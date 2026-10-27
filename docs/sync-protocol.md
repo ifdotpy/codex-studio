@@ -362,23 +362,16 @@ already requested by an earlier archive action and its exact operation identity.
 
 Connection health, subscription readiness, and message delivery are separate
 contracts. The renderer's
-[connection module](../workspaces/client/apps/web/src/sync/resourceConnection.ts)
-owns connection states and peer-health validation. The subscription store owns
+[connection state module](../workspaces/client/apps/web/src/sync/connectionState.ts)
+owns transitions, activity, retry attempts, deadlines and reconnect reasons; the
+[peer-health module](../workspaces/client/apps/web/src/sync/resourceConnection.ts)
+validates peer health. The subscription store owns
 whether a resource has an applied baseline; the outbox owns whether a message has
 a server receipt. Neither stale resource data nor an unacknowledged message alone
 means that the connection is lost.
 
-Transport activity is distinct from connection health. The connection module
-owns the closed activity states: stopped, preparing, waiting for an owner,
-retry scheduled, connecting, open, paused, and offline. Activity is derived from
-the current opening attempt, lock request, retry timer, and stream. Presentation
-must not infer an active attempt from degraded health alone. Browser offline
-activity takes precedence in presentation, including while server health is
-still fresh. Both offline and online transitions notify listeners even when
-health has not changed.
-
-The same connection module owns the closed failure reasons and optional retry
-deadline. Failure reasons describe observed boundaries, not an inferred remote
+Health and transport activity are derived views of that state. Failure reasons
+describe observed boundaries, not an inferred remote
 cause; an unclassified interruption is unknown. A validated server frame clears
 the failure. The retry deadline is Unix epoch milliseconds belonging to the
 actual retry timer and is cleared when that timer fires or is canceled. UI copy
@@ -398,9 +391,9 @@ its preparation; late results cannot reopen a superseded stream.
 
 An intentionally hidden tab releases its stream with a `paused` connection state.
 Returning to the tab resumes coordination without reporting that pause as a
-network failure. Browser `online` and `offline` events are network hints: an
-`online` event can trigger recovery but cannot establish a live connection, and
-an `offline` hint does not discard an active stream with fresh server evidence.
+network failure. A browser `offline` event immediately closes the local stream,
+cancels retry timers and invalidates peer health. An `online` event starts recovery
+immediately, but cannot establish a live connection without fresh server evidence.
 Transport errors and expired server liveness still trigger recovery.
 
 The stream owner publishes its current server-health snapshot with peer

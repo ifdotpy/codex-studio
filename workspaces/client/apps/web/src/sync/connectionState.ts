@@ -66,6 +66,55 @@ export type ConnectionEvent =
   | { type: "paused" }
   | { type: "schema-mismatch" };
 
+/** Coarse health is the existing cross-tab wire representation. */
+export type ConnectionHealth =
+  | "connecting"
+  | "live"
+  | "degraded"
+  | "offline"
+  | "paused"
+  | "schema-mismatch";
+export type ConnectionActivity = ReconnectingActivity | "paused" | "offline";
+
+export function healthOf(state: ConnectionState): ConnectionHealth {
+  switch (state.phase) {
+    case "stopped":
+    case "connecting":
+      return "connecting";
+    case "reconnecting":
+      return "degraded";
+    case "live":
+    case "offline":
+    case "paused":
+    case "schema-mismatch":
+      return state.phase;
+    default: {
+      const exhaustive: never = state;
+      return exhaustive;
+    }
+  }
+}
+
+export function activityOf(state: ConnectionState): ConnectionActivity {
+  switch (state.phase) {
+    case "connecting":
+    case "reconnecting":
+      return state.activity;
+    case "live":
+      return "open";
+    case "offline":
+    case "paused":
+      return state.phase;
+    case "stopped":
+    case "schema-mismatch":
+      return "stopped";
+    default: {
+      const exhaustive: never = state;
+      return exhaustive;
+    }
+  }
+}
+
 export function transitionConnection(
   state: ConnectionState,
   event: ConnectionEvent,

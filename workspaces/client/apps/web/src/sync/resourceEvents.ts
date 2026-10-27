@@ -40,10 +40,19 @@ import { SUBSCRIPTION_ENTITY_SCOPES } from "../generated/subscriptionEntities";
 
 import { ResourceEntityDelivery } from "./resourceEntityDelivery";
 import { EntityTransferAssembler } from "./entityTransfer";
+import { appendAppLog } from "../appLog";
+import {
+  activityOf,
+  healthOf,
+  reconnectReasons,
+  transitionConnection,
+  type ConnectionEvent,
+  type ConnectionState,
+  type ReconnectingActivity,
+} from "./connectionState";
 
 import {
   createPeerConnectionHealth,
-  hasFreshServerFrame,
   isResourceConnectionState,
   onResourceConnectionLifecycle,
   pageHidden,
@@ -292,9 +301,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   let source: ServerEventSource | undefined;
   let openingSource: AbortController | undefined;
-  let reconnecting = false;
 
-  let sourceOpened = false;
   let sessionId: string | undefined;
   let subscriptionGen = 0;
   let subscriptionGeneration = 0;
@@ -335,12 +342,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   let schemaHandshakeTimeout: ReturnType<typeof setTimeout> | undefined;
 
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-  let reconnectRetryAt: number | undefined;
-  let connectionFailure: ResourceConnectionFailure | undefined;
 
   let coordinatorIdleStopTimer: ReturnType<typeof setTimeout> | undefined;
-
-  let retryCount = 0;
 
   let preHandshakeFailures = 0;
 
@@ -371,12 +374,16 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   let pendingReset = false;
   const progressValues = new Map<string, ResourceProgressEvent>();
 
-  let currentStatus: ResourceConnectionState = "connecting";
+  let connectionState: ConnectionState =
+    typeof navigator !== "undefined" && navigator.onLine === false
+      ? { phase: "offline", since: Date.now() }
+      : { phase: "connecting", attempt: 1, activity: "stopped" };
   let lastConnectionNotification:
     | readonly [
         ResourceConnectionState,
         ResourceStreamState,
         ResourceConnectionFailure | undefined,
+        number | undefined,
         number | undefined,
       ]
     | undefined;
@@ -393,46 +400,121 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   const resourceKey = subscriptionKey;
 
+  function changeConnection(event: ConnectionEvent) {
+    const previous = connectionState;
+    const next = transitionConnection(previous, event);
+    connectionState = next;
+    if (
+      next.phase === "reconnecting" &&
+      (previous.phase !== "reconnecting" || previous.attempt !== next.attempt)
+    ) {
+      appendAppLog({
+        at: Date.now(),
+        title: "Reconnecting",
+        reason: reconnectReasons[next.cause],
+        detail: `Attempt ${next.attempt}${next.retryAt === undefined ? "" : `; retry at ${new Date(next.retryAt).toISOString()}`}`,
+      });
+    }
+  }
+
   function setStatus(status: ResourceConnectionState) {
-    if (coordinatorActive && pageHidden() && status !== "schema-mismatch")
+    if (
+      coordinatorActive &&
+      pageHidden() &&
+      status !== "schema-mismatch" &&
+      status !== "offline"
+    )
       status = "paused";
-    if (currentStatus === status) {
+    if (
+      connectionState.phase === "offline" &&
+      status !== "schema-mismatch" &&
+      status !== "offline"
+    )
+      return;
+    if (healthOf(connectionState) === status) {
       notifyConnectionListeners();
       return;
     }
-    currentStatus = status;
+    switch (status) {
+      case "connecting":
+        changeConnection({
+          type: "connecting",
+          attempt: 1,
+          activity: "stopped",
+        });
+        break;
+      case "live":
+        changeConnection({ type: "live", at: Date.now() });
+        break;
+      case "degraded":
+        changeConnection({
+          type: "reconnecting",
+          attempt: 1,
+          cause: "unknown",
+          activity: "stopped",
+        });
+        break;
+      case "offline":
+        changeConnection({ type: "offline", at: Date.now() });
+        break;
+      case "paused":
+        changeConnection({ type: "paused" });
+        break;
+      case "schema-mismatch":
+        changeConnection({ type: "schema-mismatch" });
+        break;
+      default: {
+        const exhaustive: never = status;
+        return exhaustive;
+      }
+    }
     if (status === "degraded" || status === "offline")
       requireBaselineReconciliation();
     notifyConnectionListeners();
     if (owner || independent) broadcast({ kind: "status", status });
   }
 
-  function streamState(): ResourceStreamState {
-    if (!coordinatorActive) return "stopped";
-    if (navigator.onLine === false) return "offline";
-    if (pageHidden()) return "paused";
-    if (source)
-      return sourceOpened
-        ? "open"
-        : reconnectRetryAt !== undefined
-          ? "retry-scheduled"
-          : "connecting";
-    if (openingSource || initializing) return "preparing";
-    if (reconnectTimer !== undefined) return "retry-scheduled";
-    if (ownerRequestPending) return "waiting-owner";
-    return "stopped";
+  function connectionDetail(): ResourceConnectionDetail {
+    return connectionState.phase === "reconnecting"
+      ? {
+          failure: connectionState.cause,
+          retryAt: connectionState.retryAt,
+          attempt: connectionState.attempt,
+        }
+      : {};
   }
 
-  function connectionDetail(): ResourceConnectionDetail {
-    return { failure: connectionFailure, retryAt: reconnectRetryAt };
+  function setActivity(activity: ReconnectingActivity) {
+    if (
+      connectionState.phase === "connecting" ||
+      connectionState.phase === "reconnecting"
+    ) {
+      if (activity !== connectionState.activity) {
+        if (connectionState.phase === "connecting")
+          changeConnection({
+            type: "connecting",
+            attempt: connectionState.attempt,
+            activity: activity === "retry-scheduled" ? "stopped" : activity,
+          });
+        else
+          changeConnection({
+            type: "reconnecting",
+            ...connectionState,
+            activity,
+          });
+      }
+    }
+    notifyConnectionListeners();
   }
 
   function notifyConnectionListeners() {
+    const detail = connectionDetail();
     const notification = [
-      currentStatus,
-      streamState(),
-      connectionFailure,
-      reconnectRetryAt,
+      healthOf(connectionState),
+      activityOf(connectionState),
+      detail.failure,
+      detail.retryAt,
+      detail.attempt,
     ] as const;
     if (
       lastConnectionNotification?.every(
@@ -441,10 +523,10 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     )
       return;
     lastConnectionNotification = notification;
-    const [status, stream, failure, retryAt] = notification;
+    const [status, stream, failure, retryAt, attempt] = notification;
     for (const listener of transportStatusListeners) {
       try {
-        listener(status, stream, { failure, retryAt });
+        listener(status, stream, { failure, retryAt, attempt });
       } catch {
         // A status consumer cannot interrupt transport recovery.
       }
@@ -459,7 +541,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         ...(owner || independent
           ? {
               health: {
-                status: currentStatus,
+                status: healthOf(connectionState),
                 generation: subscriptionGeneration,
                 sequence: ++healthSequence,
                 sentAt: Date.now(),
@@ -823,7 +905,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   function confirmConnectionActivity(receivedAt = Date.now()) {
     if (source && (owner || independent)) {
       validatedServerFrameAt = receivedAt;
-      connectionFailure = undefined;
       setStatus("live");
     } else if (!owner && !independent) {
       // Peer data can be cached replay. Only current owner health proves its
@@ -848,8 +929,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       throw new TypeError("Invalid token-rate frame");
     const event = value as ResourceTokenRatesEvent;
     if (event.workspaceId !== workspaceId) {
-      setStatus("degraded");
-      if (!fromPeer) reconnectNow();
+      if (fromPeer) setStatus("degraded");
+      else reconnectNow("invalid-frame");
       return;
     }
     if (fromPeer && (owner || independent)) return;
@@ -907,7 +988,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             listener(version);
         }
       }
-      retryCount = 0;
     } catch (error) {
       frameFailed(error, "local-state-error");
     }
@@ -1181,8 +1261,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const event = value as ResourceChangeEvent;
     if (fromPeer && (owner || independent)) return;
     if (!workspaceId || event.workspaceId !== workspaceId) {
-      setStatus("degraded");
-      if (!fromPeer) reconnectNow();
+      if (fromPeer) setStatus("degraded");
+      else reconnectNow("invalid-frame");
       return;
     }
     if (!fromPeer)
@@ -1200,8 +1280,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       throw new TypeError("Invalid heartbeat frame");
     const heartbeat = value as ResourceHeartbeatEvent;
     if (heartbeat.workspaceId !== workspaceId) {
-      setStatus("degraded");
-      if (!fromPeer) reconnectNow();
+      if (fromPeer) setStatus("degraded");
+      else reconnectNow("invalid-frame");
       return;
     }
     if (lastEpoch && heartbeat.epoch !== lastEpoch) {
@@ -1344,7 +1424,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       !owner &&
       !independent &&
       !pageHidden() &&
-      navigator.onLine !== false
+      connectionState.phase !== "offline"
     ) {
       // A new lock owner has no reliable way to infer subscriptions from
       // heartbeats. Advertise them once when ownership changes so takeover
@@ -1362,7 +1442,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     ) {
       if (!owner && !independent) {
         if (record.status !== "live" && record.health === undefined)
-          setStatus(record.status === "paused" ? "degraded" : record.status);
+          setStatus(
+            record.status === "paused" || record.status === "offline"
+              ? "degraded"
+              : record.status,
+          );
         if (
           record.status === "degraded" ||
           record.status === "offline" ||
@@ -1456,7 +1540,12 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       blockedSelectors = [...blockedResources.values()];
       entityDelivery.remove(removed);
       removeEntityTransfers(removed);
-      if (!source && reconnectTimer !== undefined) return;
+      if (
+        !source &&
+        connectionState.phase === "reconnecting" &&
+        connectionState.retryAt !== undefined
+      )
+        return;
     }
     const generation = ++streamUpdateGeneration;
     queueMicrotask(() => {
@@ -1520,7 +1609,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     heartbeatTimeout = undefined;
     clearTimeout(schemaHandshakeTimeout);
     schemaHandshakeTimeout = undefined;
-    sourceOpened = false;
+    setActivity("stopped");
   }
 
   function cancelIdentityProbe() {
@@ -1529,37 +1618,49 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     probe?.abort();
   }
 
-  function retryDelay() {
-    const ceiling = Math.min(BASE_RETRY_MS * 2 ** retryCount, MAX_RETRY_MS);
-    retryCount++;
+  function retryDelay(attempt: number) {
+    const ceiling = Math.min(BASE_RETRY_MS * 2 ** (attempt - 1), MAX_RETRY_MS);
     return Math.max(100, Math.round(ceiling * (0.5 + Math.random())));
   }
 
   function cancelReconnect() {
     clearTimeout(reconnectTimer);
     reconnectTimer = undefined;
-    reconnectRetryAt = undefined;
+    if (
+      connectionState.phase === "reconnecting" &&
+      connectionState.retryAt !== undefined
+    )
+      changeConnection({
+        type: "reconnecting",
+        ...connectionState,
+        retryAt: undefined,
+      });
   }
 
   function scheduleReconnect(failure: ResourceConnectionFailure = "unknown") {
     if (!coordinatorActive) return;
-    connectionFailure = failure;
-    reconnecting = true;
-    setStatus(
-      pageHidden()
-        ? "paused"
-        : navigator.onLine === false
-          ? "offline"
-          : "degraded",
-    );
     if (
-      reconnectTimer !== undefined ||
+      (connectionState.phase === "reconnecting" &&
+        connectionState.retryAt !== undefined) ||
       pageHidden() ||
-      navigator.onLine === false
+      connectionState.phase === "offline"
     )
       return;
-    const delay = retryDelay();
-    reconnectRetryAt = Date.now() + delay;
+    const attempt =
+      connectionState.phase === "reconnecting"
+        ? connectionState.attempt + 1
+        : 1;
+    const delay = retryDelay(attempt);
+    changeConnection({
+      type: "reconnecting",
+      attempt,
+      cause: failure,
+      activity: "retry-scheduled",
+      retryAt: Date.now() + delay,
+    });
+    requireBaselineReconciliation();
+    if (owner || independent)
+      broadcast({ kind: "status", status: healthOf(connectionState) });
     reconnectTimer = setTimeout(() => {
       cancelReconnect();
       if (!coordinatorReady) void initialize();
@@ -1592,9 +1693,20 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   function connectionLost(failure: ResourceConnectionFailure) {
     resetConnection();
-    connectionFailure = failure;
-    reconnecting = true;
-    setStatus("degraded");
+    const attempt =
+      connectionState.phase === "reconnecting"
+        ? connectionState.attempt + 1
+        : 1;
+    changeConnection({
+      type: "reconnecting",
+      attempt,
+      cause: failure,
+      activity: "stopped",
+    });
+    requireBaselineReconciliation();
+    notifyConnectionListeners();
+    if (owner || independent)
+      broadcast({ kind: "status", status: healthOf(connectionState) });
   }
 
   function probeIdentity() {
@@ -1645,7 +1757,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       resources: JSON.stringify(currentResources),
       since: JSON.stringify(since.filter((entry) => entry.since)),
       tokenRates: currentTokenRates,
-      reconnect: reconnecting,
+      reconnect: connectionState.phase === "reconnecting",
       [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
     };
     const query = new URLSearchParams(
@@ -1656,15 +1768,15 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   /** Answers a native source that asks for its next connection's path. */
   async function resumeSource(connected: ServerEventSource) {
+    cancelReconnect();
+    setActivity("preparing");
     const path = await prepareStreamPath(new AbortController().signal);
     if (source !== connected) return;
     if (path === undefined) closeSource();
     else {
-      reconnecting = false;
-      reconnectRetryAt = undefined;
       connected.resume!(path);
     }
-    notifyConnectionListeners();
+    setActivity(path === undefined ? "stopped" : "connecting");
   }
 
   async function prepareResourceCursors(
@@ -1730,13 +1842,18 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       coordinatorActive &&
       (owner || independent) &&
       !pageHidden() &&
-      navigator.onLine !== false
+      connectionState.phase !== "offline"
     );
   }
 
   async function openSource() {
     if (!canOpenSource()) return;
-    if (openingSource || reconnectTimer !== undefined) return;
+    if (
+      openingSource ||
+      (connectionState.phase === "reconnecting" &&
+        connectionState.retryAt !== undefined)
+    )
+      return;
     const resources = owner ? aggregateResources() : localResources();
     const tokenRates = owner
       ? hasTokenRateInterest()
@@ -1753,18 +1870,19 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     closeSource();
     const attempt = new AbortController();
     openingSource = attempt;
-    notifyConnectionListeners();
+    setActivity("preparing");
     const path = await prepareStreamPath(attempt.signal);
     if (openingSource !== attempt) return;
     if (path === undefined) {
       openingSource = undefined;
-      notifyConnectionListeners();
+      setActivity("stopped");
       return;
     }
     // Opening a retry does not recover the lost stream. Keep that server-wide
     // state until a valid frame arrives, including for newly visible chats.
     setStatus(
-      currentStatus === "degraded" || currentStatus === "offline"
+      healthOf(connectionState) === "degraded" ||
+        healthOf(connectionState) === "offline"
         ? "degraded"
         : "connecting",
     );
@@ -1775,10 +1893,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         connected.close();
         return;
       }
-      reconnecting = false;
       source = connected;
       openingSource = undefined;
-      notifyConnectionListeners();
+      setActivity("connecting");
       if (source !== connected) return;
       let schemaHandshakeReceived = false;
       let connectionOpened = false;
@@ -1805,15 +1922,28 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       connected.onretry = ({ opened, retryAt }) => {
         if (source !== connected) return;
         if (!opened) {
-          connectionLost("stream-error");
+          if (
+            connectionState.phase !== "reconnecting" ||
+            connectionState.activity !== "stopped"
+          )
+            connectionLost("stream-error");
           probeIdentity();
-        } else if (sourceOpened && !schemaHandshakeReceived)
+        } else if (
+          activityOf(connectionState) === "open" &&
+          !schemaHandshakeReceived
+        )
           failHandshake("stream-error");
-        else if (sourceOpened) {
+        else if (activityOf(connectionState) === "open") {
           requireBaselineReconciliation();
           connectionLost("stream-error");
         }
-        reconnectRetryAt = retryAt;
+        if (connectionState.phase === "reconnecting")
+          changeConnection({
+            type: "reconnecting",
+            ...connectionState,
+            retryAt,
+            activity: "retry-scheduled",
+          });
         notifyConnectionListeners();
       };
       connected.onresume = () => {
@@ -1823,8 +1953,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       };
       connected.onopen = () => {
         if (source !== connected) return;
-        sourceOpened = true;
-        notifyConnectionListeners();
+        setActivity("open");
         if (source !== connected) return;
         connectionOpened = true;
         clearTimeout(schemaHandshakeTimeout);
@@ -1837,7 +1966,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       const applyFrame = (
         message: Event,
         apply: (parsed: unknown) => void,
-        resetRetryOnSuccess = true,
         maxBytes?: number,
       ) => {
         if (source !== connected) return;
@@ -1854,7 +1982,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           )
             throw new TypeError("Resource frame exceeds the size limit");
           apply(JSON.parse(data) as unknown);
-          if (resetRetryOnSuccess) retryCount = 0;
         } catch (error) {
           frameFailed(error);
         }
@@ -1937,23 +2064,16 @@ export function createResourceEvents(options: ResourceEventsOptions) {
               throw new TypeError("Invalid resource frame");
             receiveResourceEvent(parsed);
           },
-          false,
           SYNC_STREAM_EVENT_MAX_BYTES,
         );
       });
       connected.addEventListener("entity-transfer", (message: Event) => {
-        applyFrame(
-          message,
-          receiveEntityTransfer,
-          false,
-          SYNC_STREAM_EVENT_MAX_BYTES,
-        );
+        applyFrame(message, receiveEntityTransfer, SYNC_STREAM_EVENT_MAX_BYTES);
       });
       connected.addEventListener("resource-progress", (message: Event) => {
         applyFrame(
           message,
           receiveResourceProgress,
-          false,
           SYNC_STREAM_EVENT_MAX_BYTES,
         );
       });
@@ -2012,7 +2132,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (!sessionId) {
       // Opening streams queue interests until the session handler flushes them.
       // An already live stream without a session cannot acknowledge a diff.
-      if (currentStatus === "live") reconnectNow();
+      if (healthOf(connectionState) === "live") reconnectNow();
       return;
     }
     const connected = source;
@@ -2053,7 +2173,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   function sendPeerHeartbeat() {
     if (!coordinatorReady || pageHidden()) return;
-    if (!owner && !independent && currentStatus === "live") {
+    if (!owner && !independent && healthOf(connectionState) === "live") {
       const status = peerHealth.status();
       if (status && status !== "live") setStatus(status);
     }
@@ -2108,7 +2228,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const requestedWorkspaceId = workspaceId;
     ownerRequestController = requestController;
     ownerRequestPending = true;
-    notifyConnectionListeners();
+    setActivity("waiting-owner");
     void locks
       .request(
         serverStorageName(
@@ -2126,7 +2246,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             requestedWorkspaceId !== workspaceId ||
             !lock ||
             pageHidden() ||
-            navigator.onLine === false
+            connectionState.phase === "offline"
           )
             return;
           requireBaselineReconciliation();
@@ -2185,7 +2305,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   async function initialize() {
     if (coordinatorReady || initializing || !coordinatorActive) return;
     initializing = true;
-    notifyConnectionListeners();
+    setActivity("preparing");
     const generation = coordinatorGeneration;
     try {
       const storage = await syncDatabase();
@@ -2217,9 +2337,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       else startAsOwner();
     } catch (error) {
       if (generation === coordinatorGeneration) {
-        connectionFailure = "local-state-error";
-        setStatus(navigator.onLine === false ? "offline" : "degraded");
         if (retryableReadError(error)) scheduleReconnect("local-state-error");
+        else
+          setStatus(
+            connectionState.phase === "offline" ? "offline" : "degraded",
+          );
       }
     } finally {
       if (generation === coordinatorGeneration) initializing = false;
@@ -2233,13 +2355,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       pauseTransport();
       return;
     }
-    if (navigator.onLine === false) {
-      if (!hasValidatedConnection()) setStatus("offline");
-      return;
-    }
+    if (connectionState.phase === "offline") return;
     cancelReconnect();
-    if (currentStatus === "paused") setStatus("connecting");
-    else if (currentStatus === "offline") setStatus("degraded");
+    if (healthOf(connectionState) === "paused") setStatus("connecting");
     if (!coordinatorReady) void initialize();
     else {
       // A resumed follower must keep advertising its subscriptions even when
@@ -2285,12 +2403,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     notifyConnectionListeners();
   }
 
-  function hasValidatedConnection() {
-    return owner || independent
-      ? !!source && hasFreshServerFrame(validatedServerFrameAt)
-      : peerHealth.status() === "live";
-  }
-
   function pauseTransport() {
     setStatus("paused");
     releaseStream();
@@ -2310,14 +2422,34 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     stopResume = onResourceConnectionLifecycle({
       resume: resumeTransport,
       offline: () => {
-        // Browser reachability is only a hint. A validated stream may continue
-        // through a VPN or adapter change despite navigator.onLine being false.
-        if (!hasValidatedConnection()) setStatus("offline");
-        else notifyConnectionListeners();
+        setStatus("offline");
+        releaseStream();
+        peerHealth.clear();
+        notifyConnectionListeners();
+      },
+      online: () => {
+        if (
+          connectionState.phase !== "offline" &&
+          connectionState.phase !== "reconnecting"
+        )
+          return;
+        const attempt =
+          connectionState.phase === "reconnecting"
+            ? connectionState.attempt + 1
+            : 1;
+        cancelReconnect();
+        closeSource("network-online");
+        changeConnection({
+          type: "reconnecting",
+          attempt,
+          cause: "network-online",
+          activity: "connecting",
+        });
+        resumeTransport();
       },
       pause: pauseTransport,
     });
-    if (pageHidden() || navigator.onLine === false) {
+    if (pageHidden() || connectionState.phase === "offline") {
       setStatus(pageHidden() ? "paused" : "offline");
       return;
     }
@@ -2378,7 +2510,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         if (
           generation === subscriptionGeneration &&
           listeners.has(callback) &&
-          currentStatus === "live" &&
+          healthOf(connectionState) === "live" &&
           known.epoch === lastEpoch &&
           !baselineReconciliations.has(key) &&
           (progress
@@ -2429,7 +2561,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     ) => void,
   ): () => void {
     transportStatusListeners.add(listener);
-    listener(currentStatus, streamState(), connectionDetail());
+    listener(
+      healthOf(connectionState),
+      activityOf(connectionState),
+      connectionDetail(),
+    );
     return () => transportStatusListeners.delete(listener);
   }
 

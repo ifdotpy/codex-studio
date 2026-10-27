@@ -1,21 +1,11 @@
 import type {
   ResourceConnectionDetail,
-  ResourceConnectionFailure,
   ResourceConnectionState,
   ResourceStreamState,
 } from "../sync/resourceConnection";
 import { localTime } from "../local-time";
+import { reconnectReasons } from "../sync/connectionState";
 
-const failureLabels: Record<ResourceConnectionFailure, string> = {
-  "stream-error": "Connection failed.",
-  "heartbeat-timeout": "Server updates timed out.",
-  "schema-handshake-timeout": "Server compatibility check timed out.",
-  "subscription-timeout": "Server updates did not start in time.",
-  "subscription-rejected": "Could not confirm live updates.",
-  "invalid-frame": "Received invalid server updates.",
-  "local-state-error": "Could not prepare or apply local sync data.",
-  unknown: "Reason unknown.",
-};
 const activityLabels: Record<ResourceStreamState, string> = {
   stopped: "Connection interrupted.",
   preparing: "Preparing connection…",
@@ -72,15 +62,17 @@ export function selectMessageConnection(
     })}.`;
 
   const reason = detail.failure
-    ? failureLabels[detail.failure]
+    ? reconnectReasons[detail.failure]
     : activity === "stopped" ||
         activity === undefined ||
         activity === "retry-scheduled" ||
         (interrupted &&
           activity !== "preparing" &&
           activity !== "waiting-owner")
-      ? failureLabels.unknown
+      ? reconnectReasons.unknown
       : "";
-  connection.message = reason ? `${reason} ${action}` : action;
+  const attempt =
+    detail.attempt === undefined ? "" : ` Attempt ${detail.attempt}.`;
+  connection.message = `${reason ? `${reason} ${action}` : action}${attempt}`;
   return connection;
 }

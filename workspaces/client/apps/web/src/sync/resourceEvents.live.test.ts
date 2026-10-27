@@ -1884,15 +1884,23 @@ it("connection: live status without current server proof cannot heal", async () 
   expect(status.mock.lastCall?.[0]).toBe("degraded");
 });
 
-it("connection: browser offline hint preserves a validated stream and online is not proof", async () => {
+it("connection: an offline owner does not make the follower locally offline", async () => {
+  const f = await fixture(true);
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  f.control("status", { status: "offline", health: health("offline", 1, 2) });
+  expect(status.mock.lastCall?.[0]).toBe("degraded");
+  f.control("leader-heartbeat", { health: health("live", 1, 3) });
+  expect(status.mock.lastCall?.[0]).toBe("live");
+});
+
+it("connection: offline closes a validated stream and online is not proof", async () => {
   const f = await fixture();
   const status = vi.fn();
   f.transport.watchResourceConnection(status);
   Object.assign(navigator, { onLine: false });
   window.dispatchEvent(new Event("offline"));
-  expect(f.source.closed).toBe(false);
-  expect(status.mock.lastCall?.[0]).toBe("live");
-  f.source.onerror?.();
+  expect(f.source.closed).toBe(true);
   expect(status.mock.lastCall?.[0]).toBe("offline");
   Object.assign(navigator, { onLine: true });
   window.dispatchEvent(new Event("online"));
@@ -2169,13 +2177,13 @@ it("connection: retry activity and deadline describe actual work and clear only 
   expect(status.mock.lastCall).toEqual([
     "degraded",
     "retry-scheduled",
-    { failure: "stream-error", retryAt: failedAt + 500 },
+    { failure: "stream-error", retryAt: failedAt + 500, attempt: 1 },
   ]);
   await vi.advanceTimersByTimeAsync(500);
   expect(status.mock.lastCall).toEqual([
     "degraded",
     "preparing",
-    { failure: "stream-error", retryAt: undefined },
+    { failure: "stream-error", retryAt: undefined, attempt: 1 },
   ]);
   finish();
   await vi.advanceTimersByTimeAsync(0);
@@ -2191,7 +2199,7 @@ it("connection: retry activity and deadline describe actual work and clear only 
   expect(status.mock.lastCall).toEqual([
     "live",
     "open",
-    { failure: undefined, retryAt: undefined },
+    { failure: undefined, retryAt: undefined, attempt: undefined },
   ]);
   f.sources[1]!.onerror?.();
   expect(status.mock.lastCall?.[2].retryAt).toBeGreaterThan(Date.now());
@@ -2200,24 +2208,24 @@ it("connection: retry activity and deadline describe actual work and clear only 
   expect(status.mock.lastCall).toEqual([
     "paused",
     "paused",
-    { failure: "stream-error", retryAt: undefined },
+    { failure: undefined, retryAt: undefined, attempt: undefined },
   ]);
 });
 
-it("connection: browser reachability activity changes without discarding validated stream health", async () => {
+it("connection: browser reachability changes close and reopen the stream", async () => {
   const f = await fixture();
   const status = vi.fn();
   f.transport.watchResourceConnection(status);
   f.source.onopen?.();
   Object.assign(navigator, { onLine: false });
   window.dispatchEvent(new Event("offline"));
-  expect(status.mock.lastCall?.slice(0, 2)).toEqual(["live", "offline"]);
-  expect(f.source.closed).toBe(false);
+  expect(status.mock.lastCall?.slice(0, 2)).toEqual(["offline", "offline"]);
+  expect(f.source.closed).toBe(true);
   Object.assign(navigator, { onLine: true });
   window.dispatchEvent(new Event("online"));
   await vi.advanceTimersByTimeAsync(60);
-  expect(status.mock.lastCall?.slice(0, 2)).toEqual(["live", "open"]);
-  expect(f.sources).toHaveLength(1);
+  expect(status.mock.lastCall?.slice(0, 2)).toEqual(["degraded", "connecting"]);
+  expect(f.sources).toHaveLength(2);
 });
 
 it("connection: unchanged server heartbeats do not repeat live observer side effects", async () => {
@@ -2351,14 +2359,15 @@ it("connection: first and late quiet followers recover only from fresh scoped ow
   expect(status.mock.lastCall?.[0]).toBe("live");
 });
 
-it("connection: offline hint preserves fresh follower proof and plain heartbeats cannot extend it", async () => {
+it("connection: offline invalidates follower health and plain heartbeats cannot restore it", async () => {
   const f = await fixture(true);
   const status = vi.fn();
   f.transport.watchResourceConnection(status);
   Object.assign(navigator, { onLine: false });
   window.dispatchEvent(new Event("offline"));
-  expect(status.mock.lastCall?.[0]).toBe("live");
+  expect(status.mock.lastCall?.[0]).toBe("offline");
   Object.assign(navigator, { onLine: true });
+  window.dispatchEvent(new Event("online"));
   for (let i = 0; i < 5; i++) {
     f.control("leader-heartbeat", {});
     await vi.advanceTimersByTimeAsync(3_000);
