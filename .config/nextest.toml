@@ -19,6 +19,7 @@ junit.path = "junit.xml"
 # Single owner of fast Rust witnesses. Cargo still builds the complete workspace;
 # this nextest execution profile changes selection only, never Cargo's feature graph.
 [profile.fast]
+# Idle compaction lookup searches its deadline index; upgrades retain episodes and roll back atomically.
 # Supervisor admission witnesses cover typed capabilities and exact operator recovery.
 # T17 clauses cover transactional errors, startup readiness, and native delivery.
 inherits = "ci"
@@ -187,6 +188,8 @@ default-filter = '''
     | (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices))
     | (package(=studio-runtime-server) & kind(test) & binary(=integration) & test(/^migration_startup::/))
     | (package(=studio-runtime-services) & kind(lib) & test(/^idle_compaction::tests::unsupported_rate_evidence_never_proves_resume_or_compaction$/))
+    | (package(=studio-runtime-services) & kind(lib) & test(/^idle_compaction::tests::episode_lookup_/))
+    | (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(/^idle_compaction::episode_index_upgrade_/))
     | (package(=studio-runtime-schema) & kind(lib) & test(/^provider_rate_limits::tests::sdk_generated_projection_keeps_absence_known_and_unsupported_distinct$/))
     | (package(=studio-runtime-services) & kind(test) & binary(=integration) & (test(/^account_transfer_progress::subagents_summary_does_not_hold_the_excluded_leads_native_preparation$/) | test(/^account_transfer_corpus::subagents_summary_bypasses_only_an_unenrolled_leads_summary_hold$/)))
     | (package(=studio-runtime-http) & kind(test) & binary(=integration) & test(/^process_controls::process_stop_pagination_requires_valid_cursors_before_certifying_absence$/))
@@ -415,6 +418,8 @@ default-filter = '''
     | (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices))
     | (package(=studio-runtime-server) & kind(test) & binary(=integration) & test(/^migration_startup::/))
     | (package(=studio-runtime-services) & kind(lib) & test(/^idle_compaction::tests::unsupported_rate_evidence_never_proves_resume_or_compaction$/))
+    | (package(=studio-runtime-services) & kind(lib) & test(/^idle_compaction::tests::episode_lookup_/))
+    | (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(/^idle_compaction::episode_index_upgrade_/))
     | (package(=studio-runtime-schema) & kind(lib) & test(/^provider_rate_limits::tests::sdk_generated_projection_keeps_absence_known_and_unsupported_distinct$/))
     | (package(=studio-runtime-services) & kind(test) & binary(=integration) & (test(/^account_transfer_progress::subagents_summary_does_not_hold_the_excluded_leads_native_preparation$/) | test(/^account_transfer_corpus::subagents_summary_bypasses_only_an_unenrolled_leads_summary_hold$/)))
     | (package(=studio-runtime-http) & kind(test) & binary(=integration) & test(/^process_controls::process_stop_pagination_requires_valid_cursors_before_certifying_absence$/))
