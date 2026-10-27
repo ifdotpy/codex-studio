@@ -22,8 +22,9 @@ use studio_runtime_services::voice::policy::{
 use studio_runtime_services::voice::provider::VoiceCallbackActor;
 use studio_runtime_services::voice::provider::notification_requires_stop;
 use studio_runtime_services::voice::runtime::{
-    VoiceConnectionScope as VoiceProviderContext, VoiceFuture as ProviderFuture, VoiceReply,
-    VoiceRequestPort as VoiceProviderPort, VoiceRequestReceipt, VoiceRpcId, VoiceWriteCertainty,
+    VoiceConnectionScope as VoiceProviderContext, VoiceFuture as ProviderFuture,
+    VoicePrepareFailure, VoiceReply, VoiceRequestPort as VoiceProviderPort, VoiceRequestReceipt,
+    VoiceRpcId, VoiceWriteCertainty,
 };
 use studio_runtime_store::RuntimeStore;
 
@@ -1769,7 +1770,7 @@ impl VoiceProviderPort for DelayedPrepareProvider {
         account_key: &'a str,
         thread_id: &'a str,
         epoch: i64,
-    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoiceWriteCertainty>> {
+    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoicePrepareFailure>> {
         Box::pin(async move {
             self.prepare_calls.fetch_add(1, Ordering::SeqCst);
             self.prepare_entered.notify_one();
@@ -1825,12 +1826,12 @@ impl VoiceProviderPort for PrepareNotSentProvider {
         _account_key: &'a str,
         _thread_id: &'a str,
         _epoch: i64,
-    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoiceWriteCertainty>> {
+    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoicePrepareFailure>> {
         Box::pin(async move {
             self.prepare_calls.fetch_add(1, Ordering::SeqCst);
             self.prepare_entered.notify_one();
             self.release_prepare.notified().await;
-            Err(VoiceWriteCertainty::NotSent)
+            Err(VoicePrepareFailure::NotSent)
         })
     }
 
@@ -1874,7 +1875,7 @@ impl VoiceProviderPort for ReceiptProvider {
         account_key: &'a str,
         thread_id: &'a str,
         epoch: i64,
-    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoiceWriteCertainty>> {
+    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoicePrepareFailure>> {
         Box::pin(async move {
             Ok(VoiceProviderContext {
                 agent_id: agent_id.to_owned(),
@@ -1934,7 +1935,7 @@ impl VoiceProviderPort for SignaledReceiptProvider {
         account_key: &'a str,
         thread_id: &'a str,
         epoch: i64,
-    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoiceWriteCertainty>> {
+    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoicePrepareFailure>> {
         Box::pin(async move {
             Ok(VoiceProviderContext {
                 agent_id: agent_id.to_owned(),
@@ -1994,7 +1995,7 @@ impl VoiceProviderPort for BlockingProvider {
         account_key: &'a str,
         thread_id: &'a str,
         epoch: i64,
-    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoiceWriteCertainty>> {
+    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoicePrepareFailure>> {
         Box::pin(async move {
             Ok(VoiceProviderContext {
                 agent_id: agent_id.to_owned(),

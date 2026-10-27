@@ -144,8 +144,8 @@ impl ProductionLifecyclePorts {
 #[tokio::test]
 async fn composed_stop_dispatches_active_voice_session_after_commit() {
     use studio_runtime_services::voice_runtime::{
-        Method, VoiceConnectionScope, VoiceFuture, VoiceReply, VoiceRequestPort,
-        VoiceRequestReceipt, VoiceWriteCertainty,
+        Method, VoiceConnectionScope, VoiceFuture, VoicePrepareFailure, VoiceReply,
+        VoiceRequestPort, VoiceRequestReceipt, VoiceWriteCertainty,
     };
 
     struct RecordingVoice {
@@ -160,9 +160,9 @@ async fn composed_stop_dispatches_active_voice_session_after_commit() {
             _: &'a str,
             _: &'a str,
             _: i64,
-        ) -> VoiceFuture<'a, Result<VoiceConnectionScope, VoiceWriteCertainty>> {
+        ) -> VoiceFuture<'a, Result<VoiceConnectionScope, VoicePrepareFailure>> {
             self.signal_dispatch();
-            Box::pin(async { Err(VoiceWriteCertainty::NotSent) })
+            Box::pin(async { Err(VoicePrepareFailure::NotSent) })
         }
 
         fn request<'a>(
@@ -1506,8 +1506,8 @@ async fn production_restart_scan_settles_durable_deleted_agent_state() {
 #[tokio::test(start_paused = true)]
 async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops_after_commit() {
     use studio_runtime_services::voice_runtime::{
-        Method, VoiceConnectionScope, VoiceFuture, VoiceReply, VoiceRequestPort,
-        VoiceRequestReceipt, VoiceWriteCertainty,
+        Method, VoiceConnectionScope, VoiceFuture, VoicePrepareFailure, VoiceReply,
+        VoiceRequestPort, VoiceRequestReceipt, VoiceWriteCertainty,
     };
 
     struct RecordingVoice {
@@ -1527,8 +1527,8 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
             _: &'a str,
             _: &'a str,
             _: i64,
-        ) -> VoiceFuture<'a, Result<VoiceConnectionScope, VoiceWriteCertainty>> {
-            Box::pin(async { Err(VoiceWriteCertainty::NotSent) })
+        ) -> VoiceFuture<'a, Result<VoiceConnectionScope, VoicePrepareFailure>> {
+            Box::pin(async { Err(VoicePrepareFailure::NotSent) })
         }
 
         fn request<'a>(
