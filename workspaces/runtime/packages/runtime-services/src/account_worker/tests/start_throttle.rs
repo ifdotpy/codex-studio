@@ -214,6 +214,8 @@ async fn a_waiting_start_survives_a_restart_and_starts_once() {
             .set_start_throttle("default", throttle(1, LONG_PAUSE_SECONDS, 8))
             .unwrap();
         let (mut peer, mut worker) = open(&state, state.bridge.clone(), &account).await;
+        peer.trace.store(true, std::sync::atomic::Ordering::Relaxed);
+        peer.phase("starting throttle fixture");
         for agent in &agents {
             wake_agent(&state, &worker, agent).await;
         }
@@ -224,16 +226,27 @@ async fn a_waiting_start_survives_a_restart_and_starts_once() {
             .cloned()
             .expect("a waiting agent");
         shows_wait(&state, std::slice::from_ref(&waiting), 1, "pause").await;
+        peer.phase("shutting down with a waiting start");
         worker.shutdown().await.unwrap();
+        peer.phase("recovering scheduler after shutdown");
         scheduler::recover_on_startup(&state.bridge.store)
             .await
             .unwrap();
         assert_eq!(record_of(&state, &waiting).await["status"], "queued");
         // A new process has new gates; its burst starts the waiting input.
         let restarted = test_bridge(Arc::clone(&state.bridge.store)).await;
+        restarted
+            .faults
+            .hold_restart_recovery
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let (mut peer, mut worker) = open(&state, restarted, &account).await;
+        peer.trace.store(true, std::sync::atomic::Ordering::Relaxed);
+        peer.phase("restarting throttle fixture");
+        worker.faults.restart_recovery_held.notified().await;
+        peer.phase("starting queued turn before recovery");
         wake_agent(&state, &worker, &waiting).await;
         let (started, input) = serve_start(&mut peer, &agents).await;
+        worker.faults.release_restart_recovery.notify_one();
         assert_eq!(started, waiting);
         let id = if waiting == agents[0] {
             "input"
@@ -252,7 +265,7 @@ async fn a_waiting_start_survives_a_restart_and_starts_once() {
             "{input}"
         );
         wake_agent(&state, &worker, &waiting).await;
-        worker_barrier(&worker).await;
+        worker_barrier_with_history(&worker, &mut peer).await;
         assert!(peer.writes.try_recv().is_err(), "the input started twice");
         worker.shutdown().await.unwrap();
     }
