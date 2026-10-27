@@ -79,6 +79,8 @@ pub struct ProviderRequest {
 /// transfer member, independent of the agent's already adopted destination account.
 #[derive(Clone)]
 pub struct TransferProviderRequest {
+    pub root_request_id: String,
+    pub admitted_request: Option<studio_runtime_store::request_results::AdmittedRequest>,
     pub transfer_id: String,
     pub member: String,
     pub source_account: String,
