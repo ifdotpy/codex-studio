@@ -1,3 +1,7 @@
+import {
+  ProcessActionStatus as GeneratedApiProcessActionStatus,
+  NativeCommandAction as GeneratedApiNativeCommandAction,
+} from "../../generated/api.ts";
 import { useSubscription } from "../../sync/subscriptions";
 import { randomUUID } from "../../uuid";
 import {
@@ -358,7 +362,7 @@ export default function BackgroundTasks({
       });
       if (controlScope.current !== controlStorageKey) return;
       setControlResult(result);
-      if (result.status === "uncertain") {
+      if (result.status === GeneratedApiProcessActionStatus.uncertain) {
         setPendingControl(body);
         sessionStorage.setItem(controlStorageKey, JSON.stringify(body));
         notify(
@@ -371,7 +375,7 @@ export default function BackgroundTasks({
           .map((item) => item.status)
           .join(", ");
         notify(
-          result.status === "partial"
+          result.status === GeneratedApiProcessActionStatus.partial
             ? `Some processes did not stop: ${outcomes || "see each process result"}`
             : `Stop result: ${outcomes || result.response?.status || "unknown"}`,
         );
@@ -413,7 +417,10 @@ export default function BackgroundTasks({
         },
       });
       if (controlScope.current !== controlStorageKey) return;
-      if (!receipt.found || receipt.result.status === "uncertain") {
+      if (
+        !receipt.found ||
+        receipt.result.status === GeneratedApiProcessActionStatus.uncertain
+      ) {
         notify(
           "The stop result is still unknown. Check its receipt again later.",
         );
@@ -426,7 +433,7 @@ export default function BackgroundTasks({
         .map((item) => item.status)
         .join(", ");
       notify(
-        receipt.result.status === "partial"
+        receipt.result.status === GeneratedApiProcessActionStatus.partial
           ? `Some processes did not stop: ${outcomes || "see each process result"}`
           : `Stop result: ${outcomes || receipt.result.response?.status || "unknown"}`,
       );
@@ -656,7 +663,13 @@ export default function BackgroundTasks({
       )}
       {taskRecords.status === "loading" && <p role="status">Loading tasks…</p>}
       {controlResult?.response && (
-        <p role={controlResult.status === "uncertain" ? "alert" : "status"}>
+        <p
+          role={
+            controlResult.status === GeneratedApiProcessActionStatus.uncertain
+              ? "alert"
+              : "status"
+          }
+        >
           Response stop: {String(controlResult.response.status)}
           {"error" in controlResult.response && controlResult.response.error
             ? `, ${controlResult.response.error}`
@@ -1286,7 +1299,7 @@ export function ProcessInput({
     const ok = native
       ? await act("/api/native-command", {
           id: task.id,
-          action: "input",
+          action: GeneratedApiNativeCommandAction.input,
           text: sent + "\n",
         })
       : await act("/api/monitor/input", {

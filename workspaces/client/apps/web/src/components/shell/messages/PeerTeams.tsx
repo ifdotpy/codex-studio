@@ -1,3 +1,4 @@
+import { AgentSource as GeneratedApiAgentSource } from "../../../generated/api.ts";
 import { randomUUID } from "../../../uuid";
 import {
   ActionIcon,
@@ -241,7 +242,7 @@ export function PeerTeamForm({
   const revision = useRef(project.peerTeamsRevision || 0);
   const available = agents.filter(
     (a) =>
-      a.source === "managed" &&
+      a.source === GeneratedApiAgentSource.managed &&
       a.isLead &&
       !a.deletedAt &&
       a.cwd === project.path &&

@@ -1,3 +1,4 @@
+import { ProviderKind as GeneratedApiProviderKind } from "../../generated/api.ts";
 import { required } from "../componentTestFixtures";
 import { describe, expect, it } from "vitest";
 import {
@@ -124,14 +125,14 @@ it("selects the non-default Claude alias for a stored resolved model id", () => 
     {
       model: "default",
       displayName: "Claude · Default (recommended)",
-      provider: "claude",
+      provider: GeneratedApiProviderKind.claude,
       isDefault: true,
       resolvedModel: "claude-opus-5-5",
     },
     {
       model: "opus",
       displayName: "Claude · Opus 5.5",
-      provider: "claude",
+      provider: GeneratedApiProviderKind.claude,
       resolvedModel: "claude-opus-5-5",
     },
   ] satisfies Parameters<typeof toModelOptions>[0];

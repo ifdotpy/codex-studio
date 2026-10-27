@@ -1,3 +1,4 @@
+import { ProviderKind as GeneratedApiProviderKind } from "../../generated/api.ts";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
@@ -33,7 +34,7 @@ window.launch = function (
     id: "lead-id",
     name: "Lead",
     cwd: "/fixture",
-    provider: "claude",
+    provider: GeneratedApiProviderKind.claude,
     yoloMode: yolo,
     claudeOptions: { permissionMode: mode },
   } satisfies Agent;

@@ -1,3 +1,4 @@
+import { RoomKind as GeneratedApiRoomKind } from "../../../generated/api.ts";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MantineProvider, useMantineColorScheme } from "@mantine/core";
 import { useEffect, useMemo } from "react";
@@ -42,7 +43,7 @@ const populated: Snapshot = {
     rooms: [
       {
         id: "broadcast:lead",
-        kind: "broadcast",
+        kind: GeneratedApiRoomKind.broadcast,
         name: "Team broadcast",
         rootId: "lead",
         lastMessage: {
@@ -54,7 +55,7 @@ const populated: Snapshot = {
       },
       {
         id: "private:worker",
-        kind: "private",
+        kind: GeneratedApiRoomKind.private,
         name: "API tests",
         members: ["lead", "worker"],
         lastMessage: {

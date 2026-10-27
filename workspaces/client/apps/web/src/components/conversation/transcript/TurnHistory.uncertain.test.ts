@@ -1,3 +1,7 @@
+import {
+  ProviderKind as GeneratedApiProviderKind,
+  AgentStatus as GeneratedApiAgentStatus,
+} from "../../../generated/api.ts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -26,8 +30,8 @@ for (const role of ["user", "assistant"] as const) {
           agent: {
             id: "agent",
             threadId: "thread",
-            provider: "claude",
-            status: "paused",
+            provider: GeneratedApiProviderKind.claude,
+            status: GeneratedApiAgentStatus.paused,
           } as Agent,
           agentId: "agent",
           storageKey: "uncertain-test",

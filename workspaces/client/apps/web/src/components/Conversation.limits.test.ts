@@ -1,3 +1,7 @@
+import {
+  AgentSource as GeneratedApiAgentSource,
+  AgentStatus as GeneratedApiAgentStatus,
+} from "../generated/api.ts";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   isValidElement,
@@ -124,9 +128,9 @@ it.each([undefined, null, "future-provider", "claude", "codex"])(
   (provider) => {
     const agent: NonNullable<Props["agent"]> = {
       id: "lead",
-      source: "managed",
+      source: GeneratedApiAgentSource.managed,
       isLead: true,
-      status: "idle",
+      status: GeneratedApiAgentStatus.idle,
       // @ts-expect-error Future identities must not enable the voice capability.
       provider,
     };

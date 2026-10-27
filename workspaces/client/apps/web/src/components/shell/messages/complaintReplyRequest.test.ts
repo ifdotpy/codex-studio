@@ -1,3 +1,4 @@
+import { ComplaintResponseStatus as GeneratedApiComplaintResponseStatus } from "../../../generated/api.ts";
 import assert from "node:assert/strict";
 import { it } from "vitest";
 import {
@@ -21,7 +22,7 @@ const missingStatus: RequiredResponseFields = {
 const missingVersion: RequiredResponseFields = {
   action: "respond",
   complaint_id: "complaint-1",
-  status: "resolved",
+  status: GeneratedApiComplaintResponseStatus.resolved,
 };
 void missingStatus;
 void missingVersion;
@@ -33,14 +34,14 @@ it("reuses the exact persisted complaint response after an uncertain attempt", (
     complaint_id: "complaint-1",
     version: 4,
     text: "The original reply",
-    status: "in_progress",
+    status: GeneratedApiComplaintResponseStatus.in_progress,
   };
 
   const retry = complaintReplyRequest(
     pending,
     { id: "complaint-1", version: 5 },
     "Changed draft text",
-    "resolved",
+    GeneratedApiComplaintResponseStatus.resolved,
   );
 
   assert.strictEqual(retry, pending);
@@ -55,7 +56,7 @@ it("creates one durable identity and snapshots the current response body", () =>
     undefined,
     { id: "complaint-2", version: 7 },
     "Please review this.",
-    "resolved",
+    GeneratedApiComplaintResponseStatus.resolved,
   );
 
   assert.match(request.id, /^[0-9a-f-]{36}$/i);
@@ -71,7 +72,7 @@ it("does not turn a successful response into a retry when detail reload fails", 
     undefined,
     { id: "complaint-3", version: 2 },
     "Thanks",
-    "resolved",
+    GeneratedApiComplaintResponseStatus.resolved,
   );
   const writes: UserComplaintResponse[] = [];
   const reads: string[] = [];

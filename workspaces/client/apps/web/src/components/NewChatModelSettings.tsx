@@ -1,3 +1,7 @@
+import {
+  AgentSource as GeneratedApiAgentSource,
+  AgentStatus as GeneratedApiAgentStatus,
+} from "../generated/api.ts";
 import { isModelWhitelisted, useModelWhitelist } from "./models/modelWhitelist";
 import { modelForValue } from "./models/modelOption";
 import {
@@ -199,8 +203,8 @@ function ModelDraft({ server, projectId, path, onChange }: Props) {
     id: "new-chat-draft",
     name: "New chat",
     isLead: true,
-    source: "managed",
-    status: "idle",
+    source: GeneratedApiAgentSource.managed,
+    status: GeneratedApiAgentStatus.idle,
     accountKey,
     provider,
     model,

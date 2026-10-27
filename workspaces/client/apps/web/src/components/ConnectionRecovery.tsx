@@ -1,3 +1,8 @@
+import {
+  AgentSource as GeneratedApiAgentSource,
+  AgentStatus as GeneratedApiAgentStatus,
+  RecoveryStatus as GeneratedApiRecoveryStatus,
+} from "../generated/api.ts";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@mantine/core";
@@ -25,8 +30,8 @@ const disconnectErrors = new Set<string>([
 
 export function canCheckConnection(agent: Agent) {
   return (
-    agent.source === "managed" &&
-    agent.status === "interrupted" &&
+    agent.source === GeneratedApiAgentSource.managed &&
+    agent.status === GeneratedApiAgentStatus.interrupted &&
     !agent.inFlight &&
     !agent.autoWake &&
     !agent.startAttempt &&
@@ -90,12 +95,12 @@ export default function ConnectionRecovery({
       );
       if (!mounted.current) return;
       if (
-        result.status === "reconciled" &&
+        result.status === GeneratedApiRecoveryStatus.reconciled &&
         ["completed", "failed", "interrupted"].includes(result.outcome || "")
       ) {
         setMessage("Connection checked. Refreshing the conversation.");
         await refresh();
-      } else if (result.status === "superseded") {
+      } else if (result.status === GeneratedApiRecoveryStatus.superseded) {
         setMessage(
           "The conversation changed while the connection was checked. Review its current state.",
         );
@@ -106,7 +111,10 @@ export default function ConnectionRecovery({
             ? "Could not confirm the previous outcome. Review the history before continuing."
             : "Connection checked. The previous outcome remains unconfirmed. Review the history before continuing.",
         );
-        if (result.status === "unconfirmed" && result.checked === true)
+        if (
+          result.status === GeneratedApiRecoveryStatus.unconfirmed &&
+          result.checked === true
+        )
           await refresh();
       }
     } catch (error) {

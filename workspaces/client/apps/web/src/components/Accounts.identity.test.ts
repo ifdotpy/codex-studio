@@ -1,3 +1,8 @@
+import {
+  ProviderKind as GeneratedApiProviderKind,
+  AccountStatus as GeneratedApiAccountStatus,
+} from "../generated/api.ts";
+import { ProviderKind as GeneratedProviderProviderKind } from "../generated/providerKind.ts";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { Account, AccountsState } from "./Accounts";
 import type { ServerCommand } from "../servers/navigation";
@@ -25,19 +30,19 @@ vi.mock("../servers/ServerServicesContext", async (original) => ({
 import Accounts from "./Accounts";
 const personal: Account = {
   id: "personal",
-  provider: "claude",
+  provider: GeneratedApiProviderKind.claude,
   email: "same@example.test",
   label: "Personal",
-  status: "ready",
+  status: GeneratedApiAccountStatus.ready,
   home: "/fixture/personal",
   source: "fixture",
 };
 const team: Account = {
   id: "team",
-  provider: "claude",
+  provider: GeneratedApiProviderKind.claude,
   email: "same@example.test",
   label: "Team",
-  status: "ready",
+  status: GeneratedApiAccountStatus.ready,
   home: "/fixture/team",
   source: "fixture",
 };
@@ -81,7 +86,7 @@ it("opens the exact Team profile for a configure command, not the first matching
   await receive({
     action: "account-action",
     operation: "configure-profile",
-    provider: "claude",
+    provider: GeneratedProviderProviderKind.Claude,
     email: personal.email!,
     label: "Team",
     accountKey: "team",
@@ -93,7 +98,7 @@ it("opens the exact Team profile for a configure command, not the first matching
 it("does not open Add or a guessed profile for an ambiguous legacy sign-in command", async () => {
   await receive({
     action: "account-sign-in",
-    provider: "claude",
+    provider: GeneratedProviderProviderKind.Claude,
     email: personal.email!,
     label: "Personal",
     serverLabel: "Fixture",
@@ -109,7 +114,7 @@ it("does not open Add or a guessed profile for an ambiguous legacy sign-in comma
 it("does not open Add or another profile when an exact sign-in key is missing", async () => {
   await receive({
     action: "account-sign-in",
-    provider: "claude",
+    provider: GeneratedProviderProviderKind.Claude,
     email: personal.email!,
     label: "Personal",
     serverLabel: "Fixture",
@@ -123,7 +128,7 @@ it("does not open Add or another profile when an exact sign-in key is missing", 
 it("preserves an explicit Add request even when the email already has profiles", async () => {
   await receive({
     action: "account-sign-in",
-    provider: "claude",
+    provider: GeneratedProviderProviderKind.Claude,
     email: personal.email!,
     label: "Another",
     serverLabel: "Fixture",

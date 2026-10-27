@@ -1,3 +1,4 @@
+import { AccountStatus as GeneratedApiAccountStatus } from "../generated/api.ts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
@@ -34,9 +35,13 @@ test("an account picker tile states the remaining limit next to the name", () =>
 
 test("the remaining limit is known only for a signed-in account with data", () => {
   expect(accountLimitView(account(), reading(), 200).remaining).toBe(33);
-  expect(accountLimitView(account("signedOut"), reading(), 200).remaining).toBe(
-    null,
-  );
+  expect(
+    accountLimitView(
+      account(GeneratedApiAccountStatus.signedOut),
+      reading(),
+      200,
+    ).remaining,
+  ).toBe(null);
   const failed = accountLimitView(
     account(),
     reading({ data: null, error: "Offline" }),
@@ -52,6 +57,11 @@ test("the remaining limit is known only for a signed-in account with data", () =
   expect(accountLimitView(account(), null, 200).reading).toBe(true);
   // A picker still marks a signed-out account whose limit is used up.
   expect(
-    accountLimitView(account("signedOut"), reading(), 200, false).remaining,
+    accountLimitView(
+      account(GeneratedApiAccountStatus.signedOut),
+      reading(),
+      200,
+      false,
+    ).remaining,
   ).toBe(33);
 });

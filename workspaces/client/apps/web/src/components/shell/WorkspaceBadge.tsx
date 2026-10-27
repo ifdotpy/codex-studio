@@ -1,3 +1,4 @@
+import { AgentRole as GeneratedApiAgentRole } from "../../generated/api.ts";
 import type { Agent } from "../../types";
 
 export type WorkspaceBadgeInfo = {
@@ -15,7 +16,8 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
       ? undefined
       : agent.worktree === true
         ? "worktree"
-        : agent.role === "reviewer" || agent.worktree === false
+        : agent.role === GeneratedApiAgentRole.reviewer ||
+            agent.worktree === false
           ? "shared"
           : undefined);
   // A chat lead never shows the shared mode of its own folder.

@@ -1,3 +1,5 @@
+import { ProviderKind as GeneratedProviderProviderKind } from "../generated/providerKind.ts";
+import { ProviderKind as GeneratedApiProviderKind } from "../generated/api.ts";
 import type { AccountDeleteTarget } from "./accountDeleteRequests";
 import { beforeEach, expect, it } from "vitest";
 import {
@@ -32,7 +34,10 @@ it("resolves an exact account key without selecting a duplicate or a missing rep
     accountForExternalCommand(accounts, { ...identity, accountKey: "removed" }),
   ).toBeUndefined();
   expect(
-    accountForExternalCommand(accounts, { ...identity, provider: "codex" }),
+    accountForExternalCommand(accounts, {
+      ...identity,
+      provider: GeneratedProviderProviderKind.Codex,
+    }),
   ).toBeUndefined();
   const { accountKey: _key, ...legacy } = identity;
   expect(accountForExternalCommand(accounts, legacy)).toBeUndefined();
@@ -54,7 +59,7 @@ it("does not match an unknown provider to a known account identity", () => {
   };
   expect(
     accountForExternalCommand([account], {
-      provider: "codex",
+      provider: GeneratedProviderProviderKind.Codex,
       email: account.email ?? null,
       label: account.label,
     }),
@@ -65,19 +70,19 @@ it("resolves an external account action to the account's stored delete identity"
   const accounts: AccountDeleteTarget[] = [
     {
       id: "other-account",
-      provider: "codex",
+      provider: GeneratedApiProviderKind.codex,
       email: "other@example.invalid",
       label: "Work",
     },
     {
       id: "target-account",
-      provider: "codex",
+      provider: GeneratedApiProviderKind.codex,
       email: "target@example.invalid",
       label: "Work",
     },
   ];
   const account = accountForExternalCommand(accounts, {
-    provider: "codex",
+    provider: GeneratedProviderProviderKind.Codex,
     email: "TARGET@example.invalid",
     label: "Work",
   });

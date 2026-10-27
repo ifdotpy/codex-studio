@@ -1,3 +1,9 @@
+import {
+  AgentSource as GeneratedApiAgentSource,
+  AgentStatus as GeneratedApiAgentStatus,
+  RoomKind as GeneratedApiRoomKind,
+  AccountTransferScope as GeneratedApiAccountTransferScope,
+} from "../generated/api.ts";
 import { randomUUID } from "../uuid";
 import { ProviderKind } from "../generated/providerKind.ts";
 import type { ReactNode } from "react";
@@ -398,7 +404,7 @@ export default function Conversation(p: {
   } = useMessages(
     p.id,
     kind,
-    p.agent?.source === "managed",
+    p.agent?.source === GeneratedApiAgentSource.managed,
     p.data.stateDir,
     p.syncWorkspaceId,
     p.visible ?? true,
@@ -435,7 +441,7 @@ export default function Conversation(p: {
     ]),
   ].sort();
   const receipts = useMessageReceipts(
-    p.agent?.source === "managed" ? p.id : null,
+    p.agent?.source === GeneratedApiAgentSource.managed ? p.id : null,
     `${p.data.stateDir}:${p.syncWorkspaceId}:${p.id}`,
     p.syncWorkspaceId,
     receiptIds,
@@ -484,7 +490,9 @@ export default function Conversation(p: {
     p.room ? [] : items,
     () => p.getDraft(p.id || "new"),
     p.setDraft,
-    p.agent?.source === "managed" && kind === "agent" && historyAgentId
+    p.agent?.source === GeneratedApiAgentSource.managed &&
+      kind === "agent" &&
+      historyAgentId
       ? {
           before: before ? String(before) : null,
           load: async (cursor) => {
@@ -702,7 +710,7 @@ export default function Conversation(p: {
     setHighlighted(null);
     setLimitsOpen(false);
   }, [p.id]);
-  const managed = agent?.source === "managed";
+  const managed = agent?.source === GeneratedApiAgentSource.managed;
   const [modelCommandRequest, setModelCommandRequest] = useState({
     id: p.id,
     serial: 0,
@@ -715,7 +723,7 @@ export default function Conversation(p: {
     managed,
   );
   const executionControls =
-    p.agent?.source === "managed" ? (
+    p.agent?.source === GeneratedApiAgentSource.managed ? (
       <div
         className="empty-chat-settings composer-context-row"
         aria-label="Agent settings"
@@ -1808,7 +1816,10 @@ export default function Conversation(p: {
             {!detailedActivity &&
               !reasoningVisible &&
               agent &&
-              !(agent.status === "queued" && queue.length > 0) && (
+              !(
+                agent.status === GeneratedApiAgentStatus.queued &&
+                queue.length > 0
+              ) && (
                 <LiveAgentPhase
                   source={p.waitSource}
                   agent={{
@@ -1868,7 +1879,7 @@ export default function Conversation(p: {
       />
       {p.room ? (
         <p className="room-footer">
-          {p.room.kind === "private"
+          {p.room.kind === GeneratedApiRoomKind.private
             ? "Private agent chat."
             : "Broadcast to " +
               (p.room.rootId === "all"
@@ -2017,7 +2028,8 @@ export default function Conversation(p: {
                 <>
                   {managed &&
                     p.agent?.isLead &&
-                    p.agent.accountTransfer?.scope !== "subagents" && (
+                    p.agent.accountTransfer?.scope !==
+                      GeneratedApiAccountTransferScope.subagents && (
                       <AccountTransferChip
                         transfer={p.agent.accountTransfer ?? undefined}
                       />
@@ -2286,7 +2298,7 @@ export default function Conversation(p: {
             }}
           </PromptComposer>
           <div className="conversation-composer-footer">
-            {agent?.source === "managed" && (
+            {agent?.source === GeneratedApiAgentSource.managed && (
               <Usage
                 key={p.agent?.accountKey || "default"}
                 visible={p.visible ?? true}

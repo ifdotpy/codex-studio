@@ -1,3 +1,8 @@
+import {
+  AccountStatus as GeneratedApiAccountStatus,
+  AccountTransferStatus as GeneratedApiAccountTransferStatus,
+  AccountTransferScope as GeneratedApiAccountTransferScope,
+} from "../generated/api.ts";
 import { randomUUID } from "../uuid";
 import ClaudeOrganization from "./ClaudeOrganization";
 import Disclosure from "./ui/Disclosure";
@@ -276,7 +281,7 @@ export function AccountCapacity({
   facts?: ReactNode;
 }) {
   const view = useAccountLimitView(account, { read: opened });
-  if (account.status !== "ready" && !card) return null;
+  if (account.status !== GeneratedApiAccountStatus.ready && !card) return null;
   return (
     <AccountCapacityView
       account={account}
@@ -474,7 +479,9 @@ export function AccountCapacityView({
               <dd>{account.email || "Unavailable"}</dd>
               <dt>Sign-in</dt>
               <dd>
-                {account.status === "ready" ? "Signed in" : "Sign in needed"}
+                {account.status === GeneratedApiAccountStatus.ready
+                  ? "Signed in"
+                  : "Sign in needed"}
               </dd>
             </dl>
           )}
@@ -540,7 +547,7 @@ export function AccountTransferStatus({
     ? transfer.interrupted
     : [];
   if (
-    transfer.status !== "pending" &&
+    transfer.status !== GeneratedApiAccountTransferStatus.pending &&
     !left.length &&
     !blocked.length &&
     (!showCompleted ||
@@ -559,9 +566,8 @@ export function AccountTransferStatus({
               {targetLabel}.
             </div>
           )}
-        {transfer.status === "pending" && waiting > 0 && (
-          <div>{waiting} waiting</div>
-        )}
+        {transfer.status === GeneratedApiAccountTransferStatus.pending &&
+          waiting > 0 && <div>{waiting} waiting</div>}
         {!!transfer.nativeHistoryPending && (
           <small>
             History transfer in progress: {transfer.nativeHistoryPending}{" "}
@@ -597,7 +603,7 @@ export function AccountTransferStatus({
               Retry
             </Button>
           )}
-          {transfer.status === "pending" && (
+          {transfer.status === GeneratedApiAccountTransferStatus.pending && (
             <Button
               size="compact-xs"
               variant="subtle"
@@ -627,7 +633,11 @@ export function AccountTransferChip({
 }: {
   transfer?: NonNullable<Agent["accountTransfer"]> | undefined;
 }) {
-  if (!transfer || transfer.status !== "pending") return null;
+  if (
+    !transfer ||
+    transfer.status !== GeneratedApiAccountTransferStatus.pending
+  )
+    return null;
   const blocked = Array.isArray(transfer.blocked) ? transfer.blocked : [];
   const left =
     Number(transfer.total ?? 0) - Number(transfer.completed ?? 0) ||
@@ -846,13 +856,17 @@ export default function Accounts({
     (!agent.isLead || !agent.empty || !!agent.threadId || !!agent.inFlight);
   const owner = agent?.isLead ? agent : undefined;
   const transfer = owner?.accountTransfer;
-  const teamTransfer = transfer?.scope === "subagents" ? undefined : transfer;
-  const transferring = teamTransfer?.status === "pending";
+  const teamTransfer =
+    transfer?.scope === GeneratedApiAccountTransferScope.subagents
+      ? undefined
+      : transfer;
+  const transferring =
+    teamTransfer?.status === GeneratedApiAccountTransferStatus.pending;
   const replacement = accounts.find(
     (account) =>
       account.id !== disconnectChoice?.id &&
       !account.disconnected &&
-      account.status === "ready",
+      account.status === GeneratedApiAccountStatus.ready,
   );
   const disconnectsDefault =
     disconnectChoice?.id === state.data.defaultAccountKey;
@@ -861,7 +875,7 @@ export default function Accounts({
     (account) =>
       account.id !== deleteChoice?.id &&
       !account.disconnected &&
-      account.status === "ready",
+      account.status === GeneratedApiAccountStatus.ready,
   );
   const action = async (key: string, run: () => Promise<unknown>) => {
     if (actionLock.current) return;
@@ -1151,17 +1165,20 @@ export default function Accounts({
                               )}
                               <span className="account-status-markers">
                                 {(account.error ||
-                                  account.status !== "ready") && (
+                                  account.status !==
+                                    GeneratedApiAccountStatus.ready) && (
                                   <span
                                     className="account-strip-state"
                                     data-error={
                                       Boolean(account.error) ||
-                                      account.status === "error" ||
+                                      account.status ===
+                                        GeneratedApiAccountStatus.error ||
                                       undefined
                                     }
                                   >
                                     {account.error ||
-                                    account.status === "error" ? (
+                                    account.status ===
+                                      GeneratedApiAccountStatus.error ? (
                                       <AlertCircle
                                         size={14}
                                         aria-hidden="true"
@@ -1171,7 +1188,8 @@ export default function Accounts({
                                     )}
                                     <span className="account-strip-state-label">
                                       {account.error ||
-                                      account.status === "error"
+                                      account.status ===
+                                        GeneratedApiAccountStatus.error
                                         ? "Error"
                                         : "Sign in needed"}
                                     </span>
@@ -1396,9 +1414,12 @@ export default function Accounts({
                                   </dd>
                                   <dt>Sign-in</dt>
                                   <dd>
-                                    {account.error || account.status === "error"
+                                    {account.error ||
+                                    account.status ===
+                                      GeneratedApiAccountStatus.error
                                       ? "Error"
-                                      : account.status === "ready"
+                                      : account.status ===
+                                          GeneratedApiAccountStatus.ready
                                         ? "Signed in"
                                         : "Sign in needed"}
                                   </dd>

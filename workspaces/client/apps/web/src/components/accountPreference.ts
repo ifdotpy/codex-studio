@@ -1,3 +1,4 @@
+import { AccountStatus as GeneratedApiAccountStatus } from "../generated/api.ts";
 import type { components } from "../generated/api";
 import { isProviderKind, ProviderKind } from "../generated/providerKind.ts";
 import {
@@ -96,7 +97,8 @@ export const canStart = (account: PreferenceAccount) =>
   !account.disconnected &&
   !account.deleted &&
   !account.duplicateOf &&
-  (account.status === "ready" || account.canAttemptNativeProof === true);
+  (account.status === GeneratedApiAccountStatus.ready ||
+    account.canAttemptNativeProof === true);
 
 /**
  * The default account of a new chat. The cases in
