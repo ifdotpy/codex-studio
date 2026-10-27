@@ -375,13 +375,7 @@ pub fn test_canvas() -> Connection {
         .expect("in-memory canvas");
     crate::schema::register_python_trigger_functions(&connection).expect("projection functions");
     let tx = connection.transaction().expect("fixture transaction");
-    crate::agent_columns::prepare(&tx).expect("agent columns");
-    crate::bootstrap::prepare_sync_schema(&tx).expect("sync schema");
-    crate::bootstrap::prepare_runtime_event_indexes(&tx).expect("scheduler and event indexes");
-    crate::AgentRepository::prepare_change_journal(&tx).expect("change journal");
-    crate::agent_volatile::prepare(&tx).expect("volatile fields");
-    crate::feature_schema::prepare(&tx).expect("feature schema");
-    crate::AgentIndexedReads::prepare_index(&tx).expect("agent indexes");
+    crate::migrations::prepare_canvas_fixture(&tx).expect("current canvas format");
     tx.commit().expect("fixture commits");
     connection
 }

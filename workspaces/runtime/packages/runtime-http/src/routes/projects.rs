@@ -9,6 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
+use studio_runtime_schema::model_catalog::ModelCatalog;
 use studio_runtime_services::agents_create::CreateError;
 use studio_runtime_services::host_worker_create::{
     AccountIdentity, CreationCatalog, ExecutionSettings,
@@ -21,7 +22,7 @@ use crate::router::HttpState;
 struct RadioCreationAdapter {
     /// Model lists fetched before blocking preparation, keyed by account key;
     /// an account whose list request failed is absent.
-    model_lists: std::collections::BTreeMap<String, Value>,
+    model_lists: std::collections::BTreeMap<String, ModelCatalog>,
     rows: Vec<Value>,
     identities: Option<[AccountIdentity; 2]>,
 }
@@ -41,58 +42,43 @@ impl CreationCatalog for RadioCreationAdapter {
             .get(account_key)
             .ok_or(CreateError::Internal)?;
         let row = value
-            .get("data")
-            .and_then(Value::as_array)
-            .and_then(|rows| {
-                rows.iter().find(|row| {
-                    !row.get("hidden").and_then(Value::as_bool).unwrap_or(false)
-                        && (row.get("model").and_then(Value::as_str) == Some(model)
-                            || row.get("resolvedModel").and_then(Value::as_str) == Some(model))
-                })
+            .data
+            .iter()
+            .find(|row| {
+                row.hidden != Some(true)
+                    && (row.model == model
+                        || row.resolved_model.as_ref().and_then(Option::as_deref) == Some(model))
             })
             .ok_or(CreateError::InvalidCreation("model"))?;
         let supported = row
-            .get("supportedReasoningEfforts")
-            .and_then(Value::as_array)
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(|row| row.get("reasoningEffort").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            .supported_reasoning_efforts
+            .iter()
+            .flatten()
+            .map(|effort| effort.reasoning_effort.as_str())
+            .collect::<Vec<_>>();
         if effort.is_some_and(|effort| !supported.contains(&effort)) {
             return Err(CreateError::InvalidCreation("effort"));
         }
         if fast_mode
             && !row
-                .get("serviceTiers")
-                .and_then(Value::as_array)
-                .is_some_and(|tiers| {
-                    tiers
-                        .iter()
-                        .any(|tier| tier.get("id").and_then(Value::as_str) == Some("priority"))
-                })
+                .service_tiers
+                .iter()
+                .flatten()
+                .any(|tier| tier.id == "priority")
         {
             return Err(CreateError::InvalidCreation("fast_mode"));
         }
         let native_effort = effort
             .map(str::to_owned)
-            .or_else(|| {
-                row.get("defaultReasoningEffort")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
+            .or_else(|| row.default_reasoning_effort.clone().flatten())
             .unwrap_or_else(|| "medium".to_owned());
-        let programs = row
-            .get("availableAccessPrograms")
-            .and_then(|programs| programs.get("cyber"))
-            .and_then(Value::as_array);
+        let programs = row.cyber_programs();
         let program = if daybreak_enabled {
             programs
                 .and_then(|items| {
                     ["daybreakBlue", "daybreakRed"]
                         .into_iter()
-                        .find(|name| items.iter().any(|item| item.as_str() == Some(name)))
+                        .find(|name| items.iter().any(|item| item == name))
                 })
                 .ok_or(CreateError::InvalidCreation("daybreak_enabled"))?
         } else {
@@ -184,7 +170,7 @@ async fn radio_model_lists(
     service: &studio_runtime_services::model_catalog::ModelCatalogService,
     body: &Value,
     rows: &[Value],
-) -> std::collections::BTreeMap<String, Value> {
+) -> std::collections::BTreeMap<String, ModelCatalog> {
     let mut lists = std::collections::BTreeMap::new();
     let participants = body.get("participants").and_then(Value::as_array);
     for key in participants
@@ -199,9 +185,7 @@ async fn radio_model_lists(
         }) else {
             continue;
         };
-        let Ok(provider) =
-            studio_runtime_providers::ProviderKind::of_record(row).map(|kind| kind.key())
-        else {
+        let Ok(provider) = studio_runtime_providers::ProviderKind::of_record(row) else {
             continue;
         };
         if let Ok(value) = studio_runtime_services::model_catalog::ModelListPort::list(
@@ -229,7 +213,19 @@ fn radio_create_error(error: CreateError) -> ProjectsError {
         CreateError::InvalidStoredObject { .. } => {
             ProjectsError::Invalid("radio participant record is invalid")
         }
-        _ => ProjectsError::Invalid("radio participant creation was rejected"),
+        CreateError::Conflict
+        | CreateError::MissingCreationIntent
+        | CreateError::Deleted
+        | CreateError::UnknownAgent
+        | CreateError::LeadRequired
+        | CreateError::RequestIdRequired
+        | CreateError::BaseUnresolved
+        | CreateError::ModelUnavailable
+        | CreateError::Stale
+        | CreateError::CurrentAccountExcluded
+        | CreateError::InFlight => {
+            ProjectsError::Invalid("radio participant creation was rejected")
+        }
     }
 }
 
@@ -307,7 +303,7 @@ async fn delete_project(
             eprintln!("Project deletion store error: {error}");
             return Err(ApiError::internal());
         }
-        _ => {
+        Error::Lifecycle(_) => {
             eprintln!("Project deletion lifecycle error: {error}");
             return Err(ApiError::internal());
         }

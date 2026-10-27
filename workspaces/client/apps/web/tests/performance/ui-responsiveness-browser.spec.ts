@@ -1,5 +1,6 @@
+import { required } from "./performance-fixture.ts";
 import { installResponsivenessFixture } from "./ui-responsiveness.fixture.ts";
-import type { Agent } from "../../src/types.ts";
+import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
 import type { PerformanceTranscriptItem as Message } from "./performance-fixture.ts";
 import { transcriptFixtureAgent } from "./performance-fixture.ts";
 import {
@@ -50,13 +51,13 @@ test(
       env: { ...process.env, CODEX_BOARD_STATE_DIR: join(dir, "board") },
     });
     let fixtureLog = "";
-    fixture.stderr!.on("data", (chunk) => {
+    required(fixture.stderr).on("data", (chunk) => {
       fixtureLog += chunk;
     });
     const results = [];
     try {
       const port = await new Promise((resolve, reject) => {
-        fixture.stdout!.once("data", (chunk) =>
+        required(fixture.stdout).once("data", (chunk) =>
           resolve(Number(String(chunk).trim())),
         );
         fixture.once("exit", () => reject(new Error(fixtureLog)));
@@ -170,7 +171,7 @@ test(
         await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
         const initOptions: Parameters<typeof installResponsivenessFixture>[0] =
           {
-            stateDir: original.stateDir!,
+            stateDir: required(original.stateDir),
             id: a.id,
             rows: [...histories],
           };
@@ -194,7 +195,7 @@ test(
             return route
               .fulfill({
                 path: join(staticDir, path),
-                contentType: type,
+                ...(type === undefined ? {} : { contentType: type }),
               })
               .catch(() => route.fallback());
           }
@@ -323,9 +324,9 @@ test(
         const suffix = " Input while the answer streams.";
         const streaming = (async () => {
           for (let revision = 1; revision <= 12; revision++) {
-            const items = [...histories.get(a.id)!];
+            const items = [...required(histories.get(a.id))];
             items[items.length - 1] = {
-              ...items.at(-1)!,
+              ...required(items.at(-1)),
               text: `Stream revision ${revision}. ${"Current response text. ".repeat(revision)}`,
             };
             histories.set(a.id, items);
@@ -385,7 +386,7 @@ test(
         };
         const summary = {
           viewport: name,
-          records: histories.get(a.id)!.length,
+          records: required(histories.get(a.id)).length,
           domElements: await page.locator("#messages *").count(),
           idleInput: summarize(
             metrics.input
@@ -453,7 +454,9 @@ test(
           JSON.stringify(metrics, null, 2),
         );
         for (const phase of ["idle-input", "scrolled-input"]) {
-          const counts: Record<string, number> = summary.renderCounts[phase]!;
+          const counts: Record<string, number> = required(
+            summary.renderCounts[phase],
+          );
           // The paired baseline (7066718) already includes 075fab64's
           // per-chat composer subscription, so typing isolation applies to
           // both revisions; compare latency and render counts without claiming
@@ -469,7 +472,7 @@ test(
             `${name}/${phase}: typing must not rerender the sidebar`,
           );
           assert.ok(
-            counts.conversation <= 1,
+            required(counts.conversation) <= 1,
             `${name}/${phase}: one incidental Conversation update may coincide with typing, not one per key`,
           );
         }

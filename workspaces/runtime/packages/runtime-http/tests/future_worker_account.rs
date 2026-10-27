@@ -18,7 +18,7 @@ use studio_runtime_services::{
     account_policy::AccountPolicyState,
     account_session_runtime::{
         AccountSessionError, AccountSessionFuture, AccountSessionPort, ConnectionScope,
-        ProviderRequest, ProviderResponse, RequestCertainty, SessionReceipt,
+        ProviderRequest, ProviderResponse, SessionReceipt,
     },
     model_catalog::ModelCatalogService,
 };
@@ -91,17 +91,18 @@ impl AccountSessionPort for CatalogSession {
             Ok(SessionReceipt {
                 scope,
                 operation: request.operation,
-                ticket: Some(RequestTicket {
-                    generation: 7,
-                    id: RequestId::String(format!("metadata-{read}")),
-                    method: Method::ModelList,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(json!({"data":[{
+                outcome:
+                    studio_runtime_services::account_session_runtime::SessionOutcome::Written {
+                        ticket: RequestTicket {
+                            generation: 7,
+                            id: RequestId::String(format!("metadata-{read}")),
+                            method: Method::ModelList,
+                        },
+                        response: ProviderResponse::Reply(json!({"data":[{
                     "model":model,"supportedReasoningEfforts":[{"reasoningEffort":"medium"}],
                     "defaultReasoningEffort":"medium","serviceTiers":[]
-                }],"nextCursor":null}))),
-                not_sent_reason: None,
+                }],"nextCursor":null})),
+                    },
                 replayed: false,
             })
         })

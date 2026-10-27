@@ -42,6 +42,7 @@ use rusqlite::Transaction;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin};
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::WorkItemsRepository;
 use thiserror::Error;
 
@@ -672,7 +673,11 @@ pub(crate) fn execute(
         ManagedHostTool::Watch => ports.watch(tx, actor, &call.args, &call.request_id, now)?,
         ManagedHostTool::Monitor => ports.monitor(tx, actor, &call.args, &call.request_id, now)?,
         ManagedHostTool::Review => {
-            if !matches!(actor.provider.as_deref(), None | Some("codex")) {
+            if actor
+                .provider
+                .as_deref()
+                .is_some_and(|provider| provider != ProviderKind::Codex.key())
+            {
                 return Err(Error::Invalid("Native review requires a Codex agent"));
             }
             if truthy(actor.record.extra.get("nativeReview")) {
@@ -729,7 +734,13 @@ fn remote_dependency(
         }
         ManagedHostTool::Spawn if moved_from => Some("multi-server-runtime/spawn"),
         ManagedHostTool::Interrupt if moved_from => Some("multi-server-runtime/interrupt"),
-        _ => None,
+        ManagedHostTool::Spawn
+        | ManagedHostTool::Interrupt
+        | ManagedHostTool::Search
+        | ManagedHostTool::Context
+        | ManagedHostTool::Watch
+        | ManagedHostTool::Monitor
+        | ManagedHostTool::Review => None,
     };
     Ok(dependency)
 }
@@ -1124,7 +1135,7 @@ mod tests {
             match value {
                 Value::Array(items) => stack.extend(items),
                 Value::Object(map) => stack.extend(map.values()),
-                _ => {}
+                Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
             }
         }
         assert!(

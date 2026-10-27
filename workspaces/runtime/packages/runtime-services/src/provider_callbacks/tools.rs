@@ -476,7 +476,9 @@ fn claim_settlement(
     use crate::managed_host_tools::{DeliveryCertainty, DispatchedOperation, OperationResult};
     let (value, applied) = match certainty {
         DeliveryCertainty::NotSent => (json!(error.to_string()), Some(false)),
-        _ => (json!(unknown_outcome(&call.name, &call.id, &error)), None),
+        DeliveryCertainty::Written | DeliveryCertainty::Unknown => {
+            (json!(unknown_outcome(&call.name, &call.id, &error)), None)
+        }
     };
     Box::new(ClaimFailure {
         error,

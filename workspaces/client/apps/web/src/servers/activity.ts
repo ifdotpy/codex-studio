@@ -25,6 +25,7 @@ export function createServerActivity(changed?: (busy: boolean) => void) {
     useEffect(() => {
       if (busy) return beginServerActivity();
       publish();
+      return undefined;
     }, [busy]);
   }
   return {

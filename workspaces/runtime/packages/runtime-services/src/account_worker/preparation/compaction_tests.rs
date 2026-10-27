@@ -6,7 +6,7 @@ fn input_text(prepared: &turn::PreparedSubmission) -> String {
         .iter()
         .filter_map(|input| match input {
             turn::ProviderInput::Text { text, .. } => Some(text.as_str()),
-            _ => None,
+            turn::ProviderInput::LocalImage { .. } => None,
         })
         .collect()
 }
@@ -70,7 +70,7 @@ async fn post_compaction_roster_uses_live_store_and_stops_after_delivery() {
                 let notification = json!({"method":"item/completed","params":{
                     "threadId":format!("{actor}-thread"),"turnId":"turn",
                     "item":{"id":format!("compact-{actor}"),"type":"contextCompaction"}}});
-                let frame = match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, format!("{notification}\n").as_bytes()).payload { studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame, other => panic!("fixture must decode: {other:?}"), };
+                let frame = match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, format!("{notification}\n").as_bytes()).payload { studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame, other @ studio_runtime_providers::DecodedJournalPayload::RawStdout { .. } => panic!("fixture must decode: {other:?}"), };
                 crate::notification_dispatch::dispatch_notification(
                     tx, actor, &crate::notification_dispatch::PublicationContext::default(),
                     &crate::notification_dispatch::NotificationStreamBuffer::default(),

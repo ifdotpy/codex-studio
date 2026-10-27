@@ -3,19 +3,22 @@ use super::{ToolRequestError, text};
 use serde_json::{Value, json};
 use studio_operations::*;
 
-pub(crate) fn state(record: &Value) -> Result<State, ToolRequestError> {
-    let (revision, lifecycle) = match (text(record, "stage"), text(record, "outcome")) {
-        ("queued", "pending") => (0, OperationState::Reserved),
+/// The single read boundary from persisted receipt pairs to operation lifecycle.
+pub(crate) fn classify(record: &Value) -> Result<OperationState, ToolRequestError> {
+    Ok(match (text(record, "stage"), text(record, "outcome")) {
+        ("queued", "pending") => OperationState::Reserved,
         ("running", "pending") if record["cancelRequested"] == true => {
-            (2, OperationState::CancelRequested)
+            OperationState::CancelRequested
         }
-        ("running", "pending") => (1, OperationState::Dispatched),
-        ("cancelled", "not_applied") => (3, OperationState::CancelledBeforeDispatch),
+        ("running", "pending") => OperationState::Dispatched,
+        ("cancelled", "not_applied") => OperationState::CancelledBeforeDispatch,
         ("queued" | "running" | "interrupted" | "failed" | "unknown", "unknown") => {
-            (3, OperationState::Unknown)
+            OperationState::Unknown
         }
-        ("completed", "applied") => (3, OperationState::Applied),
-        ("failed", "not_applied") => (3, OperationState::NotApplied),
+        ("completed", "applied") => OperationState::Applied,
+        // Historical handlers stored a completed delivery with a checked negative
+        // outcome. Preserve that meaning without rewriting the durable receipt.
+        ("completed" | "failed", "not_applied") => OperationState::NotApplied,
         _ => {
             return Err(studio_runtime_store::system_reads::invalid(
                 "runtime_tool_requests",
@@ -23,6 +26,31 @@ pub(crate) fn state(record: &Value) -> Result<State, ToolRequestError> {
             )
             .into());
         }
+    })
+}
+
+pub(crate) fn terminal(record: &Value) -> Result<bool, ToolRequestError> {
+    Ok(match classify(record)? {
+        OperationState::Applied
+        | OperationState::NotApplied
+        | OperationState::CancelledBeforeDispatch => true,
+        OperationState::Reserved
+        | OperationState::Dispatched
+        | OperationState::CancelRequested
+        | OperationState::Unknown => false,
+    })
+}
+
+pub(crate) fn state(record: &Value) -> Result<State, ToolRequestError> {
+    let lifecycle = classify(record)?;
+    let revision = match lifecycle {
+        OperationState::Reserved => 0,
+        OperationState::Dispatched => 1,
+        OperationState::CancelRequested => 2,
+        OperationState::CancelledBeforeDispatch
+        | OperationState::NotApplied
+        | OperationState::Applied
+        | OperationState::Unknown => 3,
     };
     let account = record["accountKey"].as_str().unwrap_or("default");
     let thread = text(record, "threadId");
@@ -99,7 +127,9 @@ pub(super) fn cancel(record: &mut Value) -> Result<bool, ToolRequestError> {
             "Conflicting request lifecycle evidence",
         )),
         DecisionKind::Transitioned => apply(record, &decision.next_state),
-        _ => Ok(false),
+        DecisionKind::ReturnExisting
+        | DecisionKind::NoEffect
+        | DecisionKind::ReceiptMissingUnknown => Ok(false),
     }
 }
 
@@ -152,4 +182,90 @@ pub(crate) fn settle(
         return Ok(false);
     }
     apply(record, &decision.state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn historical_completed_negative_receipt_keeps_its_meaning() {
+        let record = json!({"id":"request","stage":"completed","outcome":"not_applied"});
+        let decoded = state(&record).expect("historical negative receipt");
+        assert_eq!(
+            decoded.operation.expect("operation").state,
+            OperationState::NotApplied
+        );
+        assert_eq!(record["stage"], "completed");
+        let mut retained = record.clone();
+        assert!(!cancel(&mut retained).expect("already settled"));
+        assert_eq!(retained, record);
+    }
+
+    #[test]
+    fn invalid_pair_cannot_prove_terminal_completion() {
+        let mut connection = rusqlite::Connection::open_in_memory().expect("connection");
+        let tx = connection.transaction().expect("transaction");
+        for (stage, outcome) in [("queued", "applied"), ("completed", "unknown")] {
+            let record = json!({"id":"request","stage":stage,"outcome":outcome});
+            assert!(terminal(&record).is_err());
+            assert!(state(&record).is_err());
+            for specific in [false, true] {
+                assert!(
+                    super::super::refresh(
+                        &tx,
+                        &mut record.clone(),
+                        &json!({}),
+                        1.0,
+                        specific,
+                        None
+                    )
+                    .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn receipt_classification_has_one_typed_owner_and_unknown_is_not_terminal() {
+        let classify: fn(&Value) -> Result<OperationState, ToolRequestError> = classify;
+        for (stage, outcome, cancel_requested, expected, finished) in [
+            ("queued", "pending", false, OperationState::Reserved, false),
+            (
+                "running",
+                "pending",
+                false,
+                OperationState::Dispatched,
+                false,
+            ),
+            (
+                "running",
+                "pending",
+                true,
+                OperationState::CancelRequested,
+                false,
+            ),
+            (
+                "cancelled",
+                "not_applied",
+                true,
+                OperationState::CancelledBeforeDispatch,
+                true,
+            ),
+            (
+                "failed",
+                "not_applied",
+                false,
+                OperationState::NotApplied,
+                true,
+            ),
+            ("completed", "applied", false, OperationState::Applied, true),
+            ("running", "unknown", false, OperationState::Unknown, false),
+            ("failed", "unknown", false, OperationState::Unknown, false),
+        ] {
+            let record = json!({"id":"request","stage":stage,"outcome":outcome,"cancelRequested":cancel_requested});
+            assert_eq!(classify(&record).expect("valid receipt"), expected);
+            assert_eq!(terminal(&record).expect("valid receipt"), finished);
+        }
+    }
 }

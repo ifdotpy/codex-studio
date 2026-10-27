@@ -7,6 +7,9 @@ The server owns SQLite and orchestration; the renderer accesses it over HTTP.
 Native privileges stay in the isolated desktop host. Queue revisions are opaque
 server-local tokens and must only be compared within the same server.
 
+Follow [Type contracts](../../docs/type-contracts.md) for shared contract
+ownership, boundary validation, and current migration coverage.
+
 ## Apps and packages
 
 - [`apps/runtime-server/`](apps/runtime-server/): Rust HTTP server and operator CLI.

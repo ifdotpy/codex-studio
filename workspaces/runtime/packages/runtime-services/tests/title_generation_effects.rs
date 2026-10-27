@@ -12,7 +12,7 @@ use studio_runtime_services::title_generation::{
     TitleReceipt, TitleRequest, TitleRequestPort, TitleResult, WriteOutcome, admit_python_request,
     generate, generate_admitted, settle_catalog_failure,
 };
-use studio_runtime_store::provider_identity::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
+use studio_runtime_store::migrations::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
 use tokio::sync::{mpsc, oneshot};
 
@@ -28,8 +28,8 @@ async fn fixture() -> (tempfile::TempDir, RuntimeStore) {
     (root, store)
 }
 
-fn catalog() -> Value {
-    json!({"data":[{"model":"gpt-6-mini","supportedReasoningEfforts":[{"reasoningEffort":"low"}]}]})
+fn catalog() -> studio_runtime_schema::model_catalog::ModelCatalog {
+    studio_runtime_schema::model_catalog::ModelCatalog::parse(json!({"data":[{"model":"gpt-6-mini","supportedReasoningEfforts":[{"reasoningEffort":"low"}]}]})).expect("valid fixture catalog")
 }
 fn deadline() -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000_000)
@@ -266,7 +266,10 @@ async fn provider_identity_migration_rejects_provider_change_after_tagging() {
         .expect("provider changed after migration");
     let before = persisted_snapshot(&store);
     let port = FixedPort::new(Vec::new());
-    let catalog = json!({"data":[{"model":"claude-haiku"}]});
+    let catalog = studio_runtime_schema::model_catalog::ModelCatalog::parse(
+        json!({"data":[{"model":"claude-haiku"}]}),
+    )
+    .expect("valid fixture catalog");
     assert!(matches!(
         generate_admitted(
             &store,
@@ -311,9 +314,9 @@ async fn provider_identity_migration_keeps_changed_title_requests_in_conflict() 
             ),
             (
                 None,
-                json!({"data":[{"model":"changed-mini","supportedReasoningEfforts":[{"reasoningEffort":"low"}]}]}),
+                studio_runtime_schema::model_catalog::ModelCatalog::parse(json!({"data":[{"model":"changed-mini","supportedReasoningEfforts":[{"reasoningEffort":"low"}]}]})).expect("valid fixture catalog"),
             ),
-            (None, json!({"data":[{"model":"gpt-6-mini"}]})),
+            (None, studio_runtime_schema::model_catalog::ModelCatalog::parse(json!({"data":[{"model":"gpt-6-mini"}]})).expect("valid fixture catalog")),
         ] {
             let (_root, store) = legacy_title_effect_changed(state, true, change).await;
             let before = persisted_snapshot(&store);
@@ -331,7 +334,7 @@ async fn provider_identity_migration_keeps_changed_title_requests_in_conflict() 
                     .await,
                     Err(studio_runtime_services::title_generation::TitleError::Conflict)
                 ),
-                "{state}, {change:?}, {current_catalog}"
+                "{state}, {change:?}, {current_catalog:?}"
             );
             assert_eq!(port.calls.load(Ordering::SeqCst), 0);
             assert_eq!(

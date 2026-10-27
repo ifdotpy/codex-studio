@@ -70,6 +70,7 @@ test("execution settings canonical browser", async ({ page }) => {
               ],
               { cwd: root, encoding: "utf8" },
             );
+          return undefined;
         },
       },
     ],

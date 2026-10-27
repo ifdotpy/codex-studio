@@ -235,6 +235,7 @@ export function useServerDiscovery(
       const generation = ++loadGeneration.current;
       return attempts.current!.initialize().then(() => {
         if (generation === loadGeneration.current) return apply(snapshot);
+        return undefined;
       });
     }
     if (loading.current) return loading.current;

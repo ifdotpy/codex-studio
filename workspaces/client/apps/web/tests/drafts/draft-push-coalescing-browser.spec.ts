@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { AddressInfo } from "node:net";
 import type { components } from "../../src/generated/api.ts";
 import { requestBody } from "../messages/helpers.ts";
@@ -176,11 +177,12 @@ test("draft pushes coalesce at the production replication boundary", async ({
       "The maximum wait must push during continuous typing",
     );
     assert.ok(
-      pushTimes[maxWaitPushIndex] - maxWaitStart <= timing.pushMaxWait + 600,
+      required(pushTimes[maxWaitPushIndex]) - maxWaitStart <=
+        timing.pushMaxWait + 600,
       "The first push is bounded from the start of continuous typing",
     );
     assert.ok(
-      pushTimes[maxWaitPushIndex] - maxWaitStart >=
+      required(pushTimes[maxWaitPushIndex]) - maxWaitStart >=
         timing.pushMaxWait - timing.pushQuietWait - 200,
       "A quiet-period push must not satisfy the maximum-wait assertion",
     );

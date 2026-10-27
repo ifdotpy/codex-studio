@@ -11,14 +11,19 @@
 //! that checks every few minutes while its owner cannot run. Its failures of
 //! one kind are one row with their count and time range. A failure that a
 //! later run of the same rule followed with a success is not on the list.
-use rusqlite::OptionalExtension;
+mod causes;
+pub use causes::{json_cause, store_causes, store_error_kind};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use studio_runtime_schema::shared_values::{
     BACKEND_RESTARTED_TURN_ERROR, LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
     MONITOR_OWNER_STOPPED_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR, PROVIDER_RESUME_UNKNOWN_ERROR,
-    PROVIDER_START_NOT_SENT_ERROR, PROVIDER_THREAD_START_UNKNOWN_ERROR,
-    VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+    PROVIDER_THREAD_START_UNKNOWN_ERROR, VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+};
+pub use studio_runtime_schema::studio_errors::Kind;
+use studio_runtime_schema::studio_errors::{
+    Cause, Context, Diagnostics, MonitorOperationIdentity, MonitorRecoveryEvidence,
+    MonitorRecoveryProof, MonitorRecoveryReason, MonitorStatus, StudioError, Target,
 };
 use studio_runtime_store::{EventWriteRepository, StoreError, StudioErrorSources, Transaction};
 
@@ -38,104 +43,40 @@ const MONITOR_GROUP_PREFIX: &str = "monitors:";
 const MONITOR_ROW_PREFIX: &str = "monitor:";
 const DISMISSED_SIGNATURE: &str = "studio-error-dismissal";
 
-/// Why a row is on the list; each kind has one reason text and one action.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Kind {
-    /// A command whose result Studio lost; it may have run.
-    MonitorOutcomeLost,
-    /// A command that Studio did not run, or whose end Studio did not record.
-    MonitorNotRecorded,
-    /// Input that the provider proved it never received.
-    InputNotSent,
-    /// Busy-turn input that the agent did not confirm before its turn ended.
-    InputUnconfirmed,
-    /// Input whose delivery Studio could not prove either way.
-    InputUncertain,
-    /// Input that waits because of a Studio error.
-    InputStuck,
-    /// A turn that ended with its provider connection.
-    TurnDisconnected,
-    /// Studio could not prepare the agent's workspace.
-    WorkspaceFailed,
-    /// A running turn whose provider is silent while no tool runs.
-    TurnStalled,
-    /// An owner message that waits while its chat does not start.
-    InputNotStarted,
-    /// Chats that wait for an account session that does not start.
-    SessionNotStarted,
-    /// A usage resume, capacity retry or account transfer that did not move.
-    ScheduleStalled,
-}
+/// Diagnostic receipts are separate from operation receipts and dismissal keys.
+const INCIDENT_PREFIX: &str = "studio-errors:incident:";
+const INCIDENT_SIGNATURE: &str = "studio-error-incident-v1";
 
-impl Kind {
-    pub fn code(self) -> &'static str {
-        match self {
-            Self::MonitorOutcomeLost => "monitor_outcome_lost",
-            Self::MonitorNotRecorded => "monitor_not_recorded",
-            Self::InputNotSent => "input_not_sent",
-            Self::InputUnconfirmed => "input_unconfirmed",
-            Self::InputUncertain => "input_uncertain",
-            Self::InputStuck => "input_stuck",
-            Self::TurnDisconnected => "turn_disconnected",
-            Self::WorkspaceFailed => "workspace_failed",
-            Self::TurnStalled => "turn_stalled",
-            Self::InputNotStarted => "input_not_started",
-            Self::SessionNotStarted => "session_not_started",
-            Self::ScheduleStalled => "schedule_stalled",
-        }
+/// Record once by diagnostic identity. This receipt is never an operation result or retry authority.
+pub async fn record_incident(
+    store: &studio_runtime_store::RuntimeStore,
+    incident: StudioError,
+) -> Result<(), StoreError> {
+    if !matches!(incident.kind, Kind::HttpFailure | Kind::RecoveryFailed)
+        || !matches!(incident.target, Target::Details)
+    {
+        return Err(StoreError::InvalidStoredRecord {
+            object: "studio-errors",
+            id: incident.id,
+        });
     }
-
-    pub fn reason(self) -> &'static str {
-        match self {
-            Self::MonitorOutcomeLost => {
-                "Studio lost the result of this command. The command may have run. Studio does not run it again."
+    let key = format!("{INCIDENT_PREFIX}{}", incident.id);
+    let encoded = serde_json::to_string(&incident)?;
+    store
+        .transaction(move |tx| {
+            match EventWriteRepository::receipt(tx, &key)? {
+                Some(receipt) if receipt.signature != INCIDENT_SIGNATURE => {
+                    return Err(StoreError::InvalidStoredRecord {
+                        object: "studio-errors",
+                        id: key,
+                    });
+                }
+                Some(_) => {}
+                None => EventWriteRepository::put_receipt(tx, &key, INCIDENT_SIGNATURE, &encoded)?,
             }
-            Self::MonitorNotRecorded => {
-                "Studio did not run this command, or did not record its end."
-            }
-            Self::InputNotSent => "Studio did not send this message to the provider.",
-            Self::InputUnconfirmed => {
-                "The agent did not confirm this message. It may have read it. Studio does not send it again."
-            }
-            Self::InputUncertain => "Studio does not know if the provider received this message.",
-            Self::InputStuck => "This message waits because of a Studio error.",
-            Self::TurnDisconnected => "The provider connection ended during the turn.",
-            Self::WorkspaceFailed => "Studio could not prepare the workspace of this agent.",
-            Self::TurnStalled => {
-                "The chat shows a running turn, but its provider sent nothing for 10 minutes."
-            }
-            Self::InputNotStarted => "A message waits, but its chat did not start.",
-            Self::SessionNotStarted => "Chats wait for an account session that did not start.",
-            Self::ScheduleStalled => "A scheduled step did not move after its due time.",
-        }
-    }
-
-    /// The safe action: `resume` only where connection recovery decides from
-    /// native history; `check` where only the owner can decide.
-    pub fn action(self) -> &'static str {
-        match self {
-            Self::InputUncertain | Self::InputStuck | Self::TurnDisconnected => "resume",
-            Self::MonitorOutcomeLost
-            | Self::MonitorNotRecorded
-            | Self::InputNotSent
-            | Self::InputUnconfirmed
-            | Self::WorkspaceFailed
-            | Self::TurnStalled
-            | Self::InputNotStarted
-            | Self::SessionNotStarted
-            | Self::ScheduleStalled => "check",
-        }
-    }
-
-    /// The row kind of a liveness finding.
-    fn of_liveness(code: crate::liveness::Code) -> Self {
-        match code {
-            crate::liveness::Code::TurnStalled => Self::TurnStalled,
-            crate::liveness::Code::InputNotStarted => Self::InputNotStarted,
-            crate::liveness::Code::SessionNotStarted => Self::SessionNotStarted,
-            crate::liveness::Code::ScheduleStalled => Self::ScheduleStalled,
-        }
-    }
+            Ok(())
+        })
+        .await
 }
 
 /// The kind of an agent's current error, when Studio caused it.
@@ -159,7 +100,17 @@ fn agent_kind(status: &str, error: &str) -> Option<Kind> {
     {
         return Some(Kind::WorkspaceFailed);
     }
-    None
+    matches!(status, "failed" | "interrupted").then_some(Kind::UnclassifiedFailure)
+}
+
+/// The row kind of a liveness finding.
+fn liveness_kind(code: crate::liveness::Code) -> Kind {
+    match code {
+        crate::liveness::Code::TurnStalled => Kind::TurnStalled,
+        crate::liveness::Code::InputNotStarted => Kind::InputNotStarted,
+        crate::liveness::Code::SessionNotStarted => Kind::SessionNotStarted,
+        crate::liveness::Code::ScheduleStalled => Kind::ScheduleStalled,
+    }
 }
 
 /// The kind of a monitor's end, when Studio caused it. A command with an exit
@@ -167,8 +118,10 @@ fn agent_kind(status: &str, error: &str) -> Option<Kind> {
 fn monitor_kind(record: &Value) -> Option<Kind> {
     match record["status"].as_str() {
         Some("lost") => Some(Kind::MonitorOutcomeLost),
-        Some("failed") if record["exitCode"].is_null() => {
-            let error = record["error"].as_str().filter(|error| !error.is_empty())?;
+        Some("failed") if record["exitCode"].as_i64().is_none() => {
+            let Some(error) = record["error"].as_str().filter(|error| !error.is_empty()) else {
+                return Some(Kind::UnclassifiedFailure);
+            };
             let owner_stopped = error == MONITOR_OWNER_STOPPED_ERROR
                 || error.ends_with(&format!(": {MONITOR_OWNER_STOPPED_ERROR}"));
             (!owner_stopped).then_some(Kind::MonitorNotRecorded)
@@ -180,25 +133,195 @@ fn monitor_kind(record: &Value) -> Option<Kind> {
 /// The kind of an input event's state, when Studio caused it.
 fn event_kind(status: &str, error: &str, age: f64) -> Option<Kind> {
     match status {
-        "failed" if error == PROVIDER_START_NOT_SENT_ERROR => Some(Kind::InputNotSent),
         "failed" if error == studio_runtime_store::STEER_UNCONFIRMED_ERROR => {
             Some(Kind::InputUnconfirmed)
         }
         "uncertain" => Some(Kind::InputUncertain),
+        "failed" => Some(Kind::UnclassifiedFailure),
         "pending" if !error.is_empty() && age >= STUCK_INPUT_SECONDS => Some(Kind::InputStuck),
         _ => None,
     }
 }
 
+fn retained_causes(kind: Kind, error: &str) -> Vec<Cause> {
+    if kind == Kind::UnclassifiedFailure {
+        vec![Cause::Unclassified {
+            sha256: studio_runtime_store::sha256_hex(error.as_bytes()),
+        }]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Project known machine facts through their actual record owners; never copy transport extensions.
+fn monitor_evidence(record: &Value) -> Result<Cause, serde_json::Error> {
+    let _: Option<i64> = serde_json::from_value(record["exitCode"].clone())?;
+    let status: MonitorStatus = serde_json::from_value(record["status"].clone())?;
+    let operation = record
+        .get("operation")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            serde_json::from_value::<crate::monitor_policy::Operation>(value.clone()).map(
+                |operation| MonitorOperationIdentity {
+                    agent: operation.agent,
+                    epoch: operation.epoch,
+                    account_key: operation.account_key,
+                    connection_id: operation.connection_id,
+                },
+            )
+        })
+        .transpose()?;
+    let recovery = record
+        .get("reattachRecovery")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            serde_json::from_value::<crate::monitor_policy::ReattachRecovery>(value.clone()).map(
+                |recovery| MonitorRecoveryEvidence {
+                    status: recovery.status,
+                    started_at: recovery.started_at,
+                    proof: recovery.proof.map(|proof| {
+                        match serde_json::from_value::<MonitorRecoveryReason>(Value::String(
+                            proof.clone(),
+                        )) {
+                            Ok(reason) => MonitorRecoveryProof::Recognized { reason },
+                            Err(_) => MonitorRecoveryProof::Unclassified {
+                                sha256: studio_runtime_store::sha256_hex(proof.as_bytes()),
+                            },
+                        }
+                    }),
+                },
+            )
+        })
+        .transpose()?;
+    Ok(Cause::Monitor {
+        status,
+        operation,
+        recovery,
+    })
+}
+
+fn invalid_monitor(id: &str, at: f64, pointer: Option<String>, cause: Cause) -> StudioError {
+    let mut incident = invalid_source(
+        format!("monitor:{id}"),
+        "runtime_monitors",
+        id,
+        at,
+        vec![
+            Cause::StoredRecord {
+                object: "runtime_monitors".into(),
+                id: id.into(),
+                pointer,
+            },
+            cause,
+        ],
+    );
+    incident.monitor_id = Some(id.into());
+    incident
+}
+
 #[derive(Clone)]
-struct Agent {
-    name: String,
-    deleted: bool,
+enum SourceOwner {
+    Live(std::sync::Arc<studio_runtime_store::AgentRecord>),
+    Deleted,
+    Missing,
+    Invalid(Vec<Cause>),
+}
+
+enum EventSource {
+    Record(studio_runtime_store::QueueEvent),
+    Missing,
+    Invalid(Vec<Cause>),
+}
+
+fn malformed_source(error: &StoreError) -> bool {
+    matches!(
+        error,
+        StoreError::InvalidStoredObject { .. }
+            | StoreError::InvalidStoredRecord { .. }
+            | StoreError::InvalidSyncObjectField { .. }
+            | StoreError::InvalidSyncObject { .. }
+            | StoreError::Json(_)
+    )
+}
+
+fn event_source(tx: &Transaction<'_>, id: &str) -> Result<EventSource, StoreError> {
+    match studio_runtime_store::QueueEventRepository::get(
+        tx,
+        &studio_runtime_store::QueueEventId::from(id),
+    ) {
+        Ok(Some(event)) => Ok(EventSource::Record(event)),
+        Ok(None) => Ok(EventSource::Missing),
+        Err(error) if malformed_source(&error) => Ok(EventSource::Invalid(store_causes(&error))),
+        Err(error) => Err(error),
+    }
+}
+
+fn read_owner(tx: &Transaction<'_>, id: &str) -> Result<SourceOwner, StoreError> {
+    match studio_runtime_store::AgentRepository::get(tx, &studio_runtime_store::AgentId::from(id)) {
+        Ok(Some(record)) if studio_runtime_store::truthy(record.extra.get("deletedAt")) => {
+            Ok(SourceOwner::Deleted)
+        }
+        Ok(Some(record)) => Ok(SourceOwner::Live(std::sync::Arc::new(record))),
+        Ok(None) => Ok(SourceOwner::Missing),
+        Err(error) if malformed_source(&error) => Ok(SourceOwner::Invalid(store_causes(&error))),
+        Err(error) => Err(error),
+    }
+}
+
+fn owner_name(record: &studio_runtime_store::AgentRecord) -> String {
+    record
+        .extra
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("Agent")
+        .to_owned()
+}
+
+fn invalid_source(
+    id: String,
+    object: &str,
+    source_id: &str,
+    observed_at: f64,
+    causes: Vec<Cause>,
+) -> StudioError {
+    let kind = Kind::StoredRecordInvalid;
+    StudioError {
+        id,
+        kind,
+        reason: kind.reason().into(),
+        target: Target::Details,
+        detail: "Invalid retained record".into(),
+        subject: String::new(),
+        at: observed_at,
+        monitor_id: None,
+        event_id: None,
+        rule_id: None,
+        count: None,
+        first_at: None,
+        diagnostics: Diagnostics {
+            context: Context::Stored {
+                object: object.into(),
+                id: source_id.into(),
+            },
+            certainty: kind.certainty(),
+            causes,
+        },
+    }
+}
+
+fn invalid_owner(id: &str, observed_at: f64, causes: Vec<Cause>) -> StudioError {
+    invalid_source(
+        format!("stored:runtime_agents:{id}"),
+        "runtime_agents",
+        id,
+        observed_at,
+        causes,
+    )
 }
 
 /// The current rows, newest first, without dismissed ones.
 pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
-    Ok(build(tx, now)?.0)
+    Ok(json!({"items": build(tx, now)?.0}))
 }
 
 /// What a full list build saw beyond its rows: the owners that hide rows
@@ -211,57 +334,120 @@ struct Baseline {
 }
 
 /// The list and its baseline.
-fn build(tx: &Transaction<'_>, now: f64) -> Result<(Value, Baseline), StoreError> {
+fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline), StoreError> {
     let since = now - WINDOW_SECONDS;
     let dismissed = dismissed(tx)?;
     let mut hidden_owners = BTreeSet::new();
     // Many rows share an owner; each owner record is read and decoded once.
-    let mut owners = std::collections::HashMap::<String, Option<Agent>>::new();
-    let mut agent = |id: &str| -> Result<Option<Agent>, StoreError> {
+    let mut owners = std::collections::HashMap::<String, SourceOwner>::new();
+    let mut agent = |id: &str| -> Result<SourceOwner, StoreError> {
         if let Some(owner) = owners.get(id) {
             return Ok(owner.clone());
         }
-        let owner = studio_runtime_store::AgentRepository::get(
-            tx,
-            &studio_runtime_store::AgentId::from(id),
-        )?
-        .map(|record| Agent {
-            name: record
-                .extra
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("Agent")
-                .to_owned(),
-            deleted: studio_runtime_store::truthy(record.extra.get("deletedAt")),
-        });
-        owners.insert(id.to_owned(), owner.clone());
+        let owner = read_owner(tx, id)?;
+        owners.insert(id.into(), owner.clone());
         Ok(owner)
     };
-    let mut rows = Vec::new();
-    let push = |rows: &mut Vec<Value>, row: Value| {
-        if row["id"]
-            .as_str()
-            .is_some_and(|id| !dismissed.contains_key(id))
-        {
-            rows.push(row);
+    let mut rows = std::collections::BTreeMap::<String, StudioError>::new();
+    let push = |rows: &mut std::collections::BTreeMap<String, StudioError>, row: StudioError| {
+        if !dismissed.contains_key(&row.id) {
+            rows.insert(row.id.clone(), row);
         }
     };
 
     // The store read selects only rows that `monitor_kind` may accept.
     let found = studio_runtime_store::MonitorsRepository::studio_error_candidates(tx, since)?;
-    let mut groups = std::collections::BTreeMap::<(String, &'static str), MonitorGroup>::new();
+    let mut groups = std::collections::BTreeMap::<(String, String), MonitorGroup>::new();
     for (id, raw) in found {
-        let Ok(record) = serde_json::from_str::<Value>(&raw) else {
+        let record: Value = match serde_json::from_str(&raw) {
+            Ok(record) => record,
+            Err(error) => {
+                push(
+                    &mut rows,
+                    invalid_monitor(&id, now, None, json_cause(&error)),
+                );
+                continue;
+            }
+        };
+        let at = record["finished"]
+            .as_f64()
+            .or_else(|| record["created"].as_f64())
+            .unwrap_or(0.0);
+        if record["id"].as_str() != Some(id.as_str()) {
+            push(
+                &mut rows,
+                invalid_monitor(
+                    &id,
+                    now,
+                    Some("/id".into()),
+                    Cause::SchemaViolation {
+                        pointer: "/id".into(),
+                        keyword: "identity".into(),
+                    },
+                ),
+            );
             continue;
+        }
+        if let Some((pointer, keyword)) =
+            studio_runtime_schema::first_error("PersistedMonitorRecord", &record)
+                .map_err(StoreError::SchemaValidation)?
+        {
+            push(
+                &mut rows,
+                invalid_monitor(
+                    &id,
+                    now,
+                    Some(pointer.clone()),
+                    Cause::SchemaViolation { pointer, keyword },
+                ),
+            );
+            continue;
+        }
+        let evidence = match monitor_evidence(&record) {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                push(
+                    &mut rows,
+                    invalid_monitor(&id, now, None, json_cause(&error)),
+                );
+                continue;
+            }
         };
         let Some(kind) = monitor_kind(&record) else {
             continue;
         };
+        let agent_id = record["agent"].as_str().unwrap_or_default();
+        let owner = match agent(agent_id)? {
+            SourceOwner::Live(owner) => owner,
+            SourceOwner::Deleted => {
+                hidden_owners.insert(agent_id.to_owned());
+                continue;
+            }
+            SourceOwner::Invalid(causes) => {
+                push(&mut rows, invalid_owner(agent_id, now, causes));
+                continue;
+            }
+            SourceOwner::Missing => {
+                hidden_owners.insert(agent_id.to_owned());
+                push(
+                    &mut rows,
+                    invalid_monitor(
+                        &id,
+                        now,
+                        Some("/agent".into()),
+                        Cause::StoredRecord {
+                            object: "runtime_agents".into(),
+                            id: agent_id.into(),
+                            pointer: None,
+                        },
+                    ),
+                );
+                continue;
+            }
+        };
         if dismissed.contains_key(&format!("{MONITOR_ROW_PREFIX}{id}")) {
             continue;
         }
-        let agent_id = record["agent"].as_str().unwrap_or_default().to_owned();
-        let command = record["command"].as_str().unwrap_or_default().to_owned();
         let rule = record["ruleId"]
             .as_str()
             .filter(|rule| !rule.is_empty())
@@ -270,25 +456,48 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Value, Baseline), StoreError
             Some(rule) => format!("rule:{rule}"),
             None => format!(
                 "command:{agent_id}:{}",
-                &studio_runtime_store::sha256_hex(command.as_bytes())[..16]
+                &studio_runtime_store::sha256_hex(
+                    record["command"].as_str().unwrap_or_default().as_bytes()
+                )[..16]
             ),
         };
         let failure = MonitorFailure {
-            id,
             created: record["created"].as_f64().unwrap_or(0.0),
-            at: record["finished"]
-                .as_f64()
-                .or_else(|| record["created"].as_f64())
-                .unwrap_or(0.0),
-            error: record["error"].as_str().unwrap_or_default().to_owned(),
+            at,
+            // Commands and arbitrary source errors may contain credentials. Diagnostic facts replace them.
+            row: StudioError {
+                id: String::new(),
+                kind,
+                reason: kind.reason().into(),
+                target: kind.target(agent_id.into(), owner_name(&owner)),
+                monitor_id: Some(id),
+                event_id: None,
+                rule_id: rule.clone(),
+                count: None,
+                first_at: None,
+                detail: kind.reason().into(),
+                subject: String::new(),
+                at,
+                diagnostics: Diagnostics {
+                    context: Context::Monitor {
+                        request_id: record["requestId"].as_str().map(str::to_owned),
+                        turn_id: record["turnId"].as_str().map(str::to_owned),
+                        epoch: record["epoch"].as_i64(),
+                    },
+                    certainty: kind.certainty(),
+                    causes: std::iter::once(evidence)
+                        .chain(retained_causes(
+                            kind,
+                            record["error"].as_str().unwrap_or_default(),
+                        ))
+                        .collect(),
+                },
+            },
         };
         groups
-            .entry((key, kind.code()))
+            .entry((key, kind_code(kind)?))
             .or_insert_with(|| MonitorGroup {
-                kind,
-                agent: agent_id,
                 rule,
-                command: command.clone(),
                 failures: Vec::new(),
             })
             .failures
@@ -312,157 +521,289 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Value, Baseline), StoreError
             succeeded_at.is_none_or(|success| failure.created >= success)
                 && dismissed_at.is_none_or(|dismissed| failure.at > dismissed)
         });
-        group
-            .failures
-            .sort_by(|a, b| a.at.total_cmp(&b.at).then_with(|| a.id.cmp(&b.id)));
-        let (Some(first), Some(last)) = (group.failures.first(), group.failures.last()) else {
+        group.failures.sort_by(|a, b| {
+            a.at.total_cmp(&b.at)
+                .then_with(|| a.row.monitor_id.cmp(&b.row.monitor_id))
+        });
+        let count = u64::try_from(group.failures.len()).unwrap_or(u64::MAX);
+        let Some(first_at) = group.failures.first().map(|failure| failure.at) else {
             continue;
         };
-        let Some(owner) = agent(&group.agent)? else {
-            hidden_owners.insert(group.agent.clone());
+        let Some(last) = group.failures.pop() else {
             continue;
         };
-        if owner.deleted {
-            hidden_owners.insert(group.agent.clone());
-            continue;
-        }
-        rows.push(json!({
-            "id":row_id,
-            "kind":group.kind.code(),
-            "reason":group.kind.reason(),
-            "action":group.kind.action(),
-            "agentId":group.agent,
-            "agentName":owner.name,
-            "monitorId":last.id,
-            "ruleId":group.rule,
-            "detail":last.error,
-            "subject":group.command,
-            "count":group.failures.len(),
-            "firstAt":first.at,
-            "at":last.at,
-        }));
+        let mut row = last.row;
+        row.id = row_id;
+        row.count = Some(count);
+        row.first_at = Some(first_at);
+        rows.insert(row.id.clone(), row);
     }
 
     let mut events = tx.prepare_cached(
-        "SELECT id,agent,status,COALESCE(error,''),created,text FROM runtime_events WHERE created>=?1 AND status IN ('failed','uncertain','pending')",
+        "SELECT id FROM runtime_events WHERE created>=?1 AND status IN ('failed','uncertain','pending')",
     )?;
-    let found = events
-        .query_map([since], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, f64>(4)?,
-                row.get::<_, String>(5)?,
-            ))
-        })?
+    let ids = events
+        .query_map([since], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     drop(events);
-    for (id, agent_id, status, error, created, text) in found {
+    for id in ids {
+        let event = match event_source(tx, &id)? {
+            EventSource::Record(event) => event,
+            EventSource::Missing => continue,
+            EventSource::Invalid(causes) => {
+                let mut incident =
+                    invalid_source(format!("event:{id}"), "runtime_events", &id, now, causes);
+                incident.event_id = Some(id);
+                push(&mut rows, incident);
+                continue;
+            }
+        };
+        let studio_runtime_store::QueueEvent {
+            agent: agent_id,
+            status,
+            error,
+            created,
+            epoch,
+            turn_id,
+            ..
+        } = event;
+        let agent_id = agent_id.0;
+        let error = error.unwrap_or_default();
         let Some(kind) = event_kind(&status, &error, now - created) else {
             continue;
         };
-        let Some(owner) = agent(&agent_id)?.filter(|owner| !owner.deleted) else {
-            hidden_owners.insert(agent_id);
-            continue;
+        let owner = match agent(&agent_id)? {
+            SourceOwner::Live(owner) => owner,
+            SourceOwner::Invalid(causes) => {
+                push(&mut rows, invalid_owner(&agent_id, now, causes));
+                continue;
+            }
+            SourceOwner::Missing | SourceOwner::Deleted => {
+                hidden_owners.insert(agent_id);
+                continue;
+            }
         };
         push(
             &mut rows,
-            json!({
-                "id":format!("event:{id}"),
-                "kind":kind.code(),
-                "reason":kind.reason(),
-                "action":kind.action(),
-                "agentId":agent_id,
-                "agentName":owner.name,
-                "eventId":id,
-                "detail":error,
-                "subject":text.chars().take(200).collect::<String>(),
-                "count":1,
-                "firstAt":created,
-                "at":created,
-            }),
+            StudioError {
+                id: format!("event:{id}"),
+                kind,
+                reason: kind.reason().into(),
+                target: kind.target(agent_id, owner_name(&owner)),
+                event_id: Some(id),
+                monitor_id: None,
+                detail: kind.reason().into(),
+                subject: String::new(),
+                at: created,
+                rule_id: None,
+                count: None,
+                first_at: None,
+                diagnostics: Diagnostics {
+                    context: Context::Input { turn_id, epoch },
+                    certainty: kind.certainty(),
+                    causes: retained_causes(kind, &error),
+                },
+            },
         );
     }
 
-    let mut agents = tx.prepare_cached(
-        "SELECT id,status,COALESCE(json_extract(record,'$.error'),''),COALESCE(json_extract(record,'$.name'),'Agent'),COALESCE(json_extract(record,'$.turnId'),json_extract(record,'$.lastCompletedTurn'),''),COALESCE(json_extract(record,'$.activity.at'),json_extract(record,'$.created'),0) FROM runtime_agents WHERE deleted_at IS NULL AND status IN ('failed','interrupted','paused') AND json_type(record,'$.error')='text'",
-    )?;
-    let found = agents
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, f64>(5)?,
-            ))
-        })?
+    let mut agents=tx.prepare_cached("SELECT id FROM runtime_agents WHERE deleted_at IS NULL AND status IN ('failed','interrupted','paused')")?;
+    let ids = agents
+        .query_map([], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     drop(agents);
-    for (id, status, error, name, turn, at) in found {
-        let Some(kind) = agent_kind(&status, &error) else {
+    for id in ids {
+        let record = match agent(&id)? {
+            SourceOwner::Live(record) => record,
+            SourceOwner::Invalid(causes) => {
+                push(&mut rows, invalid_owner(&id, now, causes));
+                continue;
+            }
+            SourceOwner::Missing | SourceOwner::Deleted => continue,
+        };
+        let error = record
+            .extra
+            .get("error")
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| value.to_string())
+            })
+            .unwrap_or_default();
+        let Some(kind) = agent_kind(record.status.as_str(), &error) else {
             continue;
         };
+        let turn = record
+            .extra
+            .get("turnId")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                record
+                    .extra
+                    .get("lastCompletedTurn")
+                    .and_then(Value::as_str)
+            })
+            .map(str::to_owned);
+        let at = record
+            .extra
+            .get("activity")
+            .and_then(|value| value.get("at"))
+            .and_then(Value::as_f64)
+            .or_else(|| record.extra.get("created").and_then(Value::as_f64))
+            .unwrap_or(0.0);
         push(
             &mut rows,
-            json!({
-                "id":format!("agent:{id}:{turn}"),
-                "kind":kind.code(),
-                "reason":kind.reason(),
-                "action":kind.action(),
-                "agentId":id,
-                "agentName":name,
-                "detail":error,
-                "subject":"",
-                "count":1,
-                "firstAt":at,
-                "at":at,
-            }),
+            StudioError {
+                id: format!("agent:{id}:{}", turn.as_deref().unwrap_or_default()),
+                kind,
+                reason: kind.reason().into(),
+                target: kind.target(id, owner_name(&record)),
+                monitor_id: None,
+                event_id: None,
+                detail: kind.reason().into(),
+                subject: String::new(),
+                at,
+                rule_id: None,
+                count: None,
+                first_at: None,
+                diagnostics: Diagnostics {
+                    context: Context::Agent {
+                        turn_id: turn,
+                        epoch: Some(record.epoch),
+                    },
+                    certainty: kind.certainty(),
+                    causes: retained_causes(kind, &error),
+                },
+            },
         );
     }
 
     for finding in crate::liveness::findings(tx, now)? {
-        let kind = Kind::of_liveness(finding.code);
+        let kind = liveness_kind(finding.code);
         push(
             &mut rows,
-            json!({
-                "id":finding.id,
-                "kind":kind.code(),
-                "reason":kind.reason(),
-                "action":kind.action(),
-                "agentId":finding.agent,
-                "agentName":finding.agent_name,
-                "eventId":finding.event,
-                "detail":finding.detail,
-                "subject":finding.subject,
-                "count":1,
-                "firstAt":finding.first_at,
-                "at":finding.at,
-            }),
+            StudioError {
+                id: finding.id,
+                kind,
+                reason: kind.reason().into(),
+                target: kind.target(finding.agent, finding.agent_name),
+                monitor_id: None,
+                event_id: finding.event,
+                rule_id: None,
+                count: None,
+                first_at: Some(finding.first_at),
+                detail: finding.detail,
+                subject: finding.subject,
+                at: finding.at,
+                diagnostics: Diagnostics {
+                    context: Context::Agent {
+                        turn_id: None,
+                        epoch: None,
+                    },
+                    certainty: kind.certainty(),
+                    causes: Vec::new(),
+                },
+            },
         );
     }
 
-    rows.sort_by(|a, b| {
-        b["at"]
-            .as_f64()
-            .unwrap_or(0.0)
-            .total_cmp(&a["at"].as_f64().unwrap_or(0.0))
-            .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
-    });
+    let mut incidents = tx.prepare_cached(
+        "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 AND signature=?3",
+    )?;
+    for record in incidents.query_map(
+        rusqlite::params![
+            INCIDENT_PREFIX,
+            format!("{INCIDENT_PREFIX}~"),
+            INCIDENT_SIGNATURE
+        ],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, rusqlite::types::Value>(1)?,
+            ))
+        },
+    )? {
+        let (key, encoded) = record?;
+        let logical_id = key[INCIDENT_PREFIX.len()..].to_owned();
+        let source = Cause::StoredRecord {
+            object: "runtime_operation_receipts".into(),
+            id: key.clone(),
+            pointer: Some("/result".into()),
+        };
+        let decoded = match encoded {
+            rusqlite::types::Value::Text(encoded) => {
+                match serde_json::from_str::<StudioError>(&encoded) {
+                    Ok(incident) => Ok(incident),
+                    Err(error) => Err(vec![source.clone(), json_cause(&error)]),
+                }
+            }
+            rusqlite::types::Value::Null
+            | rusqlite::types::Value::Integer(_)
+            | rusqlite::types::Value::Real(_)
+            | rusqlite::types::Value::Blob(_) => Err(vec![
+                source.clone(),
+                Cause::SchemaViolation {
+                    pointer: "/result".into(),
+                    keyword: "type".into(),
+                },
+            ]),
+        };
+        let incident = match decoded {
+            Ok(incident) => incident,
+            Err(causes) => {
+                push(
+                    &mut rows,
+                    invalid_source(logical_id, "runtime_operation_receipts", &key, now, causes),
+                );
+                continue;
+            }
+        };
+        let payload = json!({"collection":"studioError","id":logical_id,"value":incident});
+        if logical_id != incident.id
+            || !matches!(incident.kind, Kind::HttpFailure | Kind::RecoveryFailed)
+            || !matches!(incident.target, Target::Details)
+            || !studio_runtime_schema::validate_sync_entity_payload_strict(
+                "studioError",
+                &logical_id,
+                false,
+                &payload,
+            )
+            .map_err(StoreError::SchemaValidation)?
+        {
+            push(
+                &mut rows,
+                invalid_source(
+                    logical_id,
+                    "runtime_operation_receipts",
+                    &key,
+                    now,
+                    vec![
+                        source,
+                        Cause::SchemaViolation {
+                            pointer: "/result".into(),
+                            keyword: "contract".into(),
+                        },
+                    ],
+                ),
+            );
+            continue;
+        }
+        if incident.at >= since {
+            push(&mut rows, incident);
+        }
+    }
+    let mut rows: Vec<_> = rows.into_values().collect();
+    rows.sort_by(|a, b| b.at.total_cmp(&a.at).then_with(|| a.id.cmp(&b.id)));
     rows.truncate(MAX_ROWS);
     let baseline = Baseline {
         hidden_owners,
         dismissed: dismissed.len(),
-        monitor_groups: rows.iter().any(|row| {
-            row["id"]
-                .as_str()
-                .is_some_and(|id| id.starts_with(MONITOR_GROUP_PREFIX))
-        }),
+        monitor_groups: rows
+            .iter()
+            .any(|row| row.id.starts_with(MONITOR_GROUP_PREFIX)),
     };
-    Ok((json!({"items":rows}), baseline))
+    Ok((rows, baseline))
 }
 
 /// Server-owned refresh cadence for time-derived membership (stuck input and
@@ -486,7 +827,10 @@ pub async fn run(
             _ = shutdown.changed() => return,
         }
         if let Err(error) = refresh(&store).await {
-            eprintln!("Studio error entity refresh failed: {error}");
+            eprintln!(
+                "Studio error entity refresh failed: {}",
+                json!({"causes": store_causes(&error)})
+            );
         }
     }
 }
@@ -514,25 +858,18 @@ pub fn publish(tx: &Transaction<'_>) -> Result<(), StoreError> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
         .as_secs_f64();
-    let (value, baseline) = build(tx, now)?;
-    let items = value
-        .get("items")
-        .and_then(Value::as_array)
-        .ok_or_else(|| StoreError::SchemaMismatch("Studio error rows are invalid".into()))?;
+    let (items, baseline) = build(tx, now)?;
     let mut current = std::collections::BTreeSet::new();
-    for item in items {
-        let id = item
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| StoreError::SchemaMismatch("Studio error id is missing".into()))?;
+    for item in &items {
+        let id = &item.id;
         studio_runtime_store::SyncDocumentsRepository::put_entity(
             tx,
             "studioError",
             id,
-            item.clone(),
+            serde_json::to_value(item)?,
             false,
         )?;
-        current.insert(id.to_owned());
+        current.insert(id.clone());
     }
     let mut statement = tx.prepare_cached(
         "SELECT id FROM sync_entities WHERE collection='studioError' AND deleted=0",
@@ -601,7 +938,7 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
     if sources
         .receipts
         .iter()
-        .any(|id| id.starts_with(DISMISSED_PREFIX))
+        .any(|id| id.starts_with(DISMISSED_PREFIX) || id.starts_with(INCIDENT_PREFIX))
         || (sources.receipts_removed && dismissed(tx)?.len() != dismissed_count)
     {
         return Ok(true);
@@ -614,7 +951,9 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
     });
     // A deleted earlier member changes a group's count even when its final
     // monitor remains. Deletions carry no source ID to check individually.
-    if sources.rows_removed && (monitor_groups || published_source_missing(tx)?) {
+    if (sources.rows_removed || sources.receipts_removed)
+        && (monitor_groups || published_source_missing(tx)?)
+    {
         return Ok(true);
     }
     for id in &sources.monitors {
@@ -628,33 +967,40 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
         }
         let candidate =
             studio_runtime_store::MonitorsRepository::studio_error_candidate(tx, id, since)?;
-        if candidate
-            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-            .is_some_and(|record| monitor_kind(&record).is_some())
-        {
-            return Ok(true);
+        if let Some(raw) = candidate {
+            match serde_json::from_str::<Value>(&raw) {
+                Err(_) => return Ok(true),
+                Ok(record) => {
+                    if studio_runtime_schema::first_error("PersistedMonitorRecord", &record)
+                        .map_err(StoreError::SchemaValidation)?
+                        .is_some()
+                        || monitor_evidence(&record).is_err()
+                        || monitor_kind(&record).is_some()
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
         }
     }
     for id in &sources.events {
         if is_published(tx, &format!("event:{id}"))? {
             return Ok(true);
         }
-        let event = tx
-            .prepare_cached(
-                "SELECT status,COALESCE(error,''),created FROM runtime_events WHERE id=?1 AND created>=?2",
-            )?
-            .query_row(rusqlite::params![id, since], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, f64>(2)?,
-                ))
-            })
-            .optional()?;
-        if event.is_some_and(|(status, error, created)| {
-            event_kind(&status, &error, now - created).is_some()
-        }) {
-            return Ok(true);
+        match event_source(tx, id)? {
+            EventSource::Invalid(_) => return Ok(true),
+            EventSource::Record(event)
+                if event.created >= since
+                    && event_kind(
+                        &event.status,
+                        event.error.as_deref().unwrap_or_default(),
+                        now - event.created,
+                    )
+                    .is_some() =>
+            {
+                return Ok(true);
+            }
+            EventSource::Record(_) | EventSource::Missing => {}
         }
     }
     for id in &sources.agents {
@@ -681,28 +1027,29 @@ fn agent_may_change(tx: &Transaction<'_>, id: &str) -> Result<bool, StoreError> 
     if own_published {
         return Ok(true);
     }
-    let own = tx
-        .prepare_cached(
-            "SELECT status,json_extract(record,'$.error') FROM runtime_agents WHERE id=?1 AND deleted_at IS NULL AND status IN ('failed','interrupted','paused') AND json_type(record,'$.error')='text'",
-        )?
-        .query_row([id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .optional()?;
-    if own.is_some_and(|(status, error)| agent_kind(&status, &error).is_some()) {
+    if is_published(tx, &format!("stored:runtime_agents:{id}"))? {
         return Ok(true);
     }
-    let owner =
-        studio_runtime_store::AgentRepository::get(tx, &studio_runtime_store::AgentId::from(id))?
-            .filter(|record| !studio_runtime_store::truthy(record.extra.get("deletedAt")))
-            .map(|record| {
-                record
-                    .extra
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Agent")
-                    .to_owned()
-            });
+    let owner = match read_owner(tx, id)? {
+        SourceOwner::Invalid(_) => return Ok(true),
+        SourceOwner::Live(record) => {
+            let error = record
+                .extra
+                .get("error")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| value.to_string())
+                })
+                .unwrap_or_default();
+            if agent_kind(record.status.as_str(), &error).is_some() {
+                return Ok(true);
+            }
+            Some(owner_name(&record))
+        }
+        SourceOwner::Missing | SourceOwner::Deleted => None,
+    };
     let mut statement = tx.prepare_cached(
         "SELECT json_extract(payload,'$.value.agentName') FROM sync_entities WHERE collection='studioError' AND deleted=0 AND json_extract(payload,'$.value.agentId')=?1",
     )?;
@@ -738,28 +1085,36 @@ fn published_source_missing(tx: &Transaction<'_>) -> Result<bool, StoreError> {
             "SELECT EXISTS(SELECT 1 FROM sync_entities e WHERE e.collection='studioError' AND e.deleted=0 AND (\
              (e.id LIKE 'monitor:%' AND NOT EXISTS(SELECT 1 FROM runtime_monitors m WHERE m.id=substr(e.id,9))) OR \
              (e.id LIKE 'event:%' AND NOT EXISTS(SELECT 1 FROM runtime_events v WHERE v.id=substr(e.id,7))) OR \
-             NOT EXISTS(SELECT 1 FROM runtime_agents a WHERE a.id=json_extract(e.payload,'$.value.agentId'))))",
+             (e.id LIKE 'stored:runtime_agents:%' AND NOT EXISTS(SELECT 1 FROM runtime_agents a WHERE a.id=json_extract(e.payload,'$.value.diagnostics.context.id'))) OR \
+             ((e.id LIKE 'http:%' OR e.id LIKE 'recovery:%') AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id='studio-errors:incident:'||e.id)) OR \
+             (json_extract(e.payload,'$.value.action')!='details' AND NOT EXISTS(SELECT 1 FROM runtime_agents a WHERE a.id=json_extract(e.payload,'$.value.agentId')))))",
         )?
         .query_row([], |row| row.get(0))?)
 }
 
-/// One failed or lost run of a rule or command.
+/// One failed or lost run of a rule or command, with its row.
 struct MonitorFailure {
-    id: String,
     /// Unix seconds of its start.
     created: f64,
     /// Unix seconds of its end, or of its start when it has none.
     at: f64,
-    error: String,
+    row: StudioError,
 }
 
 /// The failures of one rule or command and kind.
 struct MonitorGroup {
-    kind: Kind,
-    agent: String,
     rule: Option<String>,
-    command: String,
     failures: Vec<MonitorFailure>,
+}
+
+/// The serialized code of `kind`, owned by the schema enum.
+fn kind_code(kind: Kind) -> Result<String, StoreError> {
+    match serde_json::to_value(kind)? {
+        Value::String(code) => Ok(code),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
+            Err(StoreError::SchemaMismatch("studio error kind".into()))
+        }
+    }
 }
 
 /// Unix seconds of the start of the latest successful run of `rule` that
@@ -873,6 +1228,32 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_start_unknown_turn_is_a_disconnected_turn() {
+        assert_eq!(
+            agent_kind("failed", PROVIDER_THREAD_START_UNKNOWN_ERROR),
+            Some(Kind::TurnDisconnected)
+        );
+    }
+
+    #[test]
+    fn monitor_evidence_keeps_identity_and_correlates_private_unclassified_proof() {
+        let proof = "password=proof-canary";
+        let record = json!({"status":"lost","operation":{"agent":"worker","epoch":7,"accountKey":"account","connectionId":"connection","credentials":"operation-canary"},"reattachRecovery":{"accountKey":"account","epoch":7,"status":"not_reattachable","startedAt":123.0,"proof":proof}});
+        let evidence = monitor_evidence(&record).expect("known source owners");
+        let encoded = serde_json::to_value(evidence).expect("safe evidence");
+        assert_eq!(encoded["operation"]["connectionId"], "connection");
+        assert_eq!(
+            encoded["recovery"]["proof"]["classification"],
+            "unclassified"
+        );
+        assert_eq!(
+            encoded["recovery"]["proof"]["sha256"],
+            studio_runtime_store::sha256_hex(proof.as_bytes())
+        );
+        assert!(!encoded.to_string().contains("canary"));
+    }
+
+    #[test]
     fn each_studio_cause_has_its_kind_and_an_agent_cause_has_none() {
         assert_eq!(
             monitor_kind(&json!({"status":"lost","exitCode":null})),
@@ -896,8 +1277,12 @@ mod tests {
             "the owner stopped the turn"
         );
         assert_eq!(
-            event_kind("failed", PROVIDER_START_NOT_SENT_ERROR, 0.0),
-            Some(Kind::InputNotSent)
+            event_kind(
+                "failed",
+                studio_runtime_schema::shared_values::PROVIDER_START_NOT_SENT_ERROR,
+                0.0
+            ),
+            Some(Kind::UnclassifiedFailure)
         );
         assert_eq!(
             event_kind("failed", studio_runtime_store::STEER_UNCONFIRMED_ERROR, 0.0),
@@ -927,16 +1312,6 @@ mod tests {
             Some(Kind::WorkspaceFailed)
         );
         for error in [
-            PROVIDER_RESUME_UNKNOWN_ERROR,
-            PROVIDER_THREAD_START_UNKNOWN_ERROR,
-        ] {
-            assert_eq!(
-                agent_kind("failed", error),
-                Some(Kind::TurnDisconnected),
-                "{error}"
-            );
-        }
-        for error in [
             VM_PROVIDER_DISCONNECTED_TURN_ERROR,
             LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
         ] {
@@ -952,7 +1327,10 @@ mod tests {
             assert_eq!(agent_kind("failed", error), Some(Kind::WorkspaceFailed));
         }
         assert_eq!(agent_kind("paused", "Stopped by user"), None);
-        assert_eq!(agent_kind("failed", "This content was flagged"), None);
+        assert_eq!(
+            agent_kind("failed", "This content was flagged"),
+            Some(Kind::UnclassifiedFailure)
+        );
     }
 
     #[test]
@@ -962,20 +1340,27 @@ mod tests {
             Kind::InputStuck,
             Kind::TurnDisconnected,
         ] {
-            assert_eq!(kind.action(), "resume", "{kind:?}");
+            assert!(
+                matches!(
+                    kind.target("agent".into(), "Agent".into()),
+                    Target::Resume { .. }
+                ),
+                "{kind:?}"
+            );
         }
         for kind in [
             Kind::MonitorOutcomeLost,
             Kind::MonitorNotRecorded,
-            Kind::InputNotSent,
             Kind::InputUnconfirmed,
             Kind::WorkspaceFailed,
-            Kind::TurnStalled,
-            Kind::InputNotStarted,
-            Kind::SessionNotStarted,
-            Kind::ScheduleStalled,
         ] {
-            assert_eq!(kind.action(), "check", "{kind:?}");
+            assert!(
+                matches!(
+                    kind.target("agent".into(), "Agent".into()),
+                    Target::Check { .. }
+                ),
+                "{kind:?}"
+            );
         }
     }
 
@@ -1059,16 +1444,18 @@ mod tests {
                 let mut expected = std::collections::BTreeMap::new();
                 for (id, raw) in full {
                     let record: Value = serde_json::from_str(&raw).expect("fixture JSON");
+                    if id=="number-error" {continue;}
                     if let Some(kind) = monitor_kind(&record) {
                         assert!(selected.contains(&id), "SQL selection drops {id}");
                         if record["agent"] == "owner" {
-                            expected.insert(format!("monitor:{id}"), (kind.code(), "Fixture worker"));
+                            expected.insert(format!("monitor:{id}"), (serde_json::to_value(kind)?.as_str().expect("kind string").to_owned(), "Fixture worker"));
                         }
                     }
                 }
                 assert_eq!(
                     expected.keys().map(String::as_str).collect::<Vec<_>>(),
                     [
+                        "monitor:empty-error",
                         "monitor:lost",
                         "monitor:lost-no-error",
                         "monitor:no-exit-key",
@@ -1078,16 +1465,22 @@ mod tests {
                 );
                 assert!(!selected.contains("probe-exit") && !selected.contains("own-exit-error"));
 
-                let listed = list(tx, now)?["items"]
+                let rows=list(tx,now)?;
+                let invalid:Vec<_>=rows["items"].as_array().expect("items").iter().filter(|row|row["kind"]=="stored_record_invalid").collect();
+                assert_eq!(invalid.len(),2,"invalid error type and missing owner both remain visible");
+                assert!(invalid.iter().all(|row|row["action"]=="details" && row.get("agentId").is_none()));
+                assert!(invalid.iter().any(|row|row["id"]=="monitor:number-error" && row["diagnostics"]["causes"][0]["pointer"]=="/error"));
+                assert!(invalid.iter().any(|row|row["id"]=="monitor:missing-owner" && row["diagnostics"]["causes"][1]["id"]=="nobody"));
+                let listed = rows["items"]
                     .as_array()
                     .expect("items")
                     .iter()
-                    .filter(|row| row["monitorId"].is_string())
+                    .filter(|row| row["monitorId"].is_string() && row["kind"]!="stored_record_invalid")
                     .map(|row| {
                         assert!(row["id"].as_str().expect("id").starts_with(MONITOR_GROUP_PREFIX));
-                        let monitor = row["monitorId"].as_str().expect("monitor id").to_owned();
+                        let monitor = row["monitorId"].as_str().expect("monitor id");
                         let id = format!("monitor:{monitor}");
-                        assert_eq!(row["subject"], format!("run {monitor}"));
+                        assert_eq!(row["subject"], "", "command bodies stay out of diagnostic exports");
                         assert_eq!(row["at"], now - 1.0);
                         (id, (row["kind"].as_str().expect("kind"), row["agentName"].as_str().expect("name")))
                     })

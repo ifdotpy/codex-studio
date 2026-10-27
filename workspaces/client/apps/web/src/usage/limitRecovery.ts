@@ -1,7 +1,8 @@
 import type { GetResult } from "../api";
-import type { Agent, Json } from "../types";
-import { nativeErrorKind } from "../nativeErrors";
-import { providerLimitData } from "./providerLimits";
+import { ProviderKind } from "../generated/providerKind.ts";
+import type { Agent } from "../types";
+import type { AccountLimitsSnapshot } from "./accountUsage";
+import { knownNativeErrorKind } from "../nativeErrors";
 
 export type UsageEligibility = NonNullable<
   GetResult<"/api/limits">["eligibility"]
@@ -17,7 +18,11 @@ export type LimitRecovery = {
 };
 const finite = (value: unknown): value is number => Number.isFinite(value);
 
-function freshLimits(limits: Json | null, agent: Agent, now: number) {
+function freshLimits(
+  limits: AccountLimitsSnapshot | null,
+  agent: Agent,
+  now: number,
+) {
   return Boolean(
     limits &&
     !limits.error &&
@@ -31,11 +36,10 @@ function freshLimits(limits: Json | null, agent: Agent, now: number) {
 
 export function modelEligibility(
   agent: Agent,
-  limits: Json | null,
+  limits: AccountLimitsSnapshot | null,
 ): UsageEligibility | undefined {
   const value = limits?.eligibility;
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return undefined;
+  if (!value) return undefined;
   if (
     value.agentId !== agent.id ||
     value.accountKey !== (agent.accountKey || "default") ||
@@ -43,20 +47,17 @@ export function modelEligibility(
     value.provider !== (agent.provider || "")
   )
     return undefined;
-  return value as UsageEligibility;
+  return value;
 }
 
 export function limitRecovered(
   agent: Agent,
-  limits: Json | null,
+  limits: AccountLimitsSnapshot | null,
   now: number,
 ): boolean {
   const limitsAt = finite(limits?.at) ? limits.at : Number.NaN;
-  if (
-    !["usageLimitExceeded", "rateLimitExceeded"].includes(
-      nativeErrorKind(agent.error),
-    )
-  )
+  const kind = knownNativeErrorKind(agent.error);
+  if (kind !== "usageLimitExceeded" && kind !== "rateLimitExceeded")
     return false;
   const errorAt = finite(agent.nativeLimitErrorAt)
     ? agent.nativeLimitErrorAt
@@ -78,10 +79,10 @@ export function limitRecovered(
 
 export function limitRecovery(
   agent: Agent,
-  limits: Json | null,
+  limits: AccountLimitsSnapshot | null,
   now: number,
 ): LimitRecovery | null {
-  const kind = nativeErrorKind(agent.error);
+  const kind = knownNativeErrorKind(agent.error);
   if (limitRecovered(agent, limits, now)) return null;
   if (kind !== "usageLimitExceeded" && kind !== "rateLimitExceeded")
     return null;
@@ -91,13 +92,13 @@ export function limitRecovery(
     title: "Usage limit reached",
     message: "View account limits for reset times and available credits.",
   };
-  const data = providerLimitData(limits?.data);
+  const data = limits?.data;
   const snapshot = data?.rateLimits;
   if (!snapshot || !freshLimits(limits, agent, now)) return fallback;
 
   const reset =
     eligibility?.resetAt != null ? { resetAt: eligibility.resetAt } : undefined;
-  if (agent.provider === "claude") return { ...fallback, ...reset };
+  if (agent.provider !== ProviderKind.Codex) return { ...fallback, ...reset };
   let reached =
     typeof snapshot.rateLimitReachedType === "string"
       ? snapshot.rateLimitReachedType

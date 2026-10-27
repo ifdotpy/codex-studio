@@ -33,14 +33,14 @@ export function serviceTimeText(text: string, reference = new Date()): string {
           hourCycle: "h23",
         });
         const fields = (date: Date) =>
-          Object.fromEntries(
+          new Map(
             source.formatToParts(date).map((part) => [part.type, part.value]),
           );
         const day = fields(reference);
         const clock = Date.UTC(
-          +day.year,
-          +day.month - 1,
-          +day.day,
+          Number(day.get("year")),
+          Number(day.get("month")) - 1,
+          Number(day.get("day")),
           (+hour % 12) + (period.toLowerCase() === "p" ? 12 : 0),
           +(minute || 0),
         );
@@ -48,12 +48,12 @@ export function serviceTimeText(text: string, reference = new Date()): string {
         for (let n = 0; n < 3; n++) {
           const part = fields(new Date(instant));
           const shown = Date.UTC(
-            +part.year,
-            +part.month - 1,
-            +part.day,
-            +part.hour,
-            +part.minute,
-            +part.second,
+            Number(part.get("year")),
+            Number(part.get("month")) - 1,
+            Number(part.get("day")),
+            Number(part.get("hour")),
+            Number(part.get("minute")),
+            Number(part.get("second")),
           );
           instant += clock - shown;
         }

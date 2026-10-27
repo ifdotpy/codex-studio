@@ -551,12 +551,13 @@ export function createApiScope(options: ApiScopeOptions) {
     try {
       const result =
         method === "GET"
-          ? await accessClient.GET("/api/multi-server", {
-              signal: controller.signal,
-            })
+          ? await accessClient.GET(
+              "/api/multi-server",
+              controller.signal ? { signal: controller.signal } : {},
+            )
           : await accessClient.POST("/api/multi-server", {
               body: body!,
-              signal: controller.signal,
+              ...(controller.signal ? { signal: controller.signal } : {}),
               headers: {
                 "X-Canvas-Token": sessionToken ?? token,
                 "X-Canvas-Workspace": workspace,
@@ -897,7 +898,9 @@ export function createApiScope(options: ApiScopeOptions) {
       !receipt.found ||
       result?.requestId !== pending.requestId ||
       result.status !== "completed" ||
-      response?.kind !== "monitor_input" ||
+      !response ||
+      !("kind" in response) ||
+      response.kind !== "monitor_input" ||
       response.monitorId !== id ||
       (response.status !== "acknowledged" && response.status !== "rejected")
     )

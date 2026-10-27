@@ -50,17 +50,23 @@ const text = (value: unknown): string | undefined =>
   typeof value === "string" ? value : undefined;
 
 const QUESTION_TOOL = "AskUserQuestion";
+type QuestionToolProjection = {
+  payload: JsonObject;
+  questions: CardQuestion[];
+};
 const parsed = new WeakMap<
   Message,
-  { text: string; value?: JsonObject | undefined | undefined }
+  { text: string; value: QuestionToolProjection | undefined }
 >();
 
 /** The stored provider item of a Claude AskUserQuestion call, or undefined. */
-function questionToolPayload(item: Message): JsonObject | undefined {
+function questionToolPayload(
+  item: Message,
+): QuestionToolProjection | undefined {
   if (!["tool", "output"].includes(item.role)) return undefined;
   const prior = parsed.get(item);
   if (prior?.text === item.text) return prior.value;
-  let value: JsonObject | undefined;
+  let value: QuestionToolProjection | undefined;
   // Cheap prefilter: most tool rows are not questions.
   if (item.text.includes(QUESTION_TOOL)) {
     try {
@@ -69,10 +75,11 @@ function questionToolPayload(item: Message): JsonObject | undefined {
         isObject(candidate) &&
         candidate.type === "mcpToolCall" &&
         candidate.tool === QUESTION_TOOL &&
-        isObject(candidate.arguments) &&
-        toolQuestions(candidate.arguments).length > 0
-      )
-        value = candidate;
+        isObject(candidate.arguments)
+      ) {
+        const questions = toolQuestions(candidate.arguments);
+        if (questions.length > 0) value = { payload: candidate, questions };
+      }
     } catch {
       /* Clipped or plain output keeps the generic tool view. */
     }
@@ -183,7 +190,7 @@ export function splitJoinedAnswer(
         break;
       }
     if (!matched) {
-      other.push(parts[index]);
+      other.push(parts[index]!);
       index++;
       continue;
     }
@@ -329,9 +336,10 @@ export function questionCard(
   lookup?: QuestionLookup,
 ): QuestionCardModel | undefined {
   const agent = lookup?.agentId;
-  const payload = questionToolPayload(item);
-  if (payload) {
-    const questions = toolQuestions(payload.arguments as JsonObject);
+  const tool = questionToolPayload(item);
+  if (tool) {
+    const { payload } = tool;
+    const questions = tool.questions.map((question) => ({ ...question }));
     const nativeId = text(payload.id);
     const key = agent && nativeId ? questionKey(agent, nativeId) : undefined;
     const entry = key ? lookup?.history.get(key) : undefined;

@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 use studio_runtime_schema::delivery::DeliveryMoment;
+use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 use studio_runtime_store::{
     CoordinationRepository, QueueEventId, QueueEventRepository, QueueWriteRepository, StoreError,
     Transaction,
@@ -695,11 +696,7 @@ fn assert_native_thread_open(
             && agent
                 .extra
                 .get("error")
-                .and_then(Value::as_object)
-                .is_some_and(|error| {
-                    error.get("codexErrorInfo").and_then(Value::as_str)
-                        == Some("misalignmentPolicyViolation")
-                }))
+                .is_some_and(is_misalignment_policy_violation))
         || (thread.is_some()
             && agent
                 .extra
@@ -709,11 +706,7 @@ fn assert_native_thread_open(
                     previous.get("turnId") == agent.extra.get("turnId")
                         && previous
                             .get("error")
-                            .and_then(Value::as_object)
-                            .is_some_and(|error| {
-                                error.get("codexErrorInfo").and_then(Value::as_str)
-                                    == Some("misalignmentPolicyViolation")
-                            })
+                            .is_some_and(is_misalignment_policy_violation)
                 }));
     if blocked {
         return Err(CoordinationError::InvalidRequest(
@@ -1431,7 +1424,7 @@ mod tests {
         crate::queue_write::action(
             &transaction,
             "lead",
-            &json!({"action":"send_now", "message_id":"promoted-message", "request_id":"promote"}),
+            &serde_json::from_value(json!({"action":"send_now", "message_id":"promoted-message", "request_id":"promote"})).expect("typed queue command"),
             "promotion-fixture",
             |tx, _| {
                 let event = studio_runtime_store::QueueEventRepository::get(

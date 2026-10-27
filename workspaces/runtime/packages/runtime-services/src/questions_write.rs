@@ -3,6 +3,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
+use studio_runtime_schema::complaints::ComplaintResponseStatus;
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, RuntimeStore,
     SyncDocumentsRepository, Transaction,
@@ -20,9 +21,6 @@ use crate::{
 
 const USER: &str = "user";
 const PENDING: &str = "pending";
-const IN_PROGRESS: &str = "in_progress";
-const RESOLVED: &str = "resolved";
-const DECLINED: &str = "declined";
 
 #[derive(Debug, Error)]
 pub enum QuestionsWriteError {
@@ -52,7 +50,7 @@ pub struct ComplaintResponseWrite<'a> {
     pub complaint_id: &'a str,
     pub request_id: &'a str,
     pub text: &'a str,
-    pub status: &'a str,
+    pub status: ComplaintResponseStatus,
     pub version: i64,
     pub signature: &'a str,
 }
@@ -71,7 +69,6 @@ pub struct AsyncQuestionAnswerResult {
 pub struct AsyncQuestionAnswerInput<'a, V> {
     pub id: &'a str,
     pub data: &'a Value,
-    pub text: &'a str,
     pub admission: &'a dyn MessageAdmission,
     pub prepared: &'a PreparedHost,
     pub now: f64,
@@ -91,7 +88,6 @@ pub async fn answer_async_question_in_store(
         std::sync::Arc::new(validate);
     let validate_for_preparation = std::sync::Arc::clone(&validate);
     let id_for_preparation = id.clone();
-    let data_for_preparation = data.clone();
     let read = store
         .read_async("runtime-services/questions_write", move |transaction| {
             let raw = QuestionsWriteRepository::request(transaction, &id_for_preparation)?
@@ -110,13 +106,12 @@ pub async fn answer_async_question_in_store(
                 .get("agent")
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid_stored("runtime_requests", &id_for_preparation))?;
-            let text = async_answer_text(&record, &data_for_preparation)?;
             let admission =
                 crate::message_admission::MessageIngressAdmission::read(transaction, agent_id)?;
-            Ok(Some((text, admission)))
+            Ok(Some(admission))
         })
         .await?;
-    let Some((text, admission)) = read else {
+    let Some(admission) = read else {
         return Ok(None);
     };
     let admission = admission.prepare().await?;
@@ -129,7 +124,6 @@ pub async fn answer_async_question_in_store(
                 AsyncQuestionAnswerInput {
                     id: &id,
                     data: &data,
-                    text: &text,
                     admission: &admission,
                     prepared: &prepared,
                     now,
@@ -139,49 +133,6 @@ pub async fn answer_async_question_in_store(
         })
         .await?;
     Ok(Some(result))
-}
-
-fn async_answer_text(record: &Value, data: &Value) -> Result<String, QuestionsWriteError> {
-    let questions = record
-        .pointer("/params/questions")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            invalid_stored(
-                "runtime_requests",
-                record["id"].as_str().unwrap_or_default(),
-            )
-        })?;
-    let answers = data.get("answers").and_then(Value::as_object).ok_or(
-        QuestionsWriteError::InvalidRequest("Supply question answers"),
-    )?;
-    let mut sections = Vec::with_capacity(questions.len());
-    for question in questions {
-        let question_id = question.get("id").and_then(Value::as_str).ok_or_else(|| {
-            invalid_stored(
-                "runtime_requests",
-                record["id"].as_str().unwrap_or_default(),
-            )
-        })?;
-        let prompt = question
-            .get("question")
-            .and_then(Value::as_str)
-            .unwrap_or(question_id);
-        let choices = answers
-            .get(question_id)
-            .and_then(|answer| answer.get("answers"))
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        if choices.iter().any(|choice| !choice.is_string()) {
-            return Err(QuestionsWriteError::InvalidRequest(
-                "Supply question answers",
-            ));
-        }
-        let mut section = vec![prompt.to_owned()];
-        section.extend(choices.iter().filter_map(Value::as_str).map(str::to_owned));
-        sections.push(section.join("\n"));
-    }
-    Ok(sections.join("\n"))
 }
 
 /// Atomically admit an async-question follow-up, mirror an active radio answer,
@@ -194,7 +145,6 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
     let AsyncQuestionAnswerInput {
         id,
         data,
-        text,
         admission,
         prepared,
         now,
@@ -245,8 +195,19 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
             "This question belongs to a stopped turn",
         ));
     }
-    let text = event_write::python_strip(text);
-    let consumed = crate::radio_runtime::route_question_answer(
+    let answers = answered_questions(&record, data)?;
+    let text = answers
+        .iter()
+        .map(|question| {
+            std::iter::once(question.prompt.as_str())
+                .chain(question.answers.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = event_write::python_strip(&text);
+    let route = crate::radio_runtime::route_question_answer(
         transaction,
         prepared,
         &record,
@@ -254,10 +215,7 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
         None,
         now,
     )?;
-    let event_inserted = if consumed {
-        false
-    } else {
-        let turn_id = record.get("turnId").and_then(Value::as_str);
+    let send_followup = |radio_answer_turn_id: Option<&str>| -> Result<bool, QuestionsWriteError> {
         let accepted = coordination::send_system_followup_with_radio_answer(
             transaction,
             SystemFollowup {
@@ -267,7 +225,7 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
                 delivery: studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
                 now,
             },
-            turn_id,
+            radio_answer_turn_id,
             admission,
         )?;
         crate::radio_runtime::record_question_answer_followup(
@@ -277,7 +235,14 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
             text,
             now,
         )?;
-        accepted.event_inserted
+        Ok(accepted.event_inserted)
+    };
+    let event_inserted = match &route {
+        crate::radio_runtime::QuestionAnswerRoute::ConsumedByRadio => false,
+        crate::radio_runtime::QuestionAnswerRoute::OrdinaryFollowup => send_followup(None)?,
+        crate::radio_runtime::QuestionAnswerRoute::RadioFollowup { turn_id } => {
+            send_followup(Some(turn_id))?
+        }
     };
 
     record["status"] = json!("answered");
@@ -286,7 +251,9 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
     record["answeredAt"] = json!(now);
     record["decision"] = data.get("decision").cloned().unwrap_or(json!("answer"));
     record["deferred"] = json!(false);
-    record["answerHistory"] = answer_history(&record, data)?;
+    record["answerHistory"] = json!(answers.into_iter().map(|question| {
+        json!({"id":question.id,"question":question.prompt,"isSecret":question.secret,"answer":if question.secret { json!("[redacted]") } else { json!(question.answers) }})
+    }).collect::<Vec<_>>());
     put_request(transaction, id, &record, &validate)?;
     Ok(AsyncQuestionAnswerResult {
         response: json!({"status":"answered"}),
@@ -294,46 +261,60 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
     })
 }
 
-fn answer_history(record: &Value, data: &Value) -> Result<Value, QuestionsWriteError> {
+/// Consumed leaves of an async answer. The original request JSON still owns its signature.
+struct AnsweredQuestion {
+    id: String,
+    prompt: String,
+    secret: bool,
+    answers: Vec<String>,
+}
+
+fn answered_questions(
+    record: &Value,
+    data: &Value,
+) -> Result<Vec<AnsweredQuestion>, QuestionsWriteError> {
+    let stored = || {
+        invalid_stored(
+            "runtime_requests",
+            record["id"].as_str().unwrap_or_default(),
+        )
+    };
     let questions = record
         .pointer("/params/questions")
         .and_then(Value::as_array)
-        .ok_or_else(|| {
-            invalid_stored(
-                "runtime_requests",
-                record["id"].as_str().unwrap_or_default(),
-            )
-        })?;
+        .ok_or_else(stored)?;
     let answers = data.get("answers").and_then(Value::as_object).ok_or(
         QuestionsWriteError::InvalidRequest("Supply question answers"),
     )?;
-    let mut history = Vec::with_capacity(questions.len());
-    for question in questions {
-        let question_id = question.get("id").and_then(Value::as_str).ok_or_else(|| {
-            invalid_stored(
-                "runtime_requests",
-                record["id"].as_str().unwrap_or_default(),
-            )
-        })?;
-        let values = answers
-            .get(question_id)
-            .and_then(|answer| answer.get("answers"))
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        if values.iter().any(|value| !value.is_string()) {
-            return Err(QuestionsWriteError::InvalidRequest(
-                "Supply question answers",
-            ));
-        }
-        history.push(json!({
-            "id":question_id,
-            "question":question.get("question").and_then(Value::as_str).unwrap_or(question_id),
-            "isSecret":event_write::truthy(question.get("isSecret")),
-            "answer":if event_write::truthy(question.get("isSecret")) { json!("[redacted]") } else { json!(values) }
-        }));
-    }
-    Ok(Value::Array(history))
+    questions
+        .iter()
+        .map(|question| {
+            let id = question
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(stored)?;
+            // Historical missing, null and non-array leaves mean no selected answers.
+            let values = answers
+                .get(id)
+                .and_then(|answer| answer.get("answers"))
+                .and_then(Value::as_array);
+            let answers = values
+                .map(|values| serde_json::from_value::<Vec<String>>(json!(values)))
+                .transpose()
+                .map_err(|_| QuestionsWriteError::InvalidRequest("Supply question answers"))?
+                .unwrap_or_default();
+            Ok(AnsweredQuestion {
+                id: id.to_owned(),
+                prompt: question
+                    .get("question")
+                    .and_then(Value::as_str)
+                    .unwrap_or(id)
+                    .to_owned(),
+                secret: event_write::truthy(question.get("isSecret")),
+                answers,
+            })
+        })
+        .collect()
 }
 
 pub fn defer_question(
@@ -601,7 +582,11 @@ pub fn respond_to_complaint(
             });
         let stopped = event_write::truthy(lead.extra.get("deletedAt"))
             || !event_write::truthy(lead.extra.get("autoWake"));
-        if !matches!(status, RESOLVED | DECLINED) || !(answered || stopped) {
+        let closing = match status {
+            ComplaintResponseStatus::InProgress => false,
+            ComplaintResponseStatus::Resolved | ComplaintResponseStatus::Declined => true,
+        };
+        if !closing || !(answered || stopped) {
             return Err(QuestionsWriteError::InvalidRequest(
                 "This complaint requires a response from its orchestrator",
             ));
@@ -613,10 +598,7 @@ pub fn respond_to_complaint(
         ));
     }
     let text = event_write::python_strip(text);
-    if text.is_empty()
-        || text.chars().count() > 12_000
-        || !matches!(status, IN_PROGRESS | RESOLVED | DECLINED)
-    {
+    if text.is_empty() || text.chars().count() > 12_000 {
         return Err(QuestionsWriteError::InvalidRequest(
             "Record an action or reason and select in_progress, resolved, or declined",
         ));

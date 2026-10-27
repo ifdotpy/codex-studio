@@ -67,12 +67,10 @@ function ParticipantFields({
   const account = accounts.accounts.find(
     (item) => item.id === value.account_key,
   );
-  const provider = account?.provider || "codex";
+  const provider = account?.provider || "";
   const [browsedProvider, setBrowsedProvider] = useState<string>(provider);
   useEffect(() => setBrowsedProvider(provider), [provider]);
-  const providers = [
-    ...new Set(readyAccounts.map((item) => item.provider || "codex")),
-  ];
+  const providers = [...new Set(readyAccounts.map((item) => item.provider))];
   const chooseAccount = (account_key: string | null) => {
     if (account_key && account_key !== value.account_key)
       change({ account_key, model: "" });
@@ -94,7 +92,7 @@ function ParticipantFields({
     valid(enabledModel && !catalog.loading && !catalog.error);
     if (!frozen && !value.model && availableModels.length) {
       const preferred =
-        availableModels.find((row) => row.isDefault) || availableModels[0];
+        availableModels.find((row) => row.isDefault) || availableModels[0]!;
       change({ ...value, model: preferred.model });
     }
   }, [
@@ -110,7 +108,7 @@ function ParticipantFields({
   const summary = [
     modelDisplayName(info, value.model) ||
       (catalog.loading ? "Loading models…" : "Select a model"),
-    effort[0].toUpperCase() + effort.slice(1),
+    effort.charAt(0).toUpperCase() + effort.slice(1),
     setupAccountName(account),
   ]
     .filter(Boolean)
@@ -179,7 +177,7 @@ function ParticipantFields({
                     { value: "", label: "Default" },
                     ...reasoningEfforts.map((item) => ({
                       value: item,
-                      label: item[0].toUpperCase() + item.slice(1),
+                      label: item.charAt(0).toUpperCase() + item.slice(1),
                     })),
                   ]
                 : []

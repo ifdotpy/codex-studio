@@ -16,6 +16,12 @@ import {
 } from "../../../../runtime/apps/runtime-server/deliver.ts";
 import * as delivery from "../../../../runtime/apps/runtime-server/deliver.ts";
 
+function at<T>(items: readonly T[], index: number): T {
+  const item = items[index];
+  if (item === undefined) throw new Error(`expected an item at ${index}`);
+  return item;
+}
+
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../../../..",
@@ -160,13 +166,13 @@ test("explicit canary skip keeps target verification and the normal install owne
     plan.map((step) => step.label),
     ["verify target", "record canary skip", "stage and verify"],
   );
-  assert.equal(plan[0].args.at(-1), "--dry-run");
-  assert.equal(plan[1].canarySkip.commit, "b".repeat(40));
-  assert.equal(plan[1].canarySkip.app, fixtureApp);
+  assert.equal(at(plan, 0).args.at(-1), "--dry-run");
+  assert.equal(at(plan, 1).canarySkip.commit, "b".repeat(40));
+  assert.equal(at(plan, 1).canarySkip.app, fixtureApp);
   assert.ok(
-    plan[2].args.some((argument) => argument.endsWith("deliver_server.py")),
+    at(plan, 2).args.some((argument) => argument.endsWith("deliver_server.py")),
   );
-  assert.ok(!plan[2].args.includes("--dry-run"));
+  assert.ok(!at(plan, 2).args.includes("--dry-run"));
   assert.throws(() => parseDeliveryArguments(["--skip-canary"]), /--app/);
   assert.throws(
     () =>
@@ -281,10 +287,13 @@ test("retained Claude steer admission is explicit and keeps the real canary", ()
     plan.map((step) => step.label),
     ["verify target", "upgrade canary", "stage and verify"],
   );
-  assert.ok(plan[1].args.includes("--report-json"));
-  assert.ok(plan[1].args.includes("--request-id"));
-  assert.equal(plan[1].command, process.execPath);
-  assert.equal(plan[1].canaryAdmission.allowRetainedClaudeSteerFailure, true);
+  assert.ok(at(plan, 1).args.includes("--report-json"));
+  assert.ok(at(plan, 1).args.includes("--request-id"));
+  assert.equal(at(plan, 1).command, process.execPath);
+  assert.equal(
+    at(plan, 1).canaryAdmission.allowRetainedClaudeSteerFailure,
+    true,
+  );
 });
 
 test("only one retained Claude steer failure can be admitted without changing its verdict", (t) => {
@@ -350,10 +359,10 @@ test("only one retained Claude steer failure can be admitted without changing it
       } as (typeof value.rows)[number]),
     (value: typeof report) => value.rows.pop(),
     (value: typeof report) => {
-      value.rows[0].status = "skip";
+      at(value.rows, 0).status = "skip";
     },
     (value: typeof report) => {
-      value.rows[0].status = "FAIL";
+      at(value.rows, 0).status = "FAIL";
     },
     (value: typeof report) => {
       value.steer.provider = "codex";
@@ -476,8 +485,8 @@ test("Linux keeps its existing delivery owner and exact commit argument", () => 
     repository,
   });
   assert.equal(plan.length, 1);
-  assert.match(plan[0].args[0], /runtime-server\/deliver\.sh$/);
-  assert.equal(plan[0].args[1], "a".repeat(40));
+  assert.match(at(at(plan, 0).args, 0), /runtime-server\/deliver\.sh$/);
+  assert.equal(at(at(plan, 0).args, 1), "a".repeat(40));
 });
 
 test("Mac runs the canary before the only live write through the recovery owner", () => {
@@ -492,9 +501,9 @@ test("Mac runs the canary before the only live write through the recovery owner"
     plan.map((step) => step.label),
     ["verify target", "upgrade canary", "stage and verify"],
   );
-  assert.ok(plan[1].args.includes("upgrade-canary"));
+  assert.ok(at(plan, 1).args.includes("upgrade-canary"));
   assert.ok(
-    plan[2].args.some((argument) => argument.endsWith("deliver_server.py")),
+    at(plan, 2).args.some((argument) => argument.endsWith("deliver_server.py")),
   );
   assert.ok(
     plan.every(
@@ -518,7 +527,7 @@ test("Mac dry run cannot build, start a canary, or stage an update", () => {
     repository,
   });
   assert.equal(plan.length, 1);
-  assert.ok(plan[0].args.includes("--dry-run"));
+  assert.ok(at(plan, 0).args.includes("--dry-run"));
 });
 
 test("a Mac build targets its exact commit before the canary and staging", () => {
@@ -532,7 +541,7 @@ test("a Mac build targets its exact commit before the canary and staging", () =>
     plan.map((step) => step.label),
     ["package", "verify target", "upgrade canary", "stage and verify"],
   );
-  assert.ok(plan[0].args.includes("package-native"));
+  assert.ok(at(plan, 0).args.includes("package-native"));
 });
 
 test("unsupported platforms and unknown options cannot reach a delivery owner", () => {

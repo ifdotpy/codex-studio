@@ -594,7 +594,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
           params: {
             name,
             prompt: "Review without running",
-            role: "reviewer",
+            role: "implementer",
             ...overrides,
           },
         }) + "\n",
@@ -605,6 +605,13 @@ test("execution settings ui", async ({ browser: _browser }) => {
     assert.equal(first.model, "gpt-6-luna");
     assert.equal(first.effort, "high");
     assert.equal(first.fastMode, true);
+    assert.ok(current);
+    const reviewer = await spawnWorker("Inherits review defaults", {
+      role: "reviewer",
+    });
+    assert.equal(reviewer.model, current.model);
+    assert.equal(reviewer.effort, current.effort);
+    assert.equal(reviewer.fastMode, false);
     const overridden = await spawnWorker("Orchestrator override", {
       model: "gpt-5.6-sol",
       effort: "low",

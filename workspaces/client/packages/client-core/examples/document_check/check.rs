@@ -22,23 +22,25 @@ async fn render(source: &str, page: usize) -> Result<Value, String> {
     .await;
     response
         .result
-        .ok_or_else(|| response.error.unwrap().message)
+        .ok_or_else(|| response.error.expect("document check fixture").message)
 }
 fn pixels(value: &Value) -> Vec<u8> {
     STANDARD
         .decode(
             value["url"]
                 .as_str()
-                .unwrap()
+                .expect("document check fixture")
                 .strip_prefix("data:image/png;base64,")
-                .unwrap(),
+                .expect("document check fixture"),
         )
-        .unwrap()
+        .expect("document check fixture")
 }
 async fn check() -> Result<(), String> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-    listener.set_nonblocking(true).unwrap();
-    let address = listener.local_addr().unwrap();
+    listener
+        .set_nonblocking(true)
+        .expect("document check fixture");
+    let address = listener.local_addr().expect("document check fixture");
     let calls = Arc::new(AtomicUsize::new(0));
     let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let count = calls.clone();
@@ -47,9 +49,10 @@ async fn check() -> Result<(), String> {
         while !done.load(Ordering::Relaxed) {
             if let Ok((mut stream, _)) = listener.accept() {
                 count.fetch_add(1, Ordering::Relaxed);
-                let _ = stream.write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                );
+                // The probe counts requests; a client that left needs no reply.
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .ok();
             } else {
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -90,7 +93,7 @@ async fn check() -> Result<(), String> {
             if image.pixels().filter(|p|p.0.iter().any(|c|*c<240)).count()<2000 {return Err("Diagram has no rendered content.".into());}
             if let Some(path)=std::env::args_os().nth(1) {
                 let path=std::path::PathBuf::from(path);
-                let name=source.split_whitespace().next().unwrap();
+                let name=source.split_whitespace().next().expect("document check fixture");
                 std::fs::write(path.with_file_name(format!("diagram-{name}.png")),rendered_bytes).map_err(|e|e.to_string())?;
             }
         }
@@ -106,16 +109,17 @@ async fn check() -> Result<(), String> {
         Ok(())
     }.await;
     stopped.store(true, Ordering::Relaxed);
-    server.join().unwrap();
+    server.join().expect("document check fixture");
     result
 }
 pub(crate) fn main() {
-    let app = NSApplication::sharedApplication(MainThreadMarker::new().unwrap());
+    let app =
+        NSApplication::sharedApplication(MainThreadMarker::new().expect("document check fixture"));
     app.setActivationPolicy(NSApplicationActivationPolicy::Prohibited);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .unwrap();
+        .expect("document check fixture");
     runtime.spawn(async {
         let result = tokio::time::timeout(Duration::from_secs(50), check()).await;
         let status = match result {

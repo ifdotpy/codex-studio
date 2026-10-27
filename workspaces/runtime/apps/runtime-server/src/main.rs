@@ -167,6 +167,16 @@ fn main() -> std::process::ExitCode {
     runtime.shutdown_timeout(Duration::ZERO);
     let _finished = shutdown_finished.send(());
     if let Err(error) = result {
+        if let Some(store) = error.downcast_ref::<studio_runtime_store::StoreError>()
+            && matches!(store, studio_runtime_store::StoreError::Migration { .. })
+        {
+            match serde_json::to_string(&studio_runtime_services::studio_errors::store_causes(
+                store,
+            )) {
+                Ok(causes) => eprintln!("runtime migration diagnostic: {causes}"),
+                Err(_) => eprintln!("runtime migration diagnostic could not be encoded"),
+            }
+        }
         eprintln!("{}", error_exit_log(&error.to_string()));
         std::process::exit(1);
     }
@@ -225,12 +235,7 @@ fn startup_registry(
             let mut bytes = Vec::new();
             file.take((account_state::MAX_PERSISTED_DOCUMENT_BYTES + 1) as u64)
                 .read_to_end(&mut bytes)?;
-            Some(
-                studio_runtime_services::account_driver::migrate_provider_identity_2026_10_26(
-                    &registry_path,
-                    bytes,
-                )?,
-            )
+            Some(bytes)
         }
         None => None,
     };
@@ -376,9 +381,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     )
     .await??;
     startup_trace("backend-identity-completed");
-    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await?;
-    let address = listener.local_addr()?;
-    startup_trace("listener-bound");
     let mut token = [0_u8; 32];
     getrandom::fill(&mut token).map_err(|error| std::io::Error::other(error.to_string()))?;
     let token = data_encoding::HEXLOWER.encode(&token);
@@ -477,6 +479,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     startup_trace("account-registry-open-started");
     let account_driver = Arc::new(AccountDriver::open(&registry_path)?);
     startup_trace("account-registry-open-completed");
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await?;
+    let address = listener.local_addr()?;
+    startup_trace("listener-bound");
+
     for diagnostic in account_policy.limits_diagnostics() {
         eprintln!(
             "invalid persisted limits at {}/{}/{} ({})",
@@ -2893,12 +2899,16 @@ mod startup_registry_tests {
         fs::create_dir_all(state_root.join("accounts")).expect("accounts directory");
         let path = state_root.join("accounts/registry.json");
         fs::write(&path, br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/fixture","label":"Default","source":"fixture","status":"signedOut"}},"logins":{}}"#).expect("legacy registry");
-        let registry =
-            startup_registry(&state_root, codex.path()).expect("dated startup migration");
+        drop(store);
+        let store = RuntimeStore::open(Some(state.path()))
+            .await
+            .expect("locked dated migration");
+        let registry = startup_registry(&state_root, codex.path()).expect("strict startup loading");
         let bytes = registry.bytes.expect("migrated bytes");
         let policy =
             AccountPolicyState::from_startup(Some(&bytes), []).expect("strict startup policy");
         assert_eq!(policy.accounts().accounts[0]["provider"], "codex");
         assert_eq!(fs::read(path).expect("durable registry"), bytes);
+        drop(store);
     }
 }

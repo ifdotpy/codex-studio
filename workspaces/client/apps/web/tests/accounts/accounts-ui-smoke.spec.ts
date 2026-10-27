@@ -563,7 +563,7 @@ async function runAccountsUi(
           accountId: "native-claude",
         }),
       );
-      const benchAgent: import("../../src/types.ts").Agent = {
+      const benchAgent: import("../../src/generated/api.ts").AgentEntityDto = {
         ...makeLead("claude-chat", "Claude conversation", "claude", false),
         provider: "claude",
         model: "default",
@@ -1522,7 +1522,7 @@ async function runAccountsUi(
         accountId: "native-claude",
       }),
     );
-    const claude: import("../../src/types.ts").Agent = {
+    const claude: import("../../src/generated/api.ts").AgentEntityDto = {
       ...makeLead("claude-chat", "Claude conversation", "claude", false),
       provider: "claude",
       model: "default",

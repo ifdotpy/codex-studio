@@ -1,0 +1,15 @@
+{
+  "$comment": "Owner: generate-provider-contracts.ts. Declaration digest is checked by full generation; committed inputs and artifact are checked offline by Cargo.",
+  "sources": {
+    "workspaces/providers/apps/claude-bridge/rate-limit-input.ts": "827b083cc735e93e622b840874ccf31a5e4d2259902ad06d6a0dacc0137853af",
+    "workspaces/providers/apps/claude-bridge/usage-policy.ts": "14a8801a4e371cf576bfcdf78a8341f29f101f6cc5c98f3c640d0abfd886fb72",
+    "workspaces/providers/apps/claude-bridge/package.json": "b0b9c1e00582c04831b197b6780149221a532c897119f6e474913db21bbb7b07",
+    "pnpm-lock.yaml": "b049a91f27b593caae105ab69fdbecee396299d6679a419841c42a6b7dbb5d2d",
+    "workspaces/tooling/apps/repository-checks/generate-provider-contracts.ts": "c68c268970eeb3da38393d17b3c9772bf4f3b2dfc30d9499fa83413443a7d100"
+  },
+  "sdk": {
+    "version": "0.3.308",
+    "declarationsSha256": "0502b6e4f627dc199f12222c7214d36b716a9e80d0f2cb7704cd235d43a680a8"
+  },
+  "schemaSha256": "7571d6b244f5d38005bfece5664b8ae0dbdbbbde54f7cfce69f3f703757e327d"
+}

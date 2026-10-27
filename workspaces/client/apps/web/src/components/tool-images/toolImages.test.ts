@@ -1,3 +1,4 @@
+import { required } from "../componentTestFixtures";
 import type { Json } from "../../types";
 import assert from "node:assert/strict";
 import { toolImages, toolImageDisplayPayload } from "./toolImages.ts";
@@ -96,18 +97,18 @@ it("classifies image paths and content without exposing raw image bytes", () => 
     imageUrl: "[Image content]",
     id: "first",
   });
-  assert.deepEqual(displayInput.contentItems[2], {
+  assert.deepEqual(required(displayInput.contentItems[2]), {
     type: "inputImage",
     imageUrl: "[Image content]",
     id: "duplicate",
   });
-  assert.equal(displayInput.contentItems[0].text, "Result text");
+  assert.equal(required(displayInput.contentItems[0]).text, "Result text");
   assert.ok(
     !JSON.stringify(displayInput).includes("aW1hZ2U="),
     "Raw event does not duplicate image bytes",
   );
   assert.equal(
-    input.contentItems[1].imageUrl,
+    required(input.contentItems[1]).imageUrl,
     uri,
     "Display formatting cannot mutate stored data",
   );

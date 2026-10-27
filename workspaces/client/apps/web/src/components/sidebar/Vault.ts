@@ -2,6 +2,8 @@ import { ApiError } from "../../api";
 import * as defaultResources from "../../sync/subscriptions/events";
 import { subscribeProgress } from "../../sync/progressSubscription";
 import { randomUUID } from "../../uuid";
+import type { PostBody } from "../../apiTypes";
+import type { ResourceProgress } from "../../sync/resourceEvents";
 import type { components } from "../../generated/api";
 import type { ProjectChip } from "./MacSync";
 import type { SidebarBackend } from "./services";
@@ -60,24 +62,17 @@ type JobOptions<T> = {
 };
 
 /** Start once with a stable identity. Running receipts travel only on the owner's stream. */
-export async function runJob<T extends { state: string }>(
-  backend: Pick<SidebarBackend, "post">,
-  url: Parameters<SidebarBackend["post"]>[0],
-  body: Record<string, unknown>,
+async function watchJob<T extends { state: string }>(
+  start: () => Promise<T>,
+  requestId: string,
+  job: VaultProgress["resource"]["job"],
+  select: (progress: ResourceProgress) => T | null | undefined,
   { resources = defaultResources, onUpdate, signal }: JobOptions<T> = {},
 ): Promise<T> {
-  const requestId = body.requestId;
-  if (typeof requestId !== "string" || !requestId)
-    throw new Error("A vault job needs a requestId");
-  const job =
-    url === "/api/vault/aws-login"
-      ? "login"
-      : url === "/api/vault/pull"
-        ? "pull"
-        : "setup";
+  if (!requestId) throw new Error("A vault job needs a requestId");
   let initial: T;
   try {
-    initial = (await backend.post(url, body, { timeoutMs: 30000 })) as T;
+    initial = await start();
   } catch (failure) {
     if (
       failure instanceof ApiError &&
@@ -86,7 +81,7 @@ export async function runJob<T extends { state: string }>(
     )
       throw failure;
     // A lost response never changes the identity or starts another logical job.
-    initial = (await backend.post(url, body, { timeoutMs: 30000 })) as T;
+    initial = await start();
   }
   onUpdate?.(initial);
   if (initial.state !== "running") return initial;
@@ -122,21 +117,63 @@ export async function runJob<T extends { state: string }>(
       resources,
       { kind: "vault-job-progress", requestId, job },
       (progress) => {
-        if (
-          progress.resource.kind === "vault-job-progress" &&
-          progress.resource.requestId === requestId &&
-          progress.resource.job === job &&
-          progress.value
-        )
-          accept(progress.value as unknown as T);
+        if (progress.resource.requestId !== requestId) return;
+        const update = select(progress);
+        if (update) accept(update);
       },
-      async () =>
-        accept((await backend.post(url, body, { timeoutMs: 30000 })) as T),
+      async () => accept(await start()),
       fail,
     );
     // Cached stream baselines can settle synchronously during subscription.
     if (settled) cleanup();
   });
+}
+
+type VaultProgress = Extract<
+  ResourceProgress,
+  { resource: { kind: "vault-job-progress" } }
+>;
+
+// The generated event owner couples each resource.job to its value. Checking the
+// discriminator selects that declared member; this does not validate wire JSON.
+function isJobProgress<K extends VaultProgress["resource"]["job"]>(
+  progress: ResourceProgress,
+  job: K,
+): progress is Extract<VaultProgress, { resource: { job: K } }> {
+  return (
+    progress.resource.kind === "vault-job-progress" &&
+    progress.resource.job === job
+  );
+}
+
+export function loginVault(
+  backend: Pick<SidebarBackend, "post">,
+  body: PostBody<"/api/vault/aws-login">,
+  options: JobOptions<VaultLogin> = {},
+): Promise<VaultLogin> {
+  return watchJob(
+    () => backend.post("/api/vault/aws-login", body, { timeoutMs: 30000 }),
+    body.requestId,
+    "login",
+    (progress) =>
+      isJobProgress(progress, "login") ? progress.value : undefined,
+    options,
+  );
+}
+
+export function setupVault(
+  backend: Pick<SidebarBackend, "post">,
+  body: PostBody<"/api/vault/setup">,
+  options: JobOptions<VaultSetupJob> = {},
+): Promise<VaultSetupJob> {
+  return watchJob(
+    () => backend.post("/api/vault/setup", body, { timeoutMs: 30000 }),
+    body.requestId,
+    "setup",
+    (progress) =>
+      isJobProgress(progress, "setup") ? progress.value : undefined,
+    options,
+  );
 }
 
 /** Pull the latest vault state into a new folder below `to` (Downloads when left out). */
@@ -145,14 +182,21 @@ export async function pullVault(
   projectId: string,
   to: string | null,
   {
-    requestId = randomUUID() as string,
+    requestId = randomUUID(),
     ...options
   }: { requestId?: string } & JobOptions<VaultPull> = {},
 ): Promise<VaultPull> {
-  return runJob<VaultPull>(
-    backend,
-    "/api/vault/pull",
-    { projectId, requestId, ...(to ? { to } : {}) },
+  return watchJob(
+    () =>
+      backend.post(
+        "/api/vault/pull",
+        { projectId, requestId, ...(to ? { to } : {}) },
+        { timeoutMs: 30000 },
+      ),
+    requestId,
+    "pull",
+    (progress) =>
+      isJobProgress(progress, "pull") ? progress.value : undefined,
     { ...options, resources: options.resources ?? backend.resources },
   );
 }

@@ -30,6 +30,7 @@ import type {
 } from "../usage.ts";
 import { readEvidence } from "../usage.ts";
 import type { Smoke, OwnedEntities } from "../smoke.ts";
+import { ProviderKind } from "../../../../client/apps/web/src/generated/providerKind.ts";
 
 // Partial fixtures retain direct assignments and omit unused HTTP envelope fields,
 // turn model/account/detail, chat name/path, provenance binary/release, and live
@@ -55,11 +56,359 @@ type SmokeFixture<K extends keyof Smoke> = PartialMethods<
   };
 };
 
+test("account selection rejects unsupported identities and keeps known default preference", async () => {
+  const { Smoke } = await import("../smoke.ts");
+  const smoke = new Smoke({
+    url: "http://fixture",
+    app: os.tmpdir(),
+    model: {},
+  }) as SmokeFixture<never>;
+  type Account = Pick<Schema["Account"], "id" | "provider" | "status">;
+  const known = [
+    { id: "first", provider: ProviderKind.Codex, status: "ready" },
+    { id: "preferred", provider: ProviderKind.Codex, status: "ready" },
+    { id: "other", provider: ProviderKind.Claude, status: "ready" },
+  ] satisfies Account[];
+  for (const provider of [undefined, null, "", "future-provider", 7, {}, []]) {
+    const unsupported = { id: "unsupported", status: "ready", provider };
+    smoke.backend.get = async () => ({ accounts: [unsupported] });
+    await assert.rejects(smoke.accounts(), /no provider has a ready login/);
+    smoke.backend.get = async () => ({
+      accounts: [...known, unsupported],
+      defaultAccountKey: "unsupported",
+    });
+    await smoke.accounts();
+    assert.deepEqual(
+      [...smoke.accountsByProvider],
+      [
+        [ProviderKind.Codex, "first"],
+        [ProviderKind.Claude, "other"],
+      ],
+    );
+  }
+  smoke.backend.get = async () => ({
+    accounts: known,
+    defaultAccountKey: "preferred",
+  });
+  await smoke.accounts();
+  assert.equal(smoke.accountsByProvider.get(ProviderKind.Codex), "preferred");
+  smoke.providers = [ProviderKind.Claude];
+  await smoke.accounts();
+  assert.deepEqual(
+    [...smoke.accountsByProvider],
+    [[ProviderKind.Claude, "other"]],
+  );
+  smoke.usage = true;
+  await assert.rejects(smoke.accounts(), /requires ready/);
+});
+
+test("saved usage and native discovery reject unsupported provider identities", async () => {
+  const { nativeEvidence } = await import("../usage.ts");
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-identity-test-"));
+  const file = path.join(folder, "run.json");
+  try {
+    for (const provider of [
+      undefined,
+      null,
+      "",
+      "future-provider",
+      7,
+      {},
+      [],
+    ]) {
+      const agent: Parameters<typeof nativeEvidence>[1] = JSON.parse(
+        JSON.stringify({ id: "a", provider, threadId: "thread" }),
+      );
+      assert.throws(
+        () =>
+          nativeEvidence(folder, agent, { id: "default", home: folder }, []),
+        /Unsupported provider/,
+      );
+      fs.writeFileSync(
+        file,
+        JSON.stringify({ providers: [{ provider, agentId: "a" }] }),
+      );
+      assert.throws(() => readEvidence(file), /Unsupported provider/);
+    }
+    const providers = [ProviderKind.Codex, ProviderKind.Claude].map(
+      (provider) =>
+        ({ provider, agentId: "a" }) satisfies Pick<
+          Evidence["providers"][number],
+          "provider" | "agentId"
+        >,
+    );
+    fs.writeFileSync(file, JSON.stringify({ providers }));
+    assert.deepEqual(readEvidence(file).providers, providers);
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("native discovery reads only the selected provider's disposable journal", async () => {
+  const { nativeEvidence } = await import("../usage.ts");
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-journal-test-"));
+  try {
+    const sessions = path.join(folder, "sessions");
+    const project = path.join(folder, "projects", "fixture");
+    fs.mkdirSync(sessions);
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessions, "thread.json"),
+      JSON.stringify({ nativeId: "native" }),
+    );
+    const codexFile = path.join(sessions, "rollout-thread.jsonl");
+    const claudeFile = path.join(project, "native.jsonl");
+    fs.writeFileSync(
+      codexFile,
+      JSON.stringify({
+        type: "token_usage_record",
+        payload: {
+          response_id: "codex-response",
+          usage: { input_tokens: 20, cached_input_tokens: 5 },
+        },
+      }),
+    );
+    fs.writeFileSync(
+      claudeFile,
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          id: "claude-response",
+          usage: { input_tokens: 20, cache_read_input_tokens: 5 },
+        },
+      }),
+    );
+    const account = { id: "default", home: folder } satisfies Pick<
+      Schema["Account"],
+      "id" | "home" | "claudeOptions"
+    >;
+    for (const [provider, expectedFile, uncachedInput] of [
+      [ProviderKind.Codex, codexFile, 15],
+      [ProviderKind.Claude, claudeFile, 20],
+    ] as const) {
+      const evidence = nativeEvidence(
+        folder,
+        { id: "a", provider, threadId: "thread" },
+        account,
+        [],
+      );
+      assert.deepEqual(evidence.files, [expectedFile]);
+      assert.equal(evidence.tokens.uncachedInput, uncachedInput);
+      assert.equal(evidence.tokens.cacheReadInput, 5);
+    }
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+});
+
 test("process ages read every ps etime form", () => {
   assert.equal(elapsedSeconds("05:03"), 303);
   assert.equal(elapsedSeconds(" 1:02:03\n"), 3723);
   assert.equal(elapsedSeconds("2-01:02:03"), 2 * 86_400 + 3723);
   assert.throws(() => elapsedSeconds("soon"), CheckFailed);
+});
+
+test("native journal runtime guards reject malformed usage and narrow saved envelopes", async (t) => {
+  const { nativeResponses } = await import("../usage.ts");
+  for (const usage of [
+    true,
+    [],
+    "usage",
+    { input_tokens: "20" },
+    { output_tokens: "2" },
+    { cache_read_input_tokens: "3" },
+    { cache_creation: { ephemeral_1h_input_tokens: "4" } },
+  ]) {
+    await t.test(`reject usage ${JSON.stringify(usage)}`, () => {
+      assert.throws(
+        () =>
+          nativeResponses(
+            [{ type: "assistant", message: { id: "a", usage } }],
+            ProviderKind.Claude,
+          ),
+        /Native (usage|token count)/,
+      );
+    });
+  }
+  await t.test("skip non-object rows and non-string identifiers", () => {
+    for (const provider of [ProviderKind.Codex, ProviderKind.Claude])
+      assert.deepEqual(
+        nativeResponses(
+          [
+            null,
+            true,
+            [],
+            { type: "assistant", message: { id: 7, usage: {} } },
+            {
+              type: "token_usage_record",
+              payload: { response_id: 7, usage: {} },
+            },
+          ],
+          provider,
+        ),
+        [],
+      );
+  });
+  await t.test("narrow native model and turn identifiers", () => {
+    const [response] = nativeResponses(
+      [
+        { type: "turn_context", payload: { model: "context-model" } },
+        {
+          type: "token_usage_record",
+          payload: { response_id: "r", turn_id: 7, model: {}, usage: {} },
+        },
+      ],
+      ProviderKind.Codex,
+    );
+    assert.ok(response);
+    assert.equal(response.turnId, undefined);
+    assert.equal(response.model, "context-model");
+  });
+});
+
+test("steer runtime guards compare saved timestamps numerically and reject absent identity", async () => {
+  const { validateSteer } = await import("../usage.ts");
+  const submitted = { id: "s", turnId: "long" };
+  const receipt = {
+    id: "s",
+    status: "delivered",
+    materialized: true,
+  } satisfies Optional<Schema["MessageReceiptEntityDto"]>;
+  const item: Transcript = JSON.parse(
+    JSON.stringify({
+      at: "9",
+      inputs: [
+        {
+          id: "s",
+          deliveryStatus: "delivered",
+          materialized: true,
+          pending: false,
+          requestedDelivery: "current_turn",
+        },
+      ],
+    }),
+  );
+  const start: Transcript["at"] = JSON.parse('"10"');
+  assert.throws(
+    () => validateSteer(item, receipt, submitted, "long", start, 12),
+    /associated with turn 2/,
+  );
+  const missing: Transcript = { inputs: [{}] };
+  assert.throws(
+    () => validateSteer(missing, undefined, undefined, "long", 1, 12),
+    /Steer identity/,
+  );
+});
+
+test("model runtime guards normalize malformed reasoning efforts before selection", async () => {
+  const { Smoke } = await import("../smoke.ts");
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-model-guard-"));
+  const smoke = new Smoke({
+    url: "http://fixture",
+    app: folder,
+    model: {},
+  }) as SmokeFixture<never>;
+  smoke.state = folder;
+  fs.mkdirSync(path.join(folder, "model-pricing"));
+  fs.writeFileSync(
+    path.join(folder, "model-pricing/models-dev-v1.json"),
+    JSON.stringify({
+      catalog: {
+        providers: {
+          openai: { models: { small: { cost: { input: 1, output: 1 } } } },
+        },
+      },
+    }),
+  );
+  try {
+    for (const supportedReasoningEfforts of ["low", {}]) {
+      smoke.backend.get = async () => ({
+        data: [{ model: "small", supportedReasoningEfforts }],
+      });
+      const choice = await smoke.chooseModel(ProviderKind.Codex, "default");
+      assert.equal(choice.model, "small");
+      assert.deepEqual(choice.efforts, []);
+      assert.equal(lowestEffort(choice.efforts), undefined);
+    }
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("scenario runtime guards require object tools and string output", async () => {
+  const { scenarioEvidence } = await import("../usage.ts");
+  const root = path.join(os.tmpdir(), "smoke-fixture");
+  const items = (tool: unknown): Transcript[] => [
+    { role: "user", text: "This is turn 2 of a usage check." },
+    { role: "assistant", text: "Before" },
+    { role: "output", text: JSON.stringify(tool) },
+    { role: "assistant", text: "After" },
+    { role: "user", text: "Turn 3: reply with exactly DONE" },
+  ];
+  assert.throws(
+    () =>
+      scenarioEvidence(
+        items({
+          command: "pwd",
+          cwd: root,
+          exitCode: 0,
+          aggregatedOutput: [root],
+        }),
+        ProviderKind.Codex,
+        root,
+      ),
+    /pwd call/,
+  );
+  assert.throws(
+    () => scenarioEvidence(items(null), ProviderKind.Codex, root),
+    /Tool evidence is not an object/,
+  );
+  assert.equal(
+    scenarioEvidence(
+      items({ command: "pwd", cwd: root, exitCode: 0, aggregatedOutput: root }),
+      ProviderKind.Codex,
+      root,
+    ).assistantResponses,
+    2,
+  );
+});
+
+test("native snapshot runtime guards ignore malformed branches and reject non-objects", async () => {
+  const { nativeEvidence } = await import("../usage.ts");
+  const folder = fs.mkdtempSync(
+    path.join(os.tmpdir(), "smoke-snapshot-guard-"),
+  );
+  const snapshot = path.join(folder, "sessions", "thread.json");
+  const journal = path.join(folder, "projects", "fixture", "native.jsonl");
+  const agent = { id: "a", provider: ProviderKind.Claude, threadId: "thread" };
+  const account = { id: "default", home: folder };
+  fs.mkdirSync(path.dirname(snapshot), { recursive: true });
+  fs.mkdirSync(path.dirname(journal), { recursive: true });
+  fs.writeFileSync(
+    journal,
+    JSON.stringify({ type: "assistant", message: { id: "a", usage: {} } }),
+  );
+  try {
+    fs.writeFileSync(
+      snapshot,
+      JSON.stringify({
+        nativeId: "native",
+        historyBranches: [null, { nativeId: 7 }],
+      }),
+    );
+    assert.deepEqual(nativeEvidence(folder, agent, account, []).files, [
+      journal,
+    ]);
+    for (const value of [null, [], true, { session: [] }]) {
+      fs.writeFileSync(snapshot, JSON.stringify(value));
+      assert.throws(
+        () => nativeEvidence(folder, agent, account, []),
+        /Native session.*not an object/,
+      );
+    }
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
 });
 
 test("the cheapest priced visible model wins, and an alias prices by its resolved model", () => {
@@ -80,7 +429,7 @@ test("the cheapest priced visible model wins, and an alias prices by its resolve
   };
   const codex = cheapestModel(
     [
-      { model: "big", supportedReasoningEfforts: ["low"] },
+      { model: "big", supportedReasoningEfforts: [{ reasoningEffort: "low" }] },
       {
         model: "small",
         supportedReasoningEfforts: [{ reasoningEffort: "low" }],
@@ -277,6 +626,7 @@ test("native truth keeps final Claude usage per message and excludes double-coun
     ],
     "codex",
   );
+  assert.ok(codex[0]);
   assert.deepEqual(codex[0].tokens, {
     uncachedInput: 20,
     cacheReadInput: 80,
@@ -317,21 +667,20 @@ test("truth cost uses every billed category and typed recorded usage wins", asyn
     ).costUsd,
     0.002495,
   );
-  assert.deepEqual(
-    recordedResponses({
-      timeline: [
-        {
-          responseId: "r",
-          studioUsage: {
-            kind: "response",
-            tokens,
-          } as Schema["UsageObservation"],
-          requestUsage: { inputTokens: 1 },
-        },
-      ],
-    })[0].tokens,
-    tokens,
-  );
+  const [recorded] = recordedResponses({
+    timeline: [
+      {
+        responseId: "r",
+        studioUsage: {
+          kind: "response",
+          tokens,
+        } as Schema["UsageObservation"],
+        requestUsage: { inputTokens: 1 },
+      },
+    ],
+  });
+  assert.ok(recorded);
+  assert.deepEqual(recorded.tokens, tokens);
 });
 
 test("analytics collection uses a bounded API snapshot", async () => {
@@ -656,6 +1005,7 @@ test("atomic checkpoint failure preserves the previous complete evidence", async
     };
     preserveProvenance(evidence, { binary: "observed" }, true);
     assert.equal(evidence.server!.binary, "original");
+    assert.ok(evidence.recoveryObservations![0]);
     assert.equal(evidence.recoveryObservations![0].server.binary, "observed");
   } finally {
     fs.rmSync(folder, { recursive: true, force: true });
@@ -685,6 +1035,7 @@ test("cleanup recovers project registration by the exact owned path after a lost
   try {
     await smoke.cleanup();
     assert.equal(posts.length, 1);
+    assert.ok(posts[0]);
     assert.equal(posts[0][0], "/api/projects");
     assert.equal((posts[0][1] as Record<string, unknown>).path, root);
     assert.equal((posts[0][1] as Record<string, unknown>).action, "remove");
@@ -899,11 +1250,13 @@ test("recovery uses saved serving provenance when no live bridge remains", async
     throw new Error("No live bridge");
   };
   let recovered!: Awaited<ReturnType<typeof smoke.currentBridgeProvenance>>;
+  let collections = 0;
   smoke.collectUsage = async (
     _chat: Parameters<typeof smoke.collectUsage>[0],
     _provider: Parameters<typeof smoke.collectUsage>[1],
     scenario: Parameters<typeof smoke.collectUsage>[2],
   ) => {
+    collections++;
     recovered = await smoke.currentBridgeProvenance("c", scenario!.savedBridge);
   };
   smoke.serverObservation = () => ({ ...server, pid: 10 });
@@ -914,6 +1267,23 @@ test("recovery uses saved serving provenance when no live bridge remains", async
     assert.deepEqual(recovered.serving, savedBridge);
     assert.equal(recovered.current.available, false);
     assert.deepEqual(smoke.usageEvidence.server, server);
+    const checkpoint = readEvidence(file);
+    const [saved] = checkpoint.providers;
+    assert.ok(saved);
+    const cost = {
+      rootId: "a",
+      generation: 1,
+      totalUSD: 1,
+      pricedSamples: 1,
+      pricingState: "ready",
+      refreshing: false,
+    } satisfies Cost;
+    saved.displayedCost = cost;
+    saved.publication = { currentCost: cost, finalTurnId: "final" };
+    fs.writeFileSync(file, JSON.stringify(checkpoint));
+    await smoke.recover(file);
+    assert.equal(collections, 2);
+    assert.deepEqual(recovered.serving, savedBridge);
   } finally {
     fs.rmSync(folder, { recursive: true, force: true });
   }
@@ -1027,6 +1397,7 @@ test("usage chat stays idle until returned permissions have been verified", asyn
         if (unsafe)
           await assert.rejects(smoke.turn("codex"), /permission|YOLO/i);
         else await smoke.turn("codex");
+        assert.ok(posts[0]);
         assert.equal(posts[0].route, "/api/leads");
         assert.equal(
           (posts[0].body as Record<string, unknown>).yolo_mode,
@@ -1428,6 +1799,7 @@ test("failed analytics collection persists its latency before a provider row exi
     await assert.rejects(smoke.analyticsSnapshot("a", 17), /timed out/);
     const evidence = readEvidence(file);
     assert.equal(evidence.providers.length, 0);
+    assert.ok(evidence.analyticsLatency![0]);
     assert.equal(evidence.analyticsLatency![0].route, analyticsRoute("a"));
     assert.equal(evidence.analyticsLatency![0].outcome, "timeout");
     assert.equal(evidence.analyticsLatency![0].timeoutMs, 17);
@@ -1474,6 +1846,7 @@ test("recorded usage separates gaps and cumulative rows from responses", async (
   };
   assert.equal(recordedResponses(analytics).length, 1);
   const recorded = recordedUsage(analytics);
+  assert.ok(recorded.responses[0]);
   assert.equal(recorded.responses[0].responseId, "typed");
   assert.deepEqual(recorded.gaps, [
     { ...gap, tokens: null, costUsd: null, record: analytics.timeline![1] },
@@ -1501,6 +1874,7 @@ test("legacy recorded categories stay unknown and use persisted adapter preceden
           },
         ],
       });
+      assert.ok(responses[0]);
       assert.equal(responses[0].tokens.cacheReadInput, null);
       assert.equal(responses[0].tokens.uncachedInput, null);
       assert.equal(sumTokens(responses).cacheReadInput, null);
@@ -1518,6 +1892,7 @@ test("legacy recorded categories stay unknown and use persisted adapter preceden
       },
     ],
   });
+  assert.ok(response);
   assert.equal(response.tokens.uncachedInput, 10);
 });
 
@@ -1587,8 +1962,10 @@ test("comparison reprojects old snapshots and preserves unknown categories and g
   }
   assert.deepEqual(old, original);
   const withoutRaw = structuredClone(old);
+  assert.ok(withoutRaw.providers[0]);
   delete withoutRaw.providers[0].analytics;
   const [unavailable] = compareEvidence(withoutRaw, old);
+  assert.ok(unavailable);
   assert.equal(
     unavailable["recorded input/read/write/output/reasoning"],
     "unknown/unknown/unknown/unknown/unknown",
@@ -1639,6 +2016,7 @@ test("comparison gaps make totals incomplete and prices use one explicit rate ba
   } satisfies LegacyUsageRow;
   for (const timeline of [[gap], [response, gap]]) {
     const [row] = compareEvidence(make(timeline), make(timeline));
+    assert.ok(row);
     assert.equal(row["recorded input/read/write/output/reasoning"], null);
     assert.equal(row["recorded total tokens"], null);
     assert.equal(row["recorded/truth"], null);
@@ -1660,11 +2038,11 @@ test("comparison gaps make totals incomplete and prices use one explicit rate ba
   const unknown = structuredClone(response);
   // @ts-expect-error cacheReadInput is deliberately null to model malformed saved usage.
   unknown.studioUsage.tokens.cacheReadInput = null;
-  assert.equal(
-    compareEvidence(make([unknown]), make([unknown]))[0]["recorded USD"],
-    null,
-  );
+  const [unknownRow] = compareEvidence(make([unknown]), make([unknown]));
+  assert.ok(unknownRow);
+  assert.equal(unknownRow["recorded USD"], null);
   const unavailableRates = make([response]);
+  assert.ok(unavailableRates.providers[0]);
   delete unavailableRates.providers[0].truth.prices;
   for (const row of compareEvidence(unavailableRates, make([response]))) {
     assert.equal(row["recorded USD"], null);
@@ -1804,6 +2182,7 @@ test("saved Claude runs reprice native one-hour truth and display the CLI estima
       ],
     };
     const [row] = compareEvidence(snapshot, snapshot);
+    assert.ok(row);
     assert.ok(
       Math.abs(row["truth USD"]! - run.expectedCostUsd) < 1e-12,
       "comparison reparses saved rawUsage",
@@ -1875,10 +2254,7 @@ test("native usage boundaries accept sparse numeric fields and nested JSON docum
       ts.isFunctionDeclaration(node) && node.name?.text === "nativeResponses",
   )!;
   const usageView = variableType(usageBoundary, "usage");
-  const journalView = checker.getIndexTypeOfType(
-    variableType(journalBoundary, "records"),
-    ts.IndexKind.Number,
-  )!;
+  const journalView = variableType(journalBoundary, "row");
   assert.deepEqual(
     [
       checker.isTypeAssignableTo(

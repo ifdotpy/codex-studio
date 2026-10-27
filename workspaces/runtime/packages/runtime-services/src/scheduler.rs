@@ -1,6 +1,10 @@
 //! Durable claim and settlement operations owned by the account turn worker.
 
 use serde_json::{Value, json};
+use studio_runtime_schema::{
+    provider_errors::{KnownCodexErrorKind, known_error_kind},
+    provider_lifecycle::{CodexTurnStatus, TerminalTurnStatus, TurnLifecycle, TurnPhase},
+};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, ExecutionHistoryRepository, RuntimeStore,
     SchedulerRepository, StoreError, TurnAttemptIdentity,
@@ -297,8 +301,6 @@ fn project_changed_agents(
 pub async fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError> {
     Ok(lifecycle_transaction(store, move |transaction| {
         studio_runtime_store::agent_management::settle_orphaned_inputs(transaction)?;
-        migrate_auth_probe_waits(transaction)?;
-        release_capacity_start_attempts(transaction, unix_now())?;
         let mut recovery_complete = true;
         let unsubmitted = match SchedulerRepository::recover_unsubmitted(transaction) {
             Ok(recovered) => recovered,
@@ -342,105 +344,6 @@ pub async fn recover_on_startup(store: &RuntimeStore) -> Result<usize, Scheduler
         Ok(unsubmitted + submitted)
     })
     .await?)
-}
-
-/// Status of a retired Claude auth probe wait in `runtime_usage_resumes`.
-const RETIRED_AUTH_PROBE_WAIT: &str = "auth_probe_wait";
-
-/// One-time move of the retired Claude auth probe waits into the account auth
-/// gate's held state: the row is removed, and its still waiting agent becomes
-/// a held turn that `account_auth_gate` releases after an account change. Its
-/// input already returned to `pending` when the wait was recorded.
-fn migrate_auth_probe_waits(transaction: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
-    let exists: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_usage_resumes')",
-        [],
-        |row| row.get(0),
-    )?;
-    if !exists {
-        return Ok(());
-    }
-    let agents = transaction
-        .prepare(
-            "DELETE FROM runtime_usage_resumes WHERE json_extract(record,'$.status')=?1 \
-             RETURNING agent",
-        )?
-        .query_map([RETIRED_AUTH_PROBE_WAIT], |row| row.get::<_, String>(0))?
-        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
-    for id in agents {
-        let Some(mut agent) = AgentRepository::get(transaction, &AgentId::from(id.as_str()))?
-        else {
-            continue;
-        };
-        if agent.status != AgentStatus::Waiting {
-            continue;
-        }
-        agent.status = AgentStatus::Failed;
-        agent.extra.insert(
-            "error".into(),
-            json!(
-                crate::provider_adapter::adapter(studio_runtime_providers::ProviderKind::Claude)
-                    .sign_in_message()
-            ),
-        );
-        AgentRepository::put(transaction, &agent)?;
-    }
-    Ok(())
-}
-
-/// One-time release of the retired capacity start attempts. Before capacity
-/// retries queued a follow-up input, a claim parked its agent `starting` with an
-/// unsent `capacity` start attempt that no worker ever claimed (the 512-agent
-/// run of 21 October 2026). Such a retry becomes due again at `now`, and its
-/// agent returns to its failed, held state, so the continuation tick claims it
-/// through the follow-up path. A submitted attempt is left to restart recovery.
-fn release_capacity_start_attempts(
-    transaction: &rusqlite::Transaction<'_>,
-    now: f64,
-) -> Result<(), StoreError> {
-    let ids = transaction
-        .prepare(
-            "SELECT id FROM runtime_agents WHERE json_extract(record,'$.startAttempt.action')='capacity' \
-             AND json_extract(record,'$.startAttempt.submitted')=0",
-        )?
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    for id in ids {
-        let Some(row) = AgentRepository::get(transaction, &AgentId::from(id.as_str()))? else {
-            continue;
-        };
-        let mut agent = row.value();
-        let retry_id = agent["startAttempt"]["capacityRetryId"].clone();
-        let mut retry = agent["capacityRetry"].clone();
-        if retry["id"] == retry_id && retry["status"] == "starting" {
-            if let Some(record) = retry.as_object_mut() {
-                record.remove("claimedAt");
-            }
-            retry["status"] = json!("scheduled");
-            retry["dueAt"] = json!(now);
-            retry["updatedAt"] = json!(now);
-            studio_runtime_store::ContinuationRepository::put_record(
-                transaction,
-                studio_runtime_store::ContinuationTable::Capacity,
-                &id,
-                &retry,
-            )?;
-            agent["capacityRetry"] = retry;
-        }
-        if let Some(record) = agent.as_object_mut() {
-            record.remove("startAttempt");
-        }
-        agent["status"] = json!("failed");
-        agent["inFlight"] = json!(false);
-        studio_runtime_store::ContinuationRepository::put_agent(transaction, &agent)?;
-    }
-    Ok(())
-}
-
-fn unix_now() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0.0, |elapsed| elapsed.as_secs_f64())
 }
 
 /// Mirror Python's final per-agent startup cleanup after both recovery scans.
@@ -634,6 +537,15 @@ pub(crate) fn settle_terminal_in_transaction(
                 id: identity.attempt_id.clone(),
             });
     }
+    let Some(TurnLifecycle {
+        phase: TurnPhase::Terminal(_),
+        ..
+    }) = params["threadId"]
+        .as_str()
+        .and_then(|thread_id| TurnLifecycle::observe(thread_id, &params["turn"]))
+    else {
+        return Ok(false);
+    };
     let agent = AgentRepository::get(transaction, &AgentId::from(identity.agent_id.as_str()))
         .map_err(|_| StoreError::InvalidSyncObject {
             scope: "runtime_agents".into(),
@@ -696,7 +608,21 @@ pub(crate) fn settle_terminal_in_transaction(
                 match status {
                     AgentStatus::Failed => "failed",
                     AgentStatus::Interrupted => "interrupted",
-                    _ => "completed",
+                    AgentStatus::Unknown
+                    | AgentStatus::Idle
+                    | AgentStatus::Queued
+                    | AgentStatus::Starting
+                    | AgentStatus::Running
+                    | AgentStatus::Waiting
+                    | AgentStatus::WaitingOnMonitor
+                    | AgentStatus::Approval
+                    | AgentStatus::Completed
+                    | AgentStatus::Blocked
+                    | AgentStatus::Paused
+                    | AgentStatus::Parked
+                    | AgentStatus::Abandoned
+                    | AgentStatus::CapacityRetry
+                    | AgentStatus::Other(_) => "completed",
                 },
                 error.as_ref(),
                 now,
@@ -720,41 +646,41 @@ pub(crate) fn settle_terminal_in_transaction(
 }
 
 // Pure native/visible classification is shared with the future asynchronous worker.
-fn terminal_outcome<'a>(
-    turn: &'a Value,
+fn terminal_outcome(
+    turn: &Value,
     previous: Option<&Value>,
-) -> Option<(&'a str, AgentStatus, Option<Value>)> {
-    let mut native = turn["status"].as_str()?;
+) -> Option<(&'static str, AgentStatus, Option<Value>)> {
+    let mut native = CodexTurnStatus::observe(turn)?.terminal()?;
     let error = turn.get("error").filter(|v| !v.is_null());
-    let info = &turn["error"]["codexErrorInfo"];
-    if native == "interrupted" && (info == "tooManyDenials" || info.get("tooManyDenials").is_some())
+    if native == TerminalTurnStatus::Interrupted
+        && known_error_kind(&turn["error"]) == Some(KnownCodexErrorKind::TooManyDenials)
     {
-        native = "failed";
+        native = TerminalTurnStatus::Failed;
     }
     let saved = previous
         .filter(|p| p["turnId"] == turn["id"])
         .and_then(|p| p.get("error"));
     let visible_error = error.or(saved).filter(|v| !v.is_null());
-    let kind = visible_error.and_then(|e| e.get("codexErrorInfo"));
-    let refusal = kind.is_some_and(|k| {
-        k == "cyberPolicy"
-            || k == "misalignmentPolicyViolation"
-            || k.get("cyberPolicy").is_some()
-            || k.get("misalignmentPolicyViolation").is_some()
-    });
-    let visible = if refusal { "failed" } else { native };
+    let refusal = matches!(
+        visible_error.and_then(known_error_kind),
+        Some(KnownCodexErrorKind::CyberPolicy | KnownCodexErrorKind::MisalignmentPolicyViolation)
+    );
+    let visible = if refusal {
+        TerminalTurnStatus::Failed
+    } else {
+        native
+    };
     let (status, error) = match visible {
-        "completed" => (AgentStatus::Completed, None),
-        "failed" => (
+        TerminalTurnStatus::Completed => (AgentStatus::Completed, None),
+        TerminalTurnStatus::Failed => (
             AgentStatus::Failed,
             Some(visible_error.cloned().unwrap_or_else(
                 || serde_json::json!({"message":"Codex ended this turn with an error."}),
             )),
         ),
-        "interrupted" => (AgentStatus::Interrupted, error.cloned()),
-        _ => return None,
+        TerminalTurnStatus::Interrupted => (AgentStatus::Interrupted, error.cloned()),
     };
-    Some((native, status, error))
+    Some((native.as_str(), status, error))
 }
 
 /// The durable result can replay true; only the first successful application authorizes transport.
@@ -1026,7 +952,7 @@ pub async fn settle_start_outcome(
     };
     let reason = match outcome {
         TurnStart::Blocked { reason } => Some(reason),
-        _ => None,
+        TurnStart::NotSubmitted | TurnStart::Unknown => None,
     };
     Ok(lifecycle_transaction(store, move |transaction| {
         SchedulerRepository::settle_start_outcome(transaction, &identity, status, reason.as_deref())
@@ -1038,6 +964,48 @@ pub async fn settle_start_outcome(
 mod terminal_policy_tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn terminal_refusal_visibility_preserves_native_outcome_and_saved_turn_scope() {
+        for info in [
+            json!("cyberPolicy"),
+            json!({"misalignmentPolicyViolation":{}}),
+        ] {
+            let turn = json!({"id":"turn","status":"completed","error":{"codexErrorInfo":info}});
+            let (native, visible, error) = terminal_outcome(&turn, None).expect("terminal");
+            assert_eq!(native, "completed");
+            assert_eq!(visible, AgentStatus::Failed);
+            assert_eq!(error, Some(turn["error"].clone()));
+            let saved = json!({"turnId":"turn","error":turn["error"]});
+            let turn = json!({"id":"turn","status":"completed"});
+            assert_eq!(
+                terminal_outcome(&turn, Some(&saved)),
+                Some((
+                    "completed",
+                    AgentStatus::Failed,
+                    Some(saved["error"].clone())
+                ))
+            );
+            let other = json!({"turnId":"other","error":saved["error"]});
+            assert_eq!(
+                terminal_outcome(&turn, Some(&other)),
+                Some(("completed", AgentStatus::Completed, None))
+            );
+        }
+    }
+    #[test]
+    fn unknown_turn_status_cannot_be_settled_by_a_refusal_error() {
+        for status in [json!("futureStatus"), json!("uncertain"), Value::Null] {
+            let turn =
+                json!({"id":"turn","status":status,"error":{"codexErrorInfo":"cyberPolicy"}});
+            let original = turn.clone();
+            assert!(terminal_outcome(&turn, None).is_none());
+            assert_eq!(turn, original, "classification preserves receipt payloads");
+            let saved =
+                json!({"turnId":"turn","error":{"codexErrorInfo":"misalignmentPolicyViolation"}});
+            let turn = json!({"id":"turn","status":status});
+            assert!(terminal_outcome(&turn, Some(&saved)).is_none());
+        }
+    }
     #[test]
     fn native_denials_fail_both_outcomes_without_fabricating_other_interrupts() {
         for info in [json!("tooManyDenials"), json!({"tooManyDenials":{}})] {
@@ -1547,6 +1515,39 @@ mod child_turn_parent_tests {
     const TOO_MANY_ATTEMPTS: &str = "responseTooManyFailedAttempts";
 
     #[tokio::test]
+    async fn unknown_terminal_notification_preserves_attempt_and_raw_receipt() {
+        let (_directory, store, intent) = seeded("claude").await;
+        let params = json!({"threadId":"thread","turn":{"id":TURN,"status":"futureStatus",
+            "error":{"codexErrorInfo":"cyberPolicy"},"futureReceipt":{"opaque":[1,2,3]}}});
+        let before = child(&store);
+        let bytes = serde_json::to_vec(&params).expect("raw notification");
+        assert!(
+            !settle_terminal_attempt(&store, &intent.identity(), &params)
+                .await
+                .expect("classification")
+        );
+        assert_eq!(
+            child(&store),
+            before,
+            "unknown outcome cannot settle the attempt"
+        );
+        assert!(parent_events(&store).is_empty());
+        assert_eq!(
+            serde_json::to_vec(&params).expect("raw notification"),
+            bytes
+        );
+        store
+            .transaction(move |tx| {
+                let attempt = ExecutionHistoryRepository::attempt(tx, &intent.attempt_id)?
+                    .expect("attempt retained");
+                assert!(attempt["receipts"].get("terminalInput").is_none());
+                Ok(())
+            })
+            .await
+            .expect("receipt read");
+    }
+
+    #[tokio::test]
     async fn failed_child_turn_reports_one_failed_result() {
         for provider in ["codex", "claude"] {
             let (_directory, store, intent) = seeded(provider).await;
@@ -1620,7 +1621,7 @@ mod child_turn_parent_tests {
     #[tokio::test]
     async fn startup_releases_a_parked_capacity_claim_to_the_followup_path() {
         for provider in ["codex", "claude"] {
-            let (_directory, store, intent) = seeded(provider).await;
+            let (directory, store, intent) = seeded(provider).await;
             let turn = json!({"id":TURN,"status":"failed",
                 "error":{"message":"429 Too Many Requests","codexErrorInfo":TOO_MANY_ATTEMPTS}});
             assert!(
@@ -1664,7 +1665,13 @@ mod child_turn_parent_tests {
                 .await
                 .expect("parked claim writes");
 
-            recover_on_startup(&store).await.expect("startup recovery");
+            drop(store);
+            let store = RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("dated startup conversion");
+            recover_on_startup(&store)
+                .await
+                .expect("recurring startup recovery");
             let released = child(&store);
             assert_eq!(released["status"], "failed", "{provider}: {released}");
             assert_eq!(released["inFlight"], false, "{provider}");
@@ -1919,7 +1926,7 @@ mod child_result_coalesce_tests {
             .expect("wake page reads")
             .values()
             .flatten()
-            .any(|(id, _, _)| id == "lead")
+            .any(|candidate| candidate.agent_id == "lead")
     }
 
     fn release_at(store: &RuntimeStore, now: f64) -> Option<f64> {

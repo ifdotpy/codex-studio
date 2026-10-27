@@ -932,7 +932,7 @@ fn scalar_text(value: &Value) -> String {
         Value::Number(v) if v.is_f64() => {
             v.as_f64().map_or_else(|| v.to_string(), python_float_json)
         }
-        _ => value.to_string(),
+        Value::Number(_) | Value::Array(_) | Value::Object(_) => value.to_string(),
     }
 }
 fn artifact(row: &Event, value: &Value, body: &str) -> ArtifactIntent {

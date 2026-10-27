@@ -278,7 +278,13 @@ fn mac_error(error: mac_sync::MacSyncError) -> ApiError {
         mac_sync::MacSyncError::Io(_) | mac_sync::MacSyncError::Json(_) => {
             ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
         }
-        _ => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
+        mac_sync::MacSyncError::NoProject
+        | mac_sync::MacSyncError::Invalid
+        | mac_sync::MacSyncError::NoConflict(_)
+        | mac_sync::MacSyncError::Unproven { .. }
+        | mac_sync::MacSyncError::PreservedConflict { .. } => {
+            ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+        }
     }
 }
 

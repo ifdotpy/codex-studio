@@ -64,7 +64,7 @@ export function mergeQueueOrder(
   )
     throw new Error("The queue changed. Reload before reordering.");
   let index = 0;
-  return raw.map((id) => (selected.has(id) ? ordered[index++] : id));
+  return raw.map((id) => (selected.has(id) ? ordered[index++]! : id));
 }
 
 export const messageRenderKey = (item: Message) =>

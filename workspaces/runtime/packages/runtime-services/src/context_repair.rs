@@ -860,7 +860,7 @@ fn apply(
         .iter()
         .filter_map(|decision| match decision {
             InputDecision::Delivered { id, turn_id } => Some((id.clone(), turn_id.clone())),
-            _ => None,
+            InputDecision::Waiting { .. } | InputDecision::NotDelivered { .. } => None,
         })
         .collect::<BTreeMap<_, _>>();
     let pending = decisions
@@ -1559,10 +1559,14 @@ async fn repair_idle_with_broker_inner(
                 crate::native_actions::NativeError::Unavailable(_)
                 | crate::native_actions::NativeError::Changed
                 | crate::native_actions::NativeError::Invalid(_) => RepairError::AccountSession,
-                _ => RepairError::AccountSession,
+                crate::native_actions::NativeError::InvalidStored { .. }
+                | crate::native_actions::NativeError::Conflict
+                | crate::native_actions::NativeError::Store(_)
+                | crate::native_actions::NativeError::Json(_)
+                | crate::native_actions::NativeError::Sql(_) => RepairError::AccountSession,
             })
-            .and_then(|receipt| match receipt.certainty {
-                RequestCertainty::Written => match receipt.result {
+            .and_then(|receipt| match receipt.certainty() {
+                RequestCertainty::Written => match receipt.into_response() {
                     Some(ProviderResponse::Reply(value)) => Ok(value),
                     Some(ProviderResponse::Rejected(_)) => Err(RepairError::ProviderRejected),
                     None => Err(RepairError::ProviderUnknown),
@@ -1717,12 +1721,14 @@ async fn broker_call(
         Ok(receipt) if receipt.scope != *scope || receipt.operation != operation => {
             Err(RepairError::ProviderUnknown)
         }
-        Ok(receipt) if receipt.certainty == RequestCertainty::Written => match receipt.result {
-            Some(ProviderResponse::Reply(value)) => Ok(value),
-            Some(ProviderResponse::Rejected(_)) => Err(RepairError::ProviderRejected),
-            None => Err(RepairError::ProviderUnknown),
-        },
-        Ok(receipt) if receipt.certainty == RequestCertainty::NotSent => {
+        Ok(receipt) if receipt.certainty() == RequestCertainty::Written => {
+            match receipt.into_response() {
+                Some(ProviderResponse::Reply(value)) => Ok(value),
+                Some(ProviderResponse::Rejected(_)) => Err(RepairError::ProviderRejected),
+                None => Err(RepairError::ProviderUnknown),
+            }
+        }
+        Ok(receipt) if receipt.certainty() == RequestCertainty::NotSent => {
             Err(RepairError::AccountSession)
         }
         Ok(_) | Err(AccountSessionError::Unknown) => Err(RepairError::ProviderUnknown),
@@ -1888,16 +1894,14 @@ mod native_queue_admission_tests {
                 Ok(SessionReceipt {
                     scope: scope.clone(),
                     operation: request.operation,
-                    ticket: Some(RequestTicket {
-                        generation: scope.generation,
-                        id: RequestId::Number(1),
-                        method: request.method,
-                    }),
-                    certainty: RequestCertainty::Written,
-                    result: Some(ProviderResponse::Reply(
-                        json!({"data":[],"nextCursor":null}),
-                    )),
-                    not_sent_reason: None,
+                    outcome: crate::account_session_runtime::SessionOutcome::Written {
+                        ticket: RequestTicket {
+                            generation: scope.generation,
+                            id: RequestId::Number(1),
+                            method: request.method,
+                        },
+                        response: ProviderResponse::Reply(json!({"data":[],"nextCursor":null})),
+                    },
                     replayed: false,
                 })
             })

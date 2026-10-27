@@ -1,3 +1,4 @@
+import { required } from "./performance-fixture.ts";
 // Build cumulative variants without changing the working tree or its normal dist.
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -78,12 +79,12 @@ for (const [stage, label] of labels.entries()) {
   const sources = new Map(
     files.map((path) => [
       join(root, path),
-      (changed.has(path) ? current : before).get(path)!,
+      required((changed.has(path) ? current : before).get(path)),
     ]),
   );
   const dist = join(output, label);
   await build(
-    mergeConfig(loaded!.config, {
+    mergeConfig(required(loaded).config, {
       configFile: false,
       root,
       build: { outDir: dist, emptyOutDir: false },
@@ -92,8 +93,9 @@ for (const [stage, label] of labels.entries()) {
           name: "interaction-variant",
           enforce: "pre",
           transform(_code, id) {
-            const code = sources.get(id.split("?")[0]);
+            const code = sources.get(required(id.split("?")[0]));
             if (code !== undefined) return { code, map: null };
+            return undefined;
           },
         },
       ],

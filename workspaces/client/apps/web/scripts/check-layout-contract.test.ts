@@ -43,11 +43,14 @@ test("rejects an added query consumer", () => {
 });
 test("rejects invalid units and duplicate generated owners", () => {
   const bad = structuredClone(contract);
-  bad.tokens["navigation.inlineMin"].unit = "pt";
+  const navigation = bad.tokens["navigation.inlineMin"];
+  assert.ok(navigation, "The navigation boundary has an owner");
+  navigation.unit = "pt";
   assert.throws(() => validateContract(bad), /navigation.inlineMin/);
   const duplicate = structuredClone(contract);
-  duplicate.tokens["workspace-panel.min"] =
-    duplicate.tokens["workspacePanel.min"];
+  const panel = duplicate.tokens["workspacePanel.min"];
+  assert.ok(panel, "The workspace panel minimum has an owner");
+  duplicate.tokens["workspace-panel.min"] = panel;
   assert.throws(() => validateContract(duplicate), /duplicate owner/);
 });
 test("scans width ranges and TypeScript query callers", () => {
@@ -146,10 +149,9 @@ test("preserves font-relative component thresholds in generated metadata", () =>
     purpose: "Font-relative component fit",
   };
   const output = renderContract(relative);
-  assert.match(
-    output["src/layout/layout-contract.generated.css"],
-    /--layout-fixture-column: 47.5em;/,
-  );
+  const css = output["src/layout/layout-contract.generated.css"];
+  assert.ok(css, "The layout contract generates CSS");
+  assert.match(css, /--layout-fixture-column: 47.5em;/);
 });
 
 test("generates keyboard motion duration with milliseconds intact", () => {
@@ -161,8 +163,7 @@ test("generates keyboard motion duration with milliseconds intact", () => {
   };
   assert.doesNotThrow(() => validateContract(motion));
   const output = renderContract(motion);
-  assert.match(
-    output["src/layout/layout-contract.generated.css"],
-    /--layout-keyboard-motion-duration: 300ms/,
-  );
+  const css = output["src/layout/layout-contract.generated.css"];
+  assert.ok(css, "The layout contract generates CSS");
+  assert.match(css, /--layout-keyboard-motion-duration: 300ms/);
 });

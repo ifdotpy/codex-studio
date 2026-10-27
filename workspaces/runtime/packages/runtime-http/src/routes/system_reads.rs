@@ -566,7 +566,7 @@ fn redact_untrusted_diagnostic_text(value: &mut Value) {
                     redact_fields(child, fields);
                 }
             }
-            _ => {}
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
         }
     }
 

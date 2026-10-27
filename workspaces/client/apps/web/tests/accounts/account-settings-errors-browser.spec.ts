@@ -79,6 +79,7 @@ test("Account settings errors", async () => {
               ["show", "f72c2ce:web/src/components/AccountSignIn.tsx"],
               { cwd: root, encoding: "utf8" },
             );
+          return undefined;
         },
       },
     ],

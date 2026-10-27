@@ -152,7 +152,15 @@ impl HistoryError {
         match self {
             Self::DiscoveryLimit => HistoryRetryPolicy::WaitForProfileInput,
             Self::DiscoveryRoundLimit => HistoryRetryPolicy::ContinueAfterRoundBudget,
-            _ => HistoryRetryPolicy::Backoff,
+            Self::Capture(_)
+            | Self::Store(_)
+            | Self::Read(_)
+            | Self::ProfileUnavailable
+            | Self::StaleCheckpoint
+            | Self::ChangedDuringRead
+            | Self::Cancelled
+            | Self::Watcher(_)
+            | Self::AccountDriver(_) => HistoryRetryPolicy::Backoff,
         }
     }
 }
@@ -374,7 +382,6 @@ async fn collect_path(
         agent["accountKey"].as_str().unwrap_or("default"),
         text(&agent["threadId"])
     );
-    crate::analytics_history_repair::repair_terminal_errors(store).await?;
     let previous = read_history_checkpoint(store, &key, &agent).await?;
     let prepare_cancel = Arc::clone(&cancel);
     let batch = studio_runtime_process::blocking_pool::spawn_blocking(
@@ -713,7 +720,9 @@ impl NativeEvidenceRoot {
             match component {
                 std::path::Component::Normal(name) => walked.push(name),
                 std::path::Component::CurDir => continue,
-                _ => {
+                std::path::Component::Prefix(_)
+                | std::path::Component::RootDir
+                | std::path::Component::ParentDir => {
                     return Err(NativeFileOpenError::Refused(
                         NativeFileRejection::OutsideProfile,
                     ));
@@ -1337,7 +1346,6 @@ impl HistoryCollector {
         )
         .await
         .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
-        crate::analytics_history_repair::repair_terminal_errors(store).await?;
         let key = format!(
             "{}:{}:{}",
             text(&agent["id"]),

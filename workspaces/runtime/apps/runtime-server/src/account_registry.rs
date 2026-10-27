@@ -2,6 +2,7 @@
 //! decisions remain in the worker. Wakes are hints over committed SQLite rows.
 //! Registered runtime difference: `image-workspace-dependency-hold` persists
 //! an image-workspace refusal on the agent and leaves its input event pending.
+
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -11,6 +12,7 @@ use std::{
     time::Duration,
 };
 use studio_runtime_process::provider_seam::{OpenOptions, ProviderTaskFactory, Shutdown};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{
     account_driver::AccountChangeSignal,
     account_worker::{
@@ -26,7 +28,7 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::{
     AgentId, AgentRepository, QueueEvent, QueueEventId, QueueEventRepository, RuntimeStore,
-    SchedulerRepository,
+    SchedulerRepository, WakeCandidate, WorkspaceMode,
 };
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -97,7 +99,27 @@ mod registry_hints {
                                 pending.work = true;
                                 return self.wake.notify_one();
                             }
-                            _ => return self.wake.notify_one(),
+                            ObservedTable::AccessClients
+                            | ObservedTable::UsageResumes
+                            | ObservedTable::Rooms
+                            | ObservedTable::OperationReceipts
+                            | ObservedTable::Monitors
+                            | ObservedTable::Rules
+                            | ObservedTable::ServerOutbox
+                            | ObservedTable::ServerLinks
+                            | ObservedTable::FederationSettings
+                            | ObservedTable::FederationIdentity
+                            | ObservedTable::FederationPeers
+                            | ObservedTable::FederationInvites
+                            | ObservedTable::FederationRooms
+                            | ObservedTable::FederationOutbox
+                            | ObservedTable::NativeActionReceipts
+                            | ObservedTable::AccessReceipts
+                            | ObservedTable::AccountTransfers
+                            | ObservedTable::OrchestrationSettings
+                            | ObservedTable::RuntimeRequests
+                            | ObservedTable::RuntimeToolRequests
+                            | ObservedTable::AnalyticsProjection => return self.wake.notify_one(),
                         };
                         if rows.len() + ids.len() > MAX_PENDING_ROW_HINTS {
                             rows.clear();
@@ -291,7 +313,7 @@ pub type LaunchFuture<'a> =
     Pin<Box<dyn Future<Output = Result<AccountLaunch, WorkerError>> + Send + 'a>>;
 type WorkerCompletion = Pin<Box<dyn Future<Output = (String, u64)> + Send>>;
 type CommandCapacityWaiter = Pin<Box<dyn Future<Output = (String, bool)> + Send>>;
-pub type AccountTargetPage = BTreeMap<String, Vec<(String, i64, Option<String>)>>;
+pub type AccountTargetPage = studio_runtime_store::AccountWakePage;
 
 pub struct AccountLaunch {
     pub factory: Arc<dyn ProviderTaskFactory>,
@@ -597,7 +619,10 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
             .and_then(|sessions| sessions.get(&request.account).cloned());
         Box::pin(async move {
             let Some(session) = session.filter(|session| session.is_live()) else {
-                return Ok(not_sent_receipt(request, studio_runtime_services::account_session_runtime::NotSentReason::NoLiveAccountWorker));
+                return Ok(not_sent_receipt(
+                    request,
+                    ReceiptOutcome::NoLiveAccountWorker,
+                ));
             };
             dispatch_request(session, request).await
         })
@@ -608,11 +633,8 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
         request: studio_runtime_services::account_session_runtime::TransferProviderRequest,
     ) -> studio_runtime_services::account_session_runtime::SessionFuture {
         use studio_runtime_services::{
-            account_session_runtime::{
-                AccountSessionError, NotSentReason, ProviderResponse, RequestCertainty,
-                SessionReceipt,
-            },
-            account_worker::retained::{RequestResult, SessionRequest, TransferAuthorization},
+            account_session_runtime::{AccountSessionError, SessionReceipt},
+            account_worker::retained::{SessionRequest, TransferAuthorization},
         };
         let session = self
             .sessions
@@ -623,20 +645,17 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
             let not_sent = |reason| SessionReceipt {
                 scope: request.expected_scope.clone(),
                 operation: request.operation.clone(),
-                ticket: None,
-                certainty: RequestCertainty::NotSent,
-                result: None,
-                not_sent_reason: Some(reason),
+                outcome: reason,
 
                 replayed: false,
             };
             let Some(session) = session.filter(|session| session.is_live()) else {
-                return Ok(not_sent(NotSentReason::NoLiveAccountWorker));
+                return Ok(not_sent(ReceiptOutcome::NoLiveAccountWorker));
             };
             if session.scope() != &request.expected_scope
                 || request.expected_scope.account != request.source_account
             {
-                return Ok(not_sent(NotSentReason::ExpectedScopeMismatch));
+                return Ok(not_sent(ReceiptOutcome::ExpectedScopeMismatch));
             }
             let allowed_params =
                 studio_runtime_services::account_transfer::valid_source_preflight_params(
@@ -682,34 +701,18 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                 .await;
             match response {
                 Ok(receipt) if receipt.scope == scope && receipt.operation == operation => {
-                    let (certainty, result) = match receipt.result {
-                        RequestResult::Reply(value) => (
-                            RequestCertainty::Written,
-                            Some(ProviderResponse::Reply(value)),
-                        ),
-                        RequestResult::Rejected(value) => (
-                            RequestCertainty::Written,
-                            Some(ProviderResponse::Rejected(value)),
-                        ),
-                        RequestResult::NotSent => (RequestCertainty::NotSent, None),
-                        RequestResult::Unknown => (RequestCertainty::Unknown, None),
-                    };
-                    Ok(SessionReceipt {
-                        scope: receipt.scope,
-                        operation: receipt.operation,
-                        ticket: Some(receipt.ticket),
-                        certainty,
-                        result,
-                        not_sent_reason: None,
-                        replayed: false,
-                    })
+                    let mut receipt: SessionReceipt = receipt.into();
+                    receipt.replayed = false;
+                    Ok(receipt)
                 }
                 Ok(_) => Err(AccountSessionError::Unknown),
-                Err(studio_runtime_services::account_worker::retained::PortError::NotSent)
-                | Err(studio_runtime_services::account_worker::retained::PortError::Identity)
+                Err(studio_runtime_services::account_worker::retained::PortError::NotSent) => {
+                    Ok(not_sent(ReceiptOutcome::NotHandedOff))
+                }
+                Err(studio_runtime_services::account_worker::retained::PortError::Identity)
                 | Err(
                     studio_runtime_services::account_worker::retained::PortError::ScopeMismatch,
-                ) => Ok(not_sent(NotSentReason::WorkerNotSent)),
+                ) => Ok(not_sent(ReceiptOutcome::ExpectedScopeMismatch)),
                 Err(studio_runtime_services::account_worker::retained::PortError::Unknown) => {
                     Err(AccountSessionError::Unknown)
                 }
@@ -750,7 +753,7 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                     | studio_runtime_services::account_worker::retained::PortError::ScopeMismatch => {
                         studio_runtime_services::account_session_runtime::AccountSessionError::Refused("Provider session scope changed")
                     }
-                    _ => studio_runtime_services::account_session_runtime::AccountSessionError::Refused("Callback barrier was not completed"),
+                    studio_runtime_services::account_worker::retained::PortError::Invalid | studio_runtime_services::account_worker::retained::PortError::NotSent | studio_runtime_services::account_worker::retained::PortError::Deadline | studio_runtime_services::account_worker::retained::PortError::Capacity => studio_runtime_services::account_session_runtime::AccountSessionError::Refused("Callback barrier was not completed"),
                 })
         })
     }
@@ -778,7 +781,7 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                 studio_runtime_services::account_worker::retained::PortError::Identity => {
                     studio_runtime_services::account_session_runtime::AccountSessionError::Refused("Provider session scope changed")
                 }
-                _ => studio_runtime_services::account_session_runtime::AccountSessionError::Refused("Connection recovery could not be started"),
+                studio_runtime_services::account_worker::retained::PortError::ScopeMismatch | studio_runtime_services::account_worker::retained::PortError::Invalid | studio_runtime_services::account_worker::retained::PortError::NotSent | studio_runtime_services::account_worker::retained::PortError::Deadline | studio_runtime_services::account_worker::retained::PortError::Capacity => studio_runtime_services::account_session_runtime::AccountSessionError::Refused("Connection recovery could not be started"),
             })
         })
     }
@@ -808,7 +811,7 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
 
 fn not_sent_receipt(
     request: studio_runtime_services::account_session_runtime::ProviderRequest,
-    reason: studio_runtime_services::account_session_runtime::NotSentReason,
+    reason: ReceiptOutcome,
 ) -> studio_runtime_services::account_session_runtime::SessionReceipt {
     studio_runtime_services::account_session_runtime::SessionReceipt {
         scope: request.expected_scope.unwrap_or(
@@ -819,10 +822,7 @@ fn not_sent_receipt(
             },
         ),
         operation: request.operation,
-        ticket: None,
-        certainty: studio_runtime_services::account_session_runtime::RequestCertainty::NotSent,
-        result: None,
-        not_sent_reason: Some(reason),
+        outcome: reason,
         replayed: false,
     }
 }
@@ -834,10 +834,7 @@ async fn dispatch_request(
     studio_runtime_services::account_session_runtime::SessionReceipt,
     studio_runtime_services::account_session_runtime::AccountSessionError,
 > {
-    use studio_runtime_services::{
-        account_session_runtime::{ProviderResponse, RequestCertainty, SessionReceipt},
-        account_worker::retained::{RequestResult, SessionRequest},
-    };
+    use studio_runtime_services::account_worker::retained::SessionRequest;
 
     let scope = port.scope().clone();
     if request
@@ -847,7 +844,7 @@ async fn dispatch_request(
     {
         return Ok(not_sent_receipt(
             request,
-            studio_runtime_services::account_session_runtime::NotSentReason::ExpectedScopeMismatch,
+            ReceiptOutcome::ExpectedScopeMismatch,
         ));
     }
     let fallback_request = request.clone();
@@ -864,17 +861,22 @@ async fn dispatch_request(
     };
     let receipt = match port.request(retained_request).await {
         Ok(receipt) => receipt,
-        Err(studio_runtime_services::account_worker::retained::PortError::NotSent)
-        | Err(studio_runtime_services::account_worker::retained::PortError::Deadline) => {
+        Err(studio_runtime_services::account_worker::retained::PortError::NotSent) => {
             return Ok(not_sent_receipt(
                 fallback_request,
-                studio_runtime_services::account_session_runtime::NotSentReason::DeadlineExpired,
+                ReceiptOutcome::NotHandedOff,
+            ));
+        }
+        Err(studio_runtime_services::account_worker::retained::PortError::Deadline) => {
+            return Ok(not_sent_receipt(
+                fallback_request,
+                ReceiptOutcome::DeadlineExpired,
             ));
         }
         Err(studio_runtime_services::account_worker::retained::PortError::ScopeMismatch) => {
             return Ok(not_sent_receipt(
                 fallback_request,
-                studio_runtime_services::account_session_runtime::NotSentReason::ExpectedScopeMismatch,
+                ReceiptOutcome::ExpectedScopeMismatch,
             ));
         }
         Err(error) => {
@@ -887,7 +889,11 @@ async fn dispatch_request(
                         "Provider session identity changed",
                     )
                 }
-                _ => {
+                studio_runtime_services::account_worker::retained::PortError::ScopeMismatch
+                | studio_runtime_services::account_worker::retained::PortError::Invalid
+                | studio_runtime_services::account_worker::retained::PortError::NotSent
+                | studio_runtime_services::account_worker::retained::PortError::Deadline
+                | studio_runtime_services::account_worker::retained::PortError::Capacity => {
                     studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
                         "Provider request was refused",
                     )
@@ -895,29 +901,7 @@ async fn dispatch_request(
             });
         }
     };
-    let (certainty, result) = match receipt.result {
-        RequestResult::Reply(value) => (
-            RequestCertainty::Written,
-            Some(ProviderResponse::Reply(value)),
-        ),
-        RequestResult::Rejected(value) => (
-            RequestCertainty::Written,
-            Some(ProviderResponse::Rejected(value)),
-        ),
-        RequestResult::NotSent => (RequestCertainty::NotSent, None),
-        RequestResult::Unknown => (RequestCertainty::Unknown, None),
-    };
-    Ok(SessionReceipt {
-        scope: receipt.scope,
-        operation: receipt.operation,
-        ticket: Some(receipt.ticket),
-        certainty,
-        result,
-        not_sent_reason: (certainty == RequestCertainty::NotSent).then_some(
-            studio_runtime_services::account_session_runtime::NotSentReason::WorkerNotSent,
-        ),
-        replayed: receipt.replayed,
-    })
+    Ok(receipt.into())
 }
 
 impl AccountRegistry {
@@ -1070,7 +1054,7 @@ impl AccountRegistry {
     async fn dispatch_account_page(
         &mut self,
         account: &str,
-        pending_agents: Vec<(String, i64, Option<String>)>,
+        pending_agents: Vec<WakeCandidate>,
         shutdown: Option<&Shutdown>,
     ) -> Result<AccountPageDispatch, WorkerError> {
         let callback_demand = if pending_agents.is_empty() && self.idle_dormant.contains(account) {
@@ -1092,9 +1076,9 @@ impl AccountRegistry {
             return Ok(AccountPageDispatch::Exhausted);
         }
         let page_was_full = pending_agents.len() == WAKE_PAGE;
-        let (image_agents, agents, account_has_work) =
+        let (held_agents, agents, account_has_work) =
             classify_pending_agents(self.store.clone(), account.to_owned(), pending_agents).await?;
-        for agent_id in &image_agents {
+        for agent_id in &held_agents {
             self.after_agent
                 .insert(account.to_owned(), agent_id.clone());
         }
@@ -1362,7 +1346,7 @@ impl AccountRegistry {
     async fn reconcile_account(
         &mut self,
         account: String,
-        pending_agents: Vec<(String, i64, Option<String>)>,
+        pending_agents: Vec<WakeCandidate>,
         shutdown: Option<&Shutdown>,
         failure: &mut Option<WorkerError>,
     ) -> Result<(), WorkerError> {
@@ -1376,9 +1360,12 @@ impl AccountRegistry {
                 + retry_at
                     .saturating_duration_since(tokio::time::Instant::now())
                     .as_secs_f64();
-            let waits = pending_agents
+            let (_, agents, _) =
+                classify_pending_agents(self.store.clone(), account.clone(), pending_agents)
+                    .await?;
+            let waits = agents
                 .iter()
-                .map(|(agent, epoch, _)| {
+                .map(|(agent, epoch)| {
                     let mut wait = AgentStartWait::new(StartWaitReason::ProviderSession, *epoch);
                     wait.until = Some(until);
                     (agent.clone(), wait)
@@ -1786,18 +1773,46 @@ impl AccountRegistry {
 async fn classify_pending_agents(
     store: Arc<RuntimeStore>,
     account: String,
-    pending_agents: Vec<(String, i64, Option<String>)>,
+    pending_agents: Vec<WakeCandidate>,
 ) -> Result<(std::collections::BTreeSet<String>, Vec<(String, i64)>, bool), WorkerError> {
     // Legacy workspaces remain visible but cannot execute after removal.
     studio_runtime_services::legacy_image_workspace::finish_stored_workspaces(&store).await?;
+    let mut held_agents = BTreeSet::new();
+    let mut checked = Vec::new();
+    for candidate in pending_agents {
+        match candidate.workspace_mode {
+            Ok(mode) => checked.push((candidate.agent_id, candidate.epoch, mode)),
+            Err(error) => {
+                if let studio_runtime_store::StoreError::InvalidSyncObjectField {
+                    scope,
+                    id,
+                    pointer,
+                    reason,
+                } = error.as_ref()
+                    && scope == "runtime_agents"
+                {
+                    studio_runtime_services::account_worker::hold_invalid_agent_record(
+                        &store,
+                        id,
+                        pointer,
+                        reason,
+                        &error.to_string(),
+                    )
+                    .await?;
+                    held_agents.insert(candidate.agent_id);
+                } else {
+                    return Err(WorkerError::PreparationRefused(error.to_string()));
+                }
+            }
+        }
+    }
     store
         .read_async::<_, studio_runtime_store::StoreError>(
             "account-registry/legacy-settlement",
             move |db| {
-                let mut legacy_agents = BTreeSet::new();
                 let mut agents = Vec::new();
-                for (id, epoch, mode) in pending_agents {
-                    let legacy = mode.as_deref() == Some("image")
+                for (id, epoch, mode) in checked {
+                    let legacy = mode == Some(WorkspaceMode::Image)
                         || AgentRepository::get(db, &AgentId::from(id.as_str()))?.is_some_and(
                             |agent| {
                                 studio_runtime_services::legacy_image_workspace::is_legacy(
@@ -1806,7 +1821,7 @@ async fn classify_pending_agents(
                             },
                         );
                     if legacy {
-                        legacy_agents.insert(id);
+                        held_agents.insert(id);
                     } else {
                         agents.push((id, epoch));
                     }
@@ -1819,7 +1834,7 @@ async fn classify_pending_agents(
                         event_time(),
                     )?
                     .contains_key(&account);
-                Ok((legacy_agents, agents, account_has_work))
+                Ok((held_agents, agents, account_has_work))
             },
         )
         .await
@@ -1898,7 +1913,7 @@ async fn wake_page_after(
     store: &RuntimeStore,
     account: &str,
     after_agent: String,
-) -> Result<Vec<(String, i64, Option<String>)>, WorkerError> {
+) -> Result<Vec<WakeCandidate>, WorkerError> {
     let account = account.to_owned();
     Ok(store
         .read_async("runtime-server/account_registry", move |db| {
@@ -2112,7 +2127,11 @@ mod bounded_reconcile_tests {
         let classification = tokio::spawn(classify_pending_agents(
             Arc::clone(&store),
             "account-a".to_owned(),
-            vec![("image-agent".to_owned(), 1, Some("image".to_owned()))],
+            vec![WakeCandidate::ready(
+                "image-agent".to_owned(),
+                1,
+                Some(WorkspaceMode::Image),
+            )],
         ));
         tokio::task::yield_now().await;
         let unrelated_executor_work = tokio::spawn(async { "executor progressed" });
@@ -2130,6 +2149,107 @@ mod bounded_reconcile_tests {
         assert_eq!(image_agents, BTreeSet::from(["image-agent".to_owned()]));
         assert!(agents.is_empty());
         assert!(!recovery);
+    }
+
+    #[tokio::test]
+    async fn stored_review_boundary_invalid_hold_keeps_healthy_candidates_and_raw_evidence() {
+        let directory = tempfile::tempdir().expect("isolated store directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store"),
+        );
+        store.transaction(|tx| {
+            for id in ["bad-mode", "healthy-mode", "absent-mode", "null-mode"] {
+                let mut agent = serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":1,"status":"queued","autoWake":true,"inFlight":false,"accountKey":"default"});
+                if id == "healthy-mode" { agent["workspaceMode"] = serde_json::json!("shared"); }
+                if id == "null-mode" { agent["workspaceMode"] = serde_json::Value::Null; }
+                AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
+                tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,?1,'annotation','fixture','pending',0,1)", [id])?;
+            }
+            Ok(())
+        }).await.expect("pending candidates");
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.workspaceMode',7) WHERE id='bad-mode'", [])?;
+            tx.execute("INSERT INTO runtime_work(id,record) VALUES('bad-work',?1)", [serde_json::json!({"id":"bad-work","owner":"bad-mode"}).to_string()])?;
+            Ok(())
+        }).await.expect("existing corrupt mode");
+        let connection = store.test_reader().expect("fixture connection");
+        let raw: String = connection
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id='bad-mode'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("raw evidence");
+        let raw_work: String = connection
+            .query_row(
+                "SELECT record FROM runtime_work WHERE id='bad-work'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("corrupt work evidence");
+        let page = target_page(&connection, "", &BTreeMap::new())
+            .expect("one malformed mode must not abort target_page");
+        let (_, agents, _) = classify_pending_agents(
+            Arc::clone(&store),
+            "default".into(),
+            page["default"].clone(),
+        )
+        .await
+        .expect("per-agent isolation");
+        assert_eq!(
+            agents,
+            vec![
+                ("absent-mode".into(), 1),
+                ("healthy-mode".into(), 1),
+                ("null-mode".into(), 1)
+            ]
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id='bad-mode'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .expect("retained row"),
+            raw
+        );
+        let held: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM runtime_operation_receipts WHERE id=?1 AND signature=?2",
+                rusqlite::params![
+                    format!(
+                        "{}bad-mode",
+                        studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
+                    ),
+                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
+                ],
+                |row| row.get(0),
+            )
+            .expect("invalid-agent hold");
+        assert_eq!(held, 1);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT record FROM runtime_work WHERE id='bad-work'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .expect("retained work evidence"),
+            raw_work
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM runtime_events WHERE status='pending'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .expect("unclaimed events"),
+            4
+        );
     }
 
     #[tokio::test]
@@ -2168,7 +2288,13 @@ mod bounded_reconcile_tests {
 
         let page = target_page(&store.test_reader().expect("read"), "", &BTreeMap::new())
             .expect("pending target page");
-        assert_eq!(page["default"][0].2.as_deref(), Some("image"));
+        assert_eq!(
+            page["default"][0]
+                .workspace_mode
+                .as_ref()
+                .expect("checked mode"),
+            &Some(WorkspaceMode::Image)
+        );
     }
 
     async fn held_child_result_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
@@ -2358,7 +2484,11 @@ mod tests {
         let (legacy, agents, has_work) = super::classify_pending_agents(
             store.clone(),
             "account".into(),
-            vec![("agent".into(), 0, None)],
+            vec![studio_runtime_store::WakeCandidate::ready(
+                "agent".into(),
+                0,
+                None,
+            )],
         )
         .await
         .expect("current workspace remains dispatchable");
@@ -2496,7 +2626,7 @@ mod tests {
             let page = SchedulerRepository::account_wake_for_accounts(&db, [account], 8, 0.0)
                 .expect("targeted page");
             assert_eq!(page.keys().collect::<Vec<_>>(), [account]);
-            assert_eq!(page[account][0].0, agent);
+            assert_eq!(page[account][0].agent_id, agent);
         }
         let page = SchedulerRepository::account_wake_for_accounts(&db, ["acct-idle"], 8, 0.0)
             .expect("idle account page");
@@ -2604,13 +2734,13 @@ mod tests {
             })
             .await
             .expect("absence is a known pre-handoff result");
-        assert_eq!(receipt.certainty, RequestCertainty::NotSent);
+        assert_eq!(receipt.certainty(), RequestCertainty::NotSent);
         assert_eq!(
-            receipt.not_sent_reason,
+            receipt.not_sent_reason(),
             Some(NotSentReason::NoLiveAccountWorker)
         );
-        assert!(receipt.ticket.is_none());
-        assert!(receipt.result.is_none());
+        assert!(receipt.ticket().is_none());
+        assert!(receipt.response().is_none());
         assert!(!changes.has_changed().expect("change watcher remains open"));
     }
 }

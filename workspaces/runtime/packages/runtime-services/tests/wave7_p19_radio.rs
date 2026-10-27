@@ -141,7 +141,7 @@ fn replace_text(value: &mut Value, from: &str, to: &str) {
         Value::Object(map) => map
             .values_mut()
             .for_each(|value| replace_text(value, from, to)),
-        _ => {}
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 fn copy_template(corpus: &RadioCorpus, root: &Path) {
@@ -194,7 +194,9 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
                                 SqlValue::Integer(n.as_i64().expect("integer"))
                             }
                             Value::Number(n) => SqlValue::Real(n.as_f64().expect("number")),
-                            _ => panic!("SQL value"),
+                            Value::Bool(_) | Value::Array(_) | Value::Object(_) => {
+                                panic!("SQL value")
+                            }
                         })
                         .collect::<Vec<_>>();
                     db.execute(
@@ -249,7 +251,7 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
                             SqlValue::Text(s) => json!(s),
                             SqlValue::Integer(n) => json!(n),
                             SqlValue::Real(n) => json!(n),
-                            _ => panic!("blob"),
+                            SqlValue::Blob(_) => panic!("blob"),
                         },
                     );
                 }
@@ -323,7 +325,7 @@ fn normalize(value: &mut Value) {
                 normalize(value)
             }
         }
-        _ => {}
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
 }
 async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value, ProjectsError> {
@@ -376,7 +378,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
                 None,
                 1000.0,
             )
-            .map(|v| json!(v))
+            .map(|v| json!(v == radio_runtime::QuestionAnswerRoute::ConsumedByRadio))
         }).await,
         "bind" => store.transaction_with(move |db| {
             radio_runtime::bind_reserved(
@@ -643,7 +645,7 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
     let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
     let question = case["body"]["question"].clone();
     store.transaction_with(move |db|->Result<(),ProjectsError> {
-        assert!(radio_runtime::route_question_answer(db,&prepared,&question,"answer",None,1000.0)?);
+        assert_eq!(radio_runtime::route_question_answer(db,&prepared,&question,"answer",None,1000.0)?, radio_runtime::QuestionAnswerRoute::ConsumedByRadio);
         db.execute("UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id='q'",[])?;
         Ok(())
     }).await.expect("P04 caller commits both writes");

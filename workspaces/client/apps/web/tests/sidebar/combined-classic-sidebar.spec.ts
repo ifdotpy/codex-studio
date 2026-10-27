@@ -1,3 +1,5 @@
+import { required } from "../teams/helpers.ts";
+import assert from "node:assert/strict";
 import type { TestRuntimeView } from "../playwright.ts";
 import type { TestAgent } from "../playwright.ts";
 import type { ProjectEntityDto } from "../../src/generated/api.ts";
@@ -429,6 +431,7 @@ for (const [theme, viewport] of [
       ["remote", remote],
     ] as const) {
       const project = server.snapshot.runtime.projects[0];
+      assert.ok(project);
 
       Object.assign(project, {
         id: owner === "local" ? "logical-project" : "remote-project",
@@ -563,8 +566,8 @@ for (const [theme, viewport] of [
       await expect(
         row.getByRole("button", { name: /Remote renamed/ }).first(),
       ).toBeVisible();
-      expect(calls.remote[1].body.id).toBe("overlap");
-      expect(calls.remote[1].body.request_id).toBeTruthy();
+      expect(required(calls.remote[1]).body.id).toBe("overlap");
+      expect(required(calls.remote[1]).body.request_id).toBeTruthy();
       expect(local.snapshot.threads[0]!.name).toBe("Local chat");
 
       await row.hover();

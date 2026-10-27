@@ -193,6 +193,8 @@ fn read_chunked(reader: &mut impl BufRead) -> io::Result<Vec<u8>> {
     }
 }
 
+// ErrorKind is an external non-exhaustive enum; unknown I/O errors retain their text.
+#[allow(clippy::wildcard_enum_match_arm)]
 fn format_http_error(error: &io::Error) -> String {
     match error.kind() {
         io::ErrorKind::ConnectionRefused => match error.raw_os_error() {

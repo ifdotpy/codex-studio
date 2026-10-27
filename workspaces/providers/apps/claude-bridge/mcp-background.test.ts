@@ -50,11 +50,9 @@ test("MCP timer releases the turn, retains the task, avoids a false stall, and w
   const diagnostics = await bridge.call("claude/diagnostics", {});
   assert.equal(diagnostics.activeTurns, 0);
   assert.equal(diagnostics.backgroundQueries, 1);
-  assert.equal(
-    (await bridge.call("claude/state", { threadId: bridge.thread })).tasks[0]
-      .task_id,
-    "mcp-task",
-  );
+  const state = await bridge.call("claude/state", { threadId: bridge.thread });
+  assert.ok(state.tasks[0]);
+  assert.equal(state.tasks[0].task_id, "mcp-task");
   await bridge.advanceTime(180001);
   assert.equal(
     bridge.notes.some(

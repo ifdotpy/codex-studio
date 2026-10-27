@@ -179,6 +179,7 @@ try {
         ),
         "installed CLI must finish its fixture response",
       );
+      assert(messages[0]);
       session.turns.push({
         id: identity,
         nativeMessageId: messages[0].uuid,
@@ -218,11 +219,13 @@ try {
           cwd: options!.dir!,
         }),
     } as Partial<ControlDependencies> as ControlDependencies;
+    assert(session.turns[0] && session.turns[1]);
     const branch = await forkAtTurn(
       session,
       { lastTurnId: session.turns[0].id },
       deps,
     );
+    assert(branch.turns[0]?.items[0]);
     assert.equal(branch.turns[0].items[0].nativeIds!.length, 2);
     await rollbackSession(
       session,
@@ -233,6 +236,7 @@ try {
       deps,
     );
     assert.equal(session.turns.length, 1);
+    assert(session.turns[0]?.items[0]);
     console.log(
       JSON.stringify({
         order: serviceFirst ? "service/human" : "human/service",
@@ -340,6 +344,8 @@ try {
   const stored: Session = JSON.parse(
     await fs.readFile(path.join(clearCwd, "session.json"), "utf8"),
   );
+  assert(stored.nativeId);
+  assert(stored.turns[0]);
   assert.notEqual(stored.nativeId, oldId);
 
   assert(

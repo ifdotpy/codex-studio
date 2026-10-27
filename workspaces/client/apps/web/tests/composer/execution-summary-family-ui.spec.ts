@@ -1,8 +1,10 @@
+import assert from "node:assert/strict";
 import type { BrowserRectangle } from "../chat/browser.ts";
 import type { TestAgent } from "../playwright.ts";
 // The base settings fixture omits workerDefaults.fastMode.
 type PartialSettingsFixture = Partial<TestAgent>;
 import type { GetResult } from "../../src/apiTypes.ts";
+import type { components } from "../../src/generated/api.ts";
 import {
   test,
   expect,
@@ -74,14 +76,16 @@ test("phone composer keeps the lead model name and discloses other roles", async
           (route) =>
             route.fulfill({
               json: {
-                data: [
-                  { model, displayName: name, provider },
-                  {
-                    model: "gpt-6-luna",
-                    displayName: "Luna 6",
-                    provider: "codex",
-                  },
-                ].map((row) => ({
+                data: (
+                  [
+                    { model, displayName: name, provider },
+                    {
+                      model: "gpt-6-luna",
+                      displayName: "Luna 6",
+                      provider: "codex",
+                    },
+                  ] satisfies components["schemas"]["ProviderModel"][]
+                ).map((row) => ({
                   ...row,
                   defaultReasoningEffort: "medium",
                   supportedReasoningEfforts: [
@@ -130,6 +134,7 @@ test("phone composer keeps the lead model name and discloses other roles", async
         const triggerBox = (await trigger.boundingBox())!;
 
         const first = geometry[0];
+        assert.ok(first);
 
         for (const [index, box] of geometry.entries()) {
           expect(box.left).toBeGreaterThanOrEqual(triggerBox.x);
@@ -137,7 +142,10 @@ test("phone composer keeps the lead model name and discloses other roles", async
             triggerBox.x + triggerBox.width,
           );
           const previous = geometry[index - 1];
-          if (index) expect(box.left).toBeGreaterThanOrEqual(previous.right);
+          if (index) {
+            assert.ok(previous);
+            expect(box.left).toBeGreaterThanOrEqual(previous.right);
+          }
           expect(box.top).toBe(first.top);
         }
         await expect(

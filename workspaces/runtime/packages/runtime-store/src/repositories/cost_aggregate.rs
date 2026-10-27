@@ -25,16 +25,19 @@ use studio_runtime_schema::provider_kind::ProviderKind;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+#[cfg(test)]
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, params};
+#[cfg(test)]
+use rusqlite::OpenFlags;
+use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Deserialize;
 use studio_runtime_schema::usage::{UsageEvidence, UsageObservation, UsageTokens};
 
 use crate::{CachedSql, StoreError, StoreResult};
 
-/// Tables of the aggregate; created by [`ensure_cost_aggregate`].
-const TABLES: &str = "
+/// Current tables of the aggregate, installed during the analytics startup transaction.
+pub(crate) const TABLES: &str = "
 CREATE TABLE analytics_cost_rows (
     id TEXT PRIMARY KEY, root TEXT NOT NULL, agent TEXT NOT NULL, thread TEXT, turn TEXT,
     seq INTEGER NOT NULL, at REAL NOT NULL, model TEXT, account_key TEXT, response TEXT,
@@ -111,11 +114,11 @@ struct UsageCostFields<'a> {
 impl From<&UsageTokens> for CostTokens {
     fn from(tokens: &UsageTokens) -> Self {
         Self {
-            input_tokens: Some(tokens.uncached_input as f64),
-            cached_input_tokens: Some(tokens.cache_read_input as f64),
-            cache_write_input_tokens: Some(tokens.cache_write_input as f64),
-            cache_write_input_1h_tokens: tokens.cache_write_input_1h.map(|n| n as f64),
-            output_tokens: Some(tokens.output as f64),
+            input_tokens: Some(tokens.uncached_input() as f64),
+            cached_input_tokens: Some(tokens.cache_read_input() as f64),
+            cache_write_input_tokens: Some(tokens.cache_write_input() as f64),
+            cache_write_input_1h_tokens: tokens.cache_write_input_1h().map(|n| n as f64),
+            output_tokens: Some(tokens.output() as f64),
         }
     }
 }
@@ -126,7 +129,7 @@ fn cost_observation(
 ) -> StoreResult<Option<UsageObservation>> {
     if record.get("studioUsage").is_some() {
         return studio_runtime_schema::usage::ledger::UsageLedgerRow::from_typed_analytics(record)
-            .map(|ledger| Some(ledger.studio_usage))
+            .map(|ledger| Some(ledger.into_observation()))
             .map_err(|error| StoreError::SchemaValidation(error.to_string()));
     }
     let provider =
@@ -381,7 +384,7 @@ pub fn partition_journal_receipts(
             continue;
         }
         match studio_runtime_schema::usage::ledger::UsageLedgerRow::from_typed_analytics(&value)
-            .map(|ledger| ledger.studio_usage)
+            .map(|ledger| ledger.into_observation())
         {
             Ok(UsageObservation::Response {
                 evidence: UsageEvidence::Live | UsageEvidence::Recovered,
@@ -597,34 +600,19 @@ fn contributions(
 
 /// Create the aggregate on first open and fill it from the existing usage
 /// rows, in one transaction.
-pub(crate) fn ensure_cost_aggregate(path: &Path) -> StoreResult<()> {
+#[cfg(test)]
+fn ensure_cost_aggregate(path: &Path) -> StoreResult<()> {
     let mut db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     let tx = db.transaction()?;
-    migrate_2026_10_22_drop_python_cost_projection(&tx)?;
+    crate::migrations::m2026_10_22_analytics::migrate_2026_10_22_drop_python_cost_projection(&tx)?;
+    crate::migrations::m2026_10_22_analytics::aggregate_columns(&tx)?;
     install(&tx)?;
     tx.commit()?;
     Ok(())
 }
 
-/// Retire the Python JSON projection after Rust took ownership of cost writes.
-/// The projection table owns its three triggers and index; the six usage
-/// triggers must go first because SQLite does not remove cross-table triggers.
-/// IF EXISTS makes a retry after a committed open perform no schema changes.
-fn migrate_2026_10_22_drop_python_cost_projection(db: &Transaction<'_>) -> StoreResult<()> {
-    db.execute_batch(
-        "DROP TRIGGER IF EXISTS analytics_cost_usage_before_insert_v1;
-         DROP TRIGGER IF EXISTS analytics_cost_usage_before_update_v1;
-         DROP TRIGGER IF EXISTS analytics_cost_usage_before_delete_v1;
-         DROP TRIGGER IF EXISTS analytics_cost_usage_insert_v1;
-         DROP TRIGGER IF EXISTS analytics_cost_usage_update_v1;
-         DROP TRIGGER IF EXISTS analytics_cost_usage_delete_v1;
-         DROP TABLE IF EXISTS analytics_cost_projection_v1;",
-    )?;
-    Ok(())
-}
-
-/// Create a missing aggregate, or add compatibility markers without reading usage
-/// records or changing existing derived groups.
+/// Install the current derived aggregate. Historical layouts are upgraded only
+/// by the dated migration before this current-format owner runs.
 pub fn install(db: &Connection) -> StoreResult<()> {
     let exists: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_cost_rows')",
@@ -634,30 +622,6 @@ pub fn install(db: &Connection) -> StoreResult<()> {
     if !exists {
         db.execute_batch(TABLES)?;
         backfill(db)?;
-    } else {
-        let columns = db
-            .prepare("PRAGMA table_info(analytics_cost_rows)")?
-            .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<Result<HashSet<_>, _>>()?;
-        if !columns.contains("eligible") {
-            db.execute_batch("ALTER TABLE analytics_cost_rows ADD COLUMN eligible INTEGER")?;
-        }
-        if !columns.contains("final_evidence") {
-            db.execute_batch("ALTER TABLE analytics_cost_rows ADD COLUMN final_evidence INTEGER NOT NULL DEFAULT 0")?;
-        }
-        // Nullable columns are metadata-only additions: preserve every old fact/group.
-        for table in ["analytics_cost_rows", "analytics_cost_groups"] {
-            let has_split = db
-                .prepare(&format!("PRAGMA table_info({table})"))?
-                .query_map([], |row| row.get::<_, String>(1))?
-                .collect::<Result<HashSet<_>, _>>()?
-                .contains("cache_write_1h");
-            if !has_split {
-                db.execute_batch(&format!(
-                    "ALTER TABLE {table} ADD COLUMN cache_write_1h REAL"
-                ))?;
-            }
-        }
     }
     db.execute_batch(SCOPE_INDEXES)?;
     Ok(())
@@ -1673,6 +1637,8 @@ mod tests {
     }
 
     #[test]
+    // AuthAction is non-exhaustive; only reads of the guarded table are denied.
+    #[allow(clippy::wildcard_enum_match_arm)]
     fn typed_usage_legacy_migration_keeps_totals_without_reading_usage_rows() {
         use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
         let db = Connection::open_in_memory().expect("database");
@@ -1692,7 +1658,9 @@ mod tests {
             _ => Authorization::Allow,
         }))
         .expect("usage-read guard");
-        super::install(&db).expect("bounded additive migration does not inspect usage records");
+        crate::migrations::m2026_10_22_analytics::aggregate_columns(&db)
+            .expect("bounded additive migration does not inspect usage records");
+        super::install(&db).expect("current aggregate");
         let scope_indexes: Vec<String> = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name IN ('analytics_cost_rows_unmodeled','analytics_cost_rows_eligible_unmodeled') ORDER BY name")
             .expect("index migration").query_map([], |row| row.get(0)).expect("index names")
             .collect::<Result<_, _>>().expect("indexes");
@@ -1706,7 +1674,9 @@ mod tests {
         assert_eq!(groups[0].tokens.output_tokens, Some(2.0));
         assert_eq!(groups[0].count, 1);
         assert_eq!(groups[0].tokens.cache_write_input_1h_tokens, None);
-        super::install(&db).expect("migration is idempotent");
+        crate::migrations::m2026_10_22_analytics::aggregate_columns(&db)
+            .expect("migration is idempotent");
+        super::install(&db).expect("current aggregate");
         assert_eq!(
             super::cost_groups(&db, "root", &Default::default()).expect("groups"),
             groups
@@ -1756,7 +1726,7 @@ mod tests {
             let (rows, truncated) = super::recorded_responses_bounded(tx, &agents, 1)?;
             assert!(truncated);
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].tokens.as_ref().expect("known tokens").output, 2);
+            assert_eq!(rows[0].tokens.as_ref().expect("known tokens").output(), 2);
             assert_eq!(super::recorded_responses(tx, &agents)?.len(), 2);
             let receipts = ["legacy", "final", "missing"].map(|id| ("acct".to_owned(), "thread".to_owned(), id.to_owned())).into();
             let partition = super::partition_journal_receipts(tx, &receipts, &receipt_members())?;

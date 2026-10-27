@@ -3,7 +3,69 @@ type FixtureSchema = Omit<core.JSONSchema.ObjectSchema, "properties"> & {
   properties: Record<string, core.JSONSchema.JSONSchema>;
 };
 import { canonicalJson } from "./move.ts";
+import { TASK_COMMAND_TOOL_SCHEMA } from "./task-command-tool.generated.ts";
 import { test } from "vitest";
+
+test("generated task advertisement converts through the real bridge SDK and preserves read arguments", async () => {
+  const { createSdkMcpServer, tool } =
+    await import("@anthropic-ai/claude-agent-sdk");
+  const { z } = await import("zod");
+  const schema = z.fromJSONSchema(TASK_COMMAND_TOOL_SCHEMA);
+  assert.ok(
+    schema instanceof z.ZodObject,
+    "the bridge consumes an object shape",
+  );
+  createSdkMcpServer({
+    name: "studio",
+    version: "1",
+    tools: [
+      tool("orchestration_task", "Tasks", schema.shape, async () => ({
+        content: [],
+      })),
+    ],
+  });
+  for (const input of [
+    { action: "list", owner: "worker", state: "ready", cursor: "cursor" },
+    { action: "get", task_id: "task" },
+    { action: "history", task_id: "task", limit: 5 },
+  ]) {
+    assert.deepEqual(schema.parse(input), input);
+  }
+  for (const token of ["x", "🙂"]) {
+    for (const [size, expected] of [
+      [32000, true],
+      [32001, false],
+    ] as const) {
+      assert.equal(
+        schema.safeParse({
+          action: "create",
+          title: "Task",
+          description: token.repeat(size),
+        }).success,
+        expected,
+      );
+      assert.equal(
+        schema.safeParse({
+          action: "cancel",
+          task_id: "task",
+          reason: token.repeat(size),
+        }).success,
+        expected,
+      );
+    }
+  }
+  // A flat SDK advertisement permits unused nullable fields; the server's
+  // action-specific owner still refuses null in a consumed native field.
+  assert.deepEqual(
+    schema.parse({
+      action: "cancel",
+      task_id: "task",
+      reason: "done",
+      description: null,
+    }),
+    { action: "cancel", task_id: "task", reason: "done", description: null },
+  );
+});
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -40,7 +102,7 @@ test("move exports only its native session, preserves bytes and refuses conflict
     const source = path.join(dir, id + ".jsonl");
     const bytes = Buffer.from('{"old":"café","uuid":"original"}\n');
     await fs.writeFile(source, bytes);
-    const destination = nativeDestination(id, "/target", root);
+    const destination = await nativeDestination(id, "/target", root);
     assert.equal(await nativeFile(id, root), source);
     await publishNative(source, destination);
     assert.deepEqual(await fs.readFile(destination), bytes);
@@ -61,8 +123,8 @@ test("a return move extends only an exact native prefix and selects the current 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-move-return-"));
   try {
     const id = randomUUID();
-    const first = nativeDestination(id, "/first", root);
-    const second = nativeDestination(id, "/second", root);
+    const first = await nativeDestination(id, "/first", root);
+    const second = await nativeDestination(id, "/second", root);
     await fs.mkdir(path.dirname(first), { recursive: true });
     await fs.mkdir(path.dirname(second), { recursive: true });
     await fs.writeFile(first, '{"old":1}\n');
@@ -73,6 +135,56 @@ test("a return move extends only an exact native prefix and selects the current 
     assert.deepEqual(await fs.readFile(first), await fs.readFile(second));
     await fs.writeFile(second, '{"changed":1}\n');
     await assert.rejects(publishNative(second, first, true), /different bytes/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked destination folder uses the real-path key that Claude resumes", async () => {
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "claude-move-link-")),
+  );
+  try {
+    const id = randomUUID();
+    const project = path.join(root, "project");
+    const alias = path.join(root, "link");
+    await fs.mkdir(project);
+    await fs.symlink(project, alias);
+    const config = path.join(root, "config");
+    const real = await nativeDestination(id, project, config);
+    assert.equal(await nativeDestination(id, alias, config), real);
+    const other = await nativeDestination(id, "/other", config);
+    for (const file of [real, other]) {
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, '{"old":1}\n');
+    }
+    assert.equal(await nativeFile(id, config, alias), real);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a move destination key matches the SDK normalization and length limit", async () => {
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "claude-move-key-")),
+  );
+  try {
+    const id = randomUUID();
+    const config = path.join(root, "config");
+    const nfd = path.join(root, "cafe\u0301");
+    await fs.mkdir(nfd);
+    // The SDK applies NFC on macOS only. "é" in NFC is one key character.
+    const name = process.platform === "darwin" ? "caf-" : "cafe-";
+    assert.equal(
+      path.basename(path.dirname(await nativeDestination(id, nfd, config))),
+      root.replace(/[^a-zA-Z0-9]/g, "-") + "-" + name,
+    );
+    const long = "/" + "a".repeat(199);
+    assert.equal(
+      path.basename(path.dirname(await nativeDestination(id, long, config))),
+      "-" + "a".repeat(199),
+    );
+    await assert.rejects(nativeDestination(id, long + "a", config), /too long/);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -279,14 +391,18 @@ test("Studio proof reads the compiled ordered MCP schemas without model input", 
     ["mcp__studio__one", "mcp__studio__two"],
   );
   // The fixture compiled this object schema through the SDK.
+  assert.ok(catalog[0]);
   const schema = catalog[0].input_schema as FixtureSchema;
+  assert.ok(schema.properties.cwd);
   assert.equal(schema.properties.cwd.type, "string");
   assert.throws(
     () => verifyToolProof({ tools: catalog }, [...catalog].reverse()),
     /order/,
   );
   const changed = structuredClone(catalog);
+  assert.ok(changed[0]);
   const changedSchema = changed[0].input_schema as typeof schema;
+  assert.ok(changedSchema.properties.cwd);
   changedSchema.properties.cwd.type = "number";
   assert.throws(() => verifyToolProof({ tools: catalog }, changed), /schemas/);
 });
@@ -518,6 +634,8 @@ test("a catalog that crossed the paired channel with sorted keys still matches",
     },
   ];
   const sorted = canonicalFixture(current);
+  const [first, second] = sorted;
+  assert.ok(first && second);
   const proof = {
     inlineTools: false,
     tools: [{ name: "Bash", input_schema: { type: "object" } }],
@@ -530,7 +648,7 @@ test("a catalog that crossed the paired channel with sorted keys still matches",
       verifyToolProof(
         {
           ...proof,
-          compiledTools: [{ ...sorted[0], description: "Changed" }, sorted[1]],
+          compiledTools: [{ ...first, description: "Changed" }, second],
         },
         current,
       ),
@@ -538,10 +656,7 @@ test("a catalog that crossed the paired channel with sorted keys still matches",
   );
   assert.throws(
     () =>
-      verifyToolProof(
-        { ...proof, compiledTools: [sorted[1], sorted[0]] },
-        current,
-      ),
+      verifyToolProof({ ...proof, compiledTools: [second, first] }, current),
     /tool definitions differ/,
   );
 });
@@ -569,6 +684,7 @@ test("a move restores the exact tool order that the paired channel sorted", () =
     JSON.stringify(exactSession(moved).dynamicTools),
     JSON.stringify(original),
   );
+  assert.ok(original[0]);
   const compiled = [
     {
       name: "mcp__studio__orchestration_teleport",
@@ -671,6 +787,7 @@ test("later turns of a moved session keep the exact tool order the server sorted
         version: "1",
         tools: definitions.map((definition) => {
           const schema = z.fromJSONSchema(definition.inputSchema);
+          assert.ok(schema instanceof z.ZodObject);
           return tool(
             definition.name,
             definition.description,
@@ -697,8 +814,10 @@ test("later turns of a moved session keep the exact tool order the server sorted
   // The server stores records with sorted keys and sends that copy on later turns.
   const sorted = canonicalFixture(source);
   const proof = await compile(source);
+  const sortedProof = await compile(sorted);
+  assert.ok(sortedProof[0] && proof[0]);
   assert.notDeepEqual(
-    (await compile(sorted))[0].input_schema.required,
+    sortedProof[0].input_schema.required,
     proof[0].input_schema.required,
   );
   assert.deepEqual(await compile(exactTurnTools(session, sorted)), proof);
@@ -711,3 +830,39 @@ test("later turns of a moved session keep the exact tool order the server sorted
   assert.equal(exactTurnTools(session, changed), changed);
   assert.equal(exactTurnTools({}, sorted), sorted);
 });
+
+test.each(
+  [[], 42, null, false, "invalid"].map((invalidRow) => ({ invalidRow })),
+)(
+  "non-object native row $invalidRow cannot certify a saved prompt",
+  async ({ invalidRow }) => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "claude-prompt-boundary-"),
+    );
+    const file = path.join(root, "native.jsonl");
+    const session = { id: randomUUID(), model: "default", dynamicTools: [] };
+    const row = {
+      type: "attachment",
+      sessionId: session.id,
+      attachment: {
+        type: "prompt_snapshot",
+        systemPrompt: ["Complete prompt"],
+        tools: [{ name: "Bash", input_schema: { type: "object" } }],
+      },
+    };
+    try {
+      await fs.writeFile(file, JSON.stringify(row) + "\n");
+      assert.equal(
+        (await savedPromptProof(file, session)).snapshotHash.length,
+        64,
+      );
+      await fs.appendFile(file, JSON.stringify(invalidRow) + "\n");
+      await assert.rejects(
+        savedPromptProof(file, session),
+        /complete native snapshot history is unavailable/,
+      );
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);

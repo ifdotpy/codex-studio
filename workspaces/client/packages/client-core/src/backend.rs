@@ -91,14 +91,22 @@ impl Backend {
             .store(true, std::sync::atomic::Ordering::Release);
     }
     pub(crate) fn port(&self) -> u16 {
-        self.origin.port_or_known_default().unwrap()
+        // new() accepts only HTTP origins, which always have a known default port.
+        self.origin
+            .port_or_known_default()
+            .expect("HTTP origin has a port")
     }
     pub(crate) async fn desktop_probe(
         &self,
         timeout: Duration,
     ) -> Result<reqwest::Response, reqwest::Error> {
+        // new() validates the HTTP base; the fixed absolute path is a valid reference.
         self.client
-            .get(self.origin.join("/api/desktop").unwrap())
+            .get(
+                self.origin
+                    .join("/api/desktop")
+                    .expect("valid desktop probe path"),
+            )
             .timeout(timeout)
             .send()
             .await

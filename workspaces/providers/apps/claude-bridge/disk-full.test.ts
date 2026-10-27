@@ -121,7 +121,7 @@ test("persistOrDefer saves again when space returns and rejects other errors", a
     });
     const session = makeSession();
     await store.persist(session);
-
+    assert.ok(session.turns[0]);
     session.turns[0].items.push({ id: "answer-1", text: "kept in memory" });
     const originalAppend = fs.appendFile;
     let full = true;

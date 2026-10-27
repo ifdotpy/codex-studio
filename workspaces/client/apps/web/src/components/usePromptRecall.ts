@@ -103,7 +103,7 @@ export function usePromptRecall(
             if (!earlier.length) continue;
             current.entries = [...earlier, ...current.entries];
             current.index = earlier.length - 1;
-            current.value = current.entries[current.index].text;
+            current.value = earlier[current.index]!.text;
             latest.current.setDraft(current.value);
             return;
           }

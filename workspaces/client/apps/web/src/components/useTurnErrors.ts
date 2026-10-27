@@ -1,11 +1,15 @@
+import type { DeepReadonly } from "rxdb";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useMemo, useState } from "react";
 import "../api";
 import type { Agent, JsonInput, Message } from "../types";
 import { failureMessage } from "./turnFailureReason";
 
-const cachedErrors = new Map<string, Record<string, JsonInput>>();
-const inFlight = new Map<string, Promise<Record<string, JsonInput>>>();
+const cachedErrors = new Map<string, Record<string, DeepReadonly<JsonInput>>>();
+const inFlight = new Map<
+  string,
+  Promise<Record<string, DeepReadonly<JsonInput>>>
+>();
 
 export function failedTurnsNeedingLookup(
   items: Pick<Message, "turnId" | "turnStatus">[],
@@ -36,7 +40,7 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
     scope: string;
     checked: string[];
     failed: string[];
-    errors: Record<string, JsonInput>;
+    errors: Record<string, DeepReadonly<JsonInput>>;
     loading: string[];
   }>({ scope, checked: [], failed: [], errors: {}, loading: [] });
   const current = useMemo(
@@ -103,7 +107,7 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
     const threadId = agent.threadId;
     const key = `${scope}:${requestKey}`;
     const existingRequest = inFlight.get(key);
-    let request: Promise<Record<string, JsonInput>>;
+    let request: Promise<Record<string, DeepReadonly<JsonInput>>>;
     if (existingRequest) request = existingRequest;
     else {
       request = get("/api/analytics", {
@@ -117,7 +121,7 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
         },
         timeoutMs: 60000,
       }).then((data) => {
-        const recovered: Record<string, JsonInput> = {};
+        const recovered: Record<string, DeepReadonly<JsonInput>> = {};
         for (const turn of data.turns || []) {
           if (
             turn.agentId === agentId &&

@@ -119,3 +119,9 @@ export function fixtureObject(value: unknown): FixtureObject {
 export function fixtureRequestId(value: unknown) {
   return (value as Pick<PostBody<"/api/answer">, "id">).id;
 }
+
+export function fixtureItem<T>(items: readonly T[], index: number): T {
+  const item = items[index];
+  assert.ok(item !== undefined, `Fixture item ${index} exists`);
+  return item;
+}

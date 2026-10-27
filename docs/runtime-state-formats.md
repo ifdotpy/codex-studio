@@ -1,6 +1,6 @@
 # Runtime state formats
 
-This inventory is for M-07.3 of [issue #37](https://github.com/ifdotpy/codex-studio/issues/37). It describes the current Python runtime formats that the whole-runtime Rust replacement must preserve while opening the configured state directory in place. Source references below are code-verified; fresh SQLite schema and reader behavior are also observed in disposable test state.
+This historical inventory is for M-07.3 of [issue #37](https://github.com/ifdotpy/codex-studio/issues/37). It records the Python runtime formats that the Rust replacement had to preserve while opening the configured state directory in place. Source references and disposable observations describe that migration baseline. Current server conversion ownership and startup guarantees are defined by the [runtime migration policy](runtime-migrations.md) and the [store guide](../workspaces/runtime/packages/runtime-store/README.md#dated-startup-migrations).
 
 For desktop Rust selection, table dispositions, and the rollback owner/build fence, see [Rust desktop backend and state compatibility](rust-backend-state-compatibility.md). That matrix is a source-only review and does not claim full Python/Rust state parity.
 
@@ -16,7 +16,7 @@ For desktop Rust selection, table dispositions, and the rollback owner/build fen
 
 ## Provider identity migration — 2026-10-26
 
-[`provider_identity.rs`](../workspaces/runtime/packages/runtime-store/src/provider_identity.rs)
+[`m2026_10_26_provider_identity.rs`](../workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_26_provider_identity.rs)
 owns the dated conversion from omitted/null provider fields to explicit
 [`ProviderKind`](../workspaces/runtime/packages/runtime-schema/src/provider_kind.rs).
 The old account and agent representation meant Codex. Historical account entries
@@ -52,7 +52,7 @@ not repair newly orphaned legacy rows.
 This migration supports states written before 2026-10-26. Remove it when the
 supported upgrade and backup-restore paths no longer admit that representation
 and marked title effects have completed conversion or reached a terminal state,
-following the [provider migration removal rule](../workspaces/providers/README.md#provider-extensibility).
+following the [migration removal rule](runtime-migrations.md#removing-a-migration).
 The date identifies the format transition; it is not an automatic expiry date.
 
 ## Owned artifacts

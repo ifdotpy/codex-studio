@@ -2682,7 +2682,7 @@ mod tests {
                         *text = nested.to_string();
                     }
                 }
-                _ => {}
+                Value::Null | Value::Bool(_) | Value::Number(_) => {}
             }
         }
 

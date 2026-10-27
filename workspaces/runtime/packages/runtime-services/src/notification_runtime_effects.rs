@@ -329,7 +329,12 @@ mod tests {
             .map(|effect| match effect {
                 NotificationPostCommit::Analytics { observation, .. }
                 | NotificationPostCommit::TokenRateUsage(observation) => observation,
-                _ => panic!("unexpected effect"),
+                NotificationPostCommit::AnalyticsStream { .. }
+                | NotificationPostCommit::AnalyticsCaptured(_)
+                | NotificationPostCommit::AnalyticsStreamCaptured(_)
+                | NotificationPostCommit::TokenRateStream(_)
+                | NotificationPostCommit::TokenRateAssociation(_)
+                | NotificationPostCommit::Recovered { .. } => panic!("unexpected effect"),
             })
             .collect::<Vec<_>>();
         assert_eq!(observations.len(), 2);

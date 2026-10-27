@@ -5,6 +5,7 @@
 //! Provider writes are guarded by the transfer driver's durable intent and exact
 //! SessionReceipt; an Unknown outcome is never resent.
 
+use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use crate::{
     account_session_runtime::{
         AccountSessionError, AccountSessionPort, ProviderRequest, ProviderResponse,
@@ -34,6 +35,7 @@ use std::{
     time::{Duration, Instant},
 };
 use studio_runtime_providers::Method;
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::RuntimeStore;
 use studio_runtime_store::path_identity::CanonicalPath;
 
@@ -337,7 +339,7 @@ mod reconnect_read_tests {
             expected["receipt"]["scope"]
         );
         assert_eq!(
-            receipt.ticket.as_ref().expect("original ticket").id,
+            receipt.ticket().expect("original ticket").id,
             studio_runtime_providers::RequestId::String("old-request".into())
         );
         assert_eq!(value, expected["result"]["value"]);
@@ -433,7 +435,7 @@ mod reconnect_read_tests {
         assert_eq!(receipt.operation, OPERATION);
         assert_eq!(receipt.scope.connection, "old-connection");
         assert_eq!(
-            receipt.ticket.as_ref().expect("ticket").method,
+            receipt.ticket().expect("ticket").method,
             Method::ThreadUnsubscribe
         );
         assert!(receipt.replayed);
@@ -581,12 +583,11 @@ async fn session_reply(
                     .as_str()
                     .unwrap_or_default()
                     .into(),
-                ticket: Some(ticket),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(value.clone())),
-                not_sent_reason: None,
-
                 replayed: true,
+                outcome: ReceiptOutcome::Written {
+                    ticket,
+                    response: ProviderResponse::Reply(value.clone()),
+                },
             },
             value,
         ));
@@ -625,25 +626,28 @@ async fn session_reply(
         })
         .map_err(|error| match error {
             AccountSessionError::Requires(name) => TransferError::Requires(name),
-            _ => TransferError::Refused(
+            AccountSessionError::Refused(_)
+            | AccountSessionError::InvalidResponse(_)
+            | AccountSessionError::Persistence
+            | AccountSessionError::Unknown => TransferError::Refused(
                 "The retained provider request failed; inspect its durable intent",
             ),
         })?;
-        let certainty = receipt.certainty;
-        let ticket = receipt.ticket.as_ref().map(|ticket| {
+        let certainty = receipt.certainty();
+        let ticket = receipt.ticket().map(|ticket| {
             json!({
                 "generation":ticket.generation,
                 "id":ticket.id,
                 "method":ticket.method.as_str(),
             })
         });
-        let result = receipt.result.as_ref().map(|value| match value {
+        let result = receipt.response().map(|value| match value {
             ProviderResponse::Reply(value) => json!({"kind":"reply","value":value}),
             ProviderResponse::Rejected(value) => json!({"kind":"rejected","value":value}),
         });
         let exact = json!({"operation":receipt.operation,"scope":receipt.scope,
             "certainty":certainty.as_str(),"ticket":ticket,
-            "notSentReason":receipt.not_sent_reason.map(|reason| format!("{reason:?}"))});
+            "notSentReason":receipt.not_sent_reason().map(|reason| format!("{reason:?}"))});
         driver::provider_read_receipt(
             context.store,
             driver::ProviderReadReceipt {
@@ -663,14 +667,13 @@ async fn session_reply(
         }
         if receipt.operation != call.operation
             || receipt.scope != scope
-            || receipt.certainty != RequestCertainty::Written
-            || receipt.ticket.is_none()
+            || receipt.certainty() != RequestCertainty::Written
         {
             return Err(TransferError::Refused(
                 "The retained read receipt is not Written on the expected connection",
             ));
         }
-        let response = match receipt.result.clone() {
+        let response = match receipt.response().cloned() {
             Some(ProviderResponse::Reply(value)) => value,
             Some(ProviderResponse::Rejected(_)) | None => {
                 return Err(TransferError::Refused(
@@ -681,7 +684,7 @@ async fn session_reply(
         return Ok((receipt, response));
     }
     let receipt = last_receipt.ok_or(TransferError::Refused("Provider read was not sent"))?;
-    if receipt.certainty == RequestCertainty::NotSent {
+    if receipt.certainty() == RequestCertainty::NotSent {
         return Err(TransferError::Refused(
             "Provider read was not sent after retry",
         ));
@@ -722,7 +725,7 @@ async fn source_transfer_call(
 
 async fn read_catalog(
     context: &ProviderReadContext<'_>,
-    provider: &str,
+    provider: ProviderKind,
     home: &str,
 ) -> Result<CatalogObservation, TransferError> {
     let mut cursor: Option<String> = None;
@@ -750,72 +753,24 @@ async fn read_catalog(
             },
         )
         .await?;
-        let data = response["data"]
-            .as_array()
-            .ok_or(TransferError::Refused("Invalid destination model catalog"))?;
-        rows.extend(data.iter().cloned());
-        match response.get("nextCursor") {
-            None | Some(Value::Null) => {
-                let models = rows
-                    .iter()
-                    .map(|row| {
-                        Ok(ModelCapabilities {
-                            model: row["model"]
-                                .as_str()
-                                .ok_or(TransferError::Refused("Invalid catalog model"))?
-                                .into(),
-                            resolved_model: row
-                                .get("resolvedModel")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                            is_default: row
-                                .get("isDefault")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false),
-                            hidden: row.get("hidden").and_then(Value::as_bool).unwrap_or(false),
-                            access_programs: row
-                                .pointer("/availableAccessPrograms/cyber")
-                                .and_then(Value::as_array)
-                                .map(|values| {
-                                    values
-                                        .iter()
-                                        .filter_map(Value::as_str)
-                                        .map(str::to_owned)
-                                        .collect()
-                                }),
-                            supported_efforts: row["supportedReasoningEfforts"]
-                                .as_array()
-                                .map(|efforts| {
-                                    efforts
-                                        .iter()
-                                        .filter_map(|v| {
-                                            v["reasoningEffort"].as_str().map(str::to_owned)
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default(),
-                            default_effort: row
-                                .get("defaultReasoningEffort")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                            priority: row["serviceTiers"]
-                                .as_array()
-                                .is_some_and(|tiers| tiers.iter().any(|v| v["id"] == "priority")),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, TransferError>>()?;
+        let page = studio_runtime_schema::model_catalog::ModelCatalog::parse(response)
+            .map_err(|_| TransferError::Refused("Invalid destination model catalog"))?;
+        rows.extend(page.data);
+        match page.next_cursor.flatten() {
+            None => {
+                let models = rows.iter().map(ModelCapabilities::from).collect();
                 return Ok(CatalogObservation {
                     identity: CatalogIdentity {
                         account_key: context.account.into(),
                         home: home.into(),
-                        provider: provider.into(),
+                        provider,
                         generation: 0,
                     },
                     expires_at: Instant::now() + Duration::from_secs(30),
                     models,
                 });
             }
-            Some(Value::String(value)) if !value.is_empty() && seen.insert(value.clone()) => {
+            Some(value) if !value.is_empty() && seen.insert(value.clone()) => {
                 cursor = Some(value.clone())
             }
             _ => return Err(TransferError::Refused("Invalid destination model cursor")),
@@ -828,14 +783,12 @@ async fn read_catalog(
 
 fn destination_settings(
     agent: &Value,
-    source_provider: &str,
-    target_provider: &str,
+    source_provider: ProviderKind,
+    target_provider: ProviderKind,
     catalog: &CatalogObservation,
 ) -> Result<Value, TransferError> {
     let changed = source_provider != target_provider;
-    let target_kind: studio_runtime_providers::ProviderKind = target_provider
-        .parse()
-        .map_err(|_| TransferError::Refused("Unknown destination provider"))?;
+    let target_kind = target_provider;
     let visible = catalog
         .models
         .iter()
@@ -896,36 +849,41 @@ fn destination_settings(
         "nativeEffort":native_effort,"fastMode":settings.fast_mode.unwrap_or(false),
         "daybreakEnabled":settings.daybreak_enabled.unwrap_or(false),"workerDefaults":worker_defaults});
     let daybreak = !changed && agent["daybreakEnabled"] == true;
-    let cyber_program = if target_provider == "claude" {
-        if daybreak {
-            return Err(TransferError::Requires(
-                "account-transfer/destination-settings",
-            ));
-        }
-        "standard".to_owned()
-    } else {
-        let grants = catalog
-            .models
-            .iter()
-            .find(|row| row.model == selected_model && !row.hidden)
-            .and_then(|row| row.access_programs.as_ref());
-        if daybreak {
-            grants
-                .and_then(|programs| {
-                    ["daybreakBlue", "daybreakRed"]
-                        .into_iter()
-                        .find(|p| programs.iter().any(|v| v == p))
-                })
-                .ok_or(TransferError::Requires(
+    let cyber_program = match target_provider {
+        ProviderKind::Claude => {
+            if daybreak {
+                return Err(TransferError::Requires(
                     "account-transfer/destination-settings",
-                ))?
-                .to_owned()
-        } else if grants.is_some_and(|programs| !programs.iter().any(|value| value == "standard")) {
-            return Err(TransferError::Requires(
-                "account-transfer/destination-settings",
-            ));
-        } else {
+                ));
+            }
             "standard".to_owned()
+        }
+        ProviderKind::Codex => {
+            let grants = catalog
+                .models
+                .iter()
+                .find(|row| row.model == selected_model && !row.hidden)
+                .and_then(|row| row.access_programs.as_ref());
+            if daybreak {
+                grants
+                    .and_then(|programs| {
+                        ["daybreakBlue", "daybreakRed"]
+                            .into_iter()
+                            .find(|p| programs.iter().any(|v| v == p))
+                    })
+                    .ok_or(TransferError::Requires(
+                        "account-transfer/destination-settings",
+                    ))?
+                    .to_owned()
+            } else if grants
+                .is_some_and(|programs| !programs.iter().any(|value| value == "standard"))
+            {
+                return Err(TransferError::Requires(
+                    "account-transfer/destination-settings",
+                ));
+            } else {
+                "standard".to_owned()
+            }
         }
     };
     result["cyberAccessProgram"] = json!(cyber_program);
@@ -1011,12 +969,10 @@ impl TransferExecutor for AccountTransferExecutor {
                 .as_str()
                 .ok_or(TransferError::Refused("Invalid transfer target"))?;
             let source_provider = studio_runtime_providers::ProviderKind::of_record(member)
-                .map_err(|_| TransferError::Refused("Invalid transfer provider"))?
-                .key();
+                .map_err(|_| TransferError::Refused("Invalid transfer provider"))?;
             let target_provider =
                 studio_runtime_providers::ProviderKind::of_field(operation.get("targetProvider"))
-                    .map_err(|_| TransferError::Refused("Invalid transfer provider"))?
-                    .key();
+                    .map_err(|_| TransferError::Refused("Invalid transfer provider"))?;
             if let Some(accounts) = &self.preparation.account_driver {
                 // The registry snapshot is already validated and performs no auth refresh.
                 // Transfer preparation must not depend on an earlier HTTP model read.
@@ -1060,7 +1016,12 @@ impl TransferExecutor for AccountTransferExecutor {
                     self.session.ensure_session(source_account).await.map_err(
                         |error| match error {
                             AccountSessionError::Requires(name) => TransferError::Requires(name),
-                            _ => TransferError::Refused("The source account session did not start"),
+                            AccountSessionError::Refused(_)
+                            | AccountSessionError::InvalidResponse(_)
+                            | AccountSessionError::Persistence
+                            | AccountSessionError::Unknown => {
+                                TransferError::Refused("The source account session did not start")
+                            }
                         },
                     )?;
                 }
@@ -1173,8 +1134,8 @@ impl TransferExecutor for AccountTransferExecutor {
                     ));
                 }
                 let portable_required = source_provider != target_provider
-                    || source_provider == "claude"
-                    || target_provider == "claude";
+                    || source_provider == ProviderKind::Claude
+                    || target_provider == ProviderKind::Claude;
                 if !portable_required {
                     let native_path = thread.get("path").and_then(Value::as_str).ok_or(
                         TransferError::Refused("Codex returned no saved context path"),
@@ -1444,23 +1405,35 @@ impl TransferTransport for AccountTransferExecutor {
             let session_receipt = self.session.provider_request(request).await;
             match session_receipt {
                 Ok(receipt) => {
-                    let result = match receipt.result {
-                        Some(ProviderResponse::Reply(value)) => Some(value),
-                        Some(ProviderResponse::Rejected(value)) => Some(json!({"rejected":value})),
-                        None => None,
+                    let certainty = receipt.certainty();
+                    let ticket_value = receipt.ticket().map(|ticket| json!({
+                        "generation": ticket.generation, "id": ticket.id, "method": ticket.method.as_str(),
+                    }));
+                    let reason = receipt
+                        .not_sent_reason()
+                        .map(|reason| format!("{reason:?}"));
+                    let result = match receipt.outcome {
+                        ReceiptOutcome::Written {
+                            response: ProviderResponse::Reply(value),
+                            ..
+                        } => Some(value),
+                        ReceiptOutcome::Written {
+                            response: ProviderResponse::Rejected(value),
+                            ..
+                        } => Some(json!({"rejected":value})),
+                        ReceiptOutcome::WorkerNotSent { .. }
+                        | ReceiptOutcome::Unknown { .. }
+                        | ReceiptOutcome::NoLiveAccountWorker
+                        | ReceiptOutcome::ExpectedScopeMismatch
+                        | ReceiptOutcome::DeadlineExpired
+                        | ReceiptOutcome::NotHandedOff => None,
                     };
-                    let exact = json!({"operation":receipt.operation,"scope":receipt.scope,"certainty":receipt.certainty.as_str(),
-                    "ticket":receipt.ticket.map(|ticket| json!({
-                        "generation": ticket.generation,
-                        "id": ticket.id,
-                        "method": ticket.method.as_str(),
-                    })),
-                    "notSentReason":receipt.not_sent_reason.map(|reason| format!("{reason:?}")),
-                    "result":result});
+                    let exact = json!({"operation":receipt.operation,"scope":receipt.scope,"certainty":certainty.as_str(),
+                        "ticket":ticket_value,"notSentReason":reason,"result":result});
                     TransferDispatch {
                         receipt: exact,
                         result,
-                        certainty: receipt.certainty,
+                        certainty,
                     }
                 }
                 Err(error) => {
@@ -1565,7 +1538,7 @@ mod destination_settings_tests {
             identity: CatalogIdentity {
                 account_key: "target".into(),
                 home: "/tmp/target".into(),
-                provider: "codex".into(),
+                provider: ProviderKind::Codex,
                 generation: 1,
             },
             expires_at: Instant::now() + Duration::from_secs(30),
@@ -1582,8 +1555,8 @@ mod destination_settings_tests {
         };
         let result = destination_settings(
             &json!({"model":"source-model"}),
-            "claude",
-            "codex",
+            ProviderKind::Claude,
+            ProviderKind::Codex,
             &catalog,
         );
         assert!(matches!(
@@ -1756,6 +1729,7 @@ mod destination_settings_tests {
 #[allow(clippy::unwrap_used)]
 mod retained_executor_tests {
     use super::*;
+    use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use crate::account_session_runtime::{
         AccountSessionError, ConnectionScope, ProviderRequest, RequestCertainty, SessionReceipt,
     };
@@ -1809,15 +1783,15 @@ mod retained_executor_tests {
             SessionReceipt {
                 scope: Self::scope(account),
                 operation,
-                ticket: Some(RequestTicket {
-                    generation: 7,
-                    id: RequestId::Number(1),
-                    method,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(value)),
-                not_sent_reason: None,
                 replayed: false,
+                outcome: ReceiptOutcome::Written {
+                    ticket: RequestTicket {
+                        generation: 7,
+                        id: RequestId::Number(1),
+                        method,
+                    },
+                    response: ProviderResponse::Reply(value),
+                },
             }
         }
     }
@@ -1885,12 +1859,152 @@ mod retained_executor_tests {
                             request.method,
                             json!({"thread":{"id":"target-thread"}}),
                         );
-                        receipt.certainty = RequestCertainty::Unknown;
-                        receipt.ticket = None;
-                        receipt.result = None;
+                        receipt.outcome = ReceiptOutcome::Unknown {
+                            ticket: receipt.ticket().expect("written fixture ticket").clone(),
+                        };
                         return Ok(receipt);
                     }
-                    _ => return Err(AccountSessionError::Refused("unexpected provider request")),
+                    Method::Initialize
+                    | Method::Initialized
+                    | Method::Ack
+                    | Method::AccountLoginCancel
+                    | Method::AccountLoginStart
+                    | Method::AccountRateLimitResetCreditConsume
+                    | Method::ThreadLoadedList
+                    | Method::ConfigRead
+                    | Method::SkillsExtraRootsSet
+                    | Method::AccountRead
+                    | Method::AccountRateLimitsRead
+                    | Method::ThreadStart
+                    | Method::ThreadRealtimeStart
+                    | Method::ThreadRealtimeStop
+                    | Method::ThreadRealtimeAppendSpeech
+                    | Method::ThreadRealtimeItemStarted
+                    | Method::ThreadRealtimeTranscriptDelta
+                    | Method::ThreadRealtimeTranscriptDone
+                    | Method::ThreadRealtimeSdp
+                    | Method::ThreadRealtimeError
+                    | Method::ThreadRealtimeClosed
+                    | Method::ThreadResume
+                    | Method::TurnStart
+                    | Method::TurnSteer
+                    | Method::TurnInterrupt
+                    | Method::ThreadList
+                    | Method::ThreadArchive
+                    | Method::ThreadNameSet
+                    | Method::ThreadMetadataUpdate
+                    | Method::ThreadSettingsUpdate
+                    | Method::ThreadCompactStart
+                    | Method::ThreadRollback
+                    | Method::ThreadItemsList
+                    | Method::ThreadGoalSet
+                    | Method::ThreadGoalUpdated
+                    | Method::ThreadUnarchive
+                    | Method::ThreadUnsubscribe
+                    | Method::ProcessSpawn
+                    | Method::ProcessWriteStdin
+                    | Method::ProcessKill
+                    | Method::ProcessResizePty
+                    | Method::CommandExec
+                    | Method::CommandExecWrite
+                    | Method::CommandExecResize
+                    | Method::CommandExecTerminate
+                    | Method::ThreadBackgroundTerminalsList
+                    | Method::ThreadBackgroundTerminalsTerminate
+                    | Method::ThreadBackgroundTerminalsClean
+                    | Method::ThreadCommandExecutionBackground
+                    | Method::ThreadQueueList
+                    | Method::ClaudeState
+                    | Method::ClaudeRepairReport
+                    | Method::ClaudeFileBackups
+                    | Method::ClaudeSettings
+                    | Method::ClaudeActivity
+                    | Method::ClaudeStopTask
+                    | Method::ClaudeShellPolicy
+                    | Method::ClaudeDiagnostics
+                    | Method::ClaudeMoveVersions
+                    | Method::McpServerReconnect
+                    | Method::McpServerStatusList
+                    | Method::SkillsList
+                    | Method::OperationStatus
+                    | Method::ReviewStart
+                    | Method::BrowserAnswer
+                    | Method::BrowserCallback
+                    | Method::BrowserClose
+                    | Method::BrowserWait
+                    | Method::ClaudeCommands
+                    | Method::ClaudeMoveExport
+                    | Method::ClaudeMoveIdentity
+                    | Method::ClaudeMovePreflight
+                    | Method::ClaudeMoveProof
+                    | Method::Detach
+                    | Method::EventRead
+                    | Method::Exec
+                    | Method::Generate
+                    | Method::Health
+                    | Method::Info
+                    | Method::LayrHealth
+                    | Method::Next
+                    | Method::Open
+                    | Method::ProjectEnsure
+                    | Method::ProjectExec
+                    | Method::ProjectImport
+                    | Method::ProviderList
+                    | Method::Replay
+                    | Method::ResponseStatus
+                    | Method::RetireCommand
+                    | Method::SecretsList
+                    | Method::SecretsRemove
+                    | Method::SecretsSet
+                    | Method::ShareConfigure
+                    | Method::ShareName
+                    | Method::ShareStatus
+                    | Method::Sign
+                    | Method::Status
+                    | Method::SyncMacApply
+                    | Method::SyncMacHandoff
+                    | Method::SyncMacHashes
+                    | Method::SyncMacHead
+                    | Method::SyncMacRead
+                    | Method::SyncMacWorktree
+                    | Method::VaultConfigure
+                    | Method::VaultPush
+                    | Method::VaultStatus
+                    | Method::UploadBegin
+                    | Method::UploadChunk
+                    | Method::UploadCommit
+                    | Method::Verify
+                    | Method::Write
+                    | Method::CurrentTimeRead
+                    | Method::ItemToolCall
+                    | Method::ItemCommandExecutionRequestApproval
+                    | Method::ItemFileChangeRequestApproval
+                    | Method::ItemPermissionsRequestApproval
+                    | Method::McpServerElicitationRequest
+                    | Method::ItemToolRequestUserInput
+                    | Method::ItemStarted
+                    | Method::ItemCompleted
+                    | Method::ItemAgentMessageDelta
+                    | Method::ItemReasoningTextDelta
+                    | Method::ItemCommandExecutionOutputDelta
+                    | Method::CommandExecOutputDelta
+                    | Method::TurnStarted
+                    | Method::TurnCompleted
+                    | Method::TurnPlanUpdated
+                    | Method::TurnDiffUpdated
+                    | Method::ThreadClosed
+                    | Method::ThreadStatusChanged
+                    | Method::ThreadTokenUsageUpdated
+                    | Method::ThreadShellPolicyUpdated
+                    | Method::ThreadIdleCompactionUpdated
+                    | Method::AccountLoginCompleted
+                    | Method::AccountUpdated
+                    | Method::AccountRateLimitsUpdated
+                    | Method::ModelSafetyBufferingUpdated
+                    | Method::ProviderGenerationStarted
+                    | Method::ProtocolError => {
+                        return Err(AccountSessionError::Refused("unexpected provider request"));
+                    }
                 };
                 Ok(self.receipt(&request.account, request.operation, request.method, value))
             })
@@ -1960,7 +2074,146 @@ mod retained_executor_tests {
                     }
                     Method::ThreadBackgroundTerminalsList => json!({"data":[],"nextCursor":null}),
                     Method::ThreadUnsubscribe => json!({}),
-                    _ => {
+                    Method::Initialize
+                    | Method::Initialized
+                    | Method::Ack
+                    | Method::AccountLoginCancel
+                    | Method::AccountLoginStart
+                    | Method::AccountRateLimitResetCreditConsume
+                    | Method::ThreadLoadedList
+                    | Method::ConfigRead
+                    | Method::SkillsExtraRootsSet
+                    | Method::ModelList
+                    | Method::AccountRead
+                    | Method::AccountRateLimitsRead
+                    | Method::ThreadStart
+                    | Method::ThreadRealtimeStart
+                    | Method::ThreadRealtimeStop
+                    | Method::ThreadRealtimeAppendSpeech
+                    | Method::ThreadRealtimeItemStarted
+                    | Method::ThreadRealtimeTranscriptDelta
+                    | Method::ThreadRealtimeTranscriptDone
+                    | Method::ThreadRealtimeSdp
+                    | Method::ThreadRealtimeError
+                    | Method::ThreadRealtimeClosed
+                    | Method::ThreadResume
+                    | Method::ThreadRead
+                    | Method::ThreadTurnsList
+                    | Method::TurnStart
+                    | Method::TurnSteer
+                    | Method::TurnInterrupt
+                    | Method::ThreadList
+                    | Method::ThreadArchive
+                    | Method::ThreadFork
+                    | Method::ThreadNameSet
+                    | Method::ThreadMetadataUpdate
+                    | Method::ThreadSettingsUpdate
+                    | Method::ThreadCompactStart
+                    | Method::ThreadRollback
+                    | Method::ThreadItemsList
+                    | Method::ThreadGoalSet
+                    | Method::ThreadGoalUpdated
+                    | Method::ThreadUnarchive
+                    | Method::ProcessSpawn
+                    | Method::ProcessWriteStdin
+                    | Method::ProcessKill
+                    | Method::ProcessResizePty
+                    | Method::CommandExec
+                    | Method::CommandExecWrite
+                    | Method::CommandExecResize
+                    | Method::CommandExecTerminate
+                    | Method::ThreadBackgroundTerminalsTerminate
+                    | Method::ThreadBackgroundTerminalsClean
+                    | Method::ThreadCommandExecutionBackground
+                    | Method::ClaudeState
+                    | Method::ClaudeRepairReport
+                    | Method::ClaudeFileBackups
+                    | Method::ClaudeSettings
+                    | Method::ClaudeActivity
+                    | Method::ClaudeStopTask
+                    | Method::ClaudeShellPolicy
+                    | Method::ClaudeDiagnostics
+                    | Method::ClaudeMoveVersions
+                    | Method::McpServerReconnect
+                    | Method::McpServerStatusList
+                    | Method::SkillsList
+                    | Method::OperationStatus
+                    | Method::ReviewStart
+                    | Method::BrowserAnswer
+                    | Method::BrowserCallback
+                    | Method::BrowserClose
+                    | Method::BrowserWait
+                    | Method::ClaudeCommands
+                    | Method::ClaudeMoveExport
+                    | Method::ClaudeMoveIdentity
+                    | Method::ClaudeMovePreflight
+                    | Method::ClaudeMoveProof
+                    | Method::Detach
+                    | Method::EventRead
+                    | Method::Exec
+                    | Method::Generate
+                    | Method::Health
+                    | Method::Info
+                    | Method::LayrHealth
+                    | Method::Next
+                    | Method::Open
+                    | Method::ProjectEnsure
+                    | Method::ProjectExec
+                    | Method::ProjectImport
+                    | Method::ProviderList
+                    | Method::Replay
+                    | Method::ResponseStatus
+                    | Method::RetireCommand
+                    | Method::SecretsList
+                    | Method::SecretsRemove
+                    | Method::SecretsSet
+                    | Method::ShareConfigure
+                    | Method::ShareName
+                    | Method::ShareStatus
+                    | Method::Sign
+                    | Method::Status
+                    | Method::SyncMacApply
+                    | Method::SyncMacHandoff
+                    | Method::SyncMacHashes
+                    | Method::SyncMacHead
+                    | Method::SyncMacRead
+                    | Method::SyncMacWorktree
+                    | Method::VaultConfigure
+                    | Method::VaultPush
+                    | Method::VaultStatus
+                    | Method::UploadBegin
+                    | Method::UploadChunk
+                    | Method::UploadCommit
+                    | Method::Verify
+                    | Method::Write
+                    | Method::CurrentTimeRead
+                    | Method::ItemToolCall
+                    | Method::ItemCommandExecutionRequestApproval
+                    | Method::ItemFileChangeRequestApproval
+                    | Method::ItemPermissionsRequestApproval
+                    | Method::McpServerElicitationRequest
+                    | Method::ItemToolRequestUserInput
+                    | Method::ItemStarted
+                    | Method::ItemCompleted
+                    | Method::ItemAgentMessageDelta
+                    | Method::ItemReasoningTextDelta
+                    | Method::ItemCommandExecutionOutputDelta
+                    | Method::CommandExecOutputDelta
+                    | Method::TurnStarted
+                    | Method::TurnCompleted
+                    | Method::TurnPlanUpdated
+                    | Method::TurnDiffUpdated
+                    | Method::ThreadClosed
+                    | Method::ThreadStatusChanged
+                    | Method::ThreadTokenUsageUpdated
+                    | Method::ThreadShellPolicyUpdated
+                    | Method::ThreadIdleCompactionUpdated
+                    | Method::AccountLoginCompleted
+                    | Method::AccountUpdated
+                    | Method::AccountRateLimitsUpdated
+                    | Method::ModelSafetyBufferingUpdated
+                    | Method::ProviderGenerationStarted
+                    | Method::ProtocolError => {
                         return Err(AccountSessionError::Refused(
                             "unexpected source transfer request",
                         ));
@@ -2190,7 +2443,7 @@ mod retained_executor_tests {
                         .join("target-home")
                         .to_string_lossy()
                         .into_owned(),
-                    "codex".into()
+                    ProviderKind::Codex
                 ))
             );
         }
@@ -2389,7 +2642,7 @@ mod retained_executor_tests {
             catalog.seed_test_admission_catalog(
                 "target",
                 target_home.to_str().expect("target home"),
-                "codex",
+                ProviderKind::Codex,
                 json!({"data":[{"model":"gpt-6-astra","isDefault":true,
                 "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
             );
@@ -2534,7 +2787,7 @@ mod retained_executor_tests {
         }
         if cold_catalog {
             assert!(matches!(
-                catalog.read_for_admission("target", &resources.account_home, "codex"),
+                catalog.read_for_admission("target", &resources.account_home, ProviderKind::Codex),
                 crate::model_catalog::AdmissionCatalogRead::Pending
             ));
         }
@@ -2560,7 +2813,8 @@ mod retained_executor_tests {
                 2,
                 "the transfer read and the admission owner's refresh are distinct"
             );
-            match catalog.read_for_admission("target", &resources.account_home, "codex") {
+            match catalog.read_for_admission("target", &resources.account_home, ProviderKind::Codex)
+            {
                 crate::model_catalog::AdmissionCatalogRead::Fresh {
                     account_key,
                     home,
@@ -2570,10 +2824,13 @@ mod retained_executor_tests {
                 } => {
                     assert_eq!(account_key, "target");
                     assert_eq!(home, target_home.to_string_lossy());
-                    assert_eq!(provider, "codex");
+                    assert_eq!(provider, ProviderKind::Codex);
                     assert!(generation > 0);
                 }
-                other => panic!("the exact destination admission cache must be fresh: {other:?}"),
+                other @ crate::model_catalog::AdmissionCatalogRead::Pending
+                | other @ crate::model_catalog::AdmissionCatalogRead::Unavailable => {
+                    panic!("the exact destination admission cache must be fresh: {other:?}")
+                }
             }
         }
         let imported = target_home.join("sessions/.studio-imports/source-thread.jsonl");
@@ -2630,7 +2887,7 @@ mod retained_executor_tests {
             recovered_catalog.seed_test_admission_catalog(
                 "target",
                 target_home.to_str().expect("target home"),
-                "codex",
+                ProviderKind::Codex,
                 json!({"data":[{"model":"gpt-6-astra","isDefault":true,
                 "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
             );

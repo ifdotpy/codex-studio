@@ -343,7 +343,18 @@ fn monitor_api_error(error: studio_runtime_services::monitor_policy::MonitorErro
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires cross-server/remote-events",
         ),
-        _ => ApiError::internal(),
+        MonitorError::InvalidResultReceipt(_)
+        | MonitorError::InvalidDeliveryIdentity(_)
+        | MonitorError::InvalidOutputReceipt(_)
+        | MonitorError::TaskFailed
+        | MonitorError::InputOutcomeUnknown
+        | MonitorError::ProviderRequest { .. }
+        | MonitorError::ConfigurationRejected { .. }
+        | MonitorError::ConfigurationReceipt { .. }
+        | MonitorError::Store(_)
+        | MonitorError::Event(_)
+        | MonitorError::Rules(_)
+        | MonitorError::Io(_) => ApiError::internal(),
     }
 }
 
@@ -361,7 +372,23 @@ fn store_api_error(error: StoreError) -> ApiError {
         | StoreError::InvalidSyncObjectField { scope, id, .. } => {
             ApiError::invalid_stored(&scope, &id)
         }
-        _ => ApiError::internal(),
+        StoreError::StateDirectory(_)
+        | StoreError::AlreadyOwned
+        | StoreError::MissingDatabase(_)
+        | StoreError::Migration { .. }
+        | StoreError::UnsafeStateDirectory
+        | StoreError::SchemaMismatch(_)
+        | StoreError::SchemaObjectMismatch { .. }
+        | StoreError::Sqlite(_)
+        | StoreError::CommitOutcomeUnknown(_)
+        | StoreError::Json(_)
+        | StoreError::SchemaValidation(_)
+        | StoreError::RecordContract(_)
+        | StoreError::WriterPoisoned
+        | StoreError::WriterActorInitialization(_)
+        | StoreError::WriterActorControl(_)
+        | StoreError::CommitActorOutcomeUnknown(_)
+        | StoreError::ReadTaskFailed => ApiError::internal(),
     }
 }
 

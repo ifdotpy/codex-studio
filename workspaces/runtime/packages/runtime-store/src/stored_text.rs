@@ -195,7 +195,9 @@ impl FromSql for StoredText {
             ValueRef::Text(_) | ValueRef::Blob(_) => decode(value)
                 .map(Self)
                 .map_err(|error| FromSqlError::Other(Box::new(error))),
-            _ => Err(FromSqlError::InvalidType),
+            ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) => {
+                Err(FromSqlError::InvalidType)
+            }
         }
     }
 }

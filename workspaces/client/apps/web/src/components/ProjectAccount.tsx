@@ -142,7 +142,7 @@ export default function ProjectAccount({
                       !account.disconnected || keys.includes(account.id),
                   ),
                   ...archivedMemberships,
-                ].map((account) => account.provider || "codex"),
+                ].map((account) => account.provider),
               ),
             ]}
             accounts={[

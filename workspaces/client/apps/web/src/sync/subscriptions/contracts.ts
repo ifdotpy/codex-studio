@@ -1,4 +1,19 @@
 import type { components } from "../../generated/api.ts";
+import type { DeepReadonly } from "rxdb";
+import type { SUBSCRIPTION_ENTITY_SCOPES } from "../../generated/subscriptionEntities.ts";
+import type {
+  KnownApiFields,
+  TranscriptProjectionPayload,
+} from "../../apiTypes.ts";
+
+export type ReviewTask = DeepReadonly<
+  KnownApiFields<components["schemas"]["WorkItem"]>
+>;
+export type WorkList = Omit<
+  DeepReadonly<components["schemas"]["WorkList"]>,
+  "items" | "tasks"
+> &
+  Record<"items" | "tasks", ReviewTask[]>;
 
 export type ResourceVersion = {
   viewSnapshot?: components["schemas"]["SubscriptionViewSnapshot"] | undefined;
@@ -33,9 +48,23 @@ export type ResourceProgress = ResourceProgressEvent extends infer Progress
   : never;
 
 export type ResourceRef = components["schemas"]["ResourceRef"];
-/** The OpenAPI document owns this mapping; contracts:generate emits its types. */
-export type ResourceData<R extends ResourceRef> =
-  components["schemas"]["SubscriptionDataMap"][R["kind"]];
+/** Generated wire contracts plus the existing local cache projections. */
+type SubscriptionDataMap = Omit<
+  components["schemas"]["SubscriptionDataMap"],
+  "transcript" | "work"
+> & {
+  // Local projections may omit server metadata; they do not promise a full HTTP page.
+  transcript: NonNullable<TranscriptProjectionPayload>;
+  // The work selector reconstructs review tasks from generated metadata/history rows.
+  work: WorkList;
+};
+export type ResourceData<R extends ResourceRef> = {
+  [
+    K in keyof SubscriptionDataMap
+  ]: K extends keyof typeof SUBSCRIPTION_ENTITY_SCOPES
+    ? DeepReadonly<SubscriptionDataMap[K]>
+    : SubscriptionDataMap[K];
+}[R["kind"]];
 
 export type SubscriptionStatus = "loading" | "live" | "stale" | "error";
 export type SubscriptionState<T> = {

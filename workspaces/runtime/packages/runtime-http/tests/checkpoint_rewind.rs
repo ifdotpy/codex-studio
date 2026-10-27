@@ -1,4 +1,5 @@
 //! Real Git trees through the HTTP preview and restore caller.
+
 #![allow(clippy::unwrap_used, clippy::disallowed_methods)]
 use axum::{
     body::{Body, to_bytes},
@@ -15,6 +16,7 @@ use std::{
     },
 };
 use studio_runtime_http::{HttpState, router};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::account_session_runtime::*;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore};
 use tower::ServiceExt;
@@ -48,12 +50,19 @@ impl AccountSessionPort for Provider {
                 self.release.notified().await;
             }
             Ok(SessionReceipt {
+                outcome: ReceiptOutcome::Written {
+                    ticket: studio_runtime_providers::RequestTicket {
+                        generation: request
+                            .expected_scope
+                            .as_ref()
+                            .map_or(1, |scope| scope.generation),
+                        id: studio_runtime_providers::RequestId::String(request.operation.clone()),
+                        method: request.method,
+                    },
+                    response: ProviderResponse::Reply(json!({"thread":{"id":"restored"}})),
+                },
                 scope: request.expected_scope.unwrap(),
                 operation: request.operation,
-                ticket: None,
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(json!({"thread":{"id":"restored"}}))),
-                not_sent_reason: None,
                 replayed: false,
             })
         })

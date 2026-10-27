@@ -375,6 +375,23 @@ async fn held_start_survives_restart_and_starts_once_after_login() {
 #[cfg(unix)]
 #[tokio::test]
 async fn retired_claude_auth_probe_wait_becomes_a_held_start_once() {
+    async fn restart(mut state: State) -> State {
+        let root = state.root.clone();
+        let agent = state.agent.clone();
+        let epoch = state.epoch;
+        // Keep the disposable directory while releasing its only store owner.
+        state.retained = true;
+        drop(state);
+        let store = RuntimeStore::open(Some(&root)).await.unwrap();
+        State {
+            bridge: test_bridge(Arc::new(store)).await,
+            agent,
+            epoch,
+            root,
+            retained: false,
+        }
+    }
+
     let state = State::new().await;
     let agent = agents(&state, ProviderKind::Claude, 0).await.remove(0);
     let account = Account::new(&state, ProviderKind::Claude);
@@ -405,6 +422,7 @@ async fn retired_claude_auth_probe_wait_becomes_a_held_start_once() {
         })
         .await
         .unwrap();
+    let state = restart(state).await;
     scheduler::recover_on_startup(&state.bridge.store)
         .await
         .unwrap();
@@ -423,6 +441,7 @@ async fn retired_claude_auth_probe_wait_becomes_a_held_start_once() {
         .await
         .unwrap();
     assert_eq!(remaining, 0, "the retired wait is read once");
+    let state = restart(state).await;
     scheduler::recover_on_startup(&state.bridge.store)
         .await
         .unwrap();

@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
+use studio_runtime_schema::studio_errors::MonitorRecoveryReason;
 use tokio::sync::Notify;
 
 use serde::Deserialize;
@@ -309,7 +310,7 @@ impl RetainedMonitorPort {
                 ) {
                     studio_runtime_services::monitor_policy::DEADLINE_PASSED
                 } else {
-                    "retained_exit_unavailable"
+                    MonitorRecoveryReason::RetainedExitUnavailable.code()
                 };
                 studio_runtime_services::diagnostics::log_stderr(format_args!(
                     "monitor {id} retained exit wait ended: {error}"
@@ -359,7 +360,7 @@ impl RetainedMonitorPort {
                 return match self.command_result(id, operation, response).await {
                     Ok(()) => Ok(Some(ReattachOutcome::TerminalQueued)),
                     Err(MonitorError::Refused(_)) => Ok(Some(ReattachOutcome::Gone(
-                        "invalid_terminal_receipt".into(),
+                        MonitorRecoveryReason::InvalidTerminalReceipt.code().into(),
                     ))),
                     Err(error) => Err(error),
                 };
@@ -732,10 +733,10 @@ impl RetainedMonitorPort {
             })?;
         // AccountSessionRuntime owns receipt identity/scope validation, including
         // committed replays from the original connection after a restart.
-        let config = match config_receipt.result {
-            Some(ProviderResponse::Reply(value))
-                if config_receipt.certainty == RequestCertainty::Written =>
-            {
+        let config_certainty = config_receipt.certainty();
+        let config_reason = config_receipt.not_sent_reason();
+        let config = match config_receipt.into_response() {
+            Some(ProviderResponse::Reply(value)) => {
                 let response: ConfigurationResponse =
                     serde_json::from_value(value).map_err(|_| {
                         MonitorError::Refused("Monitor configuration response is invalid")
@@ -754,8 +755,8 @@ impl RetainedMonitorPort {
             }
             _ => {
                 return Err(MonitorError::ConfigurationReceipt {
-                    certainty: config_receipt.certainty,
-                    reason: config_receipt.not_sent_reason,
+                    certainty: config_certainty,
+                    reason: config_reason,
                 });
             }
         };
@@ -788,11 +789,11 @@ impl RetainedMonitorPort {
         if receipt.operation != operation {
             return Submission::Unknown;
         }
-        match receipt.certainty {
+        match receipt.certainty() {
             RequestCertainty::Written => Submission::Written,
             RequestCertainty::Unknown => Submission::Unknown,
             RequestCertainty::NotSent => Submission::NotSent {
-                reason: match receipt.not_sent_reason {
+                reason: match receipt.not_sent_reason() {
                     Some(BrokerNotSentReason::NoLiveAccountWorker)
                     | Some(BrokerNotSentReason::ExpectedScopeMismatch) => {
                         NotSentReason::SessionMissing
@@ -963,12 +964,8 @@ impl RetainedMonitorPort {
         )
         .await
         .map_err(|error| format!("Monitor configuration was not read: {error}"))?;
-        let config = match config.result {
-            Some(ProviderResponse::Reply(value))
-                if config.certainty == RequestCertainty::Written =>
-            {
-                value["config"].clone()
-            }
+        let config = match config.into_response() {
+            Some(ProviderResponse::Reply(value)) => value["config"].clone(),
             Some(ProviderResponse::Rejected(value)) => return Err(value.to_string()),
             _ => return Err("Monitor configuration read is unknown".into()),
         };
@@ -1063,8 +1060,8 @@ impl RetainedMonitorPort {
             )
             .await
         {
-            Ok(receipt) if receipt.certainty == RequestCertainty::Written => {
-                let Some(ProviderResponse::Reply(result)) = receipt.result else {
+            Ok(receipt) if receipt.certainty() == RequestCertainty::Written => {
+                let Some(ProviderResponse::Reply(result)) = receipt.into_response() else {
                     return CheckReconciliation::Unknown;
                 };
                 if result["accepted"] == true {
@@ -1274,11 +1271,11 @@ impl MonitorNative for RetainedMonitorPort {
             if receipt.operation != *identity {
                 return Submission::Unknown;
             }
-            if receipt.certainty != RequestCertainty::Written {
+            if receipt.certainty() != RequestCertainty::Written {
                 return Self::submission(receipt, identity);
             }
             if method == Method::CommandExecTerminate {
-                return self.terminate_submission(&process_id, receipt.result);
+                return self.terminate_submission(&process_id, receipt.into_response());
             }
             if method == Method::CommandExec {
                 // The barrier only orders the command's output before its exit.
@@ -1302,7 +1299,7 @@ impl MonitorNative for RetainedMonitorPort {
                 if id.is_empty() {
                     return Submission::Unknown;
                 }
-                let Some(response) = receipt.result else {
+                let Some(response) = receipt.into_response() else {
                     return Submission::Unknown;
                 };
                 // The process ended with this result. Hold it until the store
@@ -1315,7 +1312,7 @@ impl MonitorNative for RetainedMonitorPort {
                     return Submission::Unknown;
                 }
             } else if let Some(ticket) = input_ticket {
-                let reply = match receipt.result {
+                let reply = match receipt.into_response() {
                     Some(ProviderResponse::Reply(value)) => InputReply::Acknowledged(value),
                     Some(ProviderResponse::Rejected(value)) => {
                         InputReply::Rejected(value.to_string())
@@ -1449,7 +1446,9 @@ impl MonitorPort for RetainedMonitorPort {
     ) -> futures_util::future::BoxFuture<'a, Result<ReattachOutcome, MonitorError>> {
         Box::pin(async move {
             let Some(operation) = snapshot.operation() else {
-                return Ok(ReattachOutcome::Gone("no_operation".into()));
+                return Ok(ReattachOutcome::Gone(
+                    MonitorRecoveryReason::NoOperation.code().into(),
+                ));
             };
             let operation_id = format!("monitor:{}", snapshot.id());
             let scope = match self.session.current_scope(&operation.account_key) {
@@ -1462,7 +1461,7 @@ impl MonitorPort for RetainedMonitorPort {
                         &self.store,snapshot.id(),operation,
                     ).await.map_err(|error|match error {
                         studio_runtime_services::account_worker::WorkerError::Store(error)=>MonitorError::Store(error),
-                        _=>MonitorError::Refused("Retained monitor ownership changed"),
+                        studio_runtime_services::account_worker::WorkerError::Recovery(_) | studio_runtime_services::account_worker::WorkerError::Scheduler(_) | studio_runtime_services::account_worker::WorkerError::Session(_) | studio_runtime_services::account_worker::WorkerError::Notification(_) | studio_runtime_services::account_worker::WorkerError::PreparationRefused(_) | studio_runtime_services::account_worker::WorkerError::StaleVmActor | studio_runtime_services::account_worker::WorkerError::PreparationPending(_) | studio_runtime_services::account_worker::WorkerError::PreparationAwaitsAgent(_) | studio_runtime_services::account_worker::WorkerError::CleanupUnconfirmed(_) | studio_runtime_services::account_worker::WorkerError::AlreadyRunning | studio_runtime_services::account_worker::WorkerError::Closed | studio_runtime_services::account_worker::WorkerError::ShutdownTimeout | studio_runtime_services::account_worker::WorkerError::TaskFailed | studio_runtime_services::account_worker::WorkerError::Capacity | studio_runtime_services::account_worker::WorkerError::CallbackUnknown=>MonitorError::Refused("Retained monitor ownership changed"),
                     })?.is_none() {
                         return Ok(ReattachOutcome::Pending);
                     }
@@ -1492,27 +1491,31 @@ impl MonitorPort for RetainedMonitorPort {
                 Ok(receipt) => receipt,
                 Err(_) => return Ok(ReattachOutcome::Pending),
             };
-            if receipt.certainty != RequestCertainty::Written {
+            if receipt.certainty() != RequestCertainty::Written {
                 return Ok(ReattachOutcome::Pending);
             }
-            let observation: OperationObservation = match receipt.result {
+            let observation: OperationObservation = match receipt.into_response() {
                 Some(ProviderResponse::Reply(value)) => match serde_json::from_value(value) {
                     Ok(observation) => observation,
                     Err(_) => {
-                        return Ok(ReattachOutcome::Gone("invalid_provider_observation".into()));
+                        return Ok(ReattachOutcome::Gone(
+                            MonitorRecoveryReason::InvalidProviderObservation
+                                .code()
+                                .into(),
+                        ));
                     }
                 },
                 Some(ProviderResponse::Rejected(_)) => {
-                    return Ok(ReattachOutcome::Gone("provider_rejected".into()));
+                    return Ok(ReattachOutcome::Gone(
+                        MonitorRecoveryReason::ProviderRejected.code().into(),
+                    ));
                 }
                 None => return Ok(ReattachOutcome::Pending),
             };
             if !observation.accepted {
-                return Ok(ReattachOutcome::Gone(
-                    observation
-                        .reason
-                        .unwrap_or_else(|| "operation_not_accepted".into()),
-                ));
+                return Ok(ReattachOutcome::Gone(observation.reason.unwrap_or_else(
+                    || MonitorRecoveryReason::OperationNotAccepted.code().into(),
+                )));
             }
             if let Some(response) = observation.response {
                 let response = match response {
@@ -1531,9 +1534,9 @@ impl MonitorPort for RetainedMonitorPort {
                     .await
                 {
                     Ok(()) => Ok(ReattachOutcome::TerminalQueued),
-                    Err(MonitorError::Refused(_)) => {
-                        Ok(ReattachOutcome::Gone("invalid_terminal_receipt".into()))
-                    }
+                    Err(MonitorError::Refused(_)) => Ok(ReattachOutcome::Gone(
+                        MonitorRecoveryReason::InvalidTerminalReceipt.code().into(),
+                    )),
                     Err(error) => Err(error),
                 };
             }
@@ -1794,12 +1797,8 @@ async fn run_probe(
         Instant::now() + Duration::from_secs(20),
     )
     .await?;
-    let config = match config_receipt.result {
-        Some(ProviderResponse::Reply(value))
-            if config_receipt.certainty == RequestCertainty::Written =>
-        {
-            value["config"].clone()
-        }
+    let config = match config_receipt.into_response() {
+        Some(ProviderResponse::Reply(value)) => value["config"].clone(),
         Some(ProviderResponse::Rejected(value)) => return Err(value.to_string()),
         _ => return Err("Provider configuration read is unknown".into()),
     };
@@ -1825,10 +1824,10 @@ async fn run_probe(
         Instant::now() + Duration::from_secs(65),
     )
     .await?;
-    if receipt.certainty != RequestCertainty::Written {
+    if receipt.certainty() != RequestCertainty::Written {
         return Err("Liveness command outcome is unknown; it will not be resent".into());
     }
-    match receipt.result {
+    match receipt.into_response() {
         Some(ProviderResponse::Reply(value)) => {
             let code = value["exitCode"].as_i64();
             let stdout = value["stdout"].as_str().unwrap_or_default();
@@ -1919,6 +1918,7 @@ fn apply_turn_permissions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use studio_runtime_services::rules_engine::RuleSnapshot;
     use studio_runtime_store::{AgentRecord, AgentRepository, RuleRecord, RulesRepository};
 
@@ -2007,12 +2007,40 @@ mod tests {
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
                 Ok(SessionReceipt {
+                    outcome: {
+                        let ticket = studio_runtime_providers::RequestTicket {
+                            generation: request
+                                .expected_scope
+                                .as_ref()
+                                .map_or(1, |scope| scope.generation),
+                            id: studio_runtime_providers::RequestId::String(
+                                request.operation.clone(),
+                            ),
+                            method: request.method,
+                        };
+                        match (RequestCertainty::Written, lock(&self.terminate).clone()) {
+                            (RequestCertainty::Written, Some(response)) => {
+                                ReceiptOutcome::Written { ticket, response }
+                            }
+                            (RequestCertainty::Written, None) | (RequestCertainty::Unknown, _) => {
+                                ReceiptOutcome::Unknown {
+                                    ticket: studio_runtime_providers::RequestTicket {
+                                        generation: request
+                                            .expected_scope
+                                            .as_ref()
+                                            .map_or(1, |scope| scope.generation),
+                                        id: studio_runtime_providers::RequestId::String(
+                                            request.operation.clone(),
+                                        ),
+                                        method: request.method,
+                                    },
+                                }
+                            }
+                            (RequestCertainty::NotSent, _) => ReceiptOutcome::NoLiveAccountWorker,
+                        }
+                    },
                     scope: request.expected_scope.clone().expect("scope"),
                     operation: request.operation,
-                    ticket: None,
-                    certainty: RequestCertainty::Written,
-                    result: lock(&self.terminate).clone(),
-                    not_sent_reason: None,
                     replayed: false,
                 })
             })
@@ -2133,12 +2161,21 @@ mod tests {
                 Box::pin(async move {
                     assert_eq!(request.method, Method::CommandExec);
                     Ok(SessionReceipt {
+                        outcome: ReceiptOutcome::Written {
+                            ticket: studio_runtime_providers::RequestTicket {
+                                generation: request
+                                    .expected_scope
+                                    .as_ref()
+                                    .map_or(1, |scope| scope.generation),
+                                id: studio_runtime_providers::RequestId::String(
+                                    request.operation.clone(),
+                                ),
+                                method: request.method,
+                            },
+                            response: ProviderResponse::Reply(json!({"exitCode":1})),
+                        },
                         scope: request.expected_scope.clone().expect("scope"),
                         operation: request.operation,
-                        ticket: None,
-                        certainty: RequestCertainty::Written,
-                        result: Some(ProviderResponse::Reply(json!({"exitCode":1}))),
-                        not_sent_reason: None,
                         replayed: false,
                     })
                 })
@@ -2260,12 +2297,21 @@ mod tests {
                 Box::pin(async move {
                     assert_eq!(request.method, Method::CommandExec);
                     Ok(SessionReceipt {
+                        outcome: ReceiptOutcome::Written {
+                            ticket: studio_runtime_providers::RequestTicket {
+                                generation: request
+                                    .expected_scope
+                                    .as_ref()
+                                    .map_or(1, |scope| scope.generation),
+                                id: studio_runtime_providers::RequestId::String(
+                                    request.operation.clone(),
+                                ),
+                                method: request.method,
+                            },
+                            response: ProviderResponse::Reply(json!({"exitCode":1})),
+                        },
                         scope: request.expected_scope.clone().expect("scope"),
                         operation: request.operation,
-                        ticket: None,
-                        certainty: RequestCertainty::Written,
-                        result: Some(ProviderResponse::Reply(json!({"exitCode":1}))),
-                        not_sent_reason: None,
                         replayed: false,
                     })
                 })
@@ -2279,7 +2325,12 @@ mod tests {
             {
                 let error = match &self.0 {
                     AccountSessionError::Unknown => AccountSessionError::Unknown,
-                    _ => AccountSessionError::Refused("Callback barrier was not completed"),
+                    AccountSessionError::Requires(_)
+                    | AccountSessionError::Refused(_)
+                    | AccountSessionError::InvalidResponse(_)
+                    | AccountSessionError::Persistence => {
+                        AccountSessionError::Refused("Callback barrier was not completed")
+                    }
                 };
                 Box::pin(async move { Err(error) })
             }
@@ -2397,7 +2448,7 @@ mod tests {
                 SessionReceipt,
             > {
                 Box::pin(async move {
-                    let mut scope = request.expected_scope.expect("scope");
+                    let mut scope = request.expected_scope.clone().expect("scope");
                     let (result, replayed) = match request.method {
                         Method::ConfigRead => {
                             if self.refuse_config_once.swap(false, Ordering::SeqCst) {
@@ -2418,15 +2469,164 @@ mod tests {
                             self.executions.fetch_add(1, Ordering::SeqCst);
                             (json!({"exitCode":0}), false)
                         }
-                        _ => panic!("unexpected monitor preparation request"),
+                        Method::Initialize
+                        | Method::Initialized
+                        | Method::Ack
+                        | Method::AccountLoginCancel
+                        | Method::AccountLoginStart
+                        | Method::AccountRateLimitResetCreditConsume
+                        | Method::ThreadLoadedList
+                        | Method::SkillsExtraRootsSet
+                        | Method::ModelList
+                        | Method::AccountRead
+                        | Method::AccountRateLimitsRead
+                        | Method::ThreadStart
+                        | Method::ThreadRealtimeStart
+                        | Method::ThreadRealtimeStop
+                        | Method::ThreadRealtimeAppendSpeech
+                        | Method::ThreadRealtimeItemStarted
+                        | Method::ThreadRealtimeTranscriptDelta
+                        | Method::ThreadRealtimeTranscriptDone
+                        | Method::ThreadRealtimeSdp
+                        | Method::ThreadRealtimeError
+                        | Method::ThreadRealtimeClosed
+                        | Method::ThreadResume
+                        | Method::ThreadRead
+                        | Method::ThreadTurnsList
+                        | Method::TurnStart
+                        | Method::TurnSteer
+                        | Method::TurnInterrupt
+                        | Method::ThreadList
+                        | Method::ThreadArchive
+                        | Method::ThreadFork
+                        | Method::ThreadNameSet
+                        | Method::ThreadMetadataUpdate
+                        | Method::ThreadSettingsUpdate
+                        | Method::ThreadCompactStart
+                        | Method::ThreadRollback
+                        | Method::ThreadItemsList
+                        | Method::ThreadGoalSet
+                        | Method::ThreadGoalUpdated
+                        | Method::ThreadUnarchive
+                        | Method::ThreadUnsubscribe
+                        | Method::ProcessSpawn
+                        | Method::ProcessWriteStdin
+                        | Method::ProcessKill
+                        | Method::ProcessResizePty
+                        | Method::CommandExecWrite
+                        | Method::CommandExecResize
+                        | Method::CommandExecTerminate
+                        | Method::ThreadBackgroundTerminalsList
+                        | Method::ThreadBackgroundTerminalsTerminate
+                        | Method::ThreadBackgroundTerminalsClean
+                        | Method::ThreadCommandExecutionBackground
+                        | Method::ThreadQueueList
+                        | Method::ClaudeState
+                        | Method::ClaudeRepairReport
+                        | Method::ClaudeFileBackups
+                        | Method::ClaudeSettings
+                        | Method::ClaudeActivity
+                        | Method::ClaudeStopTask
+                        | Method::ClaudeShellPolicy
+                        | Method::ClaudeDiagnostics
+                        | Method::ClaudeMoveVersions
+                        | Method::McpServerReconnect
+                        | Method::McpServerStatusList
+                        | Method::SkillsList
+                        | Method::OperationStatus
+                        | Method::ReviewStart
+                        | Method::BrowserAnswer
+                        | Method::BrowserCallback
+                        | Method::BrowserClose
+                        | Method::BrowserWait
+                        | Method::ClaudeCommands
+                        | Method::ClaudeMoveExport
+                        | Method::ClaudeMoveIdentity
+                        | Method::ClaudeMovePreflight
+                        | Method::ClaudeMoveProof
+                        | Method::Detach
+                        | Method::EventRead
+                        | Method::Exec
+                        | Method::Generate
+                        | Method::Health
+                        | Method::Info
+                        | Method::LayrHealth
+                        | Method::Next
+                        | Method::Open
+                        | Method::ProjectEnsure
+                        | Method::ProjectExec
+                        | Method::ProjectImport
+                        | Method::ProviderList
+                        | Method::Replay
+                        | Method::ResponseStatus
+                        | Method::RetireCommand
+                        | Method::SecretsList
+                        | Method::SecretsRemove
+                        | Method::SecretsSet
+                        | Method::ShareConfigure
+                        | Method::ShareName
+                        | Method::ShareStatus
+                        | Method::Sign
+                        | Method::Status
+                        | Method::SyncMacApply
+                        | Method::SyncMacHandoff
+                        | Method::SyncMacHashes
+                        | Method::SyncMacHead
+                        | Method::SyncMacRead
+                        | Method::SyncMacWorktree
+                        | Method::VaultConfigure
+                        | Method::VaultPush
+                        | Method::VaultStatus
+                        | Method::UploadBegin
+                        | Method::UploadChunk
+                        | Method::UploadCommit
+                        | Method::Verify
+                        | Method::Write
+                        | Method::CurrentTimeRead
+                        | Method::ItemToolCall
+                        | Method::ItemCommandExecutionRequestApproval
+                        | Method::ItemFileChangeRequestApproval
+                        | Method::ItemPermissionsRequestApproval
+                        | Method::McpServerElicitationRequest
+                        | Method::ItemToolRequestUserInput
+                        | Method::ItemStarted
+                        | Method::ItemCompleted
+                        | Method::ItemAgentMessageDelta
+                        | Method::ItemReasoningTextDelta
+                        | Method::ItemCommandExecutionOutputDelta
+                        | Method::CommandExecOutputDelta
+                        | Method::TurnStarted
+                        | Method::TurnCompleted
+                        | Method::TurnPlanUpdated
+                        | Method::TurnDiffUpdated
+                        | Method::ThreadClosed
+                        | Method::ThreadStatusChanged
+                        | Method::ThreadTokenUsageUpdated
+                        | Method::ThreadShellPolicyUpdated
+                        | Method::ThreadIdleCompactionUpdated
+                        | Method::AccountLoginCompleted
+                        | Method::AccountUpdated
+                        | Method::AccountRateLimitsUpdated
+                        | Method::ModelSafetyBufferingUpdated
+                        | Method::ProviderGenerationStarted
+                        | Method::ProtocolError => panic!("unexpected monitor preparation request"),
                     };
                     Ok(SessionReceipt {
+                        outcome: ReceiptOutcome::Written {
+                            ticket: studio_runtime_providers::RequestTicket {
+                                generation: request
+                                    .expected_scope
+                                    .as_ref()
+                                    .map_or(1, |scope| scope.generation),
+                                id: studio_runtime_providers::RequestId::String(
+                                    request.operation.clone(),
+                                ),
+                                method: request.method,
+                            },
+                            response: ProviderResponse::Reply(result),
+                        },
                         scope,
                         operation: request.operation,
-                        ticket: None,
-                        certainty: RequestCertainty::Written,
-                        result: Some(ProviderResponse::Reply(result)),
-                        not_sent_reason: None,
                         replayed,
                     })
                 })
@@ -2740,14 +2940,23 @@ mod tests {
                     );
                     self.status_requests.fetch_add(1, Ordering::SeqCst);
                     Ok(SessionReceipt {
+                        outcome: ReceiptOutcome::Written {
+                            ticket: studio_runtime_providers::RequestTicket {
+                                generation: request
+                                    .expected_scope
+                                    .as_ref()
+                                    .map_or(1, |scope| scope.generation),
+                                id: studio_runtime_providers::RequestId::String(
+                                    request.operation.clone(),
+                                ),
+                                method: request.method,
+                            },
+                            response: ProviderResponse::Rejected(
+                                json!({"code":-32601,"message":"method not found"}),
+                            ),
+                        },
                         scope: request.expected_scope.expect("scope"),
                         operation: request.operation,
-                        ticket: None,
-                        certainty: RequestCertainty::Written,
-                        result: Some(ProviderResponse::Rejected(
-                            json!({"code":-32601,"message":"method not found"}),
-                        )),
-                        not_sent_reason: None,
                         replayed: false,
                     })
                 })
@@ -3131,7 +3340,149 @@ mod tests {
                                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             json!({})
                         }
-                        _ => panic!("inactive owner must never start or resume a command"),
+                        Method::Initialize
+                        | Method::Initialized
+                        | Method::Ack
+                        | Method::AccountLoginCancel
+                        | Method::AccountLoginStart
+                        | Method::AccountRateLimitResetCreditConsume
+                        | Method::ThreadLoadedList
+                        | Method::ConfigRead
+                        | Method::SkillsExtraRootsSet
+                        | Method::ModelList
+                        | Method::AccountRead
+                        | Method::AccountRateLimitsRead
+                        | Method::ThreadStart
+                        | Method::ThreadRealtimeStart
+                        | Method::ThreadRealtimeStop
+                        | Method::ThreadRealtimeAppendSpeech
+                        | Method::ThreadRealtimeItemStarted
+                        | Method::ThreadRealtimeTranscriptDelta
+                        | Method::ThreadRealtimeTranscriptDone
+                        | Method::ThreadRealtimeSdp
+                        | Method::ThreadRealtimeError
+                        | Method::ThreadRealtimeClosed
+                        | Method::ThreadResume
+                        | Method::ThreadRead
+                        | Method::ThreadTurnsList
+                        | Method::TurnStart
+                        | Method::TurnSteer
+                        | Method::TurnInterrupt
+                        | Method::ThreadList
+                        | Method::ThreadArchive
+                        | Method::ThreadFork
+                        | Method::ThreadNameSet
+                        | Method::ThreadMetadataUpdate
+                        | Method::ThreadSettingsUpdate
+                        | Method::ThreadCompactStart
+                        | Method::ThreadRollback
+                        | Method::ThreadItemsList
+                        | Method::ThreadGoalSet
+                        | Method::ThreadGoalUpdated
+                        | Method::ThreadUnarchive
+                        | Method::ThreadUnsubscribe
+                        | Method::ProcessSpawn
+                        | Method::ProcessWriteStdin
+                        | Method::ProcessKill
+                        | Method::ProcessResizePty
+                        | Method::CommandExec
+                        | Method::CommandExecWrite
+                        | Method::CommandExecResize
+                        | Method::ThreadBackgroundTerminalsList
+                        | Method::ThreadBackgroundTerminalsTerminate
+                        | Method::ThreadBackgroundTerminalsClean
+                        | Method::ThreadCommandExecutionBackground
+                        | Method::ThreadQueueList
+                        | Method::ClaudeState
+                        | Method::ClaudeRepairReport
+                        | Method::ClaudeFileBackups
+                        | Method::ClaudeSettings
+                        | Method::ClaudeActivity
+                        | Method::ClaudeStopTask
+                        | Method::ClaudeShellPolicy
+                        | Method::ClaudeDiagnostics
+                        | Method::ClaudeMoveVersions
+                        | Method::McpServerReconnect
+                        | Method::McpServerStatusList
+                        | Method::SkillsList
+                        | Method::ReviewStart
+                        | Method::BrowserAnswer
+                        | Method::BrowserCallback
+                        | Method::BrowserClose
+                        | Method::BrowserWait
+                        | Method::ClaudeCommands
+                        | Method::ClaudeMoveExport
+                        | Method::ClaudeMoveIdentity
+                        | Method::ClaudeMovePreflight
+                        | Method::ClaudeMoveProof
+                        | Method::Detach
+                        | Method::EventRead
+                        | Method::Exec
+                        | Method::Generate
+                        | Method::Health
+                        | Method::Info
+                        | Method::LayrHealth
+                        | Method::Next
+                        | Method::Open
+                        | Method::ProjectEnsure
+                        | Method::ProjectExec
+                        | Method::ProjectImport
+                        | Method::ProviderList
+                        | Method::Replay
+                        | Method::ResponseStatus
+                        | Method::RetireCommand
+                        | Method::SecretsList
+                        | Method::SecretsRemove
+                        | Method::SecretsSet
+                        | Method::ShareConfigure
+                        | Method::ShareName
+                        | Method::ShareStatus
+                        | Method::Sign
+                        | Method::Status
+                        | Method::SyncMacApply
+                        | Method::SyncMacHandoff
+                        | Method::SyncMacHashes
+                        | Method::SyncMacHead
+                        | Method::SyncMacRead
+                        | Method::SyncMacWorktree
+                        | Method::VaultConfigure
+                        | Method::VaultPush
+                        | Method::VaultStatus
+                        | Method::UploadBegin
+                        | Method::UploadChunk
+                        | Method::UploadCommit
+                        | Method::Verify
+                        | Method::Write
+                        | Method::CurrentTimeRead
+                        | Method::ItemToolCall
+                        | Method::ItemCommandExecutionRequestApproval
+                        | Method::ItemFileChangeRequestApproval
+                        | Method::ItemPermissionsRequestApproval
+                        | Method::McpServerElicitationRequest
+                        | Method::ItemToolRequestUserInput
+                        | Method::ItemStarted
+                        | Method::ItemCompleted
+                        | Method::ItemAgentMessageDelta
+                        | Method::ItemReasoningTextDelta
+                        | Method::ItemCommandExecutionOutputDelta
+                        | Method::CommandExecOutputDelta
+                        | Method::TurnStarted
+                        | Method::TurnCompleted
+                        | Method::TurnPlanUpdated
+                        | Method::TurnDiffUpdated
+                        | Method::ThreadClosed
+                        | Method::ThreadStatusChanged
+                        | Method::ThreadTokenUsageUpdated
+                        | Method::ThreadShellPolicyUpdated
+                        | Method::ThreadIdleCompactionUpdated
+                        | Method::AccountLoginCompleted
+                        | Method::AccountUpdated
+                        | Method::AccountRateLimitsUpdated
+                        | Method::ModelSafetyBufferingUpdated
+                        | Method::ProviderGenerationStarted
+                        | Method::ProtocolError => {
+                            panic!("inactive owner must never start or resume a command")
+                        }
                     };
                     let result =
                         if request.method == Method::CommandExecTerminate && !self.confirmed {
@@ -3140,12 +3491,32 @@ mod tests {
                             Some(ProviderResponse::Reply(response))
                         };
                     Ok(SessionReceipt {
+                        outcome: {
+                            let ticket = studio_runtime_providers::RequestTicket {
+                                generation: request
+                                    .expected_scope
+                                    .as_ref()
+                                    .map_or(1, |scope| scope.generation),
+                                id: studio_runtime_providers::RequestId::String(
+                                    request.operation.clone(),
+                                ),
+                                method: request.method,
+                            };
+                            match (RequestCertainty::Written, result) {
+                                (RequestCertainty::Written, Some(response)) => {
+                                    ReceiptOutcome::Written { ticket, response }
+                                }
+                                (RequestCertainty::Written, None)
+                                | (RequestCertainty::Unknown, _) => {
+                                    ReceiptOutcome::Unknown { ticket }
+                                }
+                                (RequestCertainty::NotSent, _) => {
+                                    ReceiptOutcome::NoLiveAccountWorker
+                                }
+                            }
+                        },
                         scope: request.expected_scope.expect("scope"),
                         operation: request.operation,
-                        ticket: None,
-                        certainty: RequestCertainty::Written,
-                        result,
-                        not_sent_reason: None,
                         replayed: false,
                     })
                 })

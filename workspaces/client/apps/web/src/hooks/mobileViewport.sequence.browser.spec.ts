@@ -223,6 +223,8 @@ for (const [name, steps] of Object.entries({
             })();
           window.stepKeyboard({ height: 337, innerHeight: 669 });
           const animation = composer.getAnimations()[0];
+          if (!animation)
+            throw new Error("Missing composer keyboard animation");
           animation.pause();
           animation.currentTime = 50;
           const computed = window.getComputedStyle;
@@ -362,10 +364,16 @@ for (const [name, steps] of Object.entries({
             0,
           );
           for (let i = 1; i < rows.length; i++) {
+            const row = rows[i];
+            const previous = rows[i - 1];
+            if (!row || !previous)
+              throw new Error("Missing consecutive keyboard animation frames");
             const sign = direction === "open" ? 1 : -1;
-            expect(sign * (bottoms[i] - bottoms[i - 1])).toBeLessThanOrEqual(1);
             expect(
-              sign * (rows[i].padding - rows[i - 1].padding),
+              sign * (row.composer.bottom - previous.composer.bottom),
+            ).toBeLessThanOrEqual(1);
+            expect(
+              sign * (row.padding - previous.padding),
             ).toBeGreaterThanOrEqual(-1);
           }
         }

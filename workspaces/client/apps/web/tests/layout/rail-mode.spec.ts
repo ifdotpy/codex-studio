@@ -168,12 +168,14 @@ for (const check of [
           const ctx = canvas.getContext("2d");
           if (!ctx) throw new Error("Missing fixture canvas context");
           ctx.drawImage(image, 0, 0);
-          return [
-            [850, 300],
-            [911, 300],
-            [850, 650],
-            [911, 650],
-          ].map(([x, y]) => [...ctx.getImageData(x, y, 1, 1).data]);
+          return (
+            [
+              [850, 300],
+              [911, 300],
+              [850, 650],
+              [911, 650],
+            ] satisfies [number, number][]
+          ).map(([x, y]) => [...ctx.getImageData(x, y, 1, 1).data]);
         }, png);
         expect(colors[1]).toEqual(colors[0]);
         if (check === "panel-background") {

@@ -734,7 +734,7 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                 return Ok(());
             };
             if actors.iter().any(|actor| {
-                actor.provider != "claude"
+                actor.provider != ProviderKind::Claude.key()
                     || actor.account_key != first.account_key
                     || actor.agent_id.is_empty()
                     || actor.epoch < 0
@@ -764,7 +764,7 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                             &actor.agent_id,
                             actor.epoch,
                             &actor.account_key,
-                            Some("claude"),
+                            Some(ProviderKind::Claude.key()),
                         )
                         .map_err(|_| WorkerError::TaskFailed)?
                         {
@@ -797,7 +797,7 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                         studio_runtime_services::linux_vm_provider::GuestCredentialTarget {
                             agent_id: &actor.agent_id,
                             actor_epoch: actor.epoch,
-                            provider: "claude",
+                            provider: ProviderKind::Claude.key(),
                             account_key: &actor.account_key,
                             relative_path: &credential_path,
                         },
@@ -810,7 +810,7 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                         | studio_runtime_services::linux_vm_provider::GuestProviderError::Persistence(_) => {
                             return Err(WorkerError::TaskFailed);
                         }
-                        _ => profile_copy_failed = true,
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::Invalid | studio_runtime_services::linux_vm_provider::GuestProviderError::Unknown | studio_runtime_services::linux_vm_provider::GuestProviderError::Refused | studio_runtime_services::linux_vm_provider::GuestProviderError::InvalidResponse | studio_runtime_services::linux_vm_provider::GuestProviderError::Guest(_) | studio_runtime_services::linux_vm_provider::GuestProviderError::Json(_) => profile_copy_failed = true,
                     }
                 }
             }
@@ -1193,7 +1193,7 @@ async fn read_vm_codex_bootstrap(
             )
             .await
             .map_err(|_| WorkerError::PreparationPending("provider-session/account-read".into()))?;
-        if receipt.certainty
+        if receipt.certainty()
             != studio_runtime_services::account_session_runtime::RequestCertainty::Written
         {
             return Err(WorkerError::PreparationPending(
@@ -1201,7 +1201,7 @@ async fn read_vm_codex_bootstrap(
             ));
         }
         if !matches!(
-            receipt.result,
+            receipt.response().cloned(),
             Some(studio_runtime_services::account_session_runtime::ProviderResponse::Reply(_))
         ) {
             return Err(WorkerError::PreparationPending(
@@ -1236,7 +1236,7 @@ async fn read_vm_codex_bootstrap(
         let still_same = current.accounts.iter().any(|row| {
             row.get("id").and_then(Value::as_str) == Some(account_key)
                 && row.get("accountId") == account.get("accountId")
-                && row.get("provider").and_then(Value::as_str) == Some("codex")
+                && row.get("provider").and_then(Value::as_str) == Some(ProviderKind::Codex.key())
                 && row.get("status").and_then(Value::as_str) == Some("ready")
         });
         if !still_same {
@@ -1282,7 +1282,7 @@ async fn refresh_vm_codex_token(
                         &actor_id,
                         actor_epoch,
                         &account_key,
-                        Some("codex"),
+                        Some(ProviderKind::Codex.key()),
                     )
                     .map_err(|_| WorkerError::TaskFailed)
                 })
@@ -1307,7 +1307,7 @@ async fn refresh_vm_codex_token(
         .iter()
         .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
         .ok_or_else(|| WorkerError::PreparationRefused("vm-auth/account-unavailable".into()))?;
-    if account.get("provider").and_then(Value::as_str) != Some("codex")
+    if account.get("provider").and_then(Value::as_str) != Some(ProviderKind::Codex.key())
         || account.get("status").and_then(Value::as_str) != Some("ready")
         || account.get("accountId").and_then(Value::as_str) != Some(previous_account_id)
     {
@@ -1758,7 +1758,7 @@ fn verify_vm_claude_account<R: studio_runtime_services::account_driver::Provider
     }
     let expected_account_id = format!("{CLAUDE_ACCOUNT_ID_PREFIX}{email}");
     if current.get("status").and_then(Value::as_str) != Some("ready")
-        || current.get("provider").and_then(Value::as_str) != Some("claude")
+        || current.get("provider").and_then(Value::as_str) != Some(ProviderKind::Claude.key())
         || current.get("email").and_then(Value::as_str) != Some(email)
         || current.get("accountId").and_then(Value::as_str) != Some(expected_account_id.as_str())
     {
@@ -2345,14 +2345,13 @@ mod voice_composition_tests {
     use studio_runtime_services::{
         account_driver::AccountDriver,
         account_session_runtime::{
-            AccountSessionError, AccountSessionRuntime, ConnectionScope, NotSentReason,
-            ProviderRequest, ProviderResponse, RequestCertainty, RetainedAccountSession,
-            SessionFuture, SessionReceipt as AccountSessionReceipt,
+            AccountSessionError, AccountSessionRuntime, ConnectionScope, ProviderRequest,
+            RetainedAccountSession, SessionFuture, SessionReceipt as AccountSessionReceipt,
         },
         account_worker::{
             AccountHandle, StoreBridge,
             preparation::PreparationResources,
-            retained::{PortError, RequestResult, SessionRequest},
+            retained::{PortError, SessionRequest},
             start_account_worker_with_preparation,
         },
         callback_runtime::{CallbackReplyPort, CallbackRuntime},
@@ -2407,28 +2406,9 @@ mod voice_composition_tests {
                             AccountSessionError::Refused("Provider request was refused")
                         }
                     })?;
-                let (certainty, result) = match retained.result {
-                    RequestResult::Reply(value) => (
-                        RequestCertainty::Written,
-                        Some(ProviderResponse::Reply(value)),
-                    ),
-                    RequestResult::Rejected(value) => (
-                        RequestCertainty::Written,
-                        Some(ProviderResponse::Rejected(value)),
-                    ),
-                    RequestResult::NotSent => (RequestCertainty::NotSent, None),
-                    RequestResult::Unknown => (RequestCertainty::Unknown, None),
-                };
-                Ok(AccountSessionReceipt {
-                    scope: retained.scope,
-                    operation: retained.operation,
-                    ticket: Some(retained.ticket),
-                    certainty,
-                    result,
-                    not_sent_reason: (certainty == RequestCertainty::NotSent)
-                        .then_some(NotSentReason::WorkerNotSent),
-                    replayed: false,
-                })
+                let mut receipt: AccountSessionReceipt = retained.into();
+                receipt.replayed = false;
+                Ok(receipt)
             })
         }
     }
@@ -2906,7 +2886,9 @@ pub fn account_home<R: ProviderAuthReader>(
         .iter()
         .find(|profile| profile["id"] == key)
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    if studio_runtime_providers::ProviderKind::key_of(initial_profile) != Some("codex") {
+    if studio_runtime_providers::ProviderKind::key_of(initial_profile)
+        != Some(ProviderKind::Codex.key())
+    {
         return Err(WorkerError::PreparationRefused(
             "provider-session/claude-runtime-launch".into(),
         ));
@@ -2928,7 +2910,7 @@ pub fn account_home<R: ProviderAuthReader>(
         .iter()
         .find(|profile| profile["id"] == key)
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    if studio_runtime_providers::ProviderKind::key_of(profile) != Some("codex") {
+    if studio_runtime_providers::ProviderKind::key_of(profile) != Some(ProviderKind::Codex.key()) {
         return Err(WorkerError::PreparationRefused(
             "provider-session/claude-runtime-launch".into(),
         ));

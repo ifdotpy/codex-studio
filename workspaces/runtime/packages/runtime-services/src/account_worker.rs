@@ -24,6 +24,7 @@ use studio_runtime_process::{
         Shutdown,
     },
 };
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_providers::{Frame, Method, RequestId, RequestOutcome, ResponseBody};
 use studio_runtime_store::{
     AgentId, AgentRepository, ObservedTable, RuntimeStore, SchedulerRepository, StoreError,
@@ -47,6 +48,7 @@ pub mod retained_frame;
 mod steer;
 mod stopped_turns;
 pub(crate) mod store;
+pub use store::hold_invalid_agent_record;
 mod submission;
 mod turn_preparation;
 mod vm_reattach;
@@ -152,6 +154,8 @@ impl std::fmt::Display for PreparationBlock {
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
     #[error(transparent)]
+    Recovery(#[from] crate::recovery::RecoveryError),
+    #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
     Scheduler(#[from] scheduler::SchedulerError),
@@ -191,7 +195,19 @@ fn vm_credential_maintenance_error(error: &WorkerError) -> Option<&'static str> 
             Some("pending")
         }
         WorkerError::PreparationRefused(_) => Some("stale-or-unavailable"),
-        _ => None,
+        WorkerError::Store(_)
+        | WorkerError::Recovery(_)
+        | WorkerError::Scheduler(_)
+        | WorkerError::Session(_)
+        | WorkerError::Notification(_)
+        | WorkerError::StaleVmActor
+        | WorkerError::CleanupUnconfirmed(_)
+        | WorkerError::AlreadyRunning
+        | WorkerError::Closed
+        | WorkerError::ShutdownTimeout
+        | WorkerError::TaskFailed
+        | WorkerError::Capacity
+        | WorkerError::CallbackUnknown => None,
     }
 }
 
@@ -297,7 +313,19 @@ impl StoreBridge {
             account_released: Arc::default(),
         };
         bridge
-            .run(|store| async move { Ok(scheduler::recover_on_startup(&store).await?) })
+            .run(|store| async move {
+                let changed = scheduler::recover_on_startup(&store).await?;
+                // Global restart decisions finish before the registry can
+                // construct account workers; provider reconnects never repeat them.
+                crate::account_transfer_driver::recover(&store, now())
+                    .await
+                    .map_err(|error| {
+                        WorkerError::PreparationRefused(format!(
+                            "account-transfer/startup-recovery/{error}"
+                        ))
+                    })?;
+                Ok(changed)
+            })
             .await?;
         Ok(bridge)
     }
@@ -486,6 +514,12 @@ pub enum AccountCommand {
     /// Re-evaluate idle candidates as if a durable blocker commit notified the worker.
     #[cfg(test)]
     IdleStateChange(tokio::time::Instant),
+    /// Inspect settled idle decisions, optionally after a completed sweep.
+    #[cfg(test)]
+    IdleInspect {
+        sweep_at: Option<tokio::time::Instant>,
+        reply: tokio::sync::oneshot::Sender<idle_unload::IdleObservation>,
+    },
     /// The caller's durable event and epoch are rechecked inside the claim transaction.
     Wake {
         agent_id: String,
@@ -501,7 +535,7 @@ pub enum AccountCommand {
         thread_id: String,
         turn_id: String,
     },
-    RestartRecoveryDone,
+    RestartRecoveryDone(Result<(), crate::recovery::RecoveryError>),
     RestartStreams(Box<NotificationStreamBuffer>),
 }
 
@@ -1630,6 +1664,13 @@ impl Worker {
             }
             #[cfg(test)]
             AccountCommand::IdleStateChange(now) => self.idle_state_changed(now),
+            #[cfg(test)]
+            AccountCommand::IdleInspect { sweep_at, reply } => {
+                if let Some(now) = sweep_at {
+                    self.idle_sweep(now).await?;
+                }
+                let _sent = reply.send(self.idle_observation());
+            }
             AccountCommand::VmNotification(command) => self.vm_notification(*command).await?,
             AccountCommand::CommittedFrame(command) => self.committed_frame(*command).await?,
             AccountCommand::RetainedRequest(command) => self.retained_request(*command).await?,
@@ -1695,8 +1736,9 @@ impl Worker {
                 thread_id,
                 turn_id,
             } => self.interrupt(agent_id, thread_id, turn_id).await?,
-            AccountCommand::RestartRecoveryDone => {
+            AccountCommand::RestartRecoveryDone(result) => {
                 self.restart_recovery.take();
+                result?;
                 self.schedule_publication_drain()?;
                 #[cfg(test)]
                 {
@@ -1851,7 +1893,7 @@ impl Worker {
                     self.resources.model_catalog.clone(),
                     self.account.clone(),
                     self.resources.account_home.clone(),
-                    intent.provider.key().to_owned(),
+                    intent.provider,
                 )
             });
         let agents = catalog
@@ -1860,7 +1902,7 @@ impl Worker {
         let task = tokio::spawn(async move {
             match (catalog, agents) {
                 (Some((catalog, account, home, provider)), _) => {
-                    catalog.refreshed(&account, &home, &provider).await;
+                    catalog.refreshed(&account, &home, provider).await;
                 }
                 (None, Some(agents)) => {
                     if agents.await.is_err() {
@@ -1899,7 +1941,10 @@ impl Worker {
             .vm_sessions
             .values()
             .map(|session| session.launch_request.clone())
-            .filter(|request| request.provider == "claude" && request.account_key == self.account)
+            .filter(|request| {
+                request.provider == ProviderKind::Claude.key()
+                    && request.account_key == self.account
+            })
             .collect::<Vec<_>>();
         let Some(resolver) = self.resources.vm_provider_launch.clone() else {
             self.vm_credential_refresh_at = None;
@@ -2363,7 +2408,9 @@ impl Worker {
         Ok(
             match Box::pin(self.drive(commit.finish(control, vm))).await? {
                 submission::Committed::Ready(ready) => Some(ready),
-                _ => None,
+                submission::Committed::Nothing
+                | submission::Committed::Retry(..)
+                | submission::Committed::Vm(..) => None,
             },
         )
     }
@@ -3384,7 +3431,7 @@ impl Worker {
             let ticket = match &outcome {
                 SessionOutcome::Write { ticket, .. } => ticket.as_ref(),
                 SessionOutcome::Resolved { ticket, .. } => Some(ticket),
-                _ => None,
+                SessionOutcome::GenerationClosed { .. } => None,
             };
             let pending = ticket.and_then(|t| self.pending.get(&t.id)).cloned();
             if let Some(actor) = actor_id {
@@ -3622,7 +3669,7 @@ impl Worker {
 
     fn has_active_claude_vm_sessions(&self) -> bool {
         self.vm_sessions.values().any(|session| {
-            session.launch_request.provider == "claude"
+            session.launch_request.provider == ProviderKind::Claude.key()
                 && session.launch_request.account_key == self.account
         })
     }
@@ -4039,7 +4086,11 @@ impl Worker {
             {
                 frame.method.as_str() == "turn/completed"
             }
-            _ => false,
+            JournalPayload::Frame(_)
+            | JournalPayload::RawStdout { .. }
+            | JournalPayload::Stderr(_)
+            | JournalPayload::Exit(_)
+            | JournalPayload::Other { .. } => false,
         };
         if completed {
             self.bridge.continuation_wake().notify_one();
@@ -4865,7 +4916,11 @@ impl Worker {
                         result => result?,
                     }
                 }
-                effect => remaining.push_back(effect),
+                effect @ Effect::LimitsUpdated(_)
+                | effect @ Effect::LimitFailure { .. }
+                | effect @ Effect::Submit(_)
+                | effect @ Effect::Interrupt { .. }
+                | effect @ Effect::Wake(..) => remaining.push_back(effect),
             }
         }
         self.effects = remaining;
@@ -4964,6 +5019,14 @@ fn invalid_agent_record_error(error: &WorkerError) -> bool {
 }
 fn invalid_agent_record_details(error: &WorkerError) -> Option<(&str, &str, &str)> {
     match error {
+        WorkerError::Recovery(crate::recovery::RecoveryError::Store(
+            StoreError::InvalidSyncObjectField {
+                scope,
+                id,
+                pointer,
+                reason,
+            },
+        )) if scope == "runtime_agents" => Some((id.as_str(), pointer.as_str(), reason.as_str())),
         WorkerError::Store(StoreError::InvalidSyncObjectField {
             scope,
             id,
@@ -4978,7 +5041,22 @@ fn invalid_agent_record_details(error: &WorkerError) -> Option<(&str, &str, &str
                 reason,
             },
         )) if scope == "runtime_agents" => Some((id.as_str(), pointer.as_str(), reason.as_str())),
-        _ => None,
+        WorkerError::Recovery(_)
+        | WorkerError::Store(_)
+        | WorkerError::Scheduler(_)
+        | WorkerError::Session(_)
+        | WorkerError::Notification(_)
+        | WorkerError::PreparationRefused(_)
+        | WorkerError::StaleVmActor
+        | WorkerError::PreparationPending(_)
+        | WorkerError::PreparationAwaitsAgent(_)
+        | WorkerError::CleanupUnconfirmed(_)
+        | WorkerError::AlreadyRunning
+        | WorkerError::Closed
+        | WorkerError::ShutdownTimeout
+        | WorkerError::TaskFailed
+        | WorkerError::Capacity
+        | WorkerError::CallbackUnknown => None,
     }
 }
 fn definite_rejection(error: &WorkerError) -> bool {

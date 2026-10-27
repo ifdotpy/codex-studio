@@ -178,8 +178,10 @@ export async function restoreStorage(
   }
   Storage.prototype.setItem = original;
   if (!interrupted) throw new Error("Expected incomplete import");
+  const [database] = snapshot.databases;
+  if (!database) throw new Error("Expected the fixture database.");
   const held = await new Promise<IDBDatabase>((resolve, reject) => {
-    const opened = indexedDB.open(snapshot.databases[0].name);
+    const opened = indexedDB.open(database.name);
     opened.onsuccess = () => resolve(opened.result);
     opened.onerror = () => reject(opened.error);
   });
@@ -254,6 +256,8 @@ function readRestoreFixture(file: string): ProfileRestoreFixture {
 
 async function main() {
   const [mode, file] = process.argv.slice(2);
+  if (file === undefined)
+    throw new Error("Supply the profile fixture document.");
   const seed = mode === "seed" ? readSeedManifest(file) : undefined;
   const restore = mode === "restore" ? readRestoreFixture(file) : undefined;
   const profile = seed?.profile ?? restore?.profile;
@@ -285,6 +289,7 @@ async function main() {
       `(${createSourceFrame.toString()})()`,
     );
     const frame = window.webContents.mainFrame.frames[0];
+    if (!frame) throw new Error("Expected the source profile frame.");
     await frame.executeJavaScript(`(${seedFrameStorage.toString()})()`);
   } else if (restore) {
     await window.loadURL("http://127.0.0.1:4621/");

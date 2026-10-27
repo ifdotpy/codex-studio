@@ -157,7 +157,7 @@ export function receivePreferenceFields(
     const keys = new Map<string, Record<string, unknown>>();
     const scalars = new Map<string, unknown>();
     for (const [name, field] of Object.entries(fields)) {
-      let parts: string[];
+      let parts: [string] | [string, string];
       try {
         parts = JSON.parse(name);
       } catch {

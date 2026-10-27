@@ -164,7 +164,18 @@ pub fn maintain_monitor(
         crate::notification_dispatch::NotificationDispatchError::Store(error) => {
             MonitorError::Store(error)
         }
-        _ => MonitorError::Refused("Could not record the shell policy notice"),
+        crate::notification_dispatch::NotificationDispatchError::InvalidNotification { .. }
+        | crate::notification_dispatch::NotificationDispatchError::InvalidAccountState { .. }
+        | crate::notification_dispatch::NotificationDispatchError::StreamCapacity
+        | crate::notification_dispatch::NotificationDispatchError::InvalidStoredObject { .. }
+        | crate::notification_dispatch::NotificationDispatchError::ConflictingDelivery
+        | crate::notification_dispatch::NotificationDispatchError::ConflictingInput
+        | crate::notification_dispatch::NotificationDispatchError::UnauthorizedSubmission
+        | crate::notification_dispatch::NotificationDispatchError::Dependency(_)
+        | crate::notification_dispatch::NotificationDispatchError::Move(_)
+        | crate::notification_dispatch::NotificationDispatchError::Json(_) => {
+            MonitorError::Refused("Could not record the shell policy notice")
+        }
     })?;
     decision
         .effects
@@ -248,7 +259,15 @@ pub fn observe(
         crate::event_write::EventWriteError::Store(error) => {
             crate::notification_dispatch::NotificationDispatchError::Store(error)
         }
-        _ => crate::notification_dispatch::NotificationDispatchError::invalid(),
+        crate::event_write::EventWriteError::InvalidRequest(_)
+        | crate::event_write::EventWriteError::InvalidResultSchema(_)
+        | crate::event_write::EventWriteError::Conflict(_)
+        | crate::event_write::EventWriteError::RemoteEventsUnavailable
+        | crate::event_write::EventWriteError::WorkerAssignmentUnavailable
+        | crate::event_write::EventWriteError::InvalidStoredObject { .. }
+        | crate::event_write::EventWriteError::Clock => {
+            crate::notification_dispatch::NotificationDispatchError::invalid()
+        }
     })?;
     Ok(())
 }

@@ -306,7 +306,9 @@ pub fn apply_window(
             SqlValue::Text(text) => text.clone(),
             SqlValue::Blob(bytes) => stored_text::decode_blob(bytes)
                 .map_err(|_| round_trip_failure(column, &candidate.key))?,
-            _ => return Err(round_trip_failure(column, &candidate.key)),
+            SqlValue::Null | SqlValue::Integer(_) | SqlValue::Real(_) => {
+                return Err(round_trip_failure(column, &candidate.key));
+            }
         };
         if stored != candidate.to || text != candidate.text {
             return Err(round_trip_failure(column, &candidate.key));

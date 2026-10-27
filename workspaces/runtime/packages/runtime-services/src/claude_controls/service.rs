@@ -62,7 +62,7 @@ pub enum FailureEvidence {
 }
 pub trait ControlStorage: Send + Sync {
     fn execution_key(&self, request: &ControlRequest) -> String {
-        format!("{:p}:{}", self, request.id)
+        format!("{:p}:{}", self, request.id())
     }
     fn reserve(
         &self,
@@ -149,11 +149,11 @@ impl Controls {
             .and_then(Value::as_u64)
             .unwrap_or(0);
         let transport_request = if attempt == 0 {
-            request.request_id.clone()
+            request.request_id().to_owned()
         } else {
             format!(
                 "claude-retry:{}",
-                request_signature(&json!([request.request_id, attempt]))
+                request_signature(&json!([request.request_id(), attempt]))
             )
         };
         let scope = ControlScope {
@@ -179,7 +179,7 @@ impl Controls {
                         20,
                     )
                     .await?;
-                let queue = if request.action == Action::Rollback {
+                let queue = if matches!(request, ControlRequest::Rollback { .. }) {
                     self.bound_call(
                         binding,
                         &scope,
@@ -208,16 +208,19 @@ impl Controls {
                         return Err(error);
                     }
                 };
-                let (method, params) = if request.action == Action::Settings {
-                    (
+                let (method, params) = match request {
+                    ControlRequest::Settings { settings, .. } => (
                         "claude/settings",
-                        json!({"threadId":thread,"settings":request.settings}),
-                    )
-                } else {
-                    (
+                        json!({"threadId":thread,"settings":settings}),
+                    ),
+                    ControlRequest::Rollback {
+                        turn_id,
+                        restore_files,
+                        ..
+                    } => (
                         "thread/rollback",
-                        json!({"threadId":thread,"turnId":request.turn,"requestId":request.request_id,"restoreFiles":request.restore_files}),
-                    )
+                        json!({"threadId":thread,"turnId":turn_id,"requestId":request.request_id(),"restoreFiles":restore_files}),
+                    ),
                 };
                 match self
                     .bound_call(
@@ -225,7 +228,7 @@ impl Controls {
                         &scope,
                         method,
                         params,
-                        if request.restore_files {
+                        if request.restore_files() {
                             FILE_RESTORE_TIMEOUT_SECONDS
                         } else {
                             25
@@ -236,7 +239,7 @@ impl Controls {
                     Err(error @ (ControlError::NotSent | ControlError::Request)) => {
                         // A provider rejection can follow a partial file restore.
                         // Only an explicit not-sent receipt proves no file effect.
-                        if !request.restore_files || matches!(error, ControlError::NotSent) {
+                        if !request.restore_files() || matches!(error, ControlError::NotSent) {
                             *uncertain = false;
                         } else {
                             return Err(ControlError::Unknown);
@@ -246,7 +249,10 @@ impl Controls {
                     result => result?,
                 }
             } else {
-                json!({"settings":request.settings})
+                match request {
+                    ControlRequest::Settings { settings, .. } => json!({"settings":settings}),
+                    ControlRequest::Rollback { .. } => return Err(ControlError::Busy),
+                }
             };
             *uncertain = true;
             *snapshot = self.store.provider(snapshot.clone(), result).await?;

@@ -180,14 +180,25 @@ impl Snapshot {
         raw: &str,
         agents: impl IntoIterator<Item = (String, String)>,
     ) -> Result<Self, TransferError> {
+        Self::read_fallible(raw, agents.into_iter().map(Ok))
+    }
+
+    /// Consume store reads lazily so resource limits stop the next record read.
+    pub(crate) fn read_fallible(
+        raw: &str,
+        agents: impl IntoIterator<Item = Result<(String, String), TransferError>>,
+    ) -> Result<Self, TransferError> {
         let operation = read_record(raw, "PersistedAccountTransferRecord", "account transfer")?;
         let order: MemberOrder =
             serde_json::from_str(raw).map_err(|_| invalid("account transfer", "/members"))?;
         let mut records = BTreeMap::new();
         let mut bytes = raw.len();
-        for (id, raw) in agents {
+        for record in agents {
+            let (id, raw) = record?;
             bytes = bytes.saturating_add(raw.len());
-            if records.len() >= MAX_TRANSFER_AGENT_RECORDS || bytes > 64 * 1024 * 1024 {
+            if records.len() >= MAX_TRANSFER_AGENT_RECORDS
+                || bytes > studio_runtime_store::AccountTransferRepository::MAX_SNAPSHOT_BYTES
+            {
                 return Err(invalid("transfer snapshot", "/resourceLimit"));
             }
             // `runtime_agents` uses the table schema. Keep the open record as JSON;
@@ -313,7 +324,13 @@ impl Snapshot {
                                 "The server restarted before the turn interrupt receipt arrived. No request was repeated."
                             );
                         }
-                        _ => {}
+                        Phase::Waiting
+                        | Phase::Lazy
+                        | Phase::Ready
+                        | Phase::Blocked
+                        | Phase::Unknown
+                        | Phase::Completed
+                        | Phase::Left => {}
                     }
                 }
             }
@@ -1046,7 +1063,7 @@ impl Snapshot {
                     .expect("member is an object")
                     .remove("nativeParams");
             }
-            _ => {
+            RequestCertainty::Written | RequestCertainty::Unknown => {
                 current["phase"] = json!("unknown");
                 current["error"] =
                     json!("Native transfer outcome is unknown; no request was repeated");
@@ -1332,18 +1349,22 @@ pub(crate) fn enroll(
         .and_then(Value::as_str)
         .unwrap_or("default")
         .to_owned();
-    let provider = studio_runtime_providers::ProviderKind::of_record(value)
-        .map_err(|_| TransferError::Refused("Unknown agent provider"))?
-        .key()
-        .to_owned();
+    let source_kind = studio_runtime_providers::ProviderKind::of_record(value)
+        .map_err(|_| TransferError::Refused("Unknown agent provider"))?;
+    let provider = source_kind.key().to_owned();
     let source_thread = value
         .get("threadId")
         .cloned()
         .filter(|thread| !thread.is_null());
-    if !lead && provider != target_provider {
+    if !lead && source_kind != target_kind {
         return Ok(json!({"phase":"left","sourceAccountKey":source_account,
             "sourceThreadId":source_thread,"provider":provider,"name":value.get("name"),
             "reason":format!("Uses {provider}; the destination account uses {target_provider}")}));
+    }
+    if value["environment"] == "linux" && source_account != target {
+        return Err(TransferError::Refused(
+            "Archive VM workers before changing the team account",
+        ));
     }
     let done = source_account == target;
     let active = studio_runtime_store::truthy(value.get("inFlight"))
@@ -1450,7 +1471,11 @@ pub(crate) fn enroll(
 pub fn before_start(agent: &Value) -> Result<(), TransferError> {
     validate("PersistedAgentRecord", "transfer agent", agent)?;
     if agent.get("accountTransfer").is_some_and(|v| {
-        !v.is_null() && !matches!(v["status"].as_str(), Some("completed" | "cancelled"))
+        !v.is_null()
+            && !matches!(v["status"].as_str(), Some("completed" | "cancelled"))
+            // A subagent transfer's summary belongs to its unenrolled lead.
+            // Its own member/recovery markers below still hold admission.
+            && !(v["status"] == "pending" && v["scope"] == "subagents" && agent["isLead"] == true)
     }) || studio_runtime_store::truthy(agent.get("accountTransferId"))
         || studio_runtime_store::truthy(agent.get("lazyAccountTransfer"))
         || agent

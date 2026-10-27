@@ -7,6 +7,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use studio_runtime_process::ProviderLaunchSpec;
 /// Launch variable that binds a bridge to its credential identity.
 pub const CREDENTIAL_IDENTITY_ENVIRONMENT: &str = "STUDIO_CLAUDE_CREDENTIAL_IDENTITY";
+use studio_runtime_providers::ProviderKind;
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeHold {
     #[error("Cannot verify the pinned Claude account")]
@@ -41,7 +42,7 @@ impl BridgeSnapshot {
     pub fn from_record(record: Value) -> Result<Self, BridgeHold> {
         let profile: Profile =
             serde_json::from_value(record.clone()).map_err(|_| BridgeHold::Account)?;
-        if profile.provider != "claude" {
+        if profile.provider != ProviderKind::Claude.key() {
             return Err(BridgeHold::Account);
         }
         if !studio_runtime_schema::validate(

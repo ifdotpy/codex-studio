@@ -139,8 +139,8 @@ pub fn install(
             return;
         }
         let requested = toggle.is_checked().unwrap_or(false);
-        let _ = toggle.set_enabled(false);
-        let _ = status.set_text("Background recovery: Updating…");
+        drop(toggle.set_enabled(false));
+        drop(status.set_text("Background recovery: Updating…"));
         let (toggle, status, resources, executable, state, app) = (
             toggle.clone(),
             status.clone(),
@@ -152,20 +152,20 @@ pub fn install(
         tauri::async_runtime::spawn_blocking(move || {
             let result = configure(&resources, &executable, requested);
             let actual = preference(&state);
-            let _ = toggle.set_checked(actual.as_ref().copied().unwrap_or(false));
-            let _ = toggle.set_enabled(true);
-            let _ = status.set_text(match (&result, &actual) {
+            drop(toggle.set_checked(actual.as_ref().copied().unwrap_or(false)));
+            drop(toggle.set_enabled(true));
+            drop(status.set_text(match (&result, &actual) {
                 (Ok(()), Ok(true)) => "Background recovery: On",
                 (Ok(()), Ok(false)) => "Background recovery: Off",
                 _ => "Background recovery: Unavailable",
-            });
+            }));
             if let Err(error) = result {
                 use tauri::Emitter;
                 eprintln!("Cannot change background recovery: {error}");
-                let _ = app.emit(
+                drop(app.emit(
                     "studio-desktop-error",
                     serde_json::json!({"message": error}),
-                );
+                ));
             }
         });
     });

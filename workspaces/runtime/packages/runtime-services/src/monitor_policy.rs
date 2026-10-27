@@ -11,26 +11,8 @@ pub const CHUNK_BYTES: usize = 65_536;
 pub const PROBE_LEASE_SECONDS: f64 = 90.0;
 pub const DEFAULT_MONITOR_STALL_SECONDS: u64 = 1800;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MonitorStatus {
-    Approval,
-    Starting,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-    Lost,
-}
-
-impl MonitorStatus {
-    fn terminal(self) -> bool {
-        matches!(
-            self,
-            Self::Completed | Self::Failed | Self::Cancelled | Self::Lost
-        )
-    }
-}
+use studio_runtime_schema::studio_errors::MonitorRecoveryStatus as RecoveryStatus;
+pub use studio_runtime_schema::studio_errors::MonitorStatus;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,7 +95,20 @@ impl MonitorError {
             | Self::Rules(crate::rules_tick::RulesTickError::Event(
                 crate::event_write::EventWriteError::Store(error),
             )) => Some(error),
-            _ => None,
+            Self::InvalidStored { .. }
+            | Self::InvalidResultReceipt(_)
+            | Self::InvalidDeliveryIdentity(_)
+            | Self::InvalidOutputReceipt(_)
+            | Self::TaskFailed
+            | Self::InputOutcomeUnknown
+            | Self::Refused(_)
+            | Self::Unavailable(_)
+            | Self::ProviderRequest { .. }
+            | Self::ConfigurationRejected { .. }
+            | Self::ConfigurationReceipt { .. }
+            | Self::Event(_)
+            | Self::Rules(_)
+            | Self::Io(_) => None,
         }
     }
 
@@ -151,7 +146,15 @@ impl MonitorError {
             Self::Rules(crate::rules_tick::RulesTickError::Event(
                 crate::event_write::EventWriteError::Store(error),
             )) => fatal_store_error(error),
-            _ => false,
+            Self::Refused(_)
+            | Self::InputOutcomeUnknown
+            | Self::Unavailable(_)
+            | Self::ProviderRequest { .. }
+            | Self::ConfigurationRejected { .. }
+            | Self::ConfigurationReceipt { .. }
+            | Self::Event(_)
+            | Self::Rules(_)
+            | Self::Io(_) => false,
         }
     }
 }
@@ -181,22 +184,15 @@ fn fatal_store_error(error: &studio_runtime_store::StoreError) -> bool {
     )
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum RecoveryStatus {
-    Running,
-    NotReattachable,
-}
-
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ReattachRecovery {
+pub(crate) struct ReattachRecovery {
     account_key: String,
     epoch: i64,
-    status: RecoveryStatus,
-    started_at: f64,
+    pub(crate) status: RecoveryStatus,
+    pub(crate) started_at: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    proof: Option<String>,
+    pub(crate) proof: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]

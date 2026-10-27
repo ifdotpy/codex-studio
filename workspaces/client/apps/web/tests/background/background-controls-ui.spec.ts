@@ -1,5 +1,7 @@
+import { required } from "../teams/helpers.ts";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
-import type { Agent, Monitor, BackgroundTask } from "../../src/types.ts";
+import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
+import type { Monitor, BackgroundTask } from "../../src/types.ts";
 import type { PostBody, PostResult, GetResult } from "../../src/apiTypes.ts";
 type FixtureSync = Parameters<typeof handleEntitySyncFixtureRequest>[2];
 type RecordedBody = Partial<
@@ -318,7 +320,7 @@ test("Background controls", async ({ context }, testInfo) => {
             });
           }
           const requestId = new URL(req.url()).searchParams.get("requestId");
-          const result = processReceipts.get(requestId!);
+          const result = processReceipts.get(required(requestId));
           return route.fulfill({
             json: { found: !!result, result: result || null },
           });
@@ -330,28 +332,28 @@ test("Background controls", async ({ context }, testInfo) => {
             json: { error: "Response changed. Refresh the process list" },
           });
         }
-        value = processReceipts.get(body.requestId!);
+        value = processReceipts.get(required(body.requestId));
         if (!value) {
           if (body.action === "stop_selected") {
             selectedStopDispatches++;
             monitor.cancelRequested = true;
           }
           const result: PostResult<"/api/processes/action"> = {
-            requestId: body.requestId!,
+            requestId: required(body.requestId),
             status: "completed",
             processes:
               body.action === "stop_selected"
                 ? [
                     {
-                      key: body.process!.key,
-                      agent: body.process!.agent,
+                      key: required(body.process).key,
+                      agent: required(body.process).agent,
                       status: "requested",
                     },
                   ]
                 : [],
           };
           value = result;
-          processReceipts.set(body.requestId!, result);
+          processReceipts.set(required(body.requestId), result);
           if (body.action === "stop_selected" && dropNextSelectedStopReply) {
             dropNextSelectedStopReply = false;
             return route.abort();
@@ -438,16 +440,22 @@ test("Background controls", async ({ context }, testInfo) => {
     await drawer
       .getByRole("button", { name: "Stop response", exact: true })
       .click();
-    assert.equal(writes.at(-1)!.path, "/api/processes/action");
-    assert.equal(writes.at(-1)!.body.action, "stop_response");
-    assert.deepEqual(writes.at(-1)!.body.responseTarget, responseTarget);
+    assert.equal(required(writes.at(-1)).path, "/api/processes/action");
+    assert.equal(required(writes.at(-1)).body.action, "stop_response");
+    assert.deepEqual(
+      required(writes.at(-1)).body.responseTarget,
+      responseTarget,
+    );
     await page
       .getByText("Response changed. Refresh the process list", { exact: true })
       .waitFor();
     await drawer
       .getByRole("button", { name: "Stop response", exact: true })
       .click();
-    assert.deepEqual(writes.at(-1)!.body.responseTarget, responseTarget);
+    assert.deepEqual(
+      required(writes.at(-1)).body.responseTarget,
+      responseTarget,
+    );
     assert.equal(
       monitor.status,
       "running",
@@ -476,16 +484,21 @@ test("Background controls", async ({ context }, testInfo) => {
     await drawer
       .getByRole("button", { name: "Stop response", exact: true })
       .click();
-    assert.deepEqual(writes.at(-1)!.body.responseTarget, responseTarget);
+    assert.deepEqual(
+      required(writes.at(-1)).body.responseTarget,
+      responseTarget,
+    );
     assert.equal(state.runtime.monitors, unchangedMonitors);
     assert.equal(state.runtime.tasks, unchangedTasks);
     await drawer
       .getByRole("button", { name: "Stop owned processes", exact: true })
       .click();
-    assert.equal(writes.at(-1)!.body.action, "stop_owned");
-    assert.equal(writes.at(-1)!.body.includeDescendants, false);
+    assert.equal(required(writes.at(-1)).body.action, "stop_owned");
+    assert.equal(required(writes.at(-1)).body.includeDescendants, false);
     assert.deepEqual(
-      writes.at(-1)!.body.processes!.map((process) => process.key),
+      required(required(writes.at(-1)).body.processes).map(
+        (process) => process.key,
+      ),
       ["monitor-key", "claude-task-key", "native-key"],
     );
     await drawer
@@ -529,7 +542,7 @@ test("Background controls", async ({ context }, testInfo) => {
           '[aria-label="Terminal input"]',
         )!.value === "",
     );
-    assert.deepEqual(writes.at(-1), {
+    assert.deepEqual(required(writes.at(-1)), {
       path: "/api/monitor/input",
       body: { id: created.id, text: "hello\n" },
     });
@@ -543,12 +556,12 @@ test("Background controls", async ({ context }, testInfo) => {
       .waitFor();
     assert.equal(await input.inputValue(), "keep this input");
     await drawer.getByRole("button", { name: "Ctrl+C", exact: true }).click();
-    assert.equal(writes.at(-1)!.body.text, "\u0003");
+    assert.equal(required(writes.at(-1)).body.text, "\u0003");
     await drawer.locator(".process-resize summary").click();
     await drawer.getByLabel("Rows", { exact: true }).fill("30");
     await drawer.getByLabel("Columns", { exact: true }).fill("100");
     await drawer.getByRole("button", { name: "Resize", exact: true }).click();
-    assert.deepEqual(writes.at(-1)!.body, {
+    assert.deepEqual(required(writes.at(-1)).body, {
       id: created.id,
       rows: 30,
       cols: 100,
@@ -580,21 +593,21 @@ test("Background controls", async ({ context }, testInfo) => {
     await drawer
       .getByRole("button", { name: "Input closed", exact: true })
       .waitFor();
-    assert.equal(writes.at(-1)!.body.closeStdin, true);
+    assert.equal(required(writes.at(-1)).body.closeStdin, true);
     assert.equal(await input.isDisabled(), true);
     dropNextSelectedStopReply = true;
     await drawer
       .getByRole("button", { name: "Stop selected process", exact: true })
       .click();
-    assert.equal(writes.at(-1)!.path, "/api/processes/action");
-    assert.equal(writes.at(-1)!.body.action, "stop_selected");
-    assert.equal(writes.at(-1)!.body.process!.key, "monitor-key");
+    assert.equal(required(writes.at(-1)).path, "/api/processes/action");
+    assert.equal(required(writes.at(-1)).body.action, "stop_selected");
+    assert.equal(required(writes.at(-1)).body.process!.key, "monitor-key");
     assert.equal(
       monitor.status,
       "running",
       "The stop request does not claim that the process exited",
     );
-    const lostReply = writes.at(-1)!.body;
+    const lostReply = required(writes.at(-1)).body;
     await page
       .getByText(
         "The stop reply is unknown. Check its receipt before another stop.",
@@ -636,16 +649,16 @@ test("Background controls", async ({ context }, testInfo) => {
     await drawer
       .getByRole("button", { name: "Send via agent", exact: true })
       .click();
-    assert.deepEqual(writes.at(-1), {
+    assert.deepEqual(required(writes.at(-1)), {
       path: "/api/native-command",
       body: { id: "native-task", text: "continue\n", action: "input" },
     });
     await drawer
       .getByRole("button", { name: "Stop selected process", exact: true })
       .click();
-    assert.equal(writes.at(-1)!.path, "/api/processes/action");
-    assert.equal(writes.at(-1)!.body.action, "stop_selected");
-    assert.equal(writes.at(-1)!.body.process!.key, "native-key");
+    assert.equal(required(writes.at(-1)).path, "/api/processes/action");
+    assert.equal(required(writes.at(-1)).body.action, "stop_selected");
+    assert.equal(required(writes.at(-1)).body.process!.key, "native-key");
     await page.screenshot({
       path: testInfo.outputPath("native-command-controls.png"),
     });

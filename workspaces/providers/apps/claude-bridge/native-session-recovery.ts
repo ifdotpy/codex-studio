@@ -408,7 +408,7 @@ export async function recoverNativeSession(
     await canonicalDirectory(filesystem, location);
   await verifyInspection(request, inspect!);
   await absentSidecars(filesystem, directory, target.nativeId);
-  const nativeFile = nativeDestination(
+  const nativeFile = await nativeDestination(
     target.nativeId,
     target.cwd,
     target.profilePath,

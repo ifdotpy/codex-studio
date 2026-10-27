@@ -30,6 +30,7 @@ use studio_runtime_process::{
         ProviderAttachment, ProviderTaskFactory, SessionClock, Shutdown, TaskExit,
     },
 };
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_providers::{DecodedJournalPayload, decode_journal_value};
 use studio_runtime_schema::shared_values::{
     GUEST_PROVIDER_READ_RETRY_SECONDS, LINUX_VM_PROVIDER_HANDLE_PREFIX,
@@ -697,7 +698,7 @@ impl GuestProviderSession {
         // An uncertain start still needs running proof before it becomes Started.
         let retained = match &disposition {
             StartDisposition::Retained(info) => Some(info),
-            _ => None,
+            StartDisposition::Dispatch | StartDisposition::Reconcile => None,
         };
         let info = parse_info(&identity.handle, &started, retained)?;
         if retained.is_none() {
@@ -980,7 +981,7 @@ pub async fn copy_guest_credentials(
 ) -> Result<String> {
     if target.agent_id.is_empty()
         || target.actor_epoch < 0
-        || (target.provider != "codex" && target.provider != "claude")
+        || target.provider.parse::<ProviderKind>().is_err()
         || target.account_key.is_empty()
         || target.relative_path.is_empty()
         || target.relative_path.starts_with('/')

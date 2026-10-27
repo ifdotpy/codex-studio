@@ -136,7 +136,9 @@ fn validate_git_directory(
                 std::path::Component::ParentDir => {
                     lexical.pop();
                 }
-                _ => return Err(NativeLayrError::Refused("Invalid Git commondir".into())),
+                std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                    return Err(NativeLayrError::Refused("Invalid Git commondir".into()));
+                }
             }
             if !lexical.starts_with(project) {
                 return Err(NativeLayrError::Refused(format!(

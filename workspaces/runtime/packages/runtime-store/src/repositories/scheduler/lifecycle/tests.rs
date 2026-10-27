@@ -88,6 +88,74 @@ fn with<T>(connection: &mut Connection, change: impl FnOnce(&Transaction<'_>) ->
     result
 }
 
+#[test]
+fn terminal_error_records_keep_unknown_extensions_and_only_known_policy_blocks() {
+    for (info, blocked) in [
+        (json!("misalignmentPolicyViolation"), true),
+        (json!({"misalignmentPolicyViolation":{}}), true),
+        (
+            json!({"futurePolicy":{"opaque":[1,null,{"keep":true}]}}),
+            false,
+        ),
+        (
+            json!({"misalignmentPolicyViolation":{},"futurePolicy":{}}),
+            false,
+        ),
+    ] {
+        let mut connection = database();
+        put(
+            &connection,
+            json!({
+                "status":"running","autoWake":true,"inFlight":true,"turnId":"turn-now","turnEpoch":0,
+                "startAttempt":{"id":"now","epoch":0,"submitted":true,"turnId":"turn-now",
+                    "observedTurnId":"turn-now","threadId":"thread","accountKey":ACCOUNT,
+                    "events":["message"],"connectionGeneration":1,"requestTicket":"ticket"}
+            }),
+        );
+        connection.execute_batch("INSERT INTO runtime_events VALUES('message','agent','user','message','dispatching',2,0,NULL,NULL);")
+            .expect("input event writes");
+        let error =
+            json!({"message":"Provider refusal","codexErrorInfo":info,"vendorExtension":{"id":42}});
+        assert!(with(&mut connection, |tx| {
+            SchedulerRepository::settle_terminal(
+                tx,
+                AGENT,
+                0,
+                "now",
+                "turn-now",
+                AgentStatus::Failed,
+                Some(error.clone()),
+                "failed",
+                Some(&error),
+                &[],
+            )
+            .expect("terminal settlement")
+        }));
+        let agent = stored(&connection);
+        assert_eq!(agent["error"], error);
+        assert_eq!(agent.get("nativeThreadBlock").is_some(), blocked);
+        if blocked {
+            assert_eq!(agent["nativeThreadBlock"]["error"], error);
+        }
+        assert!(with(&mut connection, |tx| {
+            SchedulerRepository::settle_terminal(
+                tx,
+                AGENT,
+                0,
+                "now",
+                "turn-now",
+                AgentStatus::Failed,
+                Some(error.clone()),
+                "failed",
+                Some(&error),
+                &[],
+            )
+            .expect("identical receipt replay")
+        }));
+        assert_eq!(stored(&connection), agent);
+    }
+}
+
 fn restart_and_reconnect(connection: &mut Connection, generation: u64) {
     with(connection, |tx| {
         SchedulerRepository::recover_submitted(tx).expect("startup recovery runs")

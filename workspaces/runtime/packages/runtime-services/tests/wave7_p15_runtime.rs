@@ -1164,6 +1164,7 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
         &query,
     )
     .expect("read durable refusal");
+    let receipt = serde_json::to_value(receipt).expect("receipt JSON");
     assert_eq!(
         receipt["found"], true,
         "refusal must commit before HTTP failure"

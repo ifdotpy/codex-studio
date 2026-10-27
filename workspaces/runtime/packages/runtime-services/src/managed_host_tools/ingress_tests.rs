@@ -1310,7 +1310,7 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
     .unwrap();
     let arguments = match &frame {
         Frame::Request(request) => request.params.as_ref().unwrap()["arguments"].clone(),
-        _ => unreachable!(),
+        Frame::Notification(_) | Frame::UnknownMethod(_) | Frame::Response { .. } => unreachable!(),
     };
     let monitor_create = runtime.ports().monitor_create.unwrap();
     FAIL_MANAGED_WORKSPACE_PREPARATION.with(|fail| fail.set(true));
@@ -1544,8 +1544,8 @@ async fn managed_reads_preserve_corrupt_record_identity() {
     assert!(
         matches!(
             &search_result,
-            Err(CallbackError::Store(StoreError::InvalidStoredObject { table, id }))
-                if *table == "runtime_work" && id == "p05-corrupt-work"
+            Err(CallbackError::Store(StoreError::InvalidSyncObject { scope, id }))
+                if scope == "runtime_work" && id == "p05-corrupt-work"
         ),
         "corrupt work result: {search_result:?}"
     );
@@ -1669,7 +1669,9 @@ async fn managed_write_rollback(case_index: usize, table: &str, operation: &str,
     );
     let first = match dispatch_case(&store, seed, expected, None).await.unwrap() {
         CallbackDecision::Answer(reply) => reply,
-        _ => panic!("retry must answer"),
+        CallbackDecision::Pending(_)
+        | CallbackDecision::Settled(_)
+        | CallbackDecision::Unsupported => panic!("retry must answer"),
     };
     if let Some(saved) = saved_failure {
         assert_eq!(first.body, saved, "failed reply is durable for {table}");
@@ -2709,8 +2711,9 @@ async fn task_result_schema_spawn_assignment_contains_contract() {
     assert_eq!(
         studio_runtime_store::WorkItemsRepository::work_record(&read, "schema-task")
             .unwrap()
-            .unwrap()["owner"],
-        child
+            .unwrap()
+            .owner(),
+        Some(child)
     );
 }
 

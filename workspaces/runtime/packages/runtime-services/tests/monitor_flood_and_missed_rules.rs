@@ -32,7 +32,13 @@ fn output(
         .into_iter()
         .filter_map(|effect| match effect {
             Effect::OutputEvent { payload, .. } => Some(payload),
-            _ => None,
+            Effect::ExitEvent
+            | Effect::StallEvent { .. }
+            | Effect::Probe { .. }
+            | Effect::ExpireApprovals
+            | Effect::Terminate
+            | Effect::Native { .. }
+            | Effect::RuleFinished => None,
         })
         .collect()
 }

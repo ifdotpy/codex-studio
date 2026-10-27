@@ -882,7 +882,12 @@ fn valid_receipt(effect: &CleanupEffect, receipt: &Value) -> bool {
             .get("stateId")
             .and_then(Value::as_str)
             .is_some_and(|state_id| !state_id.is_empty()),
-        _ => true,
+        CleanupEffect::ArchiveImage
+        | CleanupEffect::RemoveImage
+        | CleanupEffect::ReleaseNativeLine
+        | CleanupEffect::ReleaseVmLine { .. }
+        | CleanupEffect::SaveWorktreeRef { .. }
+        | CleanupEffect::RemoveWorktree { .. } => true,
     }
 }
 
@@ -1045,7 +1050,11 @@ fn guest_failure(error: crate::linux_vm_guest::GuestError) -> EffectFailure {
         | GuestError::Protocol {
             uncertain: false, ..
         } => EffectFailure::NotSent,
-        _ => EffectFailure::Unknown,
+        GuestError::SpacePreflight { .. }
+        | GuestError::Transport { .. }
+        | GuestError::Protocol { .. }
+        | GuestError::Rejected { .. }
+        | GuestError::FrameCallback { .. } => EffectFailure::Unknown,
     }
 }
 

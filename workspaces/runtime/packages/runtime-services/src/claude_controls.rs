@@ -66,83 +66,24 @@ pub struct ControlSnapshot {
     operation: Option<Operation>,
     saved: Option<Value>,
 }
-#[derive(Clone)]
-pub struct ControlRequest {
-    id: String,
-    request_id: String,
-    action: Action,
-    settings: Option<Value>,
-    turn: Option<String>,
-    restore_files: bool,
-}
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Action {
-    Settings,
-    Rollback,
-}
-impl Action {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Settings => "settings",
-            Self::Rollback => "rollback",
-        }
-    }
-}
+pub use studio_runtime_schema::claude_controls::ClaudeControlCommand as ControlRequest;
 pub struct Writes {
     pub agent: Value,
     pub operation: Value,
     pub removed: Vec<String>,
     pub result: Value,
 }
-impl ControlRequest {
-    pub fn from_value(body: &Value) -> Result<Self> {
-        let text = |k| {
-            body.get(k)
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty() && s.len() <= 1024)
-                .map(str::to_owned)
-                .ok_or(ControlError::Request)
-        };
-        let action = match body.get("action").and_then(Value::as_str) {
-            Some("settings") => Action::Settings,
-            Some("rollback") => Action::Rollback,
-            _ => return Err(ControlError::Request),
-        };
-        let restore_files = match body.get("restore_files") {
-            None => false,
-            Some(Value::Bool(value)) if action == Action::Rollback => *value,
-            _ => return Err(ControlError::Request),
-        };
-        Ok(Self {
-            restore_files,
-            id: text("id")?,
-            request_id: text("request_id")?,
-            action,
-            settings: if action == Action::Settings {
-                Some(settings(
-                    body.get("settings").ok_or(ControlError::Request)?,
-                )?)
-            } else {
-                None
-            },
-            turn: if action == Action::Rollback {
-                Some(text("turn_id")?)
-            } else {
-                None
-            },
-        })
+fn signature(request: &ControlRequest) -> String {
+    let (settings, turn) = match request {
+        ControlRequest::Settings { settings, .. } => (json!(settings), Value::Null),
+        ControlRequest::Rollback { turn_id, .. } => (Value::Null, json!(turn_id)),
+    };
+    let mut value = json!({"agent":request.id(),"action":request.action_name(),"settings":settings,"turn":turn});
+    // Preserve signatures for existing context-only receipts.
+    if request.restore_files() {
+        value["restoreFiles"] = json!(true);
     }
-    pub fn operation_id(&self) -> String {
-        format!("claude-control:{}", self.request_id)
-    }
-    fn signature(&self) -> String {
-        let mut value = json!({"agent":self.id,"action":self.action.name(),"settings":self.settings,"turn":self.turn});
-        // Preserve signatures for existing context-only receipts.
-        if self.restore_files {
-            value["restoreFiles"] = json!(true);
-        }
-        request_signature(&value)
-    }
+    request_signature(&value)
 }
 impl ControlSnapshot {
     pub fn from_records(agent: Value, operation: Option<Value>) -> Result<Self> {
@@ -180,30 +121,32 @@ impl ControlSnapshot {
     /// Permission mode is the only setting with an SDK live control. Missing
     /// thinking means enabled; absent and null compact limits both mean default.
     pub(crate) fn live_permissions(&self, request: &ControlRequest) -> bool {
-        request.action == Action::Settings
-            && request.settings.as_ref().is_some_and(|next| {
-                let previous = &self.raw["claudeOptions"];
-                next.get("permissionMode").is_some()
-                    && (next.get("thinking").and_then(Value::as_bool) != Some(false))
-                        == (previous.get("thinking").and_then(Value::as_bool) != Some(false))
-                    && next
-                        .get("autoCompactWindow")
-                        .filter(|value| !value.is_null())
-                        == previous
-                            .get("autoCompactWindow")
-                            .filter(|value| !value.is_null())
-            })
+        let ControlRequest::Settings { settings, .. } = request else {
+            return false;
+        };
+        let previous = &self.raw["claudeOptions"];
+        let next_window = settings
+            .auto_compact_window
+            .value()
+            .map(|window| json!(window));
+        settings.permission_mode.is_some()
+            && (settings.thinking != Some(false))
+                == (previous.get("thinking").and_then(Value::as_bool) != Some(false))
+            && next_window.as_ref()
+                == previous
+                    .get("autoCompactWindow")
+                    .filter(|value| !value.is_null())
     }
     pub fn reserve(&self, request: &ControlRequest, pending: bool, now: f64) -> Result<Writes> {
-        if request.id != self.agent.id || truthy(self.raw.get("accountTransferId")) {
+        if request.id() != self.agent.id || truthy(self.raw.get("accountTransferId")) {
             return Err(ControlError::Changed);
         }
         if let Some(op) = &self.operation {
             if op.id != request.operation_id()
-                || op.request_id != request.request_id
-                || op.agent != request.id
-                || op.kind != format!("claude_{}", request.action.name())
-                || op.signature != request.signature()
+                || op.request_id != request.request_id()
+                || op.agent != request.id()
+                || op.kind != format!("claude_{}", request.action_name())
+                || op.signature != signature(request)
             {
                 return Err(ControlError::Conflict);
             }
@@ -241,11 +184,17 @@ impl ControlSnapshot {
         {
             return Err(ControlError::Busy);
         }
-        if request.action == Action::Rollback && (pending || self.agent.thread_id.is_none()) {
+        if matches!(request, ControlRequest::Rollback { .. })
+            && (pending || self.agent.thread_id.is_none())
+        {
             return Err(ControlError::Busy);
         }
-        let mut operation = json!({"id":request.operation_id(),"requestId":request.request_id,"kind":format!("claude_{}",request.action.name()),"agent":request.id,"turnId":request.turn,"signature":request.signature(),"source":self.source(),"phase":"provider_pending","created":now});
-        if request.restore_files {
+        let turn = match request {
+            ControlRequest::Settings { .. } => None,
+            ControlRequest::Rollback { turn_id, .. } => Some(turn_id),
+        };
+        let mut operation = json!({"id":request.operation_id(),"requestId":request.request_id(),"kind":format!("claude_{}",request.action_name()),"agent":request.id(),"turnId":turn,"signature":signature(request),"source":self.source(),"phase":"provider_pending","created":now});
+        if request.restore_files() {
             operation["restoreFiles"] = json!(true);
         }
         if let Some(previous) = &self.saved {
@@ -296,7 +245,12 @@ impl ControlSnapshot {
         {
             return Err(ControlError::Busy);
         }
-        if request.action == Action::Rollback {
+        if let ControlRequest::Rollback {
+            turn_id,
+            restore_files,
+            ..
+        } = request
+        {
             if truthy(queue.get("data").or_else(|| queue.get("items"))) {
                 return Err(ControlError::Busy);
             }
@@ -306,9 +260,9 @@ impl ControlSnapshot {
                 .ok_or(ControlError::Request)?;
             let index = turns
                 .iter()
-                .position(|t| t.get("id").and_then(Value::as_str) == request.turn.as_deref())
+                .position(|t| t.get("id").and_then(Value::as_str) == Some(turn_id.as_str()))
                 .ok_or(ControlError::Request)?;
-            if request.restore_files
+            if *restore_files
                 && turns[index].get("canRestoreFiles").and_then(Value::as_bool) != Some(true)
             {
                 return Err(ControlError::Request);
@@ -357,44 +311,46 @@ impl ControlSnapshot {
             .filter(|v| v.is_object())
             .cloned()
             .ok_or(ControlError::Unknown)?;
-        if request.restore_files
+        if request.restore_files()
             && result.get("filesRestored").and_then(Value::as_bool) != Some(true)
         {
             return Err(ControlError::Unknown);
         }
         let mut agent = self.raw.clone();
         let mut removed = vec![];
-        if request.action == Action::Settings {
-            let settings = request.settings.clone().ok_or(ControlError::Request)?;
-            agent["claudeOptions"] = settings.clone();
-            if let Some(mode) = settings.get("permissionMode") {
-                agent["yoloMode"] = json!(mode == "bypassPermissions");
+        match request {
+            ControlRequest::Settings { settings, .. } => {
+                agent["claudeOptions"] = json!(settings);
+                if let Some(mode) = settings.permission_mode {
+                    agent["yoloMode"] = json!(mode == studio_runtime_schema::claude_permissions::PermissionMode::BypassPermissions);
+                }
+                if agent["workspaceOperation"] == "branch_recovery" {
+                    agent["status"] = json!("paused");
+                    agent["error"] = Value::Null;
+                }
             }
-            if agent["workspaceOperation"] == "branch_recovery" {
-                agent["status"] = json!("paused");
-                agent["error"] = Value::Null;
-            }
-        } else {
-            removed = serde_json::from_value(
-                op.get("removedTurns")
-                    .cloned()
-                    .ok_or(ControlError::Unknown)?,
-            )
-            .map_err(|_| ControlError::Unknown)?;
-            for (k, v) in [
-                ("status", json!("paused")),
-                ("autoWake", json!(false)),
-                ("inFlight", json!(false)),
-                ("turnId", Value::Null),
-                (
-                    "lastCompletedTurn",
-                    op.get("retainedTurn").cloned().unwrap_or(Value::Null),
-                ),
-                ("activity", Value::Null),
-                ("activeTools", json!([])),
-                ("error", Value::Null),
-            ] {
-                agent[k] = v;
+            ControlRequest::Rollback { .. } => {
+                removed = serde_json::from_value(
+                    op.get("removedTurns")
+                        .cloned()
+                        .ok_or(ControlError::Unknown)?,
+                )
+                .map_err(|_| ControlError::Unknown)?;
+                for (k, v) in [
+                    ("status", json!("paused")),
+                    ("autoWake", json!(false)),
+                    ("inFlight", json!(false)),
+                    ("turnId", Value::Null),
+                    (
+                        "lastCompletedTurn",
+                        op.get("retainedTurn").cloned().unwrap_or(Value::Null),
+                    ),
+                    ("activity", Value::Null),
+                    ("activeTools", json!([])),
+                    ("error", Value::Null),
+                ] {
+                    agent[k] = v;
+                }
             }
         }
         agent["workspaceOperation"] = Value::Null;
@@ -423,36 +379,6 @@ impl ControlSnapshot {
         Ok(())
     }
 }
-pub fn settings(value: &Value) -> Result<Value> {
-    let object = value.as_object().ok_or(ControlError::Request)?;
-    if object.keys().any(|k| {
-        ![
-            "permissionMode",
-            "thinking",
-            "autoCompactWindow",
-            "mcpAutoBackground",
-        ]
-        .contains(&k.as_str())
-    }) {
-        return Err(ControlError::Request);
-    }
-    if let Some(mode) = object.get("permissionMode")
-        && !mode.as_str().is_some_and(|m| PERMISSION_MODES.contains(&m))
-    {
-        return Err(ControlError::Request);
-    }
-    if object.get("thinking").is_some_and(|v| !v.is_boolean())
-        || object
-            .get("mcpAutoBackground")
-            .is_some_and(|v| !v.is_boolean())
-        || object.get("autoCompactWindow").is_some_and(|v| {
-            !v.is_null() && !v.as_u64().is_some_and(|n| (100000..=1000000).contains(&n))
-        })
-    {
-        return Err(ControlError::Request);
-    }
-    Ok(value.clone())
-}
 fn validate(schema: &str, value: &Value) -> Result<()> {
     if let Some((path, _)) = studio_runtime_schema::first_error(schema, value)
         .map_err(|_| ControlError::Invalid("schema".into()))?
@@ -460,4 +386,49 @@ fn validate(schema: &str, value: &Value) -> Result<()> {
         return Err(ControlError::Invalid(path));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_control_signatures_preserve_existing_receipts() {
+        for (body, expected) in [
+            (
+                json!({"action":"settings","id":"agent","request_id":"one","settings":{}}),
+                "eb5e71e48860d9a285652d455a37628512cdb609b34480ae0b02f78bec487c38",
+            ),
+            (
+                json!({"action":"settings","id":"agent","request_id":"one","settings":{"autoCompactWindow":null}}),
+                "7ef66fdf13bb4634469324e10d82fe6dba891d3c3819f6445d6e1b862ec561df",
+            ),
+            (
+                json!({"action":"rollback","id":"agent","request_id":"one","turn_id":"two"}),
+                "f9423f5bbdf873e88cb062b928111349ea9e03326f9b5a8aeb94cc1436f3cc83",
+            ),
+            (
+                json!({"action":"rollback","id":"agent","request_id":"one","turn_id":"two","restore_files":true}),
+                "4c00d37fbf8e7852d7003ed42f4e448d6d5d04f7b2e50afa97cc9df11a17cb49",
+            ),
+        ] {
+            let request: ControlRequest = serde_json::from_value(body).expect("command");
+            assert_eq!(request.operation_id(), "claude-control:one");
+            assert_eq!(signature(&request), expected);
+        }
+    }
+
+    #[test]
+    fn claude_control_service_consumes_shared_command() {
+        fn execute(
+            controls: &service::Controls,
+            command: studio_runtime_schema::claude_controls::ClaudeControlCommand,
+        ) {
+            drop(controls.execute(command));
+        }
+        let _: fn(
+            &service::Controls,
+            studio_runtime_schema::claude_controls::ClaudeControlCommand,
+        ) = execute;
+    }
 }

@@ -383,7 +383,7 @@ impl StartGate {
             }
             let pause_end = match wait {
                 Wait::Pause { until } if first => Some(until),
-                _ => None,
+                Wait::Slot { .. } | Wait::Pause { .. } | Wait::Behind => None,
             };
             let slot_wait = first && matches!(wait, Wait::Slot { .. });
             tokio::select! {

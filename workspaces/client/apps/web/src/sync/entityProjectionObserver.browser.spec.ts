@@ -65,16 +65,21 @@ test("entity observer applies RxDB changes across tabs and resets before publica
         window.snapshots.at(-1)?.threads.find((agent) => agent.id === "99")
           ?.name === "changed-99",
     );
-    const burst = await page.evaluate(() => ({
-      publications: window.snapshots.length - window.beforeBurst,
-      queries: window.queryCalls,
-      unchanged:
-        window.snapshots[0].threads[100] ===
-        window.snapshots.at(-1)!.threads[100],
-      storageReads: window.observerReads.length - window.beforeBurstReads,
-      readIds: window.observerReads.at(-1)!.length,
-      elapsedMs: window.lastPublishedAt - window.burstStartedAt,
-    }));
+    const burst = await page.evaluate(() => {
+      const initial = window.snapshots[0];
+      const latest = window.snapshots.at(-1);
+      const readIds = window.observerReads.at(-1);
+      if (!initial || !latest || !readIds)
+        throw new Error("Expected observer snapshots and storage reads");
+      return {
+        publications: window.snapshots.length - window.beforeBurst,
+        queries: window.queryCalls,
+        unchanged: initial.threads[100] === latest.threads[100],
+        storageReads: window.observerReads.length - window.beforeBurstReads,
+        readIds: readIds.length,
+        elapsedMs: window.lastPublishedAt - window.burstStartedAt,
+      };
+    });
     assert.equal(burst.publications, 1);
     assert.equal(burst.queries, 1, JSON.stringify(burst));
     assert.equal(burst.unchanged, true);
@@ -120,11 +125,13 @@ test("entity observer applies RxDB changes across tabs and resets before publica
       await window.putRows([
         { id: "state:entities:ready", payload: "resetting", seq: 2 },
       ]);
-      [window.staleMarker] =
+      const [staleMarker] =
         await window.projections.storageInstance.findDocumentsById(
           ["state:entities:ready"],
           true,
         );
+      if (!staleMarker) throw new Error("Expected reset marker");
+      window.staleMarker = staleMarker;
       await window.putRows(
         Array.from({ length: 2000 }, (_, index) => ({
           ...window.entityRow(`${index}`, 0),

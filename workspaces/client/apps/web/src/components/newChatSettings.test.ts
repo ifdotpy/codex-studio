@@ -4,8 +4,26 @@ import {
   isNewChatSettings,
   settingsForNewChatRequest,
   settingsForNewChatAccount,
+  type NewChatWorkspaceMode,
 } from "./newChatSettings";
 import { isServerCommand } from "../servers/navigation";
+
+test.each(["layr-native", "layr", "worktree"] satisfies NewChatWorkspaceMode[])(
+  "accepts the generated new-chat workspace mode %s",
+  (workspaceMode) => expect(isNewChatSettings({ workspaceMode })).toBe(true),
+);
+
+test.each([
+  undefined,
+  null,
+  "",
+  "shared",
+  "unknown",
+  { toString: () => "worktree" },
+  ["layr"],
+])("rejects malformed new-chat workspace mode %s", (workspaceMode) => {
+  expect(isNewChatSettings({ workspaceMode })).toBe(false);
+});
 
 test("new chat accepts explicit reviewer Fast mode and rejects malformed review fields", () => {
   for (const fast_mode of [true, false]) {

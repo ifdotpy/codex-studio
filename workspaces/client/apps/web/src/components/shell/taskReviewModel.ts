@@ -1,12 +1,17 @@
-import type { GetResult, PostBody } from "../../api";
+import type { PostBody } from "../../api";
 import {
   DEFAULT_GATE_TIMEOUT_MS,
   MAX_GATE_TIMEOUT_MS,
   MAX_RESULT_SCHEMA_BYTES,
 } from "../../generated/taskReview";
 
-export type ReviewTask = GetResult<"/api/work">["items"][number];
-export type Gate = PostBody<"/api/work">["gate"];
+import type { ReviewTask } from "../../sync/subscriptions/workData";
+export type { ReviewTask } from "../../sync/subscriptions/workData";
+export type TaskConfiguration = Extract<
+  PostBody<"/api/work">,
+  { action: "create" | "update" }
+>;
+export type Gate = TaskConfiguration["gate"];
 export const prettyJson = (value: unknown) => JSON.stringify(value, null, 2);
 
 export function gateFields(gate: Gate) {
@@ -39,7 +44,7 @@ export function parseGate(
 
 export function parseResultSchema(
   text: string,
-): PostBody<"/api/work">["result_schema"] {
+): TaskConfiguration["result_schema"] {
   if (!text.trim()) return undefined;
   if (new TextEncoder().encode(text).length > MAX_RESULT_SCHEMA_BYTES)
     throw new Error(
@@ -56,7 +61,7 @@ export function parseResultSchema(
     (!value || typeof value !== "object" || Array.isArray(value))
   )
     throw new Error("The result schema must be a JSON object or boolean.");
-  return value as PostBody<"/api/work">["result_schema"];
+  return value as TaskConfiguration["result_schema"];
 }
 
 export function requiresGateOverride(task: ReviewTask): boolean {

@@ -4,7 +4,7 @@ export interface EdgeRailMetrics {
   statusReserve: number;
   targetSize: number;
   /** Outer screen edge to the system status column center; strip center when absent. */
-  statusColumnCenter?: number;
+  statusColumnCenter?: number | undefined;
 }
 
 export interface EdgeRailViewport {

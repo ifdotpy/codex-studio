@@ -287,7 +287,9 @@ impl Worker {
                 ticket: Some(t), ..
             }
             | SessionOutcome::Resolved { ticket: t, .. } => t,
-            _ => return Ok(false),
+            SessionOutcome::Write { .. } | SessionOutcome::GenerationClosed { .. } => {
+                return Ok(false);
+            }
         };
         let Some(pending) = self.retained_requests.get(&ticket.id) else {
             return Ok(false);
@@ -329,7 +331,7 @@ impl Worker {
                 outcome: WriteOutcome::Unknown,
                 ..
             } => Some(RequestResult::Unknown),
-            _ => None,
+            SessionOutcome::Write { .. } | SessionOutcome::GenerationClosed { .. } => None,
         };
         let key = pending.call.key();
         let written = match outcome {
@@ -337,7 +339,9 @@ impl Worker {
                 recovery: Some(recovery),
                 ..
             } => Some(store::record(recovery)),
-            _ => None,
+            SessionOutcome::Write { .. }
+            | SessionOutcome::Resolved { .. }
+            | SessionOutcome::GenerationClosed { .. } => None,
         };
         let volatile = pending.volatile;
         let accepted = if volatile {
@@ -617,7 +621,10 @@ mod tests {
         match result {
             RequestResult::Reply(Value::String(text))
             | RequestResult::Rejected(Value::String(text)) => text.as_ptr(),
-            _ => panic!("expected owned string result"),
+            RequestResult::Reply(_)
+            | RequestResult::Rejected(_)
+            | RequestResult::NotSent
+            | RequestResult::Unknown => panic!("expected owned string result"),
         }
     }
 

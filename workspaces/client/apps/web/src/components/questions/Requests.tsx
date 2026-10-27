@@ -45,24 +45,15 @@ type Props = {
 };
 
 type RequestDto = components["schemas"]["RequestEntityDto"];
+type QuestionCardAnswer = components["schemas"]["QuestionCardAnswer"];
 type JsonObject = Record<string, JsonValue>;
 
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function objectValue(value: unknown): JsonObject {
-  return isJsonObject(value) ? value : {};
-}
-
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
-}
-
-function stringValues(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === "string")
-    : [];
 }
 
 function isJsonValue(value: unknown): value is JsonValue {
@@ -114,12 +105,11 @@ function useAnswerDrafts() {
   return requestDraftsForStorage(useServerStorage());
 }
 // Show a command as the shell line the user would type, not as JSON.
-function commandText(command: unknown): string {
+function commandText(
+  command: components["schemas"]["RequestParamsDto"]["command"],
+): string {
   if (typeof command === "string") return command;
-  if (
-    Array.isArray(command) &&
-    command.every((part) => typeof part === "string")
-  )
+  if (Array.isArray(command))
     return command
       .map((part) =>
         /^[\w@%+=:,./-]+$/.test(part)
@@ -148,7 +138,7 @@ const answerKey = (scope: string, request: RequestDto) =>
     ),
   ]);
 
-function AnswerForm({
+export function AnswerForm({
   request,
   sending,
   post,
@@ -174,11 +164,10 @@ function AnswerForm({
   );
   const questions = requestQuestions(request);
   const method = request.method || "";
-  const params = objectValue(request.params);
-  const schema = objectValue(params.requestedSchema);
-  const properties = objectValue(schema.properties);
+  const schema = request.params?.requestedSchema;
+  const properties = schema?.properties ?? {};
   const elicitation = method === "mcpServer/elicitation/request";
-  const required = new Set(stringValues(elicitation ? schema.required : []));
+  const required = new Set(elicitation ? (schema?.required ?? []) : []);
   const missingRequired = [...required].some(
     (id) => !questions.some((question) => question.id === id),
   );
@@ -207,25 +196,29 @@ function AnswerForm({
     e.preventDefault();
     if (sending || !ready) return;
     try {
-      let body: Json;
+      let answer: QuestionCardAnswer;
       if (
-        ["item/tool/requestUserInput", "agent/asyncQuestion"].includes(method)
+        method === "item/tool/requestUserInput" ||
+        method === "agent/asyncQuestion"
       ) {
-        body = {
-          answers: Object.fromEntries(
-            questions.map((q) => [
-              q.id,
-              { answers: answerList(q, values[q.id]) },
-            ]),
-          ),
+        answer = {
+          method,
+          data: {
+            answers: Object.fromEntries(
+              questions.map((q) => [
+                q.id,
+                { answers: answerList(q, values[q.id]) },
+              ]),
+            ),
+          },
         };
-      } else {
-        const content: Json = {};
+      } else if (method === "mcpServer/elicitation/request") {
+        const content: components["schemas"]["QuestionElicitation"]["content"] =
+          {};
         for (const [key, value] of Object.entries(properties)) {
-          const schemaProperty = objectValue(value);
+          const schemaProperty = value;
           const type = stringValue(schemaProperty.type) || "string";
-          const propertyItems = objectValue(schemaProperty.items);
-          const enumValues = stringValues(propertyItems.enum);
+          const enumValues = schemaProperty.items?.enum ?? [];
           const question = questions.find((entry) => entry.id === key);
           if (!question)
             throw new Error("The requested answer fields changed.");
@@ -240,12 +233,14 @@ function AnswerForm({
                 : type === "array" && enumValues.length > 0
                   ? v
                   : ["object", "array"].includes(type)
-                    ? parseJson(v[0])
+                    ? parseJson(v[0] ?? "")
                     : v[0];
         }
-        body = { decision: "accept", content };
+        answer = { method, data: { decision: "accept", content } };
+      } else {
+        throw new Error("Unsupported question type.");
       }
-      void post(body);
+      void post(answer.data);
     } catch (e) {
       notify(errorText(e));
     }
@@ -315,11 +310,11 @@ export function RequestCard({
 
   const draftKey = answerKey(scope, r);
   const owner = agents.find((a) => a.id === r.agent);
-  const params = objectValue(r.params);
+  const params = r.params ?? {};
   const approvalDetails = requestApprovalDetails(r);
   const browserOpen = browserOpenDetails(r);
   const method = r.method || "";
-  const requestThread = stringValue(params.threadId);
+  const requestThread = params.threadId ?? undefined;
   const blocked =
     !!nativeThreadError(owner) && requestThread === owner?.threadId;
   const [requestError, setRequestError] = useState("");
@@ -458,12 +453,12 @@ export function RequestCard({
       BROWSER_OPEN_METHOD,
     ].includes(method) ||
     (method === "mcpServer/elicitation/request" && params.mode === "url");
-  const reason = stringValue(params.reason);
-  const message = stringValue(params.message);
+  const reason = params.reason;
+  const message = params.message;
   const command = approvalDetails.command;
-  const cwd = stringValue(params.cwd);
+  const cwd = params.cwd;
   const permissions = approvalDetails.permissions;
-  const url = stringValue(params.url);
+  const url = params.url;
   const questions = question ? requestQuestions(r) : [];
   const Icon = approval ? ShieldQuestion : MessageCircleQuestion;
   if (browserOpen)
@@ -615,7 +610,7 @@ export function RequestCard({
                 ref={trigger}
                 data-answer={r.id}
                 variant={open ? "subtle" : "filled"}
-                color={open ? "gray" : undefined}
+                {...(open ? { color: "gray" } : {})}
                 disabled={sending}
                 aria-expanded={open}
                 aria-controls={`answer-${r.id}`}
@@ -631,14 +626,22 @@ export function RequestCard({
             <>
               <Button
                 disabled={sending}
-                onClick={() => void post({ decision: "decline" })}
+                onClick={() =>
+                  void post({
+                    decision: "decline",
+                  } satisfies components["schemas"]["QuestionApproval"])
+                }
               >
                 {stdinApproval ? "Decline input" : "Decline"}
               </Button>
               <Button
                 variant="filled"
                 disabled={sending}
-                onClick={() => void post({ decision: "accept" })}
+                onClick={() =>
+                  void post({
+                    decision: "accept",
+                  } satisfies components["schemas"]["QuestionApproval"])
+                }
               >
                 {stdinApproval ? "Allow input" : "Approve"}
               </Button>

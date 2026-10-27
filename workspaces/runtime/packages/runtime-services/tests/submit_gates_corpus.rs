@@ -22,7 +22,11 @@ fn profile(case: &Value, record: &Value, key: &str) -> CatalogIdentity {
     CatalogIdentity {
         account_key: record["accountKey"].as_str().unwrap_or("default").into(),
         home: p["home"].as_str().expect("profile home").into(),
-        provider: p["provider"].as_str().expect("provider").into(),
+        provider: p["provider"]
+            .as_str()
+            .expect("provider")
+            .parse()
+            .expect("known provider"),
         generation: p["generation"].as_u64().expect("generation"),
     }
 }
@@ -37,7 +41,8 @@ fn catalog(case: &Value, now: Instant) -> Option<CatalogObservation> {
             provider: case["catalog"]["provider"]
                 .as_str()
                 .expect("provider")
-                .into(),
+                .parse()
+                .expect("known provider"),
             generation: case["catalog"]["generation"].as_u64().expect("generation"),
         },
         expires_at: now

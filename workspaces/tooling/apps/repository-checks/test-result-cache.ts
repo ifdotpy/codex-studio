@@ -7,8 +7,10 @@ import path from "node:path";
 import type { GateStep, StepResult } from "./facade.ts";
 
 /** The step fields that key a cached result. */
-type CachedStep = Pick<GateStep, "commands" | "inputs" | "options"> & {
-  id?: string;
+type CachedStep = {
+  [K in "commands" | "inputs" | "options"]?: GateStep[K] | undefined;
+} & {
+  id?: string | undefined;
 };
 
 /** The `cargo metadata --format-version 1` fields used for crate keys. */

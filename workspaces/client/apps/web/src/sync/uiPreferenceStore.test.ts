@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mergePreferenceFields, preferenceCacheKey } from "./uiPreferenceMerge";
 import {
@@ -50,7 +51,7 @@ describe("UI preference cache", () => {
         theme: "dark",
       });
       const first = readPreferenceFields("user");
-      const writer = Object.values(first)[0].writer;
+      const writer = required(Object.values(first)[0]).writer;
       expect(writer).toMatch(
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
       );
@@ -168,12 +169,12 @@ it("adopts the server clock correction without replacing a newer local edit", ()
   const accepted = { [key]: { ...sent[key], timestamp: 1000 } };
   receivePreferenceFields("user", sent);
   acknowledgePreferenceFields("user", sent, accepted);
-  expect(readPreferenceFields("user")[key].timestamp).toBe(1000);
+  expect(required(readPreferenceFields("user")[key]).timestamp).toBe(1000);
   receivePreferenceFields("user", {
     [key]: { ...sent[key], value: "light", timestamp: 2000 },
   });
   acknowledgePreferenceFields("user", sent, accepted);
-  expect(readPreferenceFields("user")[key].value).toBe("light");
+  expect(required(readPreferenceFields("user")[key]).value).toBe("light");
 });
 
 it("shows the server value when it wins over a clamped edit", () => {

@@ -6,6 +6,7 @@ import {
   SYNC_STREAM_EVENT_MAX_BYTES,
 } from "../generated/sharedValues";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
+import { required } from "../components/componentTestFixtures";
 
 afterEach(() => vi.unstubAllGlobals());
 function setup(options: { rejectGrant?: boolean } = {}) {
@@ -180,7 +181,7 @@ it("keeps a native initial transfer larger than the queue bound while its consum
     await host.started;
     host.acknowledge();
     host.event({ type: "open" });
-    host.event({ type: "entity-transfer", data: frames[0] });
+    host.event({ type: "entity-transfer", data: required(frames[0]) });
     await first.promise;
     for (const data of frames.slice(1))
       host.event({ type: "entity-transfer", data });

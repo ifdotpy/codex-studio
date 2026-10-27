@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use studio_runtime_providers::ProviderKind;
 
 #[cfg(unix)]
 use rustix::{
@@ -160,7 +161,7 @@ pub fn read(task: &Value, agent: &Value, requested_agent: &str) -> Result<Value,
     if task["sourceProvider"]
         .as_str()
         .unwrap_or(agent["provider"].as_str().unwrap_or(""))
-        != "claude"
+        != ProviderKind::Claude.key()
         || !task["itemId"]
             .as_str()
             .is_some_and(|id| id.starts_with("task:"))

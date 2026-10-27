@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use studio_runtime_providers::Method;
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::account_session_runtime::{
     AccountSessionError, AccountSessionPort, ProviderRequest, ProviderResponse, RequestCertainty,
 };
@@ -424,24 +425,17 @@ async fn branch(
         };
         let result = port.provider_request(request).await;
         match result {
-            Ok(receipt) if receipt.certainty == RequestCertainty::Written => match receipt.result {
-                Some(ProviderResponse::Reply(value)) => value,
-                Some(ProviderResponse::Rejected(error)) => {
+            Ok(studio_runtime_services::account_session_runtime::SessionReceipt {
+                outcome: ReceiptOutcome::Written { response, .. },
+                ..
+            }) => match response {
+                ProviderResponse::Reply(value) => value,
+                ProviderResponse::Rejected(error) => {
                     settle_failure(&store, &operation_id, false, &error.to_string()).await?;
                     return Err(bad_request(&error.to_string()));
                 }
-                _ => {
-                    settle_failure(
-                        &store,
-                        &operation_id,
-                        true,
-                        "Provider fork outcome is unknown",
-                    )
-                    .await?;
-                    return Err(unavailable());
-                }
             },
-            Ok(receipt) if receipt.certainty == RequestCertainty::NotSent => {
+            Ok(receipt) if receipt.certainty() == RequestCertainty::NotSent => {
                 settle_failure(&store, &operation_id, false, "Provider fork was not sent").await?;
                 return Err(unavailable());
             }
@@ -596,9 +590,11 @@ async fn provider_request(
             .map_err(|error| match error {
                 AccountSessionError::Requires(name) => ApiError::dependency(name),
                 AccountSessionError::Unknown => unavailable(),
-                _ => bad_request(&error.to_string()),
+                AccountSessionError::Refused(_)
+                | AccountSessionError::InvalidResponse(_)
+                | AccountSessionError::Persistence => bad_request(&error.to_string()),
             })?;
-    if receipt.certainty == RequestCertainty::NotSent {
+    if receipt.certainty() == RequestCertainty::NotSent {
         // A worker can disappear between ensuring the account session and
         // submitting the request. A NotSent receipt permits retrying, but the
         // operation identity and payload remain unchanged.
@@ -614,15 +610,26 @@ async fn provider_request(
             .map_err(|error| match error {
                 AccountSessionError::Requires(name) => ApiError::dependency(name),
                 AccountSessionError::Unknown => unavailable(),
-                _ => bad_request(&error.to_string()),
+                AccountSessionError::Refused(_)
+                | AccountSessionError::InvalidResponse(_)
+                | AccountSessionError::Persistence => bad_request(&error.to_string()),
             })?;
     }
-    match (receipt.certainty, receipt.result) {
-        (RequestCertainty::Written, Some(ProviderResponse::Reply(value))) => Ok(value),
-        (RequestCertainty::Written, Some(ProviderResponse::Rejected(error))) => {
-            Err(bad_request(&error.to_string()))
-        }
-        _ => Err(unavailable()),
+    match receipt.outcome {
+        ReceiptOutcome::Written {
+            response: ProviderResponse::Reply(value),
+            ..
+        } => Ok(value),
+        ReceiptOutcome::Written {
+            response: ProviderResponse::Rejected(error),
+            ..
+        } => Err(bad_request(&error.to_string())),
+        ReceiptOutcome::Unknown { .. }
+        | ReceiptOutcome::WorkerNotSent { .. }
+        | ReceiptOutcome::NoLiveAccountWorker
+        | ReceiptOutcome::ExpectedScopeMismatch
+        | ReceiptOutcome::DeadlineExpired
+        | ReceiptOutcome::NotHandedOff => Err(unavailable()),
     }
 }
 
@@ -777,8 +784,7 @@ async fn ensure_branch_model_catalog(state: &HttpState, account_key: &str) -> Re
         .and_then(Value::as_str)
         .unwrap_or_default();
     let provider = studio_runtime_providers::ProviderKind::of_record(account)
-        .map_err(|_| bad_request("Account provider is unknown"))?
-        .key();
+        .map_err(|_| bad_request("Account provider is unknown"))?;
     match state
         .model_catalog
         .wait_for_admission_catalog(account_key, home, provider)
@@ -1172,6 +1178,7 @@ inventory::submit! { crate::routes::manifest::RouteModuleRegistration { name:"br
 mod tests {
     use super::*;
     use std::sync::Mutex;
+    use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use studio_runtime_services::account_session_runtime::{
         AccountSessionFuture, ConnectionScope, SessionReceipt,
     };
@@ -1245,20 +1252,158 @@ mod tests {
                     Method::ThreadFork | Method::ThreadStart => {
                         return Err(AccountSessionError::Unknown);
                     }
-                    other => panic!("unexpected method {other:?}"),
+                    other @ Method::Initialize
+                    | other @ Method::Initialized
+                    | other @ Method::Ack
+                    | other @ Method::AccountLoginCancel
+                    | other @ Method::AccountLoginStart
+                    | other @ Method::AccountRateLimitResetCreditConsume
+                    | other @ Method::ThreadLoadedList
+                    | other @ Method::ConfigRead
+                    | other @ Method::SkillsExtraRootsSet
+                    | other @ Method::AccountRead
+                    | other @ Method::AccountRateLimitsRead
+                    | other @ Method::ThreadRealtimeStart
+                    | other @ Method::ThreadRealtimeStop
+                    | other @ Method::ThreadRealtimeAppendSpeech
+                    | other @ Method::ThreadRealtimeItemStarted
+                    | other @ Method::ThreadRealtimeTranscriptDelta
+                    | other @ Method::ThreadRealtimeTranscriptDone
+                    | other @ Method::ThreadRealtimeSdp
+                    | other @ Method::ThreadRealtimeError
+                    | other @ Method::ThreadRealtimeClosed
+                    | other @ Method::ThreadResume
+                    | other @ Method::ThreadRead
+                    | other @ Method::TurnStart
+                    | other @ Method::TurnSteer
+                    | other @ Method::TurnInterrupt
+                    | other @ Method::ThreadList
+                    | other @ Method::ThreadArchive
+                    | other @ Method::ThreadNameSet
+                    | other @ Method::ThreadMetadataUpdate
+                    | other @ Method::ThreadSettingsUpdate
+                    | other @ Method::ThreadCompactStart
+                    | other @ Method::ThreadRollback
+                    | other @ Method::ThreadItemsList
+                    | other @ Method::ThreadGoalSet
+                    | other @ Method::ThreadGoalUpdated
+                    | other @ Method::ThreadUnarchive
+                    | other @ Method::ThreadUnsubscribe
+                    | other @ Method::ProcessSpawn
+                    | other @ Method::ProcessWriteStdin
+                    | other @ Method::ProcessKill
+                    | other @ Method::ProcessResizePty
+                    | other @ Method::CommandExec
+                    | other @ Method::CommandExecWrite
+                    | other @ Method::CommandExecResize
+                    | other @ Method::CommandExecTerminate
+                    | other @ Method::ThreadBackgroundTerminalsList
+                    | other @ Method::ThreadBackgroundTerminalsTerminate
+                    | other @ Method::ThreadBackgroundTerminalsClean
+                    | other @ Method::ThreadCommandExecutionBackground
+                    | other @ Method::ThreadQueueList
+                    | other @ Method::ClaudeState
+                    | other @ Method::ClaudeRepairReport
+                    | other @ Method::ClaudeFileBackups
+                    | other @ Method::ClaudeSettings
+                    | other @ Method::ClaudeActivity
+                    | other @ Method::ClaudeStopTask
+                    | other @ Method::ClaudeShellPolicy
+                    | other @ Method::ClaudeDiagnostics
+                    | other @ Method::ClaudeMoveVersions
+                    | other @ Method::McpServerReconnect
+                    | other @ Method::McpServerStatusList
+                    | other @ Method::SkillsList
+                    | other @ Method::OperationStatus
+                    | other @ Method::ReviewStart
+                    | other @ Method::BrowserAnswer
+                    | other @ Method::BrowserCallback
+                    | other @ Method::BrowserClose
+                    | other @ Method::BrowserWait
+                    | other @ Method::ClaudeCommands
+                    | other @ Method::ClaudeMoveExport
+                    | other @ Method::ClaudeMoveIdentity
+                    | other @ Method::ClaudeMovePreflight
+                    | other @ Method::ClaudeMoveProof
+                    | other @ Method::Detach
+                    | other @ Method::EventRead
+                    | other @ Method::Exec
+                    | other @ Method::Generate
+                    | other @ Method::Health
+                    | other @ Method::Info
+                    | other @ Method::LayrHealth
+                    | other @ Method::Next
+                    | other @ Method::Open
+                    | other @ Method::ProjectEnsure
+                    | other @ Method::ProjectExec
+                    | other @ Method::ProjectImport
+                    | other @ Method::ProviderList
+                    | other @ Method::Replay
+                    | other @ Method::ResponseStatus
+                    | other @ Method::RetireCommand
+                    | other @ Method::SecretsList
+                    | other @ Method::SecretsRemove
+                    | other @ Method::SecretsSet
+                    | other @ Method::ShareConfigure
+                    | other @ Method::ShareName
+                    | other @ Method::ShareStatus
+                    | other @ Method::Sign
+                    | other @ Method::Status
+                    | other @ Method::SyncMacApply
+                    | other @ Method::SyncMacHandoff
+                    | other @ Method::SyncMacHashes
+                    | other @ Method::SyncMacHead
+                    | other @ Method::SyncMacRead
+                    | other @ Method::SyncMacWorktree
+                    | other @ Method::VaultConfigure
+                    | other @ Method::VaultPush
+                    | other @ Method::VaultStatus
+                    | other @ Method::UploadBegin
+                    | other @ Method::UploadChunk
+                    | other @ Method::UploadCommit
+                    | other @ Method::Verify
+                    | other @ Method::Write
+                    | other @ Method::CurrentTimeRead
+                    | other @ Method::ItemToolCall
+                    | other @ Method::ItemCommandExecutionRequestApproval
+                    | other @ Method::ItemFileChangeRequestApproval
+                    | other @ Method::ItemPermissionsRequestApproval
+                    | other @ Method::McpServerElicitationRequest
+                    | other @ Method::ItemToolRequestUserInput
+                    | other @ Method::ItemStarted
+                    | other @ Method::ItemCompleted
+                    | other @ Method::ItemAgentMessageDelta
+                    | other @ Method::ItemReasoningTextDelta
+                    | other @ Method::ItemCommandExecutionOutputDelta
+                    | other @ Method::CommandExecOutputDelta
+                    | other @ Method::TurnStarted
+                    | other @ Method::TurnCompleted
+                    | other @ Method::TurnPlanUpdated
+                    | other @ Method::TurnDiffUpdated
+                    | other @ Method::ThreadClosed
+                    | other @ Method::ThreadStatusChanged
+                    | other @ Method::ThreadTokenUsageUpdated
+                    | other @ Method::ThreadShellPolicyUpdated
+                    | other @ Method::ThreadIdleCompactionUpdated
+                    | other @ Method::AccountLoginCompleted
+                    | other @ Method::AccountUpdated
+                    | other @ Method::AccountRateLimitsUpdated
+                    | other @ Method::ModelSafetyBufferingUpdated
+                    | other @ Method::ProviderGenerationStarted
+                    | other @ Method::ProtocolError => panic!("unexpected method {other:?}"),
                 };
                 Ok(SessionReceipt {
                     scope: self.current_scope(&request.account).expect("scope"),
                     operation: request.operation,
-                    ticket: Some(studio_runtime_providers::RequestTicket {
-                        generation: 1,
-                        id: studio_runtime_providers::RequestId::String("fixture".into()),
-                        method: request.method,
-                    }),
-                    certainty: RequestCertainty::Written,
-                    result: Some(ProviderResponse::Reply(result)),
-                    not_sent_reason: None,
                     replayed: false,
+                    outcome: ReceiptOutcome::Written {
+                        ticket: studio_runtime_providers::RequestTicket {
+                            generation: 1,
+                            id: studio_runtime_providers::RequestId::String("fixture".into()),
+                            method: request.method,
+                        },
+                        response: ProviderResponse::Reply(result),
+                    },
                 })
             })
         }

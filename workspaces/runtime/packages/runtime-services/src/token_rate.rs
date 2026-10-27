@@ -676,7 +676,8 @@ fn project_effect(
                         state.actual = 0.0;
                         state.pending = 0.0;
                         state.estimated = false;
-                        state.baseline = state.lifetime.as_ref().map(|tokens| tokens.output as f64);
+                        state.baseline =
+                            state.lifetime.as_ref().map(|tokens| tokens.output() as f64);
                         state.samples.clear();
                         state.response_outputs.clear();
                         state.response_output_total = 0.0;
@@ -761,7 +762,7 @@ fn project_usage_observation(state: &mut ProjectedAgent, usage: UsageObservation
             last,
             ..
         } => {
-            let output = total.output as f64;
+            let output = total.output() as f64;
             if state.baseline.is_none()
                 || state
                     .lifetime
@@ -769,7 +770,7 @@ fn project_usage_observation(state: &mut ProjectedAgent, usage: UsageObservation
                     .is_some_and(|previous| total.decreased_from(previous))
             {
                 state.baseline =
-                    Some((output - last.map_or(0.0, |tokens| tokens.output as f64)).max(0.0));
+                    Some((output - last.map_or(0.0, |tokens| tokens.output() as f64)).max(0.0));
             }
             state.lifetime = Some(total);
             if state.response_outputs.is_empty() {
@@ -798,7 +799,7 @@ fn project_usage_observation(state: &mut ProjectedAgent, usage: UsageObservation
                 // preserves the first value and never consumes timing twice.
                 return;
             }
-            let response = tokens.output as f64;
+            let response = tokens.output() as f64;
             state.response_outputs.insert(identity, tokens);
             state.response_output_total += response;
             state.actual = state.response_output_total;
@@ -854,7 +855,7 @@ fn project_item_association(state: &mut ProjectedAgent, observation: &Notificati
         state.rate = 0.0;
         state.actual = 0.0;
         state.pending = 0.0;
-        state.baseline = state.lifetime.as_ref().map(|tokens| tokens.output as f64);
+        state.baseline = state.lifetime.as_ref().map(|tokens| tokens.output() as f64);
         state.timing_valid = false;
     }
     if !state.active || turn.as_deref() != Some(state.turn.as_str()) {
@@ -1175,10 +1176,8 @@ mod tests {
             response_id: response.into(),
             turn_id: Some(turn.into()),
             model: "claude".into(),
-            tokens: studio_runtime_schema::usage::UsageTokens {
-                output,
-                ..Default::default()
-            },
+            tokens: studio_runtime_schema::usage::UsageTokens::new(0, 0, 0, None, output, None)
+                .expect("valid token categories"),
             evidence: studio_runtime_schema::usage::UsageEvidence::Live,
             parent_tool_use_id: None,
             model_context_window: None,
@@ -1264,14 +1263,11 @@ mod tests {
             typed_usage(UsageObservation::Cumulative {
                 scope: UsageScope::CodexThread,
                 turn_id: Some(turn.into()),
-                total: UsageTokens {
-                    output,
-                    ..Default::default()
-                },
-                last: Some(UsageTokens {
-                    output: 20,
-                    ..Default::default()
-                }),
+                total: UsageTokens::new(0, 0, 0, None, output, None)
+                    .expect("valid token categories"),
+                last: Some(
+                    UsageTokens::new(0, 0, 0, None, 20, None).expect("valid token categories"),
+                ),
                 model_context_window: None,
                 models: None,
             })
@@ -1316,10 +1312,8 @@ mod tests {
             typed_usage(UsageObservation::Cumulative {
                 scope: UsageScope::ClaudeQuery,
                 turn_id: Some("turn".into()),
-                total: UsageTokens {
-                    output: 50_000,
-                    ..Default::default()
-                },
+                total: UsageTokens::new(0, 0, 0, None, 50_000, None)
+                    .expect("valid token categories"),
                 last: None,
                 model_context_window: None,
                 models: None,
@@ -1365,16 +1359,12 @@ mod tests {
                     typed_usage(UsageObservation::Cumulative {
                         scope: UsageScope::CodexThread,
                         turn_id: Some("turn".into()),
-                        total: UsageTokens {
-                            uncached_input: input,
-                            output,
-                            reasoning_output: reasoning,
-                            ..Default::default()
-                        },
-                        last: Some(UsageTokens {
-                            output: last_output,
-                            ..Default::default()
-                        }),
+                        total: UsageTokens::new(input, 0, 0, None, output, reasoning)
+                            .expect("valid token categories"),
+                        last: Some(
+                            UsageTokens::new(0, 0, 0, None, last_output, None)
+                                .expect("valid token categories"),
+                        ),
                         model_context_window: None,
                         models: None,
                     }),
@@ -1405,14 +1395,12 @@ mod tests {
             typed_usage(studio_runtime_schema::usage::UsageObservation::Cumulative {
                 scope: studio_runtime_schema::usage::UsageScope::CodexThread,
                 turn_id: Some("turn".into()),
-                total: studio_runtime_schema::usage::UsageTokens {
-                    output: 30,
-                    ..Default::default()
-                },
-                last: Some(studio_runtime_schema::usage::UsageTokens {
-                    output: 30,
-                    ..Default::default()
-                }),
+                total: studio_runtime_schema::usage::UsageTokens::new(0, 0, 0, None, 30, None)
+                    .expect("valid token categories"),
+                last: Some(
+                    studio_runtime_schema::usage::UsageTokens::new(0, 0, 0, None, 30, None)
+                        .expect("valid token categories"),
+                ),
                 model_context_window: None,
                 models: None,
             }),

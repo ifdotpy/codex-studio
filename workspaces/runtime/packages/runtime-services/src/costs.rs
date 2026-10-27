@@ -274,7 +274,7 @@ pub fn usage_reconciliation(
                     }
                 }
             }
-            _ => {}
+            UsageObservation::Response { .. } | UsageObservation::Cumulative { .. } => {}
         }
     }
     let budget_record: Option<String> = tx
@@ -362,16 +362,16 @@ pub fn usage_reconciliation(
     let mut mismatched = 0;
     let mut unknown_recorded = 0;
     let mut known_recorded = 0;
-    let mut recorded_token_total = Some(studio_runtime_schema::usage::UsageTokens {
-        cache_write_input_1h: Some(0),
-        reasoning_output: Some(0),
-        ..Default::default()
-    });
-    let mut evidence_token_total = Some(studio_runtime_schema::usage::UsageTokens {
-        cache_write_input_1h: Some(0),
-        reasoning_output: Some(0),
-        ..Default::default()
-    });
+    // Zero one-hour writes are a subset of zero cache writes.
+    let mut recorded_token_total = Some(
+        studio_runtime_schema::usage::UsageTokens::new(0, 0, 0, Some(0), 0, Some(0))
+            .expect("valid token categories"),
+    );
+    // Zero one-hour writes are a subset of zero cache writes.
+    let mut evidence_token_total = Some(
+        studio_runtime_schema::usage::UsageTokens::new(0, 0, 0, Some(0), 0, Some(0))
+            .expect("valid token categories"),
+    );
     let mut recorded_total = Some(0.0);
     let mut evidence_total = Some(0.0);
     let responses = rows.into_iter().map(|(id, (recorded, native))| {
@@ -427,27 +427,30 @@ fn add_tokens(
 ) -> Option<studio_runtime_schema::usage::UsageTokens> {
     let total = total?;
     let tokens = tokens?;
-    Some(studio_runtime_schema::usage::UsageTokens {
-        uncached_input: total.uncached_input.checked_add(tokens.uncached_input)?,
-        cache_read_input: total
-            .cache_read_input
-            .checked_add(tokens.cache_read_input)?,
-        cache_write_input: total
-            .cache_write_input
-            .checked_add(tokens.cache_write_input)?,
-        // Contract v4: absence uses legacy pricing, so it contributes zero one-hour writes.
-        cache_write_input_1h: Some(
+    studio_runtime_schema::usage::UsageTokens::new(
+        total
+            .uncached_input()
+            .checked_add(tokens.uncached_input())?,
+        total
+            .cache_read_input()
+            .checked_add(tokens.cache_read_input())?,
+        total
+            .cache_write_input()
+            .checked_add(tokens.cache_write_input())?,
+        // Contract v4: absence uses legacy pricing and contributes zero one-hour writes.
+        Some(
             total
-                .cache_write_input_1h
+                .cache_write_input_1h()
                 .unwrap_or(0)
-                .checked_add(tokens.cache_write_input_1h.unwrap_or(0))?,
+                .checked_add(tokens.cache_write_input_1h().unwrap_or(0))?,
         ),
-        output: total.output.checked_add(tokens.output)?,
-        reasoning_output: total
-            .reasoning_output
-            .zip(tokens.reasoning_output)
+        total.output().checked_add(tokens.output())?,
+        total
+            .reasoning_output()
+            .zip(tokens.reasoning_output())
             .and_then(|(a, b)| a.checked_add(b)),
-    })
+    )
+    .ok()
 }
 
 fn same_billable_tokens(
@@ -456,14 +459,15 @@ fn same_billable_tokens(
 ) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => {
-            left.uncached_input == right.uncached_input
-                && left.cache_read_input == right.cache_read_input
-                && left.cache_write_input == right.cache_write_input
-                && left.cache_write_input_1h.unwrap_or(0) == right.cache_write_input_1h.unwrap_or(0)
-                && left.output == right.output
+            left.uncached_input() == right.uncached_input()
+                && left.cache_read_input() == right.cache_read_input()
+                && left.cache_write_input() == right.cache_write_input()
+                && left.cache_write_input_1h().unwrap_or(0)
+                    == right.cache_write_input_1h().unwrap_or(0)
+                && left.output() == right.output()
                 && left
-                    .reasoning_output
-                    .zip(right.reasoning_output)
+                    .reasoning_output()
+                    .zip(right.reasoning_output())
                     .is_none_or(|(a, b)| a == b)
         }
         _ => false,
@@ -491,16 +495,17 @@ fn log_tokens(tokens: CostTokens) -> Option<studio_runtime_schema::usage::UsageT
             })
             .map(|n| n as u64)
     };
-    Some(studio_runtime_schema::usage::UsageTokens {
-        uncached_input: count(tokens.input_tokens)?,
-        cache_read_input: count(tokens.cached_input_tokens)?,
-        cache_write_input: count(tokens.cache_write_input_tokens)?,
-        cache_write_input_1h: tokens
+    studio_runtime_schema::usage::UsageTokens::new(
+        count(tokens.input_tokens)?,
+        count(tokens.cached_input_tokens)?,
+        count(tokens.cache_write_input_tokens)?,
+        tokens
             .cache_write_input_1h_tokens
             .and_then(|n| count(Some(n))),
-        output: count(tokens.output_tokens)?,
-        reasoning_output: None,
-    })
+        count(tokens.output_tokens)?,
+        None,
+    )
+    .ok()
 }
 
 fn price_response(
@@ -511,16 +516,16 @@ fn price_response(
     let model = model?;
     let tokens = tokens?;
     let usage = TokenUsage {
-        input_tokens: Some(tokens.uncached_input as f64),
-        cached_input_tokens: Some(tokens.cache_read_input as f64),
-        cache_write_input_tokens: Some(tokens.cache_write_input as f64),
-        cache_write_input_1h_tokens: tokens.cache_write_input_1h.map(|n| n as f64),
-        output_tokens: Some(tokens.output as f64),
+        input_tokens: Some(tokens.uncached_input() as f64),
+        cached_input_tokens: Some(tokens.cache_read_input() as f64),
+        cache_write_input_tokens: Some(tokens.cache_write_input() as f64),
+        cache_write_input_1h_tokens: tokens.cache_write_input_1h().map(|n| n as f64),
+        output_tokens: Some(tokens.output() as f64),
     };
     let context = tokens
-        .uncached_input
-        .checked_add(tokens.cache_read_input)?
-        .checked_add(tokens.cache_write_input)?;
+        .uncached_input()
+        .checked_add(tokens.cache_read_input())?
+        .checked_add(tokens.cache_write_input())?;
     catalog?
         .price_usage(
             provider_for(model)?,
@@ -680,7 +685,7 @@ fn parse_codex_evidence(
                     }
                 }
                 RolloutAction::WrongThread => incomplete = true,
-                _ => {}
+                RolloutAction::Event { .. } | RolloutAction::Payload { .. } => {}
             }
         }
     }
@@ -2053,15 +2058,38 @@ mod tests {
         let tokens = response.tokens.as_ref().expect("known tokens");
         assert_eq!(
             (
-                tokens.uncached_input,
-                tokens.cache_read_input,
-                tokens.output
+                tokens.uncached_input(),
+                tokens.cache_read_input(),
+                tokens.output()
             ),
             (70, 30, 20)
         );
-        assert_eq!(tokens.reasoning_output, Some(7));
+        assert_eq!(tokens.reasoning_output(), Some(7));
         assert!(!budget.incomplete);
         assert!(!budget.truncated);
+    }
+
+    #[test]
+    fn usage_reconciliation_rejects_invalid_cache_write_subset() {
+        let mut raw = super::CostTokens {
+            input_tokens: Some(1.0),
+            cached_input_tokens: Some(2.0),
+            cache_write_input_tokens: Some(3.0),
+            cache_write_input_1h_tokens: Some(4.0),
+            output_tokens: Some(5.0),
+        };
+        assert!(super::log_tokens(raw).is_none());
+        raw.cache_write_input_1h_tokens = Some(3.0);
+        let tokens = super::log_tokens(raw).expect("valid subset");
+        assert_eq!(tokens.total(), Some(11));
+        assert_eq!(tokens.cache_write_input_1h(), Some(3));
+        raw.cache_write_input_1h_tokens = None;
+        assert_eq!(
+            super::log_tokens(raw)
+                .expect("legacy pricing")
+                .cache_write_input_1h(),
+            None
+        );
     }
 
     #[test]
@@ -2072,14 +2100,8 @@ mod tests {
                 "tiers":[{"tier":{"type":"context","size":100},"input":3,"output":4,"cache_read":1,"cache_write":2}]}}}},
             "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":1}}}}
         }})).expect("catalog");
-        let tokens = UsageTokens {
-            uncached_input: 70,
-            cache_read_input: 20,
-            cache_write_input: 10,
-            cache_write_input_1h: None,
-            output: 5,
-            reasoning_output: Some(2),
-        };
+        let tokens =
+            UsageTokens::new(70, 20, 10, None, 5, Some(2)).expect("valid token categories");
         assert_eq!(
             super::price_response(Some(&catalog), Some("gpt-test"), Some(&tokens)),
             Some(0.00027)
@@ -2088,8 +2110,7 @@ mod tests {
             super::price_response(Some(&catalog), Some("gpt-test"), None),
             None
         );
-        let mut unknown_reasoning = tokens.clone();
-        unknown_reasoning.reasoning_output = None;
+        let unknown_reasoning = UsageTokens::new(70, 20, 10, None, 5, None).expect("valid tokens");
         assert!(super::same_billable_tokens(
             Some(&tokens),
             Some(&unknown_reasoning)

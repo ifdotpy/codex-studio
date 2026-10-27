@@ -695,7 +695,7 @@ fn resolve(
                 .map(|(k, v)| (k.clone(), resolve(v, results, project)))
                 .collect(),
         ),
-        _ => value.clone(),
+        Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
     }
 }
 

@@ -30,7 +30,7 @@ function hasConfirmedChatCount(expected: number) {
         string,
         JsonValue[]
       >
-    ).agents.length === expected
+    ).agents?.length === expected
   );
 }
 
@@ -243,7 +243,7 @@ test("Chat Create Latency Ui @performance", async ({
     const accountChangeMs = Date.now() - accountStartedAt;
     await expect(destinationAccount).toHaveAttribute("aria-pressed", "true");
     assert.equal(accountChanges.length, 1);
-    assert.equal(accountChanges[0].id, confirmed.id);
+    assert.equal(accountChanges[0]?.id, confirmed.id);
     assert.equal(
       transfers.length,
       0,

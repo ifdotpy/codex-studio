@@ -1,3 +1,4 @@
+import { required } from "./performance-fixture.ts";
 import type { PostResult } from "../../src/apiTypes.ts";
 import { fixturePostBody } from "../mobile/browser-fixture.ts";
 import type { Request } from "@playwright/test";
@@ -25,9 +26,9 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     stdio: ["pipe", "pipe", "pipe"],
   });
   let log = "";
-  fixture.stderr!.on("data", (data) => (log += data));
+  required(fixture.stderr).on("data", (data) => (log += data));
   const port = await new Promise((resolve, reject) => {
-    fixture.stdout!.once("data", (data) =>
+    required(fixture.stdout).once("data", (data) =>
       resolve(Number(String(data).trim())),
     );
     fixture.once("exit", () => reject(new Error(log)));
@@ -96,7 +97,7 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     };
   });
   const rename = async (agent: Agent, name: string) => {
-    fixture.stdin!.write(
+    required(fixture.stdin).write(
       JSON.stringify({
         id: `rename:${agent.id}:${name}`,
         method: "fixture/entity-change",
@@ -120,9 +121,13 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
   try {
     await page.goto(origin);
     await page.locator(`[data-chat="${lead.id}"]`).click();
-    if (!(await page.locator(`[data-worker="${workers[0].id}"]`).isVisible()))
+    if (
+      !(await page
+        .locator(`[data-worker="${required(workers[0]).id}"]`)
+        .isVisible())
+    )
       await page.locator("#team-toggle").click();
-    await page.locator(`[data-worker="${workers[0].id}"]`).waitFor();
+    await page.locator(`[data-worker="${required(workers[0]).id}"]`).waitFor();
     await page
       .locator("#message")
       .fill("Keep this draft while other agents update.");
@@ -209,13 +214,13 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
       "Keep this draft while other agents update.",
     );
     await reset();
-    await rename(workers[0], "Worker changed");
+    await rename(required(workers[0]), "Worker changed");
     const affected = await counts();
     const workerModelWork = await modelWork();
     expect(workerModelWork["catalog-row"]).toBeGreaterThan(0);
     expect(workerModelWork["order-compare"] || 0).toBe(0);
     expect(workerModelWork["search-row"] || 0).toBe(0);
-    expect(affected[`team-row:${workers[0].id}`]).toBeGreaterThan(0);
+    expect(affected[`team-row:${required(workers[0]).id}`]).toBeGreaterThan(0);
     for (const worker of workers.slice(1))
       expect(affected[`team-row:${worker.id}`] || 0).toBe(0);
     await reset();
@@ -240,7 +245,7 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     await page.context().setOffline(false);
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
     await expect(page.locator("#error")).toHaveCount(0);
-    await page.locator(`[data-worker="${workers[0].id}"]`).click();
+    await page.locator(`[data-worker="${required(workers[0]).id}"]`).click();
     await expect(page.locator("#conversation-title")).toContainText(
       "Worker changed",
     );
@@ -261,7 +266,7 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     );
     await page.locator("#send").click();
     const submitted = fixturePostBody<"/api/messages">(await sent);
-    expect(submitted.room).toBe(workers[0].id);
+    expect(submitted.room).toBe(required(workers[0]).id);
     expect(submitted.text).toBe("Instruction for the selected worker.");
     await expect(page.locator("#message")).toHaveValue("");
     await page.locator(`[data-chat="${lead.id}"]`).click();

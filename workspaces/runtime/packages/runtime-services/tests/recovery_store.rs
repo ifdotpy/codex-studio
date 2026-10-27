@@ -455,6 +455,14 @@ fn frozen_cases(corpus: Corpus) -> Vec<serde_json::Value> {
     // Adapt their agent input and expected agent output, leaving receipts intact.
     for case in &mut cases {
         case["agent"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+        if let Some(history) = case["agent"]
+            .get_mut("accountHistory")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for entry in history {
+                entry["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+            }
+        }
         if agent_output && case["after"].is_object() {
             case["after"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
         }
@@ -513,7 +521,9 @@ impl studio_runtime_services::recovery_history::RecoveryReader for StartReader {
                 body: match method {
                     HistoryMethod::Turns => self.replies.pop_front().expect("page"),
                     HistoryMethod::Thread => json!({"thread":{"id":"thread","status":self.state}}),
-                    _ => panic!("unexpected read"),
+                    HistoryMethod::Items | HistoryMethod::BackgroundTerminals => {
+                        panic!("unexpected read")
+                    }
                 },
             })
         })
@@ -760,7 +770,7 @@ async fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
                     observation: observation.clone(),
                     complete_history: true,
                     idle_twice: true,
-                    confirmed_not_applied: false,
+                    not_applied: None,
                 },
             )
             .await;
@@ -824,6 +834,28 @@ async fn restart_not_applied_failpoints_roll_back_event_and_agent_together() {
             let current: Arc<ObservationSource> =
                 Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
             let writer = HoldWriter::default();
+            let mut reader = StartReader {
+                replies: [json!({"data":[{"id":"rejected","threadId":before.record()["threadId"],
+                    "clientUserMessageId":before.start_attempt()["events"][0],"startOutcome":"not_applied","items":[]}]})].into(),
+                observation: observation.clone(), state: json!({"type":"idle"}),
+            };
+            let crate_proof = studio_runtime_services::recovery_history::HistoryRead::new(
+                &mut reader,
+                observation.scope.clone(),
+                std::time::Instant::now()
+                    + studio_runtime_services::recovery_history::READ_DEADLINE,
+            )
+            .exact_start_outcome(
+                before.record()["threadId"].as_str().expect("thread"),
+                before.start_attempt()["events"][0].as_str().expect("event"),
+            )
+            .await
+            .expect("negative receipt");
+            let studio_runtime_services::recovery_history::ExactStart::NotApplied(proof) =
+                crate_proof
+            else {
+                panic!("negative proof");
+            };
             let result = RecoveryStore {
                 store: Arc::clone(&store),
                 connection_current: Arc::new(|_| true),
@@ -838,7 +870,7 @@ async fn restart_not_applied_failpoints_roll_back_event_and_agent_together() {
                     observation: observation.clone(),
                     complete_history: true,
                     idle_twice: true,
-                    confirmed_not_applied: true,
+                    not_applied: Some(proof),
                 },
             )
             .await;
@@ -978,7 +1010,7 @@ impl studio_runtime_services::recovery_history::RecoveryReader for TaskReader {
                     self.page += 1;
                     body
                 }
-                _ => panic!("unexpected method"),
+                HistoryMethod::Turns => panic!("unexpected method"),
             };
             Ok(HistoryReceipt { scope, body })
         })

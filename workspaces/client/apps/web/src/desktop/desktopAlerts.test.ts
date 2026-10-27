@@ -65,10 +65,13 @@ it("builds completed reply notifications with a bounded title and body", () => {
     target: { agentId: "lead", section: "messages" },
   });
 
+  assert.ok(alerts[1]);
   assert.equal(alerts[1].title.length, 160);
 
+  assert.ok(alerts[1] !== null && alerts[1] !== undefined);
   assert.equal(alerts[1].body, "Open the chat to read the reply.");
 
+  assert.ok(alerts[2] !== null && alerts[2] !== undefined);
   assert.equal(alerts[2].body, "b".repeat(2000));
 });
 
@@ -387,17 +390,19 @@ it("does not show a complaint from before the window started when its page arriv
   const [old] = desktopAlerts(
     snapshot([lead], [], [complaint(1, 900_000)]),
   ).filter((alert) => alert.id.startsWith("complaint:"));
-
+  assert.ok(old);
   assert.equal(old.at, 900_000);
   assert.equal(fresh(old), false);
   // A new version of the same complaint after the start is a new event.
   const [next] = desktopAlerts(
     snapshot([lead], [], [complaint(2, 1_000_010)]),
   ).filter((alert) => alert.id.startsWith("complaint:"));
-
+  assert.ok(next);
   assert.equal(fresh(next), true);
   // A record without a time keeps the earlier rule.
-  assert.equal(fresh({ ...old!, at: undefined }), true);
+  const withoutTime = { ...old };
+  delete withoutTime.at;
+  assert.equal(fresh(withoutTime), true);
 });
 
 const signInParams = {

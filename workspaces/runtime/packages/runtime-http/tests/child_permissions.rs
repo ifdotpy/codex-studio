@@ -1,4 +1,5 @@
 //! The UI's HTTP caller inherits the current Claude permissions before commit.
+
 #![allow(clippy::unwrap_used, clippy::disallowed_methods)]
 use axum::{
     body::{Body, to_bytes},
@@ -8,6 +9,7 @@ use axum::{
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_http::{HttpState, router};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{account_driver::AccountDriver, account_session_runtime::*};
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore};
 use tower::ServiceExt;
@@ -31,17 +33,17 @@ impl AccountSessionPort for Catalog {
             Ok(SessionReceipt {
                 scope: request.expected_scope.unwrap(),
                 operation: request.operation,
-                ticket: Some(studio_runtime_providers::RequestTicket {
-                    generation: 1,
-                    id: studio_runtime_providers::RequestId::String("catalog".into()),
-                    method: request.method,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(
-                    json!({"data":[{"model":"claude-haiku-4-5","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
-                )),
-                not_sent_reason: None,
                 replayed: false,
+                outcome: ReceiptOutcome::Written {
+                    ticket: studio_runtime_providers::RequestTicket {
+                        generation: 1,
+                        id: studio_runtime_providers::RequestId::String("catalog".into()),
+                        method: request.method,
+                    },
+                    response: ProviderResponse::Reply(
+                        json!({"data":[{"model":"claude-haiku-4-5","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
+                    ),
+                },
             })
         })
     }
@@ -104,7 +106,8 @@ async fn ui_child_permissions_inherit_override_review_and_refuse_escalation() {
     let state_root = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(state_root.path())).await.unwrap());
     let registry = root.path().join("accounts.json");
-    std::fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":cwd,"label":"Fixture","source":"Fixture","provider":"claude","status":"signedOut"}},"logins":{},"deleteReceipts":{}}).to_string()).unwrap();
+    let missing_cli = root.path().join("missing-claude-cli");
+    std::fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":cwd,"label":"Fixture","source":"Fixture","provider":"claude","status":"signedOut","claudeOptions":{"binaryPath":missing_cli}}},"logins":{},"deleteReceipts":{}}).to_string()).unwrap();
     let state = HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
@@ -119,7 +122,12 @@ async fn ui_child_permissions_inherit_override_review_and_refuse_escalation() {
     catalog.set_account_session(Some(Arc::new(Catalog)));
     assert!(matches!(
         catalog
-            .read_until_ready("default", &cwd, "claude", false)
+            .read_until_ready(
+                "default",
+                &cwd,
+                studio_runtime_providers::ProviderKind::Claude,
+                false
+            )
             .await,
         studio_runtime_services::model_catalog::CatalogRead::Ready(_)
     ));
@@ -150,7 +158,7 @@ async fn ui_child_permissions_inherit_override_review_and_refuse_escalation() {
             "bypassPermissions",
         ),
     ] {
-        let parent = json!({"id":LEAD,"rootId":LEAD,"epoch":0,"status":"idle","isLead":true,"name":"Lead","cwd":cwd,"hostProjectPath":cwd,"accountKey":"default","provider":"claude","model":"claude-haiku-4-5","autoWake":true,"yoloMode":true,"workspaceMode":"worktree","workerDefaults":{"model":"claude-haiku-4-5"},"claudeOptions":{"permissionMode":mode,"thinking":false}});
+        let parent = json!({"id":LEAD,"rootId":LEAD,"epoch":0,"status":"idle","isLead":true,"name":"Lead","cwd":cwd,"hostProjectPath":cwd,"accountKey":"default","provider":"claude","model":"claude-haiku-4-5","autoWake":true,"yoloMode":true,"workspaceMode":"worktree","workerDefaults":{"accountKey":"default","model":"claude-haiku-4-5"},"claudeOptions":{"permissionMode":mode,"thinking":false}});
         let projected =
             studio_runtime_services::sync_views::project_persisted_record("agent", &parent)
                 .unwrap();
@@ -186,4 +194,147 @@ async fn ui_child_permissions_inherit_override_review_and_refuse_escalation() {
     .await;
     assert!((400..500).contains(&status));
     catalog.shutdown().await.unwrap();
+}
+
+struct RoutingCatalog;
+impl AccountSessionPort for RoutingCatalog {
+    fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+        Some(ConnectionScope {
+            account: account.into(),
+            connection: "fixture".into(),
+            generation: 1,
+        })
+    }
+    fn provider_request(
+        &self,
+        request: ProviderRequest,
+    ) -> AccountSessionFuture<'_, SessionReceipt> {
+        Box::pin(async move {
+            Ok(SessionReceipt {
+                scope: request.expected_scope.unwrap(),
+                operation: request.operation,
+                outcome: ReceiptOutcome::Written {
+                    ticket: studio_runtime_providers::RequestTicket {
+                        generation: 1,
+                        id: studio_runtime_providers::RequestId::String("catalog".into()),
+                        method: request.method,
+                    },
+                    response: ProviderResponse::Reply(
+                        json!({"data":[{"model":"gpt-6-luna","supportedReasoningEfforts":[{"reasoningEffort":"high"}]}],"nextCursor":null}),
+                    ),
+                },
+                replayed: false,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn automatic_http_child_warms_higher_priority_catalog_before_selection() {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = tempfile::tempdir().unwrap();
+    let cwd = root
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let parent_home = root.path().join("parent-home");
+    let priority_home = root.path().join("priority-home");
+    let claude_home = root.path().join("claude-home");
+    let missing_cli = root.path().join("missing-claude-cli");
+    std::fs::create_dir_all(&parent_home).unwrap();
+    std::fs::create_dir_all(&priority_home).unwrap();
+    std::fs::create_dir_all(&claude_home).unwrap();
+    std::fs::write(
+        parent_home.join("auth.json"),
+        r#"{"OPENAI_API_KEY":"fixture-parent"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        priority_home.join("auth.json"),
+        r#"{"OPENAI_API_KEY":"fixture-priority"}"#,
+    )
+    .unwrap();
+    let registry = root.path().join("accounts.json");
+    std::fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
+        "defaultAccountKey":"default","accounts":{
+            "default":{"id":"default","home":parent_home,"label":"Parent","source":"Fixture","provider":"codex","status":"ready"},
+            "a-priority":{"id":"a-priority","home":priority_home,"label":"Priority","source":"Fixture","provider":"codex","status":"ready"},
+            "claude-parent":{"id":"claude-parent","home":claude_home,"label":"Claude","source":"Fixture","provider":"claude","status":"signedOut","claudeOptions":{"binaryPath":missing_cli}}},
+        "logins":{},"deleteReceipts":{}}).to_string()).unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(state_root.path())).await.unwrap());
+    let lead = json!({"id":LEAD,"rootId":LEAD,"epoch":0,"status":"idle","isLead":true,
+        "name":"Lead","cwd":cwd,"hostProjectPath":cwd,"accountKey":"default","provider":"codex",
+        "model":"gpt-6-luna","autoWake":true,"yoloMode":true,"workspaceMode":"shared",
+        "concurrency":4,"maxAgents":20,"workerDefaults":{"model":"gpt-6-luna"}});
+    store
+        .transaction(move |tx| AgentRepository::put(tx, &AgentRecord::from_value(lead).unwrap()))
+        .await
+        .unwrap();
+    let mut state = HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        store.root().to_string_lossy().into_owned(),
+        49171,
+        None,
+        Some(store.clone()),
+        None,
+    )
+    .with_account_driver(Arc::new(AccountDriver::open(&registry).unwrap()));
+    let session = Arc::new(RoutingCatalog);
+    let catalog = state.model_catalog_handle();
+    catalog.set_account_session(Some(session.clone()));
+    state.account_session = Some(session);
+    assert!(matches!(
+        catalog
+            .read_until_ready(
+                "default",
+                parent_home.to_str().unwrap(),
+                studio_runtime_providers::ProviderKind::Codex,
+                false
+            )
+            .await,
+        studio_runtime_services::model_catalog::CatalogRead::Ready(_)
+    ));
+    let app = router(state).unwrap();
+    let body = json!({"id":"ec2d6635-e504-4d2e-a5ed-a4631393e2cc","parent":LEAD,"name":"Child","prompt":"Read","role":"implementer"});
+    let (status, response) = call(&app, body.clone()).await;
+    assert_eq!(status, 200, "{response}");
+    assert_eq!(response["accountKey"], "a-priority");
+    let claude_lead_id = "af2eeb40-0cc8-44ef-a4e8-aa321b4d7331";
+    let claude_lead = json!({"id":claude_lead_id,"rootId":claude_lead_id,"epoch":0,"status":"idle","isLead":true,
+        "name":"Claude lead","cwd":cwd,"hostProjectPath":cwd,"accountKey":"claude-parent","provider":"claude",
+        "model":"claude-haiku-4-5","autoWake":true,"yoloMode":true,"workspaceMode":"shared",
+        "concurrency":4,"maxAgents":20,"workerDefaults":{}});
+    store.transaction(move |tx| {
+        AgentRepository::put(tx, &AgentRecord::from_value(claude_lead).unwrap())?;
+        tx.execute("INSERT INTO runtime_profiles(id,record) VALUES(?1,?2)", rusqlite::params!["codex-profile", json!({"id":"codex-profile","name":"Codex profile","role":"implementer","model":"gpt-6-luna","effort":null,"instructions":""}).to_string()])?;
+        Ok(())
+    }).await.unwrap();
+    let (profile_status, profile_child) = call(&app, json!({"id":"bc2d6635-e504-4d2e-a5ed-a4631393e2cc","parent":claude_lead_id,"profile_id":"codex-profile","name":"Profile child","prompt":"Read"})).await;
+    assert_eq!(profile_status, 200, "{profile_child}");
+    assert_eq!(profile_child["provider"], "codex");
+    assert_eq!(profile_child["model"], "gpt-6-luna");
+    catalog.shutdown().await.unwrap();
+    store
+        .transaction(|tx| {
+            tx.execute("DELETE FROM runtime_agents WHERE id=?1", [LEAD])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut fresh = body.clone();
+    fresh["id"] = json!("dc2d6635-e504-4d2e-a5ed-a4631393e2cc");
+    let (fresh_status, _) = call(&app, fresh).await;
+    assert_eq!(
+        fresh_status, 500,
+        "new admission must fail without its parent"
+    );
+    let (status, replay) = call(&app, body).await;
+    assert_eq!(
+        status, 200,
+        "replay must precede parent and catalog admission: {replay}"
+    );
+    assert_eq!(replay["accountKey"], "a-priority");
 }

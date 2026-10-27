@@ -1,4 +1,5 @@
 //! Reconnect authorization, session identity and durable HTTP replay witnesses.
+
 #![allow(clippy::unwrap_used, clippy::disallowed_methods)]
 use axum::{
     body::{Body, to_bytes},
@@ -8,6 +9,7 @@ use axum::{
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use studio_runtime_http::{HttpState, router};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{account_policy::AccountPolicyState, account_session_runtime::*};
 use studio_runtime_store::RuntimeStore;
 use tower::ServiceExt;
@@ -60,24 +62,43 @@ impl AccountSessionPort for Session {
                 _ => panic!("unexpected method"),
             };
             Ok(SessionReceipt {
+                outcome: {
+                    let ticket = studio_runtime_providers::RequestTicket {
+                        generation: scope().generation,
+                        id: studio_runtime_providers::RequestId::String(request.operation.clone()),
+                        method: request.method,
+                    };
+                    match (
+                        if self.unknown {
+                            RequestCertainty::Unknown
+                        } else {
+                            RequestCertainty::Written
+                        },
+                        if self.unknown {
+                            None
+                        } else {
+                            Some(ProviderResponse::Reply(result))
+                        },
+                    ) {
+                        (RequestCertainty::Written, Some(response)) => {
+                            ReceiptOutcome::Written { ticket, response }
+                        }
+                        (RequestCertainty::Written, None) | (RequestCertainty::Unknown, _) => {
+                            ReceiptOutcome::Unknown {
+                                ticket: studio_runtime_providers::RequestTicket {
+                                    generation: scope().generation,
+                                    id: studio_runtime_providers::RequestId::String(
+                                        request.operation.clone(),
+                                    ),
+                                    method: request.method,
+                                },
+                            }
+                        }
+                        (RequestCertainty::NotSent, _) => ReceiptOutcome::NoLiveAccountWorker,
+                    }
+                },
                 scope: scope(),
                 operation: request.operation.clone(),
-                ticket: Some(studio_runtime_providers::RequestTicket {
-                    generation: scope().generation,
-                    id: studio_runtime_providers::RequestId::String(request.operation),
-                    method: request.method,
-                }),
-                certainty: if self.unknown {
-                    RequestCertainty::Unknown
-                } else {
-                    RequestCertainty::Written
-                },
-                result: if self.unknown {
-                    None
-                } else {
-                    Some(ProviderResponse::Reply(result))
-                },
-                not_sent_reason: None,
                 replayed: false,
             })
         })
@@ -217,10 +238,21 @@ async fn mcp_reconnect_requires_user_authority_and_exact_session_identity() {
 }
 #[tokio::test]
 async fn mcp_reconnect_replays_lost_success_without_second_provider_call() {
-    let (_root, _store, app, session) = fixture("claude", false).await;
+    let (_root, store, app, session) = fixture("claude", false).await;
     let first = request(&app, "/api/mcp/reconnect", Some(body()), true).await;
     assert_eq!(first.0, 200, "{first:?}");
     assert_eq!(first.1["status"], "completed");
+    let receipt = studio_runtime_store::EventWriteRepository::receipt(
+        &store.test_reader().unwrap(),
+        "mcp-reconnect:f43c1885-f4fc-485b-bf99-8b4f31e7e7c4",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        receipt.signature,
+        r#"{"id":"agent","name":"server","request_id":"f43c1885-f4fc-485b-bf99-8b4f31e7e7c4","session":{"account":"account","connection":"connection","epoch":2,"generation":1,"thread":"thread"}}"#,
+        "typed requests must preserve historical receipt signature bytes"
+    );
     assert_eq!(
         request(&app, "/api/mcp/reconnect", Some(body()), true).await,
         first
@@ -326,6 +358,20 @@ async fn mcp_reconnect_unknown_is_never_resent_and_codex_is_explicitly_unsupport
     assert!(response.1.to_string().contains("not supported for Codex"));
     assert!(session.calls.lock().unwrap().is_empty());
 }
+#[tokio::test]
+async fn mcp_reconnect_missing_account_is_not_classified_as_codex() {
+    let (_root, _store, app, session) = fixture("claude", false).await;
+    let mut missing = body();
+    missing["session"]["account"] = json!("missing");
+    let response = request(&app, "/api/mcp/reconnect", Some(missing), true).await;
+    assert_eq!(response.0, 400);
+    assert_eq!(
+        response.1["error"],
+        "MCP server reconnect requires a supported account provider."
+    );
+    assert!(session.calls.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn mcp_inventory_follows_cursor_and_returns_session_binding() {
     let (_root, _store, app, session) = fixture("claude", false).await;

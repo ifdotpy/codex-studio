@@ -11,9 +11,13 @@ export type ClaudeSettings = Pick<Settings, "env"> &
     nativeReviewerEnvironment?: Record<string, string | undefined>;
   };
 
-export type ThinkingModel = Partial<
-  Pick<ModelInfo, "value" | "resolvedModel" | "description">
-> & { model?: ModelInfo["value"] };
+export type ThinkingModel = Partial<Pick<ModelInfo, "value">> &
+  Partial<
+    Pick<
+      import("./runtime-contract.generated.ts").ProviderModel,
+      "model" | "resolvedModel" | "description"
+    >
+  >;
 
 // Resolve aliases from the current account catalog, not a fixed alias mapping.
 export function requiresThinking(
@@ -33,7 +37,7 @@ export function requiresThinking(
     );
   const match = explicit || described;
   if (!match) return false;
-  const [, family, major, minor = "0"] = match;
+  const [, family = "", major, minor = "0"] = match;
   return (
     (family.toLowerCase() === "opus" && major === "5" && minor === "5") ||
     (family.toLowerCase() === "fable" &&

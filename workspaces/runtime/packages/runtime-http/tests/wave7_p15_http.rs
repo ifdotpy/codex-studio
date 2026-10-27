@@ -232,6 +232,56 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
     ));
     let app = router(state).expect("router").layer(Extension(runtime));
     let id = case["before"]["id"].as_str().expect("monitor id");
+    let before_invalid = database_snapshot(&store);
+    for (field, invalid) in [
+        ("rows", Value::Null),
+        ("cols", Value::Null),
+        ("rows", json!(0)),
+        ("cols", json!(1001)),
+        ("rows", json!(1.5)),
+        ("text", json!("x".repeat(32001))),
+    ] {
+        let mut body = json!({"id": id});
+        body[field] = invalid;
+        let (status, response) = call(&app, "/api/monitor/input", body).await;
+        assert_eq!(status, 400, "{field}: {response}");
+        assert_eq!(response["error"], "Invalid request");
+        assert_eq!(response["location"], json!(["body", field]));
+        assert_eq!(database_snapshot(&store), before_invalid);
+        assert!(port.submitted.lock().expect("effects").is_empty());
+    }
+
+    // Missing dimensions write stdin; a supplied dimension resizes using only
+    // the missing dimension's default. Explicit null was refused above.
+    for (identity, dimension, size) in [
+        (
+            "http-resize-rows",
+            json!({"rows": 19}),
+            json!({"rows": 19, "cols": 80}),
+        ),
+        (
+            "http-resize-cols",
+            json!({"cols": 37}),
+            json!({"rows": 24, "cols": 37}),
+        ),
+    ] {
+        let mut body = dimension;
+        body["id"] = json!(id);
+        // Each distinct input keeps its own request identity.
+        let (status, response) =
+            call_with_identity(&app, "POST", "/api/monitor/input", body, Some(identity)).await;
+        assert_eq!(status, 200, "resize should succeed: {response}");
+        let submitted = port.submitted.lock().expect("resize effects");
+        let Some(studio_runtime_services::monitor_policy::Effect::Native {
+            method, params, ..
+        }) = submitted.last()
+        else {
+            panic!("resize must submit a native effect");
+        };
+        assert_eq!(*method, "command/exec/resize");
+        assert_eq!(params, &json!({"processId": id, "size": size}));
+    }
+
     let (status, response) = call(
         &app,
         "/api/monitor/input",
@@ -246,14 +296,14 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
         let submitted = port.submitted.lock().expect("submitted effects");
         assert_eq!(
             submitted.len(),
-            1,
+            3,
             "one HTTP input submits one native effect"
         );
         let studio_runtime_services::monitor_policy::Effect::Native {
             identity,
             method,
             params,
-        } = &submitted[0]
+        } = &submitted[2]
         else {
             panic!("input must submit a native effect");
         };
@@ -292,7 +342,8 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
     assert_eq!(status, 200, "{replay}");
     assert_eq!(replay["requestId"], "http-input-fixture");
     assert_eq!(replay["status"], "acknowledged");
-    assert_eq!(port.submitted.lock().expect("one input").len(), 1);
+    // Two resizes and one stdin write; the replay adds no effect.
+    assert_eq!(port.submitted.lock().expect("one input").len(), 3);
     let (status, _) = call(
         &app,
         "/api/monitor/input",
@@ -318,7 +369,7 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
     )
     .await;
     assert_eq!(status, 400, "invalid identities fail before a native write");
-    assert_eq!(port.submitted.lock().expect("no second input").len(), 1);
+    assert_eq!(port.submitted.lock().expect("no second input").len(), 3);
 
     let owner = case["before"]["agent"].as_str().expect("monitor owner");
     let epoch = case["actor"]["epoch"].as_i64().expect("actor epoch");
@@ -375,7 +426,7 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
             .lock()
             .expect("receipt read has no effect")
             .len(),
-        1
+        3
     );
 }
 

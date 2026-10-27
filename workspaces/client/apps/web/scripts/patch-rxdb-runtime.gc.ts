@@ -141,11 +141,16 @@ async function testProjectionConflict(format: string) {
     storageInstance,
     schema,
   );
-  // Storage metadata and value are unused by the forced-conflict write.
-  const write = {
-    document: { id: "deleted-row", _deleted: false },
-    previous: undefined,
-  } as Parameters<typeof wrapped.bulkWrite>[0][number];
+  const write: Parameters<typeof wrapped.bulkWrite>[0][number] = {
+    document: {
+      id: "deleted-row",
+      value: 0,
+      _deleted: false,
+      _attachments: {},
+      _meta: { lwt: 1 },
+      _rev: "1-fixture",
+    },
+  };
   const projectionResult = await wrapped.bulkWrite(
     [write],
     "studio-projection-pull",

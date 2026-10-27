@@ -223,6 +223,9 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
             n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4,
           );
         const [red, green, blue] = rgb;
+        assert.ok(
+          red !== undefined && green !== undefined && blue !== undefined,
+        );
         return red * 0.2126 + green * 0.7152 + blue * 0.0722;
       };
       const contrast = (a: string, b: string) =>

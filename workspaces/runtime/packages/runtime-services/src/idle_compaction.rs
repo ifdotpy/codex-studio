@@ -5,6 +5,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_schema::{
     idle_compaction::{Mode, Settings},
     shared_values::*,
@@ -69,7 +70,7 @@ fn prefix_inputs(agent: &Value) -> Value {
 /// Called in the dedicated cache notification transaction. Only request-local
 /// assistant usage can arm a timer; a cumulative SDK result cannot arm it.
 pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Result<(), StoreError> {
-    if agent["provider"] != "claude" {
+    if agent["provider"] != ProviderKind::Claude.key() {
         return Ok(());
     }
     let cache: CacheReport = serde_json::from_value(raw.clone())
@@ -324,10 +325,12 @@ pub fn handoff_refusal(
 pub fn limits_allowed(limits: &Value, agent: &Value, now: f64) -> bool {
     // B2-6 owns freshness and model-specific window eligibility. A native
     // warning is stricter than ordinary admission: only `allowed` may compact.
-    let status = limits
-        .pointer("/data/claudeRateLimit/status")
-        .and_then(Value::as_str);
-    status.is_none_or(|status| status == "allowed")
+    let Ok(info) =
+        studio_runtime_schema::provider_rate_limits::checked_claude_rate_info(&limits["data"])
+    else {
+        return false;
+    };
+    info.is_none_or(|info| info["status"] == "allowed")
         && crate::usage_resume::eligibility(limits, agent, now)["canRun"] == true
 }
 fn check(
@@ -502,6 +505,42 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unsupported_rate_evidence_never_proves_resume_or_compaction() {
+        let agent =
+            json!({"id":"agent", "accountKey":"default", "provider":"claude", "model":"sonnet"});
+        let known = json!({"status":"allowed", "rateLimitType":"five_hour", "utilization":0.2, "resetsAt":2000});
+        let base = json!({"accountKey":"default", "at":1000, "data":{"rateLimits":{"limitId":"claude", "primary":{"usedPercent":20, "resetsAt":2000}}, "claudeRateLimit":known}});
+        assert_eq!(
+            crate::usage_resume::eligibility(&base, &agent, 1000.0)["canRun"],
+            true
+        );
+        assert!(limits_allowed(&base, &agent, 1000.0));
+        for raw in [
+            json!({"type":"unsupported", "raw":{"status":"future"}}),
+            json!({"status":"future", "rateLimitType":"five_hour"}),
+            json!({"status":"allowed", "rateLimitType":"future_scope"}),
+            json!({"status":"allowed", "rateLimitType":"five_hour", "overageStatus":"future"}),
+            json!({"status":"allowed", "rateLimitType":"five_hour", "resetsAt":"soon"}),
+            Value::Null,
+        ] {
+            for bucket in [false, true] {
+                let mut observation = base.clone();
+                if bucket {
+                    observation["data"]["rateLimits"]["claudeRateLimit"] = raw.clone();
+                } else {
+                    observation["data"]["claudeRateLimit"] = raw.clone();
+                }
+                let before = observation.clone();
+                let decision = crate::usage_resume::eligibility(&observation, &agent, 1000.0);
+                assert_eq!(decision["fresh"], false, "{raw}; bucket={bucket}");
+                assert_eq!(decision["canRun"], false);
+                assert_eq!(decision["allowed"], false);
+                assert!(!limits_allowed(&observation, &agent, 1000.0));
+                assert_eq!(observation, before);
+            }
+        }
+    }
     struct Clock(f64);
     impl Clock {
         fn advance(&mut self, seconds: f64) {

@@ -582,10 +582,31 @@ fn map_store_error(error: crate::StoreError) -> TranscriptStoreError {
         crate::StoreError::InvalidStoredObject { table, id } => {
             TranscriptStoreError::InvalidStoredObject { table, id }
         }
-        other => TranscriptStoreError::Store(other),
+        other @ crate::StoreError::StateDirectory(_)
+        | other @ crate::StoreError::AlreadyOwned
+        | other @ crate::StoreError::MissingDatabase(_)
+        | other @ crate::StoreError::UnsafeStateDirectory
+        | other @ crate::StoreError::Migration { .. }
+        | other @ crate::StoreError::SchemaMismatch(_)
+        | other @ crate::StoreError::InvalidSyncObject { .. }
+        | other @ crate::StoreError::InvalidSyncObjectField { .. }
+        | other @ crate::StoreError::InvalidStoredRecord { .. }
+        | other @ crate::StoreError::SchemaObjectMismatch { .. }
+        | other @ crate::StoreError::Sqlite(_)
+        | other @ crate::StoreError::CommitOutcomeUnknown(_)
+        | other @ crate::StoreError::Json(_)
+        | other @ crate::StoreError::SchemaValidation(_)
+        | other @ crate::StoreError::RecordContract(_)
+        | other @ crate::StoreError::WriterPoisoned
+        | other @ crate::StoreError::WriterActorInitialization(_)
+        | other @ crate::StoreError::WriterActorControl(_)
+        | other @ crate::StoreError::CommitActorOutcomeUnknown(_)
+        | other @ crate::StoreError::ReadTaskFailed => TranscriptStoreError::Store(other),
     }
 }
 
+// rusqlite errors are non-exhaustive; preserve every unrelated database failure.
+#[allow(clippy::wildcard_enum_match_arm)]
 fn map_column_error(error: rusqlite::Error, table: &'static str, id: &str) -> TranscriptStoreError {
     match error {
         rusqlite::Error::InvalidColumnType(..) | rusqlite::Error::FromSqlConversionFailure(..) => {
@@ -623,7 +644,10 @@ fn python_string(value: &Value) -> String {
     match value {
         Value::Null => "None".to_owned(),
         Value::String(value) => value.clone(),
-        other => other.to_string(),
+        other @ Value::Bool(_)
+        | other @ Value::Number(_)
+        | other @ Value::Array(_)
+        | other @ Value::Object(_) => other.to_string(),
     }
 }
 

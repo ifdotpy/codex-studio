@@ -1,3 +1,4 @@
+import type { WorkerModelInfo } from "../agents/WorkerModelPicker";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 import { ActionIcon, Button, Textarea } from "@mantine/core";
@@ -15,7 +16,8 @@ import { ExecutionSettings } from "../agents/ExecutionSettings";
 import Usage, { type UsageAccount } from "../Usage";
 import { createServerServices } from "../../servers/serverServices";
 import { ServerServicesProvider } from "../../servers/ServerServicesContext";
-import type { Agent, Json } from "../../types";
+import type { Agent } from "../../types";
+import type { AccountLimitsSnapshot } from "../../usage/accountUsage";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
 import "./empty-chat-settings.css";
 
@@ -35,11 +37,12 @@ const titles = [
   "Проверка интерфейса нескольких проектов на узком экране",
   "Prepare the next release",
 ] as const;
-const recentChats = indicators.map((indicator, index) => ({
-  id: `chat-${index}`,
-  title: titles[index],
-  indicator,
-}));
+const recentChats = indicators.map((indicator, index) => {
+  const title = titles[index];
+  if (title === undefined)
+    throw new Error("Missing conversation title fixture");
+  return { id: `chat-${index}`, title, indicator };
+});
 const lead = {
   id: "story-lead",
   rootId: "story-lead",
@@ -55,7 +58,7 @@ const lead = {
   workerModel: "gpt-6-luna",
   contextUsage: { tokens: 64000, window: 200000 },
 } as Agent;
-const models = ["gpt-6-astra", "gpt-6-luna"].map((model) => ({
+const models = ["gpt-6-astra", "gpt-6-luna"].map((model): WorkerModelInfo => ({
   model,
   displayName: model,
   provider: "codex",
@@ -64,7 +67,7 @@ const models = ["gpt-6-astra", "gpt-6-luna"].map((model) => ({
   supportedReasoningEfforts: [{ reasoningEffort: "high" }],
 }));
 const catalog = { models, loading: false, error: "", retry: fn() };
-const limits: Json = {
+const limits: AccountLimitsSnapshot = {
   accountKey: "default",
   data: {
     accountId: "story-account",
@@ -86,9 +89,11 @@ const limits: Json = {
 const observedAt = Date.now() / 1000;
 const usageAccounts = [10, 15, 40].map((usedPercent, index): UsageAccount => {
   const key = index === 0 ? "default" : `account-${index}`;
+  const label = ["Engineering", "Research", "Review"][index];
+  if (label === undefined) throw new Error("Missing account label fixture");
   return {
     key,
-    label: ["Engineering", "Research", "Review"][index],
+    label,
     provider: index === 2 ? "claude" : "codex",
     loading: false,
     reload: fn(),

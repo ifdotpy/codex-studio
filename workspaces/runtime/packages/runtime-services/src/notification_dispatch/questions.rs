@@ -29,7 +29,7 @@ fn fields(value: &Value) -> Result<Vec<Value>, NotificationDispatchError> {
         let options=q.options.unwrap_or_default().into_iter().map(|option|match option {
             Value::String(label)=>Ok(json!({"label":label})),
             Value::Object(ref object) if object.get("label").is_some_and(Value::is_string)=>Ok(option),
-            _=>Err(NotificationDispatchError::invalid()),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_)=>Err(NotificationDispatchError::invalid()),
         }).collect::<Result<Vec<_>,_>>()?;
         Ok(json!({"id":index.to_string(),"question":q.title,"options":options,"multiSelect":q.multi_select,"isSecret":q.is_secret}))
     }).collect()

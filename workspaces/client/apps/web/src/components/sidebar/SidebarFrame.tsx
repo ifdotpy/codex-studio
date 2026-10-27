@@ -266,9 +266,9 @@ export function SidebarFrame(p: SidebarFrameProps) {
   return (
     <Drawer
       opened={p.opened}
-      onEnterTransitionEnd={p.onEntered}
+      {...(p.onEntered ? { onEnterTransitionEnd: p.onEntered } : {})}
       onClose={close}
-      zIndex={p.drawerZIndex}
+      {...(p.drawerZIndex !== undefined ? { zIndex: p.drawerZIndex } : {})}
       size={`min(${layoutValues.sidebar.drawerMax}rem, 100vw)`}
       padding={0}
       withCloseButton={false}

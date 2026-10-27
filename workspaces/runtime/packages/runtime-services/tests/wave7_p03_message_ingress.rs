@@ -106,7 +106,7 @@ impl Fixture {
         store.transaction(move |tx| {
             tx.execute_batch(&sql)?;
             tx.execute("UPDATE sync_entities SET hash=sync_entity_hash(payload) WHERE payload IS NOT NULL", [])?;
-            studio_runtime_store::agent_volatile::migrate_2026_10_20(tx)
+            studio_runtime_store::migrations::migrate_2026_10_20(tx)
         }).await.expect("configure ingress case");
     }
 }

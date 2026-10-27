@@ -194,7 +194,15 @@ async fn pull_document(
         ],
     )
     .map_err(|e| error("invalid_scope", e))?;
-    let result = http(backend, &format!("/api/sync/pull?{}", url.query().unwrap())).await?;
+    // parse_with_params above appends at least scope, after and limit.
+    let result = http(
+        backend,
+        &format!(
+            "/api/sync/pull?{}",
+            url.query().expect("sync cursor query was appended")
+        ),
+    )
+    .await?;
     if result["workspaceId"] != workspace {
         return Err(error(
             "workspace_changed",
@@ -300,7 +308,15 @@ async fn pull_entities(
         }
         let url = reqwest::Url::parse_with_params("http://127.0.0.1/api/sync/pull", &query)
             .map_err(|e| error("invalid_scope", e))?;
-        let result = http(backend, &format!("/api/sync/pull?{}", url.query().unwrap())).await?;
+        // parse_with_params above appends at least scope, after and limit.
+        let result = http(
+            backend,
+            &format!(
+                "/api/sync/pull?{}",
+                url.query().expect("sync cursor query was appended")
+            ),
+        )
+        .await?;
         if result["workspaceId"] != workspace {
             return Err(error(
                 "workspace_changed",
@@ -517,7 +533,7 @@ mod tests {
         let worker = tokio::spawn(async move {
             let mut store = crate::store::Store::open(&worker_path).unwrap();
             while let Some((request, reply)) = receive.recv().await {
-                let _ = reply.send(store.dispatch(request));
+                drop(reply.send(store.dispatch(request)));
             }
         });
         let mut previous = 0;
@@ -611,7 +627,7 @@ mod tests {
         let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(32);
         let worker = tokio::spawn(async move {
             while let Some((request, reply)) = receive.recv().await {
-                let _ = reply.send(store.dispatch(request));
+                drop(reply.send(store.dispatch(request)));
             }
         });
         let failure = pull(&backend, &sender, &workspace, "state")
@@ -696,7 +712,7 @@ mod tests {
         let worker = tokio::spawn(async move {
             let mut store = crate::store::Store::open(&path).unwrap();
             while let Some((request, reply)) = receive.recv().await {
-                let _ = reply.send(store.dispatch(request));
+                drop(reply.send(store.dispatch(request)));
             }
             drop(directory);
         });
@@ -782,7 +798,7 @@ mod tests {
                         .unwrap_or(0) as usize;
                     observed.store(revision, Ordering::SeqCst);
                 }
-                let _ = reply.send(response);
+                drop(reply.send(response));
             }
             drop(directory);
         });
@@ -938,7 +954,7 @@ mod tests {
                         .unwrap_or(0) as usize;
                     observed_state_puts.store(revision, Ordering::SeqCst);
                 }
-                let _ = reply.send(response);
+                drop(reply.send(response));
             }
             drop(directory);
         });

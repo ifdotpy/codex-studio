@@ -191,8 +191,10 @@ test("refuses binaries built from another commit", () =>
 
 test("refuses a binary that changed after the build", () =>
   withRelease(async (directory) => {
+    const [artifact] = releaseArtifacts();
+    assert.ok(artifact);
     await writeFile(
-      path.join(directory, "release", releaseArtifacts()[0]),
+      path.join(directory, "release", artifact),
       "rebuilt elsewhere",
     );
     await assert.rejects(
@@ -211,7 +213,9 @@ test("refuses another platform, a missing binary and a missing manifest", () =>
       }),
       /were built for/,
     );
-    await rm(path.join(directory, "release", releaseArtifacts()[1]));
+    const [, artifact] = releaseArtifacts();
+    assert.ok(artifact);
+    await rm(path.join(directory, "release", artifact));
     await assert.rejects(
       verifyReleaseBinaries({ directory, commit: commitA }),
       /are missing/,
@@ -227,7 +231,9 @@ test("refuses a manifest that omits a required artifact", () =>
   withRelease(async (directory) => {
     const manifest: Awaited<ReturnType<typeof writeReleaseManifest>> =
       JSON.parse(await readFile(manifestPath(directory), "utf8"));
-    delete manifest.files[releaseArtifacts()[0]];
+    const [artifact] = releaseArtifacts();
+    assert.ok(artifact);
+    delete manifest.files[artifact];
     await writeFile(manifestPath(directory), JSON.stringify(manifest));
     await assert.rejects(
       verifyReleaseBinaries({ directory, commit: commitA }),
@@ -290,10 +296,12 @@ test("a build removes the old manifest first and records the built commit", asyn
       },
     });
     assert.equal(manifest.commit, commitA);
-    assert.equal(calls[0].command, "cargo");
-    assert.ok(calls[0].args.includes("--locked"));
-    assert.ok(calls[0].args.includes("--release"));
-    assert.equal(calls[0].target, directory);
+    const [call] = calls;
+    assert.ok(call);
+    assert.equal(call.command, "cargo");
+    assert.ok(call.args.includes("--locked"));
+    assert.ok(call.args.includes("--release"));
+    assert.equal(call.target, directory);
     await verifyReleaseBinaries({ directory, commit: commitA });
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -346,9 +354,13 @@ test("the package flow runs the dev-profile host check unless CI is stated", () 
       "check package start",
     ],
   );
-  assert.match(plan(false)[0].args![0], /desktop\/signing-check\.ts$/);
-  assert.equal(plan(false)[1].args![0], "test-native-webview");
-  const skipped = plan(true)[1];
+  const [signing, native] = plan(false);
+  const signingScript = signing?.args?.[0];
+  assert.ok(signingScript);
+  assert.match(signingScript, /desktop\/signing-check\.ts$/);
+  assert.equal(native?.args?.[0], "test-native-webview");
+  const [, skipped] = plan(true);
+  assert.ok(skipped);
   assert.equal(skipped.command, undefined);
   assert.match(skipped!.skipped!, new RegExp(commitA));
   assert.equal(plan(true).length, 6);
@@ -361,7 +373,9 @@ test("the package flow runs the dev-profile host check unless CI is stated", () 
     ),
     false,
   );
-  assert.match(plan(false).at(-1)!.args![0], /check-package-start\.ts$/);
+  const packageStart = plan(false).at(-1)?.args?.[0];
+  assert.ok(packageStart);
+  assert.match(packageStart, /check-package-start\.ts$/);
   assert.equal(
     parseFlowArguments(["/tmp/out", "--hosted-ci-passed"]).hostedCiPassed,
     true,

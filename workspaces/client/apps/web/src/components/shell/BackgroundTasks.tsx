@@ -50,12 +50,25 @@ import {
   CHAT_INDICATOR_URGENCY,
   type ChatIndicatorKind,
 } from "../chat-status/chatStatusModel";
-import type { Agent, JsonInput, Monitor, Request, Snapshot } from "../../types";
+import type {
+  Agent,
+  BackgroundTask,
+  JsonInput,
+  Monitor,
+  Request,
+  Snapshot,
+  WorkspaceTask,
+} from "../../types";
 import { copyText } from "../../clipboard/clipboard";
 import {
   activeTask,
+  displayProcess,
+  processIdentity,
   projectTaskForRenderer,
   type DisplayBackgroundTask,
+  type DisplayLegacyTask,
+  type DisplayProcessTask,
+  type RendererTaskKind,
 } from "../backgroundTaskModel";
 
 type BackgroundAction = <Path extends ApiPostPath>(
@@ -66,8 +79,6 @@ type TaskDetailResponse =
   paths["/api/task"]["get"]["responses"][200]["content"]["application/json"];
 type MonitorTask = Monitor;
 type PendingRequest = Request;
-type ManagedProcess =
-  paths["/api/processes"]["get"]["responses"][200]["content"]["application/json"]["processes"][number];
 type ProcessResponseTarget = NonNullable<
   paths["/api/processes"]["get"]["responses"][200]["content"]["application/json"]["responseTarget"]
 >;
@@ -76,24 +87,20 @@ export const backgroundProcessGroups = [
   ["monitor", "Monitors"],
   ["tool", "Other tools"],
   ["backgroundTask", "Background tasks"],
-] as const;
-export const responseStopIdentity = (
-  target: ProcessResponseTarget | null | undefined,
-) => (target ? { responseTarget: target } : {});
+] as const satisfies ReadonlyArray<readonly [RendererTaskKind, string]>;
+export const responseStopIdentity = (target: ProcessResponseTarget) => ({
+  responseTarget: target,
+});
 export const responseStopDisabled = (
   target: ProcessResponseTarget | null | undefined,
   pending: boolean,
 ) => !target || pending;
 export const responseOwnerIdentityKey = (
   owner:
-    | {
-        id?: string | undefined;
-        accountKey?: string | null | undefined;
-        epoch?: number | null | undefined;
-        inFlight?: boolean | null | undefined;
-        threadId?: string | null | undefined;
-        turnId?: string | null | undefined;
-      }
+    | Pick<
+        Agent,
+        "id" | "accountKey" | "epoch" | "inFlight" | "threadId" | "turnId"
+      >
     | undefined,
 ) =>
   JSON.stringify(
@@ -109,24 +116,7 @@ export const responseOwnerIdentityKey = (
       : null,
   );
 
-function displayProcess(process: ManagedProcess): DisplayBackgroundTask {
-  return {
-    ...process,
-    kind:
-      process.source === "monitor"
-        ? "monitor"
-        : process.source === "codex_task"
-          ? "command"
-          : "backgroundTask",
-    tail: process.output || "",
-    interactive: process.capabilities.sendInput,
-    processKey: process.key,
-  };
-}
-
-export function monitorTask(
-  monitor: MonitorTask,
-): DisplayBackgroundTask | null {
+export function monitorTask(monitor: MonitorTask) {
   return projectTaskForRenderer(monitor, "monitor");
 }
 
@@ -157,7 +147,10 @@ const names: Record<string, string> = {
   contextCompaction: "Context compaction",
   fileChange: "File changes",
 };
-const taskName = (task: DisplayBackgroundTask) =>
+const taskName = (
+  task: Pick<DisplayBackgroundTask, "command" | "name"> &
+    Pick<WorkspaceTask, "query">,
+) =>
   task.command ||
   ("query" in task ? task.query : undefined) ||
   names[task.name || ""] ||
@@ -169,13 +162,17 @@ const duration = (seconds: number) =>
     : seconds < 3600
       ? `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`
       : `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-const elapsed = (task: DisplayBackgroundTask, now: number) => {
+const elapsed = (
+  task: Pick<DisplayBackgroundTask, "status" | "created"> &
+    Pick<WorkspaceTask, "durationMs" | "finished">,
+  now: number,
+) => {
   if (task.durationMs != null) return duration(task.durationMs / 1000);
   if (!activeTask(task) && !task.finished) return "";
   return duration(Math.max(0, (task.finished || now) - task.created));
 };
 export function backgroundTaskState(
-  task: DisplayBackgroundTask,
+  task: Pick<DisplayBackgroundTask, "status">,
 ): ChatIndicatorKind {
   if (task.status === "approval") return "answer";
   if (["failed", "lost"].includes(task.status)) return "error";
@@ -183,7 +180,11 @@ export function backgroundTaskState(
   if (task.status === "completed") return "unread";
   return "paused";
 }
-function TaskStatus({ task }: { task: DisplayBackgroundTask }) {
+function TaskStatus({
+  task,
+}: {
+  task: Pick<DisplayBackgroundTask, "status" | "cancelRequested">;
+}) {
   return (
     <span className="task-status">
       {activeTask(task) && task.cancelRequested
@@ -192,13 +193,16 @@ function TaskStatus({ task }: { task: DisplayBackgroundTask }) {
     </span>
   );
 }
-const iconFor = (task: DisplayBackgroundTask) =>
+const iconFor = (task: Pick<DisplayBackgroundTask, "kind">) =>
   task.kind === "monitor"
     ? Activity
     : task.kind === "command"
       ? Terminal
       : Wrench;
-const taskKindLabel = (task: DisplayBackgroundTask, owner?: Agent) => {
+const taskKindLabel = (
+  task: Pick<DisplayBackgroundTask, "kind"> & Pick<WorkspaceTask, "turnId">,
+  owner?: Agent,
+) => {
   if (task.kind === "monitor") return "Monitor";
   if (task.kind !== "command") return "Tool";
   const outsideTurn = Boolean(
@@ -297,14 +301,15 @@ export default function BackgroundTasks({
     }
   }, [leadId, controlStorageKey]);
   const processIds = new Set(processRecords.map((process) => process.id));
+  const processTasks = processRecords.map(displayProcess);
   const tasks = [
-    ...processRecords.map(displayProcess),
+    ...processTasks,
     // The task stream also carries tools and commands without a process handle.
     // Process records own the output and controls for overlapping task ids.
     ...(taskRecords.data ?? [])
       .map((task) => projectTaskForRenderer(task))
       .filter(
-        (task): task is DisplayBackgroundTask =>
+        (task): task is DisplayLegacyTask =>
           task != null && !processIds.has(task.id),
       ),
   ].filter(activeTask);
@@ -343,6 +348,8 @@ export default function BackgroundTasks({
     : (selection && selection.scope === leadId
         ? scoped.find((task) => task.id === selection.id)
         : undefined) || filtered[0];
+  const selectedProcess =
+    selectedTask && "key" in selectedTask ? selectedTask : undefined;
   const submitControl = async (body: PostBody<"/api/processes/action">) => {
     setControlPending(true);
     try {
@@ -365,7 +372,7 @@ export default function BackgroundTasks({
           .join(", ");
         notify(
           result.status === "partial"
-            ? `Some processes did not stop: ${outcomes || result.error || "see each process result"}`
+            ? `Some processes did not stop: ${outcomes || "see each process result"}`
             : `Stop result: ${outcomes || result.response?.status || "unknown"}`,
         );
       }
@@ -406,11 +413,7 @@ export default function BackgroundTasks({
         },
       });
       if (controlScope.current !== controlStorageKey) return;
-      if (
-        !receipt.found ||
-        !receipt.result ||
-        receipt.result.status === "uncertain"
-      ) {
+      if (!receipt.found || receipt.result.status === "uncertain") {
         notify(
           "The stop result is still unknown. Check its receipt again later.",
         );
@@ -424,7 +427,7 @@ export default function BackgroundTasks({
         .join(", ");
       notify(
         receipt.result.status === "partial"
-          ? `Some processes did not stop: ${outcomes || receipt.result.error || "see each process result"}`
+          ? `Some processes did not stop: ${outcomes || "see each process result"}`
           : `Stop result: ${outcomes || receipt.result.response?.status || "unknown"}`,
       );
       await refresh();
@@ -438,8 +441,20 @@ export default function BackgroundTasks({
     }
   };
   const runProcessControl = (
-    action: "stop_selected" | "stop_owned" | "stop_response",
-    process?: DisplayBackgroundTask,
+    control:
+      | {
+          action: Extract<
+            PostBody<"/api/processes/action">["action"],
+            "stop_selected"
+          >;
+          process: DisplayProcessTask;
+        }
+      | {
+          action: Extract<
+            PostBody<"/api/processes/action">["action"],
+            "stop_owned" | "stop_response"
+          >;
+        },
   ) => {
     if (
       !leadId ||
@@ -454,47 +469,55 @@ export default function BackgroundTasks({
       notify("Check the earlier stop result before starting another stop.");
       return;
     }
-    const processIdentity = (task: DisplayBackgroundTask) => ({
-      key: task.processKey || "",
-      generation: task.generation || "",
-      agent: task.agent,
-      accountKey: task.accountKey || "",
-      epoch: task.epoch ?? -1,
-    });
-    const body: PostBody<"/api/processes/action"> = {
-      action,
+    const scope = {
       requestId: randomUUID(),
       agent: leadId,
       accountKey: scopeOwner.accountKey || "default",
       epoch: scopeOwner.epoch,
-      ...(action === "stop_response"
-        ? responseStopIdentity(responseTarget)
-        : {}),
-      ...(action === "stop_selected" && process
-        ? { process: processIdentity(process) }
-        : {}),
-      ...(action === "stop_owned"
-        ? {
-            processes: tasks
-              .filter(
-                (task) =>
-                  task.capabilities?.stop &&
-                  (task.agent === leadId ||
-                    (includeWorkers && owner(task.agent)?.rootId === leadId)),
-              )
-              .map(processIdentity),
-            includeDescendants: includeWorkers,
-          }
-        : {}),
-      ...(action === "stop_selected" &&
-      process?.agent !== leadId &&
-      includeWorkers
-        ? { includeDescendants: true }
-        : {}),
     };
-    if (action === "stop_response" && !responseTarget) {
-      notify("Refresh the process list before stopping this response.");
-      return;
+    let body: PostBody<"/api/processes/action">;
+    switch (control.action) {
+      case "stop_response":
+        if (!responseTarget) {
+          notify("Refresh the process list before stopping this response.");
+          return;
+        }
+        body = {
+          ...scope,
+          action: control.action,
+          ...responseStopIdentity(responseTarget),
+        };
+        break;
+      case "stop_selected":
+        body = {
+          ...scope,
+          action: control.action,
+          process: processIdentity(control.process),
+          ...(control.process.agent !== leadId && includeWorkers
+            ? { includeDescendants: true }
+            : {}),
+        };
+        break;
+      case "stop_owned":
+        body = {
+          ...scope,
+          action: control.action,
+          processes: processTasks
+            .filter(activeTask)
+            .filter(
+              (task) =>
+                task.capabilities.stop &&
+                (task.agent === leadId ||
+                  (includeWorkers && owner(task.agent)?.rootId === leadId)),
+            )
+            .map(processIdentity),
+          includeDescendants: includeWorkers,
+        };
+        break;
+      default: {
+        const exhaustive: never = control;
+        return exhaustive;
+      }
     }
     sessionStorage.setItem(controlStorageKey, JSON.stringify(body));
     setPendingControl(body);
@@ -529,7 +552,7 @@ export default function BackgroundTasks({
     <Drawer
       opened={opened}
       onClose={close}
-      onExitTransitionEnd={afterClose}
+      {...(afterClose ? { onExitTransitionEnd: afterClose } : {})}
       returnFocus={!afterClose}
       position="right"
       size={940}
@@ -584,7 +607,7 @@ export default function BackgroundTasks({
             leftSection={<Square size={12} />}
             loading={controlPending}
             disabled={responseStopDisabled(responseTarget, !!pendingControl)}
-            onClick={() => runProcessControl("stop_response")}
+            onClick={() => runProcessControl({ action: "stop_response" })}
           >
             Stop response
           </Button>
@@ -604,7 +627,7 @@ export default function BackgroundTasks({
               processLoading ||
               !!processLoadError
             }
-            onClick={() => runProcessControl("stop_owned")}
+            onClick={() => runProcessControl({ action: "stop_owned" })}
           >
             Stop owned processes
           </Button>
@@ -635,7 +658,7 @@ export default function BackgroundTasks({
       {controlResult?.response && (
         <p role={controlResult.status === "uncertain" ? "alert" : "status"}>
           Response stop: {String(controlResult.response.status)}
-          {typeof controlResult.response.error === "string"
+          {"error" in controlResult.response && controlResult.response.error
             ? `, ${controlResult.response.error}`
             : ""}
         </p>
@@ -646,19 +669,17 @@ export default function BackgroundTasks({
           className="process-control-results"
         >
           {controlResult.processes.map((item, index) => {
-            const key = typeof item.key === "string" ? item.key : "";
+            const key = item.key;
             const process = processRecords.find(
               (candidate) => candidate.key === key,
             );
             return (
               <li key={`${key}:${index}`}>
-                {process?.name ||
-                  (typeof item.agent === "string"
-                    ? owner(item.agent)?.name
-                    : null) ||
-                  "Process"}
-                : {String(item.status || "unknown")}
-                {typeof item.error === "string" ? `, ${item.error}` : ""}
+                {process?.name || owner(item.agent)?.name || "Process"}:{" "}
+                {item.status}
+                {"error" in item && typeof item.error === "string"
+                  ? `, ${item.error}`
+                  : ""}
               </li>
             );
           })}
@@ -749,10 +770,16 @@ export default function BackgroundTasks({
               !processLoading &&
               !processLoadError &&
               !pendingControl &&
-              !!selectedTask.capabilities?.stop &&
+              !!selectedProcess?.capabilities.stop &&
               (includeWorkers || selectedTask.agent === leadId)
             }
-            onStop={() => runProcessControl("stop_selected", selectedTask)}
+            onStop={() => {
+              if (selectedProcess)
+                runProcessControl({
+                  action: "stop_selected",
+                  process: selectedProcess,
+                });
+            }}
             controlPending={controlPending}
           />
         ) : (
@@ -860,9 +887,10 @@ export function TaskDetail({
     }
   };
   const resolvedDetail = detail?.id === summary.id ? detail : null;
-  const task = resolvedDetail ? { ...resolvedDetail, ...summary } : summary;
+  const task = { ...resolvedDetail, ...summary };
   const monitor = task.kind === "monitor" && "tail" in task ? task : null;
-  const outputSupported = summary.capabilities?.readOutput !== false;
+  const outputSupported =
+    !("capabilities" in summary) || summary.capabilities.readOutput !== false;
   const outputTail = outputSupported
     ? (fileOutput?.text ??
       resolvedDetail?.tail ??
@@ -966,28 +994,31 @@ export function TaskDetail({
               : "The agent receives the result when this command exits."}
           </p>
         )}
-        {task.kind === "monitor" && task.outputWakeBudget && (
-          <div className="task-wake-budget" role="status">
-            <Text size="sm">
-              {task.outputWakeBudget.totalSuppressedMatches} matches suppressed
-            </Text>
-            {task.outputWakeBudget.paused && (
-              <>
-                <Text fw={600} size="sm">
-                  Output wakes paused
-                </Text>
-                <Text size="sm">
-                  {task.status === "running"
-                    ? "The command is still running. Its exit will still wake the agent."
-                    : "The command exit will still wake the agent."}
-                </Text>
-              </>
-            )}
-            {activeTask(task) && (
-              <MonitorRestart task={task} notify={notify} refresh={refresh} />
-            )}
-          </div>
-        )}
+        {task.kind === "monitor" &&
+          "outputWakeBudget" in task &&
+          task.outputWakeBudget && (
+            <div className="task-wake-budget" role="status">
+              <Text size="sm">
+                {task.outputWakeBudget.totalSuppressedMatches} matches
+                suppressed
+              </Text>
+              {task.outputWakeBudget.paused && (
+                <>
+                  <Text fw={600} size="sm">
+                    Output wakes paused
+                  </Text>
+                  <Text size="sm">
+                    {task.status === "running"
+                      ? "The command is still running. Its exit will still wake the agent."
+                      : "The command exit will still wake the agent."}
+                  </Text>
+                </>
+              )}
+              {activeTask(task) && (
+                <MonitorRestart task={task} notify={notify} refresh={refresh} />
+              )}
+            </div>
+          )}
         {task.outputFile && (
           <div className="task-file-output">
             <p className="task-cwd">{task.outputFile}</p>
@@ -1134,14 +1165,18 @@ export function TaskDetail({
           )}
         </div>
         {(task.kind === "monitor" ||
-          (task.status === "running" && task.capabilities?.sendInput)) && (
+          (task.status === "running" &&
+            "capabilities" in task &&
+            task.capabilities.sendInput)) && (
           <ProcessInput
             task={task}
             owner={owner}
             pending={pending}
             act={act}
             receiptOnly={
-              task.status !== "running" || !task.capabilities?.sendInput
+              task.status !== "running" ||
+              !("capabilities" in task) ||
+              !task.capabilities.sendInput
             }
           />
         )}
@@ -1201,8 +1236,11 @@ export function ProcessInput({
   act,
   receiptOnly = false,
 }: {
-  task: DisplayBackgroundTask;
-  owner?: Agent;
+  task: Pick<
+    DisplayBackgroundTask,
+    "id" | "kind" | "stdinClosed" | "stdinCloseRequested" | "cancelRequested"
+  >;
+  owner?: Agent | undefined;
   pending: boolean;
   act: BackgroundAction;
   receiptOnly?: boolean;
@@ -1378,7 +1416,8 @@ export function ProcessInput({
 }
 
 async function downloadLog(
-  task: DisplayBackgroundTask,
+  task: Pick<DisplayBackgroundTask, "id" | "kind" | "outputTruncated"> &
+    Pick<BackgroundTask, "tail">,
   detail: TaskDetailResponse | null,
   notify: (s: string) => void,
   fileText?: string,

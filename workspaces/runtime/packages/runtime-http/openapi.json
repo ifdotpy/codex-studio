@@ -4398,7 +4398,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -5917,7 +5917,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -7761,7 +7761,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -9383,7 +9383,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -17309,7 +17309,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -20196,16 +20196,16 @@
         "properties": {
           "action": {
             "const": "rollback",
-            "title": "Action",
             "type": "string"
           },
           "id": {
-            "title": "Id",
+            "maxLength": 1024,
+            "minLength": 1,
             "type": "string"
           },
           "request_id": {
+            "maxLength": 1024,
             "minLength": 1,
-            "title": "Request Id",
             "type": "string"
           },
           "restore_files": {
@@ -20213,17 +20213,17 @@
             "type": "boolean"
           },
           "turn_id": {
-            "title": "Turn Id",
+            "maxLength": 1024,
+            "minLength": 1,
             "type": "string"
           }
         },
         "required": [
           "action",
           "id",
-          "turn_id",
-          "request_id"
+          "request_id",
+          "turn_id"
         ],
-        "title": "ClaudeSessionRollbackRequest",
         "type": "object"
       },
       "ClaudeSessionSettings": {
@@ -20338,25 +20338,17 @@
         "properties": {
           "action": {
             "const": "settings",
-            "title": "Action",
             "type": "string"
           },
           "id": {
-            "title": "Id",
+            "maxLength": 1024,
+            "minLength": 1,
             "type": "string"
           },
           "request_id": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Request Id"
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
           },
           "settings": {
             "$ref": "#/components/schemas/ClaudeSettings"
@@ -20365,9 +20357,9 @@
         "required": [
           "action",
           "id",
+          "request_id",
           "settings"
         ],
-        "title": "ClaudeSessionSettingsRequest",
         "type": "object"
       },
       "ClaudeSessionStateRequest": {
@@ -20513,53 +20505,33 @@
         "additionalProperties": false,
         "properties": {
           "autoCompactWindow": {
-            "anyOf": [
-              {
-                "maximum": 1000000,
-                "minimum": 100000,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Autocompactwindow"
+            "format": "uint64",
+            "maximum": 1000000,
+            "minimum": 100000,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "mcpAutoBackground": {
-            "description": "Move eligible MCP calls to the background after 120 seconds. The default is on.",
+            "description": "Native MCP calls move to the background after the shared wait; absent keeps the default.",
             "type": "boolean"
           },
           "permissionMode": {
-            "anyOf": [
-              {
-                "enum": [
-                  "default",
-                  "acceptEdits",
-                  "auto",
-                  "plan",
-                  "bypassPermissions"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "description": "Claude session permission modes accepted by settings and child creation.",
+            "enum": [
+              "default",
+              "acceptEdits",
+              "auto",
+              "plan",
+              "bypassPermissions"
             ],
-            "title": "Permissionmode"
+            "type": "string"
           },
           "thinking": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Thinking"
+            "type": "boolean"
           }
         },
-        "title": "ClaudeSettings",
         "type": "object"
       },
       "ClaudeSettingsResponse": {
@@ -20885,12 +20857,7 @@
           "status": {
             "anyOf": [
               {
-                "enum": [
-                  "in_progress",
-                  "resolved",
-                  "declined"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/ComplaintResponseStatus"
               },
               {
                 "type": "null"
@@ -21496,6 +21463,14 @@
         ],
         "title": "ComplaintResponseDto",
         "type": "object"
+      },
+      "ComplaintResponseStatus": {
+        "enum": [
+          "in_progress",
+          "resolved",
+          "declined"
+        ],
+        "type": "string"
       },
       "ComplaintStatus": {
         "enum": [
@@ -27337,6 +27312,22 @@
         "title": "FileInfo",
         "type": "object"
       },
+      "FoundProcessReceipt": {
+        "properties": {
+          "found": {
+            "const": true,
+            "type": "boolean"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ProcessActionResult"
+          }
+        },
+        "required": [
+          "found",
+          "result"
+        ],
+        "type": "object"
+      },
       "HistoricalInputProofRecordResponse": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -27428,6 +27419,24 @@
         ],
         "title": "HostResources",
         "type": "object"
+      },
+      "HttpErrorKind": {
+        "description": "Safe HTTP classifications, shared with the existing operator log.",
+        "enum": [
+          "handler_panic",
+          "store_configuration",
+          "store_data",
+          "store_database",
+          "store_io",
+          "store_ownership",
+          "store_schema",
+          "store_concurrency",
+          "response_body_read",
+          "costs_computation",
+          "costs_state",
+          "unclassified"
+        ],
+        "type": "string"
       },
       "HttpMetricSummary": {
         "additionalProperties": false,
@@ -29484,6 +29493,24 @@
         "title": "MessageRequest",
         "type": "object"
       },
+      "MigrationPhase": {
+        "enum": [
+          "validate",
+          "apply",
+          "commit",
+          "rollback"
+        ],
+        "type": "string"
+      },
+      "MigrationRollbackOutcome": {
+        "description": "A failed step's rollback, never a claim about previously committed migration steps.",
+        "enum": [
+          "not_required",
+          "rolled_back",
+          "unknown"
+        ],
+        "type": "string"
+      },
       "MigrationStatus": {
         "additionalProperties": false,
         "properties": {
@@ -29543,6 +29570,32 @@
         "title": "MigrationStatus",
         "type": "object"
       },
+      "MigrationTarget": {
+        "description": "Migration execution stays in runtime-store; these facts are shared operator and UI evidence.",
+        "enum": [
+          "canvas",
+          "analytics",
+          "account_registry",
+          "supervisor"
+        ],
+        "type": "string"
+      },
+      "MissingProcessReceipt": {
+        "properties": {
+          "found": {
+            "const": false,
+            "type": "boolean"
+          },
+          "result": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "found",
+          "result"
+        ],
+        "type": "object"
+      },
       "MissingToolRequestResponse": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -29580,8 +29633,48 @@
         "title": "MissingToolRequestResponse",
         "type": "object"
       },
+      "ModelAccessPrograms": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "cyber": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ModelCatalog": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "description": "One validated provider page, or the combined catalog after pagination.",
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderModel"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "ModelCatalogResponse": {
-        "additionalProperties": false,
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
         "properties": {
           "accountKey": {
             "anyOf": [
@@ -29674,7 +29767,7 @@
                 "type": "integer"
               },
               "provider": {
-                "type": "string"
+                "$ref": "#/components/schemas/ProviderKind"
               }
             },
             "required": [
@@ -29687,6 +29780,40 @@
         ],
         "description": "A complete provider model row scoped to its account; catalogPosition preserves provider order.",
         "title": "ModelEntityDto"
+      },
+      "ModelReasoningEffort": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "reasoningEffort": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reasoningEffort"
+        ],
+        "type": "object"
+      },
+      "ModelServiceTier": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
       },
       "ModelsResource": {
         "additionalProperties": false,
@@ -30142,6 +30269,68 @@
         "title": "MonitorInput",
         "type": "object"
       },
+      "MonitorInputKind": {
+        "enum": [
+          "monitor_input"
+        ],
+        "type": "string"
+      },
+      "MonitorInputResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/MonitorInputKind"
+          },
+          "monitorId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MonitorInputStatus"
+          }
+        },
+        "required": [
+          "kind",
+          "monitorId",
+          "status"
+        ],
+        "type": "object"
+      },
+      "MonitorInputStatus": {
+        "description": "Outcome of stdin sent to a monitor through HTTP; owned by monitor_http_input.rs.",
+        "enum": [
+          "acknowledged",
+          "rejected",
+          "pending",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "MonitorOperationIdentity": {
+        "additionalProperties": false,
+        "description": "Public projection of the native operation identity, without open transport evidence.",
+        "properties": {
+          "accountKey": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "connectionId": {
+            "type": "string"
+          },
+          "epoch": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent",
+          "epoch",
+          "accountKey",
+          "connectionId"
+        ],
+        "type": "object"
+      },
       "MonitorOutputWakeBudget": {
         "additionalProperties": false,
         "description": "Public output wake budget. The monitor matcher owns the stored budget. Tokens count available output wake batches.",
@@ -30432,6 +30621,95 @@
         "title": "MonitorRecordResponse",
         "type": "object"
       },
+      "MonitorRecoveryEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "proof": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MonitorRecoveryProof"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "startedAt": {
+            "description": "Unix seconds.",
+            "format": "double",
+            "type": "number"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MonitorRecoveryStatus"
+          }
+        },
+        "required": [
+          "status",
+          "startedAt",
+          "proof"
+        ],
+        "type": "object"
+      },
+      "MonitorRecoveryProof": {
+        "description": "Unclassified text stays private in the retained record; its digest permits exact correlation.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "classification": {
+                "const": "recognized",
+                "type": "string"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/MonitorRecoveryReason"
+              }
+            },
+            "required": [
+              "classification",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "classification": {
+                "const": "unclassified",
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "classification",
+              "sha256"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "MonitorRecoveryReason": {
+        "description": "Studio-owned recovery proof codes. A retained native reason outside this set remains unclassified.",
+        "enum": [
+          "no_operation",
+          "invalid_provider_observation",
+          "provider_rejected",
+          "operation_not_accepted",
+          "invalid_terminal_receipt",
+          "termination_unconfirmed",
+          "retained_exit_unavailable",
+          "reattach_window_expired"
+        ],
+        "type": "string"
+      },
+      "MonitorRecoveryStatus": {
+        "enum": [
+          "running",
+          "not_reattachable"
+        ],
+        "type": "string"
+      },
       "MonitorRestartRequest": {
         "additionalProperties": false,
         "properties": {
@@ -30478,15 +30756,14 @@
       },
       "MonitorState": {
         "enum": [
-          "starting",
           "approval",
+          "starting",
           "running",
           "completed",
           "failed",
           "cancelled",
           "lost"
         ],
-        "title": "MonitorState",
         "type": "string"
       },
       "MonitorsResource": {
@@ -35154,66 +35431,46 @@
         "type": "object"
       },
       "ProcessActionResult": {
-        "additionalProperties": false,
         "properties": {
-          "error": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
           "processes": {
             "default": [],
             "items": {
-              "additionalProperties": {
-                "$ref": "#/components/schemas/JsonValue"
-              },
-              "type": "object"
+              "$ref": "#/components/schemas/ProcessEntry"
             },
-            "title": "Processes",
             "type": "array"
           },
           "requestId": {
-            "title": "Requestid",
+            "maxLength": 200,
+            "minLength": 1,
             "type": "string"
           },
           "response": {
             "anyOf": [
               {
-                "additionalProperties": {
-                  "$ref": "#/components/schemas/JsonValue"
-                },
-                "type": "object"
+                "$ref": "#/components/schemas/ProcessResponse"
               },
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Response"
+            ]
           },
           "status": {
-            "enum": [
-              "completed",
-              "partial",
-              "uncertain"
-            ],
-            "title": "Status",
-            "type": "string"
+            "$ref": "#/components/schemas/ProcessActionStatus"
           }
         },
         "required": [
           "requestId",
           "status"
         ],
-        "title": "ProcessActionResult",
         "type": "object"
+      },
+      "ProcessActionStatus": {
+        "enum": [
+          "completed",
+          "partial",
+          "uncertain"
+        ],
+        "type": "string"
       },
       "ProcessCapabilities": {
         "additionalProperties": false,
@@ -35245,102 +35502,370 @@
         "type": "object"
       },
       "ProcessControlRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "accountKey": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Accountkey",
-            "type": "string"
-          },
-          "action": {
-            "enum": [
-              "stop_selected",
-              "stop_owned",
-              "stop_response",
-              "background_command"
-            ],
-            "title": "Action",
-            "type": "string"
-          },
-          "agent": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Agent",
-            "type": "string"
-          },
-          "epoch": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Epoch",
-            "type": "integer"
-          },
-          "includeDescendants": {
-            "default": false,
-            "title": "Includedescendants",
-            "type": "boolean"
-          },
-          "itemId": {
-            "anyOf": [
-              {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "accountKey": {
                 "maxLength": 200,
                 "minLength": 1,
                 "type": "string"
               },
-              {
+              "action": {
+                "const": "stop_selected",
+                "type": "string"
+              },
+              "agent": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "epoch": {
+                "format": "uint64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "includeDescendants": {
+                "default": false,
+                "type": "boolean"
+              },
+              "itemId": {
                 "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Running command item that moves to the background",
-            "title": "Itemid"
-          },
-          "process": {
-            "anyOf": [
-              {
+              },
+              "process": {
                 "$ref": "#/components/schemas/ProcessIdentity"
               },
-              {
+              "processes": {
+                "const": [],
+                "default": [],
+                "maxItems": 0,
+                "type": "array"
+              },
+              "requestId": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "responseTarget": {
                 "type": "null"
               }
-            ],
-            "default": null
-          },
-          "processes": {
-            "default": [],
-            "items": {
-              "$ref": "#/components/schemas/ProcessIdentity"
             },
-            "maxItems": 500,
-            "title": "Processes",
-            "type": "array"
+            "required": [
+              "action",
+              "requestId",
+              "agent",
+              "accountKey",
+              "epoch",
+              "process"
+            ],
+            "type": "object"
           },
-          "requestId": {
+          {
+            "additionalProperties": false,
+            "properties": {
+              "accountKey": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "action": {
+                "const": "stop_owned",
+                "type": "string"
+              },
+              "agent": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "epoch": {
+                "format": "uint64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "includeDescendants": {
+                "default": false,
+                "type": "boolean"
+              },
+              "itemId": {
+                "type": "null"
+              },
+              "process": {
+                "type": "null"
+              },
+              "processes": {
+                "items": {
+                  "$ref": "#/components/schemas/ProcessIdentity"
+                },
+                "maxItems": 500,
+                "minItems": 1,
+                "type": "array"
+              },
+              "requestId": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "responseTarget": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "action",
+              "requestId",
+              "agent",
+              "accountKey",
+              "epoch",
+              "processes"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "accountKey": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "action": {
+                "const": "stop_response",
+                "type": "string"
+              },
+              "agent": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "epoch": {
+                "format": "uint64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "includeDescendants": {
+                "const": false,
+                "default": false,
+                "type": "boolean"
+              },
+              "itemId": {
+                "type": "null"
+              },
+              "process": {
+                "type": "null"
+              },
+              "processes": {
+                "const": [],
+                "default": [],
+                "maxItems": 0,
+                "type": "array"
+              },
+              "requestId": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "responseTarget": {
+                "$ref": "#/components/schemas/ProcessResponseTarget"
+              }
+            },
+            "required": [
+              "action",
+              "requestId",
+              "agent",
+              "accountKey",
+              "epoch",
+              "responseTarget"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "accountKey": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "action": {
+                "const": "background_command",
+                "type": "string"
+              },
+              "agent": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "epoch": {
+                "format": "uint64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "includeDescendants": {
+                "const": false,
+                "default": false,
+                "type": "boolean"
+              },
+              "itemId": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "process": {
+                "type": "null"
+              },
+              "processes": {
+                "const": [],
+                "default": [],
+                "maxItems": 0,
+                "type": "array"
+              },
+              "requestId": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "responseTarget": {
+                "$ref": "#/components/schemas/ProcessResponseTarget"
+              }
+            },
+            "required": [
+              "action",
+              "requestId",
+              "agent",
+              "accountKey",
+              "epoch",
+              "responseTarget",
+              "itemId"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ProcessEntry": {
+        "oneOf": [
+          {
+            "properties": {
+              "status": {
+                "const": "pending",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "stopped",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "already_finished",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "requested",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "type": "string"
+              },
+              "status": {
+                "const": "stale",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "error"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "type": "string"
+              },
+              "status": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "error"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": true,
+              "status": {
+                "const": "uncertain",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "agent": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Requestid",
             "type": "string"
           },
-          "responseTarget": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ProcessResponseTarget"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
+          "generation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
-          "action",
-          "requestId",
-          "agent",
-          "accountKey",
-          "epoch"
+          "key",
+          "agent"
         ],
-        "title": "ProcessControlRequest",
         "type": "object"
       },
       "ProcessIdentity": {
@@ -35349,31 +35874,27 @@
           "accountKey": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Accountkey",
             "type": "string"
           },
           "agent": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Agent",
             "type": "string"
           },
           "epoch": {
+            "format": "uint64",
             "maximum": 9007199254740991,
             "minimum": 0,
-            "title": "Epoch",
             "type": "integer"
           },
           "generation": {
             "maxLength": 256,
             "minLength": 1,
-            "title": "Generation",
             "type": "string"
           },
           "key": {
             "maxLength": 2048,
             "minLength": 1,
-            "title": "Key",
             "type": "string"
           }
         },
@@ -35384,7 +35905,6 @@
           "accountKey",
           "epoch"
         ],
-        "title": "ProcessIdentity",
         "type": "object"
       },
       "ProcessKind": {
@@ -35460,29 +35980,14 @@
         "type": "object"
       },
       "ProcessReceipt": {
-        "additionalProperties": false,
-        "properties": {
-          "found": {
-            "title": "Found",
-            "type": "boolean"
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/FoundProcessReceipt"
           },
-          "result": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ProcessActionResult"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
+          {
+            "$ref": "#/components/schemas/MissingProcessReceipt"
           }
-        },
-        "required": [
-          "found"
-        ],
-        "title": "ProcessReceipt",
-        "type": "object"
+        ]
       },
       "ProcessRecord": {
         "additionalProperties": false,
@@ -35521,43 +36026,49 @@
         "title": "ProcessRecord",
         "type": "object"
       },
+      "ProcessResponse": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/MonitorInputResponse"
+          },
+          {
+            "$ref": "#/components/schemas/ResponseEntry"
+          }
+        ],
+        "description": "A response stop or background entry, or the receipt of HTTP monitor input."
+      },
       "ProcessResponseTarget": {
         "additionalProperties": false,
         "properties": {
           "accountKey": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Accountkey",
             "type": "string"
           },
           "agent": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Agent",
             "type": "string"
           },
           "connectionId": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Connectionid",
             "type": "string"
           },
           "epoch": {
+            "format": "uint64",
             "maximum": 9007199254740991,
             "minimum": 0,
-            "title": "Epoch",
             "type": "integer"
           },
           "threadId": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Threadid",
             "type": "string"
           },
           "turnId": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Turnid",
             "type": "string"
           }
         },
@@ -35569,7 +36080,6 @@
           "threadId",
           "turnId"
         ],
-        "title": "ProcessResponseTarget",
         "type": "object"
       },
       "ProcessTree": {
@@ -37907,17 +38417,72 @@
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
         },
-        "description": "One extensible provider catalog entry; names remain provider-owned strings.",
         "properties": {
-          "model": {
-            "title": "Model",
+          "accountKey": {
             "type": "string"
+          },
+          "availableAccessPrograms": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelAccessPrograms"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "defaultReasoningEffort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hidden": {
+            "type": "boolean"
+          },
+          "isDefault": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/ProviderKind"
+          },
+          "resolvedModel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "serviceTiers": {
+            "items": {
+              "$ref": "#/components/schemas/ModelServiceTier"
+            },
+            "type": "array"
+          },
+          "supportedReasoningEfforts": {
+            "items": {
+              "$ref": "#/components/schemas/ModelReasoningEffort"
+            },
+            "type": "array"
           }
         },
         "required": [
           "model"
         ],
-        "title": "ProviderModel",
         "type": "object"
       },
       "ProviderUpdateNotice": {
@@ -38285,6 +38850,31 @@
         "title": "PullResult",
         "type": "object"
       },
+      "QuestionAnswerStrings": {
+        "properties": {
+          "answers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "answers"
+        ],
+        "type": "object"
+      },
+      "QuestionApproval": {
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/QuestionDecision"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      },
       "QuestionBody": {
         "additionalProperties": false,
         "properties": {
@@ -38311,6 +38901,115 @@
         "title": "QuestionBody",
         "type": "object"
       },
+      "QuestionCardAnswer": {
+        "description": "The method selects the required answer fields. The renderer sends only data;\nthe stored request method remains the server's authority.",
+        "oneOf": [
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/QuestionApproval"
+              },
+              "method": {
+                "const": "item/commandExecution/requestApproval",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/QuestionApproval"
+              },
+              "method": {
+                "const": "item/fileChange/requestApproval",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/QuestionApproval"
+              },
+              "method": {
+                "const": "item/permissions/requestApproval",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/QuestionSelections"
+              },
+              "method": {
+                "const": "item/tool/requestUserInput",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/QuestionSelections"
+              },
+              "method": {
+                "const": "agent/asyncQuestion",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/QuestionElicitation"
+              },
+              "method": {
+                "const": "mcpServer/elicitation/request",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "data"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "QuestionDecision": {
+        "enum": [
+          "accept",
+          "decline",
+          "cancel"
+        ],
+        "type": "string"
+      },
       "QuestionDeferBody": {
         "additionalProperties": false,
         "properties": {
@@ -38328,6 +39027,24 @@
           "deferred"
         ],
         "title": "QuestionDeferBody",
+        "type": "object"
+      },
+      "QuestionElicitation": {
+        "properties": {
+          "content": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/QuestionDecision"
+          }
+        },
+        "required": [
+          "decision",
+          "content"
+        ],
         "type": "object"
       },
       "QuestionEntry": {
@@ -38452,6 +39169,20 @@
         "title": "QuestionOption",
         "type": "object"
       },
+      "QuestionSelections": {
+        "properties": {
+          "answers": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/QuestionAnswerStrings"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "answers"
+        ],
+        "type": "object"
+      },
       "QueueCancelBody": {
         "additionalProperties": false,
         "else": {
@@ -38479,68 +39210,37 @@
         "properties": {
           "action": {
             "const": "cancel",
-            "title": "Action",
             "type": "string"
           },
           "agent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Agent"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expectedText": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expectedtext"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expected_revision": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expected Revision"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "message_id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Message Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "request_id": {
             "anyOf": [
@@ -38551,15 +39251,12 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Request Id"
+            ]
           }
         },
         "required": [
           "action"
         ],
-        "title": "QueueCancelBody",
         "type": "object"
       },
       "QueueCapabilities": {
@@ -38586,68 +39283,37 @@
         "properties": {
           "action": {
             "const": "edit",
-            "title": "Action",
             "type": "string"
           },
           "agent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Agent"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expectedText": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expectedtext"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expected_revision": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expected Revision"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "message_id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Message Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "request_id": {
             "anyOf": [
@@ -38658,13 +39324,10 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Request Id"
+            ]
           },
           "text": {
             "maxLength": 32000,
-            "title": "Text",
             "type": "string"
           }
         },
@@ -38672,7 +39335,6 @@
           "action",
           "text"
         ],
-        "title": "QueueEditBody",
         "type": "object"
       },
       "QueueEntityDto": {
@@ -38709,68 +39371,37 @@
               "first",
               "send_now"
             ],
-            "title": "Action",
             "type": "string"
           },
           "agent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Agent"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expectedText": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expectedtext"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expected_revision": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expected Revision"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "message_id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Message Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "request_id": {
             "anyOf": [
@@ -38781,15 +39412,12 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Request Id"
+            ]
           }
         },
         "required": [
           "action"
         ],
-        "title": "QueueFirstBody",
         "type": "object"
       },
       "QueueItem": {
@@ -38890,42 +39518,27 @@
         "properties": {
           "action": {
             "const": "reorder",
-            "title": "Action",
             "type": "string"
           },
           "agent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Agent"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "ordered_ids": {
             "items": {
               "type": "string"
             },
-            "title": "Ordered Ids",
             "type": "array"
           },
           "request_id": {
@@ -38937,9 +39550,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Request Id"
+            ]
           }
         },
         "required": [
@@ -38947,7 +39558,6 @@
           "expected_revision",
           "ordered_ids"
         ],
-        "title": "QueueReorderBody",
         "type": "object"
       },
       "QueueResource": {
@@ -39040,32 +39650,40 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "limitId": {
             "anyOf": [
               {
-                "type": "null"
+                "type": "string"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Limitid"
           },
           "limitName": {
             "anyOf": [
               {
-                "type": "null"
+                "type": "string"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Limitname"
+          },
+          "planType": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plantype"
           },
           "primary": {
             "anyOf": [
@@ -39075,19 +39693,17 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "rateLimitReachedType": {
             "anyOf": [
               {
-                "type": "null"
+                "type": "string"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Ratelimitreachedtype"
           },
           "secondary": {
@@ -39098,8 +39714,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "spendControlReached": {
             "anyOf": [
@@ -39110,7 +39725,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Spendcontrolreached"
           }
         },
@@ -39118,78 +39732,7 @@
         "type": "object"
       },
       "RateLimitBucketDto": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "description": "Known rate-limit fields plus fields owned by the active provider.",
-        "properties": {
-          "limitId": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Limitid"
-          },
-          "limitName": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Limitname"
-          },
-          "planType": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Plantype"
-          },
-          "primary": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RateLimitWindowDto"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "rateLimitReachedType": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Ratelimitreachedtype"
-          },
-          "secondary": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RateLimitWindowDto"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "title": "RateLimitBucketDto",
-        "type": "object"
+        "$ref": "#/components/schemas/RateLimitBucket"
       },
       "RateLimitIndividualLimit": {
         "additionalProperties": false,
@@ -39202,13 +39745,12 @@
                 "type": "integer"
               },
               {
-                "type": "null"
+                "type": "number"
               },
               {
-                "type": "number"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Remainingpercent"
           }
         },
@@ -39229,13 +39771,12 @@
                 "type": "integer"
               },
               {
-                "type": "null"
+                "type": "number"
               },
               {
-                "type": "number"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Expiresat"
           },
           "grantedAt": {
@@ -39246,13 +39787,12 @@
                 "type": "integer"
               },
               {
-                "type": "null"
+                "type": "number"
               },
               {
-                "type": "number"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Grantedat"
           },
           "id": {
@@ -39293,11 +39833,9 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Availablecount"
           },
           "credits": {
-            "default": [],
             "items": {
               "$ref": "#/components/schemas/RateLimitResetCredit"
             },
@@ -39309,7 +39847,9 @@
         "type": "object"
       },
       "RateLimitWindow": {
-        "additionalProperties": false,
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
         "properties": {
           "resetsAt": {
             "anyOf": [
@@ -39319,13 +39859,12 @@
                 "type": "integer"
               },
               {
-                "type": "null"
+                "type": "number"
               },
               {
-                "type": "number"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Resetsat"
           },
           "usedPercent": {
@@ -39336,13 +39875,12 @@
                 "type": "integer"
               },
               {
-                "type": "null"
+                "type": "number"
               },
               {
-                "type": "number"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Usedpercent"
           },
           "windowDurationMins": {
@@ -39353,13 +39891,12 @@
                 "type": "integer"
               },
               {
-                "type": "null"
+                "type": "number"
               },
               {
-                "type": "number"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Windowdurationmins"
           }
         },
@@ -39367,135 +39904,10 @@
         "type": "object"
       },
       "RateLimitWindowDto": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "description": "Known usage window fields plus provider-specific window metadata.",
-        "properties": {
-          "resetsAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Resetsat"
-          },
-          "usedPercent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Usedpercent"
-          },
-          "windowDurationMins": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Windowdurationmins"
-          }
-        },
-        "title": "RateLimitWindowDto",
-        "type": "object"
+        "$ref": "#/components/schemas/RateLimitWindow"
       },
       "RateLimitsDataDto": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "description": "Known renderer-facing fields with provider JSON extension payloads.\n\n``codex_records.RateLimitDataRecord`` describes the storage projection, but\nrate-limit snapshots also pass through provider reset-credit data whose\ncomplete provider-owned shape is not fixed by this repository.",
-        "properties": {
-          "accountId": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Accountid"
-          },
-          "ordinaryUsageAllowed": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ordinaryusageallowed"
-          },
-          "rateLimitResetCredits": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/JsonValue"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "rateLimits": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RateLimitBucketDto"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "rateLimitsByLimitId": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "$ref": "#/components/schemas/RateLimitBucketDto"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ratelimitsbylimitid"
-          },
-          "signedIn": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Signedin"
-          },
-          "status": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Status"
-          }
-        },
-        "title": "RateLimitsDataDto",
-        "type": "object"
+        "$ref": "#/components/schemas/UsageLimitsData"
       },
       "ReadStateBody": {
         "additionalProperties": false,
@@ -39644,6 +40056,13 @@
           "interrupted"
         ],
         "title": "RecoveryOutcome",
+        "type": "string"
+      },
+      "RecoveryPhase": {
+        "enum": [
+          "scan",
+          "history"
+        ],
         "type": "string"
       },
       "RecoveryResponse": {
@@ -42003,6 +42422,113 @@
           "removed"
         ],
         "title": "ResourceTokenRatesEvent",
+        "type": "object"
+      },
+      "ResponseEntry": {
+        "oneOf": [
+          {
+            "properties": {
+              "status": {
+                "const": "requested",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "backgrounded",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "not_running",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "type": "string"
+              },
+              "status": {
+                "const": "stale",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "error"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "type": "string"
+              },
+              "status": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "error"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "const": "uncertain",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "agent": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "itemId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent"
+        ],
         "type": "object"
       },
       "RestartEnvironmentKey": {
@@ -48259,117 +48785,121 @@
         "type": "object"
       },
       "StudioError": {
-        "additionalProperties": false,
-        "description": "One agent work item that ended because of a Studio error, not because of the agent's own work.",
-        "properties": {
-          "action": {
-            "description": "resume runs connection recovery for the agent; check opens the agent for the owner.",
-            "enum": [
-              "resume",
-              "check"
+        "description": "An action always carries its real destination. Server incidents have no invented agent.",
+        "oneOf": [
+          {
+            "properties": {
+              "action": {
+                "const": "resume",
+                "type": "string"
+              },
+              "agentId": {
+                "type": "string"
+              },
+              "agentName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "agentId",
+              "agentName"
             ],
-            "title": "Action",
-            "type": "string"
+            "type": "object"
           },
-          "agentId": {
-            "title": "Agentid",
-            "type": "string"
+          {
+            "properties": {
+              "action": {
+                "const": "check",
+                "type": "string"
+              },
+              "agentId": {
+                "type": "string"
+              },
+              "agentName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "agentId",
+              "agentName"
+            ],
+            "type": "object"
           },
-          "agentName": {
-            "title": "Agentname",
-            "type": "string"
-          },
+          {
+            "properties": {
+              "action": {
+                "const": "details",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
           "at": {
-            "description": "Unix seconds of the latest failure in this row.",
+            "description": "Unix seconds.",
+            "format": "double",
             "minimum": 0,
-            "title": "At",
             "type": "number"
           },
           "count": {
-            "description": "Failures in this row: the failed runs of one rule or command of one kind are one row.",
+            "description": "Failures in a grouped row. Unit: occurrences.",
+            "format": "uint64",
             "minimum": 1,
-            "title": "Count",
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "detail": {
-            "description": "The stored error.",
-            "title": "Detail",
             "type": "string"
           },
+          "diagnostics": {
+            "$ref": "#/components/schemas/StudioErrorDiagnostics"
+          },
           "eventId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Eventid"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "firstAt": {
-            "description": "Unix seconds of the first failure in this row.",
+            "description": "Unix seconds of the first failure in a grouped row.",
+            "format": "double",
             "minimum": 0,
-            "title": "Firstat",
-            "type": "number"
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "id": {
-            "description": "Row identity. Dismissing it hides this row; for a rule or a command it hides the failures so far, and a later failure returns.",
-            "title": "Id",
             "type": "string"
           },
           "kind": {
-            "enum": [
-              "monitor_outcome_lost",
-              "monitor_not_recorded",
-              "input_not_sent",
-              "input_unconfirmed",
-              "input_uncertain",
-              "input_stuck",
-              "turn_disconnected",
-              "workspace_failed",
-              "turn_stalled",
-              "input_not_started",
-              "session_not_started",
-              "schedule_stalled"
-            ],
-            "title": "Kind",
-            "type": "string"
+            "$ref": "#/components/schemas/StudioErrorKind"
           },
           "monitorId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Monitorid"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "reason": {
-            "description": "The reason in plain words.",
-            "title": "Reason",
             "type": "string"
           },
           "ruleId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "The rule whose runs failed, if a rule ran them.",
-            "title": "Ruleid"
+            "description": "Rule of a grouped monitor row; its failures share one row.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "subject": {
-            "description": "The command or the start of the message.",
-            "title": "Subject",
             "type": "string"
           }
         },
@@ -48377,17 +48907,518 @@
           "id",
           "kind",
           "reason",
-          "action",
-          "agentId",
-          "agentName",
           "detail",
           "subject",
-          "count",
-          "firstAt",
-          "at"
+          "at",
+          "diagnostics"
         ],
-        "title": "StudioError",
         "type": "object"
+      },
+      "StudioErrorCause": {
+        "description": "Only facts extracted by typed adapters belong here; never arbitrary error strings or payloads.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "monitor",
+                "type": "string"
+              },
+              "operation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MonitorOperationIdentity"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "recovery": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MonitorRecoveryEvidence"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "$ref": "#/components/schemas/MonitorState"
+              }
+            },
+            "required": [
+              "kind",
+              "status",
+              "operation",
+              "recovery"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "keyword": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "schema_violation",
+                "type": "string"
+              },
+              "pointer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "pointer",
+              "keyword"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "unclassified",
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "migration",
+                "type": "string"
+              },
+              "phase": {
+                "$ref": "#/components/schemas/MigrationPhase"
+              },
+              "rollback": {
+                "$ref": "#/components/schemas/MigrationRollbackOutcome"
+              },
+              "target": {
+                "$ref": "#/components/schemas/MigrationTarget"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "target",
+              "phase",
+              "rollback"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "stored_record",
+                "type": "string"
+              },
+              "object": {
+                "type": "string"
+              },
+              "pointer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "object",
+              "id",
+              "pointer"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "extendedCode": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "kind": {
+                "const": "sqlite",
+                "type": "string"
+              },
+              "primaryCode": {
+                "format": "int32",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "primaryCode",
+              "extendedCode"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "category": {
+                "$ref": "#/components/schemas/StudioErrorJsonCategory"
+              },
+              "column": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "json",
+                "type": "string"
+              },
+              "line": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "line",
+              "column",
+              "category"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "io",
+                "type": "string"
+              },
+              "osCode": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "osCode"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "schema_object",
+                "type": "string"
+              },
+              "object": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "object"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "class": {
+                "$ref": "#/components/schemas/HttpErrorKind"
+              },
+              "kind": {
+                "const": "runtime",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "class"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "StudioErrorContext": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "requestId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "const": "monitor",
+                "type": "string"
+              },
+              "turnId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "source",
+              "requestId",
+              "turnId",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "source": {
+                "const": "input",
+                "type": "string"
+              },
+              "turnId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "source",
+              "turnId",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "source": {
+                "const": "agent",
+                "type": "string"
+              },
+              "turnId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "source",
+              "turnId",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "class": {
+                "$ref": "#/components/schemas/HttpErrorKind"
+              },
+              "requestId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "route": {
+                "type": "string"
+              },
+              "source": {
+                "const": "http",
+                "type": "string"
+              },
+              "status": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "source",
+              "route",
+              "requestId",
+              "status",
+              "class"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "agentId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "phase": {
+                "$ref": "#/components/schemas/RecoveryPhase"
+              },
+              "source": {
+                "const": "recovery",
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "account",
+              "phase",
+              "agentId"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The incident timestamp is the server observation time; the source's invalid values stay private in that row.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "object": {
+                "type": "string"
+              },
+              "source": {
+                "const": "stored",
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "object",
+              "id"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "StudioErrorDiagnostics": {
+        "additionalProperties": false,
+        "properties": {
+          "causes": {
+            "description": "Ordered from the owning boundary to the underlying safe machine facts.",
+            "items": {
+              "$ref": "#/components/schemas/StudioErrorCause"
+            },
+            "type": "array"
+          },
+          "certainty": {
+            "$ref": "#/components/schemas/StudioErrorEffectCertainty"
+          },
+          "context": {
+            "$ref": "#/components/schemas/StudioErrorContext"
+          }
+        },
+        "required": [
+          "context",
+          "certainty",
+          "causes"
+        ],
+        "type": "object"
+      },
+      "StudioErrorEffectCertainty": {
+        "description": "Evidence about effects, distinct from provider delivery (\"written\" is not applied).",
+        "enum": [
+          "read_only",
+          "not_applied",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "StudioErrorJsonCategory": {
+        "enum": [
+          "io",
+          "syntax",
+          "data",
+          "eof"
+        ],
+        "type": "string"
+      },
+      "StudioErrorKind": {
+        "description": "Why work needs attention. The service owns classification and publication.",
+        "oneOf": [
+          {
+            "enum": [
+              "monitor_outcome_lost",
+              "monitor_not_recorded",
+              "input_unconfirmed",
+              "input_uncertain",
+              "input_stuck",
+              "turn_disconnected",
+              "workspace_failed",
+              "http_failure",
+              "recovery_failed",
+              "stored_record_invalid",
+              "unclassified_failure"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "turn_stalled",
+            "description": "A running turn whose provider is silent while no tool runs.",
+            "type": "string"
+          },
+          {
+            "const": "input_not_started",
+            "description": "An owner message that waits while its chat does not start.",
+            "type": "string"
+          },
+          {
+            "const": "session_not_started",
+            "description": "Chats that wait for an account session that does not start.",
+            "type": "string"
+          },
+          {
+            "const": "schedule_stalled",
+            "description": "A usage resume, capacity retry or account transfer that did not move.",
+            "type": "string"
+          }
+        ]
       },
       "StudioErrorsDismissRequest": {
         "additionalProperties": false,
@@ -55412,7 +56443,7 @@
                 "type": "null"
               },
               {
-                "type": "string"
+                "$ref": "#/components/schemas/ProviderKind"
               }
             ],
             "default": null,
@@ -56455,13 +57486,12 @@
           "accountId": {
             "anyOf": [
               {
-                "type": "null"
+                "type": "string"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Accountid"
           },
           "ordinaryUsageAllowed": {
@@ -56473,7 +57503,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Ordinaryusageallowed"
           },
           "rateLimitResetCredits": {
@@ -56484,8 +57513,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "rateLimits": {
             "anyOf": [
@@ -56495,8 +57523,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "rateLimitsByLimitId": {
             "anyOf": [
@@ -56510,7 +57537,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Ratelimitsbylimitid"
           },
           "signedIn": {
@@ -56522,31 +57548,28 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Signedin"
           },
           "source": {
             "anyOf": [
               {
-                "type": "null"
+                "type": "string"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Source"
           },
           "status": {
             "anyOf": [
               {
-                "type": "null"
+                "type": "string"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Status"
           }
         },
@@ -57645,6 +58668,122 @@
       "VaultJobProgressEvent": {
         "additionalProperties": false,
         "description": "Transient subscribed progress; never persisted to the server or client entity store.",
+        "oneOf": [
+          {
+            "properties": {
+              "resource": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/VaultJobProgressResource"
+                  },
+                  {
+                    "properties": {
+                      "job": {
+                        "const": "setup",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "job"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/VaultSetupResponse"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "resource",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "resource": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/VaultJobProgressResource"
+                  },
+                  {
+                    "properties": {
+                      "job": {
+                        "const": "login",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "job"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/VaultLoginResponse"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "resource",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "resource": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/VaultJobProgressResource"
+                  },
+                  {
+                    "properties": {
+                      "job": {
+                        "const": "pull",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "job"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/VaultPullResponse"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "resource",
+              "value"
+            ],
+            "type": "object"
+          }
+        ],
         "properties": {
           "epoch": {
             "minLength": 1,
@@ -57667,22 +58806,7 @@
             "title": "Revision",
             "type": "integer"
           },
-          "value": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/VaultSetupResponse"
-              },
-              {
-                "$ref": "#/components/schemas/VaultLoginResponse"
-              },
-              {
-                "$ref": "#/components/schemas/VaultPullResponse"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
+          "value": {},
           "workspaceId": {
             "minLength": 1,
             "title": "Workspaceid",
@@ -57729,6 +58853,19 @@
         "title": "VaultJobProgressResource",
         "type": "object"
       },
+      "VaultLoginDone": {
+        "properties": {
+          "state": {
+            "const": "done",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "VaultLoginDone",
+        "type": "object"
+      },
       "VaultLoginRequest": {
         "additionalProperties": false,
         "description": "Sign in to an AWS profile. A repeated requestId returns the same sign-in.",
@@ -57754,6 +58891,35 @@
       "VaultLoginResponse": {
         "additionalProperties": false,
         "description": "One AWS sign-in: running (page and code once AWS gives them), done or failed.",
+        "oneOf": [
+          {
+            "properties": {
+              "state": {
+                "const": "running",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/VaultLoginDone"
+          },
+          {
+            "properties": {
+              "state": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
         "properties": {
           "code": {
             "anyOf": [
@@ -57812,6 +58978,58 @@
         "title": "VaultLoginResponse",
         "type": "object"
       },
+      "VaultPullBytes": {
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "title": "VaultPullBytes",
+        "type": "integer"
+      },
+      "VaultPullDone": {
+        "allOf": [
+          {
+            "properties": {
+              "state": {
+                "const": "done",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/VaultPullOutcome"
+          }
+        ],
+        "title": "VaultPullDone"
+      },
+      "VaultPullFiles": {
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "title": "VaultPullFiles",
+        "type": "integer"
+      },
+      "VaultPullOutcome": {
+        "properties": {
+          "bytes": {
+            "$ref": "#/components/schemas/VaultPullBytes"
+          },
+          "files": {
+            "$ref": "#/components/schemas/VaultPullFiles"
+          },
+          "seq": {
+            "$ref": "#/components/schemas/VaultPullSequence"
+          }
+        },
+        "required": [
+          "seq",
+          "files",
+          "bytes"
+        ],
+        "title": "VaultPullOutcome",
+        "type": "object"
+      },
       "VaultPullRequest": {
         "additionalProperties": false,
         "description": "Pull the latest vault state into a new folder below `to` (Downloads when left out).\nA repeated requestId returns the same pull.",
@@ -57850,13 +59068,40 @@
       "VaultPullResponse": {
         "additionalProperties": false,
         "description": "One pull of a vault state into a Mac folder: running, done (seq, files, bytes) or\nfailed (error).",
+        "oneOf": [
+          {
+            "properties": {
+              "state": {
+                "const": "running",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/VaultPullDone"
+          },
+          {
+            "properties": {
+              "state": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
         "properties": {
           "bytes": {
             "anyOf": [
               {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
+                "$ref": "#/components/schemas/VaultPullBytes"
               },
               {
                 "type": "null"
@@ -57880,9 +59125,7 @@
           "files": {
             "anyOf": [
               {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
+                "$ref": "#/components/schemas/VaultPullFiles"
               },
               {
                 "type": "null"
@@ -57902,9 +59145,7 @@
           "seq": {
             "anyOf": [
               {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
+                "$ref": "#/components/schemas/VaultPullSequence"
               },
               {
                 "type": "null"
@@ -57930,6 +59171,12 @@
         ],
         "title": "VaultPullResponse",
         "type": "object"
+      },
+      "VaultPullSequence": {
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "title": "VaultPullSequence",
+        "type": "integer"
       },
       "VaultReadinessEvent": {
         "additionalProperties": false,
@@ -57995,6 +59242,23 @@
           "prefix"
         ],
         "title": "VaultReadinessResource",
+        "type": "object"
+      },
+      "VaultSetupDone": {
+        "properties": {
+          "site": {
+            "type": "string"
+          },
+          "state": {
+            "const": "done",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "site"
+        ],
+        "title": "VaultSetupDone",
         "type": "object"
       },
       "VaultSetupFactsRequest": {
@@ -58126,6 +59390,47 @@
       "VaultSetupResponse": {
         "additionalProperties": false,
         "description": "One vault setup: running (progress), done (site), failed (error), or signin when the\nAWS profile needs a sign-in first.",
+        "oneOf": [
+          {
+            "properties": {
+              "state": {
+                "const": "running",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/VaultSetupDone"
+          },
+          {
+            "properties": {
+              "state": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "state": {
+                "const": "signin",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
         "properties": {
           "error": {
             "anyOf": [
@@ -59456,34 +60761,616 @@
         "type": "object"
       },
       "WorkBody": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "properties": {
-          "action": {
-            "enum": [
-              "list",
-              "create",
-              "update",
-              "claim",
-              "submit",
-              "cancel",
-              "accept",
-              "reject",
-              "set_default_gate"
-            ],
-            "title": "Action",
-            "type": "string"
-          },
-          "agent": {
-            "anyOf": [
-              {
-                "type": "null"
+        "description": "One tagged owner consumed by both HTTP and agent mutation adapters.\n\n```compile_fail\nuse studio_runtime_schema::task_command::TaskCommand;\nlet command = TaskCommand::Cancel { task_id: \"task\".into(), version: None };\n// A cancellation always carries its reason.\n```\n\n```compile_fail\nuse studio_runtime_schema::task_command::Version;\nlet version = Version(-1); // Ingress validation cannot be bypassed.\n```",
+        "oneOf": [
+          {
+            "properties": {
+              "action": {
+                "const": "list",
+                "type": "string"
               },
-              {
+              "agent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "const": "create",
+                "type": "string"
+              },
+              "agent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "dependencies": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "description": {
+                "maxLength": 64000,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "gate": {
+                "anyOf": [
+                  {
+                    "maxLength": 32000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "command": {
+                        "maxLength": 32000,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "timeout_ms": {
+                        "default": 600000,
+                        "maximum": 3600000,
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "command"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default."
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "result_schema": {
+                "additionalProperties": true,
+                "description": "Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap.",
+                "type": [
+                  "object",
+                  "boolean"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "ready",
+                  "blocked",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "maxLength": 160,
+                "minLength": 1,
                 "type": "string"
               }
+            },
+            "required": [
+              "action",
+              "title"
             ],
-            "default": null,
-            "title": "Agent"
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "const": "update",
+                "type": "string"
+              },
+              "agent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "dependencies": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "description": {
+                "maxLength": 64000,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "gate": {
+                "anyOf": [
+                  {
+                    "maxLength": 32000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "command": {
+                        "maxLength": 32000,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "timeout_ms": {
+                        "default": 600000,
+                        "maximum": 3600000,
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "command"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default."
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "result_schema": {
+                "additionalProperties": true,
+                "description": "Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap.",
+                "type": [
+                  "object",
+                  "boolean"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "ready",
+                  "blocked",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "title": {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "version": {
+                "default": null,
+                "description": "JSON Schema integers include integral decimal numbers. Retain that ingress\ncompatibility while carrying an actual integer in the service.",
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "action",
+              "task_id"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "const": "cancel",
+                "type": "string"
+              },
+              "agent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reason": {
+                "maxLength": 12000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "version": {
+                "default": null,
+                "description": "JSON Schema integers include integral decimal numbers. Retain that ingress\ncompatibility while carrying an actual integer in the service.",
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "action",
+              "task_id",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "const": "reject",
+                "type": "string"
+              },
+              "agent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "result": {
+                "maxLength": 32000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "version": {
+                "default": null,
+                "description": "JSON Schema integers include integral decimal numbers. Retain that ingress\ncompatibility while carrying an actual integer in the service.",
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "action",
+              "task_id",
+              "result"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "const": "claim",
+                "type": "string"
+              },
+              "agent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "owner": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "version": {
+                "default": null,
+                "description": "JSON Schema integers include integral decimal numbers. Retain that ingress\ncompatibility while carrying an actual integer in the service.",
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "action",
+              "task_id"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "const": "submit",
+                "type": "string"
+              },
+              "agent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "checks": {
+                "maxLength": 12000,
+                "type": "string"
+              },
+              "files": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "result": {
+                "$ref": "#/components/schemas/JsonValue",
+                "maxLength": 12000
+              },
+              "revision": {
+                "maxLength": 200,
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "version": {
+                "default": null,
+                "description": "JSON Schema integers include integral decimal numbers. Retain that ingress\ncompatibility while carrying an actual integer in the service.",
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "action",
+              "task_id",
+              "result",
+              "checks",
+              "revision"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "const": "accept",
+                "type": "string"
+              },
+              "agent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "override_reason": {
+                "default": null,
+                "maxLength": 32000,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "result": {
+                "maxLength": 32000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "version": {
+                "default": null,
+                "description": "JSON Schema integers include integral decimal numbers. Retain that ingress\ncompatibility while carrying an actual integer in the service.",
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "action",
+              "task_id",
+              "result"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "const": "set_default_gate",
+                "type": "string"
+              },
+              "agent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "gate": {
+                "anyOf": [
+                  {
+                    "maxLength": 32000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "command": {
+                        "maxLength": 32000,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "timeout_ms": {
+                        "default": 600000,
+                        "maximum": 3600000,
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "command"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default."
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "action",
+              "gate"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "const": "list",
+                "type": "string"
+              },
+              {
+                "const": "create",
+                "type": "string"
+              },
+              {
+                "const": "update",
+                "type": "string"
+              },
+              {
+                "const": "cancel",
+                "type": "string"
+              },
+              {
+                "const": "reject",
+                "type": "string"
+              },
+              {
+                "const": "claim",
+                "type": "string"
+              },
+              {
+                "const": "submit",
+                "type": "string"
+              },
+              {
+                "const": "accept",
+                "type": "string"
+              },
+              {
+                "const": "set_default_gate",
+                "type": "string"
+              }
+            ]
+          },
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "checks": {
             "anyOf": [
@@ -59494,13 +61381,12 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Checks"
+            ]
           },
           "dependencies": {
             "anyOf": [
               {
+                "default": [],
                 "items": {
                   "type": "string"
                 },
@@ -59508,28 +61394,28 @@
                 "type": "array"
               },
               {
-                "type": "null"
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": [
+                  "array",
+                  "null"
+                ]
               }
-            ],
-            "default": null,
-            "title": "Dependencies"
+            ]
           },
           "description": {
-            "anyOf": [
-              {
-                "maxLength": 64000,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Description"
+            "maxLength": 64000,
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "files": {
             "anyOf": [
               {
+                "default": [],
                 "items": {
                   "type": "string"
                 },
@@ -59539,9 +61425,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Files"
+            ]
           },
           "gate": {
             "anyOf": [
@@ -59577,34 +61461,35 @@
             "description": "Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default."
           },
           "id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "override_reason": {
-            "description": "Lead reason to accept despite a failed, missing, or unknown gate. Saved in the decision.",
+            "default": null,
             "maxLength": 32000,
-            "minLength": 1,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "owner": {
             "anyOf": [
               {
-                "type": "null"
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               {
-                "type": "string"
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
-            ],
-            "default": null,
-            "title": "Owner"
+            ]
           },
           "reason": {
             "anyOf": [
@@ -59615,13 +61500,18 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Reason"
+            ]
           },
           "result": {
-            "$ref": "#/components/schemas/JsonValue",
-            "maxLength": 12000
+            "anyOf": [
+              {
+                "maxLength": 32000,
+                "type": "string"
+              },
+              {
+                "maxLength": 12000
+              }
+            ]
           },
           "result_schema": {
             "additionalProperties": true,
@@ -59640,37 +61530,28 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Revision"
+            ]
           },
           "status": {
-            "anyOf": [
-              {
-                "enum": [
-                  "ready",
-                  "blocked"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "enum": [
+              "ready",
+              "blocked",
+              null
             ],
-            "default": null,
-            "title": "Status"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "task_id": {
             "anyOf": [
               {
-                "type": "null"
+                "type": "string"
               },
               {
-                "type": "string"
+                "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Task Id"
+            ]
           },
           "title": {
             "anyOf": [
@@ -59679,32 +61560,27 @@
                 "type": "string"
               },
               {
-                "type": "null"
+                "maxLength": 160,
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
-            ],
-            "default": null,
-            "title": "Title"
+            ]
           },
           "version": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "default": null,
-            "title": "Version"
+            "description": "JSON Schema integers include integral decimal numbers. Retain that ingress\ncompatibility while carrying an actual integer in the service.",
+            "format": "int64",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
-        "required": [
-          "action"
-        ],
-        "title": "WorkBody",
-        "type": "object"
+        "title": "TaskCommand"
       },
       "WorkDecisionDto": {
         "additionalProperties": false,
@@ -59955,15 +61831,7 @@
           "status": {
             "anyOf": [
               {
-                "enum": [
-                  "ready",
-                  "running",
-                  "blocked",
-                  "review",
-                  "accepted",
-                  "cancelled"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkStatus"
               },
               {
                 "type": "null"
@@ -60191,16 +62059,8 @@
             "type": "string"
           },
           "status": {
-            "enum": [
-              "ready",
-              "blocked",
-              "running",
-              "review",
-              "accepted",
-              "cancelled"
-            ],
-            "title": "Status",
-            "type": "string"
+            "$ref": "#/components/schemas/WorkStatus",
+            "title": "Status"
           },
           "submissionRefusal": {
             "$ref": "#/components/schemas/TaskSubmissionRefusal"
@@ -60628,6 +62488,17 @@
         "title": "WorkResultRecordResponse",
         "type": "object"
       },
+      "WorkStatus": {
+        "enum": [
+          "ready",
+          "blocked",
+          "running",
+          "review",
+          "accepted",
+          "cancelled"
+        ],
+        "type": "string"
+      },
       "WorkViewRecordResponse": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -60682,15 +62553,7 @@
                 "type": "string"
               },
               {
-                "enum": [
-                  "ready",
-                  "running",
-                  "blocked",
-                  "review",
-                  "accepted",
-                  "cancelled"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkStatus"
               }
             ],
             "title": "Displaystatus"
@@ -60754,16 +62617,8 @@
             "type": "string"
           },
           "status": {
-            "enum": [
-              "ready",
-              "running",
-              "blocked",
-              "review",
-              "accepted",
-              "cancelled"
-            ],
-            "title": "Status",
-            "type": "string"
+            "$ref": "#/components/schemas/WorkStatus",
+            "title": "Status"
           },
           "submissionRefusal": {
             "$ref": "#/components/schemas/TaskSubmissionRefusal"
@@ -61158,6 +63013,16 @@
         },
         "title": "WorkspaceEntityDto",
         "type": "object"
+      },
+      "WorkspaceMode": {
+        "enum": [
+          "layr-native",
+          "layr",
+          "image",
+          "worktree",
+          "shared"
+        ],
+        "type": "string"
       },
       "WorkspaceResource": {
         "additionalProperties": false,

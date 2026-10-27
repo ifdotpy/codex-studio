@@ -501,15 +501,13 @@ impl MonitorInputPort for ManagedMonitorInputAdapter {
         request: super::runtime_dispatch::MonitorInputRequest<'a>,
     ) -> BoxFuture<'a, Result<Value, Error>> {
         Box::pin(async move {
-            let input = serde_json::from_value(request.input.clone())
-                .map_err(|_| Error::Invalid("Invalid monitor input"))?;
             self.runtime
                 .input_for_owner(
                     request.caller_id,
                     request.caller_epoch,
                     request.monitor_id,
                     request.ticket,
-                    &input,
+                    request.input,
                     request.now,
                 )
                 .await
@@ -614,7 +612,17 @@ fn monitor_error(error: crate::monitor_policy::MonitorError) -> Error {
         },
         // Python returns the reason of its ValueError to the agent.
         E::Refused(reason) => Error::Invalid(reason),
-        _ => Error::Invalid("Monitor action was refused"),
+        E::InvalidResultReceipt(_)
+        | E::InvalidDeliveryIdentity(_)
+        | E::InvalidOutputReceipt(_)
+        | E::TaskFailed
+        | E::InputOutcomeUnknown
+        | E::ProviderRequest { .. }
+        | E::ConfigurationRejected { .. }
+        | E::ConfigurationReceipt { .. }
+        | E::Event(_)
+        | E::Rules(_)
+        | E::Io(_) => Error::Invalid("Monitor action was refused"),
     }
 }
 

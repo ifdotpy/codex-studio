@@ -32,13 +32,13 @@ export async function fixtureFetchInput(
   options?: RequestInit,
   pathOnly = false,
 ) {
-  if (!(input instanceof Request)) return { url: input as string, options };
+  if (!(input instanceof Request)) return { url: String(input), options };
   const url = new URL(input.url);
   return {
     url: pathOnly ? url.pathname + url.search : input.url,
     options: {
       method: input.method,
-      body: input.method === "GET" ? undefined : await input.clone().text(),
+      ...(input.method === "GET" ? {} : { body: await input.clone().text() }),
     },
   };
 }
@@ -50,3 +50,9 @@ export const fixturePostBody = JSON.parse as <
 >(
   body: BodyInit | null | undefined,
 ) => WithAbsentFields<import("../../src/apiTypes.ts").PostBody<Path>>;
+
+export function required<T>(value: T | null | undefined): T {
+  if (value === null || value === undefined)
+    throw new Error("Missing expected fixture value");
+  return value;
+}

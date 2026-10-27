@@ -1,4 +1,4 @@
-import type { Agent } from "../../src/types.ts";
+import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
 import type { components } from "../../src/generated/api.ts";
 import type { AddressInfo } from "node:net";
 import type { ViteDevServer } from "vite";
@@ -26,4 +26,9 @@ export function transcriptFixtureAgent(
   // Seeded by this fixture; the seed never sets contextUsage. These agents arrive
   // through fixture documents whose broad owner type loses that seed invariant.
   return agent as Agent & components["schemas"]["TranscriptAgent"];
+}
+
+export function required<T>(value: T | null | undefined): T {
+  if (value == null) throw new Error("Missing performance fixture value");
+  return value;
 }

@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { components } from "../../src/generated/api.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
 import { fixturePostBody } from "./browser-fixture.ts";
@@ -76,7 +77,7 @@ for (const outcome of ["applied", "failed"] as const)
       await page.clock.fastForward(35_000);
       expect(posts).toHaveLength(1);
       expect(statuses).toHaveLength(0);
-      const requestId = posts[0].request_id!;
+      const requestId = required(posts[0]).request_id!;
 
       receipts.set(requestId, {
         id: "overlap",
@@ -86,7 +87,7 @@ for (const outcome of ["applied", "failed"] as const)
       });
       backend.publishRename("overlap", requestId);
       if (outcome === "applied") {
-        backend.snapshot.threads[0].name = "Stream renamed chat";
+        required(backend.snapshot.threads[0]).name = "Stream renamed chat";
         backend.publishState();
         await expect(
           page

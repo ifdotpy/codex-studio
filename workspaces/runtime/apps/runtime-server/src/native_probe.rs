@@ -233,7 +233,11 @@ fn schema_check(directory: &Path) -> Result<Value, CompatibilityRefusal> {
     if !studio_runtime_schema::usage::codex_usage_schema_compatible(&usage) {
         return Err(CompatibilityRefusal::ProtocolSchema);
     }
-    Ok(json!({"methods":required,"daybreak":true,"usage":true}))
+    let errors = read("v2/ErrorNotification.json")?;
+    if !studio_runtime_schema::provider_errors::codex_error_schema_compatible(&errors) {
+        return Err(CompatibilityRefusal::ProtocolSchema);
+    }
+    Ok(json!({"methods":required,"daybreak":true,"usage":true,"errors":true}))
 }
 
 async fn smoke(executable: &Path, home: &Path) -> Result<(), ()> {
@@ -531,8 +535,20 @@ mod tests {
             .expect("make fixture executable");
     }
 
+    fn error_notification_schema() -> serde_json::Value {
+        let mut leaf: serde_json::Value =
+            serde_json::from_str(studio_runtime_schema::provider_errors::CODEX_ERROR_SCHEMA)
+                .expect("vendor error leaf");
+        let definitions = leaf
+            .as_object_mut()
+            .expect("leaf object")
+            .remove("definitions")
+            .expect("referenced definitions");
+        json!({"definitions":{"CodexErrorInfo":leaf,"NonSteerableTurnKind":definitions["NonSteerableTurnKind"]}})
+    }
+
     #[test]
-    fn schema_check_refuses_changed_usage_fragment() {
+    fn schema_check_refuses_changed_usage_and_error_fragments() {
         let directory = tempfile::tempdir().expect("schema fixture");
         let methods = [
             "initialize",
@@ -561,6 +577,7 @@ mod tests {
                 json!({"definitions":{"Model":{"properties":{"availableAccessPrograms":{}}}}}),
             ),
             ("v2/ThreadTokenUsageUpdatedNotification.json", usage.clone()),
+            ("v2/ErrorNotification.json", error_notification_schema()),
         ] {
             let path = directory.path().join(name);
             fs::create_dir_all(path.parent().expect("parent")).expect("fixture directory");
@@ -607,10 +624,28 @@ mod tests {
             .as_object_mut()
             .expect("properties")
             .remove("last");
-        let mut notification_type = usage;
+        let mut notification_type = usage.clone();
         notification_type["properties"]["turnId"]["type"] = json!("integer");
         for incompatible in [category, retyped, optional, missing, notification_type] {
             fs::write(&path, incompatible.to_string()).expect("incompatible schema");
+            assert!(matches!(
+                super::schema_check(directory.path()),
+                Err(studio_runtime_services::native_runtime::CompatibilityRefusal::ProtocolSchema)
+            ));
+        }
+        fs::write(&path, usage.to_string()).expect("restore compatible usage");
+        let path = directory.path().join("v2/ErrorNotification.json");
+        let errors = error_notification_schema();
+        for pointer in [
+            "/definitions/CodexErrorInfo/anyOf/0/enum/0",
+            "/definitions/CodexErrorInfo/anyOf/1/properties/httpConnectionFailed/properties/httpStatusCode/type",
+            "/definitions/NonSteerableTurnKind/enum/0",
+        ] {
+            let mut changed = errors.clone();
+            *changed
+                .pointer_mut(pointer)
+                .expect("consumed error contract") = json!("drift");
+            fs::write(&path, changed.to_string()).expect("changed error schema");
             assert!(matches!(
                 super::schema_check(directory.path()),
                 Err(studio_runtime_services::native_runtime::CompatibilityRefusal::ProtocolSchema)
@@ -652,6 +687,11 @@ mod tests {
             studio_runtime_schema::usage::CODEX_USAGE_SCHEMA,
         )
         .expect("usage fixture");
+        fs::write(
+            bundle.join("error-schema.json"),
+            error_notification_schema().to_string(),
+        )
+        .expect("error fixture");
         let codex = bundle.join("codex");
         write_executable(
             &codex,
@@ -672,6 +712,7 @@ if (process.argv.includes('--version')) {
     const schemas = {
         'ClientRequest.json': {oneOf: methods.map(method => ({properties: {method: {enum: [method]}}}))},
         'v2/ThreadTokenUsageUpdatedNotification.json': JSON.parse(fs.readFileSync(path.join(__dirname, 'usage-schema.json'), 'utf8')),
+        'v2/ErrorNotification.json': JSON.parse(fs.readFileSync(path.join(__dirname, 'error-schema.json'), 'utf8')),
         'v2/TurnStartParams.json': {properties: {cyberAccessProgram: {}},
             definitions: {CyberAccessProgram: {enum: ['standard', 'daybreakBlue', 'daybreakRed']}}},
         'v2/ModelListResponse.json': {definitions: {Model: {properties: {availableAccessPrograms: {}}}}},

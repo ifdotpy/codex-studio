@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { Page } from "@playwright/test";
 import type { PostBody } from "../../src/api.ts";
 import { fixturePostBody } from "../misc-fixture.ts";
@@ -8,7 +9,7 @@ import { fixture } from "../servers/multi-server-fixture.ts";
 
 const models = ["gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol"].map((model) => ({
   model,
-  provider: "codex",
+  provider: "codex" as const,
   displayName: model,
   isDefault: model === "gpt-6-astra",
   defaultReasoningEffort: "medium",
@@ -33,7 +34,7 @@ async function setup(
       ...models[0],
       model: "claude-opus-5-5",
       displayName: "Claude Opus 5.5",
-      provider: "claude",
+      provider: "claude" as const,
     },
   ];
   const server = await fixture(label, signed, {
@@ -117,7 +118,7 @@ async function setup(
         const creation = fixturePostBody<"/api/leads">(body);
         creations.push(creation);
 
-        const row: import("../../src/types.ts").Agent = {
+        const row: import("../../src/generated/api.ts").AgentEntityDto = {
           ...snapshot.threads[0],
           id: creation.id!,
           name: "New chat",
@@ -154,7 +155,7 @@ async function setup(
       : {
           default: catalogRows(
             "default",
-            label === "Remote" ? [models[2]] : models,
+            label === "Remote" ? [required(models[2])] : models,
           ),
         };
   return { server, creations, changes, modelReads };
@@ -219,7 +220,7 @@ for (const [choice, badge] of [
         .getByRole("button", { name: "Start chat", exact: true })
         .click();
       await expect.poll(() => creations.length).toBe(1);
-      expect(creations[0]).toMatchObject({
+      expect(required(creations[0])).toMatchObject({
         workspaceMode:
           choice === "Layr"
             ? "layr-native"
@@ -254,7 +255,7 @@ for (const system of ["Windows"]) {
         .getByRole("button", { name: "Start chat", exact: true })
         .click();
       await expect.poll(() => creations.length).toBe(1);
-      expect(creations[0].workspaceMode).toBe("worktree");
+      expect(required(creations[0]).workspaceMode).toBe("worktree");
     } finally {
       await server.close();
     }
@@ -306,6 +307,7 @@ for (const width of [320, 390, 1440])
         ).toBeVisible();
         const bounds = await dialog.boundingBox();
         const viewport = page.viewportSize();
+        if (!bounds || !viewport) throw new Error("Missing workspace bounds");
 
         expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport!.width);
         const evidence = process.env.MODELS_EVIDENCE;
@@ -357,6 +359,7 @@ test("a paired server uses its own platform and catalog", async ({
   const remote = await setup("Linux", "Remote", true);
   try {
     const project = local.server.snapshot.runtime.projects[0];
+    if (!project?.path) throw new Error("Missing paired project");
 
     project.homeServerId = "local";
     project.locations = [
@@ -433,7 +436,7 @@ test("a paired server uses its own platform and catalog", async ({
       .click();
     await expect.poll(() => remote.creations.length).toBe(1);
     expect(local.creations).toHaveLength(0);
-    expect(remote.creations[0]).toMatchObject({
+    expect(required(remote.creations[0])).toMatchObject({
       workspaceMode: "layr-native",
       model: "gpt-5.6-sol",
     });
@@ -482,8 +485,8 @@ test("a filtered Claude lead keeps the server's Codex worker default without inj
       .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await expect.poll(() => creations.length).toBe(1);
-    expect(creations[0].model).toBe("claude-opus-5-5");
-    expect(creations[0]).not.toHaveProperty("worker_defaults");
+    expect(required(creations[0]).model).toBe("claude-opus-5-5");
+    expect(required(creations[0])).not.toHaveProperty("worker_defaults");
   } finally {
     await server.close();
   }
@@ -513,7 +516,7 @@ for (const system of ["Darwin", "Linux"]) {
         .getByRole("button", { name: "Start chat", exact: true })
         .click();
       await expect.poll(() => creations.length).toBe(1);
-      expect(creations[0].workspaceMode).toBe("layr-native");
+      expect(required(creations[0]).workspaceMode).toBe("layr-native");
     } finally {
       await server.close();
     }
@@ -534,7 +537,7 @@ test("Linux offers Layr VM only when its server has the Studio VM", async ({
       .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await expect.poll(() => creations.length).toBe(1);
-    expect(creations[0].workspaceMode).toBe("layr");
+    expect(required(creations[0]).workspaceMode).toBe("layr");
   } finally {
     await server.close();
   }
@@ -568,7 +571,7 @@ test("Linux without native Layr defaults to WT and explains the unavailable opti
       .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await expect.poll(() => creations.length).toBe(1);
-    expect(creations[0].workspaceMode).toBe("worktree");
+    expect(required(creations[0]).workspaceMode).toBe("worktree");
   } finally {
     await server.close();
   }

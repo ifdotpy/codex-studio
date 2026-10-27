@@ -224,20 +224,23 @@ fn workspace_view(
         );
     }
 
-    let all_work = parse_records(
-        validators,
-        "WorkItem",
-        "runtime_work",
-        WorkspaceViewsRepository::records(connection, "runtime_work").map_err(ApiError::stored)?,
-    )?;
+    let all_work =
+        studio_runtime_store::WorkItemsRepository::work(connection).map_err(ApiError::stored)?;
     let statuses = work_policy::work_statuses(&all_work);
     let root_view = root.as_deref().unwrap_or("");
-    let work = all_work
-        .iter()
+    let scoped_work = all_work
+        .into_iter()
         .filter(|item| {
-            ids.contains(&item["rootId"].as_str().unwrap_or_default().to_owned())
-                && (root.is_none() || item["rootId"] == root_view)
+            ids.contains(
+                &item.value()["rootId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            ) && (root.is_none() || item.value()["rootId"] == root_view)
         })
+        .collect::<Vec<_>>();
+    let work = scoped_work
+        .iter()
         .map(|item| work_policy::work_item_view(item, &statuses))
         .collect::<Vec<_>>();
     if view == "work" {
@@ -323,12 +326,13 @@ fn workspace_view(
             all_agents: &all_agents,
             requests: &requests,
             complaints: &complaints,
-            work: &work,
+            work: &scoped_work,
             statuses: &statuses,
             monitors: &monitors,
             rules: &rules,
         },
-    );
+    )
+    .map_err(ApiError::stored)?;
     if view == "inbox" {
         return Ok(
             studio_runtime_services::workspace_views::workspace_view_response(

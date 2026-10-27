@@ -79,11 +79,13 @@ export class NativeDraftState {
     if (!Object.keys(changes).length) return;
     // The head may already be committed, so its content is immutable. Only
     // coalesce the unsent tail to bound typing backlog while IPC is delayed.
-    if (!this.journal && this.queue.length > 1)
-      Object.assign(this.queue[1].changes, changes);
-    else this.queue.push({ id: randomUUID(), changes });
+    const [, pending] = this.queue;
+    const edit =
+      pending && !this.journal ? pending : { id: randomUUID(), changes };
+    if (edit === pending) Object.assign(edit.changes, changes);
+    else this.queue.push(edit);
     try {
-      this.journal?.save(this.queue[this.queue.length - 1]);
+      this.journal?.save(edit);
     } catch (error) {
       this.failure = error instanceof Error ? error.message : String(error);
     }
@@ -121,8 +123,7 @@ export class NativeDraftState {
     if (this.saving) return;
     this.saving = true;
     try {
-      while (this.queue.length) {
-        const edit = this.queue[0];
+      for (let edit = this.queue[0]; edit; edit = this.queue[0]) {
         this.journal?.save(edit);
         const view = await this.invoke<DraftView>(
           "drafts.edit",

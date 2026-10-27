@@ -175,7 +175,7 @@ pub struct HttpState {
     pub(crate) event_wake: Arc<Notify>,
     pub(crate) continuation_wake: Arc<Notify>,
     pub(crate) etag_operations: BTreeSet<(String, String)>,
-    mutation_tasks: Arc<crate::mutation_tasks::MutationTasks>,
+    pub(crate) mutation_tasks: Arc<crate::mutation_tasks::MutationTasks>,
 }
 
 impl HttpState {
@@ -567,7 +567,7 @@ impl HttpState {
         F: std::future::Future<Output = Response> + Send + 'static,
     {
         self.mutation_tasks
-            .run_response(future, route, request_id)
+            .run_response(future, route, request_id, self.store.clone())
             .await
     }
 
@@ -906,7 +906,7 @@ fn with_boundary(router: Router<HttpState>, state: HttpState) -> Router {
             middleware::diagnostics_http_timing,
         ))
         .layer(axum_middleware::from_fn_with_state(
-            Arc::clone(&state.mutation_tasks),
+            state.clone(),
             crate::mutation_tasks::own_mutations,
         ))
         // Boundary schema validation runs first, so malformed object requests are not sampled.

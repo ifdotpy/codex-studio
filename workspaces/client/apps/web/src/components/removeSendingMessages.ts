@@ -168,7 +168,7 @@ export function createSendingMessageRemoval(
     await Promise.all(
       Array.from({ length: Math.min(4, agents.length) }, async () => {
         while (next < agents.length) {
-          const agent = agents[next++];
+          const agent = agents[next++]!;
           const queue = await get("/api/queue", {
             query: { agent: agent.id },
             workspaceId: scope.workspaceId,

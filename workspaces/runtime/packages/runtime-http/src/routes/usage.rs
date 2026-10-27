@@ -89,7 +89,27 @@ async fn cost_interest(
             studio_runtime_store::StoreError::RecordContract("unknown cost account") => {
                 ApiError::new(StatusCode::BAD_REQUEST, "Unknown cost account")
             }
-            error => ApiError::stored(error),
+            error @ studio_runtime_store::StoreError::StateDirectory(_)
+            | error @ studio_runtime_store::StoreError::AlreadyOwned
+            | error @ studio_runtime_store::StoreError::MissingDatabase(_)
+            | error @ studio_runtime_store::StoreError::Migration { .. }
+            | error @ studio_runtime_store::StoreError::UnsafeStateDirectory
+            | error @ studio_runtime_store::StoreError::SchemaMismatch(_)
+            | error @ studio_runtime_store::StoreError::InvalidSyncObject { .. }
+            | error @ studio_runtime_store::StoreError::InvalidSyncObjectField { .. }
+            | error @ studio_runtime_store::StoreError::InvalidStoredRecord { .. }
+            | error @ studio_runtime_store::StoreError::SchemaObjectMismatch { .. }
+            | error @ studio_runtime_store::StoreError::Sqlite(_)
+            | error @ studio_runtime_store::StoreError::CommitOutcomeUnknown(_)
+            | error @ studio_runtime_store::StoreError::Json(_)
+            | error @ studio_runtime_store::StoreError::InvalidStoredObject { .. }
+            | error @ studio_runtime_store::StoreError::SchemaValidation(_)
+            | error @ studio_runtime_store::StoreError::RecordContract(_)
+            | error @ studio_runtime_store::StoreError::WriterPoisoned
+            | error @ studio_runtime_store::StoreError::WriterActorInitialization(_)
+            | error @ studio_runtime_store::StoreError::WriterActorControl(_)
+            | error @ studio_runtime_store::StoreError::CommitActorOutcomeUnknown(_)
+            | error @ studio_runtime_store::StoreError::ReadTaskFailed => ApiError::stored(error),
         })?;
     Ok(Json(serde_json::json!({})))
 }
@@ -329,6 +349,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::{Arc, Mutex};
     use studio_runtime_providers::{Method, RequestId, RequestTicket};
+    use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use studio_runtime_services::account_session_runtime::{
         AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest,
         ProviderResponse, RequestCertainty, SessionReceipt,
@@ -386,12 +407,24 @@ mod tests {
                     )
                 };
                 Ok(SessionReceipt {
+                    outcome: {
+                        match (certainty, result) {
+                            (RequestCertainty::Written, Some(response)) => {
+                                ReceiptOutcome::Written {
+                                    ticket: ticket.expect("written fixture ticket"),
+                                    response,
+                                }
+                            }
+                            (RequestCertainty::Written, None) | (RequestCertainty::Unknown, _) => {
+                                ReceiptOutcome::Unknown {
+                                    ticket: ticket.expect("unknown fixture ticket"),
+                                }
+                            }
+                            (RequestCertainty::NotSent, _) => ReceiptOutcome::NoLiveAccountWorker,
+                        }
+                    },
                     scope: self.scope.clone(),
                     operation: request.operation,
-                    ticket,
-                    certainty,
-                    result,
-                    not_sent_reason: None,
                     replayed: false,
                 })
             })

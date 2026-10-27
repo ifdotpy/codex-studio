@@ -6,7 +6,11 @@ import {
   useServerApi,
   useServerServices,
 } from "../../servers/ServerServicesContext";
-import type { DisplayBackgroundTask } from "../backgroundTaskModel";
+import type {
+  DisplayBackgroundTask,
+  DisplayProcessTask,
+} from "../backgroundTaskModel";
+import type { Monitor } from "../../types";
 
 type Restart = PostBody<"/api/monitor/restart">;
 export function restartPatterns(text: string): string[] {
@@ -18,7 +22,12 @@ export default function MonitorRestart({
   notify,
   refresh,
 }: {
-  task: DisplayBackgroundTask;
+  task: Pick<
+    DisplayBackgroundTask,
+    "id" | "agent" | "command" | "cancelRequested"
+  > &
+    Pick<Monitor, "outputPatterns"> &
+    Partial<Pick<DisplayProcessTask, "epoch" | "accountKey">>;
   notify: (message: string) => void;
   refresh: () => Promise<void>;
 }) {
@@ -35,22 +44,21 @@ export default function MonitorRestart({
     }
   });
   const [opened, setOpened] = useState(!!receipt);
-  const [patterns, setPatterns] = useState(
-    (task.outputPatterns || []).join("\n"),
-  );
+  const { outputPatterns, epoch, accountKey } = task;
+  const [patterns, setPatterns] = useState((outputPatterns || []).join("\n"));
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const values = restartPatterns(patterns);
   const unchanged =
-    patterns === (task.outputPatterns || []).join("\n") ||
-    JSON.stringify(values) === JSON.stringify(task.outputPatterns || []);
+    patterns === (outputPatterns || []).join("\n") ||
+    JSON.stringify(values) === JSON.stringify(outputPatterns || []);
   const submit = async () => {
-    if (pending || task.epoch == null) return;
+    if (pending || epoch == null) return;
     const body = receipt || {
       id: task.id,
       agent: task.agent,
-      epoch: task.epoch,
-      accountKey: task.accountKey || "default",
+      epoch,
+      accountKey: accountKey || "default",
       requestId: randomUUID(),
       outputPatterns: values,
     };
@@ -93,7 +101,7 @@ export default function MonitorRestart({
         size="xs"
         variant="light"
         mt="xs"
-        disabled={task.epoch == null}
+        disabled={epoch == null}
         onClick={() => setOpened(true)}
       >
         Restart with narrower patterns

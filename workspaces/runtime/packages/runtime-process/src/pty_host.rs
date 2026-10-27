@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use pty_process::Size;
 use pty_process::blocking::{self, Command, Pty};
-use rustix::process::{Pid, Signal, kill_process_group};
+use rustix::process::{Pid, Signal};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -27,10 +27,13 @@ use crate::PtyHost;
 use crate::child_priority::ChildPriority;
 #[cfg(target_os = "linux")]
 use crate::supervisor_identity::ProcStat;
+use crate::supervisor_identity::{
+    GroupScope, VerifiedProcessGroup as SessionGroup, capture_groups,
+};
 #[cfg(target_os = "macos")]
 use crate::supervisor_identity::{MICROS_PER_SECOND, macos_start_identity};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use crate::supervisor_identity::{boot_id, signal_verified_group_member, start_time};
+use crate::supervisor_identity::{boot_id, start_time};
 
 #[cfg(test)]
 type BeforeKillHook = Box<dyn Fn(bool) + Send>;
@@ -38,6 +41,9 @@ type BeforeKillHook = Box<dyn Fn(bool) + Send>;
 /// How long close waits for the terminal session to exit after SIGTERM before
 /// it sends SIGKILL. The wait ends early when the leader is reaped.
 const TERM_GRACE: Duration = Duration::from_millis(500);
+
+/// Whole native terminal cleanup budget, including TERM, KILL and exit proof.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Error)]
 pub enum PtyHostError {
@@ -167,18 +173,6 @@ struct PtyChild {
     status: Option<ExitStatus>,
 }
 
-#[derive(Clone)]
-struct GroupMember {
-    pid: u32,
-    start_time: String,
-}
-
-#[derive(Clone)]
-struct SessionGroup {
-    id: u32,
-    members: Vec<GroupMember>,
-}
-
 impl PtyShared {
     fn child(&self) -> Result<std::sync::MutexGuard<'_, PtyChild>, PtyHostError> {
         self.child
@@ -212,19 +206,12 @@ impl PtyShared {
                 .lock()
                 .map_err(|_| PtyHostError::Lock)?;
             if captured.is_empty() && !already_reaped {
-                *captured = session_groups(self.session);
+                *captured = session_groups(self.session)?;
             }
             captured.clone()
         };
         let term_deadline = (Instant::now() + term_grace).min(deadline);
-        let _term_result = signal_groups(
-            &groups,
-            self.session,
-            self.process_group,
-            child.process.id(),
-            Signal::TERM,
-            !already_reaped,
-        );
+        let _term_result = signal_groups(&groups, self.session, Signal::TERM);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         while !already_reaped && Instant::now() < term_deadline {
             if let Some(status) = child.process.try_wait()? {
@@ -250,26 +237,10 @@ impl PtyShared {
         let signal_error = if self.fail_next_kill.swap(false, Ordering::AcqRel) {
             Some(rustix::io::Errno::PERM)
         } else {
-            signal_groups(
-                &current_groups,
-                self.session,
-                self.process_group,
-                child.process.id(),
-                Signal::KILL,
-                false,
-            )
-            .err()
+            signal_groups(&current_groups, self.session, Signal::KILL).err()
         };
         #[cfg(not(test))]
-        let signal_error = signal_groups(
-            &current_groups,
-            self.session,
-            self.process_group,
-            child.process.id(),
-            Signal::KILL,
-            false,
-        )
-        .err();
+        let signal_error = signal_groups(&current_groups, self.session, Signal::KILL).err();
         if already_reaped {
             if let Some(error) = signal_error
                 && !crate::owned_process_group::vanished_after_reap(
@@ -313,7 +284,7 @@ impl PtyShared {
 }
 
 fn wait_for_session_processes(session: u32, deadline: Instant) -> Result<(), PtyHostError> {
-    while !session_groups(session).is_empty() {
+    while !session_groups(session)?.is_empty() {
         if Instant::now() >= deadline {
             return Err(PtyHostError::Io(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
@@ -328,7 +299,7 @@ fn wait_for_session_processes(session: u32, deadline: Instant) -> Result<(), Pty
 impl Drop for PtyShared {
     fn drop(&mut self) {
         if !self.termination_attempted.load(Ordering::Acquire) {
-            let _termination = self.terminate(Instant::now() + Duration::from_secs(2));
+            let _termination = self.terminate(Instant::now() + CLOSE_TIMEOUT);
         }
     }
 }
@@ -347,6 +318,12 @@ impl PtyHost for LocalPtyHost {
         cwd: &Path,
         env: &[(OsString, OsString)],
     ) -> Result<Self::Session, Self::Error> {
+        if !cfg!(any(target_os = "linux", target_os = "macos")) {
+            return Err(PtyHostError::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Native terminal process ownership is unavailable on this device",
+            )));
+        }
         let Some((program, args)) = command.split_first() else {
             return Err(PtyHostError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -445,7 +422,7 @@ impl PtyHost for LocalPtyHost {
     fn close(&self, session: Self::Session) -> Result<(), Self::Error> {
         let outcome = session
             .0
-            .terminate(Instant::now() + Duration::from_secs(2))
+            .terminate(Instant::now() + CLOSE_TIMEOUT)
             .map(|_| ());
         drop(session);
         outcome
@@ -506,12 +483,20 @@ impl PtySession {
 }
 
 /// Verify a persisted Linux or macOS leader identity, then clean every captured
-/// group. Platforms without a native identity/session source never signal a
-/// persisted identity; live close still owns and terminates its child group.
+/// group. Platforms without a native identity/session source refuse new
+/// terminals before spawn and never signal a persisted identity.
 pub fn cleanup_orphan(identity: &PtyIdentity) -> Result<bool, PtyHostError> {
+    cleanup_orphan_until(identity, Instant::now() + CLOSE_TIMEOUT, signal_groups)
+}
+
+fn cleanup_orphan_until(
+    identity: &PtyIdentity,
+    close_deadline: Instant,
+    signal: impl Fn(&[SessionGroup], u32, Signal) -> Result<(), rustix::io::Errno>,
+) -> Result<bool, PtyHostError> {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = identity;
+        let _ = (identity, close_deadline, signal);
         Ok(false)
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -520,7 +505,7 @@ pub fn cleanup_orphan(identity: &PtyIdentity) -> Result<bool, PtyHostError> {
         if identity.pid != identity.session || identity.pid != identity.process_group {
             return Ok(false);
         }
-        let groups = session_groups(identity.session);
+        let groups = session_groups(identity.session)?;
         if start_time(identity.pid, false)
             .map_err(supervisor_error)?
             .as_deref()
@@ -534,32 +519,17 @@ pub fn cleanup_orphan(identity: &PtyIdentity) -> Result<bool, PtyHostError> {
                 "terminal leader identity is unavailable while session jobs remain; refusing to signal",
             )));
         }
-        signal_groups(
-            &groups,
-            identity.session,
-            identity.process_group,
-            identity.pid,
-            Signal::TERM,
-            false,
-        )
-        .map_err(PtyHostError::Signal)?;
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while Instant::now() < deadline {
+        signal(&groups, identity.session, Signal::TERM).map_err(PtyHostError::Signal)?;
+        let term_deadline = (Instant::now() + TERM_GRACE).min(close_deadline);
+        while Instant::now() < term_deadline {
             std::thread::park_timeout(Duration::from_millis(10));
         }
         // Restart cleanup has no live PTY ownership, so a captured live member
         // must still anchor this session before newly discovered groups are used.
         let current_groups =
             fresh_groups_for_kill(identity.session, &groups, session_groups, true)?;
-        signal_groups(
-            &current_groups,
-            identity.session,
-            identity.process_group,
-            identity.pid,
-            Signal::KILL,
-            false,
-        )
-        .map_err(PtyHostError::Signal)?;
+        signal(&current_groups, identity.session, Signal::KILL).map_err(PtyHostError::Signal)?;
+        wait_for_session_processes(identity.session, close_deadline)?;
         Ok(true)
     }
 }
@@ -585,14 +555,15 @@ fn process_identity(pid: i32) -> Option<PtyIdentity> {
     let pid = u32::try_from(pid).ok()?;
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let stat = ProcStat::parse(&stat).ok()?;
-    if stat.state == 'Z' {
+    let (process_group, session) = stat.live_group_ids().ok()??;
+    if process_group == 0 || session == 0 {
         return None;
     }
     let boot_id = boot_id().ok()?;
     Some(PtyIdentity {
         pid,
-        process_group: stat.process_group,
-        session: stat.session,
+        process_group,
+        session,
         start_time_ticks: stat.start_ticks,
         boot_id,
     })
@@ -622,167 +593,27 @@ fn process_identity(_pid: i32) -> Option<PtyIdentity> {
     None
 }
 
-#[cfg(target_os = "linux")]
-fn session_groups(session: u32) -> Vec<SessionGroup> {
-    let mut groups = BTreeMap::<u32, Vec<GroupMember>>::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return Vec::new();
-    };
-    let Ok(boot_id) = boot_id() else {
-        return Vec::new();
-    };
-    for entry in entries.flatten() {
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        let Ok(pid) = name.parse::<u32>() else {
-            continue;
-        };
-        let Ok(raw) = std::fs::read_to_string(entry.path().join("stat")) else {
-            continue;
-        };
-        let Ok(stat) = ProcStat::parse(&raw) else {
-            continue;
-        };
-        if stat.state == 'Z' || stat.session != session {
-            continue;
+fn session_groups(session: u32) -> Result<Vec<SessionGroup>, PtyHostError> {
+    capture_groups(GroupScope::Session(session)).map_err(supervisor_error)
+}
+
+fn has_live_anchor(groups: &[SessionGroup], session: u32) -> Result<bool, PtyHostError> {
+    for group in groups {
+        if group.session == session && group.has_live_anchor().map_err(supervisor_error)? {
+            return Ok(true);
         }
-        groups
-            .entry(stat.process_group)
-            .or_default()
-            .push(GroupMember {
-                pid,
-                start_time: stat.start_identity(&boot_id),
-            });
     }
-    groups
-        .into_iter()
-        .map(|(id, mut members)| {
-            members.sort_by_key(|member| member.pid);
-            SessionGroup { id, members }
-        })
-        .collect()
-}
-
-/// macOS has no `/proc`: list every PID with libproc, keep the PIDs whose
-/// `getsid` is this session, then read each member's libproc record. Zombies
-/// are skipped as on Linux. A member whose record is unreadable (`EPERM` for
-/// another user's process, such as a `sudo` job) stays listed with no
-/// verifiable identity: its group is never signalled through it, the signal
-/// pass reports the refusal, and close reports that session jobs remain.
-#[cfg(target_os = "macos")]
-fn session_groups(session: u32) -> Vec<SessionGroup> {
-    let Ok(pids) = studio_runtime_proc_sys::all_pids() else {
-        return Vec::new();
-    };
-    let Ok(boot_id) = boot_id() else {
-        return Vec::new();
-    };
-    let mut groups = BTreeMap::<u32, Vec<GroupMember>>::new();
-    for pid in pids {
-        let Some(raw) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
-            continue;
-        };
-        if !rustix::process::getsid(Some(raw)).is_ok_and(|sid| raw_id(sid) == Some(session)) {
-            continue;
-        }
-        let (process_group, start_time) = match studio_runtime_proc_sys::bsd_info(pid, false) {
-            Ok(Some(info)) if !info.is_zombie() => (
-                info.process_group,
-                macos_start_identity(&boot_id, info.start_seconds, info.start_microseconds),
-            ),
-            Ok(_) => continue,
-            Err(_) => match rustix::process::getpgid(Some(raw)).ok().and_then(raw_id) {
-                Some(group) => (group, String::new()),
-                None => continue,
-            },
-        };
-        groups
-            .entry(process_group)
-            .or_default()
-            .push(GroupMember { pid, start_time });
-    }
-    groups
-        .into_iter()
-        .map(|(id, mut members)| {
-            members.sort_by_key(|member| member.pid);
-            SessionGroup { id, members }
-        })
-        .collect()
-}
-
-#[cfg(target_os = "macos")]
-fn raw_id(pid: Pid) -> Option<u32> {
-    u32::try_from(pid.as_raw_nonzero().get()).ok()
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn session_groups(_session: u32) -> Vec<SessionGroup> {
-    Vec::new()
-}
-
-#[cfg(target_os = "linux")]
-fn has_live_anchor(groups: &[SessionGroup], session: u32) -> bool {
-    let Ok(boot_id) = boot_id() else {
-        return false;
-    };
-    groups.iter().any(|group| {
-        group.members.iter().any(|member| {
-            let current = std::fs::read_to_string(format!("/proc/{}/stat", member.pid))
-                .ok()
-                .and_then(|raw| ProcStat::parse(&raw).ok());
-            current.is_some_and(|stat| {
-                stat.state != 'Z'
-                    && stat.process_group == group.id
-                    && stat.session == session
-                    && stat.start_identity(&boot_id) == member.start_time
-            })
-        })
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn has_live_anchor(groups: &[SessionGroup], session: u32) -> bool {
-    groups.iter().any(|group| {
-        group.members.iter().any(|member| {
-            let Some(raw) = i32::try_from(member.pid).ok().and_then(Pid::from_raw) else {
-                return false;
-            };
-            let same_start = || {
-                start_time(member.pid, false)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|current| current == member.start_time)
-            };
-            // Read the start again after the group reads, so a PID replaced
-            // between them cannot lend its group or session to the member.
-            same_start()
-                && rustix::process::getpgid(Some(raw))
-                    .ok()
-                    .and_then(raw_id)
-                    .is_some_and(|current| current == group.id)
-                && rustix::process::getsid(Some(raw))
-                    .ok()
-                    .and_then(raw_id)
-                    .is_some_and(|current| current == session)
-                && same_start()
-        })
-    })
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn has_live_anchor(_groups: &[SessionGroup], _session: u32) -> bool {
-    true
+    Ok(false)
 }
 
 fn fresh_groups_for_kill(
     session: u32,
     captured: &[SessionGroup],
-    enumerate: impl FnOnce(u32) -> Vec<SessionGroup>,
+    enumerate: impl FnOnce(u32) -> Result<Vec<SessionGroup>, PtyHostError>,
     require_anchor: bool,
 ) -> Result<Vec<SessionGroup>, PtyHostError> {
-    let current = enumerate(session);
-    if require_anchor && !current.is_empty() && !has_live_anchor(captured, session) {
+    let current = enumerate(session)?;
+    if require_anchor && !current.is_empty() && !has_live_anchor(captured, session)? {
         return Err(PtyHostError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "terminal session jobs remain without a verified original member",
@@ -794,74 +625,20 @@ fn fresh_groups_for_kill(
 fn signal_groups(
     groups: &[SessionGroup],
     session: u32,
-    owned_group: u32,
-    owned_pid: u32,
     signal: Signal,
-    allow_owned_fallback: bool,
 ) -> Result<(), rustix::io::Errno> {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        let mut ordered = groups.iter().collect::<Vec<_>>();
-        ordered.sort_by_key(|group| group.id == session);
-        let mut first_error = None;
-        let mut captured_owned_group = false;
-        for group in ordered {
-            if group.id <= 1 {
-                continue;
-            }
-            captured_owned_group |= group.id == owned_group;
-            let mut signalled = false;
-            for member in &group.members {
-                match signal_verified_group_member(
-                    member.pid,
-                    group.id,
-                    session,
-                    &member.start_time,
-                    signal,
-                ) {
-                    Ok(true) => {
-                        signalled = true;
-                        break;
-                    }
-                    Ok(false) => {}
-                    Err(_) => {
-                        first_error.get_or_insert(rustix::io::Errno::PERM);
-                    }
-                }
-            }
-            if allow_owned_fallback && !signalled && group.id == owned_group {
-                // The fallback is only used during TERM, before the child is
-                // reaped. The later KILL pass relies on captured members.
-                if let Some(pid) = i32::try_from(owned_pid).ok().and_then(Pid::from_raw)
-                    && let Err(error) = kill_process_group(pid, signal)
-                    && error != rustix::io::Errno::SRCH
-                {
-                    first_error.get_or_insert(error);
-                }
-            }
+    let mut ordered = groups.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|group| group.id == session);
+    let mut first_error = None;
+    for group in ordered {
+        if group.id <= 1 || group.session != session {
+            continue;
         }
-        if allow_owned_fallback
-            && !captured_owned_group
-            && let Some(pid) = i32::try_from(owned_pid).ok().and_then(Pid::from_raw)
-            && let Err(error) = kill_process_group(pid, signal)
-            && error != rustix::io::Errno::SRCH
-        {
-            first_error.get_or_insert(error);
-        }
-        first_error.map_or(Ok(()), Err)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = (groups, session, owned_pid, allow_owned_fallback);
-        let pid = i32::try_from(owned_group).ok().and_then(Pid::from_raw);
-        let Some(pid) = pid else {
-            return Err(rustix::io::Errno::INVAL);
-        };
-        match kill_process_group(pid, signal) {
-            Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
-            Err(error) => Err(error),
+        if group.signal(signal).is_err() {
+            first_error.get_or_insert(rustix::io::Errno::PERM);
         }
     }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn supervisor_io_error(error: &crate::supervisor_daemon::Error) -> std::io::Error {
@@ -869,7 +646,13 @@ fn supervisor_io_error(error: &crate::supervisor_daemon::Error) -> std::io::Erro
         crate::supervisor_daemon::Error::Io(error) => {
             std::io::Error::new(error.kind(), "identity check failed")
         }
-        _ => std::io::Error::other("identity check failed"),
+        crate::supervisor_daemon::Error::Journal(_)
+        | crate::supervisor_daemon::Error::Json(_)
+        | crate::supervisor_daemon::Error::Protocol(_)
+        | crate::supervisor_daemon::Error::ActiveChild { .. }
+        | crate::supervisor_daemon::Error::Refused(_) => {
+            std::io::Error::other("identity check failed")
+        }
     }
 }
 
@@ -923,6 +706,72 @@ mod tests {
             .map(|_| ());
         drop(session);
         outcome
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn orphan_cleanup_does_not_confirm_an_accepted_kill_while_session_is_live() {
+        let root = tempfile::tempdir().expect("fixture directory");
+        let host = LocalPtyHost;
+        let mut session = host
+            .open(
+                &[
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "trap \"\" TERM HUP; printf 'ready\\n'; while IFS= read -r line; do :; done"
+                        .into(),
+                ],
+                root.path(),
+                &[],
+            )
+            .expect("owned terminal fixture");
+        let identity = session.identity().expect("native fixture identity").clone();
+        let mut ready = String::new();
+        while !ready.contains("ready") {
+            let mut bytes = [0; 64];
+            let count = host
+                .read(&mut session, &mut bytes)
+                .expect("fixture readiness");
+            assert_ne!(count, 0, "fixture exits before readiness");
+            ready.push_str(&String::from_utf8_lossy(&bytes[..count]));
+        }
+        // Model a successful KILL dispatch whose target has not exited. TERM
+        // is real; the owned shell announced its ignored dispositions first.
+        let result = super::cleanup_orphan_until(
+            &identity,
+            std::time::Instant::now(),
+            |groups, session, signal| {
+                if signal == rustix::process::Signal::KILL {
+                    Ok(())
+                } else {
+                    super::signal_groups(groups, session, signal)
+                }
+            },
+        );
+        assert!(
+            matches!(result, Err(PtyHostError::Io(error))
+            if error.kind() == std::io::ErrorKind::TimedOut),
+            "accepted signal dispatch cannot prove that a live session exited"
+        );
+        assert_eq!(session.identity(), Some(&identity));
+        assert!(
+            super::start_time(identity.pid, false)
+                .expect("native identity")
+                .is_some()
+        );
+        host.close(session).expect("real fixture cleanup");
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[test]
+    fn unavailable_native_ownership_refuses_before_terminal_spawn() {
+        let result = LocalPtyHost.open(
+            &["fixture-command-must-not-be-spawned".into()],
+            std::path::Path::new("."),
+            &[],
+        );
+        assert!(matches!(result, Err(PtyHostError::Io(error))
+            if error.kind() == std::io::ErrorKind::Unsupported));
     }
 
     #[test]
@@ -1231,7 +1080,7 @@ while IFS= read -r line; do :; done
             job_session, leader.session,
             "the job stays in the terminal session"
         );
-        let groups = super::session_groups(leader.session);
+        let groups = super::session_groups(leader.session).expect("capture groups");
         assert!(groups.iter().any(|group| group.id == leader.pid));
         assert!(
             groups
@@ -1248,7 +1097,11 @@ while IFS= read -r line; do :; done
             wait_until_gone(job, &job_identity),
             "background job survived close"
         );
-        assert!(super::session_groups(leader.session).is_empty());
+        assert!(
+            super::session_groups(leader.session)
+                .expect("capture groups")
+                .is_empty()
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -1285,7 +1138,11 @@ while IFS= read -r line; do :; done
             "background job survived cleanup"
         );
         host.close(session).expect("close after cleanup");
-        assert!(super::session_groups(identity.session).is_empty());
+        assert!(
+            super::session_groups(identity.session)
+                .expect("capture groups")
+                .is_empty()
+        );
     }
 
     /// SIGKILL a test process on drop if it still has its recorded identity,

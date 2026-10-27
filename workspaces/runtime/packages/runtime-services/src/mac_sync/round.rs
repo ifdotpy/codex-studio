@@ -934,7 +934,12 @@ impl PreservedWrite {
                     ),
                     None,
                 ),
-                _ => {
+                FileType::Directory
+                | FileType::Fifo
+                | FileType::Socket
+                | FileType::CharacterDevice
+                | FileType::BlockDevice
+                | FileType::Unknown => {
                     changed = true;
                     (String::new(), None)
                 }
@@ -1284,7 +1289,11 @@ impl<'a> ProjectSync<'a> {
     fn load_object(&self, name: &str) -> Result<Map<String, Value>, MacSyncError> {
         Ok(match read_json(&self.path(name), json!({}))? {
             Value::Object(map) => map,
-            _ => Map::new(),
+            Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::String(_)
+            | Value::Array(_) => Map::new(),
         })
     }
 

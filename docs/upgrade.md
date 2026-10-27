@@ -8,6 +8,12 @@ The removed Python preflight, payload-migration, and supervisor scripts are no
 longer supported commands. Their historical output does not verify the Rust server.
 Do not run an old migration script against current state.
 
+[Runtime migrations](runtime-migrations.md) use per-step rollback: a failed
+transaction rolls back, completed steps remain, and startup resumes safely from
+retained state. The server must not serve requests before the migration barrier
+succeeds. Release rollback restores executable artifacts, not the databases or
+registry. An older binary must support the resulting format or refuse to open it.
+
 1. Prepare the reviewed source in an isolated checkout and install locked tools
    with `pnpm install --frozen-lockfile`. Preserve unrelated local changes.
 2. Run `just test-fast` before review and `just test-comprehensive` on the exact

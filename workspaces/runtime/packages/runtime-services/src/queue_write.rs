@@ -4,9 +4,10 @@ use std::collections::BTreeSet;
 
 use crate::event_write;
 use serde_json::{Value, json};
+use studio_runtime_schema::queue_command::QueueCommand;
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, EventWriteRepository, QueueWriteRepository,
-    SchedulerRepository, StoreError, Transaction, WorkItemsRepository,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, EventWriteRepository,
+    QueueWriteRepository, SchedulerRepository, StoreError, Transaction, WorkItemsRepository,
 };
 use thiserror::Error;
 
@@ -39,7 +40,7 @@ pub enum QueueWriteError {
 pub fn action(
     transaction: &Transaction<'_>,
     agent_id: &str,
-    body: &Value,
+    body: &QueueCommand,
     signature: &str,
     snapshot: impl Fn(&Transaction<'_>, &AgentRecord) -> Result<QueueSnapshot, QueueWriteError>,
 ) -> Result<Value, QueueWriteError> {
@@ -57,21 +58,16 @@ pub fn action(
         return Err(QueueWriteError::RemoteEventsUnavailable);
     }
 
-    let action = body
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
     let request_id = body
-        .get("request_id")
-        .and_then(Value::as_str)
+        .request_id()
         .map(event_write::python_strip)
         .filter(|id| !id.is_empty());
-    if body.get("request_id").is_some_and(|value| !value.is_null()) && request_id.is_none() {
+    if body.request_id().is_some() && request_id.is_none() {
         return Err(QueueWriteError::InvalidRequest(
             "Supply a request ID with 1 to 200 characters",
         ));
     }
-    if matches!(action, "reorder" | "send_now") && request_id.is_none() {
+    if matches!(body, QueueCommand::Reorder(_) | QueueCommand::SendNow(_)) && request_id.is_none() {
         return Err(QueueWriteError::InvalidRequest(
             "Supply a request ID to change queue delivery",
         ));
@@ -95,117 +91,95 @@ pub fn action(
     }
 
     let current = snapshot(transaction, &agent)?;
-    if (body.get("expected_revision").is_some() || action == "reorder")
-        && body.get("expected_revision").and_then(Value::as_str) != Some(current.revision.as_str())
-    {
+    if !body.accepts_revision(&current.revision) {
         return Err(QueueWriteError::Conflict(
             "This queue changed. Reload before editing or reordering",
         ));
     }
     let rows = &current.items;
-    let recover_failed = action == "send_now" && agent.status == AgentStatus::Failed;
-    if action == "reorder" {
-        reorder(transaction, &agent, body, rows)?;
-    } else {
-        let target_id = body
-            .get("message_id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-            .or_else(|| body.get("id").and_then(Value::as_str))
-            .unwrap_or_default();
-        let row = rows
-            .iter()
-            .find(|row| row.get("id").and_then(Value::as_str) == Some(target_id))
-            .ok_or(QueueWriteError::Conflict(
-                "This message already left the queue",
-            ))?;
-        if body
-            .get("expectedText")
-            .is_some_and(|value| !value.is_null())
-            && body.get("expectedText") != row.get("text")
-        {
-            return Err(QueueWriteError::Conflict("This queued message changed"));
+    let recover_failed =
+        matches!(body, QueueCommand::SendNow(_)) && agent.status == AgentStatus::Failed;
+    match body {
+        QueueCommand::Reorder(reorder_body) => {
+            reorder(transaction, &agent, &reorder_body.ordered_ids, rows)?
         }
-        if recover_failed
-            && (agent
-                .extra
-                .get("error")
-                .and_then(Value::as_str)
-                .is_some_and(crate::account_auth_gate::is_hold_reason)
-                || !SchedulerRepository::proven_unsent_pending_batch(
-                    transaction,
-                    &agent,
-                    target_id,
-                )?)
-        {
-            return Err(QueueWriteError::Conflict(
-                "This failed agent has no current unsent batch that can be retried",
-            ));
+        QueueCommand::Cancel(_) => {
+            let (target_id, _) = target_row(body, rows)?;
+            QueueWriteRepository::update_status(transaction, target_id, "cancelled")?;
         }
-        match action {
-            "cancel" => QueueWriteRepository::update_status(transaction, target_id, "cancelled")?,
-            "edit" => {
-                let text = body.get("text").and_then(Value::as_str).unwrap_or_default();
-                let text = event_write::python_strip(text);
-                if text.is_empty()
-                    && row
-                        .get("assets")
-                        .and_then(Value::as_array)
-                        .is_none_or(Vec::is_empty)
-                {
-                    return Err(QueueWriteError::InvalidRequest(
-                        "Supply a message or attachment",
-                    ));
-                }
-                QueueWriteRepository::update_text(transaction, target_id, text)?;
-                if row.get("text").and_then(Value::as_str) != Some(text) {
-                    let mut metadata = read_metadata(transaction, target_id)?;
-                    metadata["acceptedAt"] = json!(unix_time()?);
-                    QueueWriteRepository::put_metadata(transaction, target_id, &metadata)?;
-                }
-            }
-            "first" | "send_now" => {
-                if action == "send_now" && row.get("kind").and_then(Value::as_str) != Some("user") {
-                    return Err(QueueWriteError::Conflict(
-                        "Only a user message can be sent now",
-                    ));
-                }
-                let first = rows
-                    .iter()
-                    .filter_map(|item| item.get("created").and_then(Value::as_f64))
-                    .reduce(f64::min)
-                    .ok_or(QueueWriteError::Conflict(
-                        "This message already left the queue",
-                    ))?;
-                QueueWriteRepository::update_created(transaction, target_id, first - 0.001)?;
-                if action == "send_now" {
-                    let mut metadata = read_metadata(transaction, target_id)?;
-                    if metadata.get("requestedDelivery").is_none()
-                        && !event_write::truthy(metadata.get("sendNow"))
-                    {
-                        let original = studio_runtime_schema::DeliveryMoment::for_event(
-                            "user",
-                            "",
-                            Some(&metadata),
-                        )
-                        .map_err(|_| {
-                            QueueWriteError::InvalidStoredObject {
-                                object: "runtime_event_meta",
-                                id: target_id.to_owned(),
-                            }
-                        })?;
-                        metadata["requestedDelivery"] = json!(original);
-                    }
-                    metadata["delivery"] =
-                        json!(studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn);
-                    metadata["sendNow"] = json!(true);
-                    QueueWriteRepository::put_metadata(transaction, target_id, &metadata)?;
-                }
-            }
-            _ => {
+        QueueCommand::Edit(edit) => {
+            let (target_id, row) = target_row(body, rows)?;
+            let text = event_write::python_strip(&edit.text);
+            if text.is_empty()
+                && row
+                    .get("assets")
+                    .and_then(Value::as_array)
+                    .is_none_or(Vec::is_empty)
+            {
                 return Err(QueueWriteError::InvalidRequest(
-                    "Choose edit, cancel, first, reorder, or send_now",
+                    "Supply a message or attachment",
                 ));
+            }
+            QueueWriteRepository::update_text(transaction, target_id, text)?;
+            if row.get("text").and_then(Value::as_str) != Some(text) {
+                let mut metadata = read_metadata(transaction, target_id)?;
+                metadata["acceptedAt"] = json!(unix_time()?);
+                QueueWriteRepository::put_metadata(transaction, target_id, &metadata)?;
+            }
+        }
+        QueueCommand::First(_) | QueueCommand::SendNow(_) => {
+            let (target_id, row) = target_row(body, rows)?;
+            if recover_failed
+                && (agent
+                    .extra
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .is_some_and(crate::account_auth_gate::is_hold_reason)
+                    || !SchedulerRepository::proven_unsent_pending_batch(
+                        transaction,
+                        &agent,
+                        target_id,
+                    )?)
+            {
+                return Err(QueueWriteError::Conflict(
+                    "This failed agent has no current unsent batch that can be retried",
+                ));
+            }
+            if matches!(body, QueueCommand::SendNow(_))
+                && row.get("kind").and_then(Value::as_str) != Some("user")
+            {
+                return Err(QueueWriteError::Conflict(
+                    "Only a user message can be sent now",
+                ));
+            }
+            let first = rows
+                .iter()
+                .filter_map(|item| item.get("created").and_then(Value::as_f64))
+                .reduce(f64::min)
+                .ok_or(QueueWriteError::Conflict(
+                    "This message already left the queue",
+                ))?;
+            QueueWriteRepository::update_created(transaction, target_id, first - 0.001)?;
+            if matches!(body, QueueCommand::SendNow(_)) {
+                let mut metadata = read_metadata(transaction, target_id)?;
+                if metadata.get("requestedDelivery").is_none()
+                    && !event_write::truthy(metadata.get("sendNow"))
+                {
+                    let original = studio_runtime_schema::DeliveryMoment::for_event(
+                        "user",
+                        "",
+                        Some(&metadata),
+                    )
+                    .map_err(|_| QueueWriteError::InvalidStoredObject {
+                        object: "runtime_event_meta",
+                        id: target_id.to_owned(),
+                    })?;
+                    metadata["requestedDelivery"] = json!(original);
+                }
+                metadata["delivery"] =
+                    json!(studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn);
+                metadata["sendNow"] = json!(true);
+                QueueWriteRepository::put_metadata(transaction, target_id, &metadata)?;
             }
         }
     }
@@ -252,20 +226,33 @@ pub fn action(
     Ok(result)
 }
 
+fn target_row<'a>(
+    command: &'a QueueCommand,
+    rows: &'a [Value],
+) -> Result<(&'a str, &'a Value), QueueWriteError> {
+    let id = command.target_id().unwrap_or_default();
+    let row = rows
+        .iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(id))
+        .ok_or(QueueWriteError::Conflict(
+            "This message already left the queue",
+        ))?;
+    if command
+        .expected_text()
+        .is_some_and(|text| Some(text) != row.get("text").and_then(Value::as_str))
+    {
+        return Err(QueueWriteError::Conflict("This queued message changed"));
+    }
+    Ok((id, row))
+}
+
 fn reorder(
     transaction: &Transaction<'_>,
     agent: &AgentRecord,
-    body: &Value,
+    ordered: &[String],
     rows: &[Value],
 ) -> Result<(), QueueWriteError> {
-    let ordered = body
-        .get("ordered_ids")
-        .and_then(Value::as_array)
-        .filter(|ids| ids.iter().all(Value::is_string))
-        .ok_or(QueueWriteError::InvalidRequest(
-            "Supply every current queued message ID exactly once",
-        ))?;
-    let ids = ordered.iter().filter_map(Value::as_str).collect::<Vec<_>>();
+    let ids = ordered.iter().map(String::as_str).collect::<Vec<_>>();
     let expected = rows
         .iter()
         .filter_map(|row| row.get("id").and_then(Value::as_str))
@@ -456,7 +443,7 @@ pub fn is_live(agent: &AgentRecord) -> bool {
             Value::Bool(true) => true,
             Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
             Value::String(value) => !value.is_empty(),
-            _ => true,
+            Value::Array(_) | Value::Object(_) => true,
         })
 }
 
@@ -471,7 +458,10 @@ pub fn publish_queue(
             let snapshot = queue_snapshot(transaction, &agent).map_err(|error| match error {
                 QueueWriteError::Store(error) => error,
                 QueueWriteError::Json(error) => StoreError::Json(error),
-                _ => StoreError::InvalidSyncObject {
+                QueueWriteError::InvalidRequest(_)
+                | QueueWriteError::Conflict(_)
+                | QueueWriteError::InvalidStoredObject { .. }
+                | QueueWriteError::RemoteEventsUnavailable => StoreError::InvalidSyncObject {
                     scope: "queue".into(),
                     id: id.into(),
                 },

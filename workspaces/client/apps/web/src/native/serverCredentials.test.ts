@@ -97,6 +97,7 @@ it("releases every rejected summary response before the next poll", async () => 
     if (method === "servers.read") return { base64: "e30=" };
     if (method === "servers.cancel")
       open.delete((params as { stream: string }).stream);
+    return undefined;
   });
   setServerCredentialAdapter(new NativeServerCredentials());
   try {

@@ -62,10 +62,7 @@ test("selected Studio chat recovers after slow cursor preparation without reload
     tail: null,
     unavailable: null,
   });
-  const baseline = (
-    resources: (ResourceRef &
-      Partial<Pick<Extract<ResourceRef, { agentId: string }>, "agentId">>)[],
-  ) =>
+  const baseline = (resources: ResourceRef[]) =>
     protocol3SseEvent("resources", {
       protocol: 4,
       workspaceId,
@@ -78,7 +75,9 @@ test("selected Studio chat recovers after slow cursor preparation without reload
         revision: transcriptRevision,
         cursor: { workspaceId, seq: transcriptRevision },
         replyKind: "snapshot",
-        transcriptSnapshot: transcript(resource.agentId!),
+        transcriptSnapshot: transcript(
+          "agentId" in resource ? (resource.agentId ?? "") : "",
+        ),
       })),
     });
   const server = await createFixtureViteServer({

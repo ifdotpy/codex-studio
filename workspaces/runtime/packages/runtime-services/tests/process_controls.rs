@@ -74,7 +74,7 @@ fn legacy_match_fields(mut value: Value) -> Value {
                 *child = legacy_match_fields(child.take());
             }
         }
-        _ => (),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => (),
     }
     value
 }
@@ -119,14 +119,28 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
     let r = request.clone();
     let c = connections.clone();
     let result = store
-        .transaction_with(move |tx| process_controls::claim(tx, &r, &c, 1.0))
+        .transaction_with(move |tx| {
+            process_controls::claim(
+                tx,
+                &studio_runtime_schema::process_controls::Request::parse(r).unwrap(),
+                &c,
+                1.0,
+            )
+        })
         .await
         .unwrap();
     assert!(matches!(result,process_controls::Claim::New{ref targets,..} if targets.len()==1));
     let r = request.clone();
     let c = connections.clone();
     let replay = store
-        .transaction_with(move |tx| process_controls::claim(tx, &r, &c, 2.0))
+        .transaction_with(move |tx| {
+            process_controls::claim(
+                tx,
+                &studio_runtime_schema::process_controls::Request::parse(r).unwrap(),
+                &c,
+                2.0,
+            )
+        })
         .await
         .unwrap();
     assert!(
@@ -136,20 +150,25 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
     r["epoch"] = json!(4);
     assert!(
         store
-            .transaction_with(move |tx| process_controls::claim(tx, &r, &connections, 3.0))
+            .transaction_with(move |tx| process_controls::claim(
+                tx,
+                &studio_runtime_schema::process_controls::Request::parse(r).unwrap(),
+                &connections,
+                3.0
+            ))
             .await
             .is_err()
     );
     let connection = store.test_reader().unwrap();
     let query = json!({"requestId":"request","agent":"owner","accountKey":"acct","epoch":3});
-    assert_eq!(
-        process_controls::receipt(&connection, &query).unwrap()["found"],
-        true
-    );
+    assert!(matches!(
+        process_controls::receipt(&connection, &query).unwrap(),
+        studio_runtime_schema::process_controls::ProcessReceipt::Found(_)
+    ));
     let mut foreign = query;
     foreign["accountKey"] = json!("foreign");
-    assert_eq!(
-        process_controls::receipt(&connection, &foreign).unwrap()["found"],
-        false
-    );
+    assert!(!matches!(
+        process_controls::receipt(&connection, &foreign).unwrap(),
+        studio_runtime_schema::process_controls::ProcessReceipt::Found(_)
+    ));
 }

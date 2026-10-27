@@ -4,6 +4,7 @@ import type {
   BridgeRpcId,
   BridgeSuccessResponse,
   BridgeErrorResponse,
+  BridgeMethod,
 } from "./bridge-protocol.ts";
 // Studio monitors use native command execution without a Codex model session.
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -12,13 +13,17 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 
-export const commandMethods = new Set([
-  "config/read",
-  "command/exec",
-  "command/exec/write",
-  "command/exec/resize",
-  "command/exec/terminate",
-]);
+export const commandMethods = {
+  "config/read": true,
+  "command/exec": true,
+  "command/exec/write": true,
+  "command/exec/resize": true,
+  "command/exec/terminate": true,
+} satisfies Record<
+  Extract<BridgeMethod, "config/read" | `command/exec${string}`>,
+  true
+>;
+export type CommandMethod = keyof typeof commandMethods;
 
 type NativeFailure = BridgeError;
 type CommandParams = {
@@ -148,7 +153,7 @@ export function createCommandTransport({
     });
   }
 
-  function call(method: string, params: CommandParams) {
+  function call(method: CommandMethod | "initialize", params: CommandParams) {
     if (closed) return Promise.reject(closed);
     const id = "studio-command:" + randomUUID();
     return new Promise<unknown>((resolve, reject) => {
@@ -249,9 +254,7 @@ export function createCommandTransport({
     }
   }
 
-  async function handle(method: string, params: CommandParams = {}) {
-    if (!commandMethods.has(method))
-      throw new Error("Unsupported command executor method: " + method);
+  async function handle(method: CommandMethod, params: CommandParams = {}) {
     if (closed || closing)
       throw closed || new Error("Command executor is closing");
     if (method === "command/exec") {

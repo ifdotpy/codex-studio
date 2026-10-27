@@ -1,7 +1,30 @@
 import { expect, it, vi } from "vitest";
 import { createEntityDataObserver } from "./entityData";
 import type { createSyncClient } from "../client";
+import type { ObserveSubscriptionData } from "./module";
 vi.mock("../client", () => ({ syncDatabase: vi.fn() }));
+
+// Published cache rows are shared between observers. Consumers must copy before editing.
+function publicationTypeWitness(observe: ObserveSubscriptionData) {
+  observe(
+    { kind: "work", agentId: "lead" },
+    (data) => {
+      if (!data) return;
+      // @ts-expect-error Shared subscription arrays cannot be edited by consumers.
+      data.items.push(data.items[0]!);
+      const first = data.items[0];
+      if (first) {
+        // @ts-expect-error Nested cache values are also readonly.
+        first.title = "Changed by a consumer";
+      }
+      // @ts-expect-error A work resource never publishes a process list.
+      const processes: { processes: unknown[] } = data;
+      void processes;
+    },
+    () => {},
+  );
+}
+void publicationTypeWitness;
 
 it("selects one visible agent detail before decoding and releases its observer", async () => {
   let emit!: (rows: { id: string; toJSON: () => unknown }[]) => void;

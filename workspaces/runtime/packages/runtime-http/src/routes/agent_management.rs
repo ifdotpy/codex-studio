@@ -654,7 +654,17 @@ fn safety_error(
         ),
         SafetyError::ProviderUnknown => ApiError::new(StatusCode::CONFLICT, error.to_string()),
         SafetyError::Persistence | SafetyError::InvalidStoredState => ApiError::internal(),
-        _ => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
+        SafetyError::StaleRetry
+        | SafetyError::Inactive
+        | SafetyError::InvalidChoice
+        | SafetyError::NoRetryToCancel
+        | SafetyError::StartAlreadySubmitted
+        | SafetyError::ThreadNotOpen
+        | SafetyError::MissingFasterModel
+        | SafetyError::Preparation(_)
+        | SafetyError::ProviderRejected => {
+            ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+        }
     }
 }
 
@@ -1103,7 +1113,7 @@ mod native_review_preflight_tests {
             .expect("guest request receipt");
         assert!(selected_guest.is_some());
         assert_eq!(receipt.scope, scope);
-        assert_eq!(receipt.certainty, RequestCertainty::Written);
+        assert_eq!(receipt.certainty(), RequestCertainty::Written);
         assert_eq!(
             guest.calls.lock().expect("guest calls")[0].0,
             "provider.rpc"

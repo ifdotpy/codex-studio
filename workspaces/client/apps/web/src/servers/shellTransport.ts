@@ -8,7 +8,8 @@ import {
 import { bindNativeFrames } from "../native/frame";
 import { nativeFetch } from "../native/http";
 import { bindNativeCloseFrames } from "../native/close";
-import type { DesktopBridge } from "../desktop";
+import type { CredentialBridge, StreamPayload } from "../../../desktop/api.ts";
+import { isServerMethod } from "../../../desktop/api.ts";
 import type { CredentialRequest, StreamChunk } from "./desktopCredentials";
 import { serverParentOrigin, serverViewId } from "./environment";
 import { readServers, localServer } from "./registry";
@@ -71,12 +72,12 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
           : readServers().find((row) => row.id === owner);
       if (
         !server ||
-        new URL(value.url!).origin !== server.origin ||
-        !new URL(value.url!).pathname.startsWith("/api/") ||
-        !["GET", "POST", "HEAD"].includes(value.method!)
+        new URL(value.url).origin !== server.origin ||
+        !new URL(value.url).pathname.startsWith("/api/") ||
+        !isServerMethod(value.method)
       )
         throw new Error("The request does not belong to this server.");
-      const path = decodeURIComponent(new URL(value.url!).pathname).replace(
+      const path = decodeURIComponent(new URL(value.url).pathname).replace(
         /\/+$/,
         "",
       );
@@ -90,9 +91,9 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
       const controller = new AbortController();
       active.set(key, { controller, frame });
       ownedKey = key;
-      const request = new Request(value.url!, {
+      const request = new Request(value.url, {
         method: value.method,
-        headers: value.headers,
+        ...(value.headers === undefined ? {} : { headers: value.headers }),
         ...(value.body?.byteLength ? { body: value.body } : {}),
         signal: controller.signal,
       });
@@ -113,7 +114,7 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
       ) {
         reply({ ...metadata, streamId: value.streamId });
         const reader = response.body.getReader();
-        const send = (chunk: Omit<StreamChunk, "serverId" | "streamId">) => {
+        const send = (chunk: StreamPayload) => {
           if (!frame.isConnected || frames.get(owner) !== frame) {
             controller.abort(new Error("the frame was replaced or removed"));
             return;
@@ -131,10 +132,7 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
             const chunk = await reader.read();
             if (chunk.done) break;
             send({
-              bytes: chunk.value.buffer.slice(
-                chunk.value.byteOffset,
-                chunk.value.byteOffset + chunk.value.byteLength,
-              ) as ArrayBuffer,
+              bytes: new Uint8Array(chunk.value).buffer,
             });
           }
           send({ done: true });
@@ -177,11 +175,8 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
     active.clear();
   };
 }
-export function shellCredentialBridge(): DesktopBridge {
-  const pending = new Map<
-    string,
-    { resolve: (value: unknown) => void; reject: (error: Error) => void }
-  >();
+export function shellCredentialBridge(): CredentialBridge {
+  const pending = new Map<string, (event: MessageEvent) => void>();
   const streams = new Set<(value: StreamChunk) => void>();
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent || event.origin !== serverParentOrigin)
@@ -195,15 +190,18 @@ export function shellCredentialBridge(): DesktopBridge {
       const handler = pending.get(event.data.correlation);
       if (!handler) return;
       pending.delete(event.data.correlation);
-      if (event.data.error) handler.reject(new Error(event.data.error));
-      else handler.resolve(event.data.result);
+      handler(event);
     }
   });
   return {
     serverCredentialAction: (value) =>
       new Promise((resolve, reject) => {
         const correlation = randomUUID();
-        pending.set(correlation, { resolve, reject });
+        // Parent origin, source and correlation were checked before delivery.
+        pending.set(correlation, (event) => {
+          if (event.data.error) reject(new Error(event.data.error));
+          else resolve(event.data.result);
+        });
         window.parent.postMessage(
           { kind: "studio-server-transport", correlation, value },
           serverParentOrigin,
@@ -215,5 +213,5 @@ export function shellCredentialBridge(): DesktopBridge {
         streams.delete(callback);
       };
     },
-  } as DesktopBridge;
+  };
 }

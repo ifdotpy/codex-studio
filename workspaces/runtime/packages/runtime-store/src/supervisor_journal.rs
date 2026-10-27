@@ -23,10 +23,46 @@ pub enum JournalError {
     Refused(#[from] Refusal),
     #[error("supervisor journal contains invalid JSON")]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Migration(#[from] Box<crate::StoreError>),
     #[error("supervisor journal lock poisoned")]
     Poisoned,
 }
 pub type Result<T> = std::result::Result<T, JournalError>;
+
+/// Sole DDL owner for both supervisor structure validation and installation.
+const SUPERVISOR_SCHEMA: &str = include_str!("supervisor_schema.sql");
+
+#[derive(Clone, Copy)]
+pub(crate) enum SchemaPresence {
+    Existing,
+    Complete,
+}
+
+pub(crate) fn validate_schema(db: &Connection, presence: SchemaPresence) -> crate::StoreResult<()> {
+    let expected = Connection::open_in_memory()?;
+    expected.execute_batch(SUPERVISOR_SCHEMA)?;
+    let mut tables = expected.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
+    for name in tables.query_map([], |row| row.get::<_, String>(0))? {
+        let name = name?;
+        let exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
+            [&name],
+            |row| row.get(0),
+        )?;
+        if !exists && matches!(presence, SchemaPresence::Existing) {
+            continue;
+        }
+        if !crate::bootstrap::same_table_layout(&expected, db, &name)? {
+            return Err(crate::StoreError::SchemaObjectMismatch {
+                database: "supervisor.sqlite3".into(),
+                object: name,
+                reason: "unsupported supervisor table structure".into(),
+            });
+        }
+    }
+    Ok(())
+}
 
 /// `handles.closed_reason` of a reservation whose child process never ran, or
 /// was killed and reaped before its identity was committed. No native outcome
@@ -124,7 +160,7 @@ fn stored(db: &Connection, handle: &str, buffered: u64) -> Result<Option<StoredH
 
 impl SupervisorJournal {
     pub fn open(root: &Path) -> Result<Self> {
-        let db = Connection::open(root.join("supervisor.sqlite3"))?;
+        let mut db = Connection::open(root.join("supervisor.sqlite3"))?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         crate::sqlite_durability::configure_writer(&db)?;
         db.execute_batch("PRAGMA wal_autocheckpoint=100;")?;
@@ -137,7 +173,7 @@ impl SupervisorJournal {
         // Preserve oversized existing journals while refusing further growth.
         let maximum = (1024 * 1024 * 1024 / page_size.max(1)).max(existing);
         db.pragma_update(None, "max_page_count", sql(maximum)?)?;
-        migrate(&db)?;
+        crate::migrations::supervisor(&mut db).map_err(Box::new)?;
         let buffered_by_handle = buffered_sizes(&db)?;
         let journal = Self {
             db: Arc::new(Mutex::new(db)),
@@ -586,24 +622,10 @@ fn validate_event(event: &Value) -> Result<()> {
     Ok(())
 }
 
-fn migrate(db: &Connection) -> Result<()> {
-    // Create the current journal schema atomically before readers.
-    db.execute_batch("BEGIN IMMEDIATE")?;
-    let result = (|| -> Result<()> {
-        db.execute_batch(include_str!("supervisor_schema.sql"))?;
-        db.execute_batch("CREATE INDEX IF NOT EXISTS operations_monitor_native ON operations(handle,generation,native_id) WHERE substr(operation_id,1,8)='monitor:'")?;
-        Ok(())
-    })();
-    match result {
-        Ok(()) => {
-            db.execute_batch("COMMIT")?;
-            Ok(())
-        }
-        Err(error) => {
-            db.execute_batch("ROLLBACK")?;
-            Err(error)
-        }
-    }
+pub(crate) fn prepare_schema(db: &Transaction<'_>) -> crate::StoreResult<()> {
+    db.execute_batch(SUPERVISOR_SCHEMA)?;
+    db.execute_batch("CREATE INDEX IF NOT EXISTS operations_monitor_native ON operations(handle,generation,native_id) WHERE substr(operation_id,1,8)='monitor:'")?;
+    Ok(())
 }
 
 #[cfg(test)]

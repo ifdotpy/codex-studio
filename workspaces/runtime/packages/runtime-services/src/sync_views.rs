@@ -3,6 +3,7 @@
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, OnceLock};
+use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 
 use crate::event_write::truthy;
 
@@ -125,7 +126,9 @@ fn bound_sync_value(value: &Value, field: &str, agent_short_strings: bool) -> Va
             };
             Value::String(text.chars().take(limit).collect())
         }
-        _ => value.clone(),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
+            value.clone()
+        }
     }
 }
 
@@ -217,7 +220,9 @@ fn project_schema_value(
                     .collect(),
             )
         }
-        _ => bound_sync_value(value, field, agent_short_strings),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            bound_sync_value(value, field, agent_short_strings)
+        }
     }
 }
 
@@ -524,8 +529,7 @@ pub fn native_thread_block(record: &Value) -> Option<Value> {
         return Some(Value::Object(block?.clone()));
     }
     let blocked = |error: &Value| {
-        (error.get("codexErrorInfo").and_then(Value::as_str) == Some("misalignmentPolicyViolation"))
-            .then(|| json!({"threadId":thread_id,"error":error}))
+        is_misalignment_policy_violation(error).then(|| json!({"threadId":thread_id,"error":error}))
     };
     if let Some(block) = record.get("error").and_then(blocked) {
         return Some(block);

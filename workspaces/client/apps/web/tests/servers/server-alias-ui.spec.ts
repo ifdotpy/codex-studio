@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
 import { fixturePostBody } from "./browser-fixture.ts";
 import { remoteNetwork } from "./browser-fixture.ts";
@@ -149,8 +150,10 @@ test("combined server edits retry only the failed alias with its original identi
       "alias",
       "alias",
     ]);
-    expect(attempts[1]).toEqual(attempts[2]);
-    expect(attempts[0].requestId).not.toBe(attempts[1].requestId);
+    expect(required(attempts[1])).toEqual(attempts[2]);
+    expect(required(attempts[0]).requestId).not.toBe(
+      required(attempts[1]).requestId,
+    );
     expect(local.aliases.local).toBe("REL");
   } finally {
     await local.close();

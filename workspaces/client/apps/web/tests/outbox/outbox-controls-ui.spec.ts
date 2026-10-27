@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { OutboxEntry } from "../../src/sync/send.ts";
 import { responseJson } from "../messages/helpers.ts";
 import { requestBody } from "../messages/helpers.ts";
@@ -97,7 +98,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       },
     });
     await server.listen();
-    const origin = server.resolvedUrls!.local[0];
+    const origin = required(required(server.resolvedUrls).local[0]);
     browser = fixtureBrowser;
     context = await browser.newContext({
       viewport: { width: 1440, height: 960 },
@@ -135,7 +136,9 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
         headers: {
           "content-type": "application/json",
           origin: target,
-          "X-Canvas-Token": route.request().headers()["x-canvas-token"],
+          "X-Canvas-Token": required(
+            route.request().headers()["x-canvas-token"],
+          ),
         },
         body: JSON.stringify(body),
       });
@@ -341,6 +344,8 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
         );
       } else {
         const body = posts.at(-1);
+        assert.ok(body);
+
         assert.ok(
           await serverTranscriptHas(body!, text),
           "The accepted outbox request appears in the server transcript",
@@ -409,8 +414,8 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     await page.locator("#send").click();
     await accepted("Corrected offline message");
     assert.equal(posts.length, 1);
-    assert.equal(posts[0].text, "Corrected offline message");
-    assert.equal(posts[0].assets!.length, 1);
+    assert.equal(required(posts[0]).text, "Corrected offline message");
+    assert.equal(required(posts[0]).assets!.length, 1);
     await page.evaluate(async () => {
       window.outboxModule = await import("/src/sync/send.ts");
       window.syncModule = await import("/src/sync/client.ts");
@@ -428,7 +433,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       window.outboxModule = await import("/src/sync/send.ts");
       await (await import("/src/sync/client.ts")).syncDatabase();
     });
-    const room = posts[0].room;
+    const room = required(posts[0]).room;
     const beforeRaces = posts.length;
     const pendingSessions: Route[] = [];
     assert.equal(

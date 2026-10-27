@@ -13,6 +13,7 @@
 //! `codex_runtime.py:7671-7745`; and
 //! `release_failed_work` in `codex_work.py:1313-1355`.
 
+use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -26,8 +27,7 @@ use tokio::sync::Notify;
 
 use crate::{
     account_session_runtime::{
-        AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
-        ProviderResponse, RequestCertainty,
+        AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
     },
     account_worker::retained::RequestActor,
     agent_lifecycle_runtime::{LifecycleEffect, LifecycleEffectKind, LifecyclePorts},
@@ -404,7 +404,9 @@ impl ProductionLifecyclePorts {
                     let response = match &settled_outcome {
                         InterruptWriteResult::Accepted(response) => response,
                         InterruptWriteResult::Rejected(error) => &error["data"]["interruptReceipt"],
-                        _ => &Value::Null,
+                        InterruptWriteResult::NotSent | InterruptWriteResult::Unknown => {
+                            &Value::Null
+                        }
                     };
                     SchedulerRepository::settle_interrupt_inputs(
                         tx,
@@ -597,25 +599,25 @@ async fn request_stop_work(
         Ok(receipt)
             if receipt.operation == operation && receipt.scope.account == expected.account =>
         {
-            match receipt.certainty {
-                RequestCertainty::Written
+            match receipt.outcome {
+                ReceiptOutcome::Written { ticket, response }
                     if receipt.scope == expected
-                        && receipt.ticket.as_ref().is_some_and(|ticket| {
-                            ticket.generation == expected.generation && ticket.method == method
-                        }) =>
+                        && ticket.generation == expected.generation
+                        && ticket.method == method =>
                 {
-                    match receipt.result {
-                        Some(ProviderResponse::Reply(response)) => {
+                    match response {
+                        ProviderResponse::Reply(response) => {
                             InterruptWriteResult::Accepted(response)
                         }
-                        Some(ProviderResponse::Rejected(error)) => {
-                            InterruptWriteResult::Rejected(error)
-                        }
-                        None => InterruptWriteResult::Unknown,
+                        ProviderResponse::Rejected(error) => InterruptWriteResult::Rejected(error),
                     }
                 }
-                RequestCertainty::NotSent => InterruptWriteResult::NotSent,
-                RequestCertainty::Written | RequestCertainty::Unknown => {
+                ReceiptOutcome::WorkerNotSent { .. }
+                | ReceiptOutcome::NoLiveAccountWorker
+                | ReceiptOutcome::ExpectedScopeMismatch
+                | ReceiptOutcome::DeadlineExpired
+                | ReceiptOutcome::NotHandedOff => InterruptWriteResult::NotSent,
+                ReceiptOutcome::Written { .. } | ReceiptOutcome::Unknown { .. } => {
                     InterruptWriteResult::Unknown
                 }
             }
@@ -1321,7 +1323,14 @@ fn notify_parent_with_step(
             ManagementError::Unavailable(crate::monitor_runtime::REMOTE_EVENTS_DEPENDENCY)
         }
         event_write::EventWriteError::Store(error) => ManagementError::Store(error),
-        _ => ManagementError::Invalid("Unable to write child stop event"),
+        event_write::EventWriteError::InvalidRequest(_)
+        | event_write::EventWriteError::InvalidResultSchema(_)
+        | event_write::EventWriteError::Conflict(_)
+        | event_write::EventWriteError::WorkerAssignmentUnavailable
+        | event_write::EventWriteError::InvalidStoredObject { .. }
+        | event_write::EventWriteError::Clock => {
+            ManagementError::Invalid("Unable to write child stop event")
+        }
     })?;
     Ok(())
 }
@@ -1555,7 +1564,15 @@ fn enqueue_turn_result(
     )
     .map_err(|error| match error {
         event_write::EventWriteError::Store(error) => error,
-        other => studio_runtime_store::StoreError::SchemaMismatch(other.to_string()),
+        other @ event_write::EventWriteError::InvalidRequest(_)
+        | other @ event_write::EventWriteError::InvalidResultSchema(_)
+        | other @ event_write::EventWriteError::Conflict(_)
+        | other @ event_write::EventWriteError::RemoteEventsUnavailable
+        | other @ event_write::EventWriteError::WorkerAssignmentUnavailable
+        | other @ event_write::EventWriteError::InvalidStoredObject { .. }
+        | other @ event_write::EventWriteError::Clock => {
+            studio_runtime_store::StoreError::SchemaMismatch(other.to_string())
+        }
     })?;
     Ok(())
 }
@@ -1647,7 +1664,8 @@ mod tests {
         assert_eq!(voice_delete_retry_delay(4), Duration::from_millis(1_600));
         assert_eq!(voice_delete_retry_delay(7), Duration::from_millis(1_600));
     }
-    use crate::account_session_runtime::{AccountSessionFuture, NotSentReason, SessionReceipt};
+    use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
+    use crate::account_session_runtime::{AccountSessionFuture, RequestCertainty, SessionReceipt};
     use studio_runtime_providers::{RequestId, RequestTicket};
 
     struct Broker {
@@ -1673,6 +1691,38 @@ mod tests {
                     self.certainty
                 };
                 let receipt = SessionReceipt {
+                    outcome: {
+                        let ticket = RequestTicket {
+                            generation: request
+                                .expected_scope
+                                .as_ref()
+                                .expect("test broker request expected scope")
+                                .generation,
+                            id: RequestId::String(request.operation.clone()),
+                            method: request.method,
+                        };
+                        match (certainty, self.response.clone()) {
+                            (RequestCertainty::Written, Some(response)) => {
+                                ReceiptOutcome::Written { ticket, response }
+                            }
+                            (RequestCertainty::Written, None) | (RequestCertainty::Unknown, _) => {
+                                ReceiptOutcome::Unknown {
+                                    ticket: RequestTicket {
+                                        generation: request
+                                            .expected_scope
+                                            .as_ref()
+                                            .expect("test broker request expected scope")
+                                            .generation,
+                                        id: RequestId::String(request.operation.clone()),
+                                        method: request.method,
+                                    },
+                                }
+                            }
+                            (RequestCertainty::NotSent, _) => {
+                                ReceiptOutcome::WorkerNotSent { ticket }
+                            }
+                        }
+                    },
                     scope: self.scope.clone().unwrap_or_else(|| {
                         request
                             .expected_scope
@@ -1680,19 +1730,6 @@ mod tests {
                             .expect("test broker request expected scope")
                     }),
                     operation: request.operation.clone(),
-                    ticket: Some(RequestTicket {
-                        generation: request
-                            .expected_scope
-                            .as_ref()
-                            .expect("test broker request expected scope")
-                            .generation,
-                        id: RequestId::String(request.operation.clone()),
-                        method: request.method,
-                    }),
-                    certainty,
-                    result: self.response.clone(),
-                    not_sent_reason: (certainty == RequestCertainty::NotSent)
-                        .then_some(NotSentReason::WorkerNotSent),
                     replayed: false,
                 };
                 *self.observed.lock().expect("observed request lock") = Some(request);

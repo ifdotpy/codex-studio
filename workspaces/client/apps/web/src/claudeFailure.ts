@@ -3,6 +3,10 @@ import type { components } from "./generated/api";
 type ClaudeFailure = components["schemas"]["ClaudeFailure"];
 
 // Presentation only. codexErrorInfo remains the policy and recovery key.
+const MAX_OUTPUT_TOKENS: [string, string] = [
+  "Output token limit reached",
+  "Claude reached the output token limit. Request a shorter answer.",
+];
 const causes: Record<string, [string, string]> = {
   tool_history_mismatch: [
     "Tool history does not match",
@@ -28,10 +32,7 @@ const causes: Record<string, [string, string]> = {
     "Safety policy blocked the response",
     "Claude's safety monitor blocked this response. Review the request before continuing.",
   ],
-  max_output_tokens: [
-    "Output token limit reached",
-    "Claude reached the output token limit. Request a shorter answer.",
-  ],
+  max_output_tokens: MAX_OUTPUT_TOKENS,
   claude_code_version_too_old: [
     "Claude Code update required",
     "Update Claude Code before continuing.",
@@ -162,7 +163,7 @@ export function claudeFailureView(value: unknown) {
       "Claude server failed",
       "Review the last result before continuing.",
     ],
-    max_output_tokens: causes.max_output_tokens,
+    max_output_tokens: MAX_OUTPUT_TOKENS,
   };
   const known =
     typeof record.apiError === "string" ? causes[record.apiError] : undefined;

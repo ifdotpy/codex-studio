@@ -6,6 +6,7 @@ import type { ActionButtonProps } from "../components/ui/primitives";
 import type { ServerAccount } from "./navigation";
 import ServerAccountsPanel, { accountSources } from "./ServerAccountsPanel";
 import { serverAccountRows } from "./serverAccountRows";
+import { required } from "../components/componentTestFixtures";
 
 const controls = vi.hoisted(() => [] as ActionButtonProps[]);
 vi.mock("../components/ui/primitives", async (original) => {
@@ -71,7 +72,7 @@ it("marks only the exact restored account action for the dialog focus owner", ()
   const { html } = render({
     servers: [local],
     accountsByServer: byServer,
-    initialFocusIdentity: rows[1].key,
+    initialFocusIdentity: required(rows[1]).key,
     onInitialFocus,
   });
   const personalStart = html.indexOf('title="Personal"');

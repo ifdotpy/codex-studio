@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { Page } from "@playwright/test";
 import type { ServerResponse } from "node:http";
 import type { components } from "../../src/generated/api.ts";
@@ -1105,6 +1106,9 @@ test("different build collection sets share only drafts and outbox", async ({
         );
         if (await otherHash.projections.findOne("entity:new-build").exec())
           throw new Error("Different build caches were shared");
+
+        if (await otherHash.projections.findOne("entity:new-build").exec())
+          throw new Error("Different build caches were shared");
         window.newBuildDatabase = db;
       },
       { name: databaseName, fixtureModule },
@@ -1131,13 +1135,13 @@ test("different build collection sets share only drafts and outbox", async ({
           };
         })(),
       }),
-      legacyRows[0].id,
+      required(legacyRows[0]).id,
     );
     const { legacyProjectionStats, ...sharedData } = oldData;
     assert.deepEqual(sharedData, {
       draft: "new draft",
       message: "new queued",
-      projection: legacyRows[0].payload,
+      projection: required(legacyRows[0]).payload,
     });
     assert.equal(legacyProjectionStats.rows, legacyRows.length);
     assert.ok(legacyProjectionStats.bytes > 200_000);
@@ -1162,11 +1166,13 @@ function fixtureCursors(
 }
 
 /** Preserve the fixture's kind/agent matching for baseline records. */
-type FixtureResource = ResourceRef &
-  Partial<Pick<Extract<ResourceRef, { agentId: string }>, "agentId">>;
 function fixtureResourceMatches(
-  left: FixtureResource | null | undefined,
-  right: FixtureResource,
+  left: ResourceRef | null | undefined,
+  right: ResourceRef,
 ) {
-  return left?.kind === right.kind && left?.agentId === right.agentId;
+  return (
+    left?.kind === right.kind &&
+    (left && "agentId" in left ? left.agentId : undefined) ===
+      ("agentId" in right ? right.agentId : undefined)
+  );
 }

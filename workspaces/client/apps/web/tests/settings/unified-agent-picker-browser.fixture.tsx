@@ -1,3 +1,4 @@
+import { required } from "./fixture-helpers.ts";
 import type { Snapshot, Agent } from "../../src/types.ts";
 import type { Account, AccountsState } from "../../src/components/Accounts.tsx";
 import type { WorkerModelInfo } from "../../src/components/agents/WorkerModelPicker.tsx";
@@ -37,6 +38,8 @@ declare global {
   }
 }
 const fixtureRoot = document.getElementById("root");
+if (!fixtureRoot) throw new Error("Missing fixture root");
+
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
@@ -61,35 +64,41 @@ const accounts: Account[] = Array.from({ length: 7 }, (_, i) => ({
   provider: i < 4 ? "codex" : "claude",
   status: i === 6 ? "signedOut" : "ready",
 }));
-const codex = ["gpt-6-astra", "gpt-6-luna"].map((model, i) => ({
-  model,
-  displayName: i ? "Luna" : "Astra",
-  isDefault: !i,
-  provider: "codex",
-  defaultReasoningEffort: "medium",
-  supportedReasoningEfforts: ["low", "medium", "high"].map(
-    (reasoningEffort) => ({ reasoningEffort }),
-  ),
-  serviceTiers: i ? [] : [{ id: "priority" }],
-  availableAccessPrograms: {
-    cyber: i ? ["standard"] : ["standard", "daybreakBlue"],
-  },
-}));
-const claudeRow = (
+const codex = ["gpt-6-astra", "gpt-6-luna"].map(
+  (model, i) =>
+    ({
+      model,
+      displayName: i ? "Luna" : "Astra",
+      isDefault: !i,
+      provider: "codex",
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: ["low", "medium", "high"].map(
+        (reasoningEffort) => ({ reasoningEffort }),
+      ),
+      serviceTiers: i ? [] : [{ id: "priority" }],
+      availableAccessPrograms: {
+        cyber: i ? ["standard"] : ["standard", "daybreakBlue"],
+      },
+    }) satisfies components["schemas"]["ProviderModel"],
+);
+const claudeRow = <
+  Extra extends Partial<Pick<WorkerModelInfo, "isDefault" | "resolvedModel">>,
+>(
   model: string,
   displayName: string,
-  extra: Partial<Pick<WorkerModelInfo, "isDefault" | "resolvedModel">>,
-): WorkerModelInfo & components["schemas"]["ProviderModel"] => ({
-  model,
-  displayName,
-  provider: "claude",
-  defaultReasoningEffort: "medium",
-  supportedReasoningEfforts: ["low", "medium", "high"].map(
-    (reasoningEffort) => ({ reasoningEffort }),
-  ),
-  serviceTiers: [],
-  ...extra,
-});
+  extra: Extra,
+) =>
+  ({
+    model,
+    displayName,
+    provider: "claude",
+    defaultReasoningEffort: "medium",
+    supportedReasoningEfforts: ["low", "medium", "high"].map(
+      (reasoningEffort) => ({ reasoningEffort }),
+    ),
+    serviceTiers: [],
+    ...extra,
+  }) satisfies WorkerModelInfo & components["schemas"]["ProviderModel"];
 const claude = [
   claudeRow("default", "Claude · Default (recommended)", {
     isDefault: true,
@@ -136,7 +145,7 @@ window.fetch = async (input, options) => {
         rateLimits: {
           limitId: i < 4 ? "codex" : "claude",
           primary: {
-            usedPercent: [20, 60, 95, 100, 25, 70, 100][i]!,
+            usedPercent: required([20, 60, 95, 100, 25, 70, 100][i]),
             windowDurationMins: 300,
             resetsAt: Date.now() / 1000 + 3600,
           },
@@ -187,7 +196,7 @@ window.fetch = async (input, options) => {
         leadId: body.id,
         scope: body.scope,
         status: "completed",
-        targetAccountKey: body.account_key,
+        targetAccountKey: required(body.account_key),
         total: 0,
         moved: 0,
         completed: 0,
@@ -195,11 +204,11 @@ window.fetch = async (input, options) => {
       window.updateAgent!({
         ...window.agent,
         workerDefaults: {
-          accountKey: body.account_key,
+          accountKey: required(body.account_key),
           model:
-            Number(body.account_key!.split("-")[1]) >= 4
-              ? claude[0]!.model
-              : codex[0]!.model,
+            Number(required(body.account_key).split("-")[1]) >= 4
+              ? required(claude[0]).model
+              : required(codex[0]).model,
           effort: "medium",
           fastMode: false,
         },
@@ -210,7 +219,7 @@ window.fetch = async (input, options) => {
         path: "/fixture/project",
         name: "Project",
         created: 1,
-        accountKey: body.account_key,
+        accountKey: required(body.account_key),
         accountKeys: body.account_keys,
         accountRevision: 1,
       };
@@ -271,13 +280,17 @@ function Fixture() {
                 path: "account-selection",
                 key,
               });
-              const provider = accounts.find((a) => a.id === key)!.provider;
+              const provider = required(
+                accounts.find((a) => a.id === key),
+              ).provider;
               setAgent({
                 ...agent,
                 accountKey: key,
                 provider,
                 model:
-                  provider === "claude" ? claude[0]!.model : codex[0]!.model,
+                  provider === "claude"
+                    ? required(claude[0]).model
+                    : required(codex[0]).model,
                 effort: "medium",
               });
             }}

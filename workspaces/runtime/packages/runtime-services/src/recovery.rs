@@ -7,6 +7,7 @@ use crate::recovery_history::{
 use crate::recovery_policy::{RecoverySnapshot, native_operations_settled};
 use serde_json::{Value, json};
 use std::time::Instant;
+use studio_runtime_schema::provider_lifecycle::{CodexTurnStatus, ThreadActivity, ThreadLifecycle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompletionMode {
@@ -23,7 +24,7 @@ pub enum RecoveryAction {
         observation: crate::recovery_absence::RecoveryObservation,
         complete_history: bool,
         idle_twice: bool,
-        confirmed_not_applied: bool,
+        not_applied: Option<crate::recovery_history::NotAppliedStart>,
     },
     AcceptStart {
         turn: Value,
@@ -84,6 +85,55 @@ pub enum RecoveryError {
     #[error("Not implemented: requires {0}")]
     Dependency(&'static str),
 }
+impl From<crate::notification_dispatch::NotificationDispatchError> for RecoveryError {
+    fn from(error: crate::notification_dispatch::NotificationDispatchError) -> Self {
+        use crate::notification_dispatch::NotificationDispatchError;
+        match error {
+            NotificationDispatchError::Store(error) => Self::Store(error),
+            NotificationDispatchError::InvalidNotification { check } => {
+                Self::History(HistoryError::Notification { check })
+            }
+            NotificationDispatchError::InvalidStoredObject { table, id } => {
+                Self::Store(studio_runtime_store::StoreError::InvalidSyncObject {
+                    scope: table,
+                    id,
+                })
+            }
+            NotificationDispatchError::Dependency(name) => Self::Dependency(name),
+            NotificationDispatchError::InvalidAccountState { .. }
+            | NotificationDispatchError::StreamCapacity
+            | NotificationDispatchError::ConflictingDelivery
+            | NotificationDispatchError::ConflictingInput
+            | NotificationDispatchError::UnauthorizedSubmission
+            | NotificationDispatchError::Move(_)
+            | NotificationDispatchError::Json(_) => Self::CommitFailed,
+        }
+    }
+}
+/// A located refusal leaves its row uncertain; failures of the store stop the pass.
+pub(crate) enum RecoveryFailure {
+    Refused,
+    Fatal(RecoveryError),
+}
+impl RecoveryError {
+    pub(crate) fn classify(self) -> RecoveryFailure {
+        use studio_runtime_store::StoreError;
+        match self {
+            Self::History(_)
+            | Self::Record(_)
+            | Self::Dependency(_)
+            | Self::Store(
+                StoreError::InvalidStoredObject { .. }
+                | StoreError::InvalidStoredRecord { .. }
+                | StoreError::InvalidSyncObject { .. }
+                | StoreError::InvalidSyncObjectField { .. },
+            ) => RecoveryFailure::Refused,
+            Self::Store(_) | Self::EffectsUnavailable | Self::CommitFailed => {
+                RecoveryFailure::Fatal(self)
+            }
+        }
+    }
+}
 /// Integrator supplies the existing lifecycle and transcript writers here.
 /// `apply` must re-read expected agent scope, event statuses and operation
 /// receipts in the same transaction as its writes. It must reject stale
@@ -134,7 +184,7 @@ pub async fn recover_turn(
                         observation,
                         complete_history: false,
                         idle_twice: false,
-                        confirmed_not_applied: false,
+                        not_applied: None,
                     },
                 )
                 .await;
@@ -152,10 +202,9 @@ pub async fn recover_turn(
                 // Restart history proves delivery, but not ownership of a live
                 // stream. Only a confirmed terminal turn can clear this hold.
                 if restart_input_wait
-                    && !matches!(
-                        turn["status"].as_str(),
-                        Some("completed" | "failed" | "interrupted")
-                    )
+                    && CodexTurnStatus::observe(&turn)
+                        .and_then(|status| status.terminal())
+                        .is_none()
                 {
                     return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                 }
@@ -164,9 +213,13 @@ pub async fn recover_turn(
                     .apply(snapshot, &scope, RecoveryAction::AcceptStart { turn })
                     .await;
             }
-            Ok(crate::recovery_history::ExactStart::NotApplied) => {
+            Ok(crate::recovery_history::ExactStart::NotApplied(proof)) => {
                 let state = read.thread_document(thread).await?;
-                if !idle(&state["status"]) || crate::event_write::truthy(state.get("activeFlags")) {
+                if !ThreadLifecycle::observe(&state)
+                    .and_then(|observation| observation.activity)
+                    .is_some_and(|activity| activity.is_idle())
+                    || crate::event_write::truthy(state.get("activeFlags"))
+                {
                     return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                 }
                 read.barrier().await?;
@@ -179,10 +232,17 @@ pub async fn recover_turn(
                             observation,
                             complete_history: true,
                             idle_twice: true,
-                            confirmed_not_applied: true,
+                            not_applied: Some(proof),
                         },
                     )
                     .await;
+            }
+            Err(
+                error @ (HistoryError::Invalid(_)
+                | HistoryError::Identity
+                | HistoryError::Notification { .. }),
+            ) => {
+                return Err(error.into());
             }
             history => {
                 let complete_history =
@@ -213,7 +273,7 @@ pub async fn recover_turn(
                             observation,
                             complete_history,
                             idle_twice,
-                            confirmed_not_applied: false,
+                            not_applied: None,
                         },
                     )
                     .await;
@@ -453,7 +513,7 @@ async fn latest_turn(
     Ok(rows.first().cloned())
 }
 fn idle(state: &Value) -> bool {
-    matches!(state["type"].as_str(), Some("idle" | "notLoaded"))
+    ThreadActivity::observe(state).is_some_and(|state| state.is_idle())
 }
 fn state_name(state: &Value) -> Result<&str, HistoryError> {
     state["type"]
@@ -461,10 +521,10 @@ fn state_name(state: &Value) -> Result<&str, HistoryError> {
         .ok_or(HistoryError::Invalid("status.type"))
 }
 fn terminal(turn: &Value) -> bool {
-    matches!(
-        turn["status"].as_str(),
-        Some("completed" | "failed" | "interrupted" | "uncertain")
-    )
+    CodexTurnStatus::observe(turn)
+        .and_then(|status| status.terminal()).is_some()
+        // An explicit bridge history hold, never a successful terminal decision.
+        || turn["status"] == "uncertain"
 }
 
 /// Pure completion permission proof; the adapter obtains `unresolved_receipts`

@@ -1,3 +1,5 @@
+import assert from "node:assert/strict";
+import { required } from "../teams/helpers.ts";
 import { fixtureBarrier } from "./browser-fixture.ts";
 import type { FixtureAccount } from "./browser-fixture.ts";
 import { fixturePostBody } from "./browser-fixture.ts";
@@ -173,7 +175,7 @@ test("collapsed account sign-in keeps exact ownership at phone and desktop width
       .click();
     await expect(profile).toContainText("Claude profile saved.");
     expect(profilePosts).toHaveLength(1);
-    expect(profilePosts[0].account_key).toBe("exact-claude-profile");
+    expect(required(profilePosts[0]).account_key).toBe("exact-claude-profile");
     await page.evaluate(() => {
       const fixture = window as unknown as { __accountReturnFocus: unknown[] };
       fixture.__accountReturnFocus = [];
@@ -237,7 +239,7 @@ test("collapsed account sign-in keeps exact ownership at phone and desktop width
       dialog.getByRole("button", { name: "Retry sign-in", exact: true }),
     ).toBeDisabled();
     expect(posts).toHaveLength(1);
-    expect(posts[0].account_key).toBe("exact-claude-profile");
+    expect(required(posts[0]).account_key).toBe("exact-claude-profile");
     expect(new URL(page.url()).origin).toBe(local.origin);
     release();
     await expect(dialog).toContainText("Sign-in cancelled.");
@@ -491,7 +493,7 @@ test("accounts settings show per-server state and provider choices", async ({
       body,
     });
 
-    remoteAccounts[1].claudeOptions = body.options;
+    required(remoteAccounts[1]).claudeOptions = body.options;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -710,6 +712,7 @@ test("accounts settings show per-server state and provider choices", async ({
   let verificationReady = false;
   let finalStatusBarrier: Promise<void> | undefined;
   const loginRequestId = addStarts[0]?.loginId;
+  assert.ok(loginRequestId);
 
   // The provider has not acknowledged code delivery yet. Keep the stream's
   // current receipt pending while the explicit recovery reads below are gated.

@@ -1,5 +1,6 @@
 import { desktopFixture } from "../files/desktop.fixture.ts";
-import type { JsonInput, Agent } from "../../src/types.ts";
+import type { JsonInput } from "../../src/types.ts";
+import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 declare global {
   interface Window {
@@ -22,7 +23,9 @@ import SafetyBuffering from "../../src/components/conversation/transcript/Safety
 import { Dictation } from "../../src/components/Dictation.tsx";
 import { saveRecording, listRecordings } from "../../src/dictation/storage.ts";
 window.readRecordings = () => listRecordings("lead");
-const root = createRoot(document.getElementById("root")!);
+const rootElement = document.getElementById("root");
+if (!rootElement) throw new Error("Missing fixture root");
+const root = createRoot(rootElement);
 const agent: Agent = {
   id: "lead",
   rootId: "lead",
@@ -37,14 +40,14 @@ const noop = () => {};
 const refresh = async () => {};
 let renderId = 0;
 class Boundary extends React.Component<React.PropsWithChildren> {
-  state = { error: "" };
+  override state = { error: "" };
   static getDerivedStateFromError(error: Error) {
     return { error: error.message };
   }
-  componentDidCatch(error: Error) {
+  override componentDidCatch(error: Error) {
     window.crashes.push(error.message);
   }
-  render() {
+  override render() {
     return this.state.error
       ? React.createElement("p", { "data-crash": true }, this.state.error)
       : this.props.children;

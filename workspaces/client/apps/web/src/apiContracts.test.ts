@@ -3,9 +3,10 @@ import { readFileSync } from "node:fs";
 import {
   PROVIDER_KINDS,
   PROVIDER_LABELS,
+  ProviderKind,
   isProviderKind,
   providerLabel,
-  type ProviderKind,
+  providerToString,
 } from "./generated/providerKind.ts";
 import { serializePrimitiveParam } from "openapi-fetch";
 import { post } from "./api";
@@ -273,6 +274,50 @@ function generatedFacadeRequestAssertions() {
   post("/api/accounts/default");
   // @ts-expect-error queue actions are limited to the generated discriminator values
   post("/api/queue", { action: "unknown" });
+  post("/api/claude/session", {
+    action: "settings",
+    id: "agent",
+    request_id: "settings-one",
+    settings: {
+      thinking: true,
+      permissionMode: "plan",
+      autoCompactWindow: null,
+    },
+  });
+  // @ts-expect-error settings mutations require a durable request identity
+  post("/api/claude/session", {
+    action: "settings",
+    id: "agent",
+    settings: {},
+  });
+  post("/api/claude/session", {
+    action: "settings",
+    id: "agent",
+    request_id: "one",
+    // @ts-expect-error thinking may be absent but cannot be null
+    settings: { thinking: null },
+  });
+  post("/api/claude/session", {
+    action: "settings",
+    id: "agent",
+    request_id: "one",
+    // @ts-expect-error permissionMode may be absent but cannot be null
+    settings: { permissionMode: null },
+  });
+  post("/api/claude/session", {
+    action: "rollback",
+    id: "agent",
+    request_id: "one",
+    turn_id: "turn",
+    // @ts-expect-error rollback arguments cannot carry settings
+    settings: {},
+  });
+  // @ts-expect-error rollback requires its target turn
+  post("/api/claude/session", {
+    action: "rollback",
+    id: "agent",
+    request_id: "one",
+  });
 }
 void generatedFacadeRequestAssertions;
 
@@ -304,9 +349,11 @@ it("generated provider identities agree with the OpenAPI owner and reject unknow
     ),
   );
   expect(PROVIDER_KINDS).toEqual(openapi.components.schemas.ProviderKind.enum);
+  expect(Object.values(ProviderKind)).toEqual(PROVIDER_KINDS);
   expect(Object.keys(PROVIDER_LABELS)).toEqual(PROVIDER_KINDS);
   for (const provider of PROVIDER_KINDS) {
     expect(isProviderKind(provider)).toBe(true);
+    expect(providerToString(provider)).toBe(provider);
     expect(providerLabel(provider)).toBe(PROVIDER_LABELS[provider]);
   }
   for (const value of [
@@ -413,7 +460,7 @@ export type LocalContractAssertions = [
   Assert<
     Equal<
       PreferenceDeclaration["provider"],
-      Partial<components["schemas"]["Account"]>["provider"]
+      components["schemas"]["Account"]["provider"]
     >
   >,
   Assert<

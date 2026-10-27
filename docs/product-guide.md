@@ -79,8 +79,9 @@ That history stays with its original members when the team changes.
 Managed workers can use a different provider from their parent. The default is
 `gpt-6-luna` with `high` reasoning. The orchestrator selects each worker's model
 and reasoning level through `orchestration_spawn`. Studio selects an available
-account for that model, preferring the parent's account, then the application
-default. `account_key` selects a specific account. Model and account validation
+account for that model under the chat and project restrictions, using estimated
+capacity, account-group order, and active-agent counts. `account_key` selects a
+specific account and must respect the team's pinned account. Model and account validation
 finish before any worker in the batch is created. A team transfer moves existing
 workers whose provider matches the destination. Workers on another provider stay
 on their current account. New workers use the team's destination account and
@@ -271,6 +272,10 @@ selects the destination model and clears queued settings for the previous
 provider. Codex account transfers continue to use native history copies.
 Changing the Subagents account starts a subagent-only transfer and updates the
 account used by future workers while the lead stays on its current account.
+The lead can continue working while its subagents await transfer, unless its own
+work has a separate hold. Transfer membership is limited to that lead and its
+team; unrelated stored chats and completed transfer history do not consume the
+team's transfer limit. The team's own record and snapshot size limits still apply.
 See [the parity checks](verification/2026-09-22-claude-parity.md) for evidence
 and the tested reference revision.
 
@@ -571,7 +576,12 @@ Prompt history is in the chat header; open **Conversation tools** when space is
 limited. Context usage, session cost, and account limits sit below the composer.
 The **Warnings** icon beside Studio settings in the sidebar opens two tabs.
 **Notices** preserves provider version notices and current conversation warnings.
-**App errors** lists work interrupted by Studio, with safe Open or Resume actions.
+**App errors** lists interrupted work and runtime failures, including server
+failures that have no associated chat. Expand an entry to inspect its operation,
+source identity, validation location, safe cause details, and whether effects are
+known or uncertain. These details can be selected and copied for investigation.
+Open or Resume actions appear where the recorded evidence supports them;
+an uncertain outcome does not authorize repeating the operation.
 Select individual errors or **Select all**, then **Delete selected** to remove only
 those entries from the error list. This does not delete chats, commands, or history.
 The server applies the selected dismissals atomically. If the response is lost,

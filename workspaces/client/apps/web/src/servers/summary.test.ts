@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import type { CredentialResult } from "../../../desktop/api.ts";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 import {
   fetchServerSummary,
@@ -46,20 +47,24 @@ it("tells another Studio version from a server that does not answer", async () =
   const answer = (hash: string, status = 200) => {
     (globalThis as { window?: unknown }).window = {
       codexDesktop: {
-        serverCredentialAction: async () => ({
-          status,
-          headers: [["x-studio-api-schema", hash]],
-          body: JSON.stringify({
-            chats: [],
-            projects: [],
-            alerts: [],
-            accounts: [],
-            ready: true,
-            busy: false,
-            system: "fixture",
-            agentsRunning: 0,
-          }),
-        }),
+        serverCredentialAction: async () =>
+          ({
+            status,
+            statusText: "OK",
+            headers: [["x-studio-api-schema", hash]],
+            body: new TextEncoder().encode(
+              JSON.stringify({
+                chats: [],
+                projects: [],
+                alerts: [],
+                accounts: [],
+                ready: true,
+                busy: false,
+                system: "fixture",
+                agentsRunning: 0,
+              }),
+            ).buffer,
+          }) satisfies CredentialResult<"summary">,
       },
     };
   };

@@ -29,7 +29,7 @@ function warningTitle(value: unknown, fallback: string) {
         : "Provider";
     return `${provider} version needs attention`;
   }
-  const first = text.split(/\n|[.!?](?:\s|$)/)[0].trim();
+  const first = text.split(/\n|[.!?](?:\s|$)/)[0]?.trim();
   if (!first) return fallback;
   const words = first.split(/\s+/);
   return words.length > 8 ? `${words.slice(0, 8).join(" ")}…` : first;
@@ -173,7 +173,7 @@ export default function ConversationWarnings({
               onDelete={() => void errors.remove()}
               onAction={(item) => {
                 if (item.action === "resume") void errors.resume(item);
-                else {
+                else if (item.action === "check") {
                   setOpenScope(null);
                   openAgent(item.agentId);
                 }

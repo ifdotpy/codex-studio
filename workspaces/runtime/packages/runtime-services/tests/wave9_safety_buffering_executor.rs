@@ -11,10 +11,11 @@ use std::{
     time::Duration,
 };
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{
     account_session_runtime::{
         AccountSessionError, AccountSessionFuture, AccountSessionPort, ConnectionScope,
-        NotSentReason, ProviderRequest, ProviderResponse, RequestCertainty, SessionReceipt,
+        ProviderRequest, ProviderResponse, SessionReceipt,
     },
     account_worker::preparation::PreparationResources,
     account_worker::retained::RequestActor,
@@ -101,13 +102,20 @@ impl AccountSessionPort for Session<'_> {
             }
             if self.unknown_receipt_at == Some(call_index) {
                 return Ok(SessionReceipt {
+                    outcome: ReceiptOutcome::Unknown {
+                        ticket: studio_runtime_providers::RequestTicket {
+                            generation: request
+                                .expected_scope
+                                .as_ref()
+                                .map_or(1, |scope| scope.generation),
+                            id: studio_runtime_providers::RequestId::String(
+                                request.operation.clone(),
+                            ),
+                            method: request.method,
+                        },
+                    },
                     scope: self.scope.clone(),
                     operation: request.operation,
-                    ticket: None,
-                    certainty: RequestCertainty::Unknown,
-                    result: None,
-                    not_sent_reason: None,
-
                     replayed: false,
                 });
             }
@@ -121,13 +129,20 @@ impl AccountSessionPort for Session<'_> {
                 if !*used {
                     *used = true;
                     return Ok(SessionReceipt {
+                        outcome: ReceiptOutcome::WorkerNotSent {
+                            ticket: studio_runtime_providers::RequestTicket {
+                                generation: request
+                                    .expected_scope
+                                    .as_ref()
+                                    .map_or(1, |scope| scope.generation),
+                                id: studio_runtime_providers::RequestId::String(
+                                    request.operation.clone(),
+                                ),
+                                method: request.method,
+                            },
+                        },
                         scope: self.scope.clone(),
                         operation: request.operation.clone(),
-                        ticket: None,
-                        certainty: RequestCertainty::NotSent,
-                        result: None,
-                        not_sent_reason: Some(NotSentReason::WorkerNotSent),
-
                         replayed: false,
                     });
                 }
@@ -144,27 +159,163 @@ impl AccountSessionPort for Session<'_> {
                 Method::TurnInterrupt => json!({}),
                 Method::ThreadFork => json!({"thread":{"id":"new-thread"}}),
                 Method::TurnStart => json!({"turn":{"id":"new-turn"}}),
-                _ => return Err(AccountSessionError::Refused("Unexpected safety method")),
+                Method::Initialize
+                | Method::Initialized
+                | Method::Ack
+                | Method::AccountLoginCancel
+                | Method::AccountLoginStart
+                | Method::AccountRateLimitResetCreditConsume
+                | Method::ThreadLoadedList
+                | Method::ConfigRead
+                | Method::SkillsExtraRootsSet
+                | Method::ModelList
+                | Method::AccountRead
+                | Method::AccountRateLimitsRead
+                | Method::ThreadStart
+                | Method::ThreadRealtimeStart
+                | Method::ThreadRealtimeStop
+                | Method::ThreadRealtimeAppendSpeech
+                | Method::ThreadRealtimeItemStarted
+                | Method::ThreadRealtimeTranscriptDelta
+                | Method::ThreadRealtimeTranscriptDone
+                | Method::ThreadRealtimeSdp
+                | Method::ThreadRealtimeError
+                | Method::ThreadRealtimeClosed
+                | Method::ThreadResume
+                | Method::ThreadRead
+                | Method::TurnSteer
+                | Method::ThreadList
+                | Method::ThreadArchive
+                | Method::ThreadNameSet
+                | Method::ThreadMetadataUpdate
+                | Method::ThreadSettingsUpdate
+                | Method::ThreadCompactStart
+                | Method::ThreadRollback
+                | Method::ThreadGoalSet
+                | Method::ThreadGoalUpdated
+                | Method::ThreadUnarchive
+                | Method::ThreadUnsubscribe
+                | Method::ProcessSpawn
+                | Method::ProcessWriteStdin
+                | Method::ProcessKill
+                | Method::ProcessResizePty
+                | Method::CommandExec
+                | Method::CommandExecWrite
+                | Method::CommandExecResize
+                | Method::CommandExecTerminate
+                | Method::ThreadBackgroundTerminalsList
+                | Method::ThreadBackgroundTerminalsTerminate
+                | Method::ThreadBackgroundTerminalsClean
+                | Method::ThreadCommandExecutionBackground
+                | Method::ThreadQueueList
+                | Method::ClaudeState
+                | Method::ClaudeRepairReport
+                | Method::ClaudeFileBackups
+                | Method::ClaudeSettings
+                | Method::ClaudeActivity
+                | Method::ClaudeStopTask
+                | Method::ClaudeShellPolicy
+                | Method::ClaudeDiagnostics
+                | Method::ClaudeMoveVersions
+                | Method::McpServerReconnect
+                | Method::McpServerStatusList
+                | Method::SkillsList
+                | Method::OperationStatus
+                | Method::ReviewStart
+                | Method::BrowserAnswer
+                | Method::BrowserCallback
+                | Method::BrowserClose
+                | Method::BrowserWait
+                | Method::ClaudeCommands
+                | Method::ClaudeMoveExport
+                | Method::ClaudeMoveIdentity
+                | Method::ClaudeMovePreflight
+                | Method::ClaudeMoveProof
+                | Method::Detach
+                | Method::EventRead
+                | Method::Exec
+                | Method::Generate
+                | Method::Health
+                | Method::Info
+                | Method::LayrHealth
+                | Method::Next
+                | Method::Open
+                | Method::ProjectEnsure
+                | Method::ProjectExec
+                | Method::ProjectImport
+                | Method::ProviderList
+                | Method::Replay
+                | Method::ResponseStatus
+                | Method::RetireCommand
+                | Method::SecretsList
+                | Method::SecretsRemove
+                | Method::SecretsSet
+                | Method::ShareConfigure
+                | Method::ShareName
+                | Method::ShareStatus
+                | Method::Sign
+                | Method::Status
+                | Method::SyncMacApply
+                | Method::SyncMacHandoff
+                | Method::SyncMacHashes
+                | Method::SyncMacHead
+                | Method::SyncMacRead
+                | Method::SyncMacWorktree
+                | Method::VaultConfigure
+                | Method::VaultPush
+                | Method::VaultStatus
+                | Method::UploadBegin
+                | Method::UploadChunk
+                | Method::UploadCommit
+                | Method::Verify
+                | Method::Write
+                | Method::CurrentTimeRead
+                | Method::ItemToolCall
+                | Method::ItemCommandExecutionRequestApproval
+                | Method::ItemFileChangeRequestApproval
+                | Method::ItemPermissionsRequestApproval
+                | Method::McpServerElicitationRequest
+                | Method::ItemToolRequestUserInput
+                | Method::ItemStarted
+                | Method::ItemCompleted
+                | Method::ItemAgentMessageDelta
+                | Method::ItemReasoningTextDelta
+                | Method::ItemCommandExecutionOutputDelta
+                | Method::CommandExecOutputDelta
+                | Method::TurnStarted
+                | Method::TurnCompleted
+                | Method::TurnPlanUpdated
+                | Method::TurnDiffUpdated
+                | Method::ThreadClosed
+                | Method::ThreadStatusChanged
+                | Method::ThreadTokenUsageUpdated
+                | Method::ThreadShellPolicyUpdated
+                | Method::ThreadIdleCompactionUpdated
+                | Method::AccountLoginCompleted
+                | Method::AccountUpdated
+                | Method::AccountRateLimitsUpdated
+                | Method::ModelSafetyBufferingUpdated
+                | Method::ProviderGenerationStarted
+                | Method::ProtocolError => {
+                    return Err(AccountSessionError::Refused("Unexpected safety method"));
+                }
             };
             Ok(SessionReceipt {
                 scope: self.scope.clone(),
                 operation: request.operation.clone(),
-                ticket: Some(RequestTicket {
-                    generation: self.scope.generation,
-                    id: RequestId::String(request.operation),
-                    method: request.method,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(
-                    if self.reject_start && request.method == Method::TurnStart {
+                replayed: false,
+                outcome: ReceiptOutcome::Written {
+                    ticket: RequestTicket {
+                        generation: self.scope.generation,
+                        id: RequestId::String(request.operation),
+                        method: request.method,
+                    },
+                    response: if self.reject_start && request.method == Method::TurnStart {
                         ProviderResponse::Rejected(json!({"message":"start rejected"}))
                     } else {
                         ProviderResponse::Reply(result)
                     },
-                ),
-                not_sent_reason: None,
-
-                replayed: false,
+                },
             })
         })
     }
@@ -263,21 +414,159 @@ impl AccountSessionPort for StartBlockingSession {
                 Method::TurnInterrupt => json!({}),
                 Method::ThreadFork => json!({"thread":{"id":"new-thread"}}),
                 Method::TurnStart => json!({"turn":{"id":"new-turn"}}),
-                _ => return Err(AccountSessionError::Refused("Unexpected safety method")),
+                Method::Initialize
+                | Method::Initialized
+                | Method::Ack
+                | Method::AccountLoginCancel
+                | Method::AccountLoginStart
+                | Method::AccountRateLimitResetCreditConsume
+                | Method::ThreadLoadedList
+                | Method::ConfigRead
+                | Method::SkillsExtraRootsSet
+                | Method::ModelList
+                | Method::AccountRead
+                | Method::AccountRateLimitsRead
+                | Method::ThreadStart
+                | Method::ThreadRealtimeStart
+                | Method::ThreadRealtimeStop
+                | Method::ThreadRealtimeAppendSpeech
+                | Method::ThreadRealtimeItemStarted
+                | Method::ThreadRealtimeTranscriptDelta
+                | Method::ThreadRealtimeTranscriptDone
+                | Method::ThreadRealtimeSdp
+                | Method::ThreadRealtimeError
+                | Method::ThreadRealtimeClosed
+                | Method::ThreadResume
+                | Method::ThreadRead
+                | Method::TurnSteer
+                | Method::ThreadList
+                | Method::ThreadArchive
+                | Method::ThreadNameSet
+                | Method::ThreadMetadataUpdate
+                | Method::ThreadSettingsUpdate
+                | Method::ThreadCompactStart
+                | Method::ThreadRollback
+                | Method::ThreadGoalSet
+                | Method::ThreadGoalUpdated
+                | Method::ThreadUnarchive
+                | Method::ThreadUnsubscribe
+                | Method::ProcessSpawn
+                | Method::ProcessWriteStdin
+                | Method::ProcessKill
+                | Method::ProcessResizePty
+                | Method::CommandExec
+                | Method::CommandExecWrite
+                | Method::CommandExecResize
+                | Method::CommandExecTerminate
+                | Method::ThreadBackgroundTerminalsList
+                | Method::ThreadBackgroundTerminalsTerminate
+                | Method::ThreadBackgroundTerminalsClean
+                | Method::ThreadCommandExecutionBackground
+                | Method::ThreadQueueList
+                | Method::ClaudeState
+                | Method::ClaudeRepairReport
+                | Method::ClaudeFileBackups
+                | Method::ClaudeSettings
+                | Method::ClaudeActivity
+                | Method::ClaudeStopTask
+                | Method::ClaudeShellPolicy
+                | Method::ClaudeDiagnostics
+                | Method::ClaudeMoveVersions
+                | Method::McpServerReconnect
+                | Method::McpServerStatusList
+                | Method::SkillsList
+                | Method::OperationStatus
+                | Method::ReviewStart
+                | Method::BrowserAnswer
+                | Method::BrowserCallback
+                | Method::BrowserClose
+                | Method::BrowserWait
+                | Method::ClaudeCommands
+                | Method::ClaudeMoveExport
+                | Method::ClaudeMoveIdentity
+                | Method::ClaudeMovePreflight
+                | Method::ClaudeMoveProof
+                | Method::Detach
+                | Method::EventRead
+                | Method::Exec
+                | Method::Generate
+                | Method::Health
+                | Method::Info
+                | Method::LayrHealth
+                | Method::Next
+                | Method::Open
+                | Method::ProjectEnsure
+                | Method::ProjectExec
+                | Method::ProjectImport
+                | Method::ProviderList
+                | Method::Replay
+                | Method::ResponseStatus
+                | Method::RetireCommand
+                | Method::SecretsList
+                | Method::SecretsRemove
+                | Method::SecretsSet
+                | Method::ShareConfigure
+                | Method::ShareName
+                | Method::ShareStatus
+                | Method::Sign
+                | Method::Status
+                | Method::SyncMacApply
+                | Method::SyncMacHandoff
+                | Method::SyncMacHashes
+                | Method::SyncMacHead
+                | Method::SyncMacRead
+                | Method::SyncMacWorktree
+                | Method::VaultConfigure
+                | Method::VaultPush
+                | Method::VaultStatus
+                | Method::UploadBegin
+                | Method::UploadChunk
+                | Method::UploadCommit
+                | Method::Verify
+                | Method::Write
+                | Method::CurrentTimeRead
+                | Method::ItemToolCall
+                | Method::ItemCommandExecutionRequestApproval
+                | Method::ItemFileChangeRequestApproval
+                | Method::ItemPermissionsRequestApproval
+                | Method::McpServerElicitationRequest
+                | Method::ItemToolRequestUserInput
+                | Method::ItemStarted
+                | Method::ItemCompleted
+                | Method::ItemAgentMessageDelta
+                | Method::ItemReasoningTextDelta
+                | Method::ItemCommandExecutionOutputDelta
+                | Method::CommandExecOutputDelta
+                | Method::TurnStarted
+                | Method::TurnCompleted
+                | Method::TurnPlanUpdated
+                | Method::TurnDiffUpdated
+                | Method::ThreadClosed
+                | Method::ThreadStatusChanged
+                | Method::ThreadTokenUsageUpdated
+                | Method::ThreadShellPolicyUpdated
+                | Method::ThreadIdleCompactionUpdated
+                | Method::AccountLoginCompleted
+                | Method::AccountUpdated
+                | Method::AccountRateLimitsUpdated
+                | Method::ModelSafetyBufferingUpdated
+                | Method::ProviderGenerationStarted
+                | Method::ProtocolError => {
+                    return Err(AccountSessionError::Refused("Unexpected safety method"));
+                }
             };
             Ok(SessionReceipt {
                 scope: self.scope.clone(),
                 operation: request.operation.clone(),
-                ticket: Some(RequestTicket {
-                    generation: self.scope.generation,
-                    id: RequestId::String(request.operation),
-                    method: request.method,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(result)),
-                not_sent_reason: None,
-
                 replayed: false,
+                outcome: ReceiptOutcome::Written {
+                    ticket: RequestTicket {
+                        generation: self.scope.generation,
+                        id: RequestId::String(request.operation),
+                        method: request.method,
+                    },
+                    response: ProviderResponse::Reply(result),
+                },
             })
         })
     }
@@ -365,15 +654,21 @@ impl AccountSessionPort for BlockingSession {
                 .recv()
                 .expect("release blocked provider");
             Ok(SessionReceipt {
+                outcome: ReceiptOutcome::Written {
+                    ticket: studio_runtime_providers::RequestTicket {
+                        generation: request
+                            .expected_scope
+                            .as_ref()
+                            .map_or(1, |scope| scope.generation),
+                        id: studio_runtime_providers::RequestId::String(request.operation.clone()),
+                        method: request.method,
+                    },
+                    response: ProviderResponse::Reply(
+                        json!({"data":[{"id":"turn","status":"inProgress"}]}),
+                    ),
+                },
                 scope: self.scope.clone(),
                 operation: request.operation,
-                ticket: None,
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(
-                    json!({"data":[{"id":"turn","status":"inProgress"}]}),
-                )),
-                not_sent_reason: None,
-
                 replayed: false,
             })
         })

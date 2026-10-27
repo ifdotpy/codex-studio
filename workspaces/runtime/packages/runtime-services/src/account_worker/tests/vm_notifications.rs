@@ -202,7 +202,9 @@ fn delta(actor: &str, text: &str) -> Frame {
         "threadId":format!("thread-{actor}"),"turnId":"turn","itemId":"answer","delta":text}});
     match studio_runtime_providers::decode_journal_value(0, 0, &payload).payload {
         studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame,
-        other => panic!("invalid notification: {other:?}"),
+        other @ studio_runtime_providers::DecodedJournalPayload::RawStdout { .. } => {
+            panic!("invalid notification: {other:?}")
+        }
     }
 }
 

@@ -142,13 +142,23 @@ async fn work_commands_match_python_arguments_bounds_and_provenance() {
 #[tokio::test]
 async fn malformed_work_never_poison_store_writer() {
     for (field, value) in [
-        ("results", json!(["bad"])),
-        ("decisions", json!([5])),
-        ("status", Value::Null),
+        ("results", Some(json!(["bad"]))),
+        ("decisions", Some(json!([5]))),
+        ("status", Some(Value::Null)),
+        ("status", None),
+        ("status", Some(json!("unknown"))),
+        ("dependencies", Some(json!({"0":"prerequisite"}))),
+        ("dependencies", Some(json!([7]))),
     ] {
         let (_dir, store, context) = fixture().await;
         let mut work = template().value["baseWork"].clone();
-        work[field] = value;
+        if let Some(value) = value {
+            work[field] = value;
+        } else {
+            work.as_object_mut()
+                .expect("work fixture object")
+                .remove(field);
+        }
         put_record(&store, "runtime_work", &work).await;
         let frame = call(
             &context,
@@ -538,5 +548,34 @@ async fn resolve_retirement_rolls_back_with_card_and_agent() {
             record(&store, "runtime_requests", &id)["status"],
             "resolved"
         );
+    }
+}
+
+#[tokio::test]
+async fn task_tool_cancel_retains_its_historical_reason_bound() {
+    let (_directory, store, context) = fixture().await;
+    let before = &template().value["reviewCases"][0]["before"];
+    for (token_index, token) in ["x", "🙂"].into_iter().enumerate() {
+        for (size, expected) in [(32000, true), (32001, false)] {
+            put_record(&store, "runtime_work", before).await;
+            let frame = call(
+                &context,
+                &format!("reason-bound-{token_index}-{size}"),
+                "orchestration_task",
+                json!({"action":"cancel","task_id":before["id"],"reason":token.repeat(size)}),
+            );
+            let result = reply(
+                dispatch(std::sync::Arc::clone(&store), &context, &frame, 20.0)
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(body(&result)["success"], expected, "{token_index}/{size}");
+            if !expected {
+                assert_eq!(
+                    record(&store, "runtime_work", before["id"].as_str().unwrap()),
+                    *before
+                );
+            }
+        }
     }
 }

@@ -5,6 +5,7 @@ use crate::{submit_gates as gates, thread_prepare as thread, turn_prepare as tur
 use snapshot::*;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::Transaction;
 use studio_runtime_store::path_identity::CanonicalPath;
 
@@ -287,7 +288,21 @@ fn rejected_notifications(
     if let Err(error) = selected_inputs_current(tx, intent) {
         return match error {
             WorkerError::PreparationRefused(_) => Ok(rejected),
-            error => Err(error),
+            error @ WorkerError::Recovery(_)
+            | error @ WorkerError::Store(_)
+            | error @ WorkerError::Scheduler(_)
+            | error @ WorkerError::Session(_)
+            | error @ WorkerError::Notification(_)
+            | error @ WorkerError::StaleVmActor
+            | error @ WorkerError::PreparationPending(_)
+            | error @ WorkerError::PreparationAwaitsAgent(_)
+            | error @ WorkerError::CleanupUnconfirmed(_)
+            | error @ WorkerError::AlreadyRunning
+            | error @ WorkerError::Closed
+            | error @ WorkerError::ShutdownTimeout
+            | error @ WorkerError::TaskFailed
+            | error @ WorkerError::Capacity
+            | error @ WorkerError::CallbackUnknown => Err(error),
         };
     }
     let record = agent(tx, &intent.agent_id)?.value();
@@ -451,7 +466,7 @@ fn catalog(
     match resources.model_catalog.read_for_admission(
         &intent.account_key,
         &resources.account_home,
-        intent.provider.key(),
+        intent.provider,
     ) {
         AdmissionCatalogRead::Fresh {
             value,
@@ -467,54 +482,11 @@ fn catalog(
                 provider,
                 generation,
             };
-            let models = value["data"]
-                .as_array()
-                .ok_or_else(|| invalid("model catalog"))?
+            let models = value
+                .data
                 .iter()
-                .map(|v| {
-                    Ok(gates::ModelCapabilities {
-                        model: v["model"]
-                            .as_str()
-                            .ok_or_else(|| invalid("catalog/model"))?
-                            .into(),
-                        resolved_model: v
-                            .get("resolvedModel")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        is_default: v.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
-                        hidden: v.get("hidden").and_then(Value::as_bool).unwrap_or(false),
-                        access_programs: v
-                            .pointer("/availableAccessPrograms/cyber")
-                            .and_then(Value::as_array)
-                            .map(|values| {
-                                values
-                                    .iter()
-                                    .filter_map(Value::as_str)
-                                    .map(str::to_owned)
-                                    .collect()
-                            }),
-                        supported_efforts: v
-                            .get("supportedReasoningEfforts")
-                            .and_then(Value::as_array)
-                            .map(|a| {
-                                a.iter()
-                                    .filter_map(|v| {
-                                        v["reasoningEffort"].as_str().map(str::to_owned)
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                        default_effort: v
-                            .get("defaultReasoningEffort")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        priority: v
-                            .get("serviceTiers")
-                            .and_then(Value::as_array)
-                            .is_some_and(|a| a.iter().any(|v| v["id"] == "priority")),
-                    })
-                })
-                .collect::<Result<Vec<_>, WorkerError>>()?;
+                .map(gates::ModelCapabilities::from)
+                .collect();
             Ok((
                 identity.clone(),
                 Some(gates::CatalogObservation {
@@ -524,11 +496,11 @@ fn catalog(
                 }),
             ))
         }
-        _ => Ok((
+        AdmissionCatalogRead::Pending | AdmissionCatalogRead::Unavailable => Ok((
             gates::CatalogIdentity {
                 account_key: intent.account_key.clone(),
                 home: resources.account_home.clone(),
-                provider: intent.provider.key().to_owned(),
+                provider: intent.provider,
                 generation: 0,
             },
             None,
@@ -698,7 +670,13 @@ fn catalog_admission_error(error: gates::ExecutionDenial) -> WorkerError {
         gates::ExecutionDenial::CatalogRequired | gates::ExecutionDenial::CatalogExpired => {
             catalog_pending()
         }
-        _ => refusal(error.to_string()),
+        gates::ExecutionDenial::AccountChanged
+        | gates::ExecutionDenial::SettingsChanged
+        | gates::ExecutionDenial::CatalogIdentityMismatch
+        | gates::ExecutionDenial::ModelUnavailable
+        | gates::ExecutionDenial::EffortUnsupported
+        | gates::ExecutionDenial::FastModeUnsupported
+        | gates::ExecutionDenial::DaybreakUnsupported => refusal(error.to_string()),
     }
 }
 
@@ -728,7 +706,7 @@ fn daybreak_program(
     let catalog = match resources.model_catalog.read_for_admission(
         &snapshot.account.key,
         &resources.account_home,
-        "codex",
+        ProviderKind::Codex,
     ) {
         crate::model_catalog::AdmissionCatalogRead::Fresh { value, .. } => value,
         crate::model_catalog::AdmissionCatalogRead::Pending => return Err(catalog_pending()),
@@ -740,31 +718,17 @@ fn daybreak_program(
 }
 
 fn resolve_daybreak_program(
-    catalog: &Value,
+    catalog: &studio_runtime_schema::model_catalog::ModelCatalog,
     model: Option<&str>,
     enabled: bool,
 ) -> Result<String, WorkerError> {
     if !enabled {
         return Ok("standard".into());
     }
-    let programs = catalog
-        .get("data")
-        .and_then(Value::as_array)
-        .and_then(|rows| {
-            rows.iter().find(|row| {
-                row.get("model").and_then(Value::as_str) == model
-                    && row.get("hidden").and_then(Value::as_bool) != Some(true)
-            })
-        })
-        .and_then(|row| row.get("availableAccessPrograms"))
-        .and_then(|value| value.get("cyber"))
-        .and_then(Value::as_array);
-    let Some(programs) = programs else {
-        return Err(refusal("Daybreak is not available for this model on this account. Choose another model or turn off Daybreak".into()));
-    };
-    if programs.iter().any(|program| !program.is_string()) {
-        return Err(refusal("Daybreak model catalog is invalid".into()));
-    }
+    let programs = catalog.data.iter()
+        .find(|row| Some(row.model.as_str()) == model && row.hidden != Some(true))
+        .and_then(|row| row.cyber_programs())
+        .ok_or_else(|| refusal("Daybreak is not available for this model on this account. Choose another model or turn off Daybreak".into()))?;
     for candidate in ["daybreakBlue", "daybreakRed"] {
         if programs.iter().any(|program| program == candidate) {
             return Ok(candidate.into());
@@ -859,7 +823,10 @@ pub(crate) async fn before_start(
                 thread::HoldReason::AccountTransfer
             ))
         }
-        error => refusal(error.to_string()),
+        error @ crate::account_transfer::TransferError::Stored { .. }
+        | error @ crate::account_transfer::TransferError::Refused(_)
+        | error @ crate::account_transfer::TransferError::Requires(_)
+        | error @ crate::account_transfer::TransferError::Store(_) => refusal(error.to_string()),
     })
 }
 
@@ -1028,7 +995,13 @@ async fn workspace_with_vm_action(
                 | crate::native_actions::NativeError::Unavailable(_)) => {
                     WorkerError::PreparationPending(format!("workspace-readiness/{error}").into())
                 }
-                error => refusal(error.to_string()),
+                error @ crate::native_actions::NativeError::Invalid(_)
+                | error @ crate::native_actions::NativeError::InvalidStored { .. }
+                | error @ crate::native_actions::NativeError::Conflict
+                | error @ crate::native_actions::NativeError::Changed
+                | error @ crate::native_actions::NativeError::Store(_)
+                | error @ crate::native_actions::NativeError::Json(_)
+                | error @ crate::native_actions::NativeError::Sql(_) => refusal(error.to_string()),
             })?;
         }
         let ready = workspace_agent(&store, &intent.agent_id).await?;
@@ -1075,9 +1048,10 @@ async fn workspace_with_vm_action(
         } => Err(WorkerError::PreparationAwaitsAgent(
             WORKSPACE_PENDING_REASON.into(),
         )),
-        _ => Err(WorkerError::PreparationPending(
-            WORKSPACE_PENDING_REASON.into(),
-        )),
+        crate::workspace_ready::WorkspaceDecision::Provision(_)
+        | crate::workspace_ready::WorkspaceDecision::Defer { .. } => Err(
+            WorkerError::PreparationPending(WORKSPACE_PENDING_REASON.into()),
+        ),
     }
 }
 
@@ -1237,7 +1211,9 @@ async fn prepare_native_thread_for_transfer_owner(
         }),
         thread::Outcome::Refuse(reason) => Err(refusal(format!("thread-preparation/{reason:?}"))),
         thread::Outcome::Hold(reason) => Err(refusal(format!("thread-preparation/{reason:?}"))),
-        _ => Err(refusal("native-thread/start-required".into())),
+        thread::Outcome::Ready(_) | thread::Outcome::Resume(_) => {
+            Err(refusal("native-thread/start-required".into()))
+        }
     }
 }
 
@@ -1277,7 +1253,9 @@ pub(crate) async fn prepare_review_thread(
         thread::Outcome::Hold(reason) => {
             return Err(refusal(format!("thread-preparation/{reason:?}")));
         }
-        _ => return Err(refusal("native-review/thread-start-required".into())),
+        thread::Outcome::Ready(_) | thread::Outcome::Resume(_) => {
+            return Err(refusal("native-review/thread-start-required".into()));
+        }
     };
     for artifact in &attempt.artifacts {
         let thread::ArtifactIntent::RememberRole { version, text } = artifact;
@@ -1692,7 +1670,9 @@ pub(crate) async fn prepare_safety_retry(
         thread::Outcome::Hold(reason) => {
             return Err(refusal(format!("thread-preparation/{reason:?}")));
         }
-        _ => return Err(refusal("safety-retry/source-thread-required".into())),
+        thread::Outcome::Ready(_) | thread::Outcome::Start(_) => {
+            return Err(refusal("safety-retry/source-thread-required".into()));
+        }
     };
     let program = daybreak_program(resources, &snapshot)?;
     let mut turn_params = native_turn_params(
@@ -2360,8 +2340,13 @@ mod daybreak_tests {
     #[test]
     fn disabled_daybreak_uses_standard_for_fallback_model_without_catalog() {
         assert_eq!(
-            resolve_daybreak_program(&json!({}), Some("fallback-model"), false)
-                .expect("disabled Daybreak resolves to standard"),
+            resolve_daybreak_program(
+                &studio_runtime_schema::model_catalog::ModelCatalog::parse(json!({"data":[]}))
+                    .expect("empty catalog"),
+                Some("fallback-model"),
+                false
+            )
+            .expect("disabled Daybreak resolves to standard"),
             "standard"
         );
     }
@@ -2374,8 +2359,12 @@ mod daybreak_tests {
         ]});
         for (enabled, expected) in [(false, "standard"), (true, "daybreakRed")] {
             let mut snapshot = action_snapshot(enabled);
-            let program =
-                resolve_daybreak_program(&catalog, snapshot.settings.model.as_deref(), enabled);
+            let program = resolve_daybreak_program(
+                &studio_runtime_schema::model_catalog::ModelCatalog::parse(catalog.clone())
+                    .expect("fixture catalog"),
+                snapshot.settings.model.as_deref(),
+                enabled,
+            );
             assert!(
                 program.is_ok(),
                 "fallback model Daybreak resolution must succeed"
@@ -2761,7 +2750,7 @@ mod team_progress_delivery_tests {
                         );
                         Some(text.as_str())
                     }
-                    _ => None,
+                    turn::ProviderInput::LocalImage { .. } => None,
                 })
                 .collect();
             assert!(

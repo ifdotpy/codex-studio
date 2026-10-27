@@ -4,13 +4,16 @@ import type { SignInForward } from "../../desktop";
 import { nativeSignInMethods } from "../../native/signInProtocol";
 
 type Preparation = Readonly<{ id: string; requestId: string }>;
-type Approval = { openUrl?: string | null; forward?: SignInForward | null };
+type Approval = {
+  openUrl?: string | null | undefined;
+  forward?: SignInForward | null | undefined;
+};
 
 /** Capture native permission before the approval request can outlive the click. */
 export async function approveSignInPage<T extends Approval>(options: {
   url: string;
   requestId: string;
-  owner?: string;
+  owner?: string | undefined;
   approve(): Promise<T>;
   onOpenError(error: unknown): void;
 }): Promise<T> {

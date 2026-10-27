@@ -48,9 +48,11 @@ test("Claude failure causes at 320 and 1200 pixels", async ({
         name: "claude-failure-fixture",
         resolveId(id) {
           if (id === "virtual:claude-failure") return "\0" + id;
+          return null;
         },
         load(id) {
           if (id === "\0virtual:claude-failure") return harness;
+          return null;
         },
       },
     ],

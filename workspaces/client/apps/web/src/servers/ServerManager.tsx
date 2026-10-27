@@ -1,4 +1,5 @@
 import { randomUUID } from "../uuid";
+import { ProviderKind } from "../generated/providerKind.ts";
 import { serverRows, relativeSeen } from "./serverRows";
 import { localDateTime } from "../local-time";
 import { ActionButton, SettingsSection } from "../components/ui/primitives";
@@ -128,7 +129,7 @@ export default function ServerManager({
               const summary = navigation[server.id];
               const accounts = accountsByServer[server.id] || [];
               const codexCount = accounts.filter(
-                (account) => account.provider === "codex",
+                (account) => account.provider === ProviderKind.Codex,
               ).length;
               const claudeCount = accounts.length - codexCount;
               const state =

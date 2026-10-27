@@ -61,9 +61,9 @@ export default function ProjectServerCards({
   connectionRef.current = connection;
   const [fetched, setFetched] = useState<{
     key: string;
-    system?: string;
-    hasStudioVm?: boolean;
-    nativeLayr?: ProjectServerChoice["nativeLayr"];
+    system?: string | undefined;
+    hasStudioVm?: boolean | undefined;
+    nativeLayr?: ProjectServerChoice["nativeLayr"] | undefined;
   } | null>(null);
   const system =
     server?.system ??
@@ -160,7 +160,7 @@ export default function ProjectServerCards({
                 <Button
                   variant="subtle"
                   size="xs"
-                  disabled={server.disabled}
+                  disabled={!!server.disabled}
                   onClick={() => onAdd(server.id)}
                 >
                   + Add folder on this server

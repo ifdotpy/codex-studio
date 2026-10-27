@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use futures_util::FutureExt;
+use studio_runtime_schema::studio_errors::EffectCertainty;
 use studio_runtime_services::federation_limits::FEDERATION_PATHS;
 use subtle::ConstantTimeEq;
 
@@ -338,6 +339,48 @@ fn has_operation(method: Option<&str>, path: &str) -> bool {
     })
 }
 
+pub(crate) fn diagnostic_route(state: &HttpState, request: &Request<Body>) -> String {
+    diagnostic_route_parts(
+        state,
+        request.method().as_str(),
+        request.uri().path(),
+        request
+            .extensions()
+            .get::<MatchedPath>()
+            .map(MatchedPath::as_str),
+    )
+}
+
+pub(crate) fn diagnostic_route_parts(
+    state: &HttpState,
+    method: &str,
+    path: &str,
+    matched_template: Option<&str>,
+) -> String {
+    matched_template
+        .and_then(|template| {
+            state
+                .validators
+                .match_template(method, template)
+                .map(|operation| operation.key)
+        })
+        .or_else(|| {
+            crate::schema::operations()
+                .ok()
+                .and_then(|operations| {
+                    crate::schema::matching_template(
+                        operations.iter().map(|(operation_method, template)| {
+                            (operation_method.as_str(), template.as_str())
+                        }),
+                        Some(method),
+                        path,
+                    )
+                })
+                .map(|template| format!("{method} {template}"))
+        })
+        .unwrap_or_else(|| "unmatched route".to_owned())
+}
+
 pub(crate) async fn response_safety(
     State(state): State<HttpState>,
     request: Request<Body>,
@@ -351,28 +394,7 @@ pub(crate) async fn response_safety(
         .extensions()
         .get::<MatchedPath>()
         .map(MatchedPath::as_str);
-    let route = matched_template
-        .and_then(|template| {
-            state
-                .validators
-                .match_template(&method, template)
-                .map(|operation| operation.key)
-        })
-        .or_else(|| {
-            crate::schema::operations()
-                .ok()
-                .and_then(|operations| {
-                    crate::schema::matching_template(
-                        operations.iter().map(|(operation_method, template)| {
-                            (operation_method.as_str(), template.as_str())
-                        }),
-                        Some(&method),
-                        &path,
-                    )
-                })
-                .map(|template| format!("{method} {template}"))
-        })
-        .unwrap_or_else(|| "unmatched route".to_owned());
+    let route = diagnostic_route(&state, &request);
     let request_id = request
         .headers()
         .get("x-studio-request-id")
@@ -430,6 +452,24 @@ pub(crate) async fn response_safety(
             .unwrap_or(InternalErrorKind::Unclassified);
         log_internal_error(&route, request_id.as_deref(), cause);
     }
+    if response
+        .extensions()
+        .get::<crate::mutation_tasks::IncidentCaptureAttempted>()
+        .is_none()
+    {
+        let diagnostic = http_failure(
+            &response,
+            &route,
+            request_id.as_deref(),
+            if method == "GET" || method == "HEAD" {
+                EffectCertainty::ReadOnly
+            } else {
+                EffectCertainty::Unknown
+            },
+            fallback_cause,
+        );
+        capture_http_failure(state.store.as_deref(), diagnostic).await;
+    }
     if etag_route
         && response.status() == StatusCode::OK
         && response
@@ -449,6 +489,14 @@ pub(crate) async fn response_safety(
                 );
                 let response =
                     error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+                let diagnostic = http_failure(
+                    &response,
+                    &route,
+                    request_id.as_deref(),
+                    EffectCertainty::ReadOnly,
+                    Some(InternalErrorKind::ResponseBodyRead),
+                );
+                capture_http_failure(state.store.as_deref(), diagnostic).await;
                 return if api {
                     with_api_headers(response, response_request_id.as_ref())
                 } else {
@@ -478,6 +526,106 @@ pub(crate) async fn response_safety(
         return response;
     }
     response
+}
+
+/// Extract owned evidence before awaiting the store; response bodies need not be shared across tasks.
+pub(crate) fn http_failure(
+    response: &Response,
+    route: &str,
+    request_id: Option<&str>,
+    certainty: EffectCertainty,
+    fallback: Option<InternalErrorKind>,
+) -> Option<studio_runtime_schema::studio_errors::StudioError> {
+    use studio_runtime_schema::studio_errors::{
+        Cause, Context, Diagnostics, Kind, StudioError, Target,
+    };
+    let cause = response
+        .extensions()
+        .get::<InternalErrorCause>()
+        .map(|cause| cause.0)
+        .or(fallback);
+    if response.status() != StatusCode::INTERNAL_SERVER_ERROR
+        && !(response.status() == StatusCode::SERVICE_UNAVAILABLE && cause.is_some())
+    {
+        return None;
+    }
+    let class = cause.unwrap_or(InternalErrorKind::Unclassified);
+    let causes = response
+        .extensions()
+        .get::<crate::error::DiagnosticCauses>()
+        .map(|causes| causes.0.clone())
+        .unwrap_or_else(|| vec![Cause::Runtime { class }]);
+    let diagnostics = Diagnostics {
+        context: Context::Http {
+            route: route.into(),
+            request_id: request_id.map(str::to_owned),
+            status: response.status().as_u16(),
+            class,
+        },
+        certainty: response
+            .extensions()
+            .get::<EffectCertainty>()
+            .copied()
+            .unwrap_or(certainty),
+        causes,
+    };
+    let at = match studio_runtime_services::event_write::unix_time() {
+        Ok(at) => at,
+        Err(_) => {
+            operator_incident(&diagnostics);
+            return None;
+        }
+    };
+    let identity = match request_id {
+        Some(id) => {
+            studio_runtime_store::sha256_hex(format!("{}:{route}{id}", route.len()).as_bytes())
+        }
+        None => uuid::Uuid::new_v4().to_string(),
+    };
+    Some(StudioError {
+        id: format!("http:{identity}"),
+        kind: Kind::HttpFailure,
+        reason: Kind::HttpFailure.reason().into(),
+        target: Target::Details,
+        detail: class.log_class().into(),
+        subject: route.into(),
+        at,
+        monitor_id: None,
+        event_id: None,
+        rule_id: None,
+        count: None,
+        first_at: None,
+        diagnostics,
+    })
+}
+
+/// A failed diagnostic write only reports safe operator evidence; it cannot recursively capture.
+pub(crate) async fn capture_http_failure(
+    store: Option<&studio_runtime_store::RuntimeStore>,
+    incident: Option<studio_runtime_schema::studio_errors::StudioError>,
+) {
+    let Some(incident) = incident else {
+        return;
+    };
+    let diagnostics = incident.diagnostics.clone();
+    match store {
+        Some(store) => {
+            if studio_runtime_services::studio_errors::record_incident(store, incident)
+                .await
+                .is_err()
+            {
+                operator_incident(&diagnostics);
+            }
+        }
+        None => operator_incident(&diagnostics),
+    }
+}
+
+fn operator_incident(diagnostics: &studio_runtime_schema::studio_errors::Diagnostics) {
+    match serde_json::to_string(diagnostics) {
+        Ok(encoded) => eprintln!("ERROR app diagnostic could not be stored: {encoded}"),
+        Err(_) => eprintln!("ERROR app diagnostic could not be stored or serialized"),
+    }
 }
 
 pub(crate) fn safe_request_id(value: &str) -> bool {
@@ -543,7 +691,7 @@ mod response_safety_tests {
             &mut output,
             "POST /api/agents",
             Some("request-123"),
-            crate::error::InternalErrorKind::from_store_error(&error),
+            crate::error::store_error_kind(&error),
         )
         .expect("diagnostic log writes");
         let output = String::from_utf8(output).expect("log is UTF-8");

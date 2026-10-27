@@ -109,6 +109,8 @@ window.EventSource = class extends NativeEventSource {
 };
 window.reloadCalls = [];
 const scheme = new URLSearchParams(location.search).get("scheme");
+if (scheme !== null && scheme !== "light" && scheme !== "dark")
+  throw new Error("Invalid fixture color scheme");
 
 function Fixture() {
   const [multi] = useState(location.search.includes("multi"));
@@ -188,11 +190,9 @@ function Fixture() {
   return (
     <MantineProvider
       theme={theme}
-      forceColorScheme={
-        (scheme || undefined) as React.ComponentProps<
-          typeof MantineProvider
-        >["forceColorScheme"]
-      }
+      {...(scheme === "light" || scheme === "dark"
+        ? { forceColorScheme: scheme }
+        : {})}
     >
       <div
         style={

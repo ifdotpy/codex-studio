@@ -1,4 +1,5 @@
 import { randomUUID } from "../../uuid";
+import { ProviderKind, providerLabel } from "../../generated/providerKind.ts";
 import { clearSettingsRequest, settingsRequestId } from "../settingsRequestId";
 import {
   isModelWhitelisted,
@@ -30,8 +31,9 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { ApiError, errorText, type PostBody } from "../../api";
-import { busy, type Agent, type Json, type JsonValue } from "../../types";
+import { ApiError, errorText, type PostBody, type PostResult } from "../../api";
+import { busy, type Agent, type JsonValue } from "../../types";
+import { TransferStatus } from "../../generated/api";
 import {
   isDaybreakAlias,
   useModelCatalogReader,
@@ -128,9 +130,7 @@ type SettingsProps = {
 };
 const accountOf = (agent: Pick<Agent, "accountKey">) =>
   agent.accountKey || "default";
-// Codex accounts carry no provider field.
-const providerOf = (account?: Pick<Account, "provider">) =>
-  account ? account.provider || "codex" : undefined;
+const providerOf = (account?: Pick<Account, "provider">) => account?.provider;
 const queuedFor = (agent: SettingsAgent) =>
   agent.pendingSettingsAccountKey &&
   agent.pendingSettingsAccountKey !== accountOf(agent)
@@ -191,33 +191,30 @@ const isJsonValue = (value: unknown): value is JsonValue => {
   if (Array.isArray(value)) return value.every(isJsonValue);
   return isRecord(value) && Object.values(value).every(isJsonValue);
 };
-const jsonObject = (value: unknown): Json | null => {
-  if (!isRecord(value)) return null;
-  const result: Json = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (!isJsonValue(item)) return null;
-    result[key] = item;
-  }
-  return result;
-};
-const confirmedTransfer = (
-  value: unknown,
+type TransferResponse = PostResult<"/api/agents/account-transfer">;
+export const confirmedTransfer = (
+  operation: TransferResponse,
   requestId: string,
   leadId: string,
   target: string,
-  scope: "team" | "subagents",
-): Json => {
-  const operation = jsonObject(value);
-  const receipt = jsonObject(jsonObject(operation?.requests)?.[requestId]);
+  scope: TransferResponse["scope"],
+): TransferResponse => {
+  // HTTP payloads still need runtime checks; generated types do not validate ingress.
+  if (!isRecord(operation) || !isJsonValue(operation))
+    throw new Error("The server did not confirm this account transfer.");
+  const receipt = isRecord(operation.requests)
+    ? operation.requests[requestId]
+    : undefined;
   if (
-    !operation ||
     typeof operation.id !== "string" ||
     operation.leadId !== leadId ||
     operation.targetAccountKey !== target ||
     operation.scope !== scope ||
-    !["pending", "completed", "cancelled"].includes(String(operation.status)) ||
+    !Object.values(TransferStatus).some(
+      (status) => status === operation.status,
+    ) ||
     (operation.id !== requestId &&
-      (!receipt ||
+      (!isRecord(receipt) ||
         receipt.leadId !== leadId ||
         receipt.targetAccountKey !== target ||
         receipt.scope !== scope))
@@ -559,7 +556,7 @@ function ScopedExecutionSettings({
     baseline: string | null;
   } | null>(null);
   const [transfer, setTransfer] = useState<{
-    value: Json;
+    value: TransferResponse;
     baseline: string;
   } | null>(null);
   const [retryTarget, setRetryTarget] = useState<string | null>(null);
@@ -617,22 +614,22 @@ function ScopedExecutionSettings({
     infoFor(catalog, current.model || agent.model || "")?.provider ||
     providerOf(activeAccount) ||
     agent.provider ||
-    "codex";
+    "";
   // The main agent's provider: "Same as main agent" exists only on its tab.
   const leadProvider =
     providerOf(accounts.find((account) => account.id === accountOf(agent))) ||
     agent.provider ||
-    "codex";
+    "";
   const [browsedProvider, setBrowsedProvider] = useState<string | null>(null);
   const pickerProvider =
     role === "review"
-      ? "codex"
+      ? ProviderKind.Codex
       : browsedProvider ||
         (effectiveAccount ? providerOf(activeAccount) : automaticProvider) ||
-        "codex";
+        "";
   const pickerProviders = [
-    ...new Set(connectedAccounts.map((account) => account.provider || "codex")),
-  ].filter((provider) => role !== "review" || provider === "codex");
+    ...new Set(connectedAccounts.map((account) => account.provider)),
+  ].filter((provider) => role !== "review" || provider === ProviderKind.Codex);
   const chooseAccount = (key: string | null) => {
     if (teamDefaults) void changeAccount(key);
     else if (key) onAccountChange?.(key);
@@ -645,7 +642,7 @@ function ScopedExecutionSettings({
     role === "worker" &&
     teamDefaults &&
     !!effectiveAccount &&
-    pickerProvider !== (activeAccount?.provider || "codex");
+    pickerProvider !== (activeAccount?.provider || "");
   const allWorkerModels = useWorkerModels(
     accountOf(agent),
     crossProvider && (opened || settingsRow || presentation === "panel"),
@@ -730,7 +727,7 @@ function ScopedExecutionSettings({
     daybreakEnabled !== !!agent.daybreakEnabled;
   const modeLabel = daybreakEnabled ? "Daybreak" : "Standard";
   const modelOptions = toModelOptions(models, {
-    provider: selectedProvider || "codex",
+    provider: selectedProvider || "",
     disabledReason: (row) =>
       supportsMode(row)
         ? undefined
@@ -742,7 +739,7 @@ function ScopedExecutionSettings({
     modelOptions.unshift({
       value: DEFAULT,
       label: `Same as main agent (${modelDisplayName(leadInfo, leadModel)})`,
-      provider: leadProvider || "codex",
+      provider: leadProvider || "",
       badges: [],
       description: leadInfo?.description || undefined,
       disabledReason: supportsMode(leadInfo)
@@ -754,7 +751,7 @@ function ScopedExecutionSettings({
     modelOptions.unshift({
       value: current.model || DEFAULT,
       label: modelDisplayName(selectedModel),
-      provider: selectedProvider || "codex",
+      provider: selectedProvider || "",
       badges: [],
       disabledReason: "Unavailable on this account.",
     });
@@ -770,7 +767,7 @@ function ScopedExecutionSettings({
     {
       value: DEFAULT,
       label: "Same as caller",
-      provider: "codex",
+      provider: ProviderKind.Codex,
       badges: [],
       description: "Use the caller model and reasoning level.",
     },
@@ -780,7 +777,7 @@ function ScopedExecutionSettings({
     reviewOptions.push({
       value: reviewCurrent.model,
       label: modelDisplayName(reviewCurrent.model),
-      provider: "codex",
+      provider: ProviderKind.Codex,
       badges: [],
       disabledReason: "Unavailable for review.",
     });
@@ -1070,7 +1067,7 @@ function ScopedExecutionSettings({
       `${modelDisplayName(wanted)} is not available on ${setupAccountName(accounts.find((account) => account.id === stored.account_key))}. Using ${modelDisplayName(replacement)}, the account default.`,
     );
   });
-  const storedTransfer = jsonObject(agent.accountTransfer);
+  const storedTransfer = agent.accountTransfer;
   const snapshotTransfer =
     storedTransfer &&
     (teamDefaults
@@ -1130,7 +1127,11 @@ function ScopedExecutionSettings({
     }
   };
   const change = async (patch: Partial<SettingsValue>) => {
-    if (disabled) return;
+    if (
+      disabled ||
+      ("daybreak_enabled" in patch && selectedProvider !== ProviderKind.Codex)
+    )
+      return;
     const next = { ...current, ...patch };
     const adjustments: string[] = [];
     if ("daybreak_enabled" in patch && catalogKnown) {
@@ -1265,7 +1266,12 @@ function ScopedExecutionSettings({
     }
   };
   const changeYolo = async (enabled: boolean) => {
-    if (saveLock.current) return;
+    if (
+      saveLock.current ||
+      !agent.isLead ||
+      agent.provider !== ProviderKind.Codex
+    )
+      return;
     saveLock.current = true;
     const previousPending = pendingYolo;
     setSaving(true);
@@ -1370,7 +1376,7 @@ function ScopedExecutionSettings({
               (model.provider ||
                 providerOf(activeAccount) ||
                 agent.provider ||
-                "codex") === pickerProvider)
+                "") === pickerProvider)
           );
         })
   )
@@ -1516,7 +1522,7 @@ function ScopedExecutionSettings({
         }}
         daybreakAvailable={
           !inheritedUnavailable &&
-          selectedProvider !== "claude" &&
+          selectedProvider === ProviderKind.Codex &&
           (daybreakEnabled || supportsMode(info, true))
         }
         daybreak={daybreakEnabled}
@@ -1534,7 +1540,7 @@ function ScopedExecutionSettings({
         !onDraftChange && (
           <p className="notice">
             {crossProvider
-              ? `A model here is for new subagents on any ready ${title(pickerProvider)} account. Choose an account above to use only that one.`
+              ? `A model here is for new subagents on any ready ${providerLabel(pickerProvider)} account. Choose an account above to use only that one.`
               : "For new subagents. Existing subagents keep their account and model."}
           </p>
         )}
@@ -1635,7 +1641,7 @@ function ScopedExecutionSettings({
   const askingNextTurn =
     (!!agent.inFlight || busy.has(agent.status ?? "")) && !fullAccess;
   const permissions =
-    agent.isLead && agent.provider !== "claude" ? (
+    agent.isLead && agent.provider === ProviderKind.Codex ? (
       settingsRow ? (
         <div className="execution-setting">
           <Text size="sm" fw={500}>
@@ -1734,11 +1740,11 @@ function ScopedExecutionSettings({
     infoFor(parentCatalog, summaryModel);
   const summaryProvider =
     summaryRole === "review"
-      ? "codex"
+      ? ProviderKind.Codex
       : summaryInfo?.provider ||
         providerOf(activeAccount) ||
         agent.provider ||
-        "codex";
+        "";
   const summaryEffort =
     (summaryRole === "review"
       ? summaryReview.effort || mainSettings.effort
@@ -1750,7 +1756,7 @@ function ScopedExecutionSettings({
     summaryRole !== "review" &&
     (showAccountSummary ||
       connectedAccounts.filter(
-        (account) => (account.provider || "codex") === summaryProvider,
+        (account) => account.provider === summaryProvider,
       ).length > 1)
       ? setupAccountName(
           accounts.find((account) => account.id === summaryAccount),
@@ -1805,7 +1811,7 @@ function ScopedExecutionSettings({
           ? "Same as caller"
           : displayModel(summaryCatalog, summaryModel),
         !inheritedReview && summaryEffort ? title(summaryEffort) : "",
-        !inheritedReview ? title(summaryProvider) : "",
+        !inheritedReview ? providerLabel(summaryProvider) : "",
         summaryFast ? "Fast" : "",
         summaryRole !== "review"
           ? setupAccountName(
@@ -1845,7 +1851,7 @@ function ScopedExecutionSettings({
   );
   const extras = (
     <div className="settings-group">
-      {selectedProvider !== "claude" && (
+      {selectedProvider === ProviderKind.Codex && (
         <Switch
           label="Daybreak"
           aria-label="Daybreak"

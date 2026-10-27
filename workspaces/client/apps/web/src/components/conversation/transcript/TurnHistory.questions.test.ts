@@ -69,7 +69,7 @@ for (const afterTool of [false, true]) {
       text: "",
       turnId: "turn-1",
     };
-    const history: QuestionHistoryEntry = {
+    const history = {
       id: "request-empty",
       agent: "lead",
       itemId: "empty-question",
@@ -78,7 +78,7 @@ for (const afterTool of [false, true]) {
       questions: [
         { id: "0", question: "Continue with the release?", isSecret: false },
       ],
-    };
+    } satisfies QuestionHistoryEntry;
     const request: components["schemas"]["RequestEntityDto"] = {
       id: history.id,
       agent: history.agent,

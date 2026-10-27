@@ -73,7 +73,7 @@ import type { ServerCommand } from "../servers/navigation";
 import {
   PROVIDER_KINDS,
   PROVIDER_LABELS,
-  type ProviderKind,
+  ProviderKind,
 } from "../generated/providerKind.ts";
 import {
   closeMenuFromTriggerOnEscape,
@@ -591,7 +591,7 @@ export function AccountTransferStatus({
             <Button
               size="compact-xs"
               variant="subtle"
-              disabled={pending}
+              disabled={!!pending}
               onClick={() => onAction("retry")}
             >
               Retry
@@ -698,7 +698,7 @@ export function AccountTransferConfirmation({
         Active turns move immediately and continue on the destination. Same
         provider subagents move too; other providers stay on their accounts.
       </p>
-      {target && sourceProvider !== (target.provider || "codex") && (
+      {target && sourceProvider !== target.provider && (
         <p>The destination model uses the saved chat context.</p>
       )}
       <p>Applies to this chat only.</p>
@@ -905,7 +905,8 @@ export default function Accounts({
       command.operation === "configure-profile"
     ) {
       const account = accountForExternalCommand(state.data.accounts, command);
-      if (account?.provider === "claude") setClaudeProfileChoice(account);
+      if (account?.provider === ProviderKind.Claude)
+        setClaudeProfileChoice(account);
       else if (
         matchingAccountsForExternalCommand(state.data.accounts, command)
           .length > 1
@@ -936,8 +937,8 @@ export default function Accounts({
           setError("This account is no longer saved on this server.");
         } else if (account && (!command.forceAdd || command.accountKey)) {
           const signIn: Record<ProviderKind, (account: Account) => void> = {
-            codex: setCodexLogin,
-            claude: setClaudeLogin,
+            [ProviderKind.Codex]: setCodexLogin,
+            [ProviderKind.Claude]: setClaudeLogin,
           };
           signIn[account.provider](account);
         } else {
@@ -992,7 +993,7 @@ export default function Accounts({
       onModalOpenChange?.(true);
       setTransferChoice({
         target: account,
-        sourceProvider: selected?.provider || owner.provider || "codex",
+        sourceProvider: selected?.provider || owner.provider || "",
         agentId: owner.id,
         requestId: randomUUID(),
         extend: !!extendTransfer,
@@ -1298,7 +1299,7 @@ export default function Accounts({
                                       Set application default
                                     </Menu.Item>
                                   )}
-                                  {account.provider === "claude" && (
+                                  {account.provider === ProviderKind.Claude && (
                                     <>
                                       <Menu.Item
                                         onClick={() => setClaudeLogin(account)}
@@ -1307,7 +1308,7 @@ export default function Accounts({
                                       </Menu.Item>
                                     </>
                                   )}
-                                  {account.provider !== "claude" &&
+                                  {account.provider !== ProviderKind.Claude &&
                                     account.accountId && (
                                       <Menu.Item
                                         onClick={() => setCodexLogin(account)}
@@ -1438,7 +1439,7 @@ export default function Accounts({
                                       onSaved={state.setData}
                                     />
                                   )}
-                                  {account.provider === "claude" && (
+                                  {account.provider === ProviderKind.Claude && (
                                     <ClaudeProfile
                                       account={account}
                                       onSaved={state.setData}
@@ -1576,7 +1577,7 @@ export default function Accounts({
       <AccountTransferConfirmation
         opened={!!transferChoice}
         target={transferChoice?.target || null}
-        sourceProvider={transferChoice?.sourceProvider || "codex"}
+        sourceProvider={transferChoice?.sourceProvider || ""}
         extend={transferChoice?.extend}
         onClose={() => {
           setTransferChoice(null);

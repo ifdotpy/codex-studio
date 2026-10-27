@@ -17,6 +17,7 @@ import type {
   WorkspaceEntityDto,
 } from "../generated/api";
 import type { components } from "../generated/api";
+import { RequestStatus } from "../generated/api";
 type AccountRateLimitsDto = components["schemas"]["AccountRateLimitsDto"];
 type StudioError = components["schemas"]["StudioError"];
 export type UiPreferencesDto = components["schemas"]["UiPreferencesDto"];
@@ -242,7 +243,10 @@ function projectSnapshotCollections(
   const requests =
     prior && !changed.has("request")
       ? prior.runtime.requests
-      : entityValues(values, "request");
+      : entityValues(values, "request").filter(
+          (request) =>
+            request.status == null || request.status === RequestStatus.pending,
+        );
   const rules =
     prior && !changed.has("rule")
       ? prior.runtime.rules

@@ -53,7 +53,7 @@ fn lead(connection: &Connection) -> AgentRecord {
         .expect("lead exists")
 }
 
-fn stored_work(connection: &Connection, id: &str) -> Value {
+fn stored_work(connection: &Connection, id: &str) -> studio_runtime_store::WorkItemRecord {
     WorkItemsRepository::work_record(connection, id)
         .expect("work lookup succeeds")
         .expect("work exists")
@@ -77,9 +77,9 @@ fn spawn_assignment_is_atomic_and_same_owner_replay_is_read_only() {
     tx.commit().expect("assignment commits");
 
     let saved = stored_work(&connection, "task");
-    assert_eq!(saved["owner"], "child");
-    assert_eq!(saved["version"], 3);
-    assert_eq!(saved["updated"], 12.5);
+    assert_eq!(saved.owner(), Some("child"));
+    assert_eq!(saved.value()["version"], 3);
+    assert_eq!(saved.value()["updated"], 12.5);
 
     let tx = connection.transaction().expect("replay transaction starts");
     let after_lost_response = assign_in_transaction(&tx, "task", "child", &actor, 99.0)
@@ -87,8 +87,8 @@ fn spawn_assignment_is_atomic_and_same_owner_replay_is_read_only() {
     assert!(!after_lost_response.changed);
     tx.commit().expect("read-only replay commits");
     let saved = stored_work(&connection, "task");
-    assert_eq!(saved["version"], 3);
-    assert_eq!(saved["updated"], 12.5);
+    assert_eq!(saved.value()["version"], 3);
+    assert_eq!(saved.value()["updated"], 12.5);
 }
 
 #[test]
@@ -102,8 +102,8 @@ fn spawn_assignment_rollback_leaves_the_work_item_unowned() {
     tx.rollback().expect("pre-commit failure rolls back");
 
     let saved = stored_work(&connection, "task");
-    assert!(saved["owner"].is_null());
-    assert_eq!(saved["version"], 2);
+    assert!(saved.owner().is_none());
+    assert_eq!(saved.value()["version"], 2);
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn spawn_assignment_rechecks_the_active_lead_and_same_team_child() {
     let tx = connection.transaction().expect("transaction starts");
     assert!(assign_in_transaction(&tx, "task", "child", &foreign, 12.5).is_err());
     tx.rollback().expect("foreign actor assignment rolls back");
-    assert!(stored_work(&connection, "task")["owner"].is_null());
+    assert!(stored_work(&connection, "task").owner().is_none());
 }
 
 #[test]
@@ -194,7 +194,7 @@ fn spawn_creator_failpoints_before_and_after_assignment_roll_back_child_and_work
             "no orphan child"
         );
         assert_eq!(
-            stored_work(&connection, "task"),
+            stored_work(&connection, "task").into_value(),
             work,
             "work row remains unchanged"
         );

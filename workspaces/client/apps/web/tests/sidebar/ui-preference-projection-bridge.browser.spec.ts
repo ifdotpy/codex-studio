@@ -64,7 +64,7 @@ for (const entry of ["/?studio-server=local", "/"] as const) {
       expect(
         requests.streams.filter((url) => {
           const resources = subscribedResources(url);
-          return resources.length === 1 && resources[0].kind === "state";
+          return resources.length === 1 && resources[0]?.kind === "state";
         }),
       ).toHaveLength(0);
     } finally {

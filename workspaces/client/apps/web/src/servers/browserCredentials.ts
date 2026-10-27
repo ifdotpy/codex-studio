@@ -1,5 +1,6 @@
 import { randomUUID } from "../uuid";
 import type { ServerCredentialAdapter, PairAttemptIdentity } from "./transport";
+import { isServerMethod } from "../../../desktop/api.ts";
 import {
   isRemoteServerView,
   serverParentOrigin,
@@ -141,7 +142,7 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
     }
     const request = new Request(origin + "/api/multi-server/v1/pair", {
       method: "POST",
-      body: draft.body,
+      ...(draft.body === undefined ? {} : { body: draft.body }),
       headers: { "Content-Type": "application/json" },
       signal: AbortSignal.timeout(15000),
     });
@@ -185,7 +186,7 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
     if (
       url.origin !== server.origin ||
       !url.pathname.startsWith("/api/") ||
-      !["GET", "POST", "HEAD"].includes(request.method)
+      !isServerMethod(request.method)
     )
       throw new Error("The request does not belong to this server.");
     if (isRemoteServerView && serverViewId === server.id) {

@@ -5,7 +5,9 @@ declare global {
   var syncTestCredentials: typeof credentials;
 }
 globalThis.syncTestCredentials = credentials;
-app.setPath("userData", process.argv[2]);
+const profile = process.argv[2];
+if (profile === undefined) throw new Error("Supply the fixture profile.");
+app.setPath("userData", profile);
 app.whenReady().then(() => {
   const window = new BrowserWindow({ show: false });
   void window.loadURL("about:blank");

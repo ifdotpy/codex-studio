@@ -1,4 +1,5 @@
 //! Native transport fixtures exercise the real HTTP action and receipt boundary.
+
 #![allow(clippy::unwrap_used)]
 use axum::{
     body::{Body, to_bytes},
@@ -6,8 +7,10 @@ use axum::{
     http::Request,
 };
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use studio_runtime_http::{HttpState, router};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::account_session_runtime::{
     AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
     RequestCertainty, SessionReceipt,
@@ -21,6 +24,7 @@ struct Port {
     behavior: &'static str,
     calls: Mutex<Vec<String>>,
     interrupts: Mutex<usize>,
+    pages: Mutex<VecDeque<(Option<&'static str>, Value)>>,
 }
 impl AccountSessionPort for Port {
     fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
@@ -107,6 +111,36 @@ impl AccountSessionPort for Port {
                     json!({"status":"backgrounded"})
                 }
                 "thread/backgroundTerminals/list" => {
+                    if let Some((cursor, page)) = self.pages.lock().unwrap().pop_front() {
+                        assert_eq!(request.params["cursor"].as_str(), cursor);
+                        return Ok(SessionReceipt {
+                            outcome: {
+                                let ticket = studio_runtime_providers::RequestTicket {
+                                    generation: request
+                                        .expected_scope
+                                        .as_ref()
+                                        .map_or(1, |scope| scope.generation),
+                                    id: studio_runtime_providers::RequestId::String(
+                                        request.operation.clone(),
+                                    ),
+                                    method: request.method,
+                                };
+                                match certainty {
+                                    RequestCertainty::Written => ReceiptOutcome::Written {
+                                        ticket,
+                                        response: ProviderResponse::Reply(page),
+                                    },
+                                    RequestCertainty::Unknown => ReceiptOutcome::Unknown { ticket },
+                                    RequestCertainty::NotSent => {
+                                        ReceiptOutcome::NoLiveAccountWorker
+                                    }
+                                }
+                            },
+                            scope: self.scope.clone(),
+                            operation: request.operation,
+                            replayed: false,
+                        });
+                    }
                     if self.behavior == "owner_changed" {
                         self.store.transaction_with(|tx| {
                             tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',2) WHERE id='owner'",[])?;
@@ -146,6 +180,28 @@ impl AccountSessionPort for Port {
                 _ => panic!("unexpected native method: {method}"),
             };
             Ok(SessionReceipt {
+                outcome: {
+                    let ticket = studio_runtime_providers::RequestTicket {
+                        generation: request
+                            .expected_scope
+                            .as_ref()
+                            .map_or(1, |scope| scope.generation),
+                        id: studio_runtime_providers::RequestId::String(request.operation.clone()),
+                        method: request.method,
+                    };
+                    match certainty {
+                        RequestCertainty::Written => ReceiptOutcome::Written {
+                            ticket,
+                            response: if rejected {
+                                ProviderResponse::Rejected(json!({"message":"cannot move yet"}))
+                            } else {
+                                ProviderResponse::Reply(value)
+                            },
+                        },
+                        RequestCertainty::Unknown => ReceiptOutcome::Unknown { ticket },
+                        RequestCertainty::NotSent => ReceiptOutcome::NoLiveAccountWorker,
+                    }
+                },
                 scope: if self.behavior == "claude_held_wrong_receipt" {
                     let mut scope = self.scope.clone();
                     scope.generation += 1;
@@ -154,14 +210,6 @@ impl AccountSessionPort for Port {
                     self.scope.clone()
                 },
                 operation: request.operation,
-                ticket: None,
-                certainty,
-                result: Some(if rejected {
-                    ProviderResponse::Rejected(json!({"message":"cannot move yet"}))
-                } else {
-                    ProviderResponse::Reply(value)
-                }),
-                not_sent_reason: None,
                 replayed: false,
             })
         })
@@ -511,6 +559,7 @@ async fn fixture(behavior: &'static str) -> (tempfile::TempDir, axum::Router, Ar
         behavior,
         calls: Mutex::new(vec![]),
         interrupts: Mutex::new(0),
+        pages: Mutex::new(VecDeque::new()),
     });
     let mut state = HttpState::new(
         "fixture-token".into(),
@@ -678,6 +727,101 @@ async fn held_claude_response_stop_refuses_foreign_or_ineligible_owners_without_
     }
 }
 #[tokio::test]
+async fn process_stop_pagination_requires_valid_cursors_before_certifying_absence() {
+    let terminal = json!({"data":[{"itemId":"command","processId":"42"}]});
+    let mut cases = vec![
+        (
+            "missing",
+            vec![(None, json!({"data":[]}))],
+            "already_finished",
+            "completed",
+        ),
+        (
+            "null",
+            vec![(None, json!({"data":[],"nextCursor":null}))],
+            "already_finished",
+            "completed",
+        ),
+        (
+            "continuation",
+            vec![
+                (None, json!({"data":[],"nextCursor":"next"})),
+                (Some("next"), terminal),
+            ],
+            "stopped",
+            "completed",
+        ),
+        (
+            "repeated",
+            vec![
+                (None, json!({"data":[],"nextCursor":"next"})),
+                (Some("next"), json!({"data":[],"nextCursor":"next"})),
+            ],
+            "uncertain",
+            "uncertain",
+        ),
+    ];
+    for (name, cursor) in [
+        ("number", json!(42)),
+        ("object", json!({"cursor":"next"})),
+        ("empty", json!("")),
+        ("bool", json!(false)),
+        ("array", json!(["next"])),
+    ] {
+        cases.push((
+            name,
+            vec![(None, json!({"data":[],"nextCursor":cursor}))],
+            "uncertain",
+            "uncertain",
+        ));
+    }
+    for (name, pages, expected, phase) in cases {
+        let (_root, app, port) = fixture("success").await;
+        let page_count = pages.len();
+        port.pages.lock().unwrap().extend(pages);
+        let (_, list) = call(&app, "GET", "/api/processes?agent=owner", Value::Null).await;
+        let p = &list["processes"][0];
+        let body = json!({"action":"stop_selected","requestId":"stop","agent":"owner","accountKey":"default","epoch":1,
+            "process":{"key":p["key"],"generation":p["generation"],"agent":"owner","accountKey":"default","epoch":1}});
+        let (status, result) = call(&app, "POST", "/api/processes/action", body.clone()).await;
+        assert_eq!(status, 200, "{name}: {result}");
+        assert_eq!(
+            result["processes"][0]["status"], expected,
+            "{name}: {result}"
+        );
+        assert_eq!(result["status"], phase, "{name}: {result}");
+        let before = port.calls.lock().unwrap().clone();
+        assert_eq!(
+            before
+                .iter()
+                .filter(|m| m.as_str() == "thread/backgroundTerminals/list")
+                .count(),
+            page_count,
+            "{name}: {before:?}"
+        );
+        assert_eq!(
+            before
+                .iter()
+                .filter(|m| m.as_str() == "thread/backgroundTerminals/terminate")
+                .count(),
+            usize::from(expected == "stopped"),
+            "{name}: {before:?}"
+        );
+        let (status, replay) = call(&app, "POST", "/api/processes/action", body).await;
+        assert_eq!(status, 200, "{name}: {replay}");
+        assert_eq!(replay, result, "{name}");
+        assert_eq!(*port.calls.lock().unwrap(), before, "{name}");
+        let (_, receipt) = call(
+            &app,
+            "GET",
+            "/api/processes/action?requestId=stop&agent=owner&accountKey=default&epoch=1",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(receipt, json!({"found":true,"result":result}), "{name}");
+    }
+}
+#[tokio::test]
 async fn exact_process_stop_and_lost_reply_never_repeat_the_native_effect() {
     for (behavior, expected, stops) in [
         ("success", "stopped", 1),
@@ -792,4 +936,123 @@ async fn background_move_requires_the_current_turn_and_one_item() {
         400
     );
     assert!(port.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn process_receipt_cannot_certify_a_missing_result() {
+    let (_root, app, port) = fixture("claude").await;
+    let (_, list) = call(&app, "GET", "/api/processes?agent=owner", Value::Null).await;
+    let body = json!({"action":"background_command","requestId":"move","agent":"owner","accountKey":"default","epoch":1,"responseTarget":list["responseTarget"],"itemId":"toolu-1"});
+    assert_eq!(
+        call(&app, "POST", "/api/processes/action", body.clone())
+            .await
+            .0,
+        200
+    );
+    port.store.transaction_with(|tx| {
+        tx.execute("UPDATE runtime_process_actions SET record=json_set(record,'$.result',null) WHERE id='move'", [])?;
+        Ok::<_, StoreError>(())
+    }).await.unwrap();
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            "/api/processes/action?requestId=move&agent=owner&accountKey=default&epoch=1",
+            Value::Null
+        )
+        .await
+        .0,
+        500
+    );
+    assert_eq!(
+        call(&app, "POST", "/api/processes/action", body).await.0,
+        500
+    );
+    assert_eq!(port.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn process_command_legacy_nulls_keep_exact_replay_signature() {
+    let (_root, app, port) = fixture("claude").await;
+    let (_, list) = call(&app, "GET", "/api/processes?agent=owner", Value::Null).await;
+    let body = json!({"action":"background_command","requestId":"move","agent":"owner","accountKey":"default","epoch":1,"responseTarget":list["responseTarget"],"itemId":"toolu-1","process":null,"processes":[],"includeDescendants":false});
+    let (status, result) = call(&app, "POST", "/api/processes/action", body.clone()).await;
+    assert_eq!(status, 200, "{result}");
+    assert_eq!(
+        call(&app, "POST", "/api/processes/action", body.clone())
+            .await
+            .1,
+        result
+    );
+    let mut changed = body;
+    changed.as_object_mut().unwrap().remove("process");
+    assert_eq!(
+        call(&app, "POST", "/api/processes/action", changed).await.0,
+        400
+    );
+    assert_eq!(port.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn process_identity_numeric_spelling_is_not_normalized_into_authority() {
+    let (_root, app, port) = fixture("success").await;
+    let (_, list) = call(&app, "GET", "/api/processes?agent=owner", Value::Null).await;
+    let p = &list["processes"][0];
+    let body = json!({"action":"stop_selected","requestId":"stop","agent":"owner","accountKey":"default","epoch":1,
+        "process":{"key":p["key"],"generation":p["generation"],"agent":"owner","accountKey":"default","epoch":1.0}});
+    let (status, result) = call(&app, "POST", "/api/processes/action", body.clone()).await;
+    assert_eq!(status, 200, "{result}");
+    assert_eq!(result["status"], "partial");
+    assert_eq!(result["processes"][0]["status"], "stale");
+    assert!(port.calls.lock().unwrap().is_empty());
+    assert_eq!(
+        call(&app, "POST", "/api/processes/action", body).await.1,
+        result
+    );
+}
+
+#[tokio::test]
+async fn process_receipt_and_replay_preserve_retained_result_payload() {
+    for (explicit_null, omit_processes) in [(false, false), (true, false), (false, true)] {
+        let (_root, app, port) = fixture("success").await;
+        let (_, list) = call(&app, "GET", "/api/processes?agent=owner", Value::Null).await;
+        let p = &list["processes"][0];
+        let body = json!({"action":"stop_selected","requestId":"stop","agent":"owner","accountKey":"default","epoch":1,
+            "process":{"key":p["key"],"generation":p["generation"],"agent":"owner","accountKey":"default","epoch":1}});
+        let (status, mut retained) =
+            call(&app, "POST", "/api/processes/action", body.clone()).await;
+        assert_eq!(status, 200, "{retained}");
+        if explicit_null {
+            retained["response"] = Value::Null;
+            retained["processes"][0]["generation"] = Value::Null;
+        } else {
+            retained["processes"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("generation");
+        }
+        retained["legacyExtension"] = json!({"opaque":null,"version":1});
+        retained["processes"][0]["nativeExtension"] = json!([null, "retained"]);
+        if omit_processes {
+            retained.as_object_mut().unwrap().remove("processes");
+        }
+        let stored = retained.clone();
+        port.store.transaction_with(move |tx| {
+            tx.execute("UPDATE runtime_process_actions SET record=json_set(record,'$.result',json(?)) WHERE id='stop'", [stored.to_string()])?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        let before = port.calls.lock().unwrap().clone();
+        let (_, receipt) = call(
+            &app,
+            "GET",
+            "/api/processes/action?requestId=stop&agent=owner&accountKey=default&epoch=1",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(receipt, json!({"found":true,"result":retained}));
+        let (status, replay) = call(&app, "POST", "/api/processes/action", body).await;
+        assert_eq!(status, 200);
+        assert_eq!(replay, retained);
+        assert_eq!(*port.calls.lock().unwrap(), before);
+    }
 }

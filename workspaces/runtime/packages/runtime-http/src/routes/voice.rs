@@ -396,7 +396,22 @@ fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
             studio_runtime_services::monitor_policy::MonitorError::Event(
                 studio_runtime_services::event_write::EventWriteError::RemoteEventsUnavailable,
             ) => ApiError::dependency("cross-server/remote-events"),
-            _ => ApiError::internal(),
+            studio_runtime_services::monitor_policy::MonitorError::InvalidResultReceipt(_)
+            | studio_runtime_services::monitor_policy::MonitorError::InvalidDeliveryIdentity(_)
+            | studio_runtime_services::monitor_policy::MonitorError::InvalidOutputReceipt(_)
+            | studio_runtime_services::monitor_policy::MonitorError::TaskFailed
+            | studio_runtime_services::monitor_policy::MonitorError::InputOutcomeUnknown
+            | studio_runtime_services::monitor_policy::MonitorError::ProviderRequest { .. }
+            | studio_runtime_services::monitor_policy::MonitorError::ConfigurationRejected {
+                ..
+            }
+            | studio_runtime_services::monitor_policy::MonitorError::ConfigurationReceipt {
+                ..
+            }
+            | studio_runtime_services::monitor_policy::MonitorError::Store(_)
+            | studio_runtime_services::monitor_policy::MonitorError::Event(_)
+            | studio_runtime_services::monitor_policy::MonitorError::Rules(_)
+            | studio_runtime_services::monitor_policy::MonitorError::Io(_) => ApiError::internal(),
         },
         E::NotSent => ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -407,7 +422,7 @@ fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
             "voice request outcome is unknown",
         ),
         E::Rejected => ApiError::new(StatusCode::BAD_GATEWAY, "voice provider rejected request"),
-        _ => ApiError::internal(),
+        E::Store(_) | E::Operation => ApiError::internal(),
     }
 }
 
@@ -470,7 +485,11 @@ fn voice_audio_error(error: voice::VoiceAudioError) -> ApiError {
                 StatusCode::BAD_REQUEST,
                 "Voice session or audio identity conflicts with its original content",
             ),
-            _ => ApiError::internal(),
+            voice::policy::VoiceError::InvalidSessionIdentity
+            | voice::policy::VoiceError::InvalidOffer
+            | voice::policy::VoiceError::InvalidStoredSession
+            | voice::policy::VoiceError::ActiveSessionExists
+            | voice::policy::VoiceError::InvalidClock => ApiError::internal(),
         },
         voice::VoiceAudioError::Store(studio_runtime_store::StoreError::InvalidStoredRecord {
             object,

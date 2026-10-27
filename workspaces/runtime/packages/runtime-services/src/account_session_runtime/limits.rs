@@ -5,17 +5,17 @@ use studio_runtime_store::account_state::limits_observation_key as watermark_key
 use studio_runtime_store::{StoreError, SyncDocumentsRepository};
 
 pub(super) enum LimitsWrite {
-    Snapshot(Value),
+    Snapshot(LimitsSnapshot),
     Notification(LimitsUpdate),
     ReadFailure {
         scope: Option<ConnectionScope>,
         before: Value,
-        value: Value,
+        value: LimitsSnapshot,
     },
     Read {
         scope: ConnectionScope,
         before: Value,
-        value: Value,
+        value: LimitsSnapshot,
     },
 }
 
@@ -213,12 +213,11 @@ fn commit(
             if let Some(object) = value.as_object_mut() {
                 object.remove("stale");
             }
-            value
+            LimitsSnapshot::read(account, value)
+                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
         }
     };
-    let value = LimitsSnapshot::read(account, value)
-        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
-        .into_value();
+    let value = value.into_value();
     let identical = old.as_ref() == Some(&value);
     if identical && next_stamp.is_none() {
         return Ok((Some(value), false));

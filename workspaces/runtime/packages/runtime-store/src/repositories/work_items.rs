@@ -197,10 +197,8 @@ impl WorkItemsRepository {
         Ok(Some((id, attempt_id)))
     }
 
-    pub fn work_record(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
-        Ok(Table::<WorkItemRecord>::new(connection)
-            .get(&TaskId::from(id))?
-            .map(|record| record.value().clone()))
+    pub fn work_record(connection: &Connection, id: &str) -> StoreResult<Option<WorkItemRecord>> {
+        Table::<WorkItemRecord>::new(connection).get(&TaskId::from(id))
     }
 
     /// Select only current-team items that depend on the accepted task.
@@ -208,26 +206,25 @@ impl WorkItemsRepository {
         connection: &Connection,
         root_id: &str,
         task_id: &str,
-    ) -> StoreResult<Vec<StoredRecord>> {
+    ) -> StoreResult<Vec<WorkItemRecord>> {
         let mut statement = connection.prepare_cached(
             "SELECT id, record FROM runtime_work \
              WHERE json_extract(record,'$.rootId')=?1 \
              AND EXISTS (SELECT 1 FROM json_each(record,'$.dependencies') AS dependency \
                          WHERE dependency.value=?2) ORDER BY id",
         )?;
-        statement
+        let rows = statement
             .query_map(params![root_id, task_id], |row| {
-                Ok(StoredRecord {
-                    id: row.get(0)?,
-                    record: Some(row.get(1)?),
-                })
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(Into::into)
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(id, raw)| WorkItemRecord::decode(&id, &raw))
+            .collect()
     }
 
     pub fn put_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<bool> {
-        let record = WorkItemRecord::from_value(value.clone())?;
+        let record = WorkItemRecord::checked(value.clone())?;
         if record.id().as_ref() != id {
             return Err(StoreError::InvalidStoredObject {
                 table: WorkItemRecord::TABLE,
@@ -238,7 +235,7 @@ impl WorkItemsRepository {
     }
 
     pub fn update_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
-        let record = WorkItemRecord::from_value(value.clone())?;
+        let record = WorkItemRecord::checked(value.clone())?;
         if record.id().as_ref() != id {
             return Err(StoreError::InvalidStoredObject {
                 table: WorkItemRecord::TABLE,
@@ -342,7 +339,7 @@ impl WorkItemsRepository {
     }
 
     pub fn validate_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
-        let record = WorkItemRecord::from_value(value.clone())?;
+        let record = WorkItemRecord::checked(value.clone())?;
         if record.id().as_ref() != id {
             return Err(StoreError::InvalidStoredObject {
                 table: WorkItemRecord::TABLE,
@@ -384,17 +381,8 @@ impl WorkItemsRepository {
         Ok(())
     }
 
-    pub fn work(connection: &Connection) -> StoreResult<Vec<StoredRecord>> {
-        Table::<WorkItemRecord>::new(connection)
-            .list()?
-            .into_iter()
-            .map(|record| {
-                Ok(StoredRecord {
-                    id: record.id().as_ref().to_owned(),
-                    record: Some(serde_json::to_string(record.value())?),
-                })
-            })
-            .collect::<StoreResult<Vec<_>>>()
+    pub fn work(connection: &Connection) -> StoreResult<Vec<WorkItemRecord>> {
+        Table::<WorkItemRecord>::new(connection).list()
     }
 
     pub fn plan(connection: &Connection, id: &str) -> StoreResult<Option<StoredRecord>> {
@@ -489,7 +477,9 @@ fn optional_text(value: rusqlite::types::ValueRef<'_>) -> (Option<String>, bool)
             Ok(text) => (Some(text.to_owned()), true),
             Err(_) => (None, false),
         },
-        _ => (None, false),
+        rusqlite::types::ValueRef::Integer(_)
+        | rusqlite::types::ValueRef::Real(_)
+        | rusqlite::types::ValueRef::Blob(_) => (None, false),
     }
 }
 
@@ -499,6 +489,44 @@ mod tests {
     use crate::{AgentRecord, StoreError};
     use rusqlite::Connection;
     use serde_json::json;
+
+    #[test]
+    fn typed_work_repository_retains_payload_and_rejects_corrupt_dependents() {
+        // These signatures prevent serialization/reparse adapters from returning.
+        let _: fn(&Connection) -> crate::StoreResult<Vec<crate::WorkItemRecord>> =
+            WorkItemsRepository::work;
+        let _: fn(&Connection, &str) -> crate::StoreResult<Option<crate::WorkItemRecord>> =
+            WorkItemsRepository::work_record;
+        let _: fn(&Connection, &str, &str) -> crate::StoreResult<Vec<crate::WorkItemRecord>> =
+            WorkItemsRepository::dependent_work;
+        let connection = Connection::open_in_memory().expect("database");
+        connection
+            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .expect("table");
+        let raw = json!({"id":"task","rootId":"lead","status":"ready","owner":null,"dependencies":["parent"],"future":{"nested":[null,42]}});
+        WorkItemsRepository::put_work(&connection, "task", &raw).expect("insert");
+        assert_eq!(
+            WorkItemsRepository::work(&connection).expect("list")[0].value(),
+            &raw
+        );
+        assert_eq!(
+            WorkItemsRepository::work_record(&connection, "task")
+                .expect("get")
+                .expect("task")
+                .value(),
+            &raw
+        );
+        assert_eq!(
+            WorkItemsRepository::dependent_work(&connection, "lead", "parent").expect("dependents")
+                [0]
+            .value(),
+            &raw
+        );
+        connection.execute("UPDATE runtime_work SET record=json_set(record,'$.status','future') WHERE id='task'",[]).expect("corrupt status");
+        assert!(WorkItemsRepository::work(&connection).is_err());
+        assert!(WorkItemsRepository::work_record(&connection, "task").is_err());
+        assert!(WorkItemsRepository::dependent_work(&connection, "lead", "parent").is_err());
+    }
 
     #[test]
     fn bootstrapped_tables_are_required_and_empty_reads_succeed() {
@@ -619,7 +647,7 @@ mod tests {
         assert!(
             WorkItemsRepository::work_record(&connection, "review-work")
                 .expect("review item reads")
-                .is_some_and(|record| record["status"] == "review")
+                .is_some_and(|record| record.status() == crate::WorkStatus::Review)
         );
     }
 
@@ -643,8 +671,9 @@ mod tests {
         assert_eq!(
             WorkItemsRepository::work_record(&connection, "work-1")
                 .expect("original reads")
-                .expect("original remains")["title"],
-            "original"
+                .expect("original remains")
+                .title(),
+            Some("original")
         );
     }
 }

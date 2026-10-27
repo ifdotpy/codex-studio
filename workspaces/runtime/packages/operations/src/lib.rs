@@ -447,7 +447,17 @@ pub fn transition(state: &State, event: &Event) -> Decision {
                 }
                 EventKind::Admit { .. } => reject(state, TransitionError::IdentityMismatch),
                 EventKind::ReceiptMissing => reject(state, TransitionError::ConflictingEvidence),
-                _ => reject(state, TransitionError::InvalidTransition),
+                EventKind::ClaimDispatch
+                | EventKind::Cancel
+                | EventKind::ServerRestarted
+                | EventKind::CommittedOperationReceipt
+                | EventKind::AppliedResponse
+                | EventKind::DefinitiveRejection(_)
+                | EventKind::Failure(_)
+                | EventKind::AppliedEvidence(_)
+                | EventKind::NonExecutionEvidence(_) => {
+                    reject(state, TransitionError::InvalidTransition)
+                }
             };
         }
         return match &event.kind {
@@ -486,7 +496,17 @@ pub fn transition(state: &State, event: &Event) -> Decision {
                 Vec::new(),
                 false,
             ),
-            _ => reject(state, TransitionError::OperationMissing),
+            EventKind::ClaimDispatch
+            | EventKind::Cancel
+            | EventKind::ServerRestarted
+            | EventKind::CommittedOperationReceipt
+            | EventKind::AppliedResponse
+            | EventKind::DefinitiveRejection(_)
+            | EventKind::Failure(_)
+            | EventKind::AppliedEvidence(_)
+            | EventKind::NonExecutionEvidence(_) => {
+                reject(state, TransitionError::OperationMissing)
+            }
         };
     };
 

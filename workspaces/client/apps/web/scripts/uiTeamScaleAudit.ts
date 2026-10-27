@@ -635,12 +635,10 @@ export async function mapLimited<T, R>(
   task: (value: T, index: number) => Promise<R>,
 ): Promise<R[]> {
   const results: R[] = Array.from({ length: values.length });
-  let next = 0;
+  const entries = values.entries();
   const lane = async () => {
-    while (next < values.length) {
-      const index = next;
-      next += 1;
-      results[index] = await task(values[index], index);
+    for (const [index, value] of entries) {
+      results[index] = await task(value, index);
     }
   };
   // An early rejected lane must not let teardown delete the team while other

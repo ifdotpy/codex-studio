@@ -11,7 +11,7 @@ const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** Maximum new metadata rows per family since reservation; unit: rows. */
 const MAX_NEW_METADATA_ROWS = 100_000;
-const FAMILIES = [
+const FAMILIES: readonly (readonly [string, string])[] = [
   ["canvas.sqlite3", "runtime_execution_runs"],
   ["canvas.sqlite3", "runtime_account_transfers"],
   ["analytics.sqlite3", "analytics_agents"],
@@ -62,11 +62,11 @@ interface RegistryAccount {
   home?: string;
   claudeOptions?: { configDir?: unknown };
 }
-const fail = (): never => {
+function fail(): never {
   throw new Error(
     "Cannot prove a fresh, excluded Studio canary profile. Keep the existing profile unchanged.",
   );
-};
+}
 function identity(file: string): FileIdentity {
   const s = fs.lstatSync(file, { bigint: true });
   if (s.isSymbolicLink() || s.uid !== BigInt(process.getuid!())) fail();
@@ -183,7 +183,7 @@ function load(file: string, live: string, storage: string): ProfileRecord {
 export function reserveStudioProfile(
   file: string,
   live: string,
-  { storage = OWNERSHIP_DIRECTORY }: { storage?: string } = {},
+  { storage = OWNERSHIP_DIRECTORY }: { storage?: string | undefined } = {},
 ): ProfileRecord {
   recordLocation(file, storage);
   if (fs.existsSync(file)) return load(file, live, storage);
@@ -415,7 +415,7 @@ export function bindStudioProfile(
 export function studioProfile(
   file: string,
   live: string,
-  { storage = OWNERSHIP_DIRECTORY }: { storage?: string } = {},
+  { storage = OWNERSHIP_DIRECTORY }: { storage?: string | undefined } = {},
 ) {
   const r = load(file, live, storage);
   if (r.phase !== "bound") fail();

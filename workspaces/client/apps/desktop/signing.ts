@@ -196,7 +196,7 @@ if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
 ) {
-  if (process.argv.length !== 3)
+  if (process.argv.length !== 3 || process.argv[2] === undefined)
     throw new Error("Supply the application bundle path.");
   signApplication(path.resolve(process.argv[2]));
 }

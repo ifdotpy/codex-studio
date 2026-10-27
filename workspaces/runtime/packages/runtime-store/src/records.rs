@@ -261,14 +261,7 @@ impl JsonRecord for AgentRecord {
     }
 }
 
-stored_string_enum!(WorkStatus {
-    Ready => "ready",
-    Running => "running",
-    Blocked => "blocked",
-    Review => "review",
-    Accepted => "accepted",
-    Cancelled => "cancelled",
-});
+pub use studio_runtime_schema::records::WorkStatus;
 
 record_newtype!(
     TaskRecord,
@@ -342,14 +335,54 @@ record_newtype!(
     key = External,
     query = UsageResumeRecovery
 );
-record_newtype!(
-    WorkItemRecord,
-    TaskId,
-    table = "runtime_work",
-    schema = "PersistedWorkItemRecord",
-    key = PayloadId,
-    query = None
-);
+/// Checked operational fields plus the original extensible record. Retaining
+/// the original JSON preserves omission, nulls and historical extension fields.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkItemRecord {
+    value: Value,
+    fields: WorkItemFields,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+struct WorkItemFields {
+    id: TaskId,
+    status: WorkStatus,
+    // WorkItem.dependencies owns the absent-field default. Present malformed
+    // values still fail deserialization, including null.
+    #[serde(default)]
+    dependencies: Vec<String>,
+    owner: Option<String>,
+    // Omission retains the existing progress timestamp default. Present null
+    // or malformed timestamps cannot become a legitimate epoch-zero value.
+    #[serde(default)]
+    updated: f64,
+}
+
+impl Serialize for WorkItemRecord {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.value.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkItemRecord {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::from_value(Value::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonRecord for WorkItemRecord {
+    type Id = TaskId;
+    const TABLE: &'static str = "runtime_work";
+    const SCHEMA: &'static str = "PersistedWorkItemRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(&self.fields.id)
+    }
+    fn decode_stored(_connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
+        Self::decode(row_id, encoded)
+    }
+}
 record_newtype!(
     ExecutionRunRecord,
     String,
@@ -408,11 +441,98 @@ record_newtype!(
 );
 
 impl WorkItemRecord {
-    pub fn status(&self) -> Option<WorkStatus> {
-        self.value
-            .get("status")
+    pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
+        let fields = WorkItemFields::deserialize(&value)?;
+        Ok(Self { value, fields })
+    }
+
+    pub fn checked(value: Value) -> StoreResult<Self> {
+        let id = value
+            .get("id")
             .and_then(Value::as_str)
-            .map(WorkStatus::parse)
+            .unwrap_or("<unknown>")
+            .to_owned();
+        Self::checked_at(value, &id)
+    }
+
+    fn checked_at(value: Value, row_id: &str) -> StoreResult<Self> {
+        if let Some((pointer, reason)) = studio_runtime_schema::first_error(Self::SCHEMA, &value)
+            .map_err(crate::StoreError::SchemaValidation)?
+        {
+            return Err(crate::StoreError::InvalidSyncObjectField {
+                scope: Self::TABLE.into(),
+                id: row_id.to_owned(),
+                pointer,
+                reason,
+            });
+        }
+        Self::from_value(value).map_err(|error| crate::StoreError::InvalidSyncObjectField {
+            scope: Self::TABLE.into(),
+            id: row_id.to_owned(),
+            pointer: String::new(),
+            reason: error.to_string(),
+        })
+    }
+
+    pub fn decode(row_id: &str, encoded: &str) -> StoreResult<Self> {
+        let invalid = || crate::StoreError::InvalidStoredObject {
+            table: Self::TABLE,
+            id: row_id.to_owned(),
+        };
+        let record = Self::checked_at(
+            serde_json::from_str(encoded).map_err(|_| invalid())?,
+            row_id,
+        )?;
+        if record.id().as_ref() != row_id {
+            return Err(invalid());
+        }
+        Ok(record)
+    }
+
+    pub fn id(&self) -> &TaskId {
+        &self.fields.id
+    }
+    pub fn value(&self) -> &Value {
+        &self.value
+    }
+    pub fn into_value(self) -> Value {
+        self.value
+    }
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.value.get(key)
+    }
+    pub fn status(&self) -> WorkStatus {
+        self.fields.status
+    }
+    pub fn dependencies(&self) -> &[String] {
+        &self.fields.dependencies
+    }
+    pub fn owner(&self) -> Option<&str> {
+        self.fields.owner.as_deref()
+    }
+    pub fn updated(&self) -> f64 {
+        self.fields.updated
+    }
+
+    pub fn blocked_by(&self, statuses: &BTreeMap<String, WorkStatus>) -> Vec<String> {
+        self.dependencies()
+            .iter()
+            .filter(|id| statuses.get(*id) != Some(&WorkStatus::Accepted))
+            .cloned()
+            .collect()
+    }
+
+    pub fn set(&mut self, key: impl Into<String>, value: Value) -> Result<(), serde_json::Error> {
+        let mut updated = self.value.clone();
+        updated[key.into()] = value;
+        let updated = Self::from_value(updated)?;
+        if updated.id() != self.id() {
+            return Err(<serde_json::Error as serde::de::Error>::custom(
+                "work record id is immutable",
+            ));
+        }
+        *self = updated;
+        Ok(())
     }
 
     pub fn title(&self) -> Option<&str> {
@@ -420,12 +540,8 @@ impl WorkItemRecord {
     }
 
     pub fn set_status(&mut self, status: WorkStatus) {
-        if let Some(object) = self.value.as_object_mut() {
-            object.insert(
-                "status".to_owned(),
-                Value::String(status.as_str().to_owned()),
-            );
-        }
+        self.value["status"] = serde_json::json!(status);
+        self.fields.status = status;
     }
 }
 
@@ -481,6 +597,10 @@ pub trait JsonRecord: Serialize + DeserializeOwned {
     const QUERY_SHAPE: RecordQueryShape;
 
     fn record_key(&self) -> Option<&Self::Id>;
+
+    fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
+        decode_record::<Self>(connection, row_id, encoded)
+    }
 }
 
 /// Typed access to one id/record JSON table.
@@ -507,7 +627,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
     }
 
     pub(crate) fn decode_stored(&self, row_id: &str, encoded: &str) -> StoreResult<R> {
-        decode_record::<R>(self.connection, row_id, encoded)
+        R::decode_stored(self.connection, row_id, encoded)
     }
 
     pub fn get(&self, id: &R::Id) -> StoreResult<Option<R>> {
@@ -533,7 +653,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             return Ok(None);
         };
         let encoded = stored_text_ref(row.get_ref(0)?, R::TABLE, id.as_ref())?;
-        decode_record::<R>(self.connection, id.as_ref(), encoded).map(Some)
+        R::decode_stored(self.connection, id.as_ref(), encoded).map(Some)
     }
 
     /// Keep the original JSON text for consumers whose contract depends on
@@ -561,7 +681,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             return Ok(None);
         };
         let encoded = stored_text(row.get_ref(0)?, R::TABLE, id.as_ref())?;
-        let record = decode_record::<R>(self.connection, id.as_ref(), &encoded)?;
+        let record = R::decode_stored(self.connection, id.as_ref(), &encoded)?;
         Ok(Some((record, self.reader_text(id.as_ref(), encoded)?)))
     }
 
@@ -588,7 +708,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         while let Some(row) = rows.next()? {
             let id = stored_text(row.get_ref(0)?, R::TABLE, "<invalid id>")?;
             let encoded = stored_text_ref(row.get_ref(1)?, R::TABLE, &id)?;
-            records.push(decode_record::<R>(self.connection, &id, encoded)?);
+            records.push(R::decode_stored(self.connection, &id, encoded)?);
         }
         Ok(records)
     }
@@ -616,7 +736,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         while let Some(row) = rows.next()? {
             let id = stored_text(row.get_ref(0)?, R::TABLE, "<invalid id>")?;
             let encoded = stored_text(row.get_ref(1)?, R::TABLE, &id)?;
-            let record = decode_record::<R>(self.connection, &id, &encoded)?;
+            let record = R::decode_stored(self.connection, &id, &encoded)?;
             records.push((record, self.reader_text(&id, encoded)?));
         }
         Ok(records)
@@ -636,7 +756,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         };
         let id = stored_text(row.get_ref(0)?, R::TABLE, "<invalid id>")?;
         let encoded = stored_text_ref(row.get_ref(1)?, R::TABLE, &id)?;
-        decode_record::<R>(self.connection, &id, encoded).map(Some)
+        R::decode_stored(self.connection, &id, encoded).map(Some)
     }
 
     /// Full rowid-ordered read that keeps each physical row id beside its record.
@@ -653,7 +773,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             let row_id = row.get::<_, i64>(0)?;
             let id = stored_text(row.get_ref(1)?, R::TABLE, "<invalid id>")?;
             let encoded = stored_text_ref(row.get_ref(2)?, R::TABLE, &id)?;
-            records.push((row_id, decode_record::<R>(self.connection, &id, encoded)?));
+            records.push((row_id, R::decode_stored(self.connection, &id, encoded)?));
         }
         Ok(records)
     }
@@ -1102,10 +1222,12 @@ fn stored_text(value: ValueRef<'_>, table: &'static str, id: &str) -> StoreResul
                 id: id.to_owned(),
             })
         }
-        _ => Err(crate::StoreError::InvalidStoredObject {
-            table,
-            id: id.to_owned(),
-        }),
+        ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) | ValueRef::Blob(_) => {
+            Err(crate::StoreError::InvalidStoredObject {
+                table,
+                id: id.to_owned(),
+            })
+        }
     }
 }
 
@@ -1121,10 +1243,12 @@ fn stored_text_ref<'row>(
                 id: id.to_owned(),
             })
         }
-        _ => Err(crate::StoreError::InvalidStoredObject {
-            table,
-            id: id.to_owned(),
-        }),
+        ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) | ValueRef::Blob(_) => {
+            Err(crate::StoreError::InvalidStoredObject {
+                table,
+                id: id.to_owned(),
+            })
+        }
     }
 }
 
@@ -1296,6 +1420,67 @@ mod tests {
     }
 
     #[test]
+    fn stored_review_boundary_work_diagnostic_uses_physical_row_id() {
+        let connection = Connection::open_in_memory().expect("fixture database");
+        connection
+            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .expect("work table");
+        connection
+            .execute(
+                "INSERT INTO runtime_work VALUES('physical-work',?1)",
+                [json!({"id":"payload-work","status":null}).to_string()],
+            )
+            .expect("corrupt fixture");
+        assert!(
+            matches!(super::Table::<WorkItemRecord>::new(&connection).get(&super::TaskId::from("physical-work")),Err(crate::StoreError::InvalidSyncObjectField{id,..}) if id=="physical-work")
+        );
+    }
+
+    #[test]
+    fn stored_work_boundary_contract_matches_openapi_owner() {
+        let openapi: Value = serde_json::from_str(include_str!("../../runtime-http/openapi.json"))
+            .expect("OpenAPI owner");
+        assert_eq!(
+            openapi["components"]["schemas"]["WorkItem"]["properties"]["status"]["$ref"],
+            "#/components/schemas/WorkStatus",
+            "work status consumes the generated Rust owner"
+        );
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../runtime-schema/src/schemas/persisted-work-item-record.schema.json"
+        ))
+        .expect("persisted owner");
+        for field in ["status", "dependencies", "updated"] {
+            assert_eq!(
+                schema["properties"][field]["$ref"],
+                json!(format!(
+                    "{}#/components/schemas/WorkItem/properties/{field}",
+                    studio_runtime_schema::OPENAPI_URI
+                ))
+            );
+        }
+        assert_eq!(
+            openapi["components"]["schemas"]["WorkItem"]["properties"]["dependencies"]["default"],
+            json!([])
+        );
+        let raw = json!({"id":"work","status":"ready","owner":null,"futureField":{"proof":7}});
+        let record = WorkItemRecord::checked(raw.clone())
+            .expect("nullable owner and absent default dependencies");
+        assert_eq!(record.status(), WorkStatus::Ready);
+        assert_eq!(record.owner(), None);
+        assert!(record.dependencies().is_empty());
+        assert_eq!(
+            record.updated(),
+            0.0,
+            "omission keeps the existing progress timestamp default"
+        );
+        assert_eq!(
+            record.into_value(),
+            raw,
+            "extensions, null and omission remain exact"
+        );
+    }
+
+    #[test]
     fn runtime_task_and_work_item_use_distinct_exported_schemas() {
         let runtime_task = task(json!({
             "id":"task-1", "agent":"agent-1", "kind":"command", "status":"completed",
@@ -1309,7 +1494,7 @@ mod tests {
             "id":"work-1", "rootId":"agent-1", "status":"ready", "title":"T",
             "created":1.25, "updated":1.5, "version":3, "futureField":true
         }));
-        assert_eq!(work.status(), Some(WorkStatus::Ready));
+        assert_eq!(work.status(), WorkStatus::Ready);
         assert_eq!(
             serde_json::to_value(work).expect("work item serializes")["futureField"],
             json!(true)

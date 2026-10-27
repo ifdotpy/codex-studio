@@ -355,7 +355,13 @@ fn provider_kind_ts() -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let mut text = format!(
-        "// {HEADER}\nexport const PROVIDER_KINDS = [{values}] as const;\nexport type ProviderKind = (typeof PROVIDER_KINDS)[number];\n\nexport const PROVIDER_LABELS: Record<ProviderKind, string> = {{\n"
+        "// {HEADER}\nexport const PROVIDER_KINDS = [{values}] as const;\nexport type ProviderKind = (typeof PROVIDER_KINDS)[number];\n\nexport const ProviderKind = {{\n"
+    );
+    for provider in crate::provider_kind::ProviderKind::ALL {
+        writeln!(text, "  {provider:?}: {},", json_string(provider.key())).expect("String write");
+    }
+    text.push_str(
+        "} as const;\n\nexport const PROVIDER_LABELS: Record<ProviderKind, string> = {\n",
     );
     for provider in crate::provider_kind::ProviderKind::ALL {
         writeln!(
@@ -366,7 +372,7 @@ fn provider_kind_ts() -> String {
         )
         .expect("String write");
     }
-    text.push_str("};\n\nexport function isProviderKind(value: unknown): value is ProviderKind {\n  return PROVIDER_KINDS.some((provider) => provider === value);\n}\n\nexport function providerLabel(value: string): string {\n  return isProviderKind(value) ? PROVIDER_LABELS[value] : value;\n}\n");
+    text.push_str("};\n\nexport function providerToString(provider: ProviderKind): ProviderKind {\n  return provider;\n}\n\nexport function isProviderKind(value: unknown): value is ProviderKind {\n  return PROVIDER_KINDS.some((provider) => provider === value);\n}\n\nexport function providerLabel(value: string): string {\n  return isProviderKind(value) ? PROVIDER_LABELS[value] : value;\n}\n");
     text
 }
 
@@ -379,6 +385,8 @@ const PROVIDER_OPENAPI_SITES: &[&str] = &[
     "/components/schemas/AgentRecordResponse/properties/provider",
     "/components/schemas/LazyAccountTransferSourceRecordResponse/properties/provider",
     "/components/schemas/SummaryAccount/properties/provider",
+    "/components/schemas/TransferMemberNotice/properties/provider/anyOf/1",
+    "/components/schemas/ModelEntityDto/allOf/1/properties/provider",
 ];
 
 const PROVIDER_PERSISTED_RECORDS: &[(&str, &str)] = &[
@@ -389,6 +397,38 @@ const PROVIDER_PERSISTED_RECORDS: &[(&str, &str)] = &[
     ),
     ("persisted-transfer-agent-record", ""),
 ];
+
+const PROVIDER_NATIVE_DISCRIMINATORS: &[(&str, crate::ProviderKind)] = &[
+    ("NativeCodexAccount", crate::ProviderKind::Codex),
+    ("NativeClaudeAccount", crate::ProviderKind::Claude),
+];
+
+// These SQL predicates must keep their source bytes; generation checks their
+// identity spelling against the runtime-schema ProviderKind owner instead.
+const PROVIDER_SQL_CONSUMERS: &[&str] = &[
+    "workspaces/runtime/packages/runtime-store/src/feature_schema.rs",
+    "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/selection.rs",
+    "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
+];
+
+fn check_provider_sql_consumer(path: &str, source: &str) -> Result<(), String> {
+    let predicate = format!("provider='{}'", crate::ProviderKind::Codex.key());
+    if source.matches(&predicate).count() != 1 {
+        return Err(format!(
+            "{path} SQL predicate must match ProviderKind::Codex in runtime-schema/src/provider_kind.rs"
+        ));
+    }
+    Ok(())
+}
+
+fn check_provider_sql_parity(root: &Path) -> Result<(), String> {
+    for path in PROVIDER_SQL_CONSUMERS {
+        let source =
+            std::fs::read_to_string(root.join(path)).map_err(|error| format!("{path}: {error}"))?;
+        check_provider_sql_consumer(path, &source)?;
+    }
+    Ok(())
+}
 
 fn api_schema_ts(schema_hash: &str) -> String {
     let mut text = format!(
@@ -526,6 +566,14 @@ fn check_account_group_parity(openapi: &Value) -> Result<(), String> {
 
 /// Hold the committed OpenAPI document and persisted-state schemas to the Rust owners.
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
+    for (schema, provider) in PROVIDER_NATIVE_DISCRIMINATORS {
+        let path = format!("/components/schemas/{schema}/properties/provider/const");
+        if openapi.pointer(&path) != Some(&serde_json::json!(provider)) {
+            return Err(format!(
+                "{path} must match ProviderKind in runtime-schema/src/provider_kind.rs"
+            ));
+        }
+    }
     expect_number(
         openapi,
         "/components/schemas/StudioErrorsDismissRequest/properties/ids/maxItems",
@@ -606,11 +654,12 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
                 .into(),
         );
     }
+    crate::complaints::check_schema_parity(openapi)?;
     let modes = serde_json::json!(crate::claude_permissions::PERMISSION_MODES);
     for path in [
         "/components/schemas/CreateAgentRequest/properties/permission_mode/enum",
         "/components/schemas/AgentEntityDto/properties/claudeOptions/anyOf/0/properties/permissionMode/enum",
-        "/components/schemas/ClaudeSettings/properties/permissionMode/anyOf/0/enum",
+        "/components/schemas/ClaudeSettings/properties/permissionMode/enum",
         "/components/schemas/ClaudeSessionSettings/properties/permissionMode/anyOf/0/enum",
     ] {
         if openapi.pointer(path) != Some(&modes) {
@@ -622,7 +671,14 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     crate::task_results::check_schema_parity(openapi)?;
     check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
+    crate::studio_errors::check_schema_parity(openapi)?;
+    crate::queue_command::check_schema_parity(openapi)?;
+    crate::question_answers::check_schema_parity(openapi)?;
+    crate::claude_controls::check_schema_parity(openapi)?;
+    crate::process_controls::check_schema_parity(openapi)?;
+    crate::records::check_schema_parity(openapi)?;
     crate::task_gate::check_api_contract(openapi)?;
+    crate::task_command::check_api_contract(openapi)?;
     for (suffix, value) in [
         ("minimum", values::IDLE_COMPACTION_MIN_TOKENS),
         ("default", values::IDLE_COMPACTION_DEFAULT_MIN_TOKENS),
@@ -843,10 +899,10 @@ fn check_delivery_parity(openapi: &Value) -> Result<(), String> {
     clippy::disallowed_methods,
     reason = "contract generator runs on the synchronous studio-contracts CLI thread, outside Tokio"
 )]
-fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, String> {
+fn run_node(root: &Path, script: &str, argument: &str, input: &str) -> Result<String, String> {
     let node = std::env::var(NODE_ENVIRONMENT).unwrap_or_else(|_| "node".into());
     let mut child = Command::new(&node)
-        .arg(root.join(API_TYPES_SCRIPT))
+        .arg(root.join(script))
         .arg(argument)
         .current_dir(root)
         .stdin(Stdio::piped())
@@ -858,20 +914,40 @@ fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, St
         .stdin
         .take()
         .ok_or("missing schema input")?
-        .write_all(document.to_string().as_bytes())
+        .write_all(input.as_bytes())
         .map_err(|error| error.to_string())?;
     let output = child
         .wait_with_output()
         .map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(format!(
-            "{API_TYPES_SCRIPT} failed: {}",
+            "{script} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         ));
     }
     let body = String::from_utf8(output.stdout)
-        .map_err(|error| format!("{API_TYPES_SCRIPT} printed invalid UTF-8: {error}"))?;
+        .map_err(|error| format!("{script} printed invalid UTF-8: {error}"))?;
     Ok(body)
+}
+
+fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, String> {
+    run_node(root, API_TYPES_SCRIPT, argument, &document.to_string())
+}
+
+fn task_tool_schema_ts(
+    root: &Path,
+    schema: &serde_json::Map<String, Value>,
+) -> Result<String, String> {
+    let text = format!(
+        "// {HEADER}\nimport type {{ core }} from \"zod\";\nexport const TASK_COMMAND_TOOL_SCHEMA = {} satisfies core.JSONSchema.JSONSchema;\n",
+        serde_json::to_string_pretty(schema).map_err(|error| error.to_string())?
+    );
+    run_node(
+        root,
+        "node_modules/oxfmt/bin/oxfmt",
+        "--stdin-filepath=workspaces/providers/apps/claude-bridge/task-command-tool.generated.ts",
+        &text,
+    )
 }
 
 fn subscription_scopes_ts(
@@ -1021,20 +1097,90 @@ fn supervisor_handshake_schema() -> Value {
         .to_value()
 }
 
+// Committed storage schemas annotate safe integers; HTTP schemas spell out the
+// same shared bound for validators and generated Rust consumers.
+fn materialize_safe_integers(schema: &mut Value) {
+    match schema {
+        Value::Object(object) => {
+            if object.remove("x-safe-integer") == Some(Value::String("unsigned".into())) {
+                object.insert("minimum".into(), serde_json::json!(0));
+                object.insert(
+                    "maximum".into(),
+                    serde_json::json!(values::MAX_SAFE_INTEGER),
+                );
+            }
+            for child in object.values_mut() {
+                materialize_safe_integers(child);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                materialize_safe_integers(child);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
 /// Render every contract file. `with_api_types` also runs Node for web types.
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
     check_backend_kind_parity(root)?;
+    check_provider_sql_parity(root)?;
     let mut openapi = read_json(root, OPENAPI_PATH)?;
     crate::workspace_modes::update_openapi(&mut openapi);
+    // The checked limits ingress schema also owns HTTP, SSE and bridge leaves.
+    let mut limits: Value = serde_json::from_str(
+        &include_str!("schemas/workspace-usage-limits.schema.json")
+            .replace("#/$defs/", "#/components/schemas/"),
+    )
+    .map_err(|error| error.to_string())?;
+    materialize_safe_integers(&mut limits);
+    for (name, schema) in limits["$defs"]
+        .as_object()
+        .ok_or("limits definitions must be an object")?
+    {
+        if name != "UsageLimitsResponse" && name != "SyncEntity" && name != "JsonValue" {
+            openapi["components"]["schemas"][name] = schema.clone();
+        }
+    }
+    for (alias, owner) in [
+        ("RateLimitsDataDto", "UsageLimitsData"),
+        ("RateLimitBucketDto", "RateLimitBucket"),
+        ("RateLimitWindowDto", "RateLimitWindow"),
+    ] {
+        openapi["components"]["schemas"][alias] =
+            serde_json::json!({"$ref":format!("#/components/schemas/{owner}")});
+    }
+    crate::records::refresh_openapi(&mut openapi)?;
+    crate::task_command::apply_api_contract(&mut openapi);
+    for (name, schema) in crate::studio_errors::schemas()? {
+        openapi["components"]["schemas"][name] = schema;
+    }
+    openapi["components"]["schemas"]["ComplaintResponseStatus"] = crate::complaints::schema();
+    openapi["components"]["schemas"]["ComplaintBody"]["properties"]["status"] =
+        crate::complaints::status_property();
     for (name, schema) in crate::agent_progress::schemas()
         .into_iter()
         .chain(crate::desktop::schemas())
+        .chain(crate::queue_command::schemas())
+        .chain(crate::claude_controls::schemas())
     {
         *openapi
             .pointer_mut(&format!("/components/schemas/{name}"))
             .ok_or_else(|| format!("OpenAPI is missing Rust-owned {name}"))? = schema;
     }
+    for (name, schema) in crate::process_controls::schemas() {
+        openapi["components"]["schemas"][name] = schema;
+    }
+    openapi["components"]["schemas"]["AnswerBody"]["properties"]["decision"] =
+        crate::question_answers::answer_body_decision();
+    for (name, schema) in crate::question_answers::schemas() {
+        openapi["components"]["schemas"][name] = schema;
+    }
     for (name, schema) in crate::usage::schemas() {
+        openapi["components"]["schemas"][name] = schema;
+    }
+    for (name, schema) in crate::model_catalog::schemas() {
         openapi["components"]["schemas"][name] = schema;
     }
     openapi["components"]["schemas"]["ProviderKind"] = provider_kind_schema();
@@ -1084,6 +1230,22 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         }
     }
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
+    // Mirror the runtime's task-tool advertisement from its owning contracts.
+    let native_tools = read_json(
+        root,
+        ".agents/skills/codex-workspace/references/native-tools.json",
+    )?;
+    let mut task_tool = native_tools
+        .as_array()
+        .ok_or("native tool catalog")?
+        .iter()
+        .find(|tool| tool["name"] == "orchestration_task")
+        .and_then(|tool| tool["inputSchema"].as_object())
+        .ok_or("task tool schema")?
+        .clone();
+    crate::task_results::apply_tool_contract("orchestration_task", &mut task_tool);
+    crate::task_gate::apply_tool_contract("orchestration_task", &mut task_tool);
+    crate::task_command::apply_tool_contract("orchestration_task", &mut task_tool);
     let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
         Rendered {
@@ -1094,8 +1256,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             path: "workspaces/providers/apps/claude-bridge/claude-failure.generated.ts".into(),
             text: format!(
                 "// {HEADER}\nexport const claudeFailureSchema = {} as const;\n",
-                serde_json::to_string(&crate::claude_failure::schema())
-                    .expect("failure schema"),
+                serde_json::to_string(&crate::claude_failure::schema()).expect("failure schema"),
             ),
         },
         Rendered {
@@ -1104,6 +1265,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
                 "// {HEADER}\nexport const MCP_AUTO_BACKGROUND_MS = {};\n",
                 values::CLAUDE_MCP_AUTO_BACKGROUND_MS
             ),
+        },
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/task-command-tool.generated.ts".into(),
+            text: task_tool_schema_ts(root, &task_tool)?,
         },
         Rendered {
             path: web("providerKind.ts"),
@@ -1198,6 +1363,14 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: linux_vm_swift(),
         },
     ];
+    let monitor_path = crate::studio_errors::MONITOR_RECORD_SCHEMA_PATH;
+    let mut monitor = read_json(root, monitor_path)?;
+    monitor["properties"]["status"]["anyOf"][0] =
+        openapi["components"]["schemas"]["MonitorState"].clone();
+    rendered.push(Rendered {
+        path: monitor_path.into(),
+        text: serde_json::to_string_pretty(&monitor).map_err(|error| error.to_string())? + "\n",
+    });
     for (name, pointer) in PROVIDER_PERSISTED_RECORDS {
         let path =
             format!("workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json");
@@ -1291,13 +1464,21 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .with(|settings| settings.definitions_path = "/components/schemas".into())
             .into_generator();
         generator.subschema_for::<crate::provider_input::ToolDefinition>();
+        generator.subschema_for::<crate::model_catalog::ProviderModel>();
         generator.subschema_for::<crate::provider_input::ClaudeBridgeSessionWire>();
         generator.subschema_for::<crate::provider_input::ClaudeBridgeTurnWire>();
+        generator.subschema_for::<crate::provider_input::UnsupportedClaudeRateLimit>();
+        generator.subschema_for::<crate::provider_input::items::FreshItem>();
+        generator.subschema_for::<crate::provider_lifecycle::TerminalTurn>();
+        generator.subschema_for::<crate::provider_lifecycle::ThreadIdentity>();
         generator.subschema_for::<crate::idle_compaction::CacheReport>();
         let mut schemas = generator.take_definitions(true);
         for name in [
             "RateLimitBucketDto",
             "RateLimitWindowDto",
+            "RateLimitBucket",
+            "RateLimitWindow",
+            "RateLimitIndividualLimit",
             "JsonValue",
             "ClaudeSessionSettings",
             "ClaudeCustomModel",
@@ -1328,6 +1509,26 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         rendered.push(Rendered {
             path: web("pricing.ts"),
             text: api_types(root, &document, "--rust-owned")?,
+        });
+    }
+    if with_api_types {
+        let schemas = crate::provider_errors::schemas()?;
+        let document = serde_json::json!({
+            "openapi":"3.1.0", "info":{"title":"Vendor error leaf and known classification","version":"1"},
+            "paths":{}, "components":{"schemas":schemas}
+        });
+        let mut text = api_types(root, &document, "--rust-owned")?;
+        text.push_str("\n// Known tags only; the vendor's future-value branch remains open.\nexport const KNOWN_CODEX_ERROR_KINDS = [\n");
+        for kind in schemas["KnownCodexErrorKind"]["enum"]
+            .as_array()
+            .ok_or("known error kinds must be an enum")?
+        {
+            writeln!(text, "  {kind},").expect("String write");
+        }
+        text.push_str("] as const;\n");
+        rendered.push(Rendered {
+            path: "workspaces/providers/apps/claude-bridge/provider-errors.generated.ts".into(),
+            text,
         });
     }
     if with_api_types {
@@ -1405,6 +1606,50 @@ pub fn repository_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_limit_consumers_share_checked_fields_and_open_vendor_windows() {
+        let document = read_json(&repository_root(), OPENAPI_PATH).expect("OpenAPI source");
+        for name in ["UsageLimitsData", "RateLimitsDataDto"] {
+            let schema = serde_json::json!({
+                "$ref":format!("#/components/schemas/{name}"),
+                "components":document["components"]
+            });
+            let validator = jsonschema::validator_for(&schema).expect("limits schema");
+            assert!(
+                !validator.is_valid(&serde_json::json!({
+                    "rateLimits":{"spendControlReached":"false"}
+                })),
+                "{name} must reject malformed consumed spend control"
+            );
+            assert!(
+                !validator.is_valid(&serde_json::json!({
+                    "rateLimitResetCredits":{"credits":[{"id":"credit"}]}
+                })),
+                "{name} must require credit identity, status and reset type"
+            );
+            assert!(validator.is_valid(&serde_json::json!({
+                "vendorData":{"opaque":null},
+                "rateLimits":{"planType":"plus","primary":{"usedPercent":42,"vendorWindow":{"opaque":true}}}
+            })), "{name} must preserve vendor extensions");
+        }
+    }
+
+    #[test]
+    fn transfer_notices_use_the_provider_identity_contract() {
+        let document = read_json(&repository_root(), OPENAPI_PATH).expect("OpenAPI source");
+        let schema = serde_json::json!({
+            "$ref":"#/components/schemas/TransferMemberNotice",
+            "components":document["components"]
+        });
+        let validator = jsonschema::validator_for(&schema).expect("transfer notice schema");
+        for provider in crate::ProviderKind::ALL {
+            assert!(validator.is_valid(&serde_json::json!({"id":"agent", "provider":provider})));
+        }
+        assert!(validator.is_valid(&serde_json::json!({"id":"agent", "provider":null})));
+        assert!(validator.is_valid(&serde_json::json!({"id":"agent"})));
+        assert!(!validator.is_valid(&serde_json::json!({"id":"agent", "provider":"unknown"})));
+    }
 
     #[test]
     fn persisted_provider_identity_requires_a_known_provider() {
@@ -1684,6 +1929,35 @@ process.stdout.write(JSON.stringify(JSON.parse(input).map(([method, params]) => 
     }
 
     #[test]
+    fn provider_parity_rejects_each_native_discriminator_and_sql_drift() {
+        let root = repository_root();
+        let openapi = read_json(&root, OPENAPI_PATH).expect("OpenAPI document");
+        let transfer = read_json(&root, ACCOUNT_TRANSFER_SCHEMA_PATH).expect("transfer schema");
+        check_schema_parity(&openapi, &transfer).expect("schemas agree");
+        check_provider_sql_parity(&root).expect("SQL consumers agree");
+        for (schema, _) in PROVIDER_NATIVE_DISCRIMINATORS {
+            let path = format!("/components/schemas/{schema}/properties/provider/const");
+            let mut drifted = openapi.clone();
+            *drifted.pointer_mut(&path).expect("native discriminator") = serde_json::json!("drift");
+            let error = check_schema_parity(&drifted, &transfer).expect_err("discriminator drift");
+            assert!(
+                error.contains(&path) && error.contains("provider_kind.rs"),
+                "{error}"
+            );
+        }
+        for path in PROVIDER_SQL_CONSUMERS {
+            let source = std::fs::read_to_string(root.join(path)).expect("SQL source");
+            let predicate = format!("provider='{}'", crate::ProviderKind::Codex.key());
+            let drifted = source.replace(&predicate, "provider='drift'");
+            let error = check_provider_sql_consumer(path, &drifted).expect_err("SQL drift");
+            assert!(
+                error.contains(path) && error.contains("provider_kind.rs"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
     fn claude_permission_parity_rejects_drift_in_each_consumer() {
         let root = repository_root();
         let openapi = read_json(&root, OPENAPI_PATH).expect("OpenAPI document");
@@ -1692,7 +1966,7 @@ process.stdout.write(JSON.stringify(JSON.parse(input).map(([method, params]) => 
         for path in [
             "/components/schemas/CreateAgentRequest/properties/permission_mode/enum",
             "/components/schemas/AgentEntityDto/properties/claudeOptions/anyOf/0/properties/permissionMode/enum",
-            "/components/schemas/ClaudeSettings/properties/permissionMode/anyOf/0/enum",
+            "/components/schemas/ClaudeSettings/properties/permissionMode/enum",
             "/components/schemas/ClaudeSessionSettings/properties/permissionMode/anyOf/0/enum",
         ] {
             let mut drifted = openapi.clone();

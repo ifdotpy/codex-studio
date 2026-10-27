@@ -128,7 +128,7 @@ export function createUploads(
   async function transaction<T>(
     mode: IDBTransactionMode,
     action: (store: IDBObjectStore, tx: IDBTransaction) => IDBRequest<T>,
-    stores = ["uploads"],
+    stores: [string, ...string[]] = ["uploads"],
   ): Promise<T> {
     const db = await database();
     return new Promise((resolve, reject) => {
@@ -299,7 +299,10 @@ export function createUploads(
       const base64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onerror = () => reject(new Error(`Cannot read ${row.name}.`));
-        reader.onload = () => resolve(String(reader.result).split(",")[1]);
+        reader.onload = () => {
+          const result = String(reader.result);
+          resolve(result.slice(result.indexOf(",") + 1));
+        };
         reader.readAsDataURL(new Blob([bytes], { type: row.mime }));
       });
       const response = await syncPost(

@@ -3,11 +3,48 @@ import type { DeepReadonly } from "rxdb";
 import type { SyncEntityPayload as MutableSyncEntityPayload } from "../../generated/api";
 import { SUBSCRIPTION_ENTITY_SCOPES } from "../../generated/subscriptionEntities";
 import type { ResourceData, ResourceRef } from "./contracts";
+import { selectResourceData, type ResourceDataSelectors } from "./selectData";
 import type { ObserveSubscriptionData } from "./module";
 import { createWorkDataSelector } from "./workData";
 
 type SyncEntityPayload = DeepReadonly<MutableSyncEntityPayload>;
 type ScopeKind = keyof typeof SUBSCRIPTION_ENTITY_SCOPES;
+function hasEntityScope(kind: ResourceRef["kind"]): kind is ScopeKind {
+  return kind in SUBSCRIPTION_ENTITY_SCOPES;
+}
+
+type Selection = {
+  entities: readonly SyncEntityPayload[];
+  selectWork: ReturnType<typeof createWorkDataSelector>;
+};
+const selectors: Required<Pick<ResourceDataSelectors<Selection>, ScopeKind>> = {
+  work: (ref, { entities, selectWork }) => selectWork(entities, ref.agentId),
+  agentDetail: (_ref, { entities }) =>
+    entities.find((row) => row.collection === "agentDetail")?.value,
+  task: (_ref, { entities }) =>
+    entities.find((row) => row.collection === "task")?.value,
+  "session-cost": (_ref, { entities }) =>
+    entities.find((row) => row.collection === "sessionCost")?.value,
+  desktop: (_ref, { entities }) =>
+    entities.find((row) => row.collection === "desktop")?.value,
+  terminal: (_ref, { entities }) =>
+    entities.find((row) => row.collection === "terminal")?.value,
+  tasks: (_ref, { entities }) =>
+    entities.filter((row) => row.collection === "task").map((row) => row.value),
+  monitors: (_ref, { entities }) =>
+    entities
+      .filter((row) => row.collection === "monitor")
+      .map((row) => row.value),
+  costs: (_ref, { entities }) =>
+    entities
+      .filter((row) => row.collection === "accountCost")
+      .map((row) => row.value),
+  terminals: (_ref, { entities }) =>
+    entities
+      .filter((row) => row.collection === "terminal")
+      .map((row) => row.value),
+  state: (_ref, { entities }) => entities,
+};
 
 /** Observe only persisted, typed cache rows. Network interest belongs to the
  * subscription module, and each server injects its own projection database. */
@@ -19,9 +56,9 @@ export function createEntityDataObserver(
     accept: (data: ResourceData<R> | undefined) => void,
     failed: (error: unknown) => void,
   ) => {
-    const scope = SUBSCRIPTION_ENTITY_SCOPES[ref.kind as ScopeKind];
-    if (!scope) return () => {};
-    const reference = ref as Record<string, unknown>;
+    if (!hasEntityScope(ref.kind)) return () => {};
+    const scope = SUBSCRIPTION_ENTITY_SCOPES[ref.kind];
+    const reference: Readonly<Record<string, unknown>> = ref;
     const selectedAgent = scope.agentField
       ? reference[scope.agentField]
       : undefined;
@@ -75,8 +112,8 @@ export function createEntityDataObserver(
               if (
                 value._deleted ||
                 !entity ||
-                !(scope.collections as readonly string[]).includes(
-                  entity.collection,
+                !scope.collections.some(
+                  (collection) => collection === entity.collection,
                 )
               )
                 return [];
@@ -116,28 +153,9 @@ export function createEntityDataObserver(
             )
               return;
             previousEntities = entities;
-            let data: unknown;
-            switch (ref.kind) {
-              case "work":
-                data = selectWork(entities, ref.agentId);
-                break;
-              case "agentDetail":
-              case "task":
-              case "session-cost":
-              case "desktop":
-              case "terminal":
-                data = entities[0]?.value;
-                break;
-              case "tasks":
-              case "monitors":
-              case "costs":
-              case "terminals":
-                data = entities.map((entity) => entity.value);
-                break;
-              default:
-                data = entities;
-            }
-            accept(data as ResourceData<R> | undefined);
+            accept(
+              selectResourceData(selectors, ref, { entities, selectWork }),
+            );
           },
           error: failed,
         });

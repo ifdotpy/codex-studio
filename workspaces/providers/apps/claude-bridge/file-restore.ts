@@ -34,7 +34,7 @@ import { createInterface } from "node:readline";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
-import { nativeFile } from "./move.ts";
+import { isRecord, nativeFile } from "./move.ts";
 
 // Native file-history retention count, from Claude CLI 2.1.302 (dde/Ejt).
 // Reconstruct the same retained snapshots before selecting tracked files.
@@ -111,7 +111,9 @@ function same(a: unknown, b: unknown) {
 
 // Claude owns this native document; preserve the existing format checks below.
 function parseNativeFileRecord(line: string): NativeFileRecord {
-  return JSON.parse(line);
+  const value: unknown = JSON.parse(line);
+  if (!isRecord(value)) throw invalid();
+  return value as NativeFileRecord;
 }
 async function nativeBackups(
   session: RestoreSession,
@@ -132,14 +134,17 @@ async function nativeBackups(
     for await (const line of lines) {
       const record = parseNativeFileRecord(line);
       if (
-        record.type?.startsWith("file-history-") &&
+        typeof record.type === "string" &&
+        record.type.startsWith("file-history-") &&
         !["file-history-snapshot", "file-history-delta"].includes(record.type)
       )
         throw invalid();
       if (record.type === "file-history-snapshot") {
+        if (typeof record.messageId !== "string") throw invalid();
         snapshots.set(record.messageId, record);
       }
       if (record.type === "file-history-delta") {
+        if (typeof record.messageId !== "string") throw invalid();
         const rows = deltas.get(record.messageId) || [];
         rows.push(record);
         deltas.set(record.messageId, rows);
@@ -165,9 +170,10 @@ async function nativeBackups(
     if (record) {
       const snapshot = structuredClone(record.snapshot);
       if (
-        !snapshot?.messageId ||
-        !snapshot.trackedFileBackups ||
-        typeof snapshot.trackedFileBackups !== "object"
+        !isRecord(snapshot) ||
+        typeof snapshot.messageId !== "string" ||
+        !snapshot.messageId ||
+        !isRecord(snapshot.trackedFileBackups)
       )
         throw invalid();
       const index = record.isSnapshotUpdate
@@ -194,7 +200,7 @@ async function nativeBackups(
           trackedFileBackups: { ...ordered.at(-1)?.trackedFileBackups },
         });
       }
-      const snapshot = ordered[index];
+      const snapshot = ordered[index]!;
       Object.defineProperty(snapshot.trackedFileBackups, delta.trackingPath, {
         value: delta.backup,
         enumerable: true,

@@ -1153,7 +1153,7 @@ function MultiServerShell({
                 <p role="status">Searching this server...</p>
               )}
               {searchResults[server.id]?.error && (
-                <p role="alert">{searchResults[server.id].error}</p>
+                <p role="alert">{searchResults[server.id]?.error}</p>
               )}
               {searchResults[server.id]?.results.map((result, index) => (
                 <button

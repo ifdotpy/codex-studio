@@ -86,9 +86,10 @@ export function useMobileViewport(active: boolean, compact = false) {
         const current = /^matrix\((?:[^,]+,){5}\s*([^)]+)\)$/.exec(
           getComputedStyle(node).transform,
         );
-        if (current) start = parseFloat(current[1]);
+        if (current?.[1]) start = parseFloat(current[1]);
         composerMotion.cancel();
       }
+      const easing = nativeKeyboardEasing(nativeKeyboard.curve);
       const motion = node.animate(
         [
           { transform: `translateY(${start}px)` },
@@ -96,7 +97,7 @@ export function useMobileViewport(active: boolean, compact = false) {
         ],
         {
           duration: nativeKeyboardDuration(nativeKeyboard),
-          easing: nativeKeyboardEasing(nativeKeyboard.curve),
+          ...(easing === undefined ? {} : { easing }),
           delay: closing ? layoutValues.keyboard.nativeMotionHold : 0,
           fill: "backwards",
         },

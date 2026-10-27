@@ -508,17 +508,17 @@ async fn request(
         .map_err(|_| "The native result is not confirmed")?;
     if receipt.operation != operation
         || receipt.scope != *scope
-        || receipt.certainty != RequestCertainty::Written
+        || receipt.certainty() != RequestCertainty::Written
         || !receipt
-            .ticket
+            .ticket()
             .is_some_and(|ticket| ticket.method == method && ticket.generation == scope.generation)
         || session.current_scope(&scope.account).as_ref() != Some(scope)
     {
         return Err("The native result is not confirmed");
     }
-    match receipt.result {
+    match receipt.into_response() {
         Some(ProviderResponse::Reply(value)) => Ok(value),
-        _ => Err("The native result is not confirmed"),
+        Some(ProviderResponse::Rejected(_)) | None => Err("The native result is not confirmed"),
     }
 }
 
@@ -656,8 +656,7 @@ pub(crate) fn authorize_release(
 mod tests {
     use super::*;
     use crate::account_session_runtime::{
-        AccountSessionFuture, ConnectionScope, ProviderRequest, ProviderResponse, RequestCertainty,
-        SessionReceipt,
+        AccountSessionFuture, ConnectionScope, ProviderRequest, ProviderResponse, SessionReceipt,
     };
     use serde_json::json;
     use std::sync::Mutex;
@@ -841,24 +840,165 @@ mod tests {
                         json!({"data":[],"nextCursor":null})
                     }
                     Method::ThreadUnsubscribe => json!({"status":"unsubscribed"}),
-                    method => panic!("unexpected native mutation or read: {method:?}"),
+                    method @ Method::Initialize
+                    | method @ Method::Initialized
+                    | method @ Method::Ack
+                    | method @ Method::AccountLoginCancel
+                    | method @ Method::AccountLoginStart
+                    | method @ Method::AccountRateLimitResetCreditConsume
+                    | method @ Method::ThreadLoadedList
+                    | method @ Method::ConfigRead
+                    | method @ Method::SkillsExtraRootsSet
+                    | method @ Method::ModelList
+                    | method @ Method::AccountRead
+                    | method @ Method::AccountRateLimitsRead
+                    | method @ Method::ThreadStart
+                    | method @ Method::ThreadRealtimeStart
+                    | method @ Method::ThreadRealtimeStop
+                    | method @ Method::ThreadRealtimeAppendSpeech
+                    | method @ Method::ThreadRealtimeItemStarted
+                    | method @ Method::ThreadRealtimeTranscriptDelta
+                    | method @ Method::ThreadRealtimeTranscriptDone
+                    | method @ Method::ThreadRealtimeSdp
+                    | method @ Method::ThreadRealtimeError
+                    | method @ Method::ThreadRealtimeClosed
+                    | method @ Method::ThreadResume
+                    | method @ Method::ThreadTurnsList
+                    | method @ Method::TurnStart
+                    | method @ Method::TurnSteer
+                    | method @ Method::TurnInterrupt
+                    | method @ Method::ThreadList
+                    | method @ Method::ThreadArchive
+                    | method @ Method::ThreadFork
+                    | method @ Method::ThreadNameSet
+                    | method @ Method::ThreadMetadataUpdate
+                    | method @ Method::ThreadSettingsUpdate
+                    | method @ Method::ThreadCompactStart
+                    | method @ Method::ThreadRollback
+                    | method @ Method::ThreadItemsList
+                    | method @ Method::ThreadGoalSet
+                    | method @ Method::ThreadGoalUpdated
+                    | method @ Method::ThreadUnarchive
+                    | method @ Method::ProcessSpawn
+                    | method @ Method::ProcessWriteStdin
+                    | method @ Method::ProcessKill
+                    | method @ Method::ProcessResizePty
+                    | method @ Method::CommandExec
+                    | method @ Method::CommandExecWrite
+                    | method @ Method::CommandExecResize
+                    | method @ Method::CommandExecTerminate
+                    | method @ Method::ThreadBackgroundTerminalsTerminate
+                    | method @ Method::ThreadBackgroundTerminalsClean
+                    | method @ Method::ThreadCommandExecutionBackground
+                    | method @ Method::ClaudeState
+                    | method @ Method::ClaudeRepairReport
+                    | method @ Method::ClaudeFileBackups
+                    | method @ Method::ClaudeSettings
+                    | method @ Method::ClaudeActivity
+                    | method @ Method::ClaudeStopTask
+                    | method @ Method::ClaudeShellPolicy
+                    | method @ Method::ClaudeDiagnostics
+                    | method @ Method::ClaudeMoveVersions
+                    | method @ Method::McpServerReconnect
+                    | method @ Method::McpServerStatusList
+                    | method @ Method::SkillsList
+                    | method @ Method::OperationStatus
+                    | method @ Method::ReviewStart
+                    | method @ Method::BrowserAnswer
+                    | method @ Method::BrowserCallback
+                    | method @ Method::BrowserClose
+                    | method @ Method::BrowserWait
+                    | method @ Method::ClaudeCommands
+                    | method @ Method::ClaudeMoveExport
+                    | method @ Method::ClaudeMoveIdentity
+                    | method @ Method::ClaudeMovePreflight
+                    | method @ Method::ClaudeMoveProof
+                    | method @ Method::Detach
+                    | method @ Method::EventRead
+                    | method @ Method::Exec
+                    | method @ Method::Generate
+                    | method @ Method::Health
+                    | method @ Method::Info
+                    | method @ Method::LayrHealth
+                    | method @ Method::Next
+                    | method @ Method::Open
+                    | method @ Method::ProjectEnsure
+                    | method @ Method::ProjectExec
+                    | method @ Method::ProjectImport
+                    | method @ Method::ProviderList
+                    | method @ Method::Replay
+                    | method @ Method::ResponseStatus
+                    | method @ Method::RetireCommand
+                    | method @ Method::SecretsList
+                    | method @ Method::SecretsRemove
+                    | method @ Method::SecretsSet
+                    | method @ Method::ShareConfigure
+                    | method @ Method::ShareName
+                    | method @ Method::ShareStatus
+                    | method @ Method::Sign
+                    | method @ Method::Status
+                    | method @ Method::SyncMacApply
+                    | method @ Method::SyncMacHandoff
+                    | method @ Method::SyncMacHashes
+                    | method @ Method::SyncMacHead
+                    | method @ Method::SyncMacRead
+                    | method @ Method::SyncMacWorktree
+                    | method @ Method::VaultConfigure
+                    | method @ Method::VaultPush
+                    | method @ Method::VaultStatus
+                    | method @ Method::UploadBegin
+                    | method @ Method::UploadChunk
+                    | method @ Method::UploadCommit
+                    | method @ Method::Verify
+                    | method @ Method::Write
+                    | method @ Method::CurrentTimeRead
+                    | method @ Method::ItemToolCall
+                    | method @ Method::ItemCommandExecutionRequestApproval
+                    | method @ Method::ItemFileChangeRequestApproval
+                    | method @ Method::ItemPermissionsRequestApproval
+                    | method @ Method::McpServerElicitationRequest
+                    | method @ Method::ItemToolRequestUserInput
+                    | method @ Method::ItemStarted
+                    | method @ Method::ItemCompleted
+                    | method @ Method::ItemAgentMessageDelta
+                    | method @ Method::ItemReasoningTextDelta
+                    | method @ Method::ItemCommandExecutionOutputDelta
+                    | method @ Method::CommandExecOutputDelta
+                    | method @ Method::TurnStarted
+                    | method @ Method::TurnCompleted
+                    | method @ Method::TurnPlanUpdated
+                    | method @ Method::TurnDiffUpdated
+                    | method @ Method::ThreadClosed
+                    | method @ Method::ThreadStatusChanged
+                    | method @ Method::ThreadTokenUsageUpdated
+                    | method @ Method::ThreadIdleCompactionUpdated
+                    | method @ Method::ThreadShellPolicyUpdated
+                    | method @ Method::AccountLoginCompleted
+                    | method @ Method::AccountUpdated
+                    | method @ Method::AccountRateLimitsUpdated
+                    | method @ Method::ModelSafetyBufferingUpdated
+                    | method @ Method::ProviderGenerationStarted
+                    | method @ Method::ProtocolError => {
+                        panic!("unexpected native mutation or read: {method:?}")
+                    }
                 };
                 let unknown = self.unknown && request.method == Method::ThreadUnsubscribe;
+                let ticket = RequestTicket {
+                    id: RequestId::String(request.operation.clone()),
+                    generation: 1,
+                    method: request.method,
+                };
                 Ok(SessionReceipt {
                     scope: Self::scope(),
-                    operation: request.operation.clone(),
-                    ticket: Some(RequestTicket {
-                        id: RequestId::String(request.operation),
-                        generation: 1,
-                        method: request.method,
-                    }),
-                    certainty: if unknown {
-                        RequestCertainty::Unknown
+                    operation: request.operation,
+                    outcome: if unknown {
+                        crate::account_session_runtime::SessionOutcome::Unknown { ticket }
                     } else {
-                        RequestCertainty::Written
+                        crate::account_session_runtime::SessionOutcome::Written {
+                            ticket,
+                            response: ProviderResponse::Reply(body),
+                        }
                     },
-                    result: (!unknown).then_some(ProviderResponse::Reply(body)),
-                    not_sent_reason: None,
                     replayed: false,
                 })
             })

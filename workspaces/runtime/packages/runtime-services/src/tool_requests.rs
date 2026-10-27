@@ -3,6 +3,7 @@ pub(crate) mod admission;
 pub(crate) mod lifecycle;
 pub(crate) mod prepared;
 use crate::event_write::truthy;
+use lifecycle::terminal;
 use rusqlite::{Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_store::{StoreError, system_reads as records};
@@ -67,7 +68,14 @@ fn execute_with_payload_recovery(
         crate::event_write::EventWriteError::InvalidStoredObject { object, id } => {
             ToolRequestError::Store(records::invalid(object, &id))
         }
-        _ => ToolRequestError::InvalidRequest("Unknown or deleted managed agent"),
+        crate::event_write::EventWriteError::InvalidRequest(_)
+        | crate::event_write::EventWriteError::InvalidResultSchema(_)
+        | crate::event_write::EventWriteError::Conflict(_)
+        | crate::event_write::EventWriteError::RemoteEventsUnavailable
+        | crate::event_write::EventWriteError::WorkerAssignmentUnavailable
+        | crate::event_write::EventWriteError::Clock => {
+            ToolRequestError::InvalidRequest("Unknown or deleted managed agent")
+        }
     })?;
     let actor = serde_json::to_value(actor).map_err(StoreError::from)?;
     if matches!(action, Action::List) {
@@ -139,7 +147,7 @@ fn execute_with_payload_recovery(
         save(tx, &record, &actor, payloads)?;
     }
     if !cancel {
-        if !terminal(&record)
+        if !terminal(&record)?
             && record.get("operationResult").is_none()
             && let Some(result) = operation_result(tx, text(&record, "id"))?
         {
@@ -239,8 +247,9 @@ fn refresh(
     specific: bool,
     payloads: Option<&dyn PayloadAccess>,
 ) -> Result<(), ToolRequestError> {
+    let is_terminal = terminal(record)?;
     let has_record_payload = truthy(record.get("_payloadBlobs"));
-    if !specific && terminal(record) {
+    if !specific && is_terminal {
         if payloads.is_some() && has_record_payload && terminal_payload_needed(record) {
             let root = payloads.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
             *record = root.resolve(record)?;
@@ -269,7 +278,7 @@ fn refresh(
     {
         return Ok(());
     }
-    if terminal(record) {
+    if is_terminal {
         populate_spawned_agent_ids(record);
         return Ok(());
     }
@@ -530,9 +539,6 @@ fn terminal_payload_needed(record: &Value) -> bool {
         .get("agentIds")
         .and_then(Value::as_array)
         .is_none_or(Vec::is_empty)
-}
-fn terminal(record: &Value) -> bool {
-    matches!(text(record, "outcome"), "applied" | "not_applied")
 }
 fn strip(value: &mut Value, keys: &[&str]) {
     if let Some(object) = value.as_object_mut() {

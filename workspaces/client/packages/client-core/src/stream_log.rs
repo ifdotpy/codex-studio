@@ -11,7 +11,7 @@ static PATH: OnceLock<PathBuf> = OnceLock::new();
 
 /// Sets the log folder once at startup. Without it, `line` does nothing.
 pub fn start(directory: &std::path::Path) {
-    let _ = PATH.set(directory.join(STREAM_LOG_FILE));
+    PATH.get_or_init(|| directory.join(STREAM_LOG_FILE));
 }
 
 pub fn line(text: &str) {
@@ -28,7 +28,8 @@ pub fn line(text: &str) {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0);
-        let _ = writeln!(file, "{now} {}", text.replace('\n', " "));
+        // The stream log is best-effort diagnostics; a failed write changes nothing.
+        writeln!(file, "{now} {}", text.replace('\n', " ")).ok();
     }
 }
 

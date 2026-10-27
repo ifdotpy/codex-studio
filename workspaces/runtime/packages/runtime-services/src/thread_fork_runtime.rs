@@ -184,13 +184,14 @@ pub async fn dispatch_reserved_via_broker(
             AccountSessionError::Requires(name) => NativeError::Unavailable(name),
             AccountSessionError::Refused(_) => NativeError::Changed,
             AccountSessionError::Unknown => NativeError::Unknown,
-            _ => NativeError::Unknown,
+            AccountSessionError::InvalidResponse(_) | AccountSessionError::Persistence => {
+                NativeError::Unknown
+            }
         })?;
     if receipt.operation != request.ticket.request
         || receipt.scope != scope
         || receipt
-            .ticket
-            .as_ref()
+            .ticket()
             .is_some_and(|ticket| ticket.method != method || ticket.generation != scope.generation)
     {
         return Err(NativeError::Changed);

@@ -346,7 +346,9 @@ fn sql_decode(value: ValueRef<'_>) -> Result<Option<String>, StoredTextError> {
             *last = Some((bytes.to_vec(), text.clone()));
             Ok(Some(text))
         }),
-        other => stored_text::decode(other).map(Some),
+        other @ (ValueRef::Integer(_) | ValueRef::Real(_) | ValueRef::Text(_)) => {
+            stored_text::decode(other).map(Some)
+        }
     }
 }
 

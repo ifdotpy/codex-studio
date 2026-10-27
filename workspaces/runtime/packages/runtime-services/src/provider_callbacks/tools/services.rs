@@ -118,7 +118,12 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
                 crate::coordination::CoordinationError::RequiresDependency(name) => {
                     crate::managed_host_tools::Error::Unavailable(name)
                 }
-                _ => crate::managed_host_tools::Error::Invalid("Agent input was refused"),
+                crate::coordination::CoordinationError::InvalidRequest(_)
+                | crate::coordination::CoordinationError::Conflict(_)
+                | crate::coordination::CoordinationError::InvalidStored { .. }
+                | crate::coordination::CoordinationError::AdmissionDenied(_) => {
+                    crate::managed_host_tools::Error::Invalid("Agent input was refused")
+                }
             })?;
             return Ok(crate::managed_host_tools::OperationResult {
                 value: result.receipt,
@@ -175,7 +180,12 @@ fn callback_refusal(error: CallbackError) -> crate::managed_host_tools::Error {
         CallbackError::Dependency(name) => crate::managed_host_tools::Error::Unavailable(name),
         CallbackError::Invalid(message) => crate::managed_host_tools::Error::Invalid(message),
         CallbackError::Stored(location) => crate::managed_host_tools::Error::StoredAt(location),
-        _ => crate::managed_host_tools::Error::Invalid("Message ingress refused this request"),
+        CallbackError::InvalidResultSchema(_)
+        | CallbackError::Stale
+        | CallbackError::Conflict
+        | CallbackError::Unknown => {
+            crate::managed_host_tools::Error::Invalid("Message ingress refused this request")
+        }
     }
 }
 
@@ -243,7 +253,13 @@ impl crate::managed_host_tools::InterruptPort for ProductionPorts {
             CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
             CallbackError::Stored(location) => crate::managed_host_tools::Error::StoredAt(location),
             CallbackError::Invalid(message) => crate::managed_host_tools::Error::Invalid(message),
-            _ => crate::managed_host_tools::Error::Invalid("Unknown managed agent"),
+            CallbackError::InvalidResultSchema(_)
+            | CallbackError::Dependency(_)
+            | CallbackError::Stale
+            | CallbackError::Conflict
+            | CallbackError::Unknown => {
+                crate::managed_host_tools::Error::Invalid("Unknown managed agent")
+            }
         })
     }
 
@@ -355,21 +371,38 @@ impl crate::managed_host_tools::ComplaintPort for ProductionPorts {
             .map_err(|_| crate::managed_host_tools::Error::Invalid("Invalid complaint actor"))?;
         let value =
             crate::notification_dispatch::agent_complaint_action(tx, &actor, args, request_id, now)
-                .map_err(|error| match error {
-                    crate::notification_dispatch::NotificationDispatchError::Store(error) => {
-                        crate::managed_host_tools::Error::Store(error)
-                    }
-                    crate::notification_dispatch::NotificationDispatchError::ConflictingInput => {
-                        crate::managed_host_tools::Error::Invalid(if args["action"] == "submit" {
-                            "This complaint id has different content"
-                        } else {
-                            "This response id has different content"
-                        })
-                    }
-                    crate::notification_dispatch::NotificationDispatchError::Dependency(name) => {
-                        crate::managed_host_tools::Error::Unavailable(name)
-                    }
-                    _ => crate::managed_host_tools::Error::Invalid("Complaint action was refused"),
+                .map_err(|error| {
+                    match error {
+            crate::notification_dispatch::NotificationDispatchError::Store(error) => {
+                crate::managed_host_tools::Error::Store(error)
+            }
+            crate::notification_dispatch::NotificationDispatchError::ConflictingInput => {
+                crate::managed_host_tools::Error::Invalid(if args["action"] == "submit" {
+                    "This complaint id has different content"
+                } else {
+                    "This response id has different content"
+                })
+            }
+            crate::notification_dispatch::NotificationDispatchError::Dependency(name) => {
+                crate::managed_host_tools::Error::Unavailable(name)
+            }
+            crate::notification_dispatch::NotificationDispatchError::InvalidNotification {
+                ..
+            }
+            | crate::notification_dispatch::NotificationDispatchError::InvalidAccountState {
+                ..
+            }
+            | crate::notification_dispatch::NotificationDispatchError::StreamCapacity
+            | crate::notification_dispatch::NotificationDispatchError::InvalidStoredObject {
+                ..
+            }
+            | crate::notification_dispatch::NotificationDispatchError::ConflictingDelivery
+            | crate::notification_dispatch::NotificationDispatchError::UnauthorizedSubmission
+            | crate::notification_dispatch::NotificationDispatchError::Move(_)
+            | crate::notification_dispatch::NotificationDispatchError::Json(_) => {
+                crate::managed_host_tools::Error::Invalid("Complaint action was refused")
+            }
+        }
                 })?;
         let should_wake = (args["action"] == "submit" && value["recipient"] == "lead")
             || (args["action"] == "respond" && value["author"] != actor["id"]);
@@ -428,7 +461,20 @@ impl crate::managed_host_tools::WatchMonitorPort for ProductionPorts {
             crate::monitor_policy::MonitorError::Refused(reason) => {
                 crate::managed_host_tools::Error::Invalid(reason)
             }
-            _ => crate::managed_host_tools::Error::Invalid("Monitor cancellation was refused"),
+            crate::monitor_policy::MonitorError::InvalidStored { .. }
+            | crate::monitor_policy::MonitorError::InvalidResultReceipt(_)
+            | crate::monitor_policy::MonitorError::InvalidDeliveryIdentity(_)
+            | crate::monitor_policy::MonitorError::InvalidOutputReceipt(_)
+            | crate::monitor_policy::MonitorError::TaskFailed
+            | crate::monitor_policy::MonitorError::InputOutcomeUnknown
+            | crate::monitor_policy::MonitorError::ProviderRequest { .. }
+            | crate::monitor_policy::MonitorError::ConfigurationRejected { .. }
+            | crate::monitor_policy::MonitorError::ConfigurationReceipt { .. }
+            | crate::monitor_policy::MonitorError::Event(_)
+            | crate::monitor_policy::MonitorError::Rules(_)
+            | crate::monitor_policy::MonitorError::Io(_) => {
+                crate::managed_host_tools::Error::Invalid("Monitor cancellation was refused")
+            }
         })?;
         let signals = operation
             .into_iter()
@@ -479,7 +525,15 @@ impl crate::managed_host_tools::ReviewPort for ProductionPorts {
                 crate::native_actions::NativeError::Store(error) => {
                     crate::managed_host_tools::Error::Store(error)
                 }
-                _ => crate::managed_host_tools::Error::Unavailable("agent-create/worker-driver"),
+                crate::native_actions::NativeError::Invalid(_)
+                | crate::native_actions::NativeError::InvalidStored { .. }
+                | crate::native_actions::NativeError::Conflict
+                | crate::native_actions::NativeError::Changed
+                | crate::native_actions::NativeError::Unknown
+                | crate::native_actions::NativeError::Json(_)
+                | crate::native_actions::NativeError::Sql(_) => {
+                    crate::managed_host_tools::Error::Unavailable("agent-create/worker-driver")
+                }
             },
         )?;
         Ok(crate::managed_host_tools::OperationResult {
@@ -580,7 +634,13 @@ pub(super) async fn resolve_interrupt_target(
                     CallbackError::Invalid(message) => {
                         crate::managed_host_tools::Error::Invalid(message)
                     }
-                    _ => crate::managed_host_tools::Error::Invalid("Unknown managed agent"),
+                    CallbackError::InvalidResultSchema(_)
+                    | CallbackError::Dependency(_)
+                    | CallbackError::Stale
+                    | CallbackError::Conflict
+                    | CallbackError::Unknown => {
+                        crate::managed_host_tools::Error::Invalid("Unknown managed agent")
+                    }
                 })?;
             if !is_descendant(tx, &context.agent, &target)? {
                 return Err(crate::managed_host_tools::Error::Invalid(
@@ -614,7 +674,13 @@ pub(super) async fn resolve_send_target(
                     CallbackError::Invalid(message) => {
                         crate::managed_host_tools::Error::Invalid(message)
                     }
-                    _ => crate::managed_host_tools::Error::Invalid("Unknown managed agent"),
+                    CallbackError::InvalidResultSchema(_)
+                    | CallbackError::Dependency(_)
+                    | CallbackError::Stale
+                    | CallbackError::Conflict
+                    | CallbackError::Unknown => {
+                        crate::managed_host_tools::Error::Invalid("Unknown managed agent")
+                    }
                 })?;
             let descendant = is_descendant(tx, &context.agent, &target)?;
             Ok((target, descendant))
@@ -630,7 +696,9 @@ impl From<event_write::EventWriteError> for CallbackError {
             E::Store(error) => Self::Store(error),
             E::InvalidRequest(message) | E::Conflict(message) => Self::Invalid(message),
             E::WorkerAssignmentUnavailable => Self::Dependency("worker-driver/work-assignment"),
-            _ => Self::Dependency("event-write/required-runtime-driver"),
+            E::RemoteEventsUnavailable | E::InvalidStoredObject { .. } | E::Clock => {
+                Self::Dependency("event-write/required-runtime-driver")
+            }
         }
     }
 }
@@ -714,7 +782,32 @@ pub(super) fn execute(
             .as_str()
             .filter(|owner| !owner.is_empty())
             .map(|_| "owner"),
-        _ => None,
+        ToolKind::Request
+        | ToolKind::ChatRead
+        | ToolKind::Context
+        | ToolKind::Peers
+        | ToolKind::Status
+        | ToolKind::Read
+        | ToolKind::Search
+        | ToolKind::Send
+        | ToolKind::Spawn
+        | ToolKind::Review
+        | ToolKind::Monitor
+        | ToolKind::MonitorInput
+        | ToolKind::CancelMonitor
+        | ToolKind::Move
+        | ToolKind::Teleport
+        | ToolKind::Servers
+        | ToolKind::Interrupt
+        | ToolKind::AgentManage
+        | ToolKind::Watch
+        | ToolKind::Complaint
+        | ToolKind::Speak
+        | ToolKind::Title
+        | ToolKind::SignIn
+        | ToolKind::HostExec
+        | ToolKind::LayrRead
+        | ToolKind::Unknown => None,
     };
     if let Some(field) = field {
         resolved_args[field] = json!(messages::resolve_agent(tx, snapshot, text(args, field)?)?);
@@ -726,7 +819,13 @@ pub(super) fn execute(
             monitor_cancel_owner(tx, &snapshot.context().agent, monitor_id).map_err(|error| {
                 match error {
                     crate::managed_host_tools::Error::Store(error) => CallbackError::Store(error),
-                    _ => CallbackError::Stale,
+                    crate::managed_host_tools::Error::Invalid(_)
+                    | crate::managed_host_tools::Error::Stale
+                    | crate::managed_host_tools::Error::InvalidStored { .. }
+                    | crate::managed_host_tools::Error::StoredAt(_)
+                    | crate::managed_host_tools::Error::Unavailable(_)
+                    | crate::managed_host_tools::Error::Sqlite(_)
+                    | crate::managed_host_tools::Error::Work(_) => CallbackError::Stale,
                 }
             })?;
         let (value, operation) = crate::monitor_driver::reserve_cancel(
@@ -741,7 +840,20 @@ pub(super) fn execute(
                 CallbackError::Dependency(name)
             }
             crate::monitor_policy::MonitorError::Refused(reason) => CallbackError::Invalid(reason),
-            _ => CallbackError::Invalid("Monitor cancellation was refused"),
+            crate::monitor_policy::MonitorError::InvalidStored { .. }
+            | crate::monitor_policy::MonitorError::InvalidResultReceipt(_)
+            | crate::monitor_policy::MonitorError::InvalidDeliveryIdentity(_)
+            | crate::monitor_policy::MonitorError::InvalidOutputReceipt(_)
+            | crate::monitor_policy::MonitorError::TaskFailed
+            | crate::monitor_policy::MonitorError::InputOutcomeUnknown
+            | crate::monitor_policy::MonitorError::ProviderRequest { .. }
+            | crate::monitor_policy::MonitorError::ConfigurationRejected { .. }
+            | crate::monitor_policy::MonitorError::ConfigurationReceipt { .. }
+            | crate::monitor_policy::MonitorError::Event(_)
+            | crate::monitor_policy::MonitorError::Rules(_)
+            | crate::monitor_policy::MonitorError::Io(_) => {
+                CallbackError::Invalid("Monitor cancellation was refused")
+            }
         })?;
         return Ok(crate::managed_host_tools::Staged {
             value,
@@ -780,7 +892,24 @@ pub(super) fn execute(
                     .map_err(managed_error)?;
             return Ok(result);
         }
-        _ => {}
+        ToolKind::Request
+        | ToolKind::Task
+        | ToolKind::Message
+        | ToolKind::ChatRead
+        | ToolKind::Peers
+        | ToolKind::Read
+        | ToolKind::MonitorInput
+        | ToolKind::CancelMonitor
+        | ToolKind::Move
+        | ToolKind::Teleport
+        | ToolKind::Servers
+        | ToolKind::AgentManage
+        | ToolKind::Speak
+        | ToolKind::Title
+        | ToolKind::SignIn
+        | ToolKind::HostExec
+        | ToolKind::LayrRead
+        | ToolKind::Unknown => {}
     }
     let value = match kind {
         ToolKind::Request => Ok(payloads
@@ -900,7 +1029,16 @@ fn search_error(error: crate::transcript::TranscriptError) -> crate::managed_hos
         T::Store => E::Store(studio_runtime_store::StoreError::SchemaMismatch(
             "transcript storage failed".into(),
         )),
-        _ => E::Invalid("Search result is unavailable"),
+        T::UnknownMessage
+        | T::DeletedConversation
+        | T::DeletedAssetOwner
+        | T::UnknownAssetOwner
+        | T::MissingContent
+        | T::SearchResultUnavailable
+        | T::ChatUnavailable
+        | T::HistoryCursor
+        | T::SnapshotChanged
+        | T::ReadOnlyRepair => E::Invalid("Search result is unavailable"),
     }
 }
 
@@ -918,7 +1056,18 @@ fn monitor_context_error(
         },
         M::Unavailable(name) => E::Unavailable(name),
         M::Event(crate::event_write::EventWriteError::Store(error)) => E::Store(error),
-        _ => E::Invalid("Monitor context is unavailable"),
+        M::InvalidResultReceipt(_)
+        | M::InvalidDeliveryIdentity(_)
+        | M::InvalidOutputReceipt(_)
+        | M::TaskFailed
+        | M::InputOutcomeUnknown
+        | M::Refused(_)
+        | M::ProviderRequest { .. }
+        | M::ConfigurationRejected { .. }
+        | M::ConfigurationReceipt { .. }
+        | M::Event(_)
+        | M::Rules(_)
+        | M::Io(_) => E::Invalid("Monitor context is unavailable"),
     }
 }
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str, CallbackError> {
@@ -1043,7 +1192,32 @@ pub(super) fn payload_selection(
             &snapshot.context().agent,
             args,
         )?)),
-        _ => None,
+        ToolKind::Task
+        | ToolKind::Message
+        | ToolKind::ChatRead
+        | ToolKind::Context
+        | ToolKind::Peers
+        | ToolKind::Status
+        | ToolKind::Search
+        | ToolKind::Send
+        | ToolKind::Spawn
+        | ToolKind::Review
+        | ToolKind::Monitor
+        | ToolKind::MonitorInput
+        | ToolKind::CancelMonitor
+        | ToolKind::Move
+        | ToolKind::Teleport
+        | ToolKind::Servers
+        | ToolKind::Interrupt
+        | ToolKind::AgentManage
+        | ToolKind::Watch
+        | ToolKind::Complaint
+        | ToolKind::Speak
+        | ToolKind::Title
+        | ToolKind::SignIn
+        | ToolKind::HostExec
+        | ToolKind::LayrRead
+        | ToolKind::Unknown => None,
     })
 }
 fn request_action(args: &Value) -> Result<tool_requests::Action<'_>, CallbackError> {

@@ -144,9 +144,13 @@ export function query({ prompt, options }: FixtureQuery) {
       yield {
         type: "result",
         subtype: "success",
+        is_error: false,
         usage: { input_tokens: 1, output_tokens: 1 },
         result: "done",
-      } satisfies Pick<SDKResultSuccess, "type" | "subtype" | "result"> & {
+      } satisfies Pick<
+        SDKResultSuccess,
+        "type" | "subtype" | "is_error" | "result"
+      > & {
         usage: Pick<
           SDKResultSuccess["usage"],
           "input_tokens" | "output_tokens"

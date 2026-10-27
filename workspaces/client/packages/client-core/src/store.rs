@@ -198,7 +198,8 @@ impl Store {
                     || key.len() > max_preference_key_bytes()
                     || value.as_str().is_none_or(|raw| raw.len() > 8 * 1024 * 1024)
             })
-            || serde_json::to_vec(&request.params).unwrap().len() > 16 * 1024 * 1024
+            // serde_json::Value contains only JSON-serializable values.
+            || serde_json::to_vec(&request.params).expect("JSON value serializes").len() > 16 * 1024 * 1024
         {
             return Ok(Response::failure(
                 request.id.clone(),
@@ -236,10 +237,11 @@ impl Store {
             }
         }
         let mut imported = 0;
+        // Validation above requires every entry value to be a string.
         for (key, value) in entries {
             imported += transaction.execute(
                 "INSERT OR IGNORE INTO client_preferences(key,value) VALUES(?1,?2)",
-                params![key, value.as_str().unwrap()],
+                params![key, value.as_str().expect("validated preference string")],
             )?;
         }
         let response = Response::success(
@@ -271,13 +273,14 @@ impl Store {
         if let Some(response) = replay(&transaction, request)? {
             return Ok(response);
         }
+        // The validation above requires a key, and raw_set also requires its value.
         if request.method == "preferences.raw_remove" {
             transaction.execute(
                 "DELETE FROM client_preferences WHERE key=?1",
-                [key.unwrap()],
+                [key.expect("validated preference key")],
             )?;
         } else {
-            transaction.execute("INSERT INTO client_preferences(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key.unwrap(),raw.unwrap()])?;
+            transaction.execute("INSERT INTO client_preferences(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key.expect("validated preference key"),raw.expect("validated raw preference")])?;
         }
         let response = Response::success(request.id.clone(), json!({"saved":true}));
         record(&transaction, request, &response)?;

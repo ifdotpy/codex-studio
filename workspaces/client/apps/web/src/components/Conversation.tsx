@@ -1,4 +1,5 @@
 import { randomUUID } from "../uuid";
+import { ProviderKind } from "../generated/providerKind.ts";
 import type { ReactNode } from "react";
 import { IdleCompactionNotice } from "./IdleCompactionNotice";
 import {
@@ -91,6 +92,7 @@ import {
 } from "../types";
 import Usage from "./Usage";
 import type { UsageAccount } from "./Usage";
+import type { AccountLimitsSnapshot } from "../usage/accountUsage";
 import PromptNavigator from "./PromptNavigator";
 import { usePromptRecall } from "./usePromptRecall";
 import PromptComposer, {
@@ -263,7 +265,7 @@ export default function Conversation(p: {
   refresh: () => Promise<void>;
   accountsState: ReturnType<typeof useAccounts>;
   notify: (s: string) => void;
-  limits: Json | null;
+  limits: AccountLimitsSnapshot | null;
   limitsAccounts?: UsageAccount[];
   limitsLoading?: boolean;
   jumpTarget?: { messageId: string; requestId: string } | undefined;
@@ -1456,7 +1458,7 @@ export default function Conversation(p: {
   const transcript = useMemo(
     () => (
       <>
-        {managed && !p.room && agent?.provider === "claude" && (
+        {managed && !p.room && agent?.provider === ProviderKind.Claude && (
           <ClaudeRepairNotice agent={agent} />
         )}
         <TurnHistory
@@ -2002,7 +2004,7 @@ export default function Conversation(p: {
               );
               const voiceTool = managed &&
                 agent?.isLead &&
-                agent?.provider !== "claude" &&
+                agent?.provider === ProviderKind.Codex &&
                 p.id &&
                 !threadBlock && (
                   <RealtimeVoice
@@ -2054,7 +2056,7 @@ export default function Conversation(p: {
                       workspace: p.syncWorkspaceId || p.data.stateDir,
                       account: p.agent?.accountKey || "default",
                       cwd: p.agent?.cwd || "",
-                      provider: String(p.agent?.provider || "codex"),
+                      provider: String(p.agent?.provider || ""),
                     }}
                   />
                   {exactModelCommand && (

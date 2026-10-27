@@ -325,7 +325,12 @@ impl OperationSnapshot {
                 None => RetryDecision::InspectWorkspace,
             },
             OperationPhase::Failed => RetryDecision::Dispatch,
-            _ => RetryDecision::InspectWorkspace,
+            OperationPhase::CapturePending
+            | OperationPhase::CaptureRunning
+            | OperationPhase::ProviderPending
+            | OperationPhase::LocalMutation
+            | OperationPhase::RecoveryRequired
+            | OperationPhase::Completed => RetryDecision::InspectWorkspace,
         })
     }
     /// Restart never resends a provider write. Capture can release its own reservation;

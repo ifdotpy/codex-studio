@@ -1,12 +1,13 @@
 //! Transfer progress through production preparation and terminal settlement.
+
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{
     account_session_runtime::{
         AccountSessionError, AccountSessionFuture, AccountSessionPort, ConnectionScope,
-        ProviderRequest, ProviderResponse, RequestCertainty, SessionReceipt,
-        TransferProviderRequest,
+        ProviderRequest, ProviderResponse, SessionReceipt, TransferProviderRequest,
     },
     account_transfer::Action,
     account_transfer_driver as driver,
@@ -99,6 +100,86 @@ fn resources(root: &std::path::Path, session: Arc<dyn AccountSessionPort>) -> Pr
 }
 
 #[tokio::test]
+async fn subagents_summary_does_not_hold_the_excluded_leads_native_preparation() {
+    let (root, store) = fixture().await;
+    store
+        .transaction(|tx| {
+            let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
+            lead.extra.insert("provider".into(), json!("codex"));
+            lead.extra.insert("model".into(), json!("gpt-6-astra"));
+            lead.extra.insert("nativeEffort".into(), Value::Null);
+            AgentRepository::put(tx, &lead)?;
+            let child = AgentRecord::from_value(json!({
+                "id":"child", "rootId":"lead", "epoch":1, "status":"idle", "isLead":false,
+                "accountKey":"source", "provider":"codex", "cwd":lead.extra.get("cwd")
+            }))?;
+            AgentRepository::put(tx, &child)
+        })
+        .await
+        .expect("idle child");
+    driver::request(&store, OP, "lead", "target", "subagents", "codex", 10.0)
+        .await
+        .expect("subagents transfer");
+    let before = agent(&store);
+    let pending = operation(&store);
+    assert_eq!(pending["members"]["child"]["phase"], "lazy");
+    let session = Arc::new(CompletingSession {
+        store: store.clone(),
+        native_path: root.path().join("unused-history"),
+        calls: Mutex::default(),
+    });
+    let mut resources = resources(root.path(), session.clone());
+    resources.model_catalog.retain_accounts(&[
+        json!({"id":"source","home":root.path(),"provider":"codex"}),
+        json!({"id":"target","home":root.path(),"provider":"codex"}),
+    ]);
+    resources
+        .model_catalog
+        .set_account_session(Some(session.clone()));
+    let _catalog = resources
+        .model_catalog
+        .wait_for_admission_catalog(
+            "source",
+            &resources.account_home,
+            studio_runtime_providers::ProviderKind::Codex,
+        )
+        .await;
+    session.calls.lock().expect("calls").clear();
+    let prepared =
+        preparation::prepare_native_thread(store.clone(), &resources, "lead", "ordinary-lead", 1)
+            .await
+            .expect("child-only progress cannot hold the excluded lead");
+    assert_eq!(prepared.params["model"], "gpt-6-astra");
+    let after = agent(&store);
+    assert_eq!(after["accountKey"], before["accountKey"]);
+    assert_eq!(after["threadId"], before["threadId"]);
+    assert_eq!(after["accountTransfer"], before["accountTransfer"]);
+    assert_eq!(
+        operation(&store),
+        pending,
+        "lead admission cannot advance child history"
+    );
+    assert!(
+        session.calls.lock().expect("calls").is_empty(),
+        "lead preparation sends no transfer requests"
+    );
+    resources.account_session = None;
+    let error =
+        preparation::prepare_native_thread(store.clone(), &resources, "child", "ordinary-child", 1)
+            .await
+            .expect_err("enrolled child still requires its history executor");
+    assert!(
+        matches!(error, studio_runtime_services::account_worker::WorkerError::PreparationRefused(reason)
+        if reason == "Not implemented: requires provider-session/account-worker")
+    );
+    assert_eq!(
+        operation(&store),
+        pending,
+        "child cannot bypass pending history"
+    );
+}
+
+#[tokio::test]
 async fn unknown_transfer_operation_keeps_the_native_admission_hold() {
     let (root, store) = fixture().await;
     store
@@ -142,15 +223,15 @@ impl CompletingSession {
                 .current_scope(account)
                 .expect("scope"),
             operation,
-            ticket: Some(RequestTicket {
-                generation: 1,
-                id: RequestId::String(format!("native-{}", method.as_str())),
-                method,
-            }),
-            certainty: RequestCertainty::Written,
-            result: Some(ProviderResponse::Reply(result)),
-            not_sent_reason: None,
             replayed: false,
+            outcome: ReceiptOutcome::Written {
+                ticket: RequestTicket {
+                    generation: 1,
+                    id: RequestId::String(format!("native-{}", method.as_str())),
+                    method,
+                },
+                response: ProviderResponse::Reply(result),
+            },
         }
     }
 }
@@ -180,7 +261,145 @@ impl AccountSessionPort for CompletingSession {
                     assert_eq!(member["providerIntent"]["operation"], request.operation);
                     json!({"thread":{"id":"destination-thread"}})
                 }
-                method => {
+                method @ Method::Initialize
+                | method @ Method::Initialized
+                | method @ Method::Ack
+                | method @ Method::AccountLoginCancel
+                | method @ Method::AccountLoginStart
+                | method @ Method::AccountRateLimitResetCreditConsume
+                | method @ Method::ThreadLoadedList
+                | method @ Method::ConfigRead
+                | method @ Method::SkillsExtraRootsSet
+                | method @ Method::AccountRead
+                | method @ Method::AccountRateLimitsRead
+                | method @ Method::ThreadStart
+                | method @ Method::ThreadRealtimeStart
+                | method @ Method::ThreadRealtimeStop
+                | method @ Method::ThreadRealtimeAppendSpeech
+                | method @ Method::ThreadRealtimeItemStarted
+                | method @ Method::ThreadRealtimeTranscriptDelta
+                | method @ Method::ThreadRealtimeTranscriptDone
+                | method @ Method::ThreadRealtimeSdp
+                | method @ Method::ThreadRealtimeError
+                | method @ Method::ThreadRealtimeClosed
+                | method @ Method::ThreadResume
+                | method @ Method::TurnStart
+                | method @ Method::TurnSteer
+                | method @ Method::TurnInterrupt
+                | method @ Method::ThreadList
+                | method @ Method::ThreadArchive
+                | method @ Method::ThreadNameSet
+                | method @ Method::ThreadMetadataUpdate
+                | method @ Method::ThreadSettingsUpdate
+                | method @ Method::ThreadCompactStart
+                | method @ Method::ThreadRollback
+                | method @ Method::ThreadItemsList
+                | method @ Method::ThreadGoalSet
+                | method @ Method::ThreadGoalUpdated
+                | method @ Method::ThreadUnarchive
+                | method @ Method::ThreadUnsubscribe
+                | method @ Method::ProcessSpawn
+                | method @ Method::ProcessWriteStdin
+                | method @ Method::ProcessKill
+                | method @ Method::ProcessResizePty
+                | method @ Method::CommandExec
+                | method @ Method::CommandExecWrite
+                | method @ Method::CommandExecResize
+                | method @ Method::CommandExecTerminate
+                | method @ Method::ThreadBackgroundTerminalsList
+                | method @ Method::ThreadBackgroundTerminalsTerminate
+                | method @ Method::ThreadBackgroundTerminalsClean
+                | method @ Method::ThreadCommandExecutionBackground
+                | method @ Method::ThreadQueueList
+                | method @ Method::ClaudeState
+                | method @ Method::ClaudeRepairReport
+                | method @ Method::ClaudeFileBackups
+                | method @ Method::ClaudeSettings
+                | method @ Method::ClaudeActivity
+                | method @ Method::ClaudeStopTask
+                | method @ Method::ClaudeShellPolicy
+                | method @ Method::ClaudeDiagnostics
+                | method @ Method::ClaudeMoveVersions
+                | method @ Method::McpServerReconnect
+                | method @ Method::McpServerStatusList
+                | method @ Method::SkillsList
+                | method @ Method::OperationStatus
+                | method @ Method::ReviewStart
+                | method @ Method::BrowserAnswer
+                | method @ Method::BrowserCallback
+                | method @ Method::BrowserClose
+                | method @ Method::BrowserWait
+                | method @ Method::ClaudeCommands
+                | method @ Method::ClaudeMoveExport
+                | method @ Method::ClaudeMoveIdentity
+                | method @ Method::ClaudeMovePreflight
+                | method @ Method::ClaudeMoveProof
+                | method @ Method::Detach
+                | method @ Method::EventRead
+                | method @ Method::Exec
+                | method @ Method::Generate
+                | method @ Method::Health
+                | method @ Method::Info
+                | method @ Method::LayrHealth
+                | method @ Method::Next
+                | method @ Method::Open
+                | method @ Method::ProjectEnsure
+                | method @ Method::ProjectExec
+                | method @ Method::ProjectImport
+                | method @ Method::ProviderList
+                | method @ Method::Replay
+                | method @ Method::ResponseStatus
+                | method @ Method::RetireCommand
+                | method @ Method::SecretsList
+                | method @ Method::SecretsRemove
+                | method @ Method::SecretsSet
+                | method @ Method::ShareConfigure
+                | method @ Method::ShareName
+                | method @ Method::ShareStatus
+                | method @ Method::Sign
+                | method @ Method::Status
+                | method @ Method::SyncMacApply
+                | method @ Method::SyncMacHandoff
+                | method @ Method::SyncMacHashes
+                | method @ Method::SyncMacHead
+                | method @ Method::SyncMacRead
+                | method @ Method::SyncMacWorktree
+                | method @ Method::VaultConfigure
+                | method @ Method::VaultPush
+                | method @ Method::VaultStatus
+                | method @ Method::UploadBegin
+                | method @ Method::UploadChunk
+                | method @ Method::UploadCommit
+                | method @ Method::Verify
+                | method @ Method::Write
+                | method @ Method::CurrentTimeRead
+                | method @ Method::ItemToolCall
+                | method @ Method::ItemCommandExecutionRequestApproval
+                | method @ Method::ItemFileChangeRequestApproval
+                | method @ Method::ItemPermissionsRequestApproval
+                | method @ Method::McpServerElicitationRequest
+                | method @ Method::ItemToolRequestUserInput
+                | method @ Method::ItemStarted
+                | method @ Method::ItemCompleted
+                | method @ Method::ItemAgentMessageDelta
+                | method @ Method::ItemReasoningTextDelta
+                | method @ Method::ItemCommandExecutionOutputDelta
+                | method @ Method::CommandExecOutputDelta
+                | method @ Method::TurnStarted
+                | method @ Method::TurnCompleted
+                | method @ Method::TurnPlanUpdated
+                | method @ Method::TurnDiffUpdated
+                | method @ Method::ThreadClosed
+                | method @ Method::ThreadStatusChanged
+                | method @ Method::ThreadTokenUsageUpdated
+                | method @ Method::ThreadShellPolicyUpdated
+                | method @ Method::ThreadIdleCompactionUpdated
+                | method @ Method::AccountLoginCompleted
+                | method @ Method::AccountUpdated
+                | method @ Method::AccountRateLimitsUpdated
+                | method @ Method::ModelSafetyBufferingUpdated
+                | method @ Method::ProviderGenerationStarted
+                | method @ Method::ProtocolError => {
                     panic!("unexpected ordinary provider request before adoption: {method:?}")
                 }
             };
@@ -245,7 +464,11 @@ async fn lazy_history_receipt_is_adopted_before_ordinary_preparation_returns() {
         .set_account_session(Some(session.clone()));
     let _catalog = resources
         .model_catalog
-        .wait_for_admission_catalog("target", &resources.account_home, "codex")
+        .wait_for_admission_catalog(
+            "target",
+            &resources.account_home,
+            studio_runtime_providers::ProviderKind::Codex,
+        )
         .await;
     preparation::prepare_native_thread(store.clone(), &resources, "lead", "ordinary", 1)
         .await

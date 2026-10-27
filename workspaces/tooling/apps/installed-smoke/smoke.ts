@@ -40,11 +40,16 @@ import {
   directoryIdentity,
   processStartIdentity,
   sqliteEvidence,
+  PRICING_PROVIDERS,
 } from "./usage.ts";
+import {
+  ProviderKind,
+  isProviderKind,
+  PROVIDER_KINDS,
+} from "../../../client/apps/web/src/generated/providerKind.ts";
 
 import type {
   Schema,
-  Provider,
   Transcript,
   Analytics,
   Cost,
@@ -63,9 +68,9 @@ import type { RendererManifest } from "../../../client/apps/web/scripts/build-ma
 type Options = {
   app: string;
   url: string;
-  model: Record<string, string>;
+  model: Partial<Record<ProviderKind, string>>;
   usage?: boolean;
-  providers?: string[] | undefined;
+  providers?: ProviderKind[] | undefined;
   "sqlite-ro-agent"?: string | undefined;
 };
 export type ReportRow = {
@@ -188,7 +193,6 @@ const ARCHIVE_SHOWN_MS = 10_000;
 const URL_NAMESPACE = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
 /** Pricing owner: the models.dev artifact that the backend reads in its state folder. */
 const PRICING_ARTIFACT = "model-pricing/models-dev-v1.json";
-const PRICING_PROVIDERS = { codex: "openai", claude: "anthropic" } as const;
 const TERMINAL_STATUSES = new Set([
   "completed",
   "idle",
@@ -275,21 +279,24 @@ export function elapsedSeconds(value: string) {
 export function cheapestModel(
   models: Schema["ProviderModel"][],
   pricing: Pick<PricingArtifact, "catalog">,
-  provider: Provider,
+  provider: ProviderKind,
 ) {
   const priced =
     pricing?.catalog?.providers?.[PRICING_PROVIDERS[provider]]?.models ?? {};
   let best: {
     model: string;
     price: number;
-    efforts: Schema["JsonValue"][];
+    efforts: NonNullable<Schema["ProviderModel"]["supportedReasoningEfforts"]>;
   } | null = null;
   for (const row of models) {
     if (row?.hidden || typeof row?.model !== "string") {
       continue;
     }
     const cost =
-      priced[row.model]?.cost ?? priced[row.resolvedModel as string]?.cost;
+      priced[row.model]?.cost ??
+      (typeof row.resolvedModel === "string"
+        ? priced[row.resolvedModel]?.cost
+        : undefined);
     if (typeof cost?.input !== "number" || typeof cost?.output !== "number") {
       continue;
     }
@@ -298,7 +305,9 @@ export function cheapestModel(
       best = {
         model: row.model,
         price,
-        efforts: (row.supportedReasoningEfforts ?? []) as Schema["JsonValue"][],
+        efforts: Array.isArray(row.supportedReasoningEfforts)
+          ? row.supportedReasoningEfforts
+          : [],
       };
     }
   }
@@ -306,13 +315,13 @@ export function cheapestModel(
 }
 
 /** The lowest reasoning effort that a model row lists, or undefined. */
-export function lowestEffort(efforts: readonly Schema["JsonValue"][]) {
+export function lowestEffort(
+  efforts: Readonly<
+    NonNullable<Schema["ProviderModel"]["supportedReasoningEfforts"]>
+  >,
+) {
   const order = ["minimal", "low", "medium", "high"];
-  const names = efforts.map((entry) =>
-    typeof entry === "string"
-      ? entry
-      : (entry as Record<string, Schema["JsonValue"]> | null)?.reasoningEffort,
-  );
+  const names = efforts.map((entry) => entry.reasoningEffort);
   return order.find((name) => names.includes(name));
 }
 
@@ -363,8 +372,8 @@ export function browserCardId(bridgeId: string) {
     .update(`studio-browser-open:${bridgeId}`)
     .digest()
     .subarray(0, 16);
-  bytes[6] = (bytes[6] & 0x0f) | 0x50;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  bytes[6] = (bytes.readUInt8(6) & 0x0f) | 0x50;
+  bytes[8] = (bytes.readUInt8(8) & 0x3f) | 0x80;
   const hex = bytes.toString("hex");
   return [
     hex.slice(0, 8),
@@ -697,8 +706,8 @@ export class Smoke {
   declare sqliteRoAgent: string | undefined;
   declare usageEvidence: Evidence;
   declare backend: Backend;
-  declare model: Record<string, string>;
-  declare providers: string[] | undefined;
+  declare model: Partial<Record<ProviderKind, string>>;
+  declare providers: ProviderKind[] | undefined;
   declare report: Report;
   declare runId: string;
   declare temporaryRoot: string;
@@ -715,7 +724,7 @@ export class Smoke {
   declare state: string;
   declare live: LiveChanges | null | undefined;
   declare accountRecords: Map<string, Schema["Account"]>;
-  declare accountsByProvider: Map<Provider, string>;
+  declare accountsByProvider: Map<ProviderKind, string>;
   declare evidencePath: string | undefined;
   declare interrupted: boolean | undefined;
   constructor(options: Options) {
@@ -826,7 +835,7 @@ export class Smoke {
       .split("\n")
       .flatMap((line) => {
         const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
-        return match
+        return match?.[3] !== undefined
           ? [
               {
                 pid: Number(match[1]),
@@ -934,12 +943,12 @@ export class Smoke {
     }
     const processes = command("/bin/ps", ["-axww", "-o", "pid=,command="])
       .split("\n")
-      .map((line) => /^\s*(\d+)\s+(.*)$/.exec(line))
-      .filter(
-        Boolean as typeof Boolean &
-          ((match: RegExpExecArray | null) => match is RegExpExecArray),
-      )
-      .map(([, pid, line]) => ({ pid: Number(pid), line }));
+      .flatMap((line) => {
+        const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+        return match?.[2] !== undefined
+          ? [{ pid: Number(match[1]), line: match[2] }]
+          : [];
+      });
     // A second backend of this bundle is starting, or waits for the runtime lock.
     const server = installationPaths(this.app).server;
     const others = processes.filter(
@@ -1027,9 +1036,10 @@ export class Smoke {
       (account) =>
         account.status === "ready" && !account.disconnected && !account.deleted,
     );
-    const chosen = new Map<Provider, string>();
+    const chosen = new Map<ProviderKind, string>();
     for (const account of ready) {
-      const provider = account.provider ?? "codex";
+      const provider = account.provider;
+      if (!isProviderKind(provider)) continue;
       if (this.providers && !this.providers.includes(provider)) {
         continue;
       }
@@ -1040,7 +1050,7 @@ export class Smoke {
     if (chosen.size === 0) {
       throw new CheckFailed("no provider has a ready login");
     }
-    if (this.usage && (!chosen.has("codex") || !chosen.has("claude")))
+    if (this.usage && PROVIDER_KINDS.some((provider) => !chosen.has(provider)))
       throw new CheckFailed("--usage requires ready Claude and Codex accounts");
     this.accountRecords = new Map(
       ready.map((account) => [account.id, account]),
@@ -1078,7 +1088,7 @@ export class Smoke {
     return this.root;
   }
 
-  async chooseModel(provider: Provider, account: string) {
+  async chooseModel(provider: ProviderKind, account: string) {
     if (this.model?.[provider]) {
       return { model: this.model[provider], efforts: [] };
     }
@@ -1163,7 +1173,7 @@ export class Smoke {
     }
   }
 
-  async turn(provider: Provider) {
+  async turn(provider: ProviderKind) {
     const account = this.accountsByProvider.get(provider)!;
 
     const { model, efforts } = await this.chooseModel(provider, account);
@@ -1175,7 +1185,7 @@ export class Smoke {
     const effort = lowestEffort(efforts);
     this.checkActive();
     if (this.usage) {
-      if (provider === "claude") {
+      if (provider === ProviderKind.Claude) {
         this.usageEvidence.servingBridges ??= {};
         this.usageEvidence.servingBridges[account] ??=
           await this.bridgeObservation(account);
@@ -1263,13 +1273,13 @@ export class Smoke {
     };
   }
 
-  async usageScenario(chat: Chat, provider: Provider) {
+  async usageScenario(chat: Chat, provider: ProviderKind) {
     this.checkActive();
     const { id } = chat;
     const token = `SMOKE_${this.runId}_${provider}_LONG`;
     const inputId = randomUUID();
     const initialTurnId =
-      provider === "claude"
+      provider === ProviderKind.Claude
         ? (await this.transcript(id))
             .filter((item) => item.role === "assistant")
             .at(-1)?.turnId
@@ -1281,7 +1291,7 @@ export class Smoke {
       text: `This is turn 2 of a usage check. Write about 150 words explaining why small deterministic tests are useful. Then use one read-only file-read tool to read ${path.join(this.root, NOTES_FILE)} (if no file-read tool exists, run cat on that exact file). After that tool result write another 150 words about test cleanup. Do not read any other file, delegate, or create monitors. End with ${token}.`,
     });
     let steer: Steer | null = null;
-    if (provider === "claude") {
+    if (provider === ProviderKind.Claude) {
       const activeTurnId = await until(
         "Claude turn 2 starts",
         TURN_MS,
@@ -1332,7 +1342,7 @@ export class Smoke {
 
   async collectUsage(
     chat: Chat,
-    provider: Provider,
+    provider: ProviderKind,
     scenario: {
       entities?: OwnedEntities;
       savedBridge?: BridgeObservation[] | undefined;
@@ -1385,7 +1395,7 @@ export class Smoke {
       scenario.savedBridge ??
       previous?.bridgeProcesses;
     const provenance =
-      provider === "claude"
+      provider === ProviderKind.Claude
         ? await this.currentBridgeProvenance(chat.account!, savedBridge)
         : {
             serving: [],
@@ -1393,7 +1403,7 @@ export class Smoke {
           };
     const bridgeProcesses = provenance.serving;
     const proof = scenarioEvidence(transcript, provider, this.root);
-    if (provider === "claude") {
+    if (provider === ProviderKind.Claude) {
       const item = transcript.find((item) =>
         item.inputs?.some((input) => input.text?.includes("usage-check steer")),
       );
@@ -1421,7 +1431,7 @@ export class Smoke {
       const endedAt = Math.max(
         ...transcript
           .filter((item) => item.turnId === proof.longTurnId)
-          .map((item) => item.at! as number),
+          .map((item) => Number(item.at)),
       );
       proof.steer = validateSteer(
         item,
@@ -1477,13 +1487,13 @@ export class Smoke {
     this.saveUsage();
     if (!displayedCost)
       throw new CheckFailed("No sessionCost sync entity was observed");
-    if (provider === "claude" && !bridgeProcesses.length)
+    if (provider === ProviderKind.Claude && !bridgeProcesses.length)
       throw new CheckFailed("No Claude bridge process identity found");
     const longResponseIds = truth.responses.filter(
       (response) =>
         response.turnId && response.turnId === truth.responses.at(-2)?.turnId,
     );
-    if (provider === "codex" && longResponseIds.length < 2)
+    if (provider === ProviderKind.Codex && longResponseIds.length < 2)
       throw new CheckFailed("Turn 2 has fewer than two native model responses");
     return `${id}: ${truth.responses.length} native responses, ${recorded.responses.length} recorded responses`;
   }
@@ -1604,10 +1614,10 @@ export class Smoke {
         publicationReady(
           completed.displayedCost,
           completed.publication.currentCost,
-          completed.analytics!,
+          completed.analytics ?? {},
           completed.publication.finalTurnId,
         ) &&
-        (completed.provider !== "claude" ||
+        (completed.provider !== ProviderKind.Claude ||
           completed.scenario?.steer?.receipt?.materialized)
       ) {
         console.log(`Keeping completed usage snapshot for ${id}`);
@@ -1619,10 +1629,12 @@ export class Smoke {
 
       if (!agent.name?.startsWith(`Studio smoke ${this.runId} `))
         throw new CheckFailed(`Chat ${id} is not owned by run ${this.runId}`);
+      if (!isProviderKind(agent.provider))
+        throw new CheckFailed(`Unsupported provider for chat ${id}`);
       this.checkActive();
       await this.collectUsage(
         { id, account: agent.accountKey!, model: agent.model! },
-        agent.provider as Provider,
+        agent.provider,
         {
           entities,
           savedBridge: this.usageEvidence.providers.find(
@@ -1790,12 +1802,13 @@ export class Smoke {
     const finished = monitors.filter(
       (value) => value.status === "completed" && value.exitCode === 0,
     );
-    if (finished.length === 0) {
+    const [monitor] = finished;
+    if (!monitor) {
       throw new CheckFailed(
         `no completed monitor of the chat: ${JSON.stringify(monitors.map((value) => [value.status, value.exitCode]))}`,
       );
     }
-    return `monitor ${finished[0].id ?? "?"} completed with exit 0`;
+    return `monitor ${monitor.id ?? "?"} completed with exit 0`;
   }
 
   /** Submit a sign-in card the way a command's $BROWSER does, then decline it at once. */
@@ -1935,9 +1948,10 @@ export class Smoke {
         after.archived !== before.archived
       );
     });
-    if (changed.length > 0) {
+    const [firstChanged] = changed;
+    if (firstChanged) {
       throw new CheckFailed(
-        `${changed.length} owner chats changed name or archive state, first ${changed[0][0]}`,
+        `${changed.length} owner chats changed name or archive state, first ${firstChanged[0]}`,
       );
     }
     return `${this.ownerChats.size} owner chats unchanged`;
@@ -2159,18 +2173,25 @@ function options(argv: string[]) {
       help: { type: "boolean", default: false },
     },
   });
-  const model: Record<string, string> = {};
+  const model: Partial<Record<ProviderKind, string>> = {};
   for (const entry of values.model ?? []) {
     const [provider, id] = entry.split("=");
     if (!provider || !id) {
       throw new CheckFailed(`--model takes provider=model, not ${entry}`);
     }
+    if (!isProviderKind(provider))
+      throw new CheckFailed(`Unsupported provider: ${provider}`);
     model[provider] = id;
   }
-  return { ...values, model, providers: values.provider };
+  const providers = values.provider?.map((provider) => {
+    if (!isProviderKind(provider))
+      throw new CheckFailed(`Unsupported provider: ${provider}`);
+    return provider;
+  });
+  return { ...values, model, providers };
 }
 
-const usage = `Usage: just smoke-installed [--provider codex|claude]... [--model provider=id]... [--no-model] [--usage] [--app path] [--url url]
+const usage = `Usage: just smoke-installed [--provider ${PROVIDER_KINDS.join("|")}]... [--model provider=id]... [--no-model] [--usage] [--app path] [--url url]
        just smoke-installed --compare <old.json> <new.json>
        just smoke-installed --collect <run.json>
 Checks the installed application on Linux or macOS with its own test chats; see docs/testing.md, "Installed scenario smoke".
@@ -2179,10 +2200,11 @@ Checks the installed application on Linux or macOS with its own test chats; see 
 async function cli() {
   if (process.argv[2] === "--compare") {
     const files = process.argv.slice(3);
-    if (files.length !== 2)
+    const [oldFile, newFile] = files;
+    if (files.length !== 2 || oldFile === undefined || newFile === undefined)
       throw new CheckFailed("--compare requires <old.json> <new.json>");
     console.table(
-      compareEvidence(readEvidence(files[0]), readEvidence(files[1])),
+      compareEvidence(readEvidence(oldFile), readEvidence(newFile)),
     );
     return 0;
   }

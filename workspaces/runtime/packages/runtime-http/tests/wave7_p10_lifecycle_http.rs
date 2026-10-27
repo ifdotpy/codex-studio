@@ -1,5 +1,6 @@
-#[allow(dead_code, unused_imports)]
 use crate::monitor_runtime_fixtures as fixtures;
+#[allow(dead_code, unused_imports)]
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 
 use axum::{
     Extension,
@@ -14,7 +15,7 @@ use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::{
     account_session_runtime::{
         AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest,
-        ProviderResponse, RequestCertainty, SessionReceipt,
+        ProviderResponse, SessionReceipt,
     },
     agent_lifecycle_runtime::LifecyclePorts,
     lifecycle_effects::ProductionLifecyclePorts,
@@ -67,15 +68,15 @@ impl AccountSessionPort for InterruptBroker {
             Ok(SessionReceipt {
                 scope: scope.clone(),
                 operation: request.operation.clone(),
-                ticket: Some(RequestTicket {
-                    generation: scope.generation,
-                    id: RequestId::String(request.operation),
-                    method: request.method,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(json!({"ok":true}))),
-                not_sent_reason: None,
                 replayed: false,
+                outcome: ReceiptOutcome::Written {
+                    ticket: RequestTicket {
+                        generation: scope.generation,
+                        id: RequestId::String(request.operation),
+                        method: request.method,
+                    },
+                    response: ProviderResponse::Reply(json!({"ok":true})),
+                },
             })
         })
     }

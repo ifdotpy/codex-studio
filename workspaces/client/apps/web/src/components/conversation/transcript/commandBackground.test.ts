@@ -1,3 +1,4 @@
+import { required } from "../../componentTestFixtures";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -64,8 +65,8 @@ describe("requestCommandBackground", () => {
     ).toEqual({ kind: "backgrounded" });
     const [post] = posts(calls);
 
-    expect(post.path).toBe("/api/processes/action");
-    expect(post.value).toMatchObject({
+    expect(required(post).path).toBe("/api/processes/action");
+    expect(required(post).value).toMatchObject({
       action: "background_command",
       agent: "lead",
       accountKey: "acct",
@@ -153,7 +154,7 @@ describe("requestCommandBackground", () => {
       (c) => (c.value as { requestId: string }).requestId,
     );
     expect(sent).toHaveLength(2);
-    expect(sent[1]).toBe(sent[0]);
+    expect(required(sent[1])).toBe(required(sent[0]));
   });
 
   it("reads a saved receipt without a second write", async () => {
@@ -263,5 +264,50 @@ describe("Move to background button", () => {
       },
     ];
     expect(group(items)).toContain("Move to background");
+  });
+});
+
+describe("process action construction", () => {
+  it("requires action arguments and a result for a found receipt", () => {
+    // @ts-expect-error A background command requires its current response identity and item.
+    const incomplete: import("./commandBackground").BackgroundRequest = {
+      action: "background_command",
+      requestId: "r",
+      agent: "lead",
+      accountKey: "acct",
+      epoch: 4,
+    };
+    // @ts-expect-error A found receipt always carries the saved result.
+    const found: import("../../../api").GetResult<"/api/processes/action"> = {
+      found: true,
+    };
+    const command = {
+      action: "background_command",
+      requestId: "r",
+      agent: "lead",
+      accountKey: "acct",
+      epoch: 4,
+      responseTarget: target,
+      itemId: "item",
+    } satisfies import("./commandBackground").BackgroundRequest;
+    const mixed: import("./commandBackground").BackgroundRequest = {
+      ...command,
+      // @ts-expect-error A response-only command cannot carry a process snapshot.
+      processes: ["process"],
+    };
+    const descendants: import("./commandBackground").BackgroundRequest = {
+      ...command,
+      // @ts-expect-error Descendant scope applies only to process stop commands.
+      includeDescendants: true,
+    };
+    // @ts-expect-error A failed process outcome requires its error payload.
+    const failed: NonNullable<
+      import("../../../api").PostResult<"/api/processes/action">["processes"]
+    >[number] = { key: "key", agent: "lead", status: "failed" };
+    void mixed;
+    void descendants;
+    void failed;
+    expect(incomplete.action).toBe("background_command");
+    expect(found.found).toBe(true);
   });
 });

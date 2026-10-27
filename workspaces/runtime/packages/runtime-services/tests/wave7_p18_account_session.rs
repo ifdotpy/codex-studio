@@ -66,7 +66,8 @@ async fn limits_match_real_python_route_for_missing_null_empty_and_present_field
         };
         let response = limits(&session, "fixture", case.cached)
             .await
-            .expect("valid limits response");
+            .expect("valid limits response")
+            .into_value();
         assert_eq!(response, case.result, "case {index}");
         assert_eq!(
             *session.calls.lock().expect("calls"),
@@ -202,6 +203,6 @@ fn relocate(value: &mut Value, from: &Path, to: &Path) {
             .iter_mut()
             .for_each(|value| relocate(value, from, to)),
         Value::Object(map) => map.values_mut().for_each(|value| relocate(value, from, to)),
-        _ => {}
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }

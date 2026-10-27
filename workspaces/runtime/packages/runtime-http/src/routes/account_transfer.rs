@@ -7,6 +7,7 @@ use crate::{error::ApiError, generated, router::HttpState};
 use axum::{Json, extract::State, http::StatusCode};
 use serde::Deserialize;
 use serde_json::Value;
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_services::{
     account_transfer::{Action, TransferError},
     account_transfer_driver,
@@ -152,7 +153,7 @@ async fn transfer(
         let target_provider = state
             .model_catalog
             .account_profile(target)
-            .map(|(_, provider)| provider)
+            .map(|(_, provider)| provider.key().to_owned())
             .or_else(|| {
                 state.account_policy.as_ref().and_then(|policy| {
                     policy
@@ -168,7 +169,7 @@ async fn transfer(
                         })
                 })
             })
-            .or_else(|| (target == "default").then(|| "codex".to_owned()))
+            .or_else(|| (target == "default").then(|| ProviderKind::Codex.key().to_owned()))
             .ok_or_else(|| error(TransferError::Refused("Unknown account provider")))?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

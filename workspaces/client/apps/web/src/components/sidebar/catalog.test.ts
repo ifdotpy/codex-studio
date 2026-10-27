@@ -1,3 +1,4 @@
+import { required } from "../componentTestFixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Agent, PeerTeam } from "../../types";
 import {
@@ -45,7 +46,7 @@ describe("incremental sidebar catalog", () => {
     ];
     const before = select(rows, overrides, teams, order);
     const next = select(
-      [rows[0], { ...rows[1], status: "failed" }],
+      [required(rows[0]), { ...required(rows[1]), status: "failed" }],
       overrides,
       teams,
       order,
@@ -85,7 +86,7 @@ describe("incremental sidebar catalog", () => {
     const moved = renamed.map((row, i) =>
       i === 700 ? { ...row, updated: 3000 } : row,
     );
-    expect(select(moved, overrides, teams, order).ordered[0].id).toBe(
+    expect(required(select(moved, overrides, teams, order).ordered[0]).id).toBe(
       "lead-700",
     );
     expect(counts["order-compare"]).toBeLessThan(12);
@@ -129,7 +130,12 @@ describe("incremental sidebar catalog", () => {
         ),
       ).toEqual(expected);
     verify(["c", "a", "b"]);
-    rows = [rows[1], rows[0], rows[2], rows[3]];
+    rows = [
+      required(rows[1]),
+      required(rows[0]),
+      required(rows[2]),
+      required(rows[3]),
+    ];
     verify(["c", "b", "a"]);
     rows = [...rows, agent("new", { updated: 8 })];
     verify(["new", "c", "b", "a"]);
@@ -160,7 +166,10 @@ describe("incremental sidebar catalog", () => {
     expect(
       select(rows, overrides, teams, order).ordered.map((row) => row.id),
     ).toEqual(["a", "b"]);
-    const next = [{ ...rows[0], updated: undefined }, rows[1]];
+    const next = [
+      { ...required(rows[0]), updated: undefined },
+      required(rows[1]),
+    ];
     expect(
       select(next, overrides, teams, order).ordered.map((row) => row.id),
     ).toEqual(["b", "a"]);
@@ -170,7 +179,10 @@ describe("incremental sidebar catalog", () => {
     const rows = [agent("a"), agent("b", { cwd: "/other" })];
     const before = select(rows, overrides, teams, order);
     const after = select(
-      [{ ...rows[0], projectFolder: "folder", archived: true }, rows[1]],
+      [
+        { ...required(rows[0]), projectFolder: "folder", archived: true },
+        required(rows[1]),
+      ],
       overrides,
       [{ id: "team", projectPath: "/work", members: ["a"] }],
       order,
@@ -184,15 +196,15 @@ describe("incremental sidebar catalog", () => {
     const context = {};
     const rows = [agent("a"), agent("b")];
     const label = vi.fn((row: Agent) => row.name || "");
-    expect(select(rows, context, "a", label)).toEqual([rows[0]]);
+    expect(select(rows, context, "a", label)).toEqual([required(rows[0])]);
     select(rows, context, "b", label);
     expect(label).toHaveBeenCalledTimes(2);
-    const renamed = { ...rows[0], name: "renamed" };
-    expect(select([renamed, rows[1]], context, "renamed", label)).toEqual([
-      renamed,
-    ]);
+    const renamed = { ...required(rows[0]), name: "renamed" };
+    expect(
+      select([renamed, required(rows[1])], context, "renamed", label),
+    ).toEqual([renamed]);
     expect(label).toHaveBeenCalledTimes(3);
-    select([renamed, rows[1]], {}, "renamed", label);
+    select([renamed, required(rows[1])], {}, "renamed", label);
     expect(label).toHaveBeenCalledTimes(5);
   });
 });
@@ -232,10 +244,18 @@ describe("App catalog", () => {
     const beforeWorkers = before.workers("lead");
     expect(before.team("lead")).toEqual(rows.slice(0, 2));
     expect(select(rows).leads).toBe(before.leads);
-    const after = select([rows[0], rows[1], { ...rows[2], name: "Changed" }]);
+    const after = select([
+      required(rows[0]),
+      required(rows[1]),
+      { ...required(rows[2]), name: "Changed" },
+    ]);
     expect(after.team("lead")).toBe(beforeTeam);
     expect(after.workers("lead")).toBe(beforeWorkers);
-    const moved = select([rows[0], { ...rows[1], rootId: "other" }, rows[2]]);
+    const moved = select([
+      required(rows[0]),
+      { ...required(rows[1]), rootId: "other" },
+      required(rows[2]),
+    ]);
     expect(moved.workers("lead")).toEqual([]);
     expect(moved.team("other")?.map((row) => row.id)).toEqual([
       "worker",

@@ -1,4 +1,5 @@
 import { randomUUID } from "../../uuid";
+import { ProviderKind } from "../../generated/providerKind.ts";
 import { McpInventory } from "./McpInventory";
 import {
   isModelWhitelisted,
@@ -726,7 +727,7 @@ function Plan(c: Context) {
 
 function Checkpoints(c: Context) {
   if (
-    c.selected?.provider === "claude" &&
+    c.selected?.provider === ProviderKind.Claude &&
     (c.selected.workspaceMode === "shared" ||
       (!c.selected.worktree && c.selected.workspaceMode !== "worktree"))
   ) {
@@ -1037,6 +1038,7 @@ function inventoryName(value: unknown): string | undefined {
     const candidate = value[key];
     if (typeof candidate === "string" && candidate) return candidate;
   }
+  return undefined;
 }
 
 function Profiles(c: Context) {
@@ -1074,7 +1076,7 @@ function Profiles(c: Context) {
     profileModels.unshift({
       value: draftModel,
       label: modelDisplayName(draftModel),
-      provider: "codex",
+      provider: modelProvider(draftModel) ?? lead?.provider ?? "",
       badges: ["current"],
     });
   return (
@@ -1117,7 +1119,7 @@ function Profiles(c: Context) {
                     id: randomUUID(),
                     profile_id: profile.id,
                     provider:
-                      modelProvider(profile.model) ?? lead?.provider ?? "codex",
+                      modelProvider(profile.model) ?? lead?.provider ?? "",
                     reviewer: profile.role === "reviewer",
                     name: profile.name,
                   })

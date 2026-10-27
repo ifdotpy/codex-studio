@@ -1,3 +1,5 @@
+import { required } from "../teams/helpers.ts";
+import assert from "node:assert/strict";
 import type { PostBody } from "../../src/apiTypes.ts";
 import { fixtureOrigin, fixturePostBody } from "../servers/browser-fixture.ts";
 import type { Page } from "playwright";
@@ -105,6 +107,7 @@ test("touch scrolling the sidebar does not activate a chat", async ({
     await open(page);
     const scroll = page.locator(".chat-scroll");
     const bounds = await scroll.boundingBox();
+    assert.ok(bounds);
 
     const input = await context.newCDPSession(page);
     const x = bounds!.x + bounds!.width / 2;
@@ -188,9 +191,11 @@ test("desktop drag reorders without opening a chat and wheel scrolling stays nat
     targetPosition: { x: 24, y: 28 },
   });
   await expect.poll(() => writes.length).toBe(1);
-  expect(writes[0].action).toBe("reorder");
+  expect(required(writes[0]).action).toBe("reorder");
   expect(
-    writes[0].groups[JSON.stringify(["items", "/project", null])].slice(0, 2),
+    required(
+      required(writes[0]).groups[JSON.stringify(["items", "/project", null])],
+    ).slice(0, 2),
   ).toEqual(["chat-1", "chat-0"]);
   await expect(page.getByLabel("Opened chats")).toHaveText("[]");
   const scroll = page.locator(".chat-scroll");

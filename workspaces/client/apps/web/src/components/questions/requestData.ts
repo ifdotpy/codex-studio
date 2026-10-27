@@ -17,74 +17,56 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function stringValues(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === "string")
-    : [];
-}
-
-function jsonOptions(value: unknown): AnswerQuestion["options"] {
-  if (!Array.isArray(value)) return undefined;
-  return value.flatMap((entry) => {
-    if (typeof entry === "string") return [{ label: entry }];
-    if (!isJsonObject(entry)) return [];
-    const label = stringValue(entry.label);
-    if (!label) return [];
-    const description = stringValue(entry.description);
-    return [{ label, ...(description ? { description } : {}) }];
-  });
-}
-
 export function requestQuestions(request: RequestDto): AnswerQuestion[] {
-  const params = objectValue(request.params);
-  if (Array.isArray(params.questions)) {
-    return params.questions.flatMap((entry, index) => {
-      if (!isJsonObject(entry)) return [];
-      const id = stringValue(entry.id) || `question-${index + 1}`;
-      return [
-        {
-          id,
-          question:
-            stringValue(entry.question) || stringValue(entry.title) || id,
-          options: jsonOptions(entry.options),
-          multiSelect: entry.multiSelect === true,
-          isSecret: entry.isSecret === true,
-          isOther:
-            request.method === "agent/asyncQuestion" || entry.isOther === true,
-        },
-      ];
+  const params = request.params;
+  if (params?.questions) {
+    return params.questions.map((entry, index) => {
+      const id = entry.id || `question-${index + 1}`;
+      return {
+        id,
+        question: entry.question || stringValue(entry.title) || id,
+        options: entry.options?.flatMap((option) => {
+          if (!option.label) return [];
+          return [
+            {
+              label: option.label,
+              ...(option.description
+                ? { description: option.description }
+                : {}),
+            },
+          ];
+        }),
+        multiSelect: entry.multiSelect === true,
+        isSecret: entry.isSecret === true,
+        isOther:
+          request.method === "agent/asyncQuestion" || entry.isOther === true,
+      };
     });
   }
-
-  const schema = objectValue(params.requestedSchema);
-  const properties = objectValue(schema.properties);
-  return Object.entries(properties).flatMap(([id, value]) => {
-    if (!isJsonObject(value)) return [];
-    const items = objectValue(value.items);
-    const optionValues = stringValues(
-      value.type === "array" ? items.enum : value.enum,
-    );
-    return [
-      {
+  return Object.entries(params?.requestedSchema?.properties ?? {}).map(
+    ([id, value]) => {
+      const optionValues =
+        (value.type === "array" ? value.items?.enum : value.enum) ?? [];
+      return {
         id,
-        question: stringValue(value.title) || id,
-        options: optionValues.map((label) => ({ label })),
-        multiSelect: value.type === "array" && Array.isArray(items.enum),
+        question: value.title || id,
+        options: optionValues
+          .filter((label): label is string => typeof label === "string")
+          .map((label) => ({ label })),
+        multiSelect: value.type === "array" && value.items?.enum != null,
         isSecret:
           value.isSecret === true ||
           value.writeOnly === true ||
           value.format === "password",
-      },
-    ];
-  });
+      };
+    },
+  );
 }
 
 export function requestApprovalDetails(request: RequestDto) {
-  const params = objectValue(request.params);
-  const preview = objectValue(request.preview);
   return {
-    command: params.command ?? preview.command,
-    permissions: params.permissions ?? preview.changes,
+    command: request.params?.command ?? request.preview?.command,
+    permissions: request.params?.permissions ?? request.preview?.changes,
   };
 }
 

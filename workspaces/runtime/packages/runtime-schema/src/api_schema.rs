@@ -44,7 +44,9 @@ fn strip_named_map(value: &Value) -> Value {
                 .map(|(name, child)| (name.clone(), strip_documentation(child)))
                 .collect(),
         ),
-        _ => strip_documentation(value),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Array(_) => {
+            strip_documentation(value)
+        }
     }
 }
 
@@ -93,7 +95,7 @@ fn strip_documentation(value: &Value) -> Value {
             }
             Value::Object(canonical)
         }
-        _ => value.clone(),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => value.clone(),
     }
 }
 

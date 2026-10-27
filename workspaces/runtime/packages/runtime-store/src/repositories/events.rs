@@ -42,11 +42,29 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 
 impl QueueEventRepository {
     pub fn get(connection: &Connection, id: &QueueEventId) -> StoreResult<Option<QueueEvent>> {
-        Ok(connection.query_row(
+        let mut statement = connection.prepare_cached(
             "SELECT id, agent, kind, text, status, created, epoch, turn_id, error FROM runtime_events WHERE id = ?1",
-            [&id.0],
-            Self::from_row,
-        ).optional()?)
+        )?;
+        statement
+            .query_row([&id.0], Self::from_row)
+            .optional()
+            .map_err(|error| {
+                // Row conversion failure is retained evidence; query/infrastructure failure stays fatal.
+                if let rusqlite::Error::InvalidColumnType(index, _, _)
+                | rusqlite::Error::FromSqlConversionFailure(index, _, _)
+                | rusqlite::Error::IntegralValueOutOfRange(index, _)
+                | rusqlite::Error::Utf8Error(index, _) = &error
+                    && let Ok(column) = statement.column_name(*index)
+                {
+                    return crate::StoreError::InvalidSyncObjectField {
+                        scope: "runtime_events".into(),
+                        id: id.0.clone(),
+                        pointer: format!("/{column}"),
+                        reason: "stored column cannot be decoded as a queue event".into(),
+                    };
+                }
+                error.into()
+            })
     }
 
     pub(crate) fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueueEvent> {
@@ -75,5 +93,36 @@ inventory::submit! {
     crate::repositories::SchemaRegistration {
         repository: "events",
         requirements: &REQUIREMENTS,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn event_query_failures_stay_fatal_while_malformed_columns_are_located() {
+        let connection = Connection::open_in_memory().expect("memory SQLite");
+        let id = QueueEventId::from("input");
+        assert!(
+            matches!(
+                QueueEventRepository::get(&connection, &id),
+                Err(crate::StoreError::Sqlite(_))
+            ),
+            "missing table is an infrastructure failure"
+        );
+        connection.execute_batch("CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT); INSERT INTO runtime_events VALUES('input','owner','user','private-input','failed',1,'epoch-private-canary',NULL,NULL);").expect("retained source");
+        let error = QueueEventRepository::get(&connection, &id).expect_err("malformed source");
+        assert!(
+            matches!(&error,crate::StoreError::InvalidSyncObjectField{scope,id,pointer,..} if scope=="runtime_events" && id=="input" && pointer=="/epoch")
+        );
+        assert!(!error.to_string().contains("private-canary"));
+        connection
+            .execute("UPDATE runtime_events SET epoch=0", [])
+            .expect("healthy fixture");
+        let event = QueueEventRepository::get(&connection, &id)
+            .expect("healthy query")
+            .expect("retained event");
+        assert_eq!(event.epoch, 0);
+        assert_eq!(event.text, "private-input");
     }
 }

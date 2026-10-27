@@ -6,6 +6,11 @@ import {
   VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 } from "./generated/sharedValues.ts";
 import type { Agent } from "./types";
+import type { KnownCodexErrorKind } from "studio-claude-bridge/provider-errors.generated.ts";
+import {
+  knownCodexErrorKind,
+  rawCodexErrorKind,
+} from "studio-claude-bridge/provider-errors.ts";
 
 // A Studio condition, not a Codex error kind: the state volume has no free space.
 const DISK_FULL_PATTERN = new RegExp(DISK_FULL_ERROR_PATTERN, "i");
@@ -15,8 +20,8 @@ const DISK_FULL_MESSAGE =
 const DISK_FULL_HINT =
   "Free disk space on the server. Queued work starts again on its own.";
 
-// Codex 0.153.4 CodexErrorInfo, including unknown future variants.
-export const nativeErrorHints: Record<string, string> = {
+// Every known vendor tag needs a hint; future raw records retain their details.
+export const nativeErrorHints = {
   contextWindowExceeded: "Compact the context or start a new chat.",
   sessionBudgetExceeded: "Check the session budget before continuing.",
   usageLimitExceeded: "Check this account's limits and reset time.",
@@ -44,7 +49,7 @@ export const nativeErrorHints: Record<string, string> = {
     "Codex stopped retrying. Review the last result before continuing.",
   activeTurnNotSteerable: "Queue the message until the current turn ends.",
   other: "Review the error details before continuing.",
-};
+} satisfies Record<KnownCodexErrorKind, string>;
 
 // Bound both JSON input and wrapper depth. Keep the original payload for Details.
 const MAX_ERROR_JSON_LENGTH = 65_536;
@@ -65,17 +70,17 @@ export function nativeErrorKind(value: unknown): string {
   const dataRecord = objectRecord(data);
   const nestedData = objectRecord(dataRecord?.data);
   const info = dataRecord?.codexErrorInfo ?? nestedData?.codexErrorInfo;
-  return (
-    (typeof info === "string"
-      ? info
-      : info && typeof info === "object"
-        ? Object.keys(info)[0]
-        : "") || ""
-  );
+  return rawCodexErrorKind(info) || "";
 }
 
 export function isCyberPolicyRefusal(value: unknown): boolean {
-  return nativeErrorKind(value) === "cyberPolicy";
+  return knownNativeErrorKind(value) === "cyberPolicy";
+}
+
+export function knownNativeErrorKind(
+  value: unknown,
+): KnownCodexErrorKind | undefined {
+  return knownCodexErrorKind(nativeErrorKind(value));
 }
 
 function objectRecord(value: unknown): Record<string, unknown> | null {
@@ -164,7 +169,7 @@ export function nativeThreadError(
   const block = objectRecord(agent?.nativeThreadBlock);
   if (agent?.threadId && block?.threadId === agent.threadId && "error" in block)
     return block.error;
-  return nativeErrorKind(agent?.error) === "misalignmentPolicyViolation"
+  return knownNativeErrorKind(agent?.error) === "misalignmentPolicyViolation"
     ? agent?.error
     : undefined;
 }
@@ -214,11 +219,12 @@ function codexErrorView(value: unknown, planType?: string) {
   const data = parseError(value);
   const record = objectRecord(data);
   const structured = record !== null;
-  const kind = nativeErrorKind(data);
+  const rawKind = nativeErrorKind(data);
+  const kind = knownCodexErrorKind(rawKind);
   const readable = readableError(data);
   const rawMessage =
     readable?.message ??
-    (typeof value === "string" && structured && !kind ? value : undefined);
+    (typeof value === "string" && structured && !rawKind ? value : undefined);
   const message =
     kind === "cyberPolicy"
       ? "Codex refused this turn under its cybersecurity policy."
@@ -256,7 +262,7 @@ function codexErrorView(value: unknown, planType?: string) {
     );
   }
   return {
-    kind,
+    kind: rawKind,
     message,
     title:
       kind === "cyberPolicy"
@@ -278,13 +284,16 @@ function codexErrorView(value: unknown, planType?: string) {
       policy && kind !== "cyberPolicy"
         ? "Codex restricts biological research requests that could pose safety risks. Eligible researchers can apply for Trusted Access."
         : kind
-          ? nativeErrorHints[kind] || nativeErrorHints.other
-          : "",
-    severity: ["serverOverloaded", "activeTurnNotSteerable"].includes(kind)
-      ? "warning"
-      : policy
-        ? "info"
-        : "error",
+          ? nativeErrorHints[kind]
+          : rawKind
+            ? nativeErrorHints.other
+            : "",
+    severity:
+      kind === "serverOverloaded" || kind === "activeTurnNotSteerable"
+        ? "warning"
+        : policy
+          ? "info"
+          : "error",
     details:
       typeof value === "string" && value !== message
         ? value

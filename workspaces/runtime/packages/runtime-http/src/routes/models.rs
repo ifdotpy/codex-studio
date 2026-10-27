@@ -4,6 +4,8 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
+use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::model_catalog::ModelCatalog;
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -67,12 +69,23 @@ async fn models(
     } else {
         account_catalog(&catalog, &snapshot, &account_key, retry, session).await
     };
-    let (status, value) = match result {
-        Ok(value) => (StatusCode::OK, value),
-        Err((status, value)) => (status, value),
-    };
-    let response = serde_json::from_value(value).map_err(|_| ApiError::internal())?;
-    Ok((status, Json(response)))
+    match result {
+        Ok(catalog) => {
+            // HTTP envelope metadata uses its generated contract; the validated
+            // provider models move directly into the response without reparsing.
+            let mut response: crate::generated::ModelCatalogResponse =
+                serde_json::from_value(Value::Object(catalog.extra))
+                    .map_err(|_| ApiError::internal())?;
+            response.data = Some(Some(catalog.data));
+            response.next_cursor = catalog.next_cursor;
+            Ok((StatusCode::OK, Json(response)))
+        }
+        Err((status, value)) => {
+            let response: crate::generated::ModelCatalogResponse =
+                serde_json::from_value(value).map_err(|_| ApiError::internal())?;
+            Ok((status, Json(response)))
+        }
+    }
 }
 
 async fn account_catalog(
@@ -83,7 +96,7 @@ async fn account_catalog(
     session: Option<
         std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
     >,
-) -> Result<Value, (StatusCode, Value)> {
+) -> Result<ModelCatalog, (StatusCode, Value)> {
     account_catalog_read(catalog, snapshot, account_key, retry, false, session).await
 }
 
@@ -96,7 +109,7 @@ async fn account_catalog_read(
     session: Option<
         std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
     >,
-) -> Result<Value, (StatusCode, Value)> {
+) -> Result<ModelCatalog, (StatusCode, Value)> {
     if account_key == "default"
         && !snapshot
             .accounts
@@ -108,14 +121,14 @@ async fn account_catalog_read(
         return Err(catalog_pending());
     }
     let account = account_context(snapshot, account_key)?;
-    if account.provider == "claude" && session.is_none() {
+    if account.provider == ProviderKind::Claude && session.is_none() {
         return Err(catalog_pending());
     }
     let read = async {
         ensure_session(session, &account.key)
             .await
             .map_err(|error| {
-                if account.provider == "claude"
+                if account.provider == ProviderKind::Claude
                     && matches!(
                     &error,
                     studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
@@ -129,21 +142,21 @@ async fn account_catalog_read(
                 studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
                     message,
                 ) => (StatusCode::BAD_REQUEST, json!({"error": message})),
-                _ => catalog_unavailable(),
+                studio_runtime_services::account_session_runtime::AccountSessionError::Requires(_) | studio_runtime_services::account_session_runtime::AccountSessionError::InvalidResponse(_) | studio_runtime_services::account_session_runtime::AccountSessionError::Persistence | studio_runtime_services::account_session_runtime::AccountSessionError::Unknown => catalog_unavailable(),
             }
             })?;
         let result = if fresh {
             if retry {
                 let _ = catalog
-                    .read(&account.key, &account.home, &account.provider, true)
+                    .read(&account.key, &account.home, account.provider, true)
                     .await;
             }
             catalog
-                .read_until_fresh(&account.key, &account.home, &account.provider)
+                .read_until_fresh(&account.key, &account.home, account.provider)
                 .await
         } else {
             catalog
-                .read_until_ready(&account.key, &account.home, &account.provider, retry)
+                .read_until_ready(&account.key, &account.home, account.provider, retry)
                 .await
         };
         match result {
@@ -196,7 +209,7 @@ async fn ensure_session(
 struct AccountContext {
     key: String,
     home: String,
-    provider: String,
+    provider: ProviderKind,
 }
 
 fn account_context(
@@ -230,15 +243,12 @@ fn account_context(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned(),
-        provider: studio_runtime_providers::ProviderKind::of_record(account)
-            .map_err(|_| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    json!({"error": ACCOUNT_UNAVAILABLE_MESSAGE}),
-                )
-            })?
-            .key()
-            .to_owned(),
+        provider: studio_runtime_providers::ProviderKind::of_record(account).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({"error": ACCOUNT_UNAVAILABLE_MESSAGE}),
+            )
+        })?,
     })
 }
 
@@ -251,7 +261,7 @@ async fn worker_catalog(
     session: Option<
         std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
     >,
-) -> Result<Value, (StatusCode, Value)> {
+) -> Result<ModelCatalog, (StatusCode, Value)> {
     let default_account = snapshot.default_account_key.as_str().unwrap_or("default");
     if parent_account == "default" && snapshot.accounts.is_empty() {
         return Err(catalog_pending());
@@ -314,11 +324,11 @@ async fn worker_catalog(
             continue;
         }
         match catalog
-            .read(&account.key, &account.home, &account.provider, retry)
+            .read(&account.key, &account.home, account.provider, retry)
             .await
         {
             CatalogRead::Ready(value) => {
-                append_worker_models(&mut models, &mut seen, &account, &value);
+                append_worker_models(&mut models, &mut seen, &account, value);
             }
             CatalogRead::Pending => {
                 pending = true;
@@ -343,7 +353,7 @@ async fn worker_catalog(
             (
                 account.key.as_str(),
                 account.home.as_str(),
-                account.provider.as_str(),
+                account.provider,
             )
         })
         .collect::<Vec<_>>();
@@ -367,7 +377,7 @@ async fn worker_catalog(
             (Err((_, error)), _) => Err(error),
         };
         match result {
-            Ok(value) => append_worker_models(&mut models, &mut seen, &account, &value),
+            Ok(value) => append_worker_models(&mut models, &mut seen, &account, value),
             Err(error) => {
                 let account_pending = error.get("catalogPending") == Some(&Value::Bool(true));
                 pending |= account_pending;
@@ -392,41 +402,31 @@ async fn worker_catalog(
             json!({"error": "No worker model catalog is available"}),
         ));
     }
-    let mut response = json!({"data": models, "unavailableAccounts": unavailable});
+    let mut extra = serde_json::Map::new();
+    extra.insert("unavailableAccounts".into(), json!(unavailable));
     if pending {
-        response["catalogPending"] = Value::Bool(true);
+        extra.insert("catalogPending".into(), Value::Bool(true));
     }
-    Ok(response)
+    Ok(ModelCatalog {
+        data: models,
+        next_cursor: None,
+        extra,
+    })
 }
 
 fn append_worker_models(
-    models: &mut Vec<Value>,
+    models: &mut Vec<studio_runtime_schema::model_catalog::ProviderModel>,
     seen: &mut std::collections::HashSet<String>,
     account: &AccountContext,
-    value: &Value,
+    value: ModelCatalog,
 ) {
-    if let Some(rows) = value.get("data").and_then(Value::as_array) {
-        for row in rows {
-            let Some(model) = row
-                .get("model")
-                .and_then(Value::as_str)
-                .filter(|model| !model.is_empty())
-            else {
-                continue;
-            };
-            if row.get("hidden") == Some(&Value::Bool(true)) || !seen.insert(model.to_owned()) {
-                continue;
-            }
-            let mut row = row.clone();
-            if let Some(row) = row.as_object_mut() {
-                row.insert("accountKey".to_owned(), Value::String(account.key.clone()));
-                row.insert(
-                    "provider".to_owned(),
-                    Value::String(account.provider.clone()),
-                );
-            }
-            models.push(row);
+    for mut row in value.data {
+        if row.hidden == Some(true) || !seen.insert(row.model.clone()) {
+            continue;
         }
+        row.account_key = Some(account.key.clone());
+        row.provider = Some(account.provider);
+        models.push(row);
     }
 }
 
@@ -437,6 +437,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use studio_runtime_providers::ProviderKind;
     use studio_runtime_services::account_policy::AccountsSnapshot;
     use studio_runtime_services::model_catalog::ModelCatalogService;
 
@@ -525,8 +526,9 @@ mod tests {
                     + 'a,
             >,
         > {
+            use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
             use studio_runtime_services::account_session_runtime::{
-                ProviderResponse, RequestCertainty, SessionReceipt,
+                ProviderResponse, SessionReceipt,
             };
 
             self.requests.fetch_add(1, Ordering::SeqCst);
@@ -542,15 +544,15 @@ mod tests {
                 Ok(SessionReceipt {
                     scope,
                     operation,
-                    ticket: Some(studio_runtime_providers::RequestTicket {
-                        id: studio_runtime_providers::RequestId::String("catalog-test".into()),
-                        generation: 1,
-                        method: studio_runtime_providers::Method::ModelList,
-                    }),
-                    certainty: RequestCertainty::Written,
-                    result: Some(ProviderResponse::Reply(page)),
-                    not_sent_reason: None,
                     replayed: false,
+                    outcome: ReceiptOutcome::Written {
+                        ticket: studio_runtime_providers::RequestTicket {
+                            id: studio_runtime_providers::RequestId::String("catalog-test".into()),
+                            generation: 1,
+                            method: studio_runtime_providers::Method::ModelList,
+                        },
+                        response: ProviderResponse::Reply(page),
+                    },
                 })
             })
         }
@@ -622,7 +624,7 @@ mod tests {
         use studio_runtime_services::model_catalog::{AdmissionCatalogRead, CatalogRead};
         use tower::ServiceExt;
 
-        for provider in ["codex", "claude"] {
+        for provider in [ProviderKind::Codex, ProviderKind::Claude] {
             for workers in [false, true] {
                 let startup = serde_json::to_vec(&json!({
                 "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION, "defaultAccountKey":"target", "logins":{},
@@ -857,7 +859,8 @@ mod tests {
             dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
         > = std::sync::Arc::new(CatalogSession {
             pages: std::sync::Mutex::new(vec![json!({
-                "data":[{"model":"fixture-model"}],
+                "data":[{"model":"fixture-model","defaultReasoningEffort":null,"vendor":{"future":true}}],
+                "metadata":{"futurePage":true},
                 "nextCursor":null
             })]),
             requests: calls.clone(),
@@ -877,15 +880,58 @@ mod tests {
         );
 
         let expected = json!({
-            "data":[{"model":"fixture-model"}],
+            "data":[{"model":"fixture-model","defaultReasoningEffort":null,"vendor":{"future":true}}],
+                "metadata":{"futurePage":true},
             "nextCursor":null
         });
         assert_eq!(
-            first.expect("cold catalog waits for 200 response"),
+            serde_json::to_value(first.expect("cold catalog waits for 200 response"))
+                .expect("serialized catalog"),
             expected
         );
-        assert_eq!(second.expect("concurrent catalog shares result"), expected);
+        assert_eq!(
+            serde_json::to_value(second.expect("concurrent catalog shares result"))
+                .expect("serialized catalog"),
+            expected
+        );
+        let document: Value =
+            serde_json::from_str(include_str!("../../openapi.json")).expect("OpenAPI document");
+        let schema = json!({
+            "components":document["components"],
+            "$ref":"#/components/schemas/ModelCatalogResponse"
+        });
+        assert!(
+            jsonschema::validator_for(&schema)
+                .expect("HTTP schema")
+                .is_valid(&expected)
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        catalog.shutdown().await.expect("catalog task shutdown");
+    }
+
+    #[tokio::test]
+    async fn invalid_known_provider_fields_are_unavailable_to_http_and_admission() {
+        let snapshot = snapshot(json!({
+            "id":"account", "home":"/fixture", "provider":"codex", "status":"ready"
+        }));
+        let session: std::sync::Arc<
+            dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
+        > = std::sync::Arc::new(CatalogSession {
+            pages: std::sync::Mutex::new(vec![json!({
+                "data":[{"model":"valid", "supportedReasoningEfforts":[{"reasoningEffort":1}]}]
+            })]),
+            requests: Default::default(),
+        });
+        let catalog = ModelCatalogService::new();
+        catalog.set_account_session(Some(session.clone()));
+        let error = account_catalog(&catalog, &snapshot, "account", false, Some(session))
+            .await
+            .expect_err("invalid capabilities must fail the HTTP read");
+        assert_eq!(error, super::catalog_unavailable());
+        assert_eq!(
+            catalog.read_for_admission("account", "/fixture", ProviderKind::Codex),
+            studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable
+        );
         catalog.shutdown().await.expect("catalog task shutdown");
     }
 
@@ -925,7 +971,7 @@ mod tests {
         let context = account_context(&snapshot, "profile").expect("profile exists");
         assert_eq!(context.key, "profile");
         assert_eq!(context.home, "/profile");
-        assert_eq!(context.provider, "codex");
+        assert_eq!(context.provider, ProviderKind::Codex);
     }
 
     #[test]

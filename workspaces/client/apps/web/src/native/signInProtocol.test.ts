@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { nativeSignInMethods } from "./signInProtocol";
+import { required } from "../components/componentTestFixtures";
 
 const repository = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -17,8 +18,8 @@ const declaration =
 const readOwner = (source: string) =>
   Object.fromEntries(
     [...source.matchAll(declaration)].map((match) => [
-      match[1].toLowerCase(),
-      match[2],
+      required(match[1]).toLowerCase(),
+      required(match[2]),
     ]),
   );
 function files(directory: string): string[] {

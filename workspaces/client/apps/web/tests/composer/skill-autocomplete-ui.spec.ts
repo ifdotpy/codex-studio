@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import { catalogSkills } from "./skill-autocomplete-ui.fixture.ts";
 import type { BrowserContext, BrowserContextOptions } from "@playwright/test";
 import type { GetResult, PostBody, PostResult } from "../../src/apiTypes.ts";
@@ -431,7 +432,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     );
     assert.equal(sends.length, 2);
     assert.equal(
-      sends[1].delivery,
+      required(sends[1]).delivery,
       "next_turn",
       `unselected Tab keeps queue behavior: ${JSON.stringify(sends)}`,
     );
@@ -501,7 +502,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     await sendHandled.promise;
     assert.equal(sends.length, 3);
     assert.equal(
-      sends[2].text,
+      required(sends[2]).text,
       "line one\nline two",
       "modified Enter keeps normal send behavior",
     );

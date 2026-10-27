@@ -1,4 +1,7 @@
 import type { Page, Locator } from "@playwright/test";
+import type { JsonInputOf } from "../../src/apiTypes.ts";
+import type { AccountRateLimitsDto } from "../playwright.ts";
+import { required } from "../teams/helpers.ts";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "../servers/multi-server-fixture.ts";
 import { accountLimitFixtures } from "../../src/components/AccountLimits.fixtures.ts";
@@ -55,23 +58,29 @@ test("Studio Accounts is exclusive and keeps keyboard focus inside settings and 
     source: "fixture",
   }));
   // Authored JSON fixture boundary: optional undefined fields are omitted when serialized.
-  const limits = Object.fromEntries(
-    accounts.map((account, index) => [
-      account.id,
-      {
-        ...accountLimitFixtures[index].limits,
-        accountKey: account.id,
-        ...(accountLimitFixtures[index].limits.data
-          ? {
-              data: {
-                ...accountLimitFixtures[index].limits.data,
-                accountId: account.accountId,
-              },
-            }
-          : {}),
-      },
-    ]),
-  ) as Record<string, import("../playwright.ts").AccountRateLimitsDto>;
+  const limitInputs = Object.fromEntries(
+    accounts.map((account, index) => {
+      const fixture = required(accountLimitFixtures[index]);
+      return [
+        account.id,
+        {
+          ...fixture.limits,
+          accountKey: account.id,
+          ...(fixture.limits.data
+            ? {
+                data: {
+                  ...fixture.limits.data,
+                  accountId: account.accountId,
+                },
+              }
+            : {}),
+        } satisfies JsonInputOf<AccountRateLimitsDto>,
+      ];
+    }),
+  );
+  const limits: Record<string, AccountRateLimitsDto> = JSON.parse(
+    JSON.stringify(limitInputs),
+  );
   const local = await fixture("Workstation", false, {
     accounts,
     handle: ({ url, json }) => {
@@ -90,6 +99,7 @@ test("Studio Accounts is exclusive and keeps keyboard focus inside settings and 
         json({ rootId: "overlap", pricingState: "ready", totalUSD: 1.25 });
         return true;
       }
+      return undefined;
     },
   });
   local.snapshot.runtime.rateLimitsByAccount = limits;

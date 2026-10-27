@@ -220,7 +220,7 @@ pub(super) fn accept(
     let method = match frame {
         Frame::Request(request) => request.method.as_str().to_owned(),
         Frame::UnknownMethod(request) => request.method.clone(),
-        _ => return Ok(()),
+        Frame::Notification(_) | Frame::Response { .. } => return Ok(()),
     };
     let operation = operation(journal_scope, entry.generation.0, entry.cursor.0);
     let line = encode_line(frame).map_err(|_| invalid(&operation))?;
@@ -442,8 +442,9 @@ pub(super) async fn written(
     store
         .transaction_with(move |tx| match outcome {
             WriteOutcome::Written => retire(tx, &operation),
-            _ if receipt(tx, &operation, RECOVERABLE)?.is_some()
-                && receipt(tx, &operation, REPLAYED)?.is_none() =>
+            WriteOutcome::NotSent | WriteOutcome::Unknown
+                if receipt(tx, &operation, RECOVERABLE)?.is_some()
+                    && receipt(tx, &operation, REPLAYED)?.is_none() =>
             {
                 Ok(())
             }
@@ -453,7 +454,9 @@ pub(super) async fn written(
             {
                 delete_receipt(tx, &operation, SUBMITTED)
             }
-            _ => save(tx, &operation, UNKNOWN, json!(true)),
+            WriteOutcome::NotSent | WriteOutcome::Unknown => {
+                save(tx, &operation, UNKNOWN, json!(true))
+            }
         })
         .await
 }

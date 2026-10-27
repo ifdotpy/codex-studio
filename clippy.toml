@@ -1,0 +1,6 @@
+# Test fixtures use unwrap to fail immediately; production unwrap remains denied.
+# This root policy also owns the matching setting in nested Clippy configurations.
+allow-unwrap-in-tests = true
+
+# Maximum inline future size in bytes; larger futures are boxed at their owner.
+future-size-threshold = 16384

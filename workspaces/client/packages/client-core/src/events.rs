@@ -22,10 +22,17 @@ impl EventFlow {
         })
     }
     pub fn credit(&self) -> String {
-        self.state.lock().unwrap().0.clone()
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0
+            .clone()
     }
     pub fn grant(&self, credit: &str) -> bool {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.0 != credit || state.1 {
             return false;
         }
@@ -37,7 +44,10 @@ impl EventFlow {
         loop {
             let notified = self.ready.notified();
             {
-                let state = self.state.lock().unwrap();
+                let state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if state.1 {
                     return state.0.clone();
                 }
@@ -47,7 +57,10 @@ impl EventFlow {
     }
     fn finish(&self) -> Result<(String, String), String> {
         let next = crate::server_keys::random_id()?;
-        let mut state = self.state.lock().unwrap();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let consumed = std::mem::replace(&mut state.0, next.clone());
         state.1 = false;
         Ok((consumed, next))
@@ -163,9 +176,11 @@ pub async fn run_controlled(
     let backend = match backend.as_ref() {
         Ok(backend) => backend,
         Err(error) => {
-            let _ = output
-                .send(json!({"event":id,"error":sync::error("backend_config",error)}))
-                .await;
+            drop(
+                output
+                    .send(json!({"event":id,"error":sync::error("backend_config",error)}))
+                    .await,
+            );
             return;
         }
     };

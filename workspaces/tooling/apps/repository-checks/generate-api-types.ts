@@ -4,11 +4,12 @@
 // formatted by oxfmt. `studio-contracts` (runtime-schema) runs this script,
 // appends the Rust-owned constants, and writes or checks `api.ts`.
 import ts from "typescript";
+import openapiTS, { astToString, COMMENT_HEADER } from "openapi-typescript";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
+import { text } from "node:stream/consumers";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const BIN = join(ROOT, "node_modules", ".bin");
@@ -16,42 +17,44 @@ const JSON_VALUE_ALIAS =
   "export type JsonValue = null | boolean | number | string | JsonValue[] " +
   "| { [key: string]: JsonValue };";
 
-function run(command: string, args: string[]) {
-  const result = spawnSync(join(BIN, command), args, {
-    cwd: ROOT,
-    stdio: ["ignore", "ignore", "inherit"],
-  });
-  if (result.error) {
-    throw new Error(
-      `${command} failed to start (${result.error.message}); run \`pnpm install --frozen-lockfile\``,
-    );
-  }
-  if (result.status !== 0)
-    throw new Error(`${command} exited ${result.status}`);
+// Runtime consumers use these closed domains from the same schema as their types.
+function runtimeEnumValues(document: import("openapi-typescript").OpenAPI3) {
+  return ["RequestStatus", "TaskStatus", "TransferStatus"]
+    .flatMap((name) => {
+      const schema = document.components?.schemas?.[name];
+      if (!schema) return [];
+      if (
+        !("enum" in schema) ||
+        !schema.enum?.every((value) => typeof value === "string")
+      )
+        throw new Error(`${name} must be a closed string enum`);
+      const entries = schema.enum.map(
+        (value) => `${JSON.stringify(value)}: ${JSON.stringify(value)}`,
+      );
+      return [`export const ${name} = { ${entries.join(", ")} } as const;`];
+    })
+    .join("\n");
 }
 
-// Break openapi-typescript's indexed self-reference for the recursive JSON schema.
-function normalizeRecursiveJsonValue(generated: string) {
-  const failure =
-    "openapi-typescript output has no unique recursive JsonValue component";
-  const start = /^([ \t]*)JsonValue: /m.exec(generated);
-  if (!start) throw new Error(failure);
-  const indent = start[1];
-  const afterStart = start.index + start[0].length;
-  const ending = new RegExp(
-    `^${indent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}}[^;\\n]*;`,
-    "m",
-  ).exec(generated.slice(afterStart));
-  if (!ending) throw new Error(failure);
-  const end = afterStart + ending.index + ending[0].length;
-  if (
-    !generated
-      .slice(start.index, end)
-      .includes('components["schemas"]["JsonValue"]')
-  ) {
-    throw new Error(failure);
+function format(input: string) {
+  const result = spawnSync(
+    join(BIN, "oxfmt"),
+    ["--stdin-filepath=api.ts", `--config=${join(ROOT, ".oxfmtrc.json")}`],
+    {
+      cwd: ROOT,
+      input,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "inherit"],
+      maxBuffer: Infinity,
+    },
+  );
+  if (result.error) {
+    throw new Error(
+      `oxfmt failed to start (${result.error.message}); run \`pnpm install --frozen-lockfile\``,
+    );
   }
-  return `${generated.slice(0, start.index)}${indent}JsonValue: JsonValue;${generated.slice(end)}`;
+  if (result.status !== 0) throw new Error(`oxfmt exited ${result.status}`);
+  return result.stdout;
 }
 
 function entityAliases(document: import("openapi-typescript").OpenAPI3) {
@@ -68,52 +71,50 @@ function entityAliases(document: import("openapi-typescript").OpenAPI3) {
 }
 
 // JSON omits undefined members. Keep that same input contract with exact optional types.
-function optionalPropertyInputs(generated: string) {
-  const source = ts.createSourceFile(
-    "api.ts",
-    generated,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
-  const insertions: { position: number; text: string }[] = [];
-  const visit = (node: ts.Node) => {
-    const extensionMap =
-      ts.isIndexSignatureDeclaration(node) &&
-      node.type &&
-      ts.isIndexedAccessTypeNode(node.type) &&
-      ts.isLiteralTypeNode(node.type.indexType) &&
-      ts.isStringLiteral(node.type.indexType.literal) &&
-      node.type.indexType.literal.text === "JsonValue";
-    if (
-      ((ts.isPropertySignature(node) && node.questionToken) || extensionMap) &&
-      node.type
-    ) {
-      const type = node.type;
-      const types = ts.isUnionTypeNode(type) ? type.types : [type];
-      if (
-        !types.some((member) => member.kind === ts.SyntaxKind.UndefinedKeyword)
-      ) {
-        const grouped =
-          ts.isFunctionTypeNode(type) ||
-          ts.isConstructorTypeNode(type) ||
-          ts.isConditionalTypeNode(type);
-        if (grouped)
-          insertions.push({ position: type.getStart(source), text: "(" });
-        insertions.push({
-          position: type.end,
-          text: grouped ? ") | undefined" : " | undefined",
-        });
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  for (const { position, text } of insertions.sort(
-    (a, b) => b.position - a.position,
-  ))
-    generated = generated.slice(0, position) + text + generated.slice(position);
-  return generated;
+function optionalPropertyInputs(nodes: ts.Node[]) {
+  const result = ts.transform(nodes, [
+    (context) => {
+      const visit: ts.Visitor = (input) => {
+        const node = ts.visitEachChild(input, visit, context);
+        const extensionMap =
+          ts.isIndexSignatureDeclaration(node) &&
+          ts.isIndexedAccessTypeNode(node.type) &&
+          ts.isLiteralTypeNode(node.type.indexType) &&
+          ts.isStringLiteral(node.type.indexType.literal) &&
+          node.type.indexType.literal.text === "JsonValue";
+        if (
+          (ts.isPropertySignature(node) && node.questionToken && node.type) ||
+          extensionMap
+        ) {
+          const type = ts.factory.createUnionTypeNode([
+            ...(ts.isUnionTypeNode(node.type) ? node.type.types : [node.type]),
+            ts.factory.createKeywordTypeNode(ts.SyntaxKind.UndefinedKeyword),
+          ]);
+          return ts.isPropertySignature(node)
+            ? ts.factory.updatePropertySignature(
+                node,
+                node.modifiers,
+                node.name,
+                node.questionToken,
+                type,
+              )
+            : ts.factory.updateIndexSignature(
+                node,
+                node.modifiers,
+                node.parameters,
+                type,
+              );
+        }
+        return node;
+      };
+      return (node) => ts.visitNode(node, visit) ?? node;
+    },
+  ]);
+  try {
+    return astToString(result.transformed);
+  } finally {
+    result.dispose();
+  }
 }
 
 const input = process.argv[2];
@@ -124,48 +125,46 @@ if (!input)
 const rustOwned = input === "--rust-owned";
 const fromStdin = rustOwned || input === "-";
 const document: import("openapi-typescript").OpenAPI3 = JSON.parse(
-  readFileSync(fromStdin ? 0 : input, "utf8"),
+  fromStdin ? await text(process.stdin) : readFileSync(input, "utf8"),
 );
-const temp = mkdtempSync(join(tmpdir(), "studio-api-types-"));
-try {
-  const output = join(temp, "api.ts");
-  const schemaInput = fromStdin ? join(temp, "openapi.json") : input;
-  if (fromStdin) writeFileSync(schemaInput, JSON.stringify(document));
-  run("openapi-typescript", [
-    schemaInput,
-    "--output",
-    output,
-    "--alphabetize",
-    "--default-non-nullable=false",
-  ]);
-  const generated = optionalPropertyInputs(readFileSync(output, "utf8"));
-  if (!generated.includes("export interface components")) {
-    throw new Error(
-      "openapi-typescript output is missing the components export",
-    );
-  }
-  const recursiveJsonValue =
-    JSON.stringify(document.components?.schemas?.JsonValue)?.includes(
-      '"#/components/schemas/JsonValue"',
-    ) ?? false;
-  const declarations =
-    !rustOwned || recursiveJsonValue
-      ? `${normalizeRecursiveJsonValue(generated)}\n\n${JSON_VALUE_ALIAS}`
-      : generated;
-  writeFileSync(
-    output,
+const recursiveJsonValue =
+  JSON.stringify(document.components?.schemas?.JsonValue)?.includes(
+    '"#/components/schemas/JsonValue"',
+  ) ?? false;
+if (!rustOwned && !recursiveJsonValue)
+  throw new Error(
+    "OpenAPI document must define a recursive JsonValue component",
+  );
+const nodes = await openapiTS(
+  fromStdin ? document : pathToFileURL(resolve(input)),
+  {
+    alphabetize: true,
+    defaultNonNullable: false,
+    transform(_schema, { path }) {
+      if (recursiveJsonValue && path === "#/components/schemas/JsonValue")
+        return ts.factory.createTypeReferenceNode("JsonValue");
+      return undefined;
+    },
+  },
+);
+const generated = COMMENT_HEADER + optionalPropertyInputs(nodes);
+const declarations = recursiveJsonValue
+  ? `${generated}\n${JSON_VALUE_ALIAS}`
+  : generated;
+const runtimeValues = runtimeEnumValues(document);
+const runtimeDeclarations = runtimeValues ? `${runtimeValues}\n` : "";
+process.stdout.write(
+  format(
     rustOwned
-      ? `${declarations}\n${Object.keys(document.components?.schemas ?? {})
+      ? `${declarations}\n${runtimeDeclarations}${Object.keys(
+          document.components?.schemas ?? {},
+        )
           .filter((name) => name !== "JsonValue" || !recursiveJsonValue)
           .sort()
           .map(
             (name) => `export type ${name} = components["schemas"]["${name}"];`,
           )
           .join("\n")}\n`
-      : `${declarations}${entityAliases(document)}\n`,
-  );
-  run("oxfmt", ["--write", `--config=${join(ROOT, ".oxfmtrc.json")}`, output]);
-  process.stdout.write(readFileSync(output, "utf8"));
-} finally {
-  rmSync(temp, { recursive: true, force: true });
-}
+      : `${declarations}${entityAliases(document)}\n${runtimeDeclarations}`,
+  ),
+);

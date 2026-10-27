@@ -1,3 +1,4 @@
+import { providerLabel } from "../../generated/providerKind.ts";
 import {
   useServerStorage,
   useServerServices,
@@ -120,13 +121,7 @@ export function ModelWhitelistSettings() {
       )}
       {[...new Set(models.map((model) => model.provider))].map((provider) => (
         <Stack key={provider} gap="xs" className="model-whitelist-provider">
-          <Text fw={600}>
-            {provider === "claude"
-              ? "Claude"
-              : provider === "codex"
-                ? "Codex"
-                : provider}
-          </Text>
+          <Text fw={600}>{providerLabel(provider)}</Text>
           <div className="model-whitelist-grid">
             {models
               .filter((model) => model.provider === provider)

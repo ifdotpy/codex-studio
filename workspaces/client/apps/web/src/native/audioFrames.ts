@@ -237,8 +237,8 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
         subscriptions.set(nativeId, {
           caller,
           logical: params.subscription,
-          capture: params.topic === "microphone" ? params.capture : undefined,
-          voice: params.topic === "voice" ? params.session : undefined,
+          ...(params.topic === "microphone" ? { capture: params.capture } : {}),
+          ...(params.topic === "voice" ? { voice: params.session } : {}),
         });
         try {
           const result = await invoke(

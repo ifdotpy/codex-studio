@@ -47,7 +47,10 @@ export function scanSource(
     });
   if (path.endsWith(".css")) {
     for (const match of source.matchAll(/@(media|container)\s+([^{}]+)\{/g)) {
-      if (!/\bwidth\b/.test(match[2])) continue;
+      const condition = match[2];
+      if (condition === undefined)
+        throw new Error(`Missing query condition in ${path}`);
+      if (!/\bwidth\b/.test(condition)) continue;
       const note = annotation(source, match.index ?? 0, "query");
       add("query", match, note?.[1], note?.[2]);
     }

@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { GetResult, PostResult } from "../../src/apiTypes.ts";
 import type { Page, Route } from "@playwright/test";
 import type { TestAgent } from "../playwright.ts";
@@ -54,6 +55,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
     const measurements: { width: number; label: string; boxes: Boxes }[] = [];
     for (const width of [1440, 900, 390]) {
       const openedChat: TestAgent = width === 390 ? lead : emptyWorker;
+      assert.ok(openedChat.name);
 
       const originalTranscript = await fixtureGetResult(
         "/api/transcript",
@@ -272,8 +274,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
               continue;
             else
               assert.ok(
-                Math.abs(current[selector][key] - box[key]) <= 1,
-                `${width}px ${label} ${selector}.${key}: ${box[key]} -> ${current[selector][key]}`,
+                Math.abs(required(current[selector])[key] - box[key]) <= 1,
+                `${width}px ${label} ${selector}.${key}: ${box[key]} -> ${required(current[selector])[key]}`,
               );
         assert.equal(
           await page.evaluate(
@@ -282,15 +284,16 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           false,
           `${width}px no horizontal page overflow`,
         );
-        const form = current["#composer"];
+        const form = required(current["#composer"]);
         for (const selector of [
           ".attach-button",
           ...(width <= 760 ? [] : [".dictation-trigger"]),
           "#send",
         ])
           assert.ok(
-            current[selector].x >= form.x &&
-              current[selector].x + current[selector].width <=
+            required(current[selector]).x >= form.x &&
+              required(current[selector]).x +
+                required(current[selector]).width <=
                 form.x + form.width + 1,
             `${selector} stays inside composer`,
           );
@@ -373,12 +376,12 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         );
         assert.equal(
           positions[0],
-          Math.round(baseline["#composer"].y),
+          Math.round(required(baseline["#composer"]).y),
           "390px transition starts at the empty-chat composer position",
         );
         assert.equal(
           positions[0],
-          Math.round(current["#composer"].y),
+          Math.round(required(current["#composer"]).y),
           "390px transition ends at the non-empty composer position",
         );
         assert.equal(
@@ -428,6 +431,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         "/api/messages",
         firstSend.request().postDataJSON(),
       );
+      assert.ok(firstMessage.id);
 
       await firstSend.fulfill({
         json: {
@@ -455,8 +459,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       if (emptyPhoneStart)
         for (const key of ["y", "height"] as const)
           assert.equal(
-            measurements.at(-1)!.boxes["#composer"][key],
-            baseline["#composer"][key],
+            required(measurements.at(-1)!.boxes["#composer"])[key],
+            required(baseline["#composer"])[key],
             `390px subsequent non-empty send preserves composer ${key}`,
           );
       assert.equal(

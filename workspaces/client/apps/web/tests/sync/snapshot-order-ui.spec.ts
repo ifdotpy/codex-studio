@@ -49,6 +49,7 @@ async function runSnapshotOrderUi(
   const origin = `http://127.0.0.1:${port}`;
   const initial = await readTestState(origin);
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
+  assert.ok(lead);
 
   const worker = initial.threads.find(
     (agent) => agent.rootId === lead!.id && agent.name === "Worker 00",
@@ -188,9 +189,10 @@ async function runSnapshotOrderUi(
       });
       state.frames =
         state.previous &&
-        current.every(
-          (value, index) => Math.abs(value - state.previous![index]) < 0.1,
-        )
+        current.every((value, index) => {
+          const previous = state.previous?.[index];
+          return previous !== undefined && Math.abs(value - previous) < 0.1;
+        })
           ? state.frames + 1
           : 0;
       state.previous = current;
@@ -347,9 +349,10 @@ async function runSnapshotOrderUi(
       const state = window.__snapshotOrderOpenStable;
       state.frames =
         state.previous &&
-        current.every(
-          (value, index) => Math.abs(value - state.previous![index]) < 0.1,
-        )
+        current.every((value, index) => {
+          const previous = state.previous?.[index];
+          return previous !== undefined && Math.abs(value - previous) < 0.1;
+        })
           ? state.frames + 1
           : 0;
       state.previous = current;
@@ -380,6 +383,7 @@ async function runSnapshotOrderUi(
     "Loading keeps the inner button transform unset",
   );
   const during = await label.boundingBox();
+  assert.ok(before && during);
 
   const geometryFrames = await page.evaluate(() => {
     const record = window.__snapshotOrderLabelFrames;
@@ -512,9 +516,10 @@ async function runSnapshotOrderUi(
     )?.seq;
     const committedMutationSequence = mutationSequences.get(revision);
     assert.ok(
-      Number.isSafeInteger(committedWorkerSequence) &&
+      committedWorkerSequence !== undefined &&
+        Number.isSafeInteger(committedWorkerSequence) &&
         committedWorkerSequence === committedMutationSequence &&
-        committedWorkerSequence! > seededWorker.seq,
+        committedWorkerSequence > seededWorker.seq,
       "The pushed worker entity matches the committed mutation sequence and advances the seeded entity",
     );
     await newerSession;

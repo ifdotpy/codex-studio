@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { FixtureResourceChange } from "./helpers.ts";
 import type { Page } from "@playwright/test";
 import type { ResourceRef, SyncEntity } from "../playwright.ts";
@@ -425,7 +426,7 @@ test("bounds retries for a permanent 503", async ({ page }) => {
     );
     await page.waitForTimeout(6_000);
     const offsets = fixture.pullAttempts.map((attempt) =>
-      Number((attempt.at - fixture.pullAttempts[0].at).toFixed(1)),
+      Number((attempt.at - required(fixture.pullAttempts[0]).at).toFixed(1)),
     );
     assert.ok(
       fixture.counts.pull <= 10,

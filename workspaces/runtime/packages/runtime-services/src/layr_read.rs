@@ -136,7 +136,12 @@ fn error_text(error: &GuestError) -> String {
                 .join(": ");
             format!("VM guest layr.exec: {text}")
         }
-        error => format!("VM guest layr.exec failed: {error}"),
+        error @ GuestError::InvalidRequest
+        | error @ GuestError::Identity
+        | error @ GuestError::SpacePreflight { .. }
+        | error @ GuestError::Transport { .. }
+        | error @ GuestError::Protocol { .. }
+        | error @ GuestError::FrameCallback { .. } => format!("VM guest layr.exec failed: {error}"),
     }
 }
 
@@ -233,7 +238,7 @@ pub(crate) async fn run_native(
                 &request_id,
                 &json!({"agent":record["id"],"args":argv}),
                 || {
-                    let cwd = crate::layr_native::reviewer_read_cwd(&state_dir,&record)?;
+                    let cwd = crate::layr_native::reviewer_read_cwd(&state_dir, &record)?;
                     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
                     let output = if argv.first().map(String::as_str) == Some("try") {
                         crate::layr_native::reviewer_try(&state_dir, &record, &argv)?

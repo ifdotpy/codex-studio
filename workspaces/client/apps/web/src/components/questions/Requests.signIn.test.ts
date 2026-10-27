@@ -2,6 +2,7 @@ import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Requests from "./Requests";
+import { required } from "../componentTestFixtures";
 
 const controls = vi.hoisted(() => ({
   cards: [] as Array<{ post(body: Record<string, unknown>): Promise<boolean> }>,
@@ -66,7 +67,7 @@ function card() {
     }),
   );
   expect(controls.cards).toHaveLength(1);
-  return { post: controls.cards[0].post, notify, refresh };
+  return { post: required(controls.cards[0]).post, notify, refresh };
 }
 
 beforeEach(() => {

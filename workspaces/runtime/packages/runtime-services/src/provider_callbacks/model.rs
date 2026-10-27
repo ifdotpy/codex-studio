@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_providers::{Frame, RequestId, ResponseBody};
+use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 use studio_runtime_store::{StoreError, system_reads};
 use thiserror::Error;
 
@@ -105,16 +106,16 @@ impl CallbackSnapshot {
             .is_some_and(|id| id == &self.context.thread)
             || self
                 .actor
-                .pointer("/error/codexErrorInfo")
-                .is_some_and(|e| e == "misalignmentPolicyViolation")
+                .get("error")
+                .is_some_and(is_misalignment_policy_violation)
             || (self
                 .actor
                 .pointer("/nativeTurnError/turnId")
                 .is_some_and(|id| id == &self.context.turn)
                 && self
                     .actor
-                    .pointer("/nativeTurnError/error/codexErrorInfo")
-                    .is_some_and(|e| e == "misalignmentPolicyViolation"))
+                    .pointer("/nativeTurnError/error")
+                    .is_some_and(is_misalignment_policy_violation))
         {
             return Err(CallbackError::Invalid(
                 "The native thread is blocked; inspect the agent before continuing",
@@ -211,7 +212,9 @@ impl Input {
                 request.method.clone(),
                 request.fields.get("params").cloned(),
             ),
-            _ => return Ok(None),
+            Frame::Notification(_) | Frame::UnknownMethod(_) | Frame::Response { .. } => {
+                return Ok(None);
+            }
         };
         let params = params.unwrap_or(json!({}));
         if !params.is_object() || params.to_string().len() > MAX_BYTES {

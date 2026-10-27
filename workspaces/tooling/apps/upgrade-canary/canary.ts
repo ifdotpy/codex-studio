@@ -45,6 +45,11 @@ import {
 } from "../installed-smoke/smoke.ts";
 import type { Schema, Transcript } from "../installed-smoke/usage.ts";
 
+/** A value that a canary step needs; its absence fails the check. */
+function present<T>(value: T | undefined, what: string): T {
+  if (value === undefined) throw new CheckFailed(`missing ${what}`);
+  return value;
+}
 /** The build stamp fields that the canary reads. */
 interface BuildStamp {
   commit: string;
@@ -571,7 +576,7 @@ export class Canary {
   declare builds: { from: BuildStamp; to: BuildStamp };
   declare readable: string[];
   declare port: number;
-  declare jobArguments: Record<string, string[]>;
+  declare jobArguments: Record<string, string[] | undefined>;
   declare proxy: Proxy;
   declare profiles: Record<string, string>;
   declare env: NodeJS.ProcessEnv;
@@ -867,7 +872,7 @@ export class Canary {
             `the ${name} job names the live app or state: ${part}`,
           );
     }
-    return `port ${this.port}; recovery runs ${this.jobArguments.recovery[0]}`;
+    return `port ${this.port}; recovery runs ${this.jobArguments.recovery?.[0]}`;
   }
 
   /** Native startup discovery must never fall back to the owner's live profile. */
@@ -963,7 +968,7 @@ export class Canary {
         CODEX_AGENTS_STATE_DIR: this.state,
         CODEX_AGENTS_SUPERVISOR_MODE: "0",
       },
-      profile: this.profiles.recovery,
+      profile: present(this.profiles.recovery, "recovery profile"),
       log: path.join(this.root, "logs", "first-start.log"),
     });
     job.keepAlive = false;
@@ -985,14 +990,15 @@ export class Canary {
 
   async startJobs() {
     for (const name of ["supervisor", "recovery"]) {
-      this.jobs[name] = new Job({
+      const job = new Job({
         name,
-        argv: this.jobArguments[name],
+        argv: present(this.jobArguments[name], `${name} job arguments`),
         env: { ...this.env, XPC_SERVICE_NAME: `canary.${name}` },
-        profile: this.profiles[name],
+        profile: present(this.profiles[name], `${name} profile`),
         log: path.join(this.root, "logs", `${name}.log`),
       });
-      this.jobs[name].start();
+      this.jobs[name] = job;
+      job.start();
       if (name === "supervisor") await sleep(2_000);
     }
     const identity = await this.waitBackend(this.builds.from, this.from);
@@ -1074,9 +1080,7 @@ export class Canary {
     const row = visible.at(-1)!;
     return {
       model: row.model,
-      effort: lowestEffort(
-        (row.supportedReasoningEfforts ?? []) as Schema["JsonValue"][],
-      ),
+      effort: lowestEffort(row.supportedReasoningEfforts ?? []),
     };
   }
 
@@ -1207,7 +1211,7 @@ export class Canary {
     this.installStarted = Date.now();
     // The live install runs inside the recovery job; here the job is stopped first, so that its
     // update tick never runs build N's installer against /Applications.
-    await this.jobs.recovery.stop();
+    await present(this.jobs.recovery, "recovery job").stop();
     const build = this.builds.to;
     const staged = path.join(
       this.state,
@@ -1233,7 +1237,7 @@ export class Canary {
         "/usr/bin/sandbox-exec",
         [
           "-f",
-          this.profiles.installer,
+          present(this.profiles.installer, "installer profile"),
           this.python,
           "-B",
           path.join(HERE, "install.py"),
@@ -1276,12 +1280,13 @@ export class Canary {
       );
     }
     // launchd starts the recovery job again from the swapped app; it starts the new server.
-    this.jobs.recovery.keepAlive = true;
-    this.jobs.recovery.env = {
-      ...this.jobs.recovery.env,
+    const recovery = present(this.jobs.recovery, "recovery job");
+    recovery.keepAlive = true;
+    recovery.env = {
+      ...recovery.env,
       CODEX_BACKEND_BUILD: this.artifacts.to.backendHash,
     };
-    this.jobs.recovery.start();
+    recovery.start();
     const identity = await this.waitBackend(this.builds.to, this.to);
     return `installer ${result.detail}; backend ${identity.pid} on N+1 after ${((Date.now() - this.installStarted) / 1000).toFixed(0)} s`;
   }
@@ -1320,10 +1325,13 @@ export class Canary {
   }
 
   async monitorContinues() {
-    await this.answered(this.chats.monitor, this.token("MONITOR"));
+    await this.answered(
+      present(this.chats.monitor, "monitor chat"),
+      this.token("MONITOR"),
+    );
     const rows = query(
       path.join(this.state, "canvas.sqlite3"),
-      `select json_extract(record,'$.status'), json_extract(record,'$.exitCode') from runtime_monitors where json_extract(record,'$.agent')='${this.chats.monitor.id}'`,
+      `select json_extract(record,'$.status'), json_extract(record,'$.exitCode') from runtime_monitors where json_extract(record,'$.agent')='${present(this.chats.monitor, "monitor chat").id}'`,
     );
     if (!rows.some(([status, code]) => status === "completed" && code === "0"))
       throw new CheckFailed(`monitor rows ${JSON.stringify(rows)}`);
@@ -1331,7 +1339,7 @@ export class Canary {
   }
 
   async steerOnce() {
-    const chat = this.chats.steer;
+    const chat = present(this.chats.steer, "steer chat");
     const detail = await this.deliveredOnce(
       chat,
       this.steerId,
@@ -1372,7 +1380,7 @@ export class Canary {
   }
 
   async idleContinues() {
-    const chat = this.chats.idle;
+    const chat = present(this.chats.idle, "idle chat");
     const id = await this.send(
       chat,
       `Reply with exactly ${this.token("AFTER")}. Do not use tools.`,
@@ -1439,7 +1447,11 @@ export class Canary {
         path.join(this.state, "analytics.sqlite3"),
         `select model, sum(uncached), sum(cached), sum(cache_write), sum(output) from analytics_cost_rows where agent='${chat.id}' group by model`,
       )) {
-        const [u, c, w, o] = [uncached, cached, written, output].map(Number);
+        if (model === undefined)
+          throw new CheckFailed("an analytics row has no model");
+        const [u, c, w, o] = [uncached, cached, written, output].map(
+          Number,
+        ) as [number, number, number, number];
         tokens += u + c + w + o;
         const cost = priced[model]?.cost;
         const price = cost
@@ -1555,7 +1567,7 @@ export class Canary {
       await step("monitor chat continues", () => this.monitorContinues());
       await step("queued message delivered once", () =>
         this.deliveredOnce(
-          this.chats.monitor,
+          present(this.chats.monitor, "monitor chat"),
           this.queuedId,
           this.token("QUEUED"),
         ),
@@ -1621,11 +1633,14 @@ export function options(argv: string[], environment = process.env) {
   });
   if (Boolean(values["report-json"]) !== Boolean(values["request-id"]))
     throw new CheckFailed("Use --report-json and --request-id together.");
-  values["claude-config"] ??=
-    environment.CANARY_CLAUDE_CONFIG_DIR ||
-    (values["claude-keychain"]
-      ? undefined
-      : path.join(os.homedir(), ".config/codex-studio/canary-claude"));
+  if (values["claude-config"] === undefined) {
+    const fallback =
+      environment.CANARY_CLAUDE_CONFIG_DIR ||
+      (values["claude-keychain"]
+        ? undefined
+        : path.join(os.homedir(), ".config/codex-studio/canary-claude"));
+    if (fallback !== undefined) values["claude-config"] = fallback;
+  }
   return values;
 }
 

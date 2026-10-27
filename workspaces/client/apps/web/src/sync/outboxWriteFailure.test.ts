@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
 import { createRxDatabase, type RxDatabase } from "rxdb";
 import { getRxStorageMemory } from "rxdb/plugins/storage-memory";
@@ -149,6 +150,7 @@ it("sends, removes and cancels after one outbox write failed", async () => {
   ).toHaveLength(1);
 
   // A message that never left the device can still be removed or cancelled.
+  assert.ok(db.outbox != null);
   for (const id of ["removed", "cancelled"])
     await db.outbox.insert({
       id,

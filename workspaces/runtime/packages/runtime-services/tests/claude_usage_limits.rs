@@ -149,10 +149,10 @@ fn plain_429_typed_error_schedules_a_rate_limit_resume() {
 #[test]
 fn overage_does_not_bypass_unknown_scope_rejection_or_spend_controls() {
     for permission in [
-        json!({"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":true}),
-        json!({"rateLimitType":"unknown","overageStatus":"allowed"}),
-        json!({"rateLimitType":"seven_day_opus","overageStatus":"allowed"}),
-        json!({"rateLimitType":"five_hour","isUsingOverage":"true"}),
+        json!({"status":"rejected","rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":true}),
+        json!({"status":"rejected","rateLimitType":"unknown","overageStatus":"allowed"}),
+        json!({"status":"rejected","rateLimitType":"seven_day_opus","overageStatus":"allowed"}),
+        json!({"status":"rejected","rateLimitType":"five_hour","isUsingOverage":"true"}),
     ] {
         let mut data = data(100.0);
         data["claudeRateLimit"] = permission;
@@ -165,7 +165,8 @@ fn overage_does_not_bypass_unknown_scope_rejection_or_spend_controls() {
     }
     for unknown in [false, true] {
         let mut data = data(100.0);
-        data["claudeRateLimit"] = json!({"rateLimitType":"five_hour","overageStatus":"allowed"});
+        data["claudeRateLimit"] =
+            json!({"status":"rejected","rateLimitType":"five_hour","overageStatus":"allowed"});
         if unknown {
             data["rateLimitsByLimitId"]["unknown"] =
                 json!({"secondary":{"usedPercent":100.0,"resetsAt":20000.0}});
@@ -191,6 +192,7 @@ fn overage_permission_covers_known_limits_but_requires_a_fresh_observation() {
         let mut data = data(100.0);
         data["rateLimitsByLimitId"]["claude-sonnet"]["secondary"]["usedPercent"] = json!(100.0);
         data["claudeRateLimit"] = permission;
+        data["claudeRateLimit"]["status"] = json!("rejected");
         data["claudeRateLimit"]["rateLimitType"] = json!("seven_day_sonnet");
         let decision = usage_resume::tick(&snapshot("sonnet"), &observation(data.clone()), 1000.0)
             .expect("tick");

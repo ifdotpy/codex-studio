@@ -4,12 +4,13 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{
     account_driver::AccountDriver,
     account_session_runtime::{
         AccountSessionError, AccountSessionPort, AccountSessionRuntime, ConnectionScope,
-        LoginRequest, NotSentReason, ProviderRequest, ProviderResponse, RequestCertainty,
-        RetainedAccountSession, SessionFuture, SessionFutureScope, SessionReceipt,
+        LoginRequest, ProviderRequest, ProviderResponse, RequestCertainty, RetainedAccountSession,
+        SessionFuture, SessionFutureScope, SessionReceipt,
     },
 };
 
@@ -127,13 +128,22 @@ impl RetainedAccountSession for FakeSession {
                 return Err(AccountSessionError::Unknown);
             }
             Ok(SessionReceipt {
+                outcome: {
+                    match (certainty, result) {
+                        (RequestCertainty::Written, Some(response)) => ReceiptOutcome::Written {
+                            ticket: ticket.expect("written fixture ticket"),
+                            response,
+                        },
+                        (RequestCertainty::Written, None) | (RequestCertainty::Unknown, _) => {
+                            ReceiptOutcome::Unknown {
+                                ticket: ticket.expect("unknown fixture ticket"),
+                            }
+                        }
+                        (RequestCertainty::NotSent, _) => ReceiptOutcome::NoLiveAccountWorker,
+                    }
+                },
                 scope,
                 operation,
-                certainty,
-                ticket,
-                result,
-                not_sent_reason: (certainty == RequestCertainty::NotSent)
-                    .then_some(NotSentReason::NoLiveAccountWorker),
                 replayed: false,
             })
         })

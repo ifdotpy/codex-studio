@@ -4182,7 +4182,7 @@ export interface components {
         | null
         | undefined;
       /** Workspacemode */
-      workspaceMode?: string | null | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /** Workspaceoperation */
       workspaceOperation?: null | string | undefined;
       /** Worktree */
@@ -4559,7 +4559,7 @@ export interface components {
         | null
         | undefined;
       /** Workspacemode */
-      workspaceMode?: string | null | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /** Workspaceoperation */
       workspaceOperation?: null | string | undefined;
       /** Worktree */
@@ -5770,7 +5770,7 @@ export interface components {
        */
       workspaceInGit?: boolean | undefined;
       /** Workspacemode */
-      workspaceMode?: string | null | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /**
        * Workspacemodeexplicit
        * @default null
@@ -6443,7 +6443,7 @@ export interface components {
        */
       workspaceBackend?: ("asif" | "vm") | null | undefined;
       /** Workspacemode */
-      workspaceMode?: string | null | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /**
        * Workspaceoperation
        * @default null
@@ -9287,7 +9287,7 @@ export interface components {
        */
       workspaceBackend?: ("asif" | "vm") | null | undefined;
       /** Workspacemode */
-      workspaceMode?: string | null | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /**
        * Workspaceoperation
        * @default null
@@ -10624,20 +10624,13 @@ export interface components {
       /** Request Id */
       request_id: string;
     };
-    /** ClaudeSessionRollbackRequest */
     ClaudeSessionRollbackRequest: {
-      /**
-       * Action
-       * @constant
-       */
+      /** @constant */
       action: "rollback";
-      /** Id */
       id: string;
-      /** Request Id */
       request_id: string;
       /** @default false */
       restore_files?: boolean | undefined;
-      /** Turn Id */
       turn_id: string;
     };
     /** ClaudeSessionSettings */
@@ -10686,20 +10679,11 @@ export interface components {
        */
       thinking?: boolean | null | undefined;
     };
-    /** ClaudeSessionSettingsRequest */
     ClaudeSessionSettingsRequest: {
-      /**
-       * Action
-       * @constant
-       */
+      /** @constant */
       action: "settings";
-      /** Id */
       id: string;
-      /**
-       * Request Id
-       * @default null
-       */
-      request_id?: string | null | undefined;
+      request_id: string;
       settings: components["schemas"]["ClaudeSettings"];
     };
     /** ClaudeSessionStateRequest */
@@ -10760,19 +10744,23 @@ export interface components {
       /** Task Id */
       task_id: string;
     };
-    /** ClaudeSettings */
     ClaudeSettings: {
-      /** Autocompactwindow */
+      /** Format: uint64 */
       autoCompactWindow?: number | null | undefined;
-      /** @description Move eligible MCP calls to the background after 120 seconds. The default is on. */
+      /** @description Native MCP calls move to the background after the shared wait; absent keeps the default. */
       mcpAutoBackground?: boolean | undefined;
-      /** Permissionmode */
+      /**
+       * @description Claude session permission modes accepted by settings and child creation.
+       * @enum {string}
+       */
       permissionMode?:
-        | ("default" | "acceptEdits" | "auto" | "plan" | "bypassPermissions")
-        | null
+        | "default"
+        | "acceptEdits"
+        | "auto"
+        | "plan"
+        | "bypassPermissions"
         | undefined;
-      /** Thinking */
-      thinking?: boolean | null | undefined;
+      thinking?: boolean | undefined;
     };
     /** ClaudeSettingsResponse */
     ClaudeSettingsResponse: {
@@ -10922,7 +10910,10 @@ export interface components {
        * Status
        * @default null
        */
-      status?: ("in_progress" | "resolved" | "declined") | null | undefined;
+      status?:
+        | components["schemas"]["ComplaintResponseStatus"]
+        | null
+        | undefined;
       /** Text */
       text: string;
       /**
@@ -11140,6 +11131,8 @@ export interface components {
       /** Text */
       text: string;
     };
+    /** @enum {string} */
+    ComplaintResponseStatus: "in_progress" | "resolved" | "declined";
     /**
      * ComplaintStatus
      * @enum {string}
@@ -13695,6 +13688,11 @@ export interface components {
       /** Size */
       size: number;
     };
+    FoundProcessReceipt: {
+      /** @constant */
+      found: true;
+      result: components["schemas"]["ProcessActionResult"];
+    };
     /** HistoricalInputProofRecordResponse */
     HistoricalInputProofRecordResponse: {
       /**
@@ -13738,6 +13736,23 @@ export interface components {
       /** Totalmemorybytes */
       totalMemoryBytes: number | null;
     };
+    /**
+     * @description Safe HTTP classifications, shared with the existing operator log.
+     * @enum {string}
+     */
+    HttpErrorKind:
+      | "handler_panic"
+      | "store_configuration"
+      | "store_data"
+      | "store_database"
+      | "store_io"
+      | "store_ownership"
+      | "store_schema"
+      | "store_concurrency"
+      | "response_body_read"
+      | "costs_computation"
+      | "costs_state"
+      | "unclassified";
     /** HttpMetricSummary */
     HttpMetricSummary: {
       /** Max */
@@ -14545,6 +14560,13 @@ export interface components {
        */
       protocol: 1;
     };
+    /** @enum {string} */
+    MigrationPhase: "validate" | "apply" | "commit" | "rollback";
+    /**
+     * @description A failed step's rollback, never a claim about previously committed migration steps.
+     * @enum {string}
+     */
+    MigrationRollbackOutcome: "not_required" | "rolled_back" | "unknown";
     /** MigrationStatus */
     MigrationStatus: {
       /** @default null */
@@ -14570,6 +14592,16 @@ export interface components {
        */
       stateReadError?: null | string | undefined;
     };
+    /**
+     * @description Migration execution stays in runtime-store; these facts are shared operator and UI evidence.
+     * @enum {string}
+     */
+    MigrationTarget: "canvas" | "analytics" | "account_registry" | "supervisor";
+    MissingProcessReceipt: {
+      /** @constant */
+      found: false;
+      result: null;
+    };
     /** MissingToolRequestResponse */
     MissingToolRequestResponse: {
       /** Id */
@@ -14586,6 +14618,18 @@ export interface components {
        * @enum {string}
        */
       stage: "not_found";
+    } & {
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
+    };
+    ModelAccessPrograms: {
+      cyber?: string[] | undefined;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
+    };
+    /** @description One validated provider page, or the combined catalog after pagination. */
+    ModelCatalog: {
+      data: components["schemas"]["ProviderModel"][];
+      nextCursor?: string | null | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
@@ -14623,6 +14667,8 @@ export interface components {
       unavailableAccounts?:
         | components["schemas"]["UnavailableAccount"][]
         | undefined;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * ModelEntityDto
@@ -14632,7 +14678,18 @@ export interface components {
       accountKey: string;
       /** @description Zero-based order within this account's provider model catalog. */
       catalogPosition: number;
-      provider: string;
+      provider: components["schemas"]["ProviderKind"];
+    };
+    ModelReasoningEffort: {
+      reasoningEffort: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
+    };
+    ModelServiceTier: {
+      description?: string | null | undefined;
+      id: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ModelsResource */
     ModelsResource: {
@@ -14822,6 +14879,26 @@ export interface components {
        */
       text?: string | undefined;
     };
+    /** @enum {string} */
+    MonitorInputKind: "monitor_input";
+    MonitorInputResponse: {
+      kind: components["schemas"]["MonitorInputKind"];
+      monitorId: string;
+      status: components["schemas"]["MonitorInputStatus"];
+    };
+    /**
+     * @description Outcome of stdin sent to a monitor through HTTP; owned by monitor_http_input.rs.
+     * @enum {string}
+     */
+    MonitorInputStatus: "acknowledged" | "rejected" | "pending" | "unknown";
+    /** @description Public projection of the native operation identity, without open transport evidence. */
+    MonitorOperationIdentity: {
+      accountKey: string;
+      agent: string;
+      connectionId: string;
+      /** Format: int64 */
+      epoch: number;
+    };
     /** @description Public output wake budget. The monitor matcher owns the stored budget. Tokens count available output wake batches. */
     MonitorOutputWakeBudget: {
       paused: boolean;
@@ -15002,6 +15079,42 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    MonitorRecoveryEvidence: {
+      proof: components["schemas"]["MonitorRecoveryProof"] | null;
+      /**
+       * Format: double
+       * @description Unix seconds.
+       */
+      startedAt: number;
+      status: components["schemas"]["MonitorRecoveryStatus"];
+    };
+    /** @description Unclassified text stays private in the retained record; its digest permits exact correlation. */
+    MonitorRecoveryProof:
+      | {
+          /** @constant */
+          classification: "recognized";
+          reason: components["schemas"]["MonitorRecoveryReason"];
+        }
+      | {
+          /** @constant */
+          classification: "unclassified";
+          sha256: string;
+        };
+    /**
+     * @description Studio-owned recovery proof codes. A retained native reason outside this set remains unclassified.
+     * @enum {string}
+     */
+    MonitorRecoveryReason:
+      | "no_operation"
+      | "invalid_provider_observation"
+      | "provider_rejected"
+      | "operation_not_accepted"
+      | "invalid_terminal_receipt"
+      | "termination_unconfirmed"
+      | "retained_exit_unavailable"
+      | "reattach_window_expired";
+    /** @enum {string} */
+    MonitorRecoveryStatus: "running" | "not_reattachable";
     MonitorRestartRequest: {
       accountKey: string;
       agent: string;
@@ -15020,13 +15133,10 @@ export interface components {
        */
       kind: "monitors";
     };
-    /**
-     * MonitorState
-     * @enum {string}
-     */
+    /** @enum {string} */
     MonitorState:
-      | "starting"
       | "approval"
+      | "starting"
       | "running"
       | "completed"
       | "failed"
@@ -17130,40 +17240,15 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
-    /** ProcessActionResult */
     ProcessActionResult: {
-      /**
-       * Error
-       * @default null
-       */
-      error?: null | string | undefined;
-      /**
-       * Processes
-       * @default []
-       */
-      processes?:
-        | {
-            [key: string]: components["schemas"]["JsonValue"] | undefined;
-          }[]
-        | undefined;
-      /** Requestid */
+      /** @default [] */
+      processes?: components["schemas"]["ProcessEntry"][] | undefined;
       requestId: string;
-      /**
-       * Response
-       * @default null
-       */
-      response?:
-        | {
-            [key: string]: components["schemas"]["JsonValue"] | undefined;
-          }
-        | null
-        | undefined;
-      /**
-       * Status
-       * @enum {string}
-       */
-      status: "completed" | "partial" | "uncertain";
+      response?: components["schemas"]["ProcessResponse"] | null | undefined;
+      status: components["schemas"]["ProcessActionStatus"];
     };
+    /** @enum {string} */
+    ProcessActionStatus: "completed" | "partial" | "uncertain";
     /** ProcessCapabilities */
     ProcessCapabilities: {
       /** Readoutput */
@@ -17175,49 +17260,123 @@ export interface components {
       /** Stop */
       stop: boolean;
     };
-    /** ProcessControlRequest */
-    ProcessControlRequest: {
-      /** Accountkey */
-      accountKey: string;
-      /**
-       * Action
-       * @enum {string}
-       */
-      action:
-        | "stop_selected"
-        | "stop_owned"
-        | "stop_response"
-        | "background_command";
-      /** Agent */
+    ProcessControlRequest:
+      | {
+          accountKey: string;
+          /** @constant */
+          action: "stop_selected";
+          agent: string;
+          /** Format: uint64 */
+          epoch: number;
+          /** @default false */
+          includeDescendants?: boolean | undefined;
+          itemId?: null | undefined;
+          process: components["schemas"]["ProcessIdentity"];
+          /**
+           * @default []
+           * @constant
+           */
+          processes?: never[] | undefined;
+          requestId: string;
+          responseTarget?: null | undefined;
+        }
+      | {
+          accountKey: string;
+          /** @constant */
+          action: "stop_owned";
+          agent: string;
+          /** Format: uint64 */
+          epoch: number;
+          /** @default false */
+          includeDescendants?: boolean | undefined;
+          itemId?: null | undefined;
+          process?: null | undefined;
+          processes: components["schemas"]["ProcessIdentity"][];
+          requestId: string;
+          responseTarget?: null | undefined;
+        }
+      | {
+          accountKey: string;
+          /** @constant */
+          action: "stop_response";
+          agent: string;
+          /** Format: uint64 */
+          epoch: number;
+          /**
+           * @default false
+           * @constant
+           */
+          includeDescendants?: false | undefined;
+          itemId?: null | undefined;
+          process?: null | undefined;
+          /**
+           * @default []
+           * @constant
+           */
+          processes?: never[] | undefined;
+          requestId: string;
+          responseTarget: components["schemas"]["ProcessResponseTarget"];
+        }
+      | {
+          accountKey: string;
+          /** @constant */
+          action: "background_command";
+          agent: string;
+          /** Format: uint64 */
+          epoch: number;
+          /**
+           * @default false
+           * @constant
+           */
+          includeDescendants?: false | undefined;
+          itemId: string;
+          process?: null | undefined;
+          /**
+           * @default []
+           * @constant
+           */
+          processes?: never[] | undefined;
+          requestId: string;
+          responseTarget: components["schemas"]["ProcessResponseTarget"];
+        };
+    ProcessEntry: {
       agent: string;
-      /** Epoch */
-      epoch: number;
-      /**
-       * Includedescendants
-       * @default false
-       */
-      includeDescendants?: boolean | undefined;
-      /**
-       * Itemid
-       * @description Running command item that moves to the background
-       * @default null
-       */
-      itemId?: string | null | undefined;
-      /** @default null */
-      process?: components["schemas"]["ProcessIdentity"] | null | undefined;
-      /**
-       * Processes
-       * @default []
-       */
-      processes?: components["schemas"]["ProcessIdentity"][] | undefined;
-      /** Requestid */
-      requestId: string;
-      /** @default null */
-      responseTarget?:
-        | components["schemas"]["ProcessResponseTarget"]
-        | null
-        | undefined;
-    };
+      generation?: string | null | undefined;
+      key: string;
+      source?: string | null | undefined;
+    } & (
+      | {
+          /** @constant */
+          status: "pending";
+        }
+      | {
+          /** @constant */
+          status: "stopped";
+        }
+      | {
+          /** @constant */
+          status: "already_finished";
+        }
+      | {
+          /** @constant */
+          status: "requested";
+        }
+      | {
+          error: string;
+          /** @constant */
+          status: "stale";
+        }
+      | {
+          error: string;
+          /** @constant */
+          status: "failed";
+        }
+      | {
+          error?: unknown | undefined;
+          /** @constant */
+          status: "uncertain";
+        }
+    );
     /** ProcessesResource */
     ProcessesResource: {
       agentId: string;
@@ -17227,17 +17386,12 @@ export interface components {
        */
       kind: "processes";
     };
-    /** ProcessIdentity */
     ProcessIdentity: {
-      /** Accountkey */
       accountKey: string;
-      /** Agent */
       agent: string;
-      /** Epoch */
+      /** Format: uint64 */
       epoch: number;
-      /** Generation */
       generation: string;
-      /** Key */
       key: string;
     };
     /**
@@ -17276,13 +17430,9 @@ export interface components {
         | null
         | undefined;
     };
-    /** ProcessReceipt */
-    ProcessReceipt: {
-      /** Found */
-      found: boolean;
-      /** @default null */
-      result?: components["schemas"]["ProcessActionResult"] | null | undefined;
-    };
+    ProcessReceipt:
+      | components["schemas"]["FoundProcessReceipt"]
+      | components["schemas"]["MissingProcessReceipt"];
     /** ProcessRecord */
     ProcessRecord: {
       /** Cpupercent */
@@ -17295,19 +17445,17 @@ export interface components {
       /** Rssmib */
       rssMiB: number;
     };
-    /** ProcessResponseTarget */
+    /** @description A response stop or background entry, or the receipt of HTTP monitor input. */
+    ProcessResponse:
+      | components["schemas"]["MonitorInputResponse"]
+      | components["schemas"]["ResponseEntry"];
     ProcessResponseTarget: {
-      /** Accountkey */
       accountKey: string;
-      /** Agent */
       agent: string;
-      /** Connectionid */
       connectionId: string;
-      /** Epoch */
+      /** Format: uint64 */
       epoch: number;
-      /** Threadid */
       threadId: string;
-      /** Turnid */
       turnId: string;
     };
     /** ProcessTree */
@@ -18172,13 +18320,24 @@ export interface components {
      * @enum {string}
      */
     ProviderKind: "codex" | "claude";
-    /**
-     * ProviderModel
-     * @description One extensible provider catalog entry; names remain provider-owned strings.
-     */
     ProviderModel: {
-      /** Model */
+      accountKey?: string | undefined;
+      availableAccessPrograms?:
+        | components["schemas"]["ModelAccessPrograms"]
+        | null
+        | undefined;
+      defaultReasoningEffort?: string | null | undefined;
+      description?: string | null | undefined;
+      displayName?: string | null | undefined;
+      hidden?: boolean | undefined;
+      isDefault?: boolean | undefined;
       model: string;
+      provider?: components["schemas"]["ProviderKind"] | undefined;
+      resolvedModel?: string | null | undefined;
+      serviceTiers?: components["schemas"]["ModelServiceTier"][] | undefined;
+      supportedReasoningEfforts?:
+        | components["schemas"]["ModelReasoningEffort"][]
+        | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
@@ -18320,6 +18479,12 @@ export interface components {
        */
       protocol: 1;
     };
+    QuestionAnswerStrings: {
+      answers: string[];
+    };
+    QuestionApproval: {
+      decision: components["schemas"]["QuestionDecision"];
+    };
     /** QuestionBody */
     QuestionBody: {
       /**
@@ -18330,12 +18495,55 @@ export interface components {
       /** Id */
       id: string;
     };
+    /**
+     * @description The method selects the required answer fields. The renderer sends only data;
+     *     the stored request method remains the server's authority.
+     */
+    QuestionCardAnswer:
+      | {
+          data: components["schemas"]["QuestionApproval"];
+          /** @constant */
+          method: "item/commandExecution/requestApproval";
+        }
+      | {
+          data: components["schemas"]["QuestionApproval"];
+          /** @constant */
+          method: "item/fileChange/requestApproval";
+        }
+      | {
+          data: components["schemas"]["QuestionApproval"];
+          /** @constant */
+          method: "item/permissions/requestApproval";
+        }
+      | {
+          data: components["schemas"]["QuestionSelections"];
+          /** @constant */
+          method: "item/tool/requestUserInput";
+        }
+      | {
+          data: components["schemas"]["QuestionSelections"];
+          /** @constant */
+          method: "agent/asyncQuestion";
+        }
+      | {
+          data: components["schemas"]["QuestionElicitation"];
+          /** @constant */
+          method: "mcpServer/elicitation/request";
+        };
+    /** @enum {string} */
+    QuestionDecision: "accept" | "decline" | "cancel";
     /** QuestionDeferBody */
     QuestionDeferBody: {
       /** Deferred */
       deferred: boolean;
       /** Id */
       id: string;
+    };
+    QuestionElicitation: {
+      content: {
+        [key: string]: components["schemas"]["JsonValue"] | undefined;
+      };
+      decision: components["schemas"]["QuestionDecision"];
     };
     /** QuestionEntry */
     QuestionEntry: {
@@ -18385,42 +18593,22 @@ export interface components {
       /** Label */
       label: string;
     };
-    /** QueueCancelBody */
+    QuestionSelections: {
+      answers: {
+        [key: string]: components["schemas"]["QuestionAnswerStrings"];
+      };
+    };
     QueueCancelBody: {
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
        */
       action: "cancel";
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /**
-       * Expected Revision
-       * @default null
-       */
-      expected_revision?: null | string | undefined;
-      /**
-       * Expectedtext
-       * @default null
-       */
-      expectedText?: null | string | undefined;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /**
-       * Message Id
-       * @default null
-       */
-      message_id?: null | string | undefined;
-      /**
-       * Request Id
-       * @default null
-       */
+      agent?: string | null | undefined;
+      expected_revision?: string | null | undefined;
+      expectedText?: string | null | undefined;
+      id?: string | null | undefined;
+      message_id?: string | null | undefined;
       request_id?: string | null | undefined;
     };
     /** QueueCapabilities */
@@ -18430,44 +18618,18 @@ export interface components {
       /** Reorder */
       reorder: boolean;
     };
-    /** QueueEditBody */
     QueueEditBody: {
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
        */
       action: "edit";
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /**
-       * Expected Revision
-       * @default null
-       */
-      expected_revision?: null | string | undefined;
-      /**
-       * Expectedtext
-       * @default null
-       */
-      expectedText?: null | string | undefined;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /**
-       * Message Id
-       * @default null
-       */
-      message_id?: null | string | undefined;
-      /**
-       * Request Id
-       * @default null
-       */
+      agent?: string | null | undefined;
+      expected_revision?: string | null | undefined;
+      expectedText?: string | null | undefined;
+      id?: string | null | undefined;
+      message_id?: string | null | undefined;
       request_id?: string | null | undefined;
-      /** Text */
       text: string;
     };
     /** QueueEntityDto */
@@ -18478,42 +18640,17 @@ export interface components {
       /** Revision */
       revision: string;
     };
-    /** QueueFirstBody */
     QueueFirstBody: {
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
        */
       action: "first" | "send_now";
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /**
-       * Expected Revision
-       * @default null
-       */
-      expected_revision?: null | string | undefined;
-      /**
-       * Expectedtext
-       * @default null
-       */
-      expectedText?: null | string | undefined;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /**
-       * Message Id
-       * @default null
-       */
-      message_id?: null | string | undefined;
-      /**
-       * Request Id
-       * @default null
-       */
+      agent?: string | null | undefined;
+      expected_revision?: string | null | undefined;
+      expectedText?: string | null | undefined;
+      id?: string | null | undefined;
+      message_id?: string | null | undefined;
       request_id?: string | null | undefined;
     };
     /** QueueItem */
@@ -18554,31 +18691,16 @@ export interface components {
       /** Text */
       text: string;
     };
-    /** QueueReorderBody */
     QueueReorderBody: {
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
        */
       action: "reorder";
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /** Expected Revision */
+      agent?: string | null | undefined;
       expected_revision: string;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /** Ordered Ids */
+      id?: string | null | undefined;
       ordered_ids: string[];
-      /**
-       * Request Id
-       * @default null
-       */
       request_id?: string | null | undefined;
     };
     /** QueueResource */
@@ -18616,65 +18738,29 @@ export interface components {
      * @description Known rate-limit fields plus provider-owned fields passed through unchanged.
      */
     RateLimitBucket: {
-      /** @default null */
       individualLimit?:
         | components["schemas"]["RateLimitIndividualLimit"]
         | null
         | undefined;
-      /**
-       * Limitid
-       * @default null
-       */
-      limitId?: null | string | undefined;
-      /**
-       * Limitname
-       * @default null
-       */
-      limitName?: null | string | undefined;
-      /** @default null */
+      /** Limitid */
+      limitId?: string | null | undefined;
+      /** Limitname */
+      limitName?: string | null | undefined;
+      /** Plantype */
+      planType?: string | null | undefined;
       primary?: components["schemas"]["RateLimitWindow"] | null | undefined;
-      /**
-       * Ratelimitreachedtype
-       * @default null
-       */
-      rateLimitReachedType?: null | string | undefined;
-      /** @default null */
+      /** Ratelimitreachedtype */
+      rateLimitReachedType?: string | null | undefined;
       secondary?: components["schemas"]["RateLimitWindow"] | null | undefined;
-      /**
-       * Spendcontrolreached
-       * @default null
-       */
+      /** Spendcontrolreached */
       spendControlReached?: boolean | null | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
-    /**
-     * RateLimitBucketDto
-     * @description Known rate-limit fields plus fields owned by the active provider.
-     */
-    RateLimitBucketDto: {
-      /** Limitid */
-      limitId?: null | string | undefined;
-      /** Limitname */
-      limitName?: null | string | undefined;
-      /** Plantype */
-      planType?: null | string | undefined;
-      primary?: components["schemas"]["RateLimitWindowDto"] | null | undefined;
-      /** Ratelimitreachedtype */
-      rateLimitReachedType?: null | string | undefined;
-      secondary?:
-        | components["schemas"]["RateLimitWindowDto"]
-        | null
-        | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
+    RateLimitBucketDto: components["schemas"]["RateLimitBucket"];
     /** RateLimitIndividualLimit */
     RateLimitIndividualLimit: {
-      /**
-       * Remainingpercent
-       * @default null
-       */
+      /** Remainingpercent */
       remainingPercent?: number | null | undefined;
     };
     /**
@@ -18682,15 +18768,9 @@ export interface components {
      * @description A provider reset-credit record; native service fields remain extensible.
      */
     RateLimitResetCredit: {
-      /**
-       * Expiresat
-       * @default null
-       */
+      /** Expiresat */
       expiresAt?: number | null | undefined;
-      /**
-       * Grantedat
-       * @default null
-       */
+      /** Grantedat */
       grantedAt?: number | null | undefined;
       /** Id */
       id: string;
@@ -18706,86 +18786,26 @@ export interface components {
      * @description Provider-owned reset-credit summary with the known count and credit fields.
      */
     RateLimitResetCredits: {
-      /**
-       * Availablecount
-       * @default null
-       */
+      /** Availablecount */
       availableCount?: number | null | undefined;
-      /**
-       * Credits
-       * @default []
-       */
+      /** Credits */
       credits?: components["schemas"]["RateLimitResetCredit"][] | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
-    /**
-     * RateLimitsDataDto
-     * @description Known renderer-facing fields with provider JSON extension payloads.
-     *
-     *     ``codex_records.RateLimitDataRecord`` describes the storage projection, but
-     *     rate-limit snapshots also pass through provider reset-credit data whose
-     *     complete provider-owned shape is not fixed by this repository.
-     */
-    RateLimitsDataDto: {
-      /** Accountid */
-      accountId?: null | string | undefined;
-      /** Ordinaryusageallowed */
-      ordinaryUsageAllowed?: boolean | null | undefined;
-      rateLimitResetCredits?:
-        | components["schemas"]["JsonValue"]
-        | null
-        | undefined;
-      rateLimits?:
-        | components["schemas"]["RateLimitBucketDto"]
-        | null
-        | undefined;
-      /** Ratelimitsbylimitid */
-      rateLimitsByLimitId?:
-        | {
-            [key: string]: components["schemas"]["RateLimitBucketDto"];
-          }
-        | null
-        | undefined;
-      /** Signedin */
-      signedIn?: boolean | null | undefined;
-      /** Status */
-      status?: null | string | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
+    RateLimitsDataDto: components["schemas"]["UsageLimitsData"];
     /** RateLimitWindow */
     RateLimitWindow: {
-      /**
-       * Resetsat
-       * @default null
-       */
-      resetsAt?: number | null | undefined;
-      /**
-       * Usedpercent
-       * @default null
-       */
-      usedPercent?: number | null | undefined;
-      /**
-       * Windowdurationmins
-       * @default null
-       */
-      windowDurationMins?: number | null | undefined;
-    };
-    /**
-     * RateLimitWindowDto
-     * @description Known usage window fields plus provider-specific window metadata.
-     */
-    RateLimitWindowDto: {
       /** Resetsat */
-      resetsAt?: null | number | undefined;
+      resetsAt?: number | null | undefined;
       /** Usedpercent */
-      usedPercent?: null | number | undefined;
+      usedPercent?: number | null | undefined;
       /** Windowdurationmins */
-      windowDurationMins?: null | number | undefined;
+      windowDurationMins?: number | null | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    RateLimitWindowDto: components["schemas"]["RateLimitWindow"];
     /** ReadStateBody */
     ReadStateBody: {
       /** Expected Revision */
@@ -18844,6 +18864,8 @@ export interface components {
      * @enum {string}
      */
     RecoveryOutcome: "completed" | "failed" | "interrupted";
+    /** @enum {string} */
+    RecoveryPhase: "scan" | "history";
     /** RecoveryResponse */
     RecoveryResponse: {
       /**
@@ -19739,6 +19761,38 @@ export interface components {
       /** Workspaceid */
       workspaceId: string;
     };
+    ResponseEntry: {
+      agent: string;
+      itemId?: string | null | undefined;
+    } & (
+      | {
+          /** @constant */
+          status: "requested";
+        }
+      | {
+          /** @constant */
+          status: "backgrounded";
+        }
+      | {
+          /** @constant */
+          status: "not_running";
+        }
+      | {
+          error: string;
+          /** @constant */
+          status: "stale";
+        }
+      | {
+          error: string;
+          /** @constant */
+          status: "failed";
+        }
+      | {
+          error?: string | null | undefined;
+          /** @constant */
+          status: "uncertain";
+        }
+    );
     /**
      * RestartEnvironmentKey
      * @enum {string}
@@ -22294,90 +22348,196 @@ export interface components {
       /** Waitingfor */
       waitingFor?: components["schemas"]["JsonValue"][] | null | undefined;
     };
-    /**
-     * StudioError
-     * @description One agent work item that ended because of a Studio error, not because of the agent's own work.
-     */
+    /** @description An action always carries its real destination. Server incidents have no invented agent. */
     StudioError: {
       /**
-       * Action
-       * @description resume runs connection recovery for the agent; check opens the agent for the owner.
-       * @enum {string}
-       */
-      action: "resume" | "check";
-      /** Agentid */
-      agentId: string;
-      /** Agentname */
-      agentName: string;
-      /**
-       * At
-       * @description Unix seconds of the latest failure in this row.
+       * Format: double
+       * @description Unix seconds.
        */
       at: number;
       /**
-       * Count
-       * @description Failures in this row: the failed runs of one rule or command of one kind are one row.
+       * Format: uint64
+       * @description Failures in a grouped row. Unit: occurrences.
        */
-      count: number;
-      /**
-       * Detail
-       * @description The stored error.
-       */
+      count?: number | null | undefined;
       detail: string;
-      /**
-       * Eventid
-       * @default null
-       */
+      diagnostics: components["schemas"]["StudioErrorDiagnostics"];
       eventId?: string | null | undefined;
       /**
-       * Firstat
-       * @description Unix seconds of the first failure in this row.
+       * Format: double
+       * @description Unix seconds of the first failure in a grouped row.
        */
-      firstAt: number;
-      /**
-       * Id
-       * @description Row identity. Dismissing it hides this row; for a rule or a command it hides the failures so far, and a later failure returns.
-       */
+      firstAt?: number | null | undefined;
       id: string;
-      /**
-       * Kind
-       * @enum {string}
-       */
-      kind:
-        | "monitor_outcome_lost"
-        | "monitor_not_recorded"
-        | "input_not_sent"
-        | "input_unconfirmed"
-        | "input_uncertain"
-        | "input_stuck"
-        | "turn_disconnected"
-        | "workspace_failed"
-        | "turn_stalled"
-        | "input_not_started"
-        | "session_not_started"
-        | "schedule_stalled";
-      /**
-       * Monitorid
-       * @default null
-       */
+      kind: components["schemas"]["StudioErrorKind"];
       monitorId?: string | null | undefined;
-      /**
-       * Reason
-       * @description The reason in plain words.
-       */
       reason: string;
-      /**
-       * Ruleid
-       * @description The rule whose runs failed, if a rule ran them.
-       * @default null
-       */
+      /** @description Rule of a grouped monitor row; its failures share one row. */
       ruleId?: string | null | undefined;
-      /**
-       * Subject
-       * @description The command or the start of the message.
-       */
       subject: string;
+    } & (
+      | {
+          /** @constant */
+          action: "resume";
+          agentId: string;
+          agentName: string;
+        }
+      | {
+          /** @constant */
+          action: "check";
+          agentId: string;
+          agentName: string;
+        }
+      | {
+          /** @constant */
+          action: "details";
+        }
+    );
+    /** @description Only facts extracted by typed adapters belong here; never arbitrary error strings or payloads. */
+    StudioErrorCause:
+      | {
+          /** @constant */
+          kind: "monitor";
+          operation: components["schemas"]["MonitorOperationIdentity"] | null;
+          recovery: components["schemas"]["MonitorRecoveryEvidence"] | null;
+          status: components["schemas"]["MonitorState"];
+        }
+      | {
+          keyword: string;
+          /** @constant */
+          kind: "schema_violation";
+          pointer: string;
+        }
+      | {
+          /** @constant */
+          kind: "unclassified";
+          sha256: string;
+        }
+      | {
+          id: string;
+          /** @constant */
+          kind: "migration";
+          phase: components["schemas"]["MigrationPhase"];
+          rollback: components["schemas"]["MigrationRollbackOutcome"];
+          target: components["schemas"]["MigrationTarget"];
+        }
+      | {
+          id: string;
+          /** @constant */
+          kind: "stored_record";
+          object: string;
+          pointer: string | null;
+        }
+      | {
+          /** Format: int32 */
+          extendedCode: number;
+          /** @constant */
+          kind: "sqlite";
+          /** Format: int32 */
+          primaryCode: number;
+        }
+      | {
+          category: components["schemas"]["StudioErrorJsonCategory"];
+          /** Format: uint */
+          column: number;
+          /** @constant */
+          kind: "json";
+          /** Format: uint */
+          line: number;
+        }
+      | {
+          /** @constant */
+          kind: "io";
+          /** Format: int32 */
+          osCode: number | null;
+        }
+      | {
+          /** @constant */
+          kind: "schema_object";
+          object: string;
+        }
+      | {
+          class: components["schemas"]["HttpErrorKind"];
+          /** @constant */
+          kind: "runtime";
+        };
+    StudioErrorContext:
+      | {
+          /** Format: int64 */
+          epoch: number | null;
+          requestId: string | null;
+          /** @constant */
+          source: "monitor";
+          turnId: string | null;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          source: "input";
+          turnId: string | null;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number | null;
+          /** @constant */
+          source: "agent";
+          turnId: string | null;
+        }
+      | {
+          class: components["schemas"]["HttpErrorKind"];
+          requestId: string | null;
+          route: string;
+          /** @constant */
+          source: "http";
+          /** Format: uint16 */
+          status: number;
+        }
+      | {
+          account: string;
+          agentId: string | null;
+          phase: components["schemas"]["RecoveryPhase"];
+          /** @constant */
+          source: "recovery";
+        }
+      | {
+          id: string;
+          object: string;
+          /** @constant */
+          source: "stored";
+        };
+    StudioErrorDiagnostics: {
+      /** @description Ordered from the owning boundary to the underlying safe machine facts. */
+      causes: components["schemas"]["StudioErrorCause"][];
+      certainty: components["schemas"]["StudioErrorEffectCertainty"];
+      context: components["schemas"]["StudioErrorContext"];
     };
+    /**
+     * @description Evidence about effects, distinct from provider delivery ("written" is not applied).
+     * @enum {string}
+     */
+    StudioErrorEffectCertainty: "read_only" | "not_applied" | "unknown";
+    /** @enum {string} */
+    StudioErrorJsonCategory: "io" | "syntax" | "data" | "eof";
+    /** @description Why work needs attention. The service owns classification and publication. */
+    StudioErrorKind:
+      | (
+          | "monitor_outcome_lost"
+          | "monitor_not_recorded"
+          | "input_unconfirmed"
+          | "input_uncertain"
+          | "input_stuck"
+          | "turn_disconnected"
+          | "workspace_failed"
+          | "http_failure"
+          | "recovery_failed"
+          | "stored_record_invalid"
+          | "unclassified_failure"
+        )
+      | "turn_stalled"
+      | "input_not_started"
+      | "session_not_started"
+      | "schedule_stalled";
     /** StudioErrorsDismissRequest */
     StudioErrorsDismissRequest: {
       /** @description Legacy single error id. Supply either id or ids. */
@@ -25194,7 +25354,7 @@ export interface components {
        * Provider
        * @default null
        */
-      provider?: null | string | undefined;
+      provider?: null | components["schemas"]["ProviderKind"] | undefined;
       /**
        * Reason
        * @default null
@@ -25613,48 +25773,28 @@ export interface components {
      * @description Known usage projection plus account-service fields passed through unchanged.
      */
     UsageLimitsData: {
-      /**
-       * Accountid
-       * @default null
-       */
-      accountId?: null | string | undefined;
-      /**
-       * Ordinaryusageallowed
-       * @default null
-       */
+      /** Accountid */
+      accountId?: string | null | undefined;
+      /** Ordinaryusageallowed */
       ordinaryUsageAllowed?: boolean | null | undefined;
-      /** @default null */
       rateLimitResetCredits?:
         | components["schemas"]["RateLimitResetCredits"]
         | null
         | undefined;
-      /** @default null */
       rateLimits?: components["schemas"]["RateLimitBucket"] | null | undefined;
-      /**
-       * Ratelimitsbylimitid
-       * @default null
-       */
+      /** Ratelimitsbylimitid */
       rateLimitsByLimitId?:
         | {
             [key: string]: components["schemas"]["RateLimitBucket"];
           }
         | null
         | undefined;
-      /**
-       * Signedin
-       * @default null
-       */
+      /** Signedin */
       signedIn?: boolean | null | undefined;
-      /**
-       * Source
-       * @default null
-       */
-      source?: null | string | undefined;
-      /**
-       * Status
-       * @default null
-       */
-      status?: null | string | undefined;
+      /** Source */
+      source?: string | null | undefined;
+      /** Status */
+      status?: string | null | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
@@ -26093,14 +26233,32 @@ export interface components {
       resource: components["schemas"]["VaultJobProgressResource"];
       /** Revision */
       revision: number;
-      value:
-        | components["schemas"]["VaultSetupResponse"]
-        | components["schemas"]["VaultLoginResponse"]
-        | components["schemas"]["VaultPullResponse"]
-        | null;
+      value: unknown;
       /** Workspaceid */
       workspaceId: string;
-    };
+    } & (
+      | {
+          resource: components["schemas"]["VaultJobProgressResource"] & {
+            /** @constant */
+            job: "setup";
+          };
+          value: components["schemas"]["VaultSetupResponse"] | null;
+        }
+      | {
+          resource: components["schemas"]["VaultJobProgressResource"] & {
+            /** @constant */
+            job: "login";
+          };
+          value: components["schemas"]["VaultLoginResponse"] | null;
+        }
+      | {
+          resource: components["schemas"]["VaultJobProgressResource"] & {
+            /** @constant */
+            job: "pull";
+          };
+          value: components["schemas"]["VaultPullResponse"] | null;
+        }
+    );
     /** VaultJobProgressResource */
     VaultJobProgressResource: {
       /** @enum {string} */
@@ -26111,6 +26269,11 @@ export interface components {
        */
       kind: "vault-job-progress";
       requestId: string;
+    };
+    /** VaultLoginDone */
+    VaultLoginDone: {
+      /** @constant */
+      state: "done";
     };
     /**
      * VaultLoginRequest
@@ -26149,6 +26312,31 @@ export interface components {
        * @enum {string}
        */
       state: "running" | "done" | "failed";
+    } & (
+      | {
+          /** @constant */
+          state: "running";
+        }
+      | components["schemas"]["VaultLoginDone"]
+      | {
+          /** @constant */
+          state: "failed";
+        }
+    );
+    /** VaultPullBytes */
+    VaultPullBytes: number;
+    /** VaultPullDone */
+    VaultPullDone: {
+      /** @constant */
+      state: "done";
+    } & components["schemas"]["VaultPullOutcome"];
+    /** VaultPullFiles */
+    VaultPullFiles: number;
+    /** VaultPullOutcome */
+    VaultPullOutcome: {
+      bytes: components["schemas"]["VaultPullBytes"];
+      files: components["schemas"]["VaultPullFiles"];
+      seq: components["schemas"]["VaultPullSequence"];
     };
     /**
      * VaultPullRequest
@@ -26176,7 +26364,7 @@ export interface components {
        * Bytes
        * @default null
        */
-      bytes?: number | null | undefined;
+      bytes?: components["schemas"]["VaultPullBytes"] | null | undefined;
       /**
        * Error
        * @default null
@@ -26186,7 +26374,7 @@ export interface components {
        * Files
        * @default null
        */
-      files?: number | null | undefined;
+      files?: components["schemas"]["VaultPullFiles"] | null | undefined;
       /** Folder */
       folder: string;
       /** Requestid */
@@ -26195,13 +26383,25 @@ export interface components {
        * Seq
        * @default null
        */
-      seq?: number | null | undefined;
+      seq?: components["schemas"]["VaultPullSequence"] | null | undefined;
       /**
        * State
        * @enum {string}
        */
       state: "running" | "done" | "failed";
-    };
+    } & (
+      | {
+          /** @constant */
+          state: "running";
+        }
+      | components["schemas"]["VaultPullDone"]
+      | {
+          /** @constant */
+          state: "failed";
+        }
+    );
+    /** VaultPullSequence */
+    VaultPullSequence: number;
     /**
      * VaultReadinessEvent
      * @description Transient subscribed progress; never persisted to the server or client entity store.
@@ -26229,6 +26429,12 @@ export interface components {
        */
       kind: "vault-readiness";
       prefix: string;
+    };
+    /** VaultSetupDone */
+    VaultSetupDone: {
+      site: string;
+      /** @constant */
+      state: "done";
     };
     /**
      * VaultSetupFactsRequest
@@ -26308,7 +26514,21 @@ export interface components {
        * @enum {string}
        */
       state: "running" | "done" | "failed" | "signin";
-    };
+    } & (
+      | {
+          /** @constant */
+          state: "running";
+        }
+      | components["schemas"]["VaultSetupDone"]
+      | {
+          /** @constant */
+          state: "failed";
+        }
+      | {
+          /** @constant */
+          state: "signin";
+        }
+    );
     /**
      * VaultUnlockRequest
      * @description The paper words of the project's vault, to keep its key on this Mac.
@@ -26833,46 +27053,37 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
-    /** WorkBody */
+    /**
+     * TaskCommand
+     * @description One tagged owner consumed by both HTTP and agent mutation adapters.
+     *
+     *     ```compile_fail
+     *     use studio_runtime_schema::task_command::TaskCommand;
+     *     let command = TaskCommand::Cancel { task_id: "task".into(), version: None };
+     *     // A cancellation always carries its reason.
+     *     ```
+     *
+     *     ```compile_fail
+     *     use studio_runtime_schema::task_command::Version;
+     *     let version = Version(-1); // Ingress validation cannot be bypassed.
+     *     ```
+     */
     WorkBody: {
-      /**
-       * Action
-       * @enum {string}
-       */
-      action:
+      action?:
         | "list"
         | "create"
         | "update"
+        | "cancel"
+        | "reject"
         | "claim"
         | "submit"
-        | "cancel"
         | "accept"
-        | "reject"
-        | "set_default_gate";
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /**
-       * Checks
-       * @default null
-       */
+        | "set_default_gate"
+        | undefined;
+      agent?: string | null | undefined;
       checks?: string | null | undefined;
-      /**
-       * Dependencies
-       * @default null
-       */
-      dependencies?: string[] | null | undefined;
-      /**
-       * Description
-       * @default null
-       */
+      dependencies?: string[] | (string[] | null) | undefined;
       description?: string | null | undefined;
-      /**
-       * Files
-       * @default null
-       */
       files?: string[] | null | undefined;
       /** @description Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default. */
       gate?:
@@ -26884,24 +27095,12 @@ export interface components {
           }
         | null
         | undefined;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /** @description Lead reason to accept despite a failed, missing, or unknown gate. Saved in the decision. */
-      override_reason?: string | undefined;
-      /**
-       * Owner
-       * @default null
-       */
-      owner?: null | string | undefined;
-      /**
-       * Reason
-       * @default null
-       */
+      id?: string | null | undefined;
+      /** @default null */
+      override_reason?: string | null | undefined;
+      owner?: (string | null) | (string | null) | undefined;
       reason?: string | null | undefined;
-      result?: components["schemas"]["JsonValue"] | undefined;
+      result?: string | unknown | undefined;
       /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
       result_schema?:
         | {
@@ -26909,32 +27108,190 @@ export interface components {
           }
         | boolean
         | undefined;
-      /**
-       * Revision
-       * @default null
-       */
       revision?: string | null | undefined;
+      /** @enum {string|null} */
+      status?: "ready" | "blocked" | null | undefined;
+      task_id?: string | null | undefined;
+      title?: string | (string | null) | undefined;
       /**
-       * Status
-       * @default null
-       */
-      status?: ("ready" | "blocked") | null | undefined;
-      /**
-       * Task Id
-       * @default null
-       */
-      task_id?: null | string | undefined;
-      /**
-       * Title
-       * @default null
-       */
-      title?: string | null | undefined;
-      /**
-       * Version
+       * Format: int64
+       * @description JSON Schema integers include integral decimal numbers. Retain that ingress
+       *     compatibility while carrying an actual integer in the service.
        * @default null
        */
       version?: number | null | undefined;
-    };
+    } & (
+      | {
+          /** @constant */
+          action: "list";
+          agent?: string | null | undefined;
+          id?: string | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "create";
+          agent?: string | null | undefined;
+          /** @default [] */
+          dependencies?: string[] | undefined;
+          description?: string | null | undefined;
+          /** @description Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default. */
+          gate?:
+            | string
+            | {
+                command: string;
+                /** @default 600000 */
+                timeout_ms?: number | undefined;
+              }
+            | null
+            | undefined;
+          id?: string | null | undefined;
+          owner?: string | null | undefined;
+          /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
+          result_schema?:
+            | {
+                [key: string]: unknown;
+              }
+            | boolean
+            | undefined;
+          /** @enum {string|null} */
+          status?: "ready" | "blocked" | null | undefined;
+          title: string;
+        }
+      | {
+          /** @constant */
+          action: "update";
+          agent?: string | null | undefined;
+          dependencies?: string[] | null | undefined;
+          description?: string | null | undefined;
+          /** @description Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default. */
+          gate?:
+            | string
+            | {
+                command: string;
+                /** @default 600000 */
+                timeout_ms?: number | undefined;
+              }
+            | null
+            | undefined;
+          id?: string | null | undefined;
+          owner?: string | null | undefined;
+          /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
+          result_schema?:
+            | {
+                [key: string]: unknown;
+              }
+            | boolean
+            | undefined;
+          /** @enum {string|null} */
+          status?: "ready" | "blocked" | null | undefined;
+          task_id: string;
+          title?: string | null | undefined;
+          /**
+           * Format: int64
+           * @description JSON Schema integers include integral decimal numbers. Retain that ingress
+           *     compatibility while carrying an actual integer in the service.
+           * @default null
+           */
+          version?: number | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "cancel";
+          agent?: string | null | undefined;
+          id?: string | null | undefined;
+          reason: string;
+          task_id: string;
+          /**
+           * Format: int64
+           * @description JSON Schema integers include integral decimal numbers. Retain that ingress
+           *     compatibility while carrying an actual integer in the service.
+           * @default null
+           */
+          version?: number | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "reject";
+          agent?: string | null | undefined;
+          id?: string | null | undefined;
+          result: string;
+          task_id: string;
+          /**
+           * Format: int64
+           * @description JSON Schema integers include integral decimal numbers. Retain that ingress
+           *     compatibility while carrying an actual integer in the service.
+           * @default null
+           */
+          version?: number | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "claim";
+          agent?: string | null | undefined;
+          id?: string | null | undefined;
+          /** @default null */
+          owner?: string | null | undefined;
+          task_id: string;
+          /**
+           * Format: int64
+           * @description JSON Schema integers include integral decimal numbers. Retain that ingress
+           *     compatibility while carrying an actual integer in the service.
+           * @default null
+           */
+          version?: number | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "submit";
+          agent?: string | null | undefined;
+          checks: string;
+          /** @default [] */
+          files?: string[] | undefined;
+          id?: string | null | undefined;
+          result: components["schemas"]["JsonValue"];
+          revision: string;
+          task_id: string;
+          /**
+           * Format: int64
+           * @description JSON Schema integers include integral decimal numbers. Retain that ingress
+           *     compatibility while carrying an actual integer in the service.
+           * @default null
+           */
+          version?: number | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "accept";
+          agent?: string | null | undefined;
+          id?: string | null | undefined;
+          /** @default null */
+          override_reason?: string | null | undefined;
+          result: string;
+          task_id: string;
+          /**
+           * Format: int64
+           * @description JSON Schema integers include integral decimal numbers. Retain that ingress
+           *     compatibility while carrying an actual integer in the service.
+           * @default null
+           */
+          version?: number | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "set_default_gate";
+          agent?: string | null | undefined;
+          /** @description Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default. */
+          gate:
+            | string
+            | {
+                command: string;
+                /** @default 600000 */
+                timeout_ms?: number | undefined;
+              }
+            | null;
+          id?: string | null | undefined;
+        }
+    );
     /** WorkDecisionDto */
     WorkDecisionDto: {
       /** By */
@@ -27026,17 +27383,7 @@ export interface components {
       /** Rootid */
       rootId?: null | string | undefined;
       /** Status */
-      status?:
-        | (
-            | "ready"
-            | "running"
-            | "blocked"
-            | "review"
-            | "accepted"
-            | "cancelled"
-          )
-        | null
-        | undefined;
+      status?: components["schemas"]["WorkStatus"] | null | undefined;
       /** Title */
       title?: null | string | undefined;
     };
@@ -27217,17 +27564,8 @@ export interface components {
         | undefined;
       /** Rootid */
       rootId: string;
-      /**
-       * Status
-       * @enum {string}
-       */
-      status:
-        | "ready"
-        | "blocked"
-        | "running"
-        | "review"
-        | "accepted"
-        | "cancelled";
+      /** Status */
+      status: components["schemas"]["WorkStatus"];
       submissionRefusal?:
         | components["schemas"]["TaskSubmissionRefusal"]
         | undefined;
@@ -27422,6 +27760,8 @@ export interface components {
       /** Taskshistorylimit */
       tasksHistoryLimit?: number | null | undefined;
     };
+    /** @enum {string} */
+    WorkspaceMode: "layr-native" | "layr" | "image" | "worktree" | "shared";
     /** WorkspaceResource */
     WorkspaceResource: {
       /** Agentid */
@@ -27671,6 +28011,14 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    /** @enum {string} */
+    WorkStatus:
+      | "ready"
+      | "blocked"
+      | "running"
+      | "review"
+      | "accepted"
+      | "cancelled";
     /** WorktreeCleanupErrorRecordResponse */
     WorktreeCleanupErrorRecordResponse: {
       /** At */
@@ -27807,16 +28155,7 @@ export interface components {
       /** Description */
       description: string;
       /** Displaystatus */
-      displayStatus:
-        | "blocked"
-        | (
-            | "ready"
-            | "running"
-            | "blocked"
-            | "review"
-            | "accepted"
-            | "cancelled"
-          );
+      displayStatus: "blocked" | components["schemas"]["WorkStatus"];
       gate?: components["schemas"]["TaskAcceptanceGate"] | undefined;
       /**
        * Handoff
@@ -27851,17 +28190,8 @@ export interface components {
         | undefined;
       /** Rootid */
       rootId: string;
-      /**
-       * Status
-       * @enum {string}
-       */
-      status:
-        | "ready"
-        | "running"
-        | "blocked"
-        | "review"
-        | "accepted"
-        | "cancelled";
+      /** Status */
+      status: components["schemas"]["WorkStatus"];
       submissionRefusal?:
         | components["schemas"]["TaskSubmissionRefusal"]
         | undefined;
@@ -39284,6 +39614,37 @@ export type WorkReleaseEntityDto =
 export type WorkResultEntityDto = components["schemas"]["WorkResultEntityDto"];
 export type WorkspaceEntityDto = components["schemas"]["WorkspaceEntityDto"];
 export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
+export const RequestStatus = {
+  pending: "pending",
+  blocked: "blocked",
+  answering: "answering",
+  answered: "answered",
+  declined: "declined",
+  resolved: "resolved",
+  expired: "expired",
+  submitted: "submitted",
+  acknowledged: "acknowledged",
+  failed: "failed",
+  uncertain: "uncertain",
+} as const;
+export const TaskStatus = {
+  running: "running",
+  starting: "starting",
+  approval: "approval",
+  queued: "queued",
+  waiting: "waiting",
+  completed: "completed",
+  failed: "failed",
+  interrupted: "interrupted",
+  cancelled: "cancelled",
+  lost: "lost",
+  unknown: "unknown",
+} as const;
+export const TransferStatus = {
+  pending: "pending",
+  completed: "completed",
+  cancelled: "cancelled",
+} as const;
 
 export const SYNC_PROTOCOL_VERSION = 4 as const;
 export const SYNC_IDENTITY_PROTOCOL_VERSION = 2 as const;

@@ -14,18 +14,25 @@ import type {
 type RecoveryArguments = Parameters<
   typeof import("./native-session-recovery.ts").recoverNativeSession
 >;
+function first<T>(items: readonly T[]): T {
+  const item = items[0];
+  if (item === undefined) throw new Error("expected a first item");
+  return item;
+}
 interface FixtureRow {
   type: string;
   subtype?: string;
   sessionId?: string;
   cwd?: string;
   uuid?: string;
-  parentUuid?: string | null;
+  parentUuid?: string | null | undefined;
   attachment?: unknown;
-  message?: {
-    stop_reason?: string;
-    content: string | { type: string; text?: string; id?: string }[];
-  };
+  message?:
+    | {
+        stop_reason?: string;
+        content: string | { type: string; text?: string; id?: string }[];
+      }
+    | undefined;
 }
 interface FixtureEvidence {
   target: RecoveryTarget;
@@ -257,13 +264,13 @@ test("adopts completed native history with subdirectory work and old interrupted
 
 test("preserves a known Studio event input origin without relabeling or sending it", async () =>
   fixture(async ({ request, evidence, base }) => {
-    request.pending[0].inputOrigin = STUDIO_EVENT_INPUT;
+    first(request.pending).inputOrigin = STUDIO_EVENT_INPUT;
     const before = structuredClone(request);
     await recover(request, { inspect: async () => evidence() });
     assert.deepEqual(request, before);
     const saved = JSON.parse(await fs.readFile(base, "utf8")).session;
     assert.deepEqual(saved.turns, []);
-    assert(!JSON.stringify(saved).includes(request.pending[0].text));
+    assert(!JSON.stringify(saved).includes(first(request.pending).text));
   }));
 
 for (const scenario of [
@@ -290,9 +297,9 @@ for (const scenario of [
       if (scenario === "tasks") proof.backgroundTasks = 1;
       if (scenario === "unknown-input") proof.unresolvedInputs = 1;
       if (scenario === "sent-input")
-        proof.pending[0].notSent.turnStartSubmitted = true;
+        first(proof.pending).notSent.turnStartSubmitted = true;
       if (scenario === "synthetic-input")
-        proof.pending[0].inputOrigin = "studio_event";
+        first(proof.pending).inputOrigin = "studio_event";
       await assert.rejects(recover(request, { inspect: async () => proof }));
       await assert.rejects(fs.stat(base), { code: "ENOENT" });
     }));
@@ -311,14 +318,14 @@ for (const scenario of [
   test(`refuses ${scenario} native history`, async () =>
     fixture(
       async ({ request, evidence, nativeFile, rows, writeRows, base }) => {
-        if (scenario === "wrong-session") rows[0].sessionId = pendingId;
-        if (scenario === "wrong-cwd") rows[0].cwd += "-another";
-        if (scenario === "pending-id") rows[0].uuid = pendingId;
+        if (scenario === "wrong-session") first(rows).sessionId = pendingId;
+        if (scenario === "wrong-cwd") first(rows).cwd += "-another";
+        if (scenario === "pending-id") first(rows).uuid = pendingId;
         if (scenario === "pending-text")
           rows[0]!.message!.content = request.pending[0]!.text;
         if (scenario === "incomplete-turn")
           rows.push({
-            ...rows[0],
+            ...first(rows),
             uuid: "66666666-6666-4666-8666-666666666666",
           });
         await writeRows();

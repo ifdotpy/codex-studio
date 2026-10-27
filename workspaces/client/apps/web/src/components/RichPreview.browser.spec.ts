@@ -50,7 +50,10 @@ async function nativeDocumentPolicy() {
 // lines and a dotted edge.
 import { diagram } from "./RichPreview.browser.data.ts";
 const labels = (pattern: RegExp) =>
-  [...diagram.matchAll(pattern)].map((match) => match[1].split("<br/>"));
+  [...diagram.matchAll(pattern)].map((match) => {
+    assert.ok(match[1] !== undefined);
+    return match[1].split("<br/>");
+  });
 const nodeLabels = labels(/(?<!subgraph )\b\w+\["([^"]+)"\]/g);
 const clusterLabels = labels(/subgraph \w+\["([^"]+)"\]/g).flat();
 const edgeLabels = labels(/\|"([^"]+)"\|/g);
@@ -64,10 +67,12 @@ const luminance = (rgb: string) => {
     .match(/\d+(\.\d+)?/g)!
     .slice(0, 3)
     .map(Number);
+  assert.ok(r !== undefined && g !== undefined && b !== undefined);
   return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
 };
 const contrast = (a: string, b: string) => {
   const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  assert.ok(high !== undefined && low !== undefined);
   return (high + 0.05) / (low + 0.05);
 };
 

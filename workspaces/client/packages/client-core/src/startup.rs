@@ -93,6 +93,8 @@ fn refused(error: &reqwest::Error) -> bool {
     false
 }
 
+// SAFETY: Signal zero only probes the validated positive backend process identifier.
+#[allow(unsafe_code)]
 pub async fn identity(
     backend: &Backend,
     state: &Path,
@@ -291,6 +293,8 @@ pub async fn ensure(
     ensure_with_environment(backend, state, resources, env::vars_os().collect()).await
 }
 
+// SAFETY: The child pre-exec hook invokes only the async-signal-safe setsid syscall.
+#[allow(unsafe_code)]
 async fn ensure_with_environment(
     backend: &Backend,
     state: &Path,
@@ -345,7 +349,13 @@ async fn ensure_with_environment(
     );
     environment.insert("CODEX_BIN".into(), codex.clone().into_os_string());
     environment.insert("CODEX_NODE".into(), node.into_os_string());
-    let mut paths = vec![codex.parent().unwrap().to_path_buf()];
+    // executable() returns an absolute file path, which always has a parent.
+    let mut paths = vec![
+        codex
+            .parent()
+            .expect("executable has a parent")
+            .to_path_buf(),
+    ];
     paths.extend(env::split_paths(
         environment
             .get(std::ffi::OsStr::new("PATH"))
@@ -579,6 +589,8 @@ setTimeout(() => process.exit(0), fixtureLifetimeMs);
             .unwrap();
         struct FixtureProcess(i32);
         impl Drop for FixtureProcess {
+            // This fixture owns the child process and reaps it after termination.
+            #[allow(unsafe_code)]
             fn drop(&mut self) {
                 unsafe {
                     libc::kill(self.0, libc::SIGTERM);

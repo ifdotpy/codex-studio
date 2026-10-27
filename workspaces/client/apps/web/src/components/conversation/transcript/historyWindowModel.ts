@@ -37,10 +37,13 @@ export function windowHistoryRows(
       while (
         end < group.items.length &&
         end - start < HISTORY_ROW_ITEMS &&
-        !boundaries.has(messageRenderKey(group.items[end]))
+        !boundaries.has(messageRenderKey(group.items[end]!))
       )
         end++;
-      const items = group.items.slice(start, end);
+      const items: HistoryGroup["items"] = [
+        group.items[start]!,
+        ...group.items.slice(start + 1, end),
+      ];
       const last = end === group.items.length;
       rows.push({
         ...group,
@@ -96,7 +99,7 @@ export function historyRowsCanRestoreAnchor(
   current: HistoryGroup[],
 ): boolean {
   if (!previous.length || !current.length) return false;
-  return current[0].id === previous[0].id;
+  return current[0]!.id === previous[0]!.id;
 }
 
 export function historyOffsets(
@@ -114,7 +117,7 @@ export function historyOffsets(
           : Math.max(72, Math.ceil(item.text.length / 90) * 22 + 48)),
       0,
     );
-    offsets.push(offsets[offsets.length - 1] + (measured ?? estimate));
+    offsets.push(offsets[offsets.length - 1]! + (measured ?? estimate));
   }
   return offsets;
 }
@@ -131,7 +134,7 @@ export function historyWindowRange(
     let high = count;
     while (low < high) {
       const middle = Math.floor((low + high) / 2);
-      if (offsets[middle + 1] <= position) low = middle + 1;
+      if (offsets[middle + 1]! <= position) low = middle + 1;
       else high = middle;
     }
     return Math.min(count - 1, low);

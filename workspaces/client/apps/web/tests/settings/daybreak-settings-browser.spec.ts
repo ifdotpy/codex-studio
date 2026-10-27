@@ -18,8 +18,21 @@ import {
   modelValue,
   selectModel,
 } from "../fixtures/model-picker.ts";
-import { test } from "../playwright.ts";
+import { expect, test } from "../playwright.ts";
 import { setupControl, setupToggle } from "../fixtures/setup-controls.ts";
+
+type ResetModel = NonNullable<DaybreakReset["models"]>[number];
+type ResetOptions = Pick<DaybreakReset, "agent" | "defaults"> & {
+  models?: Array<
+    Pick<ResetModel, "model"> & {
+      serviceTiers: Pick<ResetModel["serviceTiers"][number], "id">[];
+      supportedReasoningEfforts: Pick<
+        ResetModel["supportedReasoningEfforts"][number],
+        "reasoningEffort"
+      >[];
+    }
+  >;
+};
 
 test("Daybreak settings", async ({ context }) => {
   test.setTimeout(60_000);
@@ -98,7 +111,7 @@ test("Daybreak settings", async ({ context }) => {
     await page.waitForFunction(() => !!window.reset, undefined, {
       timeout: 5_000,
     });
-    const reset = async (options?: DaybreakReset) => {
+    const reset = async (options?: ResetOptions) => {
       await page.evaluate((options) => {
         localStorage.clear();
         window.reset!(options);
@@ -119,16 +132,13 @@ test("Daybreak settings", async ({ context }) => {
           exact: true,
         },
       );
-    const settled = async () =>
-      page.waitForFunction(
-        () =>
-          window.refreshCount === window.settingsCalls.length &&
-          window.settingsCalls.length > 0,
-      );
+    const settled = async () => {
+      await page.waitForFunction(() => window.settingsCalls.length > 0);
+      await expect(page.locator(".execution-status")).toContainText("Saved");
+    };
     const clearActivity = () =>
       page.evaluate(() => {
         window.settingsCalls = [];
-        window.refreshCount = 0;
       });
 
     const enable = async (defaults = false) => {

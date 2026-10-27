@@ -189,9 +189,13 @@ pub(super) fn apply(
                     crate::scheduler::SchedulerError::Store(error) => {
                         NotificationDispatchError::Store(error)
                     }
-                    error => NotificationDispatchError::Store(StoreError::SchemaMismatch(
-                        error.to_string(),
-                    )),
+                    error @ crate::scheduler::SchedulerError::InvalidAttemptTimestamp
+                    | error @ crate::scheduler::SchedulerError::PreparationWorker
+                    | error @ crate::scheduler::SchedulerError::PolicyRefused(_) => {
+                        NotificationDispatchError::Store(StoreError::SchemaMismatch(
+                            error.to_string(),
+                        ))
+                    }
                 })? {
                     return Ok(Some(DispatchOutcome::Ignored {
                         reason: "stale-user-message-receipt".into(),

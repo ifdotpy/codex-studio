@@ -2,6 +2,8 @@ import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { startBridge } from "./testing/bridge-harness.ts";
+import { createSessionStore } from "./session-store.ts";
+import path from "node:path";
 
 const bridges: Awaited<ReturnType<typeof startBridge>>[] = [];
 afterEach(async () => {
@@ -47,6 +49,36 @@ test("plain 429 without a rate limit event has a typed terminal cause", async ()
   assert.equal(turn.error!.codexErrorInfo, "rateLimitExceeded");
 });
 
+for (const error of [["overloaded"], "__proto__", "constructor"] as const) {
+  test(`unvalidated SDK assistant error ${JSON.stringify(error)} stays unclassified`, async () => {
+    const message: SessionFixtureMessage = {
+      type: "assistant",
+      // @ts-expect-error The SDK forwards parsed JSON without validating its declared error union.
+      error,
+      message: {
+        id: "malformed-error",
+        model: "claude-sonnet-4-6",
+        content: [{ type: "text", text: "Provider detail" }],
+      },
+    };
+    const original = JSON.stringify(message);
+    const { bridge, turn } = await run([
+      message,
+      { ...failed, errors: ["Provider detail"] },
+    ]);
+    assert.equal(turn.status, "failed");
+    assert.ok(turn.error);
+    assert.equal(turn.error.codexErrorInfo, undefined);
+    const { session } = await createSessionStore(
+      path.join(bridge.root, "state"),
+    ).readAll(bridge.thread);
+    const saved = session.turns.find((entry) => entry.id === turn.id);
+    assert.ok(saved);
+    assert.equal(saved.apiErrorInfo, null);
+    assert.equal(JSON.stringify(message), original);
+  });
+}
+
 test("terminal result with only a plain HTTP 429 has a typed cause", async () => {
   const { turn } = await run([failed]);
   assert.equal(turn.error!.codexErrorInfo, "rateLimitExceeded");
@@ -86,7 +118,7 @@ test("retry and fallback details survive as readable thread items", async () => 
       choice: "session",
       content: "Changed model for this session.",
     },
-    { type: "result", subtype: "success", result: "Done" },
+    { type: "result", subtype: "success", is_error: false, result: "Done" },
   ]);
   const read = await bridge.call("thread/read", {
     threadId: bridge.thread,

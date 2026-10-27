@@ -1,10 +1,12 @@
 //! Production timer admission and native hand-off, with a scripted provider.
+
 #![allow(clippy::unwrap_used)]
 use rusqlite::Transaction;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_schema::idle_compaction::{Mode, Settings};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{
     account_session_runtime::*,
     idle_compaction::{self as idle, Episode, Host},
@@ -61,20 +63,20 @@ impl AccountSessionPort for Session {
             Ok(SessionReceipt {
                 scope: Self::scope(),
                 operation: request.operation.clone(),
-                ticket: Some(RequestTicket {
-                    id: RequestId::String(format!(
-                        "retained:default:{}",
-                        studio_runtime_store::sha256_hex(request.operation.as_bytes())
-                    )),
-                    generation: 1,
-                    method: request.method,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(
-                    json!({"turn":{"id":"compact-turn","status":"inProgress"}}),
-                )),
-                not_sent_reason: None,
                 replayed: false,
+                outcome: ReceiptOutcome::Written {
+                    ticket: RequestTicket {
+                        id: RequestId::String(format!(
+                            "retained:default:{}",
+                            studio_runtime_store::sha256_hex(request.operation.as_bytes())
+                        )),
+                        generation: 1,
+                        method: request.method,
+                    },
+                    response: ProviderResponse::Reply(
+                        json!({"turn":{"id":"compact-turn","status":"inProgress"}}),
+                    ),
+                },
             })
         })
     }
@@ -446,7 +448,7 @@ async fn compact_boundary_writes_the_notice_once_and_advances_the_roster_epoch()
         agent["turnId"]=json!("compact-turn");agent["status"]=json!("running");
         AgentRepository::put(tx,&AgentRecord::from_value(agent).unwrap())?;
         let value=json!({"method":"item/completed","params":{"threadId":"thread","turnId":"compact-turn","item":{"id":"compact-boundary","type":"contextCompaction","status":"completed"}}});
-        let frame=match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, format!("{value}\n").as_bytes()).payload { studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame, other => panic!("fixture must decode: {other:?}"), };
+        let frame=match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, format!("{value}\n").as_bytes()).payload { studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame, other @ studio_runtime_providers::DecodedJournalPayload::RawStdout { .. } => panic!("fixture must decode: {other:?}"), };
         for _ in 0..2 {
             studio_runtime_services::notification_dispatch::dispatch_notification(tx,"claude",
                 &studio_runtime_services::notification_dispatch::PublicationContext::default(),
@@ -515,7 +517,7 @@ async fn cache_notification_replaces_the_timer_without_changing_token_accounting
         for (cursor,ttl) in [(1,"1h"),(2,"5m")] {
             let value=json!({"method":"thread/idleCompaction/updated","params":{"threadId":"thread","report":{
                 "requestId":"next-response","ttl":ttl,"warm":true,"lastActivityAt":idle::wall_now()*1000.0,"contextTokens":220000,"prefix":"prefix"}}});
-            let frame=match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, format!("{value}\n").as_bytes()).payload { studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame, other => panic!("fixture must decode: {other:?}"), };
+            let frame=match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, format!("{value}\n").as_bytes()).payload { studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame, other @ studio_runtime_providers::DecodedJournalPayload::RawStdout { .. } => panic!("fixture must decode: {other:?}"), };
             studio_runtime_services::notification_dispatch::dispatch_notification(tx,"claude",
                 &studio_runtime_services::notification_dispatch::PublicationContext::default(),
                 &studio_runtime_services::notification_dispatch::NotificationStreamBuffer::default(),

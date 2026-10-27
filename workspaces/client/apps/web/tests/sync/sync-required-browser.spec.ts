@@ -103,6 +103,7 @@ test("sync required browser", async ({ page: runnerPage }) => {
       } catch (error) {
         return (error as Error).message;
       }
+      return undefined;
     });
 
     assert.match(sendError!, /Identity unavailable/);

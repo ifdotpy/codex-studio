@@ -131,7 +131,13 @@ export function query({ prompt, options }: FixtureQuery) {
           backgroundedByUser: true,
         },
       };
-      yield { type: "result", subtype: "success", usage, result: "continued" };
+      yield {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        usage,
+        result: "continued",
+      };
       await until(cwd + "/.finish", abort.signal);
       if (abort.signal.aborted) return;
       yield {

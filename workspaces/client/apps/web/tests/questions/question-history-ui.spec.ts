@@ -1,3 +1,4 @@
+import { required } from "../messages/helpers.ts";
 import { responseJson } from "../messages/helpers.ts";
 import type { GetResult } from "../../src/apiTypes.ts";
 import type { Page } from "@playwright/test";
@@ -47,7 +48,10 @@ test("Question history", async ({ context }) => {
     await page.goto(origin);
     await page.locator("#message").waitFor({ timeout: 60000 });
     const selectLead = () =>
-      page!.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+      required(page)
+        .locator("[data-chat]")
+        .filter({ hasText: "Release lead" })
+        .click();
     await selectLead();
     const assistant = page.locator(".message.assistant").first();
     await assistant.waitFor();
@@ -119,8 +123,8 @@ test("Question history", async ({ context }) => {
     let history = await responseJson<GetResult<"/api/questions">>(
       await fetch(origin + "/api/questions?agent=" + lead.id),
     );
-    assert.equal(history.items[0]!.status, "pending");
-    assert.equal(history.items[0]!.deferred, true);
+    assert.equal(required(history.items[0]).status, "pending");
+    assert.equal(required(history.items[0]).deferred, true);
     await page.reload();
     await selectLead();
     await deferred.locator("summary").click();
@@ -145,11 +149,15 @@ test("Question history", async ({ context }) => {
     await card.waitFor({ state: "hidden" });
     const absent = async () => {
       assert.equal(
-        await page!.getByText("Question history", { exact: true }).count(),
+        await required(page)
+          .getByText("Question history", { exact: true })
+          .count(),
         0,
       );
       assert.equal(
-        await page!.locator('.agent-phase[data-phase="completed"]').count(),
+        await required(page)
+          .locator('.agent-phase[data-phase="completed"]')
+          .count(),
         0,
       );
     };
@@ -158,11 +166,14 @@ test("Question history", async ({ context }) => {
       await fetch(origin + "/api/questions?agent=" + lead.id),
     );
     assert.equal(
-      (history.items[0].answerHistory![0].answer as string[])[0],
+      (
+        required(required(history.items[0]).answerHistory![0])
+          .answer as string[]
+      )[0],
       "Only the runtime folder",
     );
-    assert.equal(history.items[0]!.answeredBy, "user");
-    assert.equal(history.items[0]!.deferred, false);
+    assert.equal(required(history.items[0]).answeredBy, "user");
+    assert.equal(required(history.items[0]).deferred, false);
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Other project" })

@@ -30,7 +30,7 @@ function fixture(expectedIdentity?: string) {
   roots.push(root);
   const options = {
     expectedEmail: email,
-    expectedIdentity,
+    ...(expectedIdentity === undefined ? {} : { expectedIdentity }),
     identityPath: path.join(root, "pin"),
     nativePath: path.join(root, ".claude.json"),
   };
@@ -66,11 +66,14 @@ test("shared Claude credential identity contract matches the Rust owner", () => 
   const cases = readIdentityCases();
   for (const [email, organization, uuid, expected] of cases.identities)
     assert.equal(credentialIdentity(email, organization, uuid), expected);
-  for (const [old, next, expected] of cases.comparisons)
+  for (const [old, next, expected] of cases.comparisons) {
+    assert.ok(cases.identities[old]);
+    assert.ok(cases.identities[next]);
     assert.equal(
       acceptsIdentity(cases.identities[old][3], cases.identities[next][3]),
       expected,
     );
+  }
 });
 
 test("checkAccount refuses another organization or UUID with the same email", () => {
@@ -170,6 +173,7 @@ test("the real bridge reports native UUIDs and refuses input after an organizati
   const completed = await bridge.note(
     (note) => note.method === "turn/completed",
   );
+  assert.ok(completed.params.turn.error?.data);
   assert.equal(completed.params.turn.status, "failed");
   assert.equal(completed.params.turn.startOutcome, "not_applied");
   assert.equal(

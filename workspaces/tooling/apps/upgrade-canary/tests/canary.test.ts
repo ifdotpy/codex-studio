@@ -72,8 +72,10 @@ test("structured canary output preserves failed verdict and exact request eviden
   assert.deepEqual(report.from, evidence.artifacts.from);
   assert.deepEqual(report.to, evidence.artifacts.to);
   assert.equal(report.steer.provider, "claude");
-  assert.equal(report.rows[0].status, "FAIL");
-  assert.notEqual(report.rows[0], evidence.report.rows[0]);
+  const firstRow = report.rows[0];
+  assert.ok(firstRow);
+  assert.equal(firstRow.status, "FAIL");
+  assert.notEqual(firstRow, evidence.report.rows[0]);
 });
 
 test("the narrow admission check list matches every actual complete Claude canary step", async (t) => {
@@ -171,13 +173,15 @@ test("the steer scenario replaces the exact reply instruction with a complete re
   );
   const steer = messages.filter((message) => message.chat === "steer");
   assert.equal(steer.length, 1);
-  assert.equal(steer[0].delivery, "current_turn");
-  assert.match(steer[0].text, /replace the previous final reply instruction/i);
+  const steered = steer[0];
+  assert.ok(steered);
+  assert.equal(steered.delivery, "current_turn");
+  assert.match(steered.text, /replace the previous final reply instruction/i);
   assert.ok(
-    steer[0].text.includes(`reply with exactly ${canary.token("STEERED")}`),
+    steered.text.includes(`reply with exactly ${canary.token("STEERED")}`),
     "The steer must supply the complete final reply, including its token",
   );
-  assert.match(steer[0].text, /after the existing monitor exits/i);
+  assert.match(steered.text, /after the existing monitor exits/i);
   assert.equal(canary.steerScenario.messageId, "message-steer");
 });
 
@@ -284,6 +288,7 @@ test("replacement N+1 receives its build hash without changing N or retained sup
   );
   assert.equal(replacement!.CODEX_BACKEND_BUILD, hash);
   assert.deepEqual(originalNEnvironment, originalN);
+  assert.ok(canary.jobs.supervisor);
   assert.deepEqual(canary.jobs.supervisor.env, supervisor);
   assert.deepEqual(canary.env, shared);
   assert.deepEqual(replacement, { ...originalN, CODEX_BACKEND_BUILD: hash });

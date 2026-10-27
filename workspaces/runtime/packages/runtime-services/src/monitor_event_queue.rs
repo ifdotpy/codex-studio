@@ -102,7 +102,23 @@ pub fn enqueue_output_with_scope_in_transaction(
                     crate::account_worker::WorkerError::Store(error) => {
                         NotificationDispatchError::Store(error)
                     }
-                    _ => NotificationDispatchError::invalid(),
+                    crate::account_worker::WorkerError::Recovery(_)
+                    | crate::account_worker::WorkerError::Scheduler(_)
+                    | crate::account_worker::WorkerError::Session(_)
+                    | crate::account_worker::WorkerError::Notification(_)
+                    | crate::account_worker::WorkerError::PreparationRefused(_)
+                    | crate::account_worker::WorkerError::StaleVmActor
+                    | crate::account_worker::WorkerError::PreparationPending(_)
+                    | crate::account_worker::WorkerError::PreparationAwaitsAgent(_)
+                    | crate::account_worker::WorkerError::CleanupUnconfirmed(_)
+                    | crate::account_worker::WorkerError::AlreadyRunning
+                    | crate::account_worker::WorkerError::Closed
+                    | crate::account_worker::WorkerError::ShutdownTimeout
+                    | crate::account_worker::WorkerError::TaskFailed
+                    | crate::account_worker::WorkerError::Capacity
+                    | crate::account_worker::WorkerError::CallbackUnknown => {
+                        NotificationDispatchError::invalid()
+                    }
                 })?;
         if original.is_none_or(|original| {
             original.generation != scope.generation || original.account != scope.account

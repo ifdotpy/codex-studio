@@ -389,14 +389,14 @@ impl MoveSnapshot {
         let mut row = self.raw.clone();
         // Preserve the stored provider input convention while consuming disjoint counts.
         let input = match provider {
-            ProviderKind::Claude => tokens.uncached_input,
+            ProviderKind::Claude => tokens.uncached_input(),
             ProviderKind::Codex => tokens
-                .uncached_input
-                .checked_add(tokens.cache_read_input)
-                .and_then(|n| n.checked_add(tokens.cache_write_input))
+                .uncached_input()
+                .checked_add(tokens.cache_read_input())
+                .and_then(|n| n.checked_add(tokens.cache_write_input()))
                 .ok_or_else(|| invalid("tokenUsage", "/inputOverflow"))?,
         };
-        row["firstTurnCache"] = json!({"turnId":agent.get("turnId"),"cachedInputTokens":tokens.cache_read_input,"cacheWriteInputTokens":tokens.cache_write_input,"inputTokens":input,"observedAt":now});
+        row["firstTurnCache"] = json!({"turnId":agent.get("turnId"),"cachedInputTokens":tokens.cache_read_input(),"cacheWriteInputTokens":tokens.cache_write_input(),"inputTokens":input,"observedAt":now});
         Ok(Some(row))
     }
 }

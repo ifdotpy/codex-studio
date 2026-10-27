@@ -55,6 +55,20 @@ ambiguous probe roles are refused before commands run.
 The retained VM guest uses v2 too; its fast boundary test checks version parity
 against the Rust owner.
 
+Supervisor close and restart recovery verify the entire recorded process group
+through the native group owner in
+[`supervisor_identity.rs`](src/supervisor_identity.rs), shared with PTY cleanup.
+Leader exit alone cannot prove group termination. Escalation requires a surviving
+captured member with the same boot/start identity, process group and session;
+missing identity or unreadable native process data keeps ownership unresolved.
+Close, command retirement and a replacement generation require no live group
+members and an exited recorded leader. A live leader that moves groups keeps
+ownership unresolved; its new group is never signalled. Descendants that leave
+the group or session are outside this proof. Terminal creation requires native
+process ownership support and refuses unavailable capabilities before spawn.
+PTY restart cleanup also waits for session termination after KILL; an unproven
+exit returns an error so the terminal driver retains its saved identity.
+
 V2 `nextBatch` uses the shared request/result/event DTOs in
 [`protocol.rs`](src/protocol.rs), including the owned event-count limit. It waits
 on a dedicated event connection while the primary connection carries ACK and

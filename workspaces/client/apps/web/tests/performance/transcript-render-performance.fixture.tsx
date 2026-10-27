@@ -1,3 +1,4 @@
+import { required } from "./performance-fixture.ts";
 import type { Message } from "../../src/types.ts";
 import React, { useState, Profiler } from "react";
 import { createRoot } from "react-dom/client";
@@ -90,13 +91,7 @@ const render = (m: Message) =>
   m.nativeNotice ? (
     <NativeNotice item={m} />
   ) : (
-    <StreamingText
-      text={m.text}
-      streaming={
-        m.streaming as React.ComponentProps<typeof StreamingText>["streaming"]
-      }
-      agentId="fixture"
-    />
+    <StreamingText text={m.text} streaming={!!m.streaming} agentId="fixture" />
   );
 const jump = () => {};
 function Harness() {
@@ -157,7 +152,7 @@ function Harness() {
     </MantineProvider>
   );
 }
-createRoot(document.getElementById("root")!).render(<Harness />);
+createRoot(required(document.getElementById("root"))).render(<Harness />);
 
 declare global {
   interface Window {

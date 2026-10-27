@@ -56,13 +56,18 @@ async function focusGeometry(page: Page) {
             ? value / 12.92
             : ((value + 0.055) / 1.055) ** 2.4;
         })
-        .reduce(
-          (sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index],
-          0,
-        );
+        .reduce((sum, value, index) => {
+          const weight = [0.2126, 0.7152, 0.0722][index];
+          if (weight === undefined)
+            throw new Error("Expected three color channels");
+          return sum + value * weight;
+        }, 0);
     const values = [luminance(background), luminance(foreground)].sort(
       (a, b) => b - a,
     );
+    const [high, low] = values;
+    if (high === undefined || low === undefined)
+      throw new Error("Missing focus contrast values");
     const clips = ancestors.slice(1).filter((node) => {
       const bounds = node.getBoundingClientRect();
       const css = getComputedStyle(node);
@@ -95,7 +100,7 @@ async function focusGeometry(page: Page) {
         className: node.className,
         bounds: node.getBoundingClientRect().toJSON(),
       })),
-      contrast: (values[0] + 0.05) / (values[1] + 0.05),
+      contrast: (high + 0.05) / (low + 0.05),
       scope: element.closest("#sidebar")
         ? "sidebar"
         : element.closest(".fleet-menu")

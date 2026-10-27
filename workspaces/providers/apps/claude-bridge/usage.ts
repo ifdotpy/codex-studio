@@ -17,32 +17,78 @@ type StreamEvent = StreamMessage["event"];
 type Message = Extract<StreamEvent, { type: "message_start" }>["message"];
 type DeltaUsage = Extract<StreamEvent, { type: "message_delta" }>["usage"];
 
+const handledStreamEvents = {
+  message_start: true,
+  message_delta: true,
+  message_stop: true,
+  content_block_start: false,
+  content_block_delta: false,
+  content_block_stop: false,
+} satisfies Record<StreamEvent["type"], boolean>;
+
+// Destination fields are accounting decisions. Metadata is explicitly excluded;
+// a newly published field cannot silently disappear from accounting at upgrade.
+const responseTokenFields = {
+  input_tokens: "uncachedInput",
+  cache_read_input_tokens: "cacheReadInput",
+  cache_creation_input_tokens: "cacheWriteInput",
+  output_tokens: "output",
+  cache_creation: "cacheWriteInput1h",
+  output_tokens_details: "reasoningOutput",
+  fallback_credit: null,
+  inference_geo: null,
+  iterations: null,
+  server_tool_use: null,
+  service_tier: null,
+  speed: null,
+} satisfies Record<keyof Message["usage"], keyof UsageTokens | null>;
+
+const modelTokenFields = {
+  inputTokens: "uncachedInput",
+  outputTokens: "output",
+  thinkingTokens: "reasoningOutput",
+  cacheReadInputTokens: "cacheReadInput",
+  cacheCreationInputTokens: "cacheWriteInput",
+  webSearchRequests: null,
+  costUSD: null,
+  contextWindow: null,
+  maxOutputTokens: null,
+  canonicalModel: null,
+  provider: null,
+  costBasis: null,
+} satisfies Record<keyof ModelUsage, keyof UsageTokens | null>;
+
 /** Claude input excludes cache; thinking is already included in output. */
 export function responseTokens(usage: Message["usage"]): UsageTokens {
   return {
-    uncachedInput: usage.input_tokens,
-    cacheReadInput: usage.cache_read_input_tokens ?? 0,
-    cacheWriteInput: usage.cache_creation_input_tokens ?? 0,
-    cacheWriteInput1h: Math.min(
+    [responseTokenFields.input_tokens]: usage.input_tokens,
+    [responseTokenFields.cache_read_input_tokens]:
+      usage.cache_read_input_tokens ?? 0,
+    [responseTokenFields.cache_creation_input_tokens]:
+      usage.cache_creation_input_tokens ?? 0,
+    [responseTokenFields.cache_creation]: Math.min(
       usage.cache_creation?.ephemeral_1h_input_tokens ?? 0,
       usage.cache_creation_input_tokens ?? 0,
     ),
-    output: usage.output_tokens,
+    [responseTokenFields.output_tokens]: usage.output_tokens,
     ...(usage.output_tokens_details == null
       ? {}
-      : { reasoningOutput: usage.output_tokens_details.thinking_tokens }),
+      : {
+          [responseTokenFields.output_tokens_details]:
+            usage.output_tokens_details.thinking_tokens,
+        }),
   };
 }
 
 export function modelTokens(usage: ModelUsage): UsageTokens {
   return {
-    uncachedInput: usage.inputTokens,
-    cacheReadInput: usage.cacheReadInputTokens,
-    cacheWriteInput: usage.cacheCreationInputTokens,
-    output: usage.outputTokens,
+    [modelTokenFields.inputTokens]: usage.inputTokens,
+    [modelTokenFields.cacheReadInputTokens]: usage.cacheReadInputTokens,
+    [modelTokenFields.cacheCreationInputTokens]: usage.cacheCreationInputTokens,
+    [modelTokenFields.outputTokens]: usage.outputTokens,
     ...(usage.thinkingTokens === undefined
       ? {}
-      : { reasoningOutput: usage.thinkingTokens }),
+      : { [modelTokenFields.thinkingTokens]: usage.thinkingTokens }),
   };
 }
 
@@ -123,6 +169,7 @@ export class ResponseUsage {
     if (this.closed) return [];
     const parent = frame.parent_tool_use_id ?? null;
     const event = frame.event;
+    if (!handledStreamEvents[event.type]) return [];
 
     const observations: UsageObservation[] = [];
     if (event.type === "message_start") {

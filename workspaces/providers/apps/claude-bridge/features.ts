@@ -1,42 +1,45 @@
 import type {
   SDKControlGetUsageResponse,
+  SDKAssistantMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import type { KnownCodexErrorKind } from "./provider-errors.generated.ts";
+import type { FreshToolItem } from "./session-state.ts";
+type NativeToolBlock = Extract<
+  SDKAssistantMessage["message"]["content"][number],
+  { type: "tool_use" }
+>;
 import type {
-  BridgeRateLimitInfo,
   BridgeRateBucket as LimitBucket,
   BridgeRateLimits,
 } from "./bridge-protocol.ts";
 type NativeLimits = NonNullable<SDKControlGetUsageResponse["rate_limits"]>;
-type NativeWindow = Partial<NonNullable<NativeLimits["five_hour"]>>;
-type UsageResponse = Partial<
-  Omit<SDKControlGetUsageResponse, "rate_limits">
-> & {
-  rate_limits?:
-    | {
-        [K in keyof NativeLimits]?: K extends "model_scoped"
-          ? (NativeWindow &
-              Pick<
-                NonNullable<NativeLimits["model_scoped"]>[number],
-                "display_name"
-              >)[]
-          : K extends "extra_usage"
-            ? Partial<NonNullable<NativeLimits[K]>> | null
-            : NativeWindow | null;
-      }
-    | null;
-};
-export type RateLimitInfo = BridgeRateLimitInfo;
+type NativeWindow =
+  | NonNullable<
+      NativeLimits[Exclude<keyof NativeLimits, "model_scoped" | "extra_usage">]
+    >
+  | NonNullable<NativeLimits["model_scoped"]>[number];
+type UsageResponse = Pick<
+  SDKControlGetUsageResponse,
+  "rate_limits_available" | "rate_limits" | "subscription_type"
+>;
+import {
+  parseRateLimitInfo,
+  rateWindowMinutes,
+  usagePolicy,
+  rateLimitFamily,
+} from "./rate-limit-input.ts";
+import type { RateLimitInfo } from "./rate-limit-input.ts";
+export type { RateLimitInfo } from "./rate-limit-input.ts";
+export {
+  overageAllowed,
+  parseRateLimitInfo,
+  rateLimitRejected,
+} from "./rate-limit-input.ts";
 export type Limits = Partial<BridgeRateLimits>;
 export type QueuedInput<T extends SDKUserMessage = SDKUserMessage> = T & {
   studioInputBatch?: QueuedInput<T>[];
 };
-import usagePolicyJson from "./usage-policy.ts";
-const usagePolicy: {
-  modelBuckets: Record<string, string>;
-  allowedOverageStatuses: string[];
-} = JSON.parse(usagePolicyJson);
-
 // Native Claude values normalized to Studio's existing public protocol.
 export function usageLimits(response: UsageResponse): BridgeRateLimits {
   if (!response.rate_limits_available || !response.rate_limits)
@@ -59,8 +62,8 @@ export function usageLimits(response: UsageResponse): BridgeRateLimits {
     claude: {
       limitId: "claude",
       limitName: "Claude",
-      primary: window(raw.five_hour, 300),
-      secondary: window(raw.seven_day, 10080),
+      primary: window(raw.five_hour, rateWindowMinutes.primary),
+      secondary: window(raw.seven_day, rateWindowMinutes.secondary),
     },
   };
   const scoped = [...(raw.model_scoped || [])];
@@ -80,7 +83,7 @@ export function usageLimits(response: UsageResponse): BridgeRateLimits {
     buckets[id] = {
       limitId: id,
       limitName: "Claude · " + row.display_name,
-      secondary: window(row, 10080),
+      secondary: window(row, rateWindowMinutes.secondary),
     };
   }
   return {
@@ -92,78 +95,50 @@ export function usageLimits(response: UsageResponse): BridgeRateLimits {
 }
 export function limitEvent(
   current: Limits | null | undefined,
-  info: RateLimitInfo,
-) {
-  const result: Limits = structuredClone(
-    current || {
-      rateLimitsByLimitId: {
-        claude: { limitId: "claude", limitName: "Claude" },
-      },
-    },
-  );
-  const all = (result.rateLimitsByLimitId ||= {});
-  const main = (all.claude ||= { limitId: "claude", limitName: "Claude" });
-  const type = info.rateLimitType;
-  let bucket = main,
-    key: "primary" | "secondary" =
-      type === "five_hour" ? "primary" : "secondary";
-  if (type === "seven_day_overage_included") {
-    const names = Object.keys(all).filter(
-      (id) =>
-        id !== "claude" &&
-        !["claude-opus", "claude-sonnet", "claude-oauth-apps"].includes(id),
-    );
-    const id = names.length === 1 ? names[0] : "claude-unknown-limit";
-    bucket = all[id] ||= { limitId: id, limitName: "Claude · Unknown limit" };
-  } else if (["seven_day_opus", "seven_day_sonnet"].includes(type as string)) {
-    const name = type!.slice(10),
-      id = usagePolicy.modelBuckets[name];
-    bucket = all[id] ||= { limitId: id, limitName: "Claude · " + name };
-  } else if (!["five_hour", "seven_day"].includes(type as string)) {
-    if (!info.status && !info.overageStatus) return null;
-    const id = type === "overage" ? "claude-overage" : "claude-unknown-limit";
-    bucket = all[id] ||= {
-      limitId: id,
-      limitName: "Claude · " + (type || "Unknown limit"),
-    };
-  }
-  // Native events can grant overage without reporting utilization.
-  const hasStatus =
-    typeof info.status === "string" ||
-    typeof info.overageStatus === "string" ||
-    typeof info.isUsingOverage === "boolean" ||
-    typeof info.overageInUse === "boolean";
-  if (!Number.isFinite(info.utilization) && !hasStatus) return null;
-  bucket[key] = {
-    ...bucket[key],
-    ...(Number.isFinite(info.utilization)
-      ? {
-          usedPercent: Math.max(0, Math.min(100, info.utilization! * 100)),
-        }
-      : {}),
-    windowDurationMins: type === "five_hour" ? 300 : 10080,
-    ...(Number.isFinite(info.resetsAt) ? { resetsAt: info.resetsAt } : {}),
+  evidence: ReturnType<typeof parseRateLimitInfo>,
+): BridgeRateLimits {
+  const all = structuredClone(current?.rateLimitsByLimitId ?? {});
+  const main = all.claude ?? { limitId: "claude", limitName: "Claude" };
+  all.claude = main;
+  const result: BridgeRateLimits = {
+    ...current,
+    rateLimits: main,
+    rateLimitsByLimitId: all,
+    claudeRateLimit: evidence.type === "known" ? evidence.raw : evidence,
   };
-  // Replace permission on each event; a later rejection revokes it.
-  bucket.claudeRateLimit = structuredClone(info);
-  result.claudeRateLimit = structuredClone(info);
-  return Object.assign(result, { rateLimits: main, rateLimitsByLimitId: all });
+  if (evidence.type === "unsupported") return result;
+  const { info, scope } = evidence;
+  const bucket = (all[scope.id] ??= {
+    limitId: scope.id,
+    limitName: scope.label,
+  });
+  bucket[scope.window] = {
+    ...bucket[scope.window],
+    ...(info.utilization === undefined
+      ? {}
+      : { usedPercent: Math.max(0, Math.min(100, info.utilization * 100)) }),
+    windowDurationMins: rateWindowMinutes[scope.window],
+    ...(info.resetsAt === undefined ? {} : { resetsAt: info.resetsAt }),
+  };
+  bucket.claudeRateLimit = evidence.raw;
+  return result;
 }
-export function nativeItem(
-  block: { id: string; name: string; input: Record<string, unknown> },
-  cwd: string,
-) {
+export function nativeItem(block: NativeToolBlock, cwd: string): FreshToolItem {
+  const input = block.input;
+  const isInputRecord = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!isInputRecord(input)) throw new Error("Invalid Claude tool input");
   const base = {
     id: block.id,
     status: "inProgress" as const,
     tool: block.name,
-    arguments: block.input,
+    arguments: input,
   };
   if (block.name === "Bash")
     return {
       ...base,
       type: "commandExecution" as const,
-      command: block.input.command,
+      command: input.command,
       cwd,
       aggregatedOutput: "",
     };
@@ -173,14 +148,11 @@ export function nativeItem(
       type: "fileChange" as const,
       changes: [
         {
-          path: block.input.file_path || block.input.notebook_path,
+          path: input.file_path || input.notebook_path,
           kind: { type: block.name === "Write" ? "add" : "update" },
           diff:
-            block.input.content ||
-            "-" +
-              (block.input.old_string || "") +
-              "\n+" +
-              (block.input.new_string || ""),
+            input.content ||
+            "-" + (input.old_string || "") + "\n+" + (input.new_string || ""),
         },
       ],
     };
@@ -230,25 +202,35 @@ export class InputQueue<
   }
 }
 
-// This is permission from a native rate-limit event, not the billing preference.
-export function overageAllowed(info: RateLimitInfo) {
-  if (info.overageStatus === "rejected") return false;
-  return (
-    usagePolicy.allowedOverageStatuses.includes(info.overageStatus as string) ||
-    info.isUsingOverage === true ||
-    info.overageInUse === true
-  );
-}
+// The SDK owns this closed input domain; new SDK variants require a decision.
+const assistantErrorKinds = {
+  authentication_failed: "unauthorized",
+  oauth_org_not_allowed: null,
+  account_on_hold: null,
+  verification_required: null,
+  billing_error: null,
+  rate_limit: "rateLimitExceeded",
+  overloaded: "serverOverloaded",
+  invalid_request: null,
+  model_not_found: null,
+  server_error: "internalServerError",
+  unknown: null,
+  max_output_tokens: null,
+  cloud_credential_error: null,
+} satisfies Record<
+  NonNullable<SDKAssistantMessage["error"]>,
+  KnownCodexErrorKind | null
+>;
 
-// Keep API failure classification at both assistant and terminal boundaries.
+// Keep API failure classification at the SDK assistant boundary.
 export function claudeErrorInfo(
-  error: string | null | undefined,
+  error: SDKAssistantMessage["error"],
   text: string | null | undefined,
-) {
-  if (error === "rate_limit") return "rateLimitExceeded";
-  if (error === "overloaded") return "serverOverloaded";
-  if (error === "server_error") return "internalServerError";
-  if (error === "authentication_failed") return "unauthorized";
+): KnownCodexErrorKind | null {
+  // The SDK yields parsed JSON without validating this declared union. Check
+  // primitive own tags before indexing so arrays and prototype keys stay raw.
+  if (error !== undefined && !isAssistantError(error)) return null;
+  if (error && error !== "unknown") return assistantErrorKinds[error];
   if (
     (!error || error === "unknown") &&
     /(?:^|\b(?:http(?: error)?|api(?: error)?|status(?: code)?)[ :]+)429\b/i.test(
@@ -263,6 +245,23 @@ export function claudeErrorInfo(
     )
   )
     return "httpConnectionFailed";
+  return null;
+}
+
+function isAssistantError(
+  value: unknown,
+): value is NonNullable<SDKAssistantMessage["error"]> {
+  return typeof value === "string" && Object.hasOwn(assistantErrorKinds, value);
+}
+
+// Terminal exceptions and legacy callers are untyped external ingress. A future
+// vendor tag stays unclassified; its original exception belongs to the caller.
+export function legacyClaudeErrorInfo(
+  error: unknown,
+  text: string | null | undefined,
+): KnownCodexErrorKind | null {
+  if (error == null || isAssistantError(error))
+    return claudeErrorInfo(error ?? undefined, text);
   return null;
 }
 
@@ -299,13 +298,8 @@ export function modelFamily(model: unknown) {
     ) || null
   );
 }
-export function limitApplies(
-  info: Pick<RateLimitInfo, "rateLimitType">,
-  model: unknown,
-) {
+export function limitApplies(info: RateLimitInfo, model: unknown) {
   const family = modelFamily(model);
-  const scoped = Object.keys(usagePolicy.modelBuckets).find(
-    (name) => info.rateLimitType === "seven_day_" + name,
-  );
+  const scoped = rateLimitFamily(info);
   return !family || !scoped || family === scoped;
 }

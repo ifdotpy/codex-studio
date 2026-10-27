@@ -13,19 +13,19 @@ use serde_json::Value;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UsageTokens {
     /// Base-rate input, excluding cache reads and writes; tokens.
-    pub uncached_input: u64,
+    uncached_input: u64,
     /// Input served from the prompt cache; tokens.
-    pub cache_read_input: u64,
+    cache_read_input: u64,
     /// Input written to the prompt cache; tokens.
-    pub cache_write_input: u64,
+    cache_write_input: u64,
     /// Subset of cache writes with a one-hour lifetime; tokens, absent for legacy pricing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_write_input_1h: Option<u64>,
+    cache_write_input_1h: Option<u64>,
     /// All generated output, including reasoning; tokens.
-    pub output: u64,
+    output: u64,
     /// Known reasoning subset of output; tokens, absent when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_output: Option<u64>,
+    reasoning_output: Option<u64>,
 }
 // Serde's remote derive reads the owner's fields; the wrapper enforces the cross-field subset.
 #[derive(Deserialize)]
@@ -43,18 +43,66 @@ struct UsageTokensWire {
 impl<'de> Deserialize<'de> for UsageTokens {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let tokens = UsageTokensWire::deserialize(deserializer)?;
-        if tokens
-            .cache_write_input_1h
-            .is_some_and(|hour| hour > tokens.cache_write_input)
-        {
-            return Err(serde::de::Error::custom(
-                "cacheWriteInput1h exceeds cacheWriteInput",
-            ));
-        }
-        Ok(tokens)
+        Self::new(
+            tokens.uncached_input,
+            tokens.cache_read_input,
+            tokens.cache_write_input,
+            tokens.cache_write_input_1h,
+            tokens.output,
+            tokens.reasoning_output,
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
+///
+/// A caller cannot bypass the cache-write subset check by changing fields.
+/// ```compile_fail
+/// use studio_runtime_schema::usage::UsageTokens;
+/// let mut tokens = UsageTokens::default();
+/// tokens.cache_write_input_1h = Some(1);
+/// ```
 impl UsageTokens {
+    /// Construct disjoint token categories, checking the known cache-write subset.
+    pub fn new(
+        uncached_input: u64,
+        cache_read_input: u64,
+        cache_write_input: u64,
+        cache_write_input_1h: Option<u64>,
+        output: u64,
+        reasoning_output: Option<u64>,
+    ) -> Result<Self, UsageParseError> {
+        if cache_write_input_1h.is_some_and(|hour| hour > cache_write_input) {
+            return Err(UsageParseError(
+                "cacheWriteInput1h exceeds cacheWriteInput".into(),
+            ));
+        }
+        Ok(Self {
+            uncached_input,
+            cache_read_input,
+            cache_write_input,
+            cache_write_input_1h,
+            output,
+            reasoning_output,
+        })
+    }
+    pub fn uncached_input(&self) -> u64 {
+        self.uncached_input
+    }
+    pub fn cache_read_input(&self) -> u64 {
+        self.cache_read_input
+    }
+    pub fn cache_write_input(&self) -> u64 {
+        self.cache_write_input
+    }
+    pub fn cache_write_input_1h(&self) -> Option<u64> {
+        self.cache_write_input_1h
+    }
+    pub fn output(&self) -> u64 {
+        self.output
+    }
+    pub fn reasoning_output(&self) -> Option<u64> {
+        self.reasoning_output
+    }
     /// Total billable tokens, counting reasoning only once.
     pub fn total(&self) -> Option<u64> {
         self.uncached_input
@@ -265,54 +313,37 @@ pub fn codex_usage_schema_compatible(candidate: &Value) -> bool {
     true
 }
 
-/// Mirror of Codex's generated TokenUsageBreakdown (signed int64 on the wire).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexTokenUsageBreakdown {
-    pub input_tokens: i64,
-    pub cached_input_tokens: i64,
-    #[serde(default)]
-    pub cache_write_input_tokens: i64,
-    pub output_tokens: i64,
-    pub reasoning_output_tokens: i64,
-    pub total_tokens: i64,
-}
+pub use crate::codex_generated::{
+    CodexThreadTokenUsage, CodexThreadTokenUsageUpdatedNotification, CodexTokenUsageBreakdown,
+};
 impl CodexTokenUsageBreakdown {
     /// Convert inclusive Codex input exactly as pricing::price_usage does.
     pub fn tokens(&self) -> Result<UsageTokens, UsageParseError> {
+        // An added vendor accounting category must be classified explicitly.
+        let Self {
+            input_tokens,
+            cached_input_tokens,
+            cache_write_input_tokens,
+            output_tokens,
+            reasoning_output_tokens,
+            total_tokens,
+        } = *self;
         let positive =
             |n| u64::try_from(n).map_err(|_| UsageParseError("negative Codex token count".into()));
-        let input = positive(self.input_tokens)?;
-        let read = positive(self.cached_input_tokens)?.min(input);
-        let write = positive(self.cache_write_input_tokens)?.min(input - read);
-        positive(self.total_tokens)?;
-        Ok(UsageTokens {
-            uncached_input: input - read - write,
-            cache_read_input: read,
-            cache_write_input: write,
-            cache_write_input_1h: None,
-            output: positive(self.output_tokens)?,
-            reasoning_output: Some(positive(self.reasoning_output_tokens)?),
-        })
+        let input = positive(input_tokens)?;
+        let read = positive(cached_input_tokens)?.min(input);
+        let write = positive(cache_write_input_tokens)?.min(input - read);
+        positive(total_tokens)?;
+        UsageTokens::new(
+            input - read - write,
+            read,
+            write,
+            None,
+            positive(output_tokens)?,
+            Some(positive(reasoning_output_tokens)?),
+        )
     }
 }
-/// Mirror of Codex's generated ThreadTokenUsage.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexThreadTokenUsage {
-    pub total: CodexTokenUsageBreakdown,
-    pub last: CodexTokenUsageBreakdown,
-    pub model_context_window: Option<i64>,
-}
-/// Mirror of Codex's generated ThreadTokenUsageUpdatedNotification.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexThreadTokenUsageUpdatedNotification {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub token_usage: CodexThreadTokenUsage,
-}
-
 fn optional_text(value: &Value, key: &str) -> Result<Option<String>, UsageParseError> {
     match value.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -344,18 +375,18 @@ fn legacy_tokens(value: &Value, provider: ProviderKind) -> Result<UsageTokens, U
         }
         ProviderKind::Claude => (input, read, write),
     };
-    Ok(UsageTokens {
-        uncached_input: input,
-        cache_read_input: read,
-        cache_write_input: write,
-        cache_write_input_1h: None,
-        output: count(value, "outputTokens", false)?,
-        reasoning_output: value
+    UsageTokens::new(
+        input,
+        read,
+        write,
+        None,
+        count(value, "outputTokens", false)?,
+        value
             .get("reasoningOutputTokens")
             .filter(|v| !v.is_null())
             .map(|_| count(value, "reasoningOutputTokens", false))
             .transpose()?,
-    })
+    )
 }
 /// Parse every supported usage notification once. Legacy branches support bridges
 /// already running when the typed contract is delivered and historical imports.
@@ -369,14 +400,16 @@ pub fn parse_token_usage(
     let source = params.get("usageSource").and_then(Value::as_str);
     let turn_id = optional_text(params, "turnId")?;
     let usage = &params["tokenUsage"];
-    let model_context_window = usage
-        .get("modelContextWindow")
-        .filter(|v| !v.is_null())
-        .map(|v| {
-            v.as_u64()
-                .ok_or_else(|| UsageParseError("invalid modelContextWindow".into()))
-        })
-        .transpose()?;
+    let legacy_context_window = || {
+        usage
+            .get("modelContextWindow")
+            .filter(|v| !v.is_null())
+            .map(|v| {
+                v.as_u64()
+                    .ok_or_else(|| UsageParseError("invalid modelContextWindow".into()))
+            })
+            .transpose()
+    };
     let response_evidence = match provider {
         ProviderKind::Codex => (source == Some("responseRecord")
             || params
@@ -410,7 +443,7 @@ pub fn parse_token_usage(
             )?,
             evidence,
             parent_tool_use_id: optional_text(params, "parentToolUseId")?,
-            model_context_window,
+            model_context_window: legacy_context_window()?,
         });
     }
     if source.is_some() && source != Some("tokenCount") {
@@ -420,13 +453,25 @@ pub fn parse_token_usage(
     // Only native Codex notifications deserialize the exact vendored SDK mirror.
     let scope = match provider {
         ProviderKind::Codex if source.is_none() => {
-            let native: CodexThreadTokenUsageUpdatedNotification =
-                CodexThreadTokenUsageUpdatedNotification::deserialize(params)?;
+            let CodexThreadTokenUsageUpdatedNotification {
+                thread_id: _,
+                turn_id,
+                token_usage,
+            } = CodexThreadTokenUsageUpdatedNotification::deserialize(params)?;
+            let CodexThreadTokenUsage {
+                total,
+                last,
+                model_context_window,
+            } = token_usage;
+            let model_context_window = model_context_window
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| UsageParseError("invalid modelContextWindow".into()))?;
             return Ok(UsageObservation::Cumulative {
                 scope: UsageScope::CodexThread,
-                turn_id: Some(native.turn_id),
-                total: native.token_usage.total.tokens()?,
-                last: Some(native.token_usage.last.tokens()?),
+                turn_id: Some(turn_id),
+                total: total.tokens()?,
+                last: Some(last.tokens()?),
                 model_context_window,
                 models: None,
             });
@@ -443,7 +488,7 @@ pub fn parse_token_usage(
             .filter(|v| v.is_object() && !v.as_object().is_some_and(|m| m.is_empty()))
             .map(|v| legacy_tokens(v, provider))
             .transpose()?,
-        model_context_window,
+        model_context_window: legacy_context_window()?,
         models: None,
     })
 }
@@ -677,6 +722,11 @@ mod tests {
         let value = json!({"uncachedInput":1,"cacheReadInput":2,"cacheWriteInput":10,"cacheWriteInput1h":8,"output":3});
         let tokens: UsageTokens = serde_json::from_value(value.clone()).expect("one-hour subset");
         assert_eq!(tokens.total(), Some(16));
+        assert_eq!(
+            UsageTokens::new(1, 2, 10, Some(8), 3, None).expect("checked tokens"),
+            tokens
+        );
+        assert!(UsageTokens::new(1, 2, 10, Some(11), 3, None).is_err());
         let mut decreased = value.clone();
         decreased["cacheWriteInput1h"] = json!(7);
         let decreased: UsageTokens = serde_json::from_value(decreased).expect("decreased split");
@@ -730,7 +780,7 @@ mod tests {
         fn normalize(value: &mut Value) {
             match value {
                 Value::Object(map) => {
-                    for key in ["$schema", "title", "description"] {
+                    for key in ["$schema", "$comment", "title", "description"] {
                         map.remove(key);
                     }
                     if let Some(Value::Array(required)) = map.get_mut("required") {
@@ -745,7 +795,7 @@ mod tests {
                         normalize(value);
                     }
                 }
-                _ => {}
+                Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
             }
         }
         let mut generated = schemars::generate::SchemaSettings::draft07()

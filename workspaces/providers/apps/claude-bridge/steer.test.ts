@@ -313,6 +313,42 @@ test.concurrent("a steer read without an echo is neither acknowledged nor report
   assert.equal(ack(bridge, "event-6"), undefined);
 });
 
+test.concurrent("a consumed steer in the SDK result is acknowledged before turn completion", async ({
+  startBridge,
+}) => {
+  const bridge = await startBridge();
+  const turn = await running(bridge, "consumed");
+  await steer(bridge, turn, "consumed-event");
+  await read(bridge, "steer text");
+  await end(bridge);
+  const done = await completed(bridge, turn);
+  const delivered = ack(bridge, "consumed-event");
+  assert.ok(delivered);
+  assert.equal(delivered.params.turnId, turn);
+  assert.ok(bridge.notes.indexOf(delivered) < bridge.notes.indexOf(done));
+  assert.equal(acks(bridge, "consumed-event").length, 1);
+});
+
+test.concurrent("a partially consumed composite steer remains unconfirmed", async ({
+  startBridge,
+}) => {
+  const bridge = await startBridge();
+  const turn = await running(bridge, "consumed-partial");
+  await bridge.call("turn/steer", {
+    threadId: bridge.thread,
+    expectedTurnId: turn,
+    clientUserMessageId: "partial-event",
+    input: [
+      { type: "text", text: "service", inputOrigin: "studio_event" },
+      { type: "text", text: "human", inputOrigin: "human" },
+    ],
+  });
+  await read(bridge, "human");
+  await end(bridge);
+  await completed(bridge, turn);
+  assert.equal(ack(bridge, "partial-event"), undefined);
+});
+
 test.concurrent("only the server's unsubscribe closes a session, never a busy one", async ({
   startBridge,
 }) => {
@@ -505,12 +541,13 @@ test.concurrent("a failed split prefix closes its query without submitting the r
   assert.equal((await completed(bridge, turn)).params.turn.status, "failed");
   const messages = await sdkInputs(bridge);
   assert.equal(messages.length, 1);
+  assert.ok(messages[0]);
 
   assert.equal(
     (
       messages[0].message
         .content as import("@modelcontextprotocol/sdk/types.js").TextContent[]
-    )[0].text,
+    )[0]?.text,
     "prefix-fail",
   );
 });
@@ -679,6 +716,7 @@ for (const scenario of [
     await nativeQueued(bridge);
     const beforeStop = (await sdkInputs(bridge)).slice(1);
     assert.equal(beforeStop.length, scenario === "native-split-all" ? 3 : 1);
+    assert.ok(beforeStop[0]);
     assert.equal(beforeStop[0].shouldQuery, false);
     const receipt = await bridge.call("turn/interrupt", {
       threadId: bridge.thread,
@@ -713,7 +751,7 @@ for (const scenario of [
           (
             message.message
               .content as import("@modelcontextprotocol/sdk/types.js").TextContent[]
-          )[0].text,
+          )[0]?.text,
       ),
       ["probe"],
     );
@@ -971,6 +1009,7 @@ for (const mode of ["empty", "partial", "all"]) {
         bridge.root.replace(/[^a-zA-Z0-9]/g, "-"),
       );
       const [file] = await fs.readdir(directory);
+      assert.ok(file);
       await fs.appendFile(
         path.join(directory, file),
         JSON.stringify({
@@ -1075,22 +1114,18 @@ test.concurrent("backpressured output waits for the prior turn's final save", as
   await bridge.call("thread/loaded/list", {});
   const premature = bridge.notes.find(
     (n): n is BridgeNoteFor<"item/started" | "item/completed"> =>
-      (
-        n.params as
-          | Partial<import("./bridge-protocol.ts").BridgeItemEvent>
-          | undefined
-      )?.item?.text === "after final save",
+      (n.method === "item/started" || n.method === "item/completed") &&
+      n.params.item.type === "agentMessage" &&
+      n.params.item.text === "after final save",
   );
   await release(bridge, ".release-final-save");
   await completed(bridge, old);
   assert.equal(premature, undefined);
   const answer = await bridge.note(
     (n): n is BridgeNoteFor<"item/started" | "item/completed"> =>
-      (
-        n.params as
-          | Partial<import("./bridge-protocol.ts").BridgeItemEvent>
-          | undefined
-      )?.item?.text === "after final save",
+      (n.method === "item/started" || n.method === "item/completed") &&
+      n.params.item.type === "agentMessage" &&
+      n.params.item.text === "after final save",
   );
   assert.notEqual(answer.params.turnId, old);
 

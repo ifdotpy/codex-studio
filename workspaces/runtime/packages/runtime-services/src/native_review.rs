@@ -4,6 +4,7 @@ use crate::native_actions::{NativeError, Result, bounded, checked_agent, decode}
 use rusqlite::Transaction;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::{AgentRecord, AgentRepository, ContextRepairRepository};
 
 const MAX_PROMPT: usize = 32_000;
@@ -133,7 +134,9 @@ impl ReviewPlan {
         if checked.root_id != checked_root.id {
             return Err(NativeError::Changed);
         }
-        if actor.get("provider").is_some_and(|v| v != "codex")
+        if actor
+            .get("provider")
+            .is_some_and(|v| v != ProviderKind::Codex.key())
             || crate::event_write::truthy(actor.get("nativeReview"))
         {
             return Err(NativeError::Invalid("review.actor"));

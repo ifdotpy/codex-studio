@@ -212,17 +212,77 @@ impl UsageIdentity {
 
 /// Durable typed receipt. Analytics stores these fields alongside presentation metadata;
 /// budget stores the same value alongside its accounting placement.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageLedgerRow {
     /// Immutable logical usage identity; dimensionless.
-    pub usage_identity: UsageIdentity,
+    usage_identity: UsageIdentity,
     /// First-capture deduplication key; retained across restore and re-import.
-    pub receipt_key: Option<String>,
+    receipt_key: Option<String>,
     /// Provider-neutral evidence; token fields have units of tokens.
-    pub studio_usage: UsageObservation,
+    studio_usage: UsageObservation,
 }
+// Remote derive preserves the row's permissive presentation metadata boundary.
+#[derive(Deserialize)]
+#[serde(remote = "UsageLedgerRow", rename_all = "camelCase")]
+struct UsageLedgerRowWire {
+    usage_identity: UsageIdentity,
+    receipt_key: Option<String>,
+    studio_usage: UsageObservation,
+}
+impl<'de> Deserialize<'de> for UsageLedgerRow {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let row = UsageLedgerRowWire::deserialize(deserializer)?;
+        Self::new(row.usage_identity, row.receipt_key, row.studio_usage)
+            .map_err(serde::de::Error::custom)
+    }
+}
+/// Accounting identity and evidence cannot be independently replaced by callers.
+/// ```compile_fail
+/// use studio_runtime_schema::usage::ledger::{UsageIdentity, UsageLedgerRow};
+/// fn replace_identity(mut row: UsageLedgerRow, identity: UsageIdentity) {
+///     row.usage_identity = identity;
+/// }
+/// ```
 impl UsageLedgerRow {
+    /// Check the identity against its evidence; receipt aliases remain opaque.
+    pub fn new(
+        usage_identity: UsageIdentity,
+        receipt_key: Option<String>,
+        studio_usage: UsageObservation,
+    ) -> Result<Self, UsageParseError> {
+        let (agent, thread) = match &usage_identity {
+            UsageIdentity::Response { agent, .. } => (agent.as_str(), None),
+            UsageIdentity::Cumulative {
+                agent, thread_id, ..
+            } => (agent.as_str(), thread_id.as_deref()),
+        };
+        if usage_identity != UsageIdentity::new(agent, thread, &studio_usage) {
+            return Err(UsageParseError("persisted usage identity mismatch".into()));
+        }
+        Ok(Self {
+            usage_identity,
+            receipt_key,
+            studio_usage,
+        })
+    }
+    pub fn usage_identity(&self) -> &UsageIdentity {
+        &self.usage_identity
+    }
+    pub fn receipt_key(&self) -> Option<&str> {
+        self.receipt_key.as_deref()
+    }
+    pub fn studio_usage(&self) -> &UsageObservation {
+        &self.studio_usage
+    }
+    pub fn into_observation(self) -> UsageObservation {
+        self.studio_usage
+    }
+    /// Preserve a proven historical receipt alias without changing accounting facts.
+    pub fn set_receipt_key(&mut self, receipt_key: Option<String>) {
+        self.receipt_key = receipt_key;
+    }
+
     /// New receipts derive only from typed accounting facts; legacy spellings
     /// remain aliases and never alter response identity.
     pub fn capture(agent: &str, thread: Option<&str>, observation: UsageObservation) -> Self {
@@ -282,11 +342,15 @@ impl UsageLedgerRow {
         let agent = row["agentId"].as_str().unwrap_or_default();
         if row.get("usageIdentity").is_some() || row.get("receiptKey").is_some() {
             let ledger = Self::deserialize(row)?;
-            let identity =
-                UsageIdentity::new(agent, row["threadId"].as_str(), &ledger.studio_usage);
-            if ledger.usage_identity != identity
-                || ledger.receipt_key.as_deref().is_none_or(str::is_empty)
-            {
+            let matches_owner = match &ledger.usage_identity {
+                UsageIdentity::Response { agent: owner, .. } => owner == agent,
+                UsageIdentity::Cumulative {
+                    agent: owner,
+                    thread_id,
+                    ..
+                } => owner == agent && thread_id.as_deref() == row["threadId"].as_str(),
+            };
+            if !matches_owner || ledger.receipt_key.as_deref().is_none_or(str::is_empty) {
                 return Err(UsageParseError("persisted usage identity mismatch".into()));
             }
             return Ok(ledger);
@@ -314,6 +378,53 @@ mod typed_analytics_tests {
     use super::*;
 
     #[test]
+    fn ledger_deserialization_rejects_mismatched_observation_identity() {
+        let observation: UsageObservation = serde_json::from_value(json!({"kind":"response","responseId":"response","model":"model","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":3,"cacheWriteInput":2,"output":7}})).expect("usage");
+        let ledger = UsageLedgerRow::capture("agent", Some("thread"), observation);
+        let row = serde_json::to_value(&ledger).expect("ledger");
+        assert_eq!(
+            serde_json::from_value::<UsageLedgerRow>(row.clone()).expect("round trip"),
+            ledger
+        );
+        for identity in [
+            json!({"kind":"response","agent":"agent","responseId":"other"}),
+            json!({"kind":"cumulative","agent":"agent","threadId":null,"scope":"codexThread"}),
+        ] {
+            let mut invalid = row.clone();
+            invalid["usageIdentity"] = identity;
+            assert!(serde_json::from_value::<UsageLedgerRow>(invalid).is_err());
+        }
+        let mut legacy = row;
+        legacy["receiptKey"] = Value::Null;
+        legacy["presentationMetadata"] = json!(true);
+        assert!(
+            serde_json::from_value::<UsageLedgerRow>(legacy.clone())
+                .expect("nullable legacy receipt")
+                .receipt_key()
+                .is_none()
+        );
+        legacy.as_object_mut().expect("object").remove("receiptKey");
+        assert!(
+            serde_json::from_value::<UsageLedgerRow>(legacy)
+                .expect("omitted legacy receipt")
+                .receipt_key()
+                .is_none()
+        );
+        let cumulative = UsageObservation::Cumulative {
+            scope: UsageScope::CodexThread,
+            turn_id: None,
+            total: super::super::UsageTokens::default(),
+            last: None,
+            model_context_window: None,
+            models: None,
+        };
+        let ledger = UsageLedgerRow::capture("agent", None, cumulative);
+        let mut row = serde_json::to_value(&ledger).expect("counter ledger");
+        row["usageIdentity"]["scope"] = json!("claudeQuery");
+        assert!(serde_json::from_value::<UsageLedgerRow>(row).is_err());
+    }
+
+    #[test]
     fn provider_identity_typed_ledger_preserves_receipt_and_identity_checks() {
         let observation: UsageObservation = serde_json::from_value(json!({"kind":"response","responseId":"response","model":"model","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":3,"cacheWriteInput":2,"output":7}})).expect("typed usage");
         let ledger = UsageLedgerRow::capture("agent", Some("thread"), observation);
@@ -330,6 +441,29 @@ mod typed_analytics_tests {
             assert!(UsageLedgerRow::from_typed_analytics(&invalid).is_err());
         }
         row["studioUsage"]["tokens"]["output"] = json!("invalid");
+        assert!(UsageLedgerRow::from_typed_analytics(&row).is_err());
+
+        let observation = UsageObservation::Cumulative {
+            scope: UsageScope::CodexThread,
+            turn_id: None,
+            total: super::super::UsageTokens::default(),
+            last: None,
+            model_context_window: None,
+            models: None,
+        };
+        let ledger = UsageLedgerRow::capture("agent", Some("thread"), observation);
+        let mut row = serde_json::to_value(&ledger).expect("counter ledger");
+        row["agentId"] = json!("agent");
+        row["threadId"] = json!("thread");
+        assert_eq!(
+            UsageLedgerRow::from_typed_analytics(&row).expect("matching owner"),
+            ledger
+        );
+        row["threadId"] = json!("other thread");
+        assert!(UsageLedgerRow::from_typed_analytics(&row).is_err());
+        row["threadId"] = Value::Null;
+        assert!(UsageLedgerRow::from_typed_analytics(&row).is_err());
+        row.as_object_mut().expect("object").remove("threadId");
         assert!(UsageLedgerRow::from_typed_analytics(&row).is_err());
     }
 }

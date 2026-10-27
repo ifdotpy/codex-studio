@@ -88,7 +88,11 @@ export class ResourceEntityDelivery {
       this.current = undefined;
       // Retry retained entries after the cancelled operation settles. Persistence
       // recognizes already committed entries from their durable cursor/revision.
-      if (event.resources.length) this.pending.unshift({ event, prerequisite });
+      if (event.resources.length)
+        this.pending.unshift({
+          event,
+          ...(prerequisite ? { prerequisite } : {}),
+        });
     }
   }
 
@@ -103,11 +107,15 @@ export class ResourceEntityDelivery {
     }
     this.pending.push({
       event,
-      operation,
-      prerequisite: prerequisite?.then(
-        () => true,
-        () => false,
-      ),
+      ...(operation ? { operation } : {}),
+      ...(prerequisite
+        ? {
+            prerequisite: prerequisite.then(
+              () => true,
+              () => false,
+            ),
+          }
+        : {}),
     });
     if (this.pending.length > MAX_PENDING_RESOURCE_FRAMES) {
       this.fail(
@@ -164,7 +172,7 @@ export class ResourceEntityDelivery {
               }),
             ]);
             if (!isCurrent()) continue;
-            application.release = undefined;
+            delete application.release;
             // Transfer errors already have a recovery owner; never fail twice.
             if (!ready) {
               this.current = undefined;

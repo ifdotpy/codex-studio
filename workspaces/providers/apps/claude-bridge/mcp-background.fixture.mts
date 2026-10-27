@@ -100,6 +100,7 @@ export function query({ prompt, options }: FixtureQuery) {
       yield {
         type: "result",
         subtype: "success",
+        is_error: false,
         usage,
         result: "Waiting in the background",
       };
@@ -130,6 +131,7 @@ export function query({ prompt, options }: FixtureQuery) {
       yield {
         type: "result",
         subtype: "success",
+        is_error: false,
         usage,
         result: "Remote tool finished",
       };

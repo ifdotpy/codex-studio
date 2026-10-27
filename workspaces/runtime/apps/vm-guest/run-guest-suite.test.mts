@@ -123,7 +123,7 @@ function scopedProbeGuard(folder: string, pids: number[]) {
   for (const [name, executable] of [
     ["ps", "/bin/ps"],
     ["lsof", "/usr/sbin/lsof"],
-  ]) {
+  ] as const) {
     writeFileSync(
       path.join(bin, name),
       `#!${process.execPath}

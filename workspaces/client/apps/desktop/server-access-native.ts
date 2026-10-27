@@ -30,6 +30,7 @@ const remote = await fixture("Remote", true, {
       );
       return true;
     }
+    return false;
   },
 });
 const local = await fixture("Home", false, {
@@ -45,6 +46,7 @@ const local = await fixture("Home", false, {
       });
       return true;
     }
+    return false;
   },
 });
 let desktop!: ElectronApplication;
@@ -92,11 +94,11 @@ try {
   );
   const page = await desktop.firstWindow();
   page.setDefaultTimeout(15000);
-  assert.equal(
+  assert.deepEqual(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].isVisible(),
+      BrowserWindow.getAllWindows().map((window) => window.isVisible()),
     ),
-    false,
+    [false],
   );
   await page.waitForFunction(() => !!window.codexDesktop);
   assert.match(

@@ -142,7 +142,6 @@ test.each([
   "outside tail",
   "replaced",
   "symlink transcript",
-  "symlink directory",
   "partial composite",
   "reversed composite",
   "foreign steer",
@@ -210,10 +209,6 @@ test.each([
     await fs.rename(file, file + ".target");
     await fs.symlink(path.basename(file) + ".target", file);
   }
-  if (kind === "symlink directory") {
-    await fs.rename(configDir, configDir + ".target");
-    await fs.symlink(path.basename(configDir) + ".target", configDir, "dir");
-  }
   const records = await readNativeHistory(session, {
     configDir,
     ...(kind === "replaced"
@@ -229,15 +224,7 @@ test.each([
         }
       : {}),
   });
-  if (
-    [
-      "malformed",
-      "torn",
-      "replaced",
-      "symlink transcript",
-      "symlink directory",
-    ].includes(kind)
-  )
+  if (["malformed", "torn", "replaced", "symlink transcript"].includes(kind))
     expect(records).toBeNull();
   else expect(records).not.toBeNull();
   expect(
@@ -258,6 +245,42 @@ test.each([
         : "unknown",
   );
 });
+
+test.each([
+  ["account root", 0],
+  ["projects", 1],
+  ["project", 2],
+  ["transcript", 3],
+] as const)(
+  "native history accepts only a symlinked account root: %s",
+  async (link, depth) => {
+    root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "claude-account-link-")),
+    );
+    const cwd = path.join(root, "project");
+    const project = cwd.replace(/[^a-zA-Z0-9]/g, "-");
+    // Link one path component to a real target that holds the rest.
+    const parts = ["projects", project, sessionId + ".jsonl"];
+    const target = path.join(root, "target");
+    const file = path.join(target, ...parts.slice(depth));
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      JSON.stringify({ type: "user", uuid: inputId, sessionId, cwd }) + "\n",
+    );
+    const alias = path.join(root, "alias");
+    const linked = path.join(alias, ...parts.slice(0, depth));
+    await fs.mkdir(path.dirname(linked), { recursive: true });
+    await fs.symlink(target, linked);
+    const records = await readNativeHistory(
+      { id: sessionId, cwd },
+      { configDir: alias },
+    );
+    expect(records?.map(({ row }) => row.uuid) ?? null).toEqual(
+      link === "account root" ? [inputId] : null,
+    );
+  },
+);
 
 test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
   "restart promotes chain-proven receipts: %s",
@@ -860,6 +883,46 @@ test.each([null, 42, "", "not-a-uuid"])(
     ).toBe("unknown");
   },
 );
+
+test("a Claude 2.1.310 queued receipt proves steer delivery", () => {
+  const rows = [
+    {
+      type: "user",
+      uuid: inputId,
+      parentUuid: null,
+      sessionId,
+      cwd: "/project",
+      isSidechain: false,
+      message: { role: "user", content: "initial input" },
+    },
+    {
+      type: "attachment",
+      uuid: replyId,
+      parentUuid: inputId,
+      sessionId,
+      cwd: "/project",
+      isSidechain: false,
+      attachment: {
+        type: "queued_command",
+        prompt: [{ type: "text", text: "steer" }],
+        source_uuid: steerId,
+        delivery_id: "a0dda776-98f9-4ed2-9d6c-e385b0574102",
+        commandMode: "prompt",
+        origin: { kind: "unclassified" },
+        timestamp: "2026-10-26T22:13:53.933Z",
+        isMeta: true,
+      },
+    },
+  ];
+  expect(
+    inputHistoryOutcome(rows, {
+      sessionId,
+      cwd: "/project",
+      anchorIds: [inputId],
+      inputIds: [steerId],
+    }),
+  ).toBe("delivered");
+});
 
 test.each(["total_tokens_reminder", "prompt_snapshot"])(
   "native main-session %s attachments remain valid anchor ancestors",

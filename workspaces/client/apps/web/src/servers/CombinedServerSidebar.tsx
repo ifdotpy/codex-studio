@@ -114,7 +114,7 @@ export default function CombinedServerSidebar({
       creating={!!navigation[current]?.creating}
       mobile={mobile}
       collapsed={hidden}
-      onCompactChange={onCompactChange}
+      {...(onCompactChange ? { onCompactChange } : {})}
       close={close}
       settings={settings}
       onSearch={search}

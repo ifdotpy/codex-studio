@@ -10,6 +10,7 @@ use crate::event_write;
 use rusqlite::{OptionalExtension, Transaction};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError};
 use thiserror::Error;
@@ -57,9 +58,11 @@ fn host_project_cwd<'a>(vm_workspace: bool, root: &'a Value, parent_cwd: &'a str
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
 pub enum ManagedCreationEnvironmentError {
+    #[error("{0}")]
     Invalid(&'static str),
+    #[error("Not implemented: requires {0}")]
     Unavailable(&'static str),
 }
 
@@ -237,6 +240,187 @@ impl From<ManagedCreationEnvironmentError> for Error {
     }
 }
 
+#[derive(Debug, Error)]
+pub(crate) enum WorkerSettingsError {
+    #[error(transparent)]
+    Environment(#[from] ManagedCreationEnvironmentError),
+    #[error(transparent)]
+    Store(#[from] StoreError),
+}
+
+/// Resolved child routing and execution settings shared by both creation callers.
+pub(crate) struct ResolvedWorkerSettings {
+    pub account_key: String,
+    pub account: crate::host_worker_create::AccountIdentity,
+    pub model: String,
+    pub effort: Option<String>,
+    pub fast_mode: bool,
+    pub daybreak: bool,
+}
+
+pub(crate) struct WorkerSettingsRequest<'a> {
+    pub parent: &'a Value,
+    pub root: &'a Value,
+    pub spec: &'a Value,
+    pub profile: Option<&'a studio_runtime_store::ProfileRecord>,
+    pub role: &'a str,
+    pub requested_account_key: Option<&'a str>,
+    pub account_load: &'a std::collections::HashMap<String, i64>,
+}
+
+pub(crate) async fn resolve_worker_settings(
+    store: &RuntimeStore,
+    environment: &dyn ManagedCreationEnvironment,
+    request: WorkerSettingsRequest<'_>,
+) -> Result<ResolvedWorkerSettings, WorkerSettingsError> {
+    let WorkerSettingsRequest {
+        parent,
+        root,
+        spec,
+        profile,
+        role,
+        requested_account_key,
+        account_load,
+    } = request;
+    let defaults = &root["workerDefaults"];
+    let profile_model = profile.map(|profile| profile.model.as_str());
+    let review =
+        (role == "reviewer").then(|| crate::native_review::execution_settings(parent, root, spec));
+    let requested_model = spec
+        .get("model")
+        .and_then(Value::as_str)
+        .or(profile_model)
+        .or_else(|| review.as_ref().and_then(|(model, _, _)| model.as_str()))
+        .or_else(|| defaults.get("model").and_then(Value::as_str))
+        .or_else(|| root.get("model").and_then(Value::as_str))
+        .unwrap_or(crate::agents_create::DEFAULT_LEAD_MODEL);
+    let excluded = root
+        .get("excludedAccountKeys")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let project = match root
+        .get("projectId")
+        .and_then(Value::as_str)
+        .zip(root.get("projectServerId").and_then(Value::as_str))
+    {
+        Some((id, home)) => {
+            let id = id.to_owned();
+            store
+                .read_async("runtime-services/managed_child_create", move |read| {
+                    studio_runtime_store::ProjectsRepository::get(read, &id)
+                })
+                .await?
+                .map(|(_, record)| (record, home))
+        }
+        None => None,
+    }
+    .filter(|(record, home)| record["homeServerId"] == *home)
+    .map(|(record, _)| record);
+    let groups = project.as_ref().map(|record| {
+        crate::account_preference::groups_of(
+            record.get(crate::account_preference::PROJECT_GROUPS_FIELD),
+        )
+    });
+    let keys = project.as_ref().and_then(|record| {
+        record["accountKeys"].as_array().map(|keys| {
+            keys.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+    });
+    let (account_key, account) =
+        environment.select_worker_account(crate::provider_callbacks::WorkerAccountRequest {
+            parent_account_key: parent
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default"),
+            requested_account_key,
+            default_account_key: defaults.get("accountKey").and_then(Value::as_str),
+            model: requested_model,
+            excluded_account_keys: &excluded,
+            project_account_keys: keys.as_deref(),
+            project_account_groups: groups.as_deref(),
+            active_agents: account_load,
+        })?;
+    let adapter = crate::provider_adapter::adapter(account.provider);
+    let model = if requested_model == crate::agents_create::DEFAULT_LEAD_MODEL
+        && root.get("model").is_none()
+        && defaults.get("model").is_none()
+        && profile_model.is_none()
+        && spec.get("model").is_none()
+        && !adapter.owns_model(requested_model)
+    {
+        adapter.default_model()
+    } else {
+        requested_model
+    };
+    let profile_effort = profile.and_then(|profile| profile.effort);
+    let mut effort = if spec.get("effort").is_some() {
+        spec.get("effort").and_then(Value::as_str)
+    } else if let Some(effort) = profile_effort {
+        Some(effort.as_str())
+    } else if let Some((_, effort, _)) = &review {
+        effort.as_str()
+    } else {
+        defaults.get("effort").and_then(Value::as_str)
+    };
+    let fast_mode = spec
+        .get("fast_mode")
+        .and_then(Value::as_bool)
+        .or_else(|| review.as_ref().and_then(|(_, _, fast)| *fast))
+        .or_else(|| defaults.get("fastMode").and_then(Value::as_bool))
+        .unwrap_or(false);
+    let daybreak = spec
+        .get("daybreak_enabled")
+        .and_then(Value::as_bool)
+        .or_else(|| defaults.get("daybreakEnabled").and_then(Value::as_bool))
+        .unwrap_or(false);
+    // An inherited effort unsupported by the selected model uses its native default.
+    // A request or profile explicitly choosing an effort remains a validation error.
+    if spec.get("effort").is_none()
+        && profile_effort.is_none()
+        && effort.is_some()
+        && matches!(
+            environment.catalog().resolve(
+                &account_key,
+                &account,
+                model,
+                effort,
+                fast_mode,
+                daybreak
+            ),
+            Err(crate::agents_create::CreateError::InvalidCreation("effort"))
+        )
+    {
+        effort = None;
+    }
+    Ok(ResolvedWorkerSettings {
+        account_key,
+        account,
+        model: model.to_owned(),
+        effort: effort.map(str::to_owned),
+        fast_mode,
+        daybreak,
+    })
+}
+
+impl From<WorkerSettingsError> for Error {
+    fn from(error: WorkerSettingsError) -> Self {
+        match error {
+            WorkerSettingsError::Environment(error) => error.into(),
+            WorkerSettingsError::Store(error) => Self::Store(error),
+        }
+    }
+}
+
 struct Draft {
     typed: AgentRecord,
     record: Value,
@@ -292,10 +476,6 @@ pub(crate) async fn spawn_agents(
     event_write::assert_delegation(&root)
         .map_err(|_| crate::managed_host_tools::Error::Invalid("Delegation is disabled"))?;
     let root_value = root.value();
-    let defaults = root_value
-        .get("workerDefaults")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
     let parent_cwd = parent_value.get("cwd").and_then(Value::as_str).ok_or(
         crate::managed_host_tools::Error::Invalid("Select a project directory"),
     )?;
@@ -520,122 +700,32 @@ pub(crate) async fn spawn_agents(
         let worktree = worktree && in_git;
         let id = child_id(request_id, index);
         let requested_account_key = spec.get("account_key").and_then(Value::as_str);
-        let default_account_key = defaults.get("accountKey").and_then(Value::as_str);
         let workspace_admission =
             environment.prepare_workspace(store, &actor_record, spec, request_id)?;
-        let profile_model = profile.as_ref().map(|profile| profile.model.as_str());
-        let review_settings = (role == "reviewer")
-            .then(|| crate::native_review::execution_settings(&parent_value, &root_value, spec));
-        let requested_model = spec
-            .get("model")
-            .and_then(Value::as_str)
-            .or(profile_model)
-            .or_else(|| {
-                review_settings
-                    .as_ref()
-                    .and_then(|(model, _, _)| model.as_str())
-            })
-            .or_else(|| defaults.get("model").and_then(Value::as_str))
-            .or_else(|| root_value.get("model").and_then(Value::as_str))
-            .unwrap_or("gpt-6-astra");
-        let excluded_account_keys = root_value
-            .get("excludedAccountKeys")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let project_record = match root_value
-            .get("projectId")
-            .and_then(Value::as_str)
-            .zip(root_value.get("projectServerId").and_then(Value::as_str))
-        {
-            Some((project_id, home_server)) => {
-                let project_id = project_id.to_owned();
-                store
-                    .read_async("runtime-services/managed_child_create", move |read| {
-                        studio_runtime_store::ProjectsRepository::get(read, &project_id)
-                    })
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|(_, record)| (record, home_server))
-            }
-            None => None,
-        }
-        .filter(|(record, home_server)| record["homeServerId"] == *home_server)
-        .map(|(record, _)| record);
-        let project_account_groups = project_record.as_ref().map(|record| {
-            crate::account_preference::groups_of(
-                record.get(crate::account_preference::PROJECT_GROUPS_FIELD),
-            )
-        });
-        let project_account_keys = project_record.as_ref().and_then(|record| {
-            record["accountKeys"].as_array().map(|keys| {
-                keys.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            })
-        });
-        let (account_key, account) =
-            environment.select_worker_account(crate::provider_callbacks::WorkerAccountRequest {
-                parent_account_key: parent_account,
+        let resolved = resolve_worker_settings(
+            store,
+            environment,
+            WorkerSettingsRequest {
+                parent: &parent_value,
+                root: &root_value,
+                spec,
+                profile: profile.as_ref(),
+                role,
                 requested_account_key,
-                default_account_key,
-                model: requested_model,
-                excluded_account_keys: &excluded_account_keys,
-                project_account_keys: project_account_keys.as_deref(),
-                project_account_groups: project_account_groups.as_deref(),
-                active_agents: &account_load,
-            })?;
-        *account_load.entry(account_key.clone()).or_default() += 1;
+                account_load: &account_load,
+            },
+        )
+        .await?;
+        *account_load
+            .entry(resolved.account_key.clone())
+            .or_default() += 1;
+        let account_key = &resolved.account_key;
+        let account = resolved.account;
         let provider = account.provider.key();
-        let account_adapter = crate::provider_adapter::adapter(account.provider);
-        // An unselected lead default that the account's provider cannot run
-        // becomes that provider's own default.
-        let model = if requested_model == crate::agents_create::DEFAULT_LEAD_MODEL
-            && root_value.get("model").is_none()
-            && defaults.get("model").is_none()
-            && profile_model.is_none()
-            && spec.get("model").is_none()
-            && !account_adapter.owns_model(requested_model)
-        {
-            account_adapter.default_model()
-        } else {
-            requested_model
-        };
-        let effort = if spec.get("effort").is_some() {
-            spec.get("effort").and_then(Value::as_str)
-        } else if let Some(effort) = profile.as_ref().and_then(|profile| profile.effort) {
-            Some(match effort {
-                studio_runtime_store::ReasoningEffort::Low => "low",
-                studio_runtime_store::ReasoningEffort::Medium => "medium",
-                studio_runtime_store::ReasoningEffort::High => "high",
-                studio_runtime_store::ReasoningEffort::Xhigh => "xhigh",
-                studio_runtime_store::ReasoningEffort::Max => "max",
-                studio_runtime_store::ReasoningEffort::Ultra => "ultra",
-            })
-        } else if let Some((_, effort, _)) = &review_settings {
-            effort.as_str()
-        } else {
-            defaults.get("effort").and_then(Value::as_str)
-        };
-        let fast_mode = spec
-            .get("fast_mode")
-            .and_then(Value::as_bool)
-            .or_else(|| review_settings.as_ref().and_then(|(_, _, fast)| *fast))
-            .or_else(|| defaults.get("fastMode").and_then(Value::as_bool))
-            .unwrap_or(false);
-        let daybreak = spec
-            .get("daybreak_enabled")
-            .and_then(Value::as_bool)
-            .or_else(|| defaults.get("daybreakEnabled").and_then(Value::as_bool))
-            .unwrap_or(false);
+        let model = &resolved.model;
+        let effort = resolved.effort.as_deref();
+        let fast_mode = resolved.fast_mode;
+        let daybreak = resolved.daybreak;
         let vm_workspace = matches!(workspace, "layr" | "linux");
         let host_cwd = host_project_cwd(vm_workspace, &root_value, child_directory);
         // The parent's project binding names the parent's folder. Another
@@ -803,7 +893,7 @@ pub(crate) async fn spawn_agents(
                     .ok_or(crate::managed_host_tools::Error::Invalid("Unknown task_id in this team; no workers were created"))?;
                 let title = work.get("title").and_then(Value::as_str).unwrap_or("Assigned task");
                 text.push_str(&format!("\n\n[Studio task {task}] {title}\nYou own this task. Submit the result with the work item tools."));
-                text.push_str(&studio_runtime_schema::task_results::assignment_text(&work));
+                text.push_str(&studio_runtime_schema::task_results::assignment_text(work.value()));
             }
             let record = AgentRecord::from_value(draft.record.clone())
                 .map_err(|_| crate::managed_host_tools::Error::Invalid("Invalid child agent record"))?;
@@ -1210,7 +1300,19 @@ fn map_create_error(error: crate::agents_create::CreateError) -> Error {
         crate::agents_create::CreateError::InvalidCreation(message) => {
             Error::Managed(crate::managed_host_tools::Error::Invalid(message))
         }
-        _ => Error::Refused,
+        crate::agents_create::CreateError::Conflict
+        | crate::agents_create::CreateError::MissingCreationIntent
+        | crate::agents_create::CreateError::Deleted
+        | crate::agents_create::CreateError::UnknownAgent
+        | crate::agents_create::CreateError::LeadRequired
+        | crate::agents_create::CreateError::RequestIdRequired
+        | crate::agents_create::CreateError::ModelUnavailable
+        | crate::agents_create::CreateError::IdentityChanged
+        | crate::agents_create::CreateError::Internal
+        | crate::agents_create::CreateError::Stale
+        | crate::agents_create::CreateError::CurrentAccountExcluded
+        | crate::agents_create::CreateError::InFlight
+        | crate::agents_create::CreateError::InvalidStoredObject { .. } => Error::Refused,
     }
 }
 
@@ -1221,7 +1323,24 @@ fn map_recheck_error(
         crate::agents_create::MutationError::Store(error) => {
             crate::managed_host_tools::Error::Store(error)
         }
-        _ => crate::managed_host_tools::Error::Stale,
+        crate::agents_create::MutationError::Conflict
+        | crate::agents_create::MutationError::MissingCreationIntent
+        | crate::agents_create::MutationError::Deleted
+        | crate::agents_create::MutationError::UnknownAgent
+        | crate::agents_create::MutationError::LeadRequired
+        | crate::agents_create::MutationError::RequestIdRequired
+        | crate::agents_create::MutationError::InvalidCreation(_)
+        | crate::agents_create::MutationError::BaseUnresolved
+        | crate::agents_create::MutationError::ModelUnavailable
+        | crate::agents_create::MutationError::CapabilityUnavailable(_)
+        | crate::agents_create::MutationError::IdentityChanged
+        | crate::agents_create::MutationError::Internal
+        | crate::agents_create::MutationError::Stale
+        | crate::agents_create::MutationError::CurrentAccountExcluded
+        | crate::agents_create::MutationError::InFlight
+        | crate::agents_create::MutationError::InvalidStoredObject { .. } => {
+            crate::managed_host_tools::Error::Stale
+        }
     }
 }
 
@@ -1410,7 +1529,7 @@ pub(crate) async fn request_review(
     let mut record = crate::host_worker_create::persisted_record(&prepared)
         .map_err(map_create_error)?
         .value();
-    record["provider"] = json!("codex");
+    record["provider"] = json!(ProviderKind::Codex.key());
     record["yoloMode"] = json!(false);
     record["worktree"] = json!(false);
     record["workspaceMode"] = json!("shared");
@@ -1456,7 +1575,7 @@ pub(crate) async fn request_review(
                         crate::native_actions::NativeError::Unavailable(name) => {
                             crate::managed_host_tools::Error::Unavailable(name)
                         }
-                        _ => crate::managed_host_tools::Error::Invalid(
+                        crate::native_actions::NativeError::Invalid(_) | crate::native_actions::NativeError::InvalidStored { .. } | crate::native_actions::NativeError::Conflict | crate::native_actions::NativeError::Changed | crate::native_actions::NativeError::Unknown | crate::native_actions::NativeError::Json(_) | crate::native_actions::NativeError::Sql(_) => crate::managed_host_tools::Error::Invalid(
                             "Native review creation was refused",
                         ),
                     },

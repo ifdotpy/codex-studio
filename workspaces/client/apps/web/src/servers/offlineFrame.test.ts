@@ -1,3 +1,5 @@
+import { required } from "../components/componentTestFixtures.ts";
+import assert from "node:assert/strict";
 /// <reference lib="webworker" />
 import { expect, test } from "vitest";
 import vm from "node:vm";
@@ -54,7 +56,7 @@ test("offline server navigation has frame CSP and cannot replace the root shell 
     },
   );
   let result: Promise<Response> | undefined;
-  handlers.fetch({
+  required(handlers.fetch)({
     request: {
       method: "GET",
       mode: "navigate",
@@ -64,7 +66,9 @@ test("offline server navigation has frame CSP and cannot replace the root shell 
     waitUntil() {},
   });
   const response = await result;
-  expect(response!.headers.get("Content-Security-Policy")).toContain(
+  assert.ok(response);
+  assert.ok(response);
+  expect(response.headers.get("Content-Security-Policy")).toContain(
     "frame-ancestors 'self'",
   );
   expect(root.headers.get("Content-Security-Policy")).toContain(
@@ -115,7 +119,7 @@ test("a network server-view response never overwrites the root cached HTML", asy
     },
   );
   let result: Promise<Response> | undefined;
-  handlers.fetch({
+  required(handlers.fetch)({
     request: {
       method: "GET",
       mode: "navigate",

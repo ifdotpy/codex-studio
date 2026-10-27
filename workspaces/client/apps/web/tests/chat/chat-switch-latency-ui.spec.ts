@@ -6,7 +6,7 @@ import {
 import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import type { Page, Route } from "@playwright/test";
 import type { components } from "../../src/generated/api.ts";
-import type { Agent } from "../../src/types.ts";
+import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
 import {
   fixturePullResult,
   fixtureGetResult,

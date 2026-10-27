@@ -2,18 +2,20 @@
 //! account's session before it sends `account/login/start`. The fake session
 //! models the account session broker: no scope and a NotSent receipt until
 //! `ensure_session` starts the account's worker.
+
 use serde_json::{Value, json};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{
     account_driver::AccountDriver,
     account_session_runtime::{
         AccountSessionError, AccountSessionPort, AccountSessionRuntime, ConnectionScope,
-        LoginRequest, NotSentReason, ProviderRequest, ProviderResponse, RequestCertainty,
-        RetainedAccountSession, SessionFuture, SessionFutureScope, SessionReceipt,
+        LoginRequest, ProviderRequest, ProviderResponse, RetainedAccountSession, SessionFuture,
+        SessionFutureScope, SessionReceipt,
     },
 };
 
@@ -75,34 +77,31 @@ impl RetainedAccountSession for BrokerSession {
         let Some(live) = live.filter(|live| request.expected_scope.as_ref() == Some(live)) else {
             let receipt = SessionReceipt {
                 scope: scope(&request.account),
-                operation,
-                ticket: None,
-                certainty: RequestCertainty::NotSent,
-                result: None,
-                not_sent_reason: Some(NotSentReason::NoLiveAccountWorker),
+                operation: operation.clone(),
                 replayed: false,
+                outcome: ReceiptOutcome::NoLiveAccountWorker,
             };
             return Box::pin(async move { Ok(receipt) });
         };
         assert_eq!(request.method, Method::AccountLoginStart);
         self.written.fetch_add(1, Ordering::SeqCst);
         let receipt = SessionReceipt {
-            ticket: Some(RequestTicket {
-                generation: live.generation,
-                id: RequestId::String(operation.clone()),
-                method: request.method,
-            }),
-            scope: live,
-            operation,
-            certainty: RequestCertainty::Written,
-            result: Some(ProviderResponse::Reply(json!({
-                "type":"chatgptDeviceCode",
-                "loginId":"fixture-native-login",
-                "verificationUrl":"https://example.invalid/device",
-                "userCode":"fixture-code"
-            }))),
-            not_sent_reason: None,
+            scope: live.clone(),
+            operation: operation.clone(),
             replayed: false,
+            outcome: ReceiptOutcome::Written {
+                ticket: RequestTicket {
+                    generation: live.generation,
+                    id: RequestId::String(operation.clone()),
+                    method: request.method,
+                },
+                response: ProviderResponse::Reply(json!({
+                    "type":"chatgptDeviceCode",
+                    "loginId":"fixture-native-login",
+                    "verificationUrl":"https://example.invalid/device",
+                    "userCode":"fixture-code"
+                })),
+            },
         };
         Box::pin(async move { Ok(receipt) })
     }

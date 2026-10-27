@@ -68,7 +68,29 @@ pub async fn recover_on_startup(
                             "startup scheduler reservation skipped row id={id}: invalid batch"
                         );
                     }
-                    error => return Err(MonitorError::Store(error)),
+                    error @ studio_runtime_store::StoreError::StateDirectory(_)
+                    | error @ studio_runtime_store::StoreError::AlreadyOwned
+                    | error @ studio_runtime_store::StoreError::MissingDatabase(_)
+                    | error @ studio_runtime_store::StoreError::Migration { .. }
+                    | error @ studio_runtime_store::StoreError::UnsafeStateDirectory
+                    | error @ studio_runtime_store::StoreError::SchemaMismatch(_)
+                    | error @ studio_runtime_store::StoreError::InvalidSyncObject { .. }
+                    | error @ studio_runtime_store::StoreError::InvalidSyncObjectField { .. }
+                    | error @ studio_runtime_store::StoreError::InvalidStoredRecord { .. }
+                    | error @ studio_runtime_store::StoreError::SchemaObjectMismatch { .. }
+                    | error @ studio_runtime_store::StoreError::Sqlite(_)
+                    | error @ studio_runtime_store::StoreError::CommitOutcomeUnknown(_)
+                    | error @ studio_runtime_store::StoreError::Json(_)
+                    | error @ studio_runtime_store::StoreError::InvalidStoredObject { .. }
+                    | error @ studio_runtime_store::StoreError::SchemaValidation(_)
+                    | error @ studio_runtime_store::StoreError::RecordContract(_)
+                    | error @ studio_runtime_store::StoreError::WriterPoisoned
+                    | error @ studio_runtime_store::StoreError::WriterActorInitialization(_)
+                    | error @ studio_runtime_store::StoreError::WriterActorControl(_)
+                    | error @ studio_runtime_store::StoreError::CommitActorOutcomeUnknown(_)
+                    | error @ studio_runtime_store::StoreError::ReadTaskFailed => {
+                        return Err(MonitorError::Store(error));
+                    }
                 }
             }
             let requests = recover_requests(tx)?;
@@ -299,7 +321,20 @@ pub(crate) fn startup_store_failure(error: &MonitorError) -> bool {
         MonitorError::Rules(crate::rules_tick::RulesTickError::Event(
             crate::event_write::EventWriteError::Store(error),
         )) => store_failure(error),
-        _ => false,
+        MonitorError::InvalidStored { .. }
+        | MonitorError::InvalidResultReceipt(_)
+        | MonitorError::InvalidDeliveryIdentity(_)
+        | MonitorError::InvalidOutputReceipt(_)
+        | MonitorError::TaskFailed
+        | MonitorError::InputOutcomeUnknown
+        | MonitorError::Refused(_)
+        | MonitorError::Unavailable(_)
+        | MonitorError::ProviderRequest { .. }
+        | MonitorError::ConfigurationRejected { .. }
+        | MonitorError::ConfigurationReceipt { .. }
+        | MonitorError::Event(_)
+        | MonitorError::Rules(_)
+        | MonitorError::Io(_) => false,
     }
 }
 
@@ -486,11 +521,7 @@ pub async fn answer_approval(
             let request = RequestRecord::from_value(request.clone())
                 .map_err(studio_runtime_store::StoreError::from)?;
             Table::<RequestRecord>::new(tx).put(&request)?;
-            let request_view =
-                crate::sync_views::project_persisted_record("request", request.value()).ok_or(
-                    MonitorError::Refused("Monitor approval projection is invalid"),
-                )?;
-            SyncDocumentsRepository::put_entity(tx, "request", &request_id, request_view, false)?;
+            SyncDocumentsRepository::put_entity(tx, "request", &request_id, json!({}), true)?;
             Ok(Some(MonitorApprovalAnswer {
                 response: json!({"status":"answered"}),
                 accepted,
@@ -666,7 +697,12 @@ fn refuse_unavailable(decision: &Decision) -> Result<(), MonitorError> {
                 return Err(MonitorError::Unavailable(SESSION_DEPENDENCY));
             }
 
-            _ => (),
+            Effect::OutputEvent { .. }
+            | Effect::ExitEvent
+            | Effect::StallEvent { .. }
+            | Effect::Probe { .. }
+            | Effect::ExpireApprovals
+            | Effect::RuleFinished => (),
         }
     }
     Ok(())
@@ -767,7 +803,7 @@ pub fn apply_with_rule(
                     )?;
                 }
             }
-            _ => (),
+            Effect::Probe { .. } | Effect::Terminate | Effect::Native { .. } => (),
         }
     }
     if before.record() != &decision.record {

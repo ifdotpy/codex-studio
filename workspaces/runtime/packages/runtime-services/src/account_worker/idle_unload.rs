@@ -20,6 +20,7 @@
 //! unsubscribe is never assumed.
 use super::*;
 use crate::provider_session_task::SessionStatus;
+use serde::{Deserialize, Serialize, de::IgnoredAny, de::IntoDeserializer};
 use std::time::Duration;
 use studio_runtime_schema::shared_values::NATIVE_TERMINAL_ITEMS_PER_PAGE as TERMINAL_PAGE_LIMIT;
 use studio_runtime_store::OrchestrationSettingsRepository;
@@ -56,14 +57,129 @@ const IDLE_RETRY_BACKOFF: Duration = Duration::from_secs(30);
 const LOADED_PAGE_LIMIT: u64 = 100;
 /// Pages read before a sweep gives up; a longer list is left for later.
 const MAX_LOADED_PAGES: usize = 16;
-/// `thread/read` statuses of a thread with no running turn. A turn that ended
-/// with a provider error leaves the thread in `systemError` until its next
-/// turn; Codex unloads and resumes such a thread like an idle one (measured on
-/// codex 0.160.1, 2026-10-22), so a finished worker whose last turn failed
-/// must not keep its thread and MCP server processes loaded.
-const IDLE_THREAD_STATUSES: [&str; 3] = ["idle", "notLoaded", "systemError"];
-/// `thread/unsubscribe` statuses that leave this connection unsubscribed.
-const UNSUBSCRIBED_STATUSES: [&str; 3] = ["unsubscribed", "notSubscribed", "notLoaded"];
+/// The five sweep requests; thread ownership comes from their typed input,
+/// never by reading serialized provider parameters back out of JSON.
+#[derive(Serialize)]
+#[serde(untagged, rename_all_fields = "camelCase")]
+enum IdleRequest<'a> {
+    LoadedList {
+        limit: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cursor: Option<&'a str>,
+    },
+    Read {
+        thread_id: &'a str,
+        include_turns: bool,
+    },
+    BackgroundTerminalsList {
+        thread_id: &'a str,
+        limit: u64,
+    },
+    QueueList {
+        thread_id: &'a str,
+    },
+    Unsubscribe {
+        thread_id: &'a str,
+    },
+}
+
+impl IdleRequest<'_> {
+    fn method(&self) -> Method {
+        match self {
+            Self::LoadedList { .. } => Method::ThreadLoadedList,
+            Self::Read { .. } => Method::ThreadRead,
+            Self::BackgroundTerminalsList { .. } => Method::ThreadBackgroundTerminalsList,
+            Self::QueueList { .. } => Method::ThreadQueueList,
+            Self::Unsubscribe { .. } => Method::ThreadUnsubscribe,
+        }
+    }
+
+    fn thread_id(&self) -> Option<&str> {
+        match self {
+            Self::LoadedList { .. } => None,
+            Self::Read { thread_id, .. }
+            | Self::BackgroundTerminalsList { thread_id, .. }
+            | Self::QueueList { thread_id }
+            | Self::Unsubscribe { thread_id } => Some(thread_id),
+        }
+    }
+}
+
+/// Only evidence consumed by the sweep is decoded. Unknown upstream fields
+/// remain compatible; missing/null cursors both mean the last page.
+/// Untagged struct variants require objects, whereas ordinary Serde structs
+/// also accept positional arrays, which are not valid provider evidence.
+#[derive(Deserialize)]
+#[serde(untagged, rename_all_fields = "camelCase")]
+enum IdlePage<T> {
+    Page {
+        data: Vec<T>,
+        next_cursor: Option<String>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum IdleThreadReadReply {
+    Reply { thread: IdleThread },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum IdleThread {
+    Thread {
+        id: String,
+        status: IdleThreadStatus,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum IdleThreadStatus {
+    Status {
+        #[serde(rename = "type", deserialize_with = "deserialize_string_enum")]
+        state: IdleThreadState,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum IdleThreadState {
+    NotLoaded,
+    Idle,
+    /// No turn is running after a provider error. Codex can unload/resume
+    /// this state like idle (measured on codex 0.160.1, 2026-10-22).
+    SystemError,
+    Active,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum IdleUnsubscribeReply {
+    Reply {
+        #[serde(deserialize_with = "deserialize_string_enum")]
+        status: IdleUnsubscribeStatus,
+    },
+}
+
+/// Each confirmation leaves this connection unsubscribed.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum IdleUnsubscribeStatus {
+    Unsubscribed,
+    NotSubscribed,
+    NotLoaded,
+}
+
+/// Provider status codes are JSON strings. Serde's enum decoder also accepts
+/// externally tagged objects, so decode the concrete string before the enum.
+fn deserialize_string_enum<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    T::deserialize(String::deserialize(deserializer)?.into_deserializer())
+}
 
 /// A durable usage read for idle eligibility that runs off the serialized
 /// worker; its result is applied when it completes.
@@ -319,11 +435,6 @@ fn next_deadline(clocks: &IdleClocks, delay: Option<Duration>) -> Option<Instant
     delay.and_then(|delay| clocks.next_deadline(delay))
 }
 
-fn empty_page(page: &Value) -> bool {
-    page["data"].as_array().is_some_and(Vec::is_empty)
-        && page.get("nextCursor").is_none_or(Value::is_null)
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UnloadResult {
     Unloaded,
@@ -331,7 +442,29 @@ enum UnloadResult {
     Retry,
 }
 
+/// Test-only read of the actor's settled decision and retry scheduling.
+#[cfg(test)]
+#[derive(Debug)]
+pub struct IdleObservation {
+    pub(super) provider_blocked: BTreeSet<String>,
+    pub(super) released: BTreeSet<String>,
+    pub(super) initialized: bool,
+    pub(super) retry_at: Option<Instant>,
+    pub(super) deadline: Option<Instant>,
+}
+
 impl Worker {
+    #[cfg(test)]
+    pub(super) fn idle_observation(&self) -> IdleObservation {
+        IdleObservation {
+            provider_blocked: self.idle_clocks.blocked_by(IdleBlocker::Provider),
+            released: self.idle_clocks.released.clone(),
+            initialized: self.idle_initialized,
+            retry_at: self.idle_clocks.retry_at,
+            deadline: self.idle_deadline,
+        }
+    }
+
     pub(super) fn idle_thread_touched(&mut self, thread: &str) {
         self.idle_clocks.touch(thread);
         self.idle_deadline = next_deadline(&self.idle_clocks, self.idle_delay);
@@ -701,26 +834,30 @@ impl Worker {
     /// complete; an incomplete list never stops the process.
     async fn loaded_threads(&mut self) -> Result<Option<BTreeSet<String>>, WorkerError> {
         let mut loaded = BTreeSet::new();
-        let mut cursor = Value::Null;
+        let mut cursor = None;
         for _ in 0..MAX_LOADED_PAGES {
-            let mut params = json!({"limit": LOADED_PAGE_LIMIT});
-            if !cursor.is_null() {
-                params["cursor"] = cursor;
-            }
-            let Some(page) = self.idle_request(Method::ThreadLoadedList, params).await? else {
+            let Some(page) = self
+                .idle_request(IdleRequest::LoadedList {
+                    limit: LOADED_PAGE_LIMIT,
+                    cursor: cursor.as_deref(),
+                })
+                .await?
+            else {
                 return Ok(None);
             };
-            let Some(threads) = page["data"].as_array() else {
+            let Ok(IdlePage::Page { data, next_cursor }) =
+                serde_json::from_value::<IdlePage<String>>(page)
+            else {
                 return Ok(None);
             };
-            for thread in threads {
-                let Some(thread) = thread.as_str().filter(|thread| !thread.is_empty()) else {
+            for thread in data {
+                if thread.is_empty() {
                     return Ok(None);
-                };
-                loaded.insert(thread.to_owned());
+                }
+                loaded.insert(thread);
             }
-            cursor = page.get("nextCursor").cloned().unwrap_or(Value::Null);
-            if cursor.is_null() {
+            cursor = next_cursor;
+            if cursor.is_none() {
                 return Ok(Some(loaded));
             }
         }
@@ -800,33 +937,49 @@ impl Worker {
         // Any unload attempt may succeed, even when its reply is lost.
         self.forget_thread_proofs(thread);
         let Some(read) = self
-            .idle_request(
-                Method::ThreadRead,
-                json!({"threadId": thread, "includeTurns": false}),
-            )
+            .idle_request(IdleRequest::Read {
+                thread_id: thread,
+                include_turns: false,
+            })
             .await?
         else {
             return Ok(UnloadResult::Retry);
         };
-        let native = &read["thread"];
-        if native["id"] != thread
-            || !native["status"]["type"]
-                .as_str()
-                .is_some_and(|status| IDLE_THREAD_STATUSES.contains(&status))
-        {
+        let Ok(IdleThreadReadReply::Reply {
+            thread:
+                IdleThread::Thread {
+                    id,
+                    status: IdleThreadStatus::Status { state },
+                },
+        }) = serde_json::from_value::<IdleThreadReadReply>(read)
+        else {
+            return Ok(UnloadResult::Busy(IdleBlocker::Provider));
+        };
+        if id != thread {
             return Ok(UnloadResult::Busy(IdleBlocker::Provider));
         }
-        for (method, params) in [
-            (
-                Method::ThreadBackgroundTerminalsList,
-                json!({"threadId": thread, "limit": TERMINAL_PAGE_LIMIT}),
-            ),
-            (Method::ThreadQueueList, json!({"threadId": thread})),
+        match state {
+            IdleThreadState::Idle | IdleThreadState::NotLoaded | IdleThreadState::SystemError => {}
+            IdleThreadState::Active => return Ok(UnloadResult::Busy(IdleBlocker::Provider)),
+        }
+        for request in [
+            IdleRequest::BackgroundTerminalsList {
+                thread_id: thread,
+                limit: u64::try_from(TERMINAL_PAGE_LIMIT).unwrap_or(u64::MAX),
+            },
+            IdleRequest::QueueList { thread_id: thread },
         ] {
-            match self.idle_request(method, params).await? {
-                Some(page) if empty_page(&page) => {}
+            match self.idle_request(request).await? {
+                // Work entries only prove that the page is nonempty; their
+                // contents are not used to classify provider work.
+                Some(page) => match serde_json::from_value::<IdlePage<IgnoredAny>>(page) {
+                    Ok(IdlePage::Page { data, next_cursor })
+                        if data.is_empty() && next_cursor.is_none() => {}
+                    Ok(IdlePage::Page { .. }) | Err(_) => {
+                        return Ok(UnloadResult::Busy(IdleBlocker::Provider));
+                    }
+                },
                 None => return Ok(UnloadResult::Retry),
-                Some(_) => return Ok(UnloadResult::Busy(IdleBlocker::Provider)),
             }
         }
         // Commands that arrived during the checks wait in the queue; recheck
@@ -838,19 +991,19 @@ impl Worker {
             return Ok(UnloadResult::Busy(IdleBlocker::Durable));
         }
         let Some(reply) = self
-            .idle_request(Method::ThreadUnsubscribe, json!({"threadId": thread}))
+            .idle_request(IdleRequest::Unsubscribe { thread_id: thread })
             .await?
         else {
             return Ok(UnloadResult::Retry);
         };
         Ok(
-            if reply["status"]
-                .as_str()
-                .is_some_and(|status| UNSUBSCRIBED_STATUSES.contains(&status))
-            {
-                UnloadResult::Unloaded
-            } else {
-                UnloadResult::Retry
+            match serde_json::from_value::<IdleUnsubscribeReply>(reply) {
+                Ok(IdleUnsubscribeReply::Reply { status }) => match status {
+                    IdleUnsubscribeStatus::Unsubscribed
+                    | IdleUnsubscribeStatus::NotSubscribed
+                    | IdleUnsubscribeStatus::NotLoaded => UnloadResult::Unloaded,
+                },
+                Err(_) => UnloadResult::Retry,
             },
         )
     }
@@ -899,12 +1052,14 @@ impl Worker {
     /// error reply, or an unknown outcome.
     async fn idle_request(
         &mut self,
-        method: Method,
-        params: Value,
+        request: IdleRequest<'_>,
     ) -> Result<Option<Value>, WorkerError> {
+        let method = request.method();
+        let thread_id = request.thread_id().map(str::to_owned);
         let unsubscribe_thread = (method == Method::ThreadUnsubscribe)
-            .then(|| params["threadId"].as_str().map(str::to_owned))
+            .then(|| thread_id.clone())
             .flatten();
+        let params = json!(request);
         let operation = format!(
             "idle-unload:{}:{}",
             self.connection_id,
@@ -920,7 +1075,7 @@ impl Worker {
                     id: RequestId::String(operation.clone()),
                     operation_id: OperationId(operation.clone()),
                     method,
-                    thread_id: params["threadId"].as_str().map(str::to_owned),
+                    thread_id,
                     params,
                     lightweight: true,
                     timeout_ms: IDLE_REQUEST_TIMEOUT

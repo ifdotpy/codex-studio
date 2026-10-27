@@ -1,9 +1,11 @@
 //! Typed HTTP boundary for persisted agent operations.
+
 use super::extractors::ApiJson;
 use super::manifest::{OperationStatus, RouteGroup, post};
 use crate::{error::ApiError, generated, router::HttpState};
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde_json::Value;
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_services::agents_create::{
     self, Context, CreateError, Creation, OperationError,
 };
@@ -45,7 +47,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 .resolve_identity(account_key, account_key)
                 .map_err(|_| E::Unavailable("account-driver/managed-child-account"))?;
             let account = host_account_identity(&identity);
-            let (Some(home), provider) = (account.home.as_deref(), account.provider.key()) else {
+            let (Some(home), provider) = (account.home.as_deref(), account.provider) else {
                 return Err(E::Unavailable("provider-session/model-list"));
             };
             // Worker selection reads every candidate's catalog synchronously, so
@@ -64,7 +66,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 })
                 .filter_map(|row| {
                     let worker = host_account_identity(&row.identity);
-                    Some((row.account_key, worker.home?, worker.provider.key()))
+                    Some((row.account_key, worker.home?, worker.provider))
                 })
                 .collect::<Vec<_>>();
             let (parent, _) = futures_util::future::join(
@@ -74,7 +76,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 futures_util::future::join_all(workers.iter().map(|(key, home, provider)| {
                     self.catalog
                         .service
-                        .wait_for_admission_catalog(key, home, provider)
+                        .wait_for_admission_catalog(key, home, *provider)
                 })),
             )
             .await;
@@ -381,7 +383,20 @@ fn account_read_error(
         E::UnknownAccount => M::Unknown,
         E::DeletedAccount => M::Deleted,
         E::SignInRequired => M::SignInRequired,
-        _ => M::Unavailable,
+        E::ReadRegistry
+        | E::InvalidRegistry
+        | E::WriteRegistry
+        | E::DurabilityUnconfirmed
+        | E::Poisoned
+        | E::InvalidAccountOrder(_)
+        | E::NameRequestConflict
+        | E::DeleteRequestConflict
+        | E::NoDisconnectReplacement
+        | E::NoDeleteReplacement
+        | E::InvalidCodexProfile
+        | E::LoginResponseUnknown
+        | E::UnknownLogin
+        | E::LoginCancellationUnavailable => M::Unavailable,
     }
 }
 
@@ -470,65 +485,79 @@ impl CreationCatalog for RouteCreationCatalog {
         daybreak_enabled: bool,
     ) -> Result<ExecutionSettings, CreateError> {
         let row = self.model_row(account_key, account, model)?;
-        let supported = row
-            .get("supportedReasoningEfforts")
-            .and_then(Value::as_array)
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(|row| row.get("reasoningEffort").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if effort.is_some_and(|effort| !supported.contains(&effort)) {
-            return Err(CreateError::InvalidCreation("effort"));
-        }
-        if fast_mode
-            && !row
-                .get("serviceTiers")
-                .and_then(Value::as_array)
-                .is_some_and(|tiers| {
-                    tiers
-                        .iter()
-                        .any(|tier| tier.get("id").and_then(Value::as_str) == Some("priority"))
-                })
-        {
-            return Err(CreateError::InvalidCreation("fast_mode"));
-        }
-        let native_effort = effort.map(str::to_owned).or_else(|| {
-            row.get("defaultReasoningEffort")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        });
-        let programs = row
-            .get("availableAccessPrograms")
-            .and_then(|programs| programs.get("cyber"))
-            .and_then(Value::as_array);
-        let program = if daybreak_enabled {
-            programs
-                .and_then(|programs| {
-                    ["daybreakBlue", "daybreakRed"]
-                        .into_iter()
-                        .find(|name| programs.iter().any(|entry| entry.as_str() == Some(name)))
-                })
-                .ok_or(CreateError::InvalidCreation("daybreak_enabled"))?
-        } else if programs.is_some_and(|programs| {
-            !programs
-                .iter()
-                .any(|entry| entry.as_str() == Some("standard"))
-        }) {
-            return Err(CreateError::InvalidCreation("daybreak_enabled"));
-        } else {
-            "standard"
-        };
-        Ok(ExecutionSettings {
-            model: model.to_owned(),
-            effort: effort.map(str::to_owned),
-            native_effort: native_effort.unwrap_or_else(|| "medium".to_owned()),
-            fast_mode,
-            daybreak_enabled,
-            cyber_access_program: program.to_owned(),
-        })
+        resolve_catalog_row(&row, model, effort, fast_mode, daybreak_enabled)
     }
+}
+
+fn resolve_catalog_row(
+    row: &studio_runtime_schema::model_catalog::ProviderModel,
+    model: &str,
+    effort: Option<&str>,
+    fast_mode: bool,
+    daybreak_enabled: bool,
+) -> Result<ExecutionSettings, CreateError> {
+    let supported = row
+        .supported_reasoning_efforts
+        .iter()
+        .flatten()
+        .map(|effort| effort.reasoning_effort.as_str())
+        .collect::<Vec<_>>();
+    if effort.is_some_and(|effort| !supported.contains(&effort)) {
+        return Err(CreateError::InvalidCreation("effort"));
+    }
+    if fast_mode
+        && !row
+            .service_tiers
+            .iter()
+            .flatten()
+            .any(|tier| tier.id == "priority")
+    {
+        return Err(CreateError::InvalidCreation("fast_mode"));
+    }
+    let native_effort = effort
+        .map(str::to_owned)
+        .or_else(|| row.default_reasoning_effort.clone().flatten());
+    let programs = row.cyber_programs();
+    let program = if daybreak_enabled {
+        programs
+            .and_then(|programs| {
+                ["daybreakBlue", "daybreakRed"]
+                    .into_iter()
+                    .find(|name| programs.iter().any(|entry| entry == name))
+            })
+            .ok_or(CreateError::InvalidCreation("daybreak_enabled"))?
+    } else if programs.is_some_and(|programs| !programs.iter().any(|entry| entry == "standard")) {
+        return Err(CreateError::InvalidCreation("daybreak_enabled"));
+    } else {
+        "standard"
+    };
+    Ok(ExecutionSettings {
+        model: model.to_owned(),
+        effort: effort.map(str::to_owned),
+        native_effort: native_effort.unwrap_or_else(|| "medium".to_owned()),
+        fast_mode,
+        daybreak_enabled,
+        cyber_access_program: program.to_owned(),
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn catalog_rejects_unsupported_effort_and_uses_native_default_when_omitted() {
+    let row: studio_runtime_schema::model_catalog::ProviderModel =
+        serde_json::from_value(serde_json::json!({
+            "model":"opus",
+            "supportedReasoningEfforts":[{"reasoningEffort":"high"}],
+            "defaultReasoningEffort":"high"
+        }))
+        .expect("typed provider model");
+    assert!(matches!(
+        resolve_catalog_row(&row, "opus", Some("xhigh"), false, false),
+        Err(CreateError::InvalidCreation("effort"))
+    ));
+    let settings = resolve_catalog_row(&row, "opus", None, false, false).expect("native default");
+    assert_eq!(settings.effort, None);
+    assert_eq!(settings.native_effort, "high");
 }
 
 impl RouteCreationCatalog {
@@ -537,14 +566,14 @@ impl RouteCreationCatalog {
         account_key: &str,
         account: &AccountIdentity,
         model: &str,
-    ) -> Result<Value, CreateError> {
+    ) -> Result<studio_runtime_schema::model_catalog::ProviderModel, CreateError> {
         let home = account
             .home
             .as_deref()
             .ok_or(CreateError::CapabilityUnavailable(
                 "provider-session/model-list",
             ))?;
-        let provider = account.provider.key();
+        let provider = account.provider;
         let (value, fresh_key, fresh_home, fresh_provider, expires_at) =
             match self.service.read_for_admission(account_key, home, provider) {
                 studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
@@ -555,7 +584,8 @@ impl RouteCreationCatalog {
                     expires_at,
                     ..
                 } => (value, account_key, home, provider, expires_at),
-                _ => {
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
+                | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => {
                     return Err(CreateError::CapabilityUnavailable(
                         "provider-session/model-list",
                     ));
@@ -571,14 +601,12 @@ impl RouteCreationCatalog {
             ));
         }
         value
-            .get("data")
-            .and_then(Value::as_array)
-            .and_then(|rows| {
-                rows.iter().find(|row| {
-                    !row.get("hidden").and_then(Value::as_bool).unwrap_or(false)
-                        && (row.get("model").and_then(Value::as_str) == Some(model)
-                            || row.get("resolvedModel").and_then(Value::as_str) == Some(model))
-                })
+            .data
+            .iter()
+            .find(|row| {
+                row.hidden != Some(true)
+                    && (row.model == model
+                        || row.resolved_model.as_ref().and_then(Option::as_deref) == Some(model))
             })
             .cloned()
             .ok_or(CreateError::ModelUnavailable)
@@ -919,22 +947,23 @@ async fn create_agent_with_import(
         )?));
     }
     request.catalog = admission.needs_catalog;
-    // Python merges profile model/effort before computing `needs_catalog`; a
-    // role/instructions-only profile does not itself require provider access
-    // (`codex_runtime.py:4859-4888`).
-    wait_for_agent_catalog(
-        &state,
-        AgentCatalogWaitRequest {
-            parent_id: request.parent.as_deref(),
-            preferred_parent_account: None,
-            requested_account: admission.account.as_deref().or(request.account.as_deref()),
-            requested_model: admission.model.as_deref(),
-            needs_catalog: admission.needs_catalog,
-            ignore_stored_worker_account: false,
-            require_model_match: admission.model.is_some(),
-        },
-    )
-    .await?;
+    if let Some(parent_id) = request.parent.as_deref() {
+        wait_for_child_catalog(&state, parent_id).await?;
+    } else {
+        wait_for_agent_catalog(
+            &state,
+            AgentCatalogWaitRequest {
+                parent_id: None,
+                preferred_parent_account: None,
+                requested_account: admission.account.as_deref().or(request.account.as_deref()),
+                requested_model: admission.model.as_deref(),
+                needs_catalog: admission.needs_catalog,
+                ignore_stored_worker_account: false,
+                require_model_match: admission.model.is_some(),
+            },
+        )
+        .await?;
+    }
     dispatch::<generated::AgentResponse>(state, move |context| {
         Box::pin(agents_create::agent(context, request))
     })
@@ -946,8 +975,8 @@ fn catalog_admission_candidates(
     ordered_keys: &[String],
     parent_account: Option<&str>,
     account_is_pinned: bool,
-    expected_provider: Option<&str>,
-) -> Vec<(String, String, String)> {
+    expected_provider: Option<ProviderKind>,
+) -> Vec<(String, String, ProviderKind)> {
     ordered_keys
         .iter()
         .filter_map(|key| {
@@ -964,13 +993,11 @@ fn catalog_admission_candidates(
             {
                 return None;
             }
-            let provider = studio_runtime_providers::ProviderKind::of_record(row)
-                .ok()?
-                .key();
+            let provider = ProviderKind::of_record(row).ok()?;
             if !account_is_pinned && expected_provider.is_some_and(|wanted| wanted != provider) {
                 return None;
             }
-            Some((key.clone(), home, provider.to_owned()))
+            Some((key.clone(), home, provider))
         })
         .collect()
 }
@@ -1039,6 +1066,41 @@ fn stored_parent_defaults(
     Ok(Some(defaults))
 }
 
+async fn wait_for_child_catalog(state: &HttpState, parent_id: &str) -> Result<(), ApiError> {
+    let (Some(driver), Some(session)) = (&state.account_driver, &state.account_session) else {
+        return Ok(());
+    };
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let parent_id = parent_id.to_owned();
+    let defaults = store
+        .read_async("runtime-http/routes/agents_create", move |read| {
+            stored_parent_defaults(read, &parent_id, false)
+        })
+        .await
+        .map_err(|_| ApiError::internal())?
+        .ok_or_else(ApiError::internal)?;
+    let parent_account = defaults.parent_account.as_deref().unwrap_or("default");
+    state
+        .model_catalog
+        .set_account_session(Some(std::sync::Arc::clone(session)));
+    let environment =
+        managed_creation_environment(std::sync::Arc::clone(driver), state.model_catalog.clone());
+    environment
+        .wait_for_catalog(parent_account)
+        .await
+        .map_err(|error| {
+            use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError;
+            operation_error(match error {
+                ManagedCreationEnvironmentError::Invalid(message) => {
+                    OperationError::Invalid(message)
+                }
+                ManagedCreationEnvironmentError::Unavailable(name) => {
+                    OperationError::Unavailable(name)
+                }
+            })
+        })
+}
+
 async fn wait_for_agent_catalog(
     state: &HttpState,
     request: AgentCatalogWaitRequest<'_>,
@@ -1098,11 +1160,10 @@ async fn wait_for_agent_catalog(
                     .or(worker_model)
                     .or(root_model)
                     .unwrap_or_else(|| "gpt-6-astra".to_owned());
-                let provider =
-                    model_provider(&model).map(studio_runtime_providers::ProviderKind::key);
+                let provider = model_provider(&model);
                 let pinned = explicit.or(selected_account);
                 let mut keys = Vec::new();
-                let mut add = |key: Option<&str>, expected_provider: Option<&str>| {
+                let mut add = |key: Option<&str>, expected_provider: Option<ProviderKind>| {
                     if let Some(key) = key.filter(|key| !excluded.contains(*key))
                         && !keys.iter().any(|known| known == key)
                         && expected_provider.is_none_or(|expected| {
@@ -1110,7 +1171,7 @@ async fn wait_for_agent_catalog(
                                 .accounts
                                 .iter()
                                 .find(|row| row.get("id").and_then(Value::as_str) == Some(key))
-                                .and_then(studio_runtime_providers::ProviderKind::key_of)
+                                .and_then(|row| ProviderKind::of_record(row).ok())
                                 == Some(expected)
                         })
                     {
@@ -1150,25 +1211,19 @@ async fn wait_for_agent_catalog(
         // reports the established 400 response.
         return Ok(());
     }
-    let has_requested_model = |value: &Value| {
-        value
-            .get("data")
-            .and_then(Value::as_array)
-            .is_some_and(|rows| {
-                rows.iter().any(|row| {
-                    !row.get("hidden").and_then(Value::as_bool).unwrap_or(false)
-                        && (row.get("model").and_then(Value::as_str)
-                            == Some(expected_model.as_str())
-                            || row.get("resolvedModel").and_then(Value::as_str)
-                                == Some(expected_model.as_str()))
-                })
-            })
+    let has_requested_model = |value: &studio_runtime_schema::model_catalog::ModelCatalog| {
+        value.data.iter().any(|row| {
+            row.hidden != Some(true)
+                && (row.model == expected_model
+                    || row.resolved_model.as_ref().and_then(Option::as_deref)
+                        == Some(expected_model.as_str()))
+        })
     };
     let mut saw_fresh_catalog = false;
     for (account, home, provider) in &accounts {
         if let studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
             value, ..
-        } = catalog.read_for_admission(account, home, provider)
+        } = catalog.read_for_admission(account, home, *provider)
         {
             saw_fresh_catalog = true;
             if !require_model_match || explicit_account || has_requested_model(&value) {
@@ -1186,7 +1241,7 @@ async fn wait_for_agent_catalog(
         }
         let catalog_read = tokio::time::timeout_at(
             deadline,
-            catalog.wait_for_admission_catalog(&account, &home, &provider),
+            catalog.wait_for_admission_catalog(&account, &home, provider),
         )
         .await
         .ok();
@@ -1500,10 +1555,7 @@ async fn finish_title_request(
                         .and_then(Value::as_str)
                         .unwrap_or("default")
                         .to_owned(),
-                    studio_runtime_providers::ProviderKind::of_record(&record)
-                        .map_err(|_| ApiError::internal())?
-                        .key()
-                        .to_owned(),
+                    ProviderKind::of_record(&record).map_err(|_| ApiError::internal())?,
                 ))
             },
         )
@@ -1524,7 +1576,7 @@ async fn finish_title_request(
         return;
     }
     let models = match catalog
-        .wait_for_admission_catalog(&account, &home, &provider_name)
+        .wait_for_admission_catalog(&account, &home, provider_name)
         .await
     {
         studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { value, .. } => value,
@@ -1602,10 +1654,11 @@ mod title_http_tests {
         time::Duration,
     };
     use studio_runtime_providers::{Method, RequestId, RequestTicket};
+    use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use studio_runtime_services::{
         account_session_runtime::{
             AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
-            ProviderResponse, RequestCertainty, SessionReceipt,
+            ProviderResponse, SessionReceipt,
         },
         title_generation::{TitleReceipt, TitleRequest, TitleRequestPort, WriteOutcome},
     };
@@ -1636,18 +1689,18 @@ mod title_http_tests {
                 Ok(SessionReceipt {
                     scope,
                     operation: request.operation,
-                    ticket: Some(RequestTicket {
-                        id: RequestId::String("fake-model-list".into()),
-                        generation: 4,
-                        method: Method::ModelList,
-                    }),
-                    certainty: RequestCertainty::Written,
-                    result: Some(ProviderResponse::Reply(json!({
-                        "data":[{"model":"gpt-6-mini"}],
-                        "nextCursor":null
-                    }))),
-                    not_sent_reason: None,
                     replayed: false,
+                    outcome: ReceiptOutcome::Written {
+                        ticket: RequestTicket {
+                            id: RequestId::String("fake-model-list".into()),
+                            generation: 4,
+                            method: Method::ModelList,
+                        },
+                        response: ProviderResponse::Reply(json!({
+                            "data":[{"model":"gpt-6-mini"}],
+                            "nextCursor":null
+                        })),
+                    },
                 })
             })
         }
@@ -1820,6 +1873,7 @@ mod creation_catalog_flow_tests {
         existing_conversation_catalog_parent,
     };
     use serde_json::json;
+    use studio_runtime_providers::ProviderKind;
 
     #[test]
     fn conversation_catalog_wait_does_not_apply_new_worker_account_exclusions() {
@@ -1846,7 +1900,7 @@ mod creation_catalog_flow_tests {
             ],
             Some("parent-claude"),
             false,
-            Some("codex"),
+            Some(ProviderKind::Codex),
         );
         assert_eq!(
             candidates,
@@ -1854,12 +1908,12 @@ mod creation_catalog_flow_tests {
                 (
                     "default-codex".to_owned(),
                     "/codex".to_owned(),
-                    "codex".to_owned()
+                    ProviderKind::Codex
                 ),
                 (
                     "later-codex".to_owned(),
                     "/codex-2".to_owned(),
-                    "codex".to_owned()
+                    ProviderKind::Codex
                 ),
             ]
         );
@@ -1875,7 +1929,7 @@ mod creation_catalog_flow_tests {
                 &["only-claude".to_owned()],
                 None,
                 false,
-                Some("codex"),
+                Some(ProviderKind::Codex),
             )
             .is_empty()
         );
@@ -2058,7 +2112,16 @@ async fn rename(
                 error @ studio_runtime_services::title_generation::TitleError::Conflict => {
                     ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
                 }
-                _ => ApiError::internal(),
+                studio_runtime_services::title_generation::TitleError::NoModel
+                | studio_runtime_services::title_generation::TitleError::ChatModelUnavailable
+                | studio_runtime_services::title_generation::TitleError::UnknownHeld
+                | studio_runtime_services::title_generation::TitleError::InvalidStoredObject {
+                    ..
+                }
+                | studio_runtime_services::title_generation::TitleError::InvalidTitle
+                | studio_runtime_services::title_generation::TitleError::Store(_) => {
+                    ApiError::internal()
+                }
             })?;
         if should_finish {
             let store = store.clone();
@@ -2159,7 +2222,7 @@ fn operation_error(error: OperationError) -> ApiError {
         OperationError::Internal
         | OperationError::Store(_)
         | OperationError::Create(MutationError::Store(_)) => StatusCode::INTERNAL_SERVER_ERROR,
-        _ => StatusCode::BAD_REQUEST,
+        OperationError::Invalid(_) | OperationError::Create(_) => StatusCode::BAD_REQUEST,
     };
     if matches!(
         error,
@@ -2181,7 +2244,12 @@ fn operation_error(error: OperationError) -> ApiError {
         OperationError::Create(MutationError::CapabilityUnavailable(
             "worker-driver/settings-catalog",
         )) => "Worker model catalog is unavailable",
-        _ => return ApiError::new(status, error.to_string()),
+        OperationError::Invalid(_)
+        | OperationError::Forbidden(_)
+        | OperationError::Unavailable(_)
+        | OperationError::Create(_)
+        | OperationError::Store(_)
+        | OperationError::Internal => return ApiError::new(status, error.to_string()),
     };
     ApiError::new(status, message)
 }

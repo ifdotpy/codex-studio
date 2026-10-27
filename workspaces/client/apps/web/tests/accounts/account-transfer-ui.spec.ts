@@ -90,11 +90,11 @@ test("Account Transfer Ui", async ({
 
   const logins: AccountsState["logins"] = [];
   type TransferAgent = Omit<
-    import("../../src/types.ts").Agent,
+    import("../../src/generated/api.ts").AgentEntityDto,
     "accountTransfer"
   > & {
     accountTransfer?:
-      | (import("../../src/types.ts").Agent["accountTransfer"] & {
+      | (import("../../src/generated/api.ts").AgentEntityDto["accountTransfer"] & {
           requestIds?: (string | undefined)[];
         })
       | null

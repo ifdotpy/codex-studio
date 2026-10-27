@@ -258,6 +258,8 @@ impl NotificationDispatchRepository {
         Ok(())
     }
 
+    // rusqlite errors are non-exhaustive; preserve every unrelated database failure.
+    #[allow(clippy::wildcard_enum_match_arm)]
     pub fn user_event(
         transaction: &Transaction<'_>,
         agent: &str,

@@ -44,7 +44,11 @@ fn hold_reason(
         AccountStatus::Changed => Some(CHANGED_ERROR),
         AccountStatus::Ready if same_selected_account(selected, current) => None,
         AccountStatus::Ready => Some(adapter(kind).account_changed_message()),
-        _ => Some(adapter(kind).sign_in_message()),
+        AccountStatus::SignedOut
+        | AccountStatus::Pending
+        | AccountStatus::Error
+        | AccountStatus::Duplicate
+        | AccountStatus::Unavailable => Some(adapter(kind).sign_in_message()),
     }
 }
 
@@ -69,7 +73,9 @@ fn same_selected_account(selected: &Value, current: &Value) -> bool {
     PIN_FIELDS.iter().all(|key| {
         let old = selected.get(*key).unwrap_or(&Value::Null);
         let new = current.get(*key).unwrap_or(&Value::Null);
-        if *key == "_credentialIdentity" && selected.get("provider") == Some(&json!("claude")) {
+        if *key == "_credentialIdentity"
+            && selected.get("provider") == Some(&json!(ProviderKind::Claude.key()))
+        {
             old == new
                 || old.as_str().zip(new.as_str()).is_some_and(|(old, new)| {
                     crate::account_driver::claude_identity::accepts(old, new)
@@ -129,7 +135,22 @@ pub fn launch_hold_reason(error: &crate::account_worker::WorkerError) -> Option<
         {
             Some(adapter(ProviderKind::Claude).sign_in_message())
         }
-        _ => None,
+        crate::account_worker::WorkerError::Recovery(_)
+        | crate::account_worker::WorkerError::Store(_)
+        | crate::account_worker::WorkerError::Scheduler(_)
+        | crate::account_worker::WorkerError::Session(_)
+        | crate::account_worker::WorkerError::Notification(_)
+        | crate::account_worker::WorkerError::PreparationRefused(_)
+        | crate::account_worker::WorkerError::StaleVmActor
+        | crate::account_worker::WorkerError::PreparationPending(_)
+        | crate::account_worker::WorkerError::PreparationAwaitsAgent(_)
+        | crate::account_worker::WorkerError::CleanupUnconfirmed(_)
+        | crate::account_worker::WorkerError::AlreadyRunning
+        | crate::account_worker::WorkerError::Closed
+        | crate::account_worker::WorkerError::ShutdownTimeout
+        | crate::account_worker::WorkerError::TaskFailed
+        | crate::account_worker::WorkerError::Capacity
+        | crate::account_worker::WorkerError::CallbackUnknown => None,
     }
 }
 

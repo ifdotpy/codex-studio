@@ -529,7 +529,7 @@ impl ProviderAdapter for ClaudeAdapter {
     }
 
     fn sign_in_message(&self) -> &'static str {
-        "Sign in with claude auth login first"
+        studio_runtime_store::account_state::CLAUDE_SIGN_IN_MESSAGE
     }
 
     fn account_changed_message(&self) -> &'static str {

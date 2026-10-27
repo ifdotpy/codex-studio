@@ -27,6 +27,16 @@ const lost: StudioErrorItem = {
   count: 1,
   firstAt: 1_792_700_000,
   at: 1_792_700_000,
+  diagnostics: {
+    context: {
+      source: "monitor",
+      requestId: "original-command",
+      turnId: null,
+      epoch: 0,
+    },
+    certainty: "unknown",
+    causes: [],
+  },
 };
 
 const disconnected: StudioErrorItem = {
@@ -82,6 +92,51 @@ test("a repeated failure shows its count and time range once", () => {
   expect(markup).toContain(new Date(1_792_600_000 * 1000).toLocaleString());
   expect(markup).toContain(new Date(1_792_700_000 * 1000).toLocaleString());
   expect(render([lost])).not.toContain("times");
+});
+
+test("the full diagnostic record is available in expandable details", () => {
+  const markup = render([lost]);
+  expect(markup).toContain("<details");
+  expect(markup).toContain("<summary>Details</summary>");
+  expect(markup).toContain(lost.id);
+  expect(markup).toContain("<pre");
+});
+
+test("server incidents expose details without inventing an agent action", () => {
+  const incident: StudioErrorItem = {
+    id: "http:failed-read",
+    kind: "http_failure",
+    action: "details",
+    reason: "The server could not complete this request.",
+    detail: "store_data",
+    subject: "GET /api/monitor/log",
+    at: 1,
+    diagnostics: {
+      context: {
+        source: "http",
+        route: "GET /api/monitor/log",
+        requestId: "exact-read",
+        status: 503,
+        class: "store_data",
+      },
+      certainty: "read_only",
+      causes: [
+        {
+          kind: "stored_record",
+          object: "monitors",
+          id: "monitor",
+          pointer: "/log",
+        },
+      ],
+    },
+  };
+  const markup = render([incident]);
+  expect(markup).toContain("Select error http:failed-read for Server");
+  expect(markup).toContain("exact-read");
+  expect(markup).toContain("/log");
+  expect(markup).not.toContain("agentId");
+  expect(markup).not.toContain(">Open<");
+  expect(markup).not.toContain(">Resume<");
 });
 
 test("an empty list says that nothing needs the owner", () => {

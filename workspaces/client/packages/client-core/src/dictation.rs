@@ -277,7 +277,7 @@ fn export(db: &Connection, id: &str, directory: &Path) -> Result<String, String>
         .and_then(|_| chunks.iter().try_for_each(|c| file.write_all(c)))
         .and_then(|_| file.sync_all())
         .map_err(|e| {
-            let _ = std::fs::remove_file(&path);
+            drop(std::fs::remove_file(&path));
             e.to_string()
         })?;
     Ok(path.to_string_lossy().into_owned())

@@ -161,7 +161,7 @@ for (const [name, sql] of [
     `INSERT INTO analytics_usage VALUES('{"accountKey":"${account}"}');`,
   ],
   ["active provider", `INSERT INTO handles VALUES('account:${account}',NULL);`],
-])
+] as const)
   test(`a fresh profile with a ${name} footprint is refused`, (t) => {
     const f = fixture(t);
     f.reserve();

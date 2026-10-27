@@ -18,7 +18,7 @@ use studio_runtime_services::{
     account_policy::AccountPolicyState,
     account_session_runtime::{
         AccountSessionError, AccountSessionFuture, AccountSessionPort, ConnectionScope,
-        ProviderRequest, ProviderResponse, RequestCertainty, SessionReceipt,
+        ProviderRequest, ProviderResponse, SessionReceipt,
     },
     model_catalog::ModelCatalogService,
 };
@@ -94,17 +94,18 @@ impl AccountSessionPort for CatalogSession {
             Ok(SessionReceipt {
                 scope,
                 operation: request.operation,
-                ticket: Some(RequestTicket {
-                    generation: 7,
-                    id: RequestId::String(format!("metadata-{read}")),
-                    method: Method::ModelList,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(json!({"data":[{
+                outcome:
+                    studio_runtime_services::account_session_runtime::SessionOutcome::Written {
+                        ticket: RequestTicket {
+                            generation: 7,
+                            id: RequestId::String(format!("metadata-{read}")),
+                            method: Method::ModelList,
+                        },
+                        response: ProviderResponse::Reply(json!({"data":[{
                     "model":model,"supportedReasoningEfforts":[{"reasoningEffort":"medium"}],
                     "defaultReasoningEffort":"medium","serviceTiers":[]
-                }],"nextCursor":null}))),
-                not_sent_reason: None,
+                }],"nextCursor":null})),
+                    },
                 replayed: false,
             })
         })
@@ -273,7 +274,12 @@ async fn automatic_catalog_drops_a_retired_result_and_keeps_another_ready_accoun
     assert!(matches!(
         fixture
             .catalog
-            .read_until_ready(TARGET, &fixture.target_home, "codex", false)
+            .read_until_ready(
+                TARGET,
+                &fixture.target_home,
+                studio_runtime_providers::ProviderKind::Codex,
+                false
+            )
             .await,
         CatalogRead::Ready(_)
     ));
@@ -288,9 +294,11 @@ async fn automatic_catalog_drops_a_retired_result_and_keeps_another_ready_accoun
         .expect("later account gate");
     assert!(!pending.is_finished(), "the later account is still gated");
     assert!(matches!(
-        fixture
-            .catalog
-            .read_for_admission(TARGET, &fixture.target_home, "codex"),
+        fixture.catalog.read_for_admission(
+            TARGET,
+            &fixture.target_home,
+            studio_runtime_providers::ProviderKind::Codex
+        ),
         AdmissionCatalogRead::Fresh { .. }
     ));
 
@@ -311,14 +319,20 @@ async fn automatic_catalog_drops_a_retired_result_and_keeps_another_ready_accoun
     assert!(matches!(
         fixture
             .catalog
-            .read_until_fresh(TARGET, &fixture.target_home, "codex")
+            .read_until_fresh(
+                TARGET,
+                &fixture.target_home,
+                studio_runtime_providers::ProviderKind::Codex
+            )
             .await,
         CatalogRead::Unavailable
     ));
     assert!(matches!(
-        fixture
-            .catalog
-            .read_for_admission(TARGET, &fixture.target_home, "codex"),
+        fixture.catalog.read_for_admission(
+            TARGET,
+            &fixture.target_home,
+            studio_runtime_providers::ProviderKind::Codex
+        ),
         AdmissionCatalogRead::Unavailable
     ));
     assert_eq!(fixture.session.a_reads.load(Ordering::SeqCst), 2);

@@ -276,7 +276,7 @@ pub(crate) struct MonitorInputRequest<'a> {
     pub(crate) caller_epoch: i64,
     pub(crate) monitor_id: &'a str,
     pub(crate) ticket: &'a str,
-    pub(crate) input: &'a Value,
+    pub(crate) input: &'a crate::monitor_policy::Input,
     pub(crate) now: f64,
 }
 
@@ -614,21 +614,24 @@ pub(super) async fn dispatch(
             let Some(monitor_id) = args.get("monitor_id").and_then(Value::as_str) else {
                 return Ok(Some(not_sent(Error::Invalid("Missing monitor_id"))));
             };
-            let input = args.clone();
             if let Err(error) = authorize_monitor_input(store_ref, actor, monitor_id).await {
                 return refused_before_write(error);
             }
-            match port
-                .input(MonitorInputRequest {
-                    caller_id: actor_id,
-                    caller_epoch: actor_epoch,
-                    monitor_id,
-                    ticket: request_id,
-                    input: &input,
-                    now,
-                })
-                .await
-            {
+            let result = match serde_json::from_value(args.clone()) {
+                Ok(input) => {
+                    port.input(MonitorInputRequest {
+                        caller_id: actor_id,
+                        caller_epoch: actor_epoch,
+                        monitor_id,
+                        ticket: request_id,
+                        input: &input,
+                        now,
+                    })
+                    .await
+                }
+                Err(_) => Err(Error::Invalid("Invalid monitor input")),
+            };
+            match result {
                 Ok(value) => written(value, Vec::new()),
                 Err(error) => match input_attempt(store_ref, monitor_id, request_id).await {
                     Ok(Some(record)) => managed_input_receipt(&record, request_id)?,
@@ -922,7 +925,7 @@ fn callback_refusal(error: crate::provider_callbacks::CallbackError) -> Error {
         C::Dependency(name) => Error::Unavailable(name),
         C::Store(error) => Error::Store(error),
         C::Stored(location) => Error::StoredAt(location),
-        _ => Error::Stale,
+        C::InvalidResultSchema(_) | C::Stale | C::Conflict | C::Unknown => Error::Stale,
     }
 }
 
@@ -1088,7 +1091,11 @@ pub(crate) fn managed_input_receipt(
 fn refused_before_write(error: Error) -> Result<Option<DispatchedOperation>, Error> {
     match error {
         Error::Store(_) | Error::Sqlite(_) | Error::Work(_) => Err(error),
-        error => Ok(Some(not_sent(error))),
+        error @ Error::Invalid(_)
+        | error @ Error::Stale
+        | error @ Error::InvalidStored { .. }
+        | error @ Error::StoredAt(_)
+        | error @ Error::Unavailable(_) => Ok(Some(not_sent(error))),
     }
 }
 
@@ -1132,7 +1139,14 @@ fn not_sent(error: Error) -> DispatchedOperation {
         Error::Unavailable(crate::model_catalog::MODEL_CATALOG_DEPENDENCY) => {
             json!(MODEL_CATALOG_RETRY)
         }
-        error => json!(error.to_string()),
+        error @ Error::Invalid(_)
+        | error @ Error::Stale
+        | error @ Error::InvalidStored { .. }
+        | error @ Error::StoredAt(_)
+        | error @ Error::Unavailable(_)
+        | error @ Error::Store(_)
+        | error @ Error::Sqlite(_)
+        | error @ Error::Work(_) => json!(error.to_string()),
     };
     DispatchedOperation {
         result: OperationResult {
@@ -1239,6 +1253,28 @@ mod tests {
             result.result.value,
             json!({"worktrees":[],"workspaces":[],"bases":[]})
         );
+    }
+
+    #[test]
+    fn monitor_input_port_preserves_runtime_input_type() {
+        let input = crate::monitor_policy::Input {
+            text: "input".into(),
+            rows: None,
+            cols: Some(37),
+            close_stdin: false,
+        };
+        let request = super::MonitorInputRequest {
+            caller_id: "owner",
+            caller_epoch: 2,
+            monitor_id: "monitor",
+            ticket: "ticket",
+            input: &input,
+            now: 1.0,
+        };
+        let retained: &crate::monitor_policy::Input = request.input;
+        assert_eq!(retained.cols, Some(37));
+        assert_eq!(retained.rows, None);
+        assert_eq!(retained.text, "input");
     }
 
     #[test]

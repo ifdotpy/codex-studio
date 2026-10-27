@@ -1,4 +1,6 @@
+import { required } from "../componentTestFixtures.ts";
 import { expect, test } from "vitest";
+import type { PostBody } from "../../api";
 import {
   DEFAULT_GATE_TIMEOUT_MS,
   MAX_GATE_TIMEOUT_MS,
@@ -32,6 +34,28 @@ const result = {
   files: [],
   created: 2,
 };
+
+test("generated task commands require their action payloads", () => {
+  const create = {
+    action: "create",
+    title: "Task",
+  } satisfies PostBody<"/api/work">;
+  const submit = {
+    action: "submit",
+    task_id: "task",
+    result: { answer: null },
+    checks: "checked",
+    revision: "abc",
+  } satisfies PostBody<"/api/work">;
+  // @ts-expect-error A task cancellation requires its reason.
+  const incomplete: PostBody<"/api/work"> = {
+    action: "cancel",
+    task_id: "task",
+  };
+  expect(create.action).toBe("create");
+  expect(submit.result).toEqual({ answer: null });
+  expect(incomplete.action).toBe("cancel");
+});
 
 test("acceptance requires an override for missing, failed, running, and unknown gate evidence", () => {
   expect(requiresGateOverride({ ...task, gate: null })).toBe(false);
@@ -86,7 +110,7 @@ test("only a successful gate for the current configuration permits normal accept
       gate: { command: "check", timeout_ms: 1 },
     }),
   ).toBe(true);
-  passed.results![0].gate!.monitorId = null;
+  required(passed.results![0]).gate!.monitorId = null;
   expect(requiresGateOverride(passed)).toBe(true);
 });
 

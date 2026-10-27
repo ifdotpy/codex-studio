@@ -109,7 +109,13 @@ export function query({ prompt, options }: FixtureQuery) {
             content: [{ type: "text", text: "started" }],
           },
         };
-        yield { type: "result", subtype: "success", usage, result: "started" };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          usage,
+          result: "started",
+        };
         yield { type: "rate_limit_event", rate_limit_info: info, uuid: "r-1" };
         yield refused("refused-2", true);
         yield failed;

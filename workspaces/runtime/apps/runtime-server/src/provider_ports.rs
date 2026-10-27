@@ -185,10 +185,10 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
             for (index, ((_, provider, _), result)) in active.iter().zip(account_reads).enumerate()
             {
                 let alias = format!("account{}", index + 1);
-                match result {
-                    Some(value) if *provider == ProviderKind::Claude => {
+                match (result, *provider) {
+                    (Some(value), ProviderKind::Claude) => {
                         let mut row = serde_json::Map::new();
-                        row.insert("provider".to_owned(), json!("claude"));
+                        row.insert("provider".to_owned(), json!(ProviderKind::Claude.key()));
                         if let Some(fields) = value.as_object() {
                             row.extend(fields.clone());
                         }
@@ -196,7 +196,7 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
                         row.insert("idleLimitSeconds".to_owned(), json!(idle_limit_seconds));
                         native_accounts.insert(alias.clone(), Value::Object(row));
                     }
-                    Some(value) => {
+                    (Some(value), ProviderKind::Codex) => {
                         let count = value
                             .get("data")
                             .and_then(Value::as_array)
@@ -204,10 +204,10 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
                         loaded_threads = loaded_threads.saturating_add(count as u64);
                         native_accounts.insert(
                             alias.clone(),
-                            json!({"provider":"codex", "loadedThreads":count}),
+                            json!({"provider":ProviderKind::Codex.key(), "loadedThreads":count}),
                         );
                     }
-                    None => {
+                    (None, ProviderKind::Codex | ProviderKind::Claude) => {
                         native_accounts.insert(
                             alias.clone(),
                             json!({"error":"ProviderDiagnosticsUnavailable"}),
@@ -306,11 +306,11 @@ async fn provider_read(
         .ok()?;
     if receipt.scope != *scope
         || receipt.operation != operation
-        || receipt.certainty != RequestCertainty::Written
+        || receipt.certainty() != RequestCertainty::Written
     {
         return None;
     }
-    match receipt.result? {
+    match receipt.into_response()? {
         ProviderResponse::Reply(value) => Some(value),
         ProviderResponse::Rejected(_) => None,
     }
@@ -465,7 +465,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 home.retain();
                 return fallback();
             };
-            match started.certainty {
+            match started.certainty() {
                 RequestCertainty::NotSent => {
                     home.release();
                     return title_receipt(&request, WriteOutcome::NotSent, None);
@@ -476,7 +476,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 }
                 RequestCertainty::Written => {}
             }
-            if matches!(started.result.as_ref(), Some(ProviderResponse::Rejected(_))) {
+            if matches!(started.response(), Some(ProviderResponse::Rejected(_))) {
                 home.release();
                 return title_receipt(&request, WriteOutcome::Written, None);
             }
@@ -520,7 +520,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 home.retain();
                 return fallback();
             };
-            match turn.certainty {
+            match turn.certainty() {
                 RequestCertainty::NotSent => {
                     // Keep the exact cwd for a retry that inspects ThreadStart.
                     return title_receipt(&request, WriteOutcome::NotSent, None);
@@ -531,7 +531,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 }
                 RequestCertainty::Written => {}
             }
-            if matches!(turn.result.as_ref(), Some(ProviderResponse::Rejected(_))) {
+            if matches!(turn.response(), Some(ProviderResponse::Rejected(_))) {
                 home.release();
                 return title_receipt(&request, WriteOutcome::Written, None);
             }
@@ -567,7 +567,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                     )
                     .await;
                 if let Some(listed) = listed
-                    && listed.certainty == RequestCertainty::Written
+                    && listed.certainty() == RequestCertainty::Written
                     && let Some(turns) = listed
                         .pipe_response_value()
                         .and_then(|value| value.get("data"))
@@ -660,7 +660,7 @@ trait SessionReceiptExt {
 
 impl SessionReceiptExt for SessionReceipt {
     fn pipe_response_value(&self) -> Option<&Value> {
-        match self.result.as_ref()? {
+        match self.response()? {
             ProviderResponse::Reply(value) => Some(value),
             ProviderResponse::Rejected(_) => None,
         }
@@ -755,6 +755,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime};
     use studio_runtime_providers::Method;
+    use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use studio_runtime_services::account_session_runtime::{
         AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest,
         ProviderResponse, RequestCertainty, SessionReceipt,
@@ -788,7 +789,7 @@ mod tests {
                 });
                 let operation = request.operation.clone();
                 let mut requests = self.requests.lock().expect("fixture request list");
-                requests.push(request);
+                requests.push(request.clone());
                 let certainty = if self.unknown_start && method == Method::ThreadStart {
                     RequestCertainty::Unknown
                 } else {
@@ -806,15 +807,182 @@ mod tests {
                             "type":"agentMessage", "phase":"final_answer", "text":"A Useful Title"
                         }]
                     }]}))),
-                    _ => None,
+                    Method::Initialize
+                    | Method::Initialized
+                    | Method::Ack
+                    | Method::AccountLoginCancel
+                    | Method::AccountLoginStart
+                    | Method::AccountRateLimitResetCreditConsume
+                    | Method::ThreadLoadedList
+                    | Method::ConfigRead
+                    | Method::SkillsExtraRootsSet
+                    | Method::ModelList
+                    | Method::AccountRead
+                    | Method::AccountRateLimitsRead
+                    | Method::ThreadRealtimeStart
+                    | Method::ThreadRealtimeStop
+                    | Method::ThreadRealtimeAppendSpeech
+                    | Method::ThreadRealtimeItemStarted
+                    | Method::ThreadRealtimeTranscriptDelta
+                    | Method::ThreadRealtimeTranscriptDone
+                    | Method::ThreadRealtimeSdp
+                    | Method::ThreadRealtimeError
+                    | Method::ThreadRealtimeClosed
+                    | Method::ThreadResume
+                    | Method::ThreadRead
+                    | Method::TurnSteer
+                    | Method::TurnInterrupt
+                    | Method::ThreadList
+                    | Method::ThreadArchive
+                    | Method::ThreadFork
+                    | Method::ThreadNameSet
+                    | Method::ThreadMetadataUpdate
+                    | Method::ThreadSettingsUpdate
+                    | Method::ThreadCompactStart
+                    | Method::ThreadRollback
+                    | Method::ThreadItemsList
+                    | Method::ThreadGoalSet
+                    | Method::ThreadGoalUpdated
+                    | Method::ThreadUnarchive
+                    | Method::ThreadUnsubscribe
+                    | Method::ProcessSpawn
+                    | Method::ProcessWriteStdin
+                    | Method::ProcessKill
+                    | Method::ProcessResizePty
+                    | Method::CommandExec
+                    | Method::CommandExecWrite
+                    | Method::CommandExecResize
+                    | Method::CommandExecTerminate
+                    | Method::ThreadBackgroundTerminalsList
+                    | Method::ThreadBackgroundTerminalsTerminate
+                    | Method::ThreadBackgroundTerminalsClean
+                    | Method::ThreadCommandExecutionBackground
+                    | Method::ThreadQueueList
+                    | Method::ClaudeState
+                    | Method::ClaudeRepairReport
+                    | Method::ClaudeFileBackups
+                    | Method::ClaudeSettings
+                    | Method::ClaudeActivity
+                    | Method::ClaudeStopTask
+                    | Method::ClaudeShellPolicy
+                    | Method::ClaudeDiagnostics
+                    | Method::ClaudeMoveVersions
+                    | Method::McpServerReconnect
+                    | Method::McpServerStatusList
+                    | Method::SkillsList
+                    | Method::OperationStatus
+                    | Method::ReviewStart
+                    | Method::BrowserAnswer
+                    | Method::BrowserCallback
+                    | Method::BrowserClose
+                    | Method::BrowserWait
+                    | Method::ClaudeCommands
+                    | Method::ClaudeMoveExport
+                    | Method::ClaudeMoveIdentity
+                    | Method::ClaudeMovePreflight
+                    | Method::ClaudeMoveProof
+                    | Method::Detach
+                    | Method::EventRead
+                    | Method::Exec
+                    | Method::Generate
+                    | Method::Health
+                    | Method::Info
+                    | Method::LayrHealth
+                    | Method::Next
+                    | Method::Open
+                    | Method::ProjectEnsure
+                    | Method::ProjectExec
+                    | Method::ProjectImport
+                    | Method::ProviderList
+                    | Method::Replay
+                    | Method::ResponseStatus
+                    | Method::RetireCommand
+                    | Method::SecretsList
+                    | Method::SecretsRemove
+                    | Method::SecretsSet
+                    | Method::ShareConfigure
+                    | Method::ShareName
+                    | Method::ShareStatus
+                    | Method::Sign
+                    | Method::Status
+                    | Method::SyncMacApply
+                    | Method::SyncMacHandoff
+                    | Method::SyncMacHashes
+                    | Method::SyncMacHead
+                    | Method::SyncMacRead
+                    | Method::SyncMacWorktree
+                    | Method::VaultConfigure
+                    | Method::VaultPush
+                    | Method::VaultStatus
+                    | Method::UploadBegin
+                    | Method::UploadChunk
+                    | Method::UploadCommit
+                    | Method::Verify
+                    | Method::Write
+                    | Method::CurrentTimeRead
+                    | Method::ItemToolCall
+                    | Method::ItemCommandExecutionRequestApproval
+                    | Method::ItemFileChangeRequestApproval
+                    | Method::ItemPermissionsRequestApproval
+                    | Method::McpServerElicitationRequest
+                    | Method::ItemToolRequestUserInput
+                    | Method::ItemStarted
+                    | Method::ItemCompleted
+                    | Method::ItemAgentMessageDelta
+                    | Method::ItemReasoningTextDelta
+                    | Method::ItemCommandExecutionOutputDelta
+                    | Method::CommandExecOutputDelta
+                    | Method::TurnStarted
+                    | Method::TurnCompleted
+                    | Method::TurnPlanUpdated
+                    | Method::TurnDiffUpdated
+                    | Method::ThreadClosed
+                    | Method::ThreadStatusChanged
+                    | Method::ThreadTokenUsageUpdated
+                    | Method::ThreadShellPolicyUpdated
+                    | Method::ThreadIdleCompactionUpdated
+                    | Method::AccountLoginCompleted
+                    | Method::AccountUpdated
+                    | Method::AccountRateLimitsUpdated
+                    | Method::ModelSafetyBufferingUpdated
+                    | Method::ProviderGenerationStarted
+                    | Method::ProtocolError => None,
                 };
                 Ok(SessionReceipt {
+                    outcome: {
+                        let ticket = studio_runtime_providers::RequestTicket {
+                            generation: request
+                                .expected_scope
+                                .as_ref()
+                                .map_or(1, |scope| scope.generation),
+                            id: studio_runtime_providers::RequestId::String(
+                                request.operation.clone(),
+                            ),
+                            method: request.method,
+                        };
+                        match (certainty, result) {
+                            (RequestCertainty::Written, Some(response)) => {
+                                ReceiptOutcome::Written { ticket, response }
+                            }
+                            (RequestCertainty::Written, None) | (RequestCertainty::Unknown, _) => {
+                                ReceiptOutcome::Unknown {
+                                    ticket: studio_runtime_providers::RequestTicket {
+                                        generation: request
+                                            .expected_scope
+                                            .as_ref()
+                                            .map_or(1, |scope| scope.generation),
+                                        id: studio_runtime_providers::RequestId::String(
+                                            request.operation.clone(),
+                                        ),
+                                        method: request.method,
+                                    },
+                                }
+                            }
+                            (RequestCertainty::NotSent, _) => ReceiptOutcome::NoLiveAccountWorker,
+                        }
+                    },
                     scope,
                     operation,
-                    ticket: None,
-                    certainty,
-                    result,
-                    not_sent_reason: None,
                     replayed: false,
                 })
             })

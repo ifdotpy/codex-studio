@@ -52,7 +52,7 @@ export function StudioSettingsLayout({
   value: StudioSettingsTab;
   onChange: (value: string | null) => void;
   children: ReactNode;
-  initialDetail?: boolean;
+  initialDetail?: boolean | undefined;
 }) {
   const [detail, setDetail] = useState(initialDetail || value !== "accounts");
   const heading = useRef<HTMLHeadingElement>(null);

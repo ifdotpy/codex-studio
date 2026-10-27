@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import { afterEach, expect, it, vi } from "vitest";
 vi.mock("./client", () => ({
   nativeRequest: vi.fn(),
@@ -86,7 +87,7 @@ it("keeps cancelled attempt IDs local and does not replay an uncertain transcrip
       .mocked(nativeRequest)
       .mock.calls.filter(([method]) => method === "speech.transcribe");
     expect(calls).toHaveLength(1);
-    expect(calls[0][1]).toEqual({
+    expect(required(calls[0])[1]).toEqual({
       id: "same-attempt",
       transfer: "upload",
       permit,

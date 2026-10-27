@@ -112,14 +112,14 @@ function messageGroups(
         : true);
   const groups: (Message | [Message, ...Message[]])[] = [];
   for (let index = 0; index < items.length; index++) {
-    const item = items[index];
+    const item = items[index]!;
     if (!requestCards?.has(item.id) && isEmptyAssistantMessage(item)) continue;
     if (!requestCards?.has(item.id) && !showItem(item) && isPastCommand(item))
       continue;
     if (joinsWork(item)) {
       const run: [Message, ...Message[]] = [item];
       while (index + 1 < items.length) {
-        const next = items[index + 1];
+        const next = items[index + 1]!;
         if (
           (!requestCards?.has(next.id) && isEmptyAssistantMessage(next)) ||
           (!requestCards?.has(next.id) &&
@@ -169,7 +169,7 @@ const WorkBlock = memo(function WorkBlock({
   agentId,
   active,
 }: {
-  items: Message[];
+  items: [Message, ...Message[]];
   storageKey: string;
   storageIds: string[];
   agentId?: string | undefined;

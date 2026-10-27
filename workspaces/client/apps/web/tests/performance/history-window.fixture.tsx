@@ -1,3 +1,4 @@
+import { required } from "./performance-fixture.ts";
 import type { Message } from "../../src/types.ts";
 import React, { useState, useMemo } from "react";
 import { createRoot } from "react-dom/client";
@@ -234,14 +235,7 @@ function Harness() {
             return <PreviewMessage m={m} />;
           return (
             <article data-message={m.id} className="message">
-              <StreamingText
-                text={m.text}
-                streaming={
-                  m.streaming as React.ComponentProps<
-                    typeof StreamingText
-                  >["streaming"]
-                }
-              />
+              <StreamingText text={m.text} streaming={!!m.streaming} />
               {m.id === "a500" && (
                 <img
                   alt="Saved attachment"
@@ -294,7 +288,7 @@ function Harness() {
     </MantineProvider>
   );
 }
-createRoot(document.getElementById("root")!).render(<Harness />);
+createRoot(required(document.getElementById("root"))).render(<Harness />);
 function readSavedHistory(): Message[] {
   // The fixture is the only writer of this saved history document.
   const saved: Message[] | null = JSON.parse(

@@ -7,14 +7,25 @@ import path from "node:path";
 import readline from "node:readline";
 
 // Requests come from the parent Rust witness; retain its JSON payload unchanged.
+type FixtureRequest = Record<string, JsonValue> & { id?: JsonValue } & (
+    | {
+        method: "thread/resume" | "turn/start";
+        params: Record<string, JsonValue> & {
+          threadId: string;
+          clientInfo?: Record<string, JsonValue>;
+        };
+      }
+    | {
+        method: "initialize" | "initialized" | "model/list" | "fixture/barrier";
+        params?: Record<string, JsonValue> & {
+          clientInfo?: Record<string, JsonValue>;
+        };
+      }
+  );
 function parseFixtureRequest(line: string) {
-  return JSON.parse(line) as Record<string, JsonValue> & {
-    params?: Record<string, JsonValue> & {
-      clientInfo?: Record<string, JsonValue>;
-    };
-  };
+  return JSON.parse(line) as FixtureRequest;
 }
-const root = path.dirname(fs.realpathSync(process.argv[1]));
+const root = import.meta.dirname;
 let turnCount = 0;
 fs.writeFileSync(path.join(root, "startup-cwd"), process.cwd());
 async function reportSocket(socketPath: string, value: JsonValue) {
@@ -64,7 +75,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   if (!Object.hasOwn(request, "id")) continue;
   let result = {};
   if (method === "thread/resume")
-    result = { thread: { id: request.params!.threadId } };
+    result = { thread: { id: request.params.threadId } };
   else if (method === "turn/start") {
     turnCount = increment("turn-count");
     await report("turn", {
@@ -109,7 +120,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     method === "turn/start" &&
     process.env.STUDIO_W7_P01_COMPLETE_TURN === "1"
   ) {
-    const threadId = request.params!.threadId,
+    const threadId = request.params.threadId,
       turnId = "fixture-turn",
       itemId = "fixture-assistant-item";
     notify("turn/started", {

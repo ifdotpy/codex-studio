@@ -1,3 +1,4 @@
+import { required } from "./components/componentTestFixtures.ts";
 import type { ShellManifest } from "../scripts/build-manifests.ts";
 import assert from "node:assert/strict";
 import {
@@ -128,7 +129,7 @@ test("the production Vite build compresses final outputs without changing shell 
     assert.ok(!files.some((name) => /\.(?:br|gz)\.(?:br|gz)$/.test(name)));
     const worker = await readFile(join(dist, "studio-sw.js"), "utf8");
     const shell = readShellManifest(
-      worker.match(/^self\.STUDIO_SHELL = (.*);/)![1],
+      required(required(worker.match(/^self\.STUDIO_SHELL = (.*);/))[1]),
     );
     assert.ok(shell.initial.length > 0);
     assert.ok(

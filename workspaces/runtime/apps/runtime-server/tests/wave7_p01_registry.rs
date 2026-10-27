@@ -757,7 +757,9 @@ async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
                             Value::Number(value) => {
                                 rusqlite::types::Value::Real(value.as_f64().unwrap())
                             }
-                            _ => panic!("unsupported radio fixture SQL value"),
+                            Value::Bool(_) | Value::Array(_) | Value::Object(_) => {
+                                panic!("unsupported radio fixture SQL value")
+                            }
                         })
                         .collect::<Vec<_>>();
                     db.execute(
@@ -770,6 +772,92 @@ async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
         })
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn closing_worker_does_not_invent_a_transfer_deadline_expiry() {
+    use studio_runtime_services::account_session_runtime::{
+        NotSentReason, ProviderRequest, RequestCertainty, SessionOutcome, TransferProviderRequest,
+    };
+    use studio_runtime_services::account_worker::COMMAND_CAPACITY;
+
+    let fixture = Fixture::new().await;
+    let (launcher, _writes) = scripted();
+    let _initialize_release = launcher.hold_initialize("account:default");
+    let broker = AccountSessionBroker::new();
+    let mut registry = AccountRegistry::new_with_broker(
+        fixture.store.clone(),
+        launcher.clone(),
+        Arc::new(Notify::new()),
+        broker.clone(),
+        test_registry_config(),
+        None,
+    )
+    .await
+    .unwrap();
+    registry.start("default").await.unwrap();
+    let scope = broker.current_scope("default").unwrap();
+    let deadline = std::time::Instant::now() + TEST_HANG_GUARD;
+    // Initialization is held, so the last request waits for mailbox capacity.
+    // Closing that real worker proves non-delivery before the future deadline.
+    let mut pending = Vec::new();
+    for index in 0..=COMMAND_CAPACITY {
+        let mut request = broker.transfer_request(TransferProviderRequest {
+            transfer_id: "closing-transfer".into(),
+            member: "member".into(),
+            source_account: "default".into(),
+            thread_id: "source-thread".into(),
+            operation: format!("transfer:closing-transfer:member:read-{index}"),
+            expected_scope: scope.clone(),
+            method: Method::ThreadQueueList,
+            params: json!({"threadId":"source-thread"}),
+            deadline,
+        });
+        std::future::poll_fn(|context| {
+            assert!(request.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        pending.push(request);
+    }
+    let mut ordinary = broker.request(ProviderRequest {
+        account: "default".into(),
+        operation: "model-list:closing-worker".into(),
+        actor: None,
+        expected_scope: Some(scope.clone()),
+        deleted_actor_session: None,
+        method: Method::ModelList,
+        params: json!({"limit":100}),
+        deadline,
+    });
+    std::future::poll_fn(|context| {
+        assert!(ordinary.as_mut().poll(context).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    registry.close_worker_for_test("default").await.unwrap();
+    assert!(std::time::Instant::now() < deadline);
+    for (receipt, operation) in [
+        (
+            pending.pop().unwrap().await.unwrap(),
+            format!("transfer:closing-transfer:member:read-{COMMAND_CAPACITY}"),
+        ),
+        (ordinary.await.unwrap(), "model-list:closing-worker".into()),
+    ] {
+        assert_eq!(receipt.scope, scope);
+        assert_eq!(receipt.operation, operation);
+        assert_eq!(receipt.certainty(), RequestCertainty::NotSent);
+        assert!(receipt.ticket().is_none());
+        assert_eq!(
+            receipt.not_sent_reason(),
+            Some(NotSentReason::WorkerNotSent)
+        );
+        assert!(matches!(receipt.outcome, SessionOutcome::NotHandedOff));
+    }
+    drop(pending);
+    // close_worker_for_test already joined the only worker.
+    assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
+    drop(registry);
 }
 
 #[tokio::test]
@@ -1917,8 +2005,8 @@ fn pending_backlog_pages_traverse_and_wrap() {
         let page = account_registry::target_page(&db, "", &after).unwrap();
         let rows = &page["default"];
         assert!(rows.len() <= 32);
-        actual.extend(rows.iter().map(|(id, _, _)| id.clone()));
-        after.insert("default".into(), rows.last().unwrap().0.clone());
+        actual.extend(rows.iter().map(|row| row.agent_id.clone()));
+        after.insert("default".into(), rows.last().unwrap().agent_id.clone());
     }
     assert_eq!(actual, expected);
     let wrapped_agents = account_registry::target_page(
@@ -1930,7 +2018,7 @@ fn pending_backlog_pages_traverse_and_wrap() {
     assert_eq!(
         wrapped_agents["default"]
             .iter()
-            .map(|(id, _, _)| id)
+            .map(|row| &row.agent_id)
             .collect::<Vec<_>>(),
         actual.iter().take(32).collect::<Vec<_>>()
     );
@@ -1948,7 +2036,7 @@ fn pending_backlog_tail_beyond_the_historical_total_limit_is_reachable() {
     assert_eq!(
         page["default"]
             .iter()
-            .map(|(id, _, _)| id)
+            .map(|row| &row.agent_id)
             .collect::<Vec<_>>(),
         expected[4096..].iter().collect::<Vec<_>>()
     );
@@ -4898,7 +4986,16 @@ async fn wait_for_wal_flush(
                     assert_eq!(busy, 0);
                     assert_eq!(checkpointed_frames, log_frames);
                 }
-                _ => unreachable!("observer sends only checkpoint events"),
+                StoreDiagnosticsEvent::WriterAdmission { .. }
+                | StoreDiagnosticsEvent::WriterWaiters { .. }
+                | StoreDiagnosticsEvent::ReadAdmission { .. }
+                | StoreDiagnosticsEvent::ReadWaiters { .. }
+                | StoreDiagnosticsEvent::WriterTransaction { .. }
+                | StoreDiagnosticsEvent::SqlProfile { .. }
+                | StoreDiagnosticsEvent::CommitDuration { .. }
+                | StoreDiagnosticsEvent::SqliteLockError { .. } => {
+                    unreachable!("observer sends only checkpoint events")
+                }
             }
         }
     })

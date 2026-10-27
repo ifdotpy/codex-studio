@@ -36,7 +36,7 @@ import { ACCOUNT_SIGN_IN_HINTS } from "../components/AccountAddDialog.tsx";
 import {
   PROVIDER_KINDS,
   PROVIDER_LABELS,
-  type ProviderKind,
+  ProviderKind,
 } from "../generated/providerKind.ts";
 import type { ServerServices } from "./serverServices";
 
@@ -110,7 +110,7 @@ export default function ServerAccountsPanel({
   onDiscover?: () => void;
   /** The API of each server; without it the default API serves every server. */
   servicesFor?: (serverId: string) => ServerServices | undefined;
-  initialFocusIdentity?: string;
+  initialFocusIdentity?: string | undefined;
   onInitialFocus?: () => void;
 }) {
   const [fullAccounts, setFullAccounts] = useServerFullAccounts(
@@ -454,7 +454,7 @@ export default function ServerAccountsPanel({
                               <Menu.Label>{server.label}</Menu.Label>
                               {(
                                 [
-                                  ...(row.provider === "claude"
+                                  ...(row.provider === ProviderKind.Claude
                                     ? (["configure-profile"] as const)
                                     : []),
                                   "rename",
@@ -466,12 +466,10 @@ export default function ServerAccountsPanel({
                                 <Menu.Item
                                   key={operation}
                                   disabled={cannotSignIn(server)}
-                                  color={
-                                    operation === "remove" ||
-                                    operation === "disconnect"
-                                      ? "red"
-                                      : undefined
-                                  }
+                                  {...(operation === "remove" ||
+                                  operation === "disconnect"
+                                    ? { color: "red" }
+                                    : {})}
                                   onClick={() => {
                                     if (cannotSignIn(server)) return;
                                     const accountKey = exactAccountKey(

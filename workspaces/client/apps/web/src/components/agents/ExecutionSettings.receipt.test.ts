@@ -1,5 +1,6 @@
-import { NativeSelect, Switch } from "@mantine/core";
-import type { PostBody } from "../../apiTypes";
+import { Button, NativeSelect, Switch, Textarea } from "@mantine/core";
+import type { PostBody, PostResult } from "../../apiTypes";
+import { AccountTransferStatus } from "../Accounts";
 import { required, type ComponentHookCell } from "../componentTestFixtures";
 import type { EffectCallback, PropsWithChildren, ComponentProps } from "react";
 import {
@@ -44,6 +45,7 @@ const h = vi.hoisted(() => ({
   read: vi.fn(),
   post: vi.fn(),
   refresh: vi.fn(async () => {}),
+  emptyCatalog: false,
 }));
 vi.mock("react", async (load) => ({
   ...(await load<typeof import("react")>()),
@@ -54,10 +56,12 @@ vi.mock("react", async (load) => ({
       value: typeof initial === "function" ? initial() : initial,
     };
     return [
-      cells[index].value,
+      required(cells[index]).value,
       (value: unknown) => {
-        cells[index].value =
-          typeof value === "function" ? value(cells[index].value) : value;
+        required(cells[index]).value =
+          typeof value === "function"
+            ? value(required(cells[index]).value)
+            : value;
       },
     ];
   },
@@ -71,7 +75,7 @@ vi.mock("react", async (load) => ({
     const previous = cells[index];
     if (!previous || deps.some((value, i) => value !== previous.deps![i]))
       cells[index] = { deps, value: compute() };
-    return cells[index].value;
+    return required(cells[index]).value;
   },
   useEffect: (effect: EffectCallback, deps: unknown[]) => {
     const cells = h.cells.get(h.scope)!;
@@ -105,6 +109,10 @@ vi.mock("../../servers/ServerServicesContext", () => ({
     save: (key: string, value: unknown) => h.storage.set(key, value),
   }),
 }));
+vi.mock("@mantine/hooks", async (load) => ({
+  ...(await load<typeof import("@mantine/hooks")>()),
+  useMediaQuery: () => false,
+}));
 vi.mock("../models/modelWhitelist", () => ({
   useModelWhitelist: () => null,
   isModelWhitelisted: () => true,
@@ -113,11 +121,13 @@ vi.mock("./WorkerModelPicker", async (load) => ({
   ...(await load<typeof import("./WorkerModelPicker")>()),
   useModelCatalogReader: () => ({ scope: "settings-receipt", read: h.read }),
   useWorkerModels: () => ({
-    models: ["gpt-6-astra", "gpt-6-luna"].map((model) => ({
-      model,
-      serviceTiers: [{ id: "priority" }],
-      supportedReasoningEfforts: [{ reasoningEffort: "high" }],
-    })),
+    models: (h.emptyCatalog ? [] : ["gpt-6-astra", "gpt-6-luna"]).map(
+      (model) => ({
+        model,
+        serviceTiers: [{ id: "priority" }],
+        supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+      }),
+    ),
     loading: false,
     error: "",
     retry: vi.fn(),
@@ -127,6 +137,13 @@ import { AgentSetupPicker } from "./AgentSetupPicker";
 import { ExecutionSettings, ExecutionPermissions } from "./ExecutionSettings";
 import { ClaudeSettings } from "../ClaudeSettings";
 import { ExecutionSummaryTrigger } from "./ExecutionSummaryTrigger";
+import { ChatSettingsDialog } from "./ChatSettingsDialog";
+import {
+  WorkerLaunchDialog,
+  type WorkerLaunch,
+} from "../shell/WorkerLaunchDialog";
+import { componentSnapshot } from "../componentTestFixtures";
+import { WorkerPermissions } from "../shell/WorkerPermissions";
 
 function children(
   node: ReactNode,
@@ -147,6 +164,7 @@ function invoke(element: ReactElement<unknown>) {
 const initial: Agent = {
   id: "lead",
   isLead: true,
+  provider: "codex",
   source: "managed",
   accountKey: "default",
   model: "gpt-6-astra",
@@ -196,7 +214,7 @@ function render(
         retry: vi.fn(),
       },
       refresh: h.refresh,
-      onDraftChange,
+      ...(onDraftChange && { onDraftChange }),
       renderTrigger: (trigger) =>
         createElement(ExecutionSummaryTrigger, {
           agent: trigger.agent,
@@ -262,7 +280,295 @@ afterEach(() => {
   h.read.mockReset();
   h.post.mockReset();
   h.refresh.mockClear();
+  h.emptyCatalog = false;
 });
+
+test("transfer actions retain response identity and retry the same request after a lost response", async () => {
+  const operation = {
+    id: "saved-transfer",
+    leadId: initial.id,
+    targetAccountKey: "work",
+    scope: "team",
+    status: "pending",
+    created: 1,
+    updated: 2,
+    members: {},
+    canRetry: true,
+  } satisfies PostResult<"/api/agents/account-transfer">;
+  const agent: Agent = { ...initial, accountTransfer: operation };
+  const transfer = () => {
+    const status = children(render(agent).controls).find(
+      (
+        node,
+      ): node is ReactElement<ComponentProps<typeof AccountTransferStatus>> =>
+        node.type === AccountTransferStatus,
+    );
+    return required(status).props;
+  };
+  h.post.mockRejectedValueOnce(new Error("response lost"));
+  transfer().onAction?.("retry");
+  await vi.waitFor(() => expect(transfer().pending).toBe(false));
+  expect(transfer().transfer).toBe(operation);
+  const response = {
+    ...operation,
+    updated: 3,
+    waiting: "Waiting for the current turn",
+  };
+  h.post.mockResolvedValueOnce(response);
+  transfer().onAction?.("retry");
+  await vi.waitFor(() => expect(transfer().pending).toBe(false));
+  expect(h.post).toHaveBeenCalledTimes(2);
+  expect(h.post.mock.calls[0]).toEqual(h.post.mock.calls[1]);
+  expect(h.post).toHaveBeenLastCalledWith("/api/agents/account-transfer", {
+    action: "retry",
+    scope: "team",
+    request_id: operation.id,
+  });
+  expect(transfer().transfer).toBe(response);
+});
+
+for (const provider of ["Future Provider", "codex", "claude"]) {
+  test(`a cold execution summary preserves the explicit ${provider} identity`, () => {
+    h.emptyCatalog = true;
+    const agent: Agent = {
+      ...initial,
+      // @ts-expect-error Future identities may arrive at the display boundary.
+      provider,
+    };
+    const trigger = invoke(
+      createElement(ExecutionSummaryTrigger, {
+        agent,
+        team: [],
+        onOpen: () => {},
+      }),
+    );
+    expect(trigger.props["aria-label"]).toContain(
+      `Lead Astra 6 Medium (${provider})`,
+    );
+    expect(trigger.props.title).toBe(trigger.props["aria-label"]);
+  });
+}
+
+const unsupportedAgents: Agent[] = [
+  { ...initial, id: "missing-provider", provider: undefined, yoloMode: false },
+  { ...initial, id: "null-provider", provider: null, yoloMode: false },
+  {
+    ...initial,
+    id: "unknown-provider",
+    yoloMode: false,
+    // @ts-expect-error A future wire identity must not gain Codex permission actions.
+    provider: "future-provider",
+  },
+];
+
+for (const agent of unsupportedAgents) {
+  test(`${agent.id} cannot supply permissions for a known worker provider`, () => {
+    for (const provider of ["codex", "claude"]) {
+      expect(
+        invoke(
+          createElement(WorkerPermissions, {
+            lead: agent,
+            provider,
+            reviewer: false,
+            value: undefined,
+            onChange: () => {},
+          }),
+        ),
+      ).toBeNull();
+    }
+  });
+  test(`${agent.id} cannot enable Daybreak through the model picker or extras`, () => {
+    const result = render({ ...agent, daybreakEnabled: true });
+    expect(result.picker.daybreakAvailable).toBe(false);
+    expect(
+      children(result.controls).some(
+        (node) => node.props["aria-label"] === "Daybreak",
+      ),
+    ).toBe(false);
+    result.picker.onDaybreak?.();
+    expect(h.post).not.toHaveBeenCalled();
+  });
+}
+
+test("Daybreak remains available for a Codex main agent and absent for Claude", () => {
+  expect(
+    render({ ...initial, daybreakEnabled: true }).picker.daybreakAvailable,
+  ).toBe(true);
+  expect(
+    render({ ...initial, provider: "claude", daybreakEnabled: true }).picker
+      .daybreakAvailable,
+  ).toBe(false);
+});
+
+function chatSettings(agent: Agent) {
+  return invoke(
+    createElement(ChatSettingsDialog, {
+      settingsOpen: true,
+      accountModalOpen: false,
+      setSettingsOpen: () => {},
+      agent,
+      accounts: {
+        data: {
+          accounts: [],
+          archivedAccounts: [],
+          defaultAccountKey: "default",
+          defaultAccountGroups: [],
+          logins: [],
+          supportsDelete: true,
+          supportsDisconnect: true,
+        },
+        setData: () => {},
+        error: "",
+        refresh: async () => null,
+        scope: "fixture",
+      },
+      notify: () => {},
+      agentModels: { models: [], loading: false, error: "", retry: () => {} },
+      data: componentSnapshot([agent]),
+      refresh: h.refresh,
+      workspaceId: "workspace",
+      creating: false,
+      newChat: () => {},
+      project: () => {},
+      setClaudeLoginKey: () => {},
+    }),
+  );
+}
+
+for (const agent of unsupportedAgents) {
+  test(`${agent.id} cannot receive a Codex permission control through chat settings`, () => {
+    expect(
+      children(chatSettings(agent)).filter(
+        (node) => node.type === ExecutionPermissions,
+      ),
+    ).toEqual([]);
+  });
+  test(`${agent.id} cannot post Full access from the actual permissions consumer`, async () => {
+    h.post.mockResolvedValue({ ...agent, yoloMode: true });
+    const permission = children(render(agent, true).controls).find(
+      (node): node is ReactElement<SwitchFixtureProps> =>
+        node.props["aria-label"] === "Full access without approval",
+    );
+    permission?.props.onChange({ currentTarget: { checked: true } });
+    await Promise.resolve();
+    expect(h.post).not.toHaveBeenCalled();
+    expect(permission).toBeUndefined();
+  });
+}
+
+test("chat settings retains the known Codex permission caller and the Claude settings branch", () => {
+  expect(
+    children(chatSettings({ ...initial, yoloMode: false })).some(
+      (node) => node.type === ExecutionPermissions,
+    ),
+  ).toBe(true);
+  const claude = children(chatSettings({ ...initial, provider: "claude" }));
+  expect(claude.some((node) => node.type === ExecutionPermissions)).toBe(false);
+  expect(
+    claude.some(
+      (node) => typeof node.type === "object" && node.props.agent !== undefined,
+    ),
+  ).toBe(true);
+});
+
+type TaskInputProps = Omit<ComponentProps<typeof Textarea>, "onChange"> & {
+  onChange(event: {
+    target: Pick<
+      Parameters<
+        NonNullable<ComponentProps<typeof Textarea>["onChange"]>
+      >[0]["target"],
+      "value"
+    >;
+  }): void;
+};
+type LaunchFormProps = {
+  onSubmit(event: { preventDefault(): void }): Promise<void>;
+};
+
+async function submitWorker(launch: WorkerLaunch, lead: Agent) {
+  const onStart = vi.fn(async (_body: PostBody<"/api/agents">) => {});
+  const renderDialog = () =>
+    invoke(
+      createElement(WorkerLaunchDialog, {
+        launch,
+        lead,
+        busy: false,
+        onClose: () => {},
+        onStart,
+      }),
+    );
+  const input = children(renderDialog()).find(
+    (node): node is ReactElement<TaskInputProps> => node.type === Textarea,
+  );
+  expect(input).toBeDefined();
+  input?.props.onChange({ target: { value: "Read the project and report." } });
+  const nodes = children(renderDialog());
+  const button = nodes.find(
+    (node) => node.type === Button && node.props.type === "submit",
+  );
+  const form = nodes.find(
+    (node): node is ReactElement<LaunchFormProps> => node.type === "form",
+  );
+  expect(form).toBeDefined();
+  await form?.props.onSubmit({ preventDefault: () => {} });
+  return { onStart, button };
+}
+
+for (const provider of ["", "future-provider"]) {
+  test(`an unresolved ${provider || "blank"} worker profile cannot submit its form`, async () => {
+    const { onStart, button } = await submitWorker(
+      {
+        id: "worker",
+        profile_id: "profile",
+        name: "Worker",
+        provider,
+        reviewer: false,
+      },
+      initial,
+    );
+    expect(onStart).not.toHaveBeenCalled();
+    expect(button?.props.disabled).toBe(true);
+  });
+}
+for (const agent of unsupportedAgents) {
+  test(`a Codex worker cannot submit with ${agent.id} lead identity`, async () => {
+    const { onStart, button } = await submitWorker(
+      {
+        id: "worker",
+        profile_id: "profile",
+        name: "Worker",
+        provider: "codex",
+        reviewer: false,
+      },
+      agent,
+    );
+    expect(onStart).not.toHaveBeenCalled();
+    expect(button?.props.disabled).toBe(true);
+  });
+}
+for (const provider of ["codex", "claude"]) {
+  test(`a supported ${provider} worker preserves its submitted parent and profile`, async () => {
+    const { onStart, button } = await submitWorker(
+      {
+        id: "worker",
+        profile_id: "profile",
+        name: "Worker",
+        provider,
+        reviewer: false,
+      },
+      initial,
+    );
+    expect(button?.props.disabled).toBe(false);
+    expect(onStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "worker",
+        profile_id: "profile",
+        parent: initial.id,
+        prompt: "Read the project and report.",
+      }),
+    );
+  });
+}
 
 test("the composer trigger uses the confirmed model before SSE and yields to remote settings", async () => {
   h.post.mockResolvedValue({ ...initial, model: "gpt-6-luna" });
@@ -301,7 +607,7 @@ test("queued settings and account changes keep their canonical scope", async () 
   h.post.mockResolvedValue(queued);
   render(active).picker.onModel("gpt-6-luna");
   await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
-  expect(h.post.mock.calls[0][1]).toMatchObject({
+  expect(required(required(h.post.mock.calls[0])[1])).toMatchObject({
     next_turn: true,
   });
   expect(render(active).model).toBe("Luna 6");
@@ -568,9 +874,9 @@ test("an older same-domain request cannot replace the latest acknowledgment", as
   render().picker.onRole("orchestrator");
   render().picker.onModel("gpt-6-astra");
   expect(finish).toHaveLength(2);
-  finish[1]({ ...initial, model: "gpt-6-astra" });
+  required(finish[1])({ ...initial, model: "gpt-6-astra" });
   await Promise.resolve();
-  finish[0]({ ...initial, model: "gpt-6-luna" });
+  required(finish[0])({ ...initial, model: "gpt-6-luna" });
   await Promise.resolve();
   expect(render().model).toBe("Astra 6");
 });
@@ -657,14 +963,14 @@ test("a superseding Ask intent prevents reuse of a lost Full request identity", 
   h.post.mockRejectedValueOnce(new Error("response lost"));
   control(ask).props.onChange({ currentTarget: { checked: true } });
   await vi.waitFor(() => expect(control(full).props.disabled).toBe(false));
-  const lostFullId = h.post.mock.calls[0][1].request_id;
+  const lostFullId = required(h.post.mock.calls[0])[1].request_id;
   h.post.mockResolvedValueOnce(ask);
   control(full).props.onChange({ currentTarget: { checked: false } });
   await vi.waitFor(() => expect(control(ask).props.disabled).toBe(false));
   h.post.mockResolvedValueOnce(full);
   control(ask).props.onChange({ currentTarget: { checked: true } });
   await vi.waitFor(() => expect(h.post).toHaveBeenCalledTimes(3));
-  expect(h.post.mock.calls[2][1].request_id).not.toBe(lostFullId);
+  expect(required(h.post.mock.calls[2])[1].request_id).not.toBe(lostFullId);
 });
 
 for (const [first, opposite] of [
@@ -718,14 +1024,22 @@ for (const [first, opposite] of [
     await reopen();
     await choose(first);
     await choose(first); // The same unresolved click retains its request identity.
-    expect(mutations[1].request_id).toBe(mutations[0].request_id);
+    expect(required(mutations[1]).request_id).toBe(
+      required(mutations[0]).request_id,
+    );
     await reopen();
     loseResponse = false;
     await choose(opposite);
     await choose(first);
-    expect(mutations[2].request_id).not.toBe(mutations[0].request_id);
-    expect(mutations[3].request_id).not.toBe(mutations[0].request_id);
-    expect(mutations[3].request_id).not.toBe(mutations[2].request_id);
+    expect(required(mutations[2]).request_id).not.toBe(
+      required(mutations[0]).request_id,
+    );
+    expect(required(mutations[3]).request_id).not.toBe(
+      required(mutations[0]).request_id,
+    );
+    expect(required(mutations[3]).request_id).not.toBe(
+      required(mutations[2]).request_id,
+    );
   });
 }
 
@@ -777,11 +1091,11 @@ test("a late Claude success preserves the newer unresolved permission request", 
   await reopen();
   control().props.onChange({ currentTarget: { value: "default" } });
   await vi.waitFor(() => expect(control().props.disabled).toBe(false));
-  const unresolvedId = mutations[1].request_id;
-  expect(unresolvedId).not.toBe(mutations[0].request_id);
+  const unresolvedId = required(mutations[1]).request_id;
+  expect(unresolvedId).not.toBe(required(mutations[0]).request_id);
   finish({});
   await Promise.resolve();
   control().props.onChange({ currentTarget: { value: "default" } });
   await vi.waitFor(() => expect(mutations).toHaveLength(3));
-  expect(mutations[2].request_id).toBe(unresolvedId);
+  expect(required(mutations[2]).request_id).toBe(unresolvedId);
 });

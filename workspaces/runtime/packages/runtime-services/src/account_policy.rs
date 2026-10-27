@@ -1,19 +1,13 @@
 //! Read-only projections of startup-loaded account and usage state.
 
-use serde::Deserialize;
-use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
+use studio_runtime_providers::ProviderKind;
 use thiserror::Error;
 
 pub const AUTHENTICATION_RECOVERY_MESSAGE: &str =
     "Sign in again to this account. Chats will continue when sign-in works.";
-
-fn registry_violation(value: &Value) -> Result<Option<(String, String)>, ()> {
-    studio_runtime_schema::first_error("account-registry/AccountRegistryRecord", value)
-        .map_err(|_| ())
-}
 
 fn limits_violation(value: &Value) -> Result<Option<(String, String)>, ()> {
     let mut snapshots = Map::new();
@@ -33,171 +27,9 @@ fn limits_violation(value: &Value) -> Result<Option<(String, String)>, ()> {
     .map_err(|_| ())
 }
 
-#[derive(Clone, Default)]
-pub(crate) struct RegistryOrder {
-    pub(crate) accounts: Vec<String>,
-    pub(crate) logins: Vec<String>,
-}
-
-pub(crate) fn decode_registry(bytes: &[u8]) -> Result<(Value, RegistryOrder), (String, String)> {
-    if bytes.len() > studio_runtime_store::account_state::MAX_PERSISTED_DOCUMENT_BYTES
-        || !studio_runtime_store::account_state::persisted_document_within_bounds(bytes)
-    {
-        return Err(("/".to_owned(), "resourceLimit".to_owned()));
-    }
-    let value: Value =
-        serde_json::from_slice(bytes).map_err(|_| ("/".to_owned(), "invalid JSON".to_owned()))?;
-    match registry_violation(&value) {
-        Ok(Some((pointer, _keyword))) => {
-            return Err((pointer, "schema validation failed".to_owned()));
-        }
-        Err(()) => return Err(("/".to_owned(), "schema validation failed".to_owned())),
-        Ok(None) => {}
-    }
-    for (key, account) in value["accounts"].as_object().into_iter().flatten() {
-        studio_runtime_schema::ProviderKind::of_record(account).map_err(|_| {
-            (
-                format!("/accounts/{key}/provider"),
-                "unknown provider".to_owned(),
-            )
-        })?;
-    }
-    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-    let order = RegistryOrder::deserialize(&mut deserializer)
-        .map_err(|_| ("/".to_owned(), "invalid registry order".to_owned()))?;
-    Ok((value, order))
-}
-
-pub(crate) fn encode_registry(value: &Value, order: &RegistryOrder) -> Result<Vec<u8>, ()> {
-    let Some(root) = value.as_object() else {
-        return Err(());
-    };
-    let Some(accounts) = root.get("accounts").and_then(Value::as_object) else {
-        return Err(());
-    };
-    let logins = root.get("logins").and_then(Value::as_object);
-    let mut output = Vec::new();
-    let mut serializer = serde_json::Serializer::new(&mut output);
-    let mut map = serializer.serialize_map(Some(root.len())).map_err(|_| ())?;
-    for (key, field) in root {
-        match key.as_str() {
-            "accounts" => map.serialize_entry(
-                key,
-                &OrderedRegistryMap {
-                    values: accounts,
-                    keys: &order.accounts,
-                },
-            ),
-            "logins" => map.serialize_entry(
-                key,
-                &OrderedRegistryMap {
-                    values: logins.ok_or(())?,
-                    keys: &order.logins,
-                },
-            ),
-            _ => map.serialize_entry(key, field),
-        }
-        .map_err(|_| ())?;
-    }
-    map.end().map_err(|_| ())?;
-    Ok(output)
-}
-
-struct OrderedRegistryMap<'a> {
-    values: &'a Map<String, Value>,
-    keys: &'a [String],
-}
-
-impl Serialize for OrderedRegistryMap<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut map = serializer.serialize_map(Some(self.values.len()))?;
-        let mut emitted = HashSet::new();
-        for key in self.keys {
-            if let Some(value) = self.values.get(key) {
-                map.serialize_entry(key, value)?;
-                emitted.insert(key);
-            }
-        }
-        for (key, value) in self.values {
-            if !emitted.contains(key) {
-                map.serialize_entry(key, value)?;
-            }
-        }
-        map.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for RegistryOrder {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct RootVisitor;
-        impl<'de> serde::de::Visitor<'de> for RootVisitor {
-            type Value = RegistryOrder;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("account registry object")
-            }
-            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
-            where
-                M: serde::de::MapAccess<'de>,
-            {
-                let mut result = RegistryOrder::default();
-                let mut seen = HashSet::new();
-                while let Some(key) = map.next_key::<String>()? {
-                    if !seen.insert(key.clone()) {
-                        return Err(serde::de::Error::custom("duplicate registry field"));
-                    }
-                    match key.as_str() {
-                        "accounts" => result.accounts = map.next_value_seed(KeysSeed)?,
-                        "logins" => result.logins = map.next_value_seed(KeysSeed)?,
-                        _ => {
-                            map.next_value::<serde::de::IgnoredAny>()?;
-                        }
-                    }
-                }
-                Ok(result)
-            }
-        }
-        deserializer.deserialize_map(RootVisitor)
-    }
-}
-
-struct KeysSeed;
-impl<'de> serde::de::DeserializeSeed<'de> for KeysSeed {
-    type Value = Vec<String>;
-    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct KeysVisitor;
-        impl<'de> serde::de::Visitor<'de> for KeysVisitor {
-            type Value = Vec<String>;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("ordered object")
-            }
-            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
-            where
-                M: serde::de::MapAccess<'de>,
-            {
-                let mut keys = Vec::new();
-                let mut seen = HashSet::new();
-                while let Some(key) = map.next_key::<String>()? {
-                    if !seen.insert(key.clone()) {
-                        return Err(serde::de::Error::custom("duplicate registry key"));
-                    }
-                    map.next_value::<serde::de::IgnoredAny>()?;
-                    keys.push(key);
-                }
-                Ok(keys)
-            }
-        }
-        deserializer.deserialize_map(KeysVisitor)
-    }
-}
+pub(crate) use studio_runtime_store::account_registry::{
+    RegistryOrder, decode_registry, encode_registry,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LimitsDiagnostic {
@@ -402,7 +234,7 @@ pub(crate) fn project_registry_value(
             })?;
         row.insert("provider".into(), Value::String(provider.key().into()));
         known.insert(key.clone());
-        if provider.key() == "claude"
+        if provider == ProviderKind::Claude
             && let Some(organization) = crate::account_driver::claude_identity::organization(
                 row.get("_credentialIdentity").and_then(Value::as_str),
                 row.get("_organizationName").and_then(Value::as_str),
@@ -457,7 +289,7 @@ fn listed_account(key: &str, row: &Map<String, Value>) -> bool {
 pub(crate) fn can_attempt_native_proof(stored: Option<&Map<String, Value>>) -> bool {
     let Some(row) = stored else { return false };
     let email = row.get("email").and_then(Value::as_str).unwrap_or_default();
-    row.get("provider").and_then(Value::as_str) == Some("claude")
+    row.get("provider").and_then(Value::as_str) == Some(ProviderKind::Claude.key())
         && row.get("status").and_then(Value::as_str) == Some("error")
         && row.get("_authErrorKind").and_then(Value::as_str) == Some("keychain")
         && row.get("deleted") != Some(&Value::Bool(true))
@@ -515,7 +347,7 @@ mod tests {
     fn invalid_limit_is_diagnostic_and_absent_cache_uses_default_shape() {
         let state = AccountPolicyState::from_startup(
             Some(REGISTRY),
-            [("alpha".into(), json!({"accountKey":"alpha","data":{"rateLimits":{"primary":{"usedPercent":1,"notAWindowField":true}}}}))],
+            [("alpha".into(), json!({"accountKey":"alpha","data":{"rateLimits":{"primary":{"usedPercent":"1","providerWindow":{"x":1}}}}}))],
         ).expect("bad cache does not stop startup");
         assert_eq!(state.limits("alpha")["data"], Value::Null);
         assert_eq!(state.limits_diagnostics().len(), 1);
@@ -523,16 +355,20 @@ mod tests {
             state.limits_diagnostics()[0].workspace_row,
             "workspace/current"
         );
+        assert_eq!(
+            state.limits_diagnostics()[0].pointer,
+            "/rateLimitsByAccount/alpha/data"
+        );
     }
 
     #[test]
-    fn storage_extension_rejected_by_python_restore_is_an_uncached_limit() {
+    fn startup_preserves_vendor_window_and_reset_credit_extensions() {
         let input = json!({"accountKey":"default","at":1.0,"data":{"rateLimits":{"primary":{"usedPercent":12,"providerWindow":{"x":1}}},"rateLimitResetCredits":{"providerOwned":true}}});
         let state =
             AccountPolicyState::from_startup(Some(REGISTRY), [("default".into(), input.clone())])
-                .expect("Python restore rejection does not stop startup");
-        assert!(state.limits("default")["data"].is_null());
-        assert_eq!(state.limits_diagnostics().len(), 1);
+                .expect("provider extensions survive startup");
+        assert_eq!(state.limits("default"), input);
+        assert!(state.limits_diagnostics().is_empty());
     }
 
     #[test]

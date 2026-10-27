@@ -208,7 +208,10 @@ test("chat read client browser", async ({ browser: _browser }) => {
     await page.evaluate(() => window.setPhase("final_answer"));
     await page.waitForFunction(() => window.state?.read === true);
     assert.equal(await page.evaluate(() => window.calls.length), 1);
-    assert.equal(await page.evaluate(() => window.calls[0].workspace), "first");
+    assert.equal(
+      await page.evaluate(() => window.calls[0]?.workspace),
+      "first",
+    );
     await page.evaluate(() => {
       window.previousControls = window.controls;
       window.setAgent({

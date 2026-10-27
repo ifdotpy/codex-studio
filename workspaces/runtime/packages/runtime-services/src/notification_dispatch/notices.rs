@@ -1,5 +1,6 @@
 //! Pure native notice decisions. The adapter supplies checked stored records and time.
 use serde_json::{Value, json};
+use studio_runtime_schema::provider_errors::{KnownCodexErrorKind, known_error_kind};
 use studio_runtime_store::CachedSql;
 use studio_runtime_store::sha256_hex;
 
@@ -119,7 +120,19 @@ pub(super) fn warning_text(kind: NoticeKind, params: &Value) -> String {
         NoticeKind::Guardian if text.starts_with("Automatic approval review approved (") => {
             String::new()
         }
-        _ => text.into(),
+        NoticeKind::Warning
+        | NoticeKind::Guardian
+        | NoticeKind::Config
+        | NoticeKind::Deprecation
+        | NoticeKind::HookStarted
+        | NoticeKind::HookCompleted
+        | NoticeKind::Safety
+        | NoticeKind::Verification
+        | NoticeKind::ReviewStarted
+        | NoticeKind::ReviewCompleted
+        | NoticeKind::Error
+        | NoticeKind::AuthStarted
+        | NoticeKind::AuthCompleted => text.into(),
     }
 }
 
@@ -226,13 +239,19 @@ pub(super) fn decide(
                 .get("error")
                 .filter(|v| !v.is_null() && **v != json!({}))
                 .unwrap_or(&fallback);
-            let error_kind = error_kind(error);
-            let policy = matches!(error_kind, "cyberPolicy" | "misalignmentPolicyViolation");
+            let error_kind = known_error_kind(error);
+            let policy = matches!(
+                error_kind,
+                Some(
+                    KnownCodexErrorKind::CyberPolicy
+                        | KnownCodexErrorKind::MisalignmentPolicyViolation
+                )
+            );
             if params["willRetry"] == true && !policy {
                 agent["nativeStatus"] =
                     json!({"phase":"retrying","error":error,"turnId":turn,"at":at});
                 agent["activity"] = json!({"phase":"retrying","at":at});
-            } else if error_kind == "activeTurnNotSteerable" {
+            } else if error_kind == Some(KnownCodexErrorKind::ActiveTurnNotSteerable) {
                 decision.item = Some(notice(
                     format!("steer:{}", turn.as_str().unwrap_or_default()),
                     error_message(error, label),
@@ -245,12 +264,17 @@ pub(super) fn decide(
                 }
                 remove(&mut agent, "nativeStatus");
                 remove(&mut agent, "nativeSafetyBuffering");
-                if error["codexErrorInfo"] == "misalignmentPolicyViolation" {
+                if error_kind == Some(KnownCodexErrorKind::MisalignmentPolicyViolation) {
                     agent["nativeThreadBlock"] =
                         json!({"threadId":agent["threadId"],"error":error});
                 }
-                decision.refresh_limits =
-                    matches!(error_kind, "usageLimitExceeded" | "rateLimitExceeded");
+                decision.refresh_limits = matches!(
+                    error_kind,
+                    Some(
+                        KnownCodexErrorKind::UsageLimitExceeded
+                            | KnownCodexErrorKind::RateLimitExceeded
+                    )
+                );
                 agent["nativeTurnError"] = json!({"turnId":turn,"error":error});
                 agent["error"] = error.clone();
                 agent["activity"] = json!({"phase":"error","at":at});
@@ -288,7 +312,15 @@ pub(super) fn decide(
                 json!({"turnId":turn}),
             ));
         }
-        _ => {
+        NoticeKind::Warning
+        | NoticeKind::Guardian
+        | NoticeKind::Config
+        | NoticeKind::Deprecation
+        | NoticeKind::McpStartup
+        | NoticeKind::McpLogin
+        | NoticeKind::StrictReview
+        | NoticeKind::HookStarted
+        | NoticeKind::HookCompleted => {
             let text = warning_text(kind, params);
             if text.is_empty() {
                 return Ok(decision);
@@ -408,32 +440,21 @@ pub(super) fn remove(value: &mut Value, key: &str) {
         fields.remove(key);
     }
 }
-fn error_kind(error: &Value) -> &str {
-    error["codexErrorInfo"]
-        .as_str()
-        .or_else(|| {
-            error["codexErrorInfo"]
-                .as_object()
-                .and_then(|v| v.keys().next())
-                .map(String::as_str)
-        })
-        .unwrap_or("")
-}
-const ERROR_MESSAGES: &[(&str, &str)] = &[
+const ERROR_MESSAGES: &[(KnownCodexErrorKind, &str)] = &[
     (
-        "cyberPolicy",
+        KnownCodexErrorKind::CyberPolicy,
         "Codex refused this turn under its cybersecurity policy.",
     ),
     (
-        "misalignmentPolicyViolation",
+        KnownCodexErrorKind::MisalignmentPolicyViolation,
         "Codex refused this turn under its safety policy.",
     ),
     (
-        "tooManyDenials",
+        KnownCodexErrorKind::TooManyDenials,
         "Codex stopped this turn after too many denied actions. Review the request and approval settings before trying again.",
     ),
     (
-        "flexUnavailable",
+        KnownCodexErrorKind::FlexUnavailable,
         "The selected model is temporarily unavailable on the flexible processing tier. Try again later or choose another model.",
     ),
 ];
@@ -442,8 +463,8 @@ pub(crate) fn error_message(error: &Value, label: &str) -> String {
     if crate::disk_space::is_disk_full_error(error) {
         return crate::disk_space::ERROR_MESSAGE.into();
     }
-    let kind = error_kind(error);
-    if let Some((_, message)) = ERROR_MESSAGES.iter().find(|(k, _)| *k == kind) {
+    let kind = known_error_kind(error);
+    if let Some((_, message)) = ERROR_MESSAGES.iter().find(|(k, _)| Some(*k) == kind) {
         return (*message).into();
     }
     error["message"]
@@ -589,7 +610,9 @@ pub(crate) fn account_notice(
         let mut notices = match &workspace["value"]["nativeNotices"] {
             Value::Null => Vec::new(),
             Value::Array(notices) => notices.clone(),
-            _ => return Err(super::stored("sync_entities", "workspace:current")),
+            Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Object(_) => {
+                return Err(super::stored("sync_entities", "workspace:current"));
+            }
         };
         let version_warnings: Vec<_> = notices
             .iter()
@@ -655,6 +678,10 @@ mod provider_label_tests {
 
     #[test]
     fn error_notices_name_the_agents_provider() {
+        let extension = json!({"message":"Provider detail","codexErrorInfo":{"cyberPolicy":{},"futureCode":{"opaque":[1,null]}},"vendorExtension":{"id":42}});
+        let original = extension.clone();
+        assert_eq!(error_message(&extension, "Codex"), "Provider detail");
+        assert_eq!(extension, original);
         assert_eq!(provider_label(&json!({"provider": "claude"})), "Claude");
         assert_eq!(provider_label(&json!({"provider":"codex"})), "Codex");
         assert_eq!(

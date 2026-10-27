@@ -142,17 +142,17 @@ mod tests {
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
+                    .expect("system time after the Unix epoch")
                     .as_nanos()
             )));
-            std::fs::create_dir_all(&fixture.0).unwrap();
+            std::fs::create_dir_all(&fixture.0).expect("bundle fixture folder");
             fixture
         }
     }
 
     impl Drop for Bundle {
         fn drop(&mut self) {
-            std::fs::remove_dir_all(&self.0).unwrap();
+            std::fs::remove_dir_all(&self.0).expect("remove bundle fixture folder");
         }
     }
 

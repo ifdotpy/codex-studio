@@ -46,7 +46,10 @@ impl Vault for FileVault {
         use std::io::Write;
         let bytes =
             serde_json::to_vec(state).map_err(|_| "The server key store could not be encoded.")?;
-        let directory = self.path.parent().ok_or("The server key store has no folder.")?;
+        let directory = self
+            .path
+            .parent()
+            .ok_or("The server key store has no folder.")?;
         // tempfile creates the file with mode 0600; the rename keeps it.
         let mut file = tempfile::NamedTempFile::new_in(directory)
             .map_err(|_| "The server key store could not be saved.")?;
@@ -137,10 +140,11 @@ fn key(value: &Value) -> Result<Ed25519KeyPair, String> {
 }
 fn pem(label: &str, bytes: &[u8]) -> String {
     let encoded = STANDARD.encode(bytes);
+    // Base64 is ASCII, so every byte-aligned chunk is valid UTF-8.
     let body = encoded
         .as_bytes()
         .chunks(64)
-        .map(|v| std::str::from_utf8(v).unwrap())
+        .map(|v| std::str::from_utf8(v).expect("base64 is ASCII"))
         .collect::<Vec<_>>()
         .join("\n");
     format!("-----BEGIN {label}-----\n{body}\n-----END {label}-----\n")

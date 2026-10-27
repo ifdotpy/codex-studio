@@ -392,7 +392,7 @@ export function useVisibleChatResult(
               index >= 0;
               index--
             ) {
-              const id = nativeTurnItemIds[index];
+              const id = nativeTurnItemIds[index]!;
               const row = root.querySelector<HTMLElement>(
                 `[data-message="${CSS.escape(id)}"]:not([data-lazy-message])`,
               );

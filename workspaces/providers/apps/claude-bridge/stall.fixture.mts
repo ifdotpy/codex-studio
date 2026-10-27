@@ -1,3 +1,4 @@
+import { inputText } from "./sdk-fixtures.ts";
 import type { SessionFixtureLegacyMessage as SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import { waitForFile } from "./sdk-fixtures.ts";
 import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
@@ -36,10 +37,7 @@ export function query({ prompt, options }: FixtureQuery) {
     (reading ||= prompt.next().then((input) => {
       reading = null;
       if (!input.done)
-        fs.appendFileSync(
-          cwd + "/.inputs",
-          input.value.message.content[0].text + "\n",
-        );
+        fs.appendFileSync(cwd + "/.inputs", inputText(input.value) + "\n");
       return input;
     }));
   const tool = {
@@ -51,7 +49,7 @@ export function query({ prompt, options }: FixtureQuery) {
   // Hold a steer like the CLI queue: no echo until the turn ends.
   const hold = (value: SDKUserMessage) => {
     queued.push(value);
-    if (value.message.content[0].text.includes("recorded")) {
+    if (inputText(value).includes("recorded")) {
       const uuid = randomUUID();
       fs.appendFileSync(
         history,
@@ -110,7 +108,7 @@ export function query({ prompt, options }: FixtureQuery) {
       while (!abort.signal.aborted) {
         const input = await read();
         if (input.done) return;
-        const text = input.value.message.content[0].text;
+        const text = inputText(input.value);
         fs.appendFileSync(
           history,
           JSON.stringify({
@@ -155,7 +153,13 @@ export function query({ prompt, options }: FixtureQuery) {
               usage,
             },
           };
-          yield { type: "result", subtype: "success", usage, result: "done" };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            usage,
+            result: "done",
+          };
           continue;
         }
         // The CLI sends its permission request beside the stream, as the SDK
@@ -200,7 +204,13 @@ export function query({ prompt, options }: FixtureQuery) {
               ],
             },
           };
-          yield { type: "result", subtype: "success", usage, result: "done" };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            usage,
+            result: "done",
+          };
           continue;
         }
         if (text === "approval") {
@@ -224,6 +234,7 @@ export function query({ prompt, options }: FixtureQuery) {
             yield {
               type: "result",
               subtype: "success",
+              is_error: false,
               usage,
               result: "declined",
             };
@@ -267,6 +278,7 @@ export function query({ prompt, options }: FixtureQuery) {
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             usage,
             result: "answered",
           };

@@ -2,6 +2,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
@@ -10,8 +11,8 @@ use studio_runtime_schema::shared_values::LINUX_VM_PROVIDER_HANDLE_PREFIX;
 use studio_runtime_services::linux_vm_guest::GuestError;
 use studio_runtime_services::{
     account_session_runtime::{
-        AccountSessionError, AccountSessionPort, ConnectionScope, NotSentReason, ProviderRequest,
-        ProviderResponse, RequestCertainty, SessionReceipt,
+        AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
+        ProviderResponse, SessionReceipt,
     },
     linux_vm_guest::GuestRpc,
 };
@@ -98,42 +99,28 @@ impl AccountSessionPort for VmNativeProvider {
             let result = self
                 .request_guest(&request.operation, &ticket, &request.params, timeout)
                 .await;
-            let (certainty, result, not_sent_reason, ticket_value) = match result {
-                Ok(value) => (
-                    RequestCertainty::Written,
-                    Some(ProviderResponse::Reply(value)),
-                    None,
-                    Some(ticket),
-                ),
+            let outcome = match result {
+                Ok(value) => ReceiptOutcome::Written {
+                    ticket,
+                    response: ProviderResponse::Reply(value),
+                },
                 Err(studio_runtime_services::linux_vm_guest::GuestError::Rejected {
                     code,
                     detail,
                     uncertain: false,
-                }) => (
-                    RequestCertainty::Written,
-                    Some(ProviderResponse::Rejected(
+                }) => ReceiptOutcome::Written {
+                    ticket,
+                    response: ProviderResponse::Rejected(
                         serde_json::json!({"code":code,"detail":detail}),
-                    )),
-                    None,
-                    Some(ticket),
-                ),
-                Err(error) if error.uncertain() => {
-                    (RequestCertainty::Unknown, None, None, Some(ticket))
-                }
-                Err(_) => (
-                    RequestCertainty::NotSent,
-                    None,
-                    Some(NotSentReason::WorkerNotSent),
-                    Some(ticket),
-                ),
+                    ),
+                },
+                Err(error) if error.uncertain() => ReceiptOutcome::Unknown { ticket },
+                Err(_) => ReceiptOutcome::WorkerNotSent { ticket },
             };
             Ok(SessionReceipt {
                 scope: self.scope.clone(),
                 operation: request.operation,
-                ticket: ticket_value,
-                certainty,
-                result,
-                not_sent_reason,
+                outcome,
                 replayed: false,
             })
         })
@@ -312,7 +299,8 @@ impl VmNativeProvider {
                 studio_runtime_providers::Frame::UnknownMethod(frame) => {
                     !frame.fields.contains_key("id")
                 }
-                _ => false,
+                studio_runtime_providers::Frame::Request(_)
+                | studio_runtime_providers::Frame::Response { .. } => false,
             });
             owned_prefix &= reply || notification;
             if owned_prefix {
@@ -389,6 +377,7 @@ mod tests {
     use serde_json::json;
     use std::sync::Mutex;
     use studio_runtime_providers::Method;
+    use studio_runtime_services::account_session_runtime::{NotSentReason, RequestCertainty};
 
     type NotificationDelivery = (String, String, u64, u64, studio_runtime_providers::Frame);
     type NotificationDeliveries = Arc<Mutex<Vec<NotificationDelivery>>>;
@@ -522,13 +511,13 @@ mod tests {
         assert_eq!(calls[1].1["message"]["method"], "thread/compact/start");
         assert_eq!(calls[1].1["message"]["params"]["threadId"], "guest-thread");
         assert_eq!(
-            receipt.result,
+            receipt.response().cloned(),
             Some(ProviderResponse::Reply(json!({"ok":true})))
         );
         assert_eq!(receipt.scope, scope);
         assert_eq!(receipt.operation, "op-1");
-        assert_eq!(receipt.certainty, RequestCertainty::Written);
-        assert!(receipt.ticket.is_some());
+        assert_eq!(receipt.certainty(), RequestCertainty::Written);
+        assert!(receipt.ticket().is_some());
     }
 
     #[tokio::test]
@@ -555,9 +544,9 @@ mod tests {
             })
             .await
             .expect("VM review action retains its provider result");
-        assert_eq!(receipt.certainty, RequestCertainty::Unknown);
-        assert!(receipt.ticket.is_some());
-        assert!(receipt.not_sent_reason.is_none());
+        assert_eq!(receipt.certainty(), RequestCertainty::Unknown);
+        assert!(receipt.ticket().is_some());
+        assert!(receipt.not_sent_reason().is_none());
     }
 
     #[tokio::test]
@@ -584,9 +573,12 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(receipt.certainty, RequestCertainty::NotSent);
-        assert!(receipt.ticket.is_some());
-        assert_eq!(receipt.not_sent_reason, Some(NotSentReason::WorkerNotSent));
+        assert_eq!(receipt.certainty(), RequestCertainty::NotSent);
+        assert!(receipt.ticket().is_some());
+        assert_eq!(
+            receipt.not_sent_reason(),
+            Some(NotSentReason::WorkerNotSent)
+        );
     }
 
     #[tokio::test]
@@ -613,7 +605,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(receipt.certainty, RequestCertainty::Written);
+        assert_eq!(receipt.certainty(), RequestCertainty::Written);
         let deliveries = deliveries.lock().unwrap();
         assert_eq!(deliveries.len(), 1);
         assert_eq!(deliveries[0].0, "acct");
@@ -661,7 +653,7 @@ mod tests {
             write.1["message"]["params"],
             json!({"threadId":"guest-thread"})
         );
-        assert_eq!(receipt.certainty, RequestCertainty::Written);
+        assert_eq!(receipt.certainty(), RequestCertainty::Written);
         assert_eq!(deliveries.lock().unwrap().len(), 1);
         assert_eq!(*order.lock().unwrap(), ["notification", "ack", "ack"]);
     }
@@ -739,9 +731,9 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(receipt.certainty, RequestCertainty::Written);
+        assert_eq!(receipt.certainty(), RequestCertainty::Written);
         assert_eq!(
-            receipt.result,
+            receipt.response().cloned(),
             Some(ProviderResponse::Reply(json!({"ok":true})))
         );
         // Only the notification before the first server request is delivered

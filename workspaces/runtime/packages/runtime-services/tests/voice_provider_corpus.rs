@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::account_session_runtime::{
     AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
     RequestCertainty, SessionReceipt,
@@ -967,16 +968,30 @@ impl AccountSessionPort for MockAccountSession {
                 .pop_front()
                 .expect("scripted session outcome");
             Ok(SessionReceipt {
+                outcome: {
+                    let ticket = RequestTicket {
+                        generation: self.scope.generation,
+                        id: RequestId::Number(1),
+                        method: request.method,
+                    };
+                    match (certainty, result) {
+                        (RequestCertainty::Written, Some(response)) => {
+                            ReceiptOutcome::Written { ticket, response }
+                        }
+                        (RequestCertainty::Written, None) | (RequestCertainty::Unknown, _) => {
+                            ReceiptOutcome::Unknown {
+                                ticket: RequestTicket {
+                                    generation: self.scope.generation,
+                                    id: RequestId::Number(1),
+                                    method: request.method,
+                                },
+                            }
+                        }
+                        (RequestCertainty::NotSent, _) => ReceiptOutcome::NoLiveAccountWorker,
+                    }
+                },
                 scope: self.scope.clone(),
                 operation: request.operation,
-                ticket: Some(RequestTicket {
-                    generation: self.scope.generation,
-                    id: RequestId::Number(1),
-                    method: request.method,
-                }),
-                certainty,
-                result,
-                not_sent_reason: None,
                 replayed: false,
             })
         })
@@ -2008,7 +2023,147 @@ impl VoiceProviderPort for BlockingProvider {
                     self.release_start.notified().await;
                 }
                 Method::ThreadRealtimeStop => self.stop_entered.notify_one(),
-                _ => {}
+                Method::Initialize
+                | Method::Initialized
+                | Method::Ack
+                | Method::AccountLoginCancel
+                | Method::AccountLoginStart
+                | Method::AccountRateLimitResetCreditConsume
+                | Method::ThreadLoadedList
+                | Method::ConfigRead
+                | Method::SkillsExtraRootsSet
+                | Method::ModelList
+                | Method::AccountRead
+                | Method::AccountRateLimitsRead
+                | Method::ThreadStart
+                | Method::ThreadRealtimeAppendSpeech
+                | Method::ThreadRealtimeItemStarted
+                | Method::ThreadRealtimeTranscriptDelta
+                | Method::ThreadRealtimeTranscriptDone
+                | Method::ThreadRealtimeSdp
+                | Method::ThreadRealtimeError
+                | Method::ThreadRealtimeClosed
+                | Method::ThreadResume
+                | Method::ThreadRead
+                | Method::ThreadTurnsList
+                | Method::TurnStart
+                | Method::TurnSteer
+                | Method::TurnInterrupt
+                | Method::ThreadList
+                | Method::ThreadArchive
+                | Method::ThreadFork
+                | Method::ThreadNameSet
+                | Method::ThreadMetadataUpdate
+                | Method::ThreadSettingsUpdate
+                | Method::ThreadCompactStart
+                | Method::ThreadRollback
+                | Method::ThreadItemsList
+                | Method::ThreadGoalSet
+                | Method::ThreadGoalUpdated
+                | Method::ThreadUnarchive
+                | Method::ThreadUnsubscribe
+                | Method::ProcessSpawn
+                | Method::ProcessWriteStdin
+                | Method::ProcessKill
+                | Method::ProcessResizePty
+                | Method::CommandExec
+                | Method::CommandExecWrite
+                | Method::CommandExecResize
+                | Method::CommandExecTerminate
+                | Method::ThreadBackgroundTerminalsList
+                | Method::ThreadBackgroundTerminalsTerminate
+                | Method::ThreadBackgroundTerminalsClean
+                | Method::ThreadCommandExecutionBackground
+                | Method::ThreadQueueList
+                | Method::ClaudeState
+                | Method::ClaudeRepairReport
+                | Method::ClaudeFileBackups
+                | Method::ClaudeSettings
+                | Method::ClaudeActivity
+                | Method::ClaudeStopTask
+                | Method::ClaudeShellPolicy
+                | Method::ClaudeDiagnostics
+                | Method::ClaudeMoveVersions
+                | Method::McpServerReconnect
+                | Method::McpServerStatusList
+                | Method::SkillsList
+                | Method::OperationStatus
+                | Method::ReviewStart
+                | Method::BrowserAnswer
+                | Method::BrowserCallback
+                | Method::BrowserClose
+                | Method::BrowserWait
+                | Method::ClaudeCommands
+                | Method::ClaudeMoveExport
+                | Method::ClaudeMoveIdentity
+                | Method::ClaudeMovePreflight
+                | Method::ClaudeMoveProof
+                | Method::Detach
+                | Method::EventRead
+                | Method::Exec
+                | Method::Generate
+                | Method::Health
+                | Method::Info
+                | Method::LayrHealth
+                | Method::Next
+                | Method::Open
+                | Method::ProjectEnsure
+                | Method::ProjectExec
+                | Method::ProjectImport
+                | Method::ProviderList
+                | Method::Replay
+                | Method::ResponseStatus
+                | Method::RetireCommand
+                | Method::SecretsList
+                | Method::SecretsRemove
+                | Method::SecretsSet
+                | Method::ShareConfigure
+                | Method::ShareName
+                | Method::ShareStatus
+                | Method::Sign
+                | Method::Status
+                | Method::SyncMacApply
+                | Method::SyncMacHandoff
+                | Method::SyncMacHashes
+                | Method::SyncMacHead
+                | Method::SyncMacRead
+                | Method::SyncMacWorktree
+                | Method::VaultConfigure
+                | Method::VaultPush
+                | Method::VaultStatus
+                | Method::UploadBegin
+                | Method::UploadChunk
+                | Method::UploadCommit
+                | Method::Verify
+                | Method::Write
+                | Method::CurrentTimeRead
+                | Method::ItemToolCall
+                | Method::ItemCommandExecutionRequestApproval
+                | Method::ItemFileChangeRequestApproval
+                | Method::ItemPermissionsRequestApproval
+                | Method::McpServerElicitationRequest
+                | Method::ItemToolRequestUserInput
+                | Method::ItemStarted
+                | Method::ItemCompleted
+                | Method::ItemAgentMessageDelta
+                | Method::ItemReasoningTextDelta
+                | Method::ItemCommandExecutionOutputDelta
+                | Method::CommandExecOutputDelta
+                | Method::TurnStarted
+                | Method::TurnCompleted
+                | Method::TurnPlanUpdated
+                | Method::TurnDiffUpdated
+                | Method::ThreadClosed
+                | Method::ThreadStatusChanged
+                | Method::ThreadTokenUsageUpdated
+                | Method::ThreadShellPolicyUpdated
+                | Method::ThreadIdleCompactionUpdated
+                | Method::AccountLoginCompleted
+                | Method::AccountUpdated
+                | Method::AccountRateLimitsUpdated
+                | Method::ModelSafetyBufferingUpdated
+                | Method::ProviderGenerationStarted
+                | Method::ProtocolError => {}
             }
             let _ = (scope, operation_id, params, deadline);
             VoiceRequestReceipt {

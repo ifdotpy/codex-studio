@@ -52,7 +52,7 @@ function scopedProbeGuard(folder: string, pids: number[]) {
   for (const [name, executable] of [
     ["ps", "/bin/ps"],
     ["lsof", "/usr/sbin/lsof"],
-  ]) {
+  ] as const) {
     writeFileSync(
       path.join(bin, name),
       `#!${process.execPath}
@@ -103,8 +103,13 @@ test(
       ),
       start(["-e", WAIT], outside),
     ]);
-    const [named, working, stubborn, other] = children.map(({ pid }) => pid);
-    const pids = [named, working, stubborn, other];
+    const [named, working, stubborn, other] = [
+      children[0].pid,
+      children[1].pid,
+      children[2].pid,
+      children[3].pid,
+    ] as const;
+    const pids: number[] = [named, working, stubborn, other];
     const probes = scopedProbeGuard(folder, pids);
     try {
       const found = suiteProcesses(folder, { pids }).map(({ pid }) => pid);
