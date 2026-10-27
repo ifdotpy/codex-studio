@@ -534,8 +534,8 @@ async fn hold_agent_turn_with_gate(
                 .extra
                 .get(START_WAIT_FIELD)
                 .cloned()
-                .map(studio_runtime_schema::agent_progress::decode_stored_wait)
-                .transpose()?;
+                .and_then(|value| serde_json::from_value::<studio_runtime_schema::agent_progress::LegacyStartWait>(value).ok())
+                .and_then(studio_runtime_schema::agent_progress::LegacyStartWait::into_fresh);
             let wait_changed = if held {
                 let value = serde_json::to_value(AgentStartWait::Disk { epoch })?;
                 if agent.extra.get(START_WAIT_FIELD) != Some(&value) {
@@ -755,7 +755,7 @@ mod tests {
             .transaction_with_error(move |tx| {
                 let agent =
                     AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker", "rootId":"worker", "epoch":1,
-                    "status":"queued", "role":"implementer", "autoWake":true, "cwd":cwd}))?;
+                    "status":"queued", "role":"implementer", "autoWake":true, "cwd":cwd, "startWait":{"reason":"slot", "epoch":1, "runningTurns":null}}))?;
                 AgentRepository::put(tx, &agent)?;
                 crate::event_write::enqueue_event(
                     tx,

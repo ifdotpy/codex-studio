@@ -376,14 +376,16 @@ pub(crate) fn agent_start_wait(
             }
         }
     }
-    fn stored_wait<'de, D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<AgentStartWait>, D::Error> {
-        use serde::Deserialize;
-        Option::<Value>::deserialize(deserializer)?
-            .map(studio_runtime_schema::agent_progress::decode_stored_wait)
-            .transpose()
-            .map_err(serde::de::Error::custom)
+    #[derive(serde::Deserialize)]
+    struct WaitEpoch {
+        epoch: i64,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum StoredWait {
+        Known(studio_runtime_schema::agent_progress::LegacyStartWait),
+        Unusable(WaitEpoch),
+        Invalid(serde::de::IgnoredAny),
     }
     // Agent records are open documents; this typed projection reads only wait ownership.
     #[derive(serde::Deserialize)]
@@ -397,8 +399,7 @@ pub(crate) fn agent_start_wait(
         #[serde(default)]
         native_failure_hold: Option<NativeHold>,
         account_transfer_id: Option<String>,
-        #[serde(default, deserialize_with = "stored_wait")]
-        start_wait: Option<AgentStartWait>,
+        start_wait: Option<StoredWait>,
     }
     let source: Source = serde_json::from_value(record.clone())?;
     if !matches!(
@@ -409,33 +410,41 @@ pub(crate) fn agent_start_wait(
     ) {
         return Ok(None);
     }
-    let persisted = source
-        .start_wait
-        .filter(|wait| wait.epoch() == source.epoch);
+    if source.status == Some(studio_runtime_store::AgentStatus::Queued) {
+        let hold = if !source.auto_wake {
+            Some(AgentStartWait::Paused {
+                epoch: source.epoch,
+            })
+        } else if source.native_failure_hold.is_some_and(NativeHold::active) {
+            Some(AgentStartWait::NativeFailure {
+                epoch: source.epoch,
+            })
+        } else if source.account_transfer_id.is_some() {
+            Some(AgentStartWait::AccountTransfer {
+                epoch: source.epoch,
+            })
+        } else {
+            None
+        };
+        if hold.is_some() {
+            return Ok(hold);
+        }
+    }
+    let persisted = match source.start_wait {
+        Some(StoredWait::Known(wait)) if wait.epoch == source.epoch => match wait.into_fresh() {
+            Some(wait) => Some(wait),
+            None => return Ok(None),
+        },
+        Some(StoredWait::Unusable(wait)) if wait.epoch != source.epoch => None,
+        Some(StoredWait::Unusable(_)) | Some(StoredWait::Invalid(_)) => return Ok(None),
+        Some(StoredWait::Known(_)) | None => None,
+    };
     if source.status == Some(studio_runtime_store::AgentStatus::Starting) {
         return Ok(persisted);
     }
-    let hold = if !source.auto_wake {
-        Some(AgentStartWait::Paused {
-            epoch: source.epoch,
-        })
-    } else if source.native_failure_hold.is_some_and(NativeHold::active) {
-        Some(AgentStartWait::NativeFailure {
-            epoch: source.epoch,
-        })
-    } else if source.account_transfer_id.is_some() {
-        Some(AgentStartWait::AccountTransfer {
-            epoch: source.epoch,
-        })
-    } else {
-        None
-    };
-    Ok(Some(match hold {
-        Some(wait) => wait,
-        None => persisted.unwrap_or_else(|| AgentStartWait::DispatchPending {
-            epoch: source.epoch,
-        }),
-    }))
+    Ok(Some(persisted.unwrap_or(AgentStartWait::DispatchPending {
+        epoch: source.epoch,
+    })))
 }
 
 /// Build the managed renderer view from a record and explicit runtime context.

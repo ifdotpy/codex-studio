@@ -92,19 +92,73 @@ impl AgentStartWait {
     }
 }
 
-/// Decode stored waits from older writers that emitted null for unused details.
-/// Incomplete evidence and unknown fields remain errors.
-pub fn decode_stored_wait(
-    mut value: serde_json::Value,
-) -> Result<AgentStartWait, serde_json::Error> {
-    if let Some(object) = value.as_object_mut() {
-        for key in ["runningTurns", "maxRunningTurns", "until"] {
-            if object.get(key).is_some_and(serde_json::Value::is_null) {
-                object.remove(key);
+/// Older persisted and status waits may omit details and carry extensions.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyStartWait {
+    reason: LegacyReason,
+    #[schemars(range(min = 0, max = crate::shared_values::MAX_SAFE_INTEGER))]
+    pub epoch: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0, max = crate::shared_values::MAX_SAFE_INTEGER))]
+    running_turns: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0, max = crate::shared_values::MAX_SAFE_INTEGER))]
+    max_running_turns: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    until: Option<f64>,
+    #[serde(flatten)]
+    pub extensions: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum LegacyReason {
+    Slot,
+    Pause,
+    StartQueue,
+    Disk,
+    ModelCatalog,
+    ProviderSession,
+    Dependency,
+    DispatchPending,
+    Paused,
+    NativeFailure,
+    AccountTransfer,
+}
+
+impl LegacyStartWait {
+    /// Only complete evidence can become a fresh wait.
+    pub fn into_fresh(self) -> Option<AgentStartWait> {
+        match self.reason {
+            LegacyReason::Slot => Some(AgentStartWait::Slot {
+                epoch: self.epoch,
+                running_turns: self.running_turns?,
+                max_running_turns: self.max_running_turns?,
+            }),
+            LegacyReason::Pause => Some(AgentStartWait::Pause {
+                epoch: self.epoch,
+                until: self.until?,
+            }),
+            LegacyReason::StartQueue => Some(AgentStartWait::StartQueue { epoch: self.epoch }),
+            LegacyReason::Disk => Some(AgentStartWait::Disk { epoch: self.epoch }),
+            LegacyReason::ModelCatalog => Some(AgentStartWait::ModelCatalog { epoch: self.epoch }),
+            LegacyReason::ProviderSession => {
+                Some(AgentStartWait::ProviderSession { epoch: self.epoch })
+            }
+            LegacyReason::Dependency => Some(AgentStartWait::Dependency { epoch: self.epoch }),
+            LegacyReason::DispatchPending => {
+                Some(AgentStartWait::DispatchPending { epoch: self.epoch })
+            }
+            LegacyReason::Paused => Some(AgentStartWait::Paused { epoch: self.epoch }),
+            LegacyReason::NativeFailure => {
+                Some(AgentStartWait::NativeFailure { epoch: self.epoch })
+            }
+            LegacyReason::AccountTransfer => {
+                Some(AgentStartWait::AccountTransfer { epoch: self.epoch })
             }
         }
     }
-    serde_json::from_value(value)
 }
 
 /// A managed command currently starting or running for this agent.
@@ -146,6 +200,19 @@ fn reason_schema(generator: &mut schemars::SchemaGenerator) -> serde_json::Value
     serde_json::json!({"type": "string", "enum": values})
 }
 
+fn legacy_wait_schema(generator: &mut schemars::SchemaGenerator) -> serde_json::Value {
+    let mut schema = LegacyStartWait::json_schema(generator).to_value();
+    schema["additionalProperties"] = serde_json::json!({"$ref":"#/components/schemas/JsonValue"});
+    schema["properties"]["reason"] = reason_schema(generator);
+    // Serialization omits absent legacy details, while historical response
+    // records also permit explicit null on the wire.
+    for field in ["runningTurns", "maxRunningTurns", "until"] {
+        let property = schema["properties"][field].take();
+        schema["properties"][field] = serde_json::json!({"anyOf":[property, {"type":"null"}]});
+    }
+    schema
+}
+
 /// Schemas consumed by OpenAPI and its generated renderer contract.
 pub(crate) fn schemas() -> [(&'static str, serde_json::Value); 5] {
     let mut generator = schemars::generate::SchemaSettings::openapi3()
@@ -158,7 +225,7 @@ pub(crate) fn schemas() -> [(&'static str, serde_json::Value); 5] {
         ),
         (
             "StartWaitRecordResponse",
-            AgentStartWait::json_schema(&mut generator).to_value(),
+            legacy_wait_schema(&mut generator),
         ),
         ("StartWaitReason", reason_schema(&mut generator)),
         (
@@ -254,6 +321,24 @@ mod tests {
     }
 
     #[test]
+    fn legacy_status_schema_remains_open_and_allows_missing_or_null_details() {
+        let schema = schemas()[1].1.clone();
+        assert_eq!(
+            schema["additionalProperties"]["$ref"],
+            "#/components/schemas/JsonValue"
+        );
+        let required = schema["required"].as_array().expect("required");
+        assert!(!required.contains(&serde_json::json!("until")));
+        assert!(
+            schema["properties"]["until"]["anyOf"]
+                .as_array()
+                .expect("nullable")
+                .iter()
+                .any(|s| s["type"] == "null")
+        );
+    }
+
+    #[test]
     fn wait_schema_preserves_safe_integer_bounds() {
         let schema = schemas()[0].1.clone();
         for variant in schema["oneOf"].as_array().expect("wait variants") {
@@ -268,18 +353,61 @@ mod tests {
     }
 
     #[test]
-    fn stored_wait_accepts_legacy_nulls_without_inventing_evidence() {
-        assert_eq!(decode_stored_wait(serde_json::json!({"reason":"slot", "epoch":3, "runningTurns":1, "maxRunningTurns":2, "until":null})).unwrap(), AgentStartWait::Slot { epoch:3, running_turns:1, max_running_turns:2 });
-        assert!(
-            decode_stored_wait(
-                serde_json::json!({"reason":"slot", "epoch":3, "runningTurns":null})
-            )
-            .is_err()
+    fn legacy_reason_and_wire_schemas_match_the_wait_owner() {
+        let mut generator = schemars::generate::SchemaSettings::openapi3()
+            .for_serialize()
+            .into_generator();
+        assert_eq!(
+            LegacyReason::json_schema(&mut generator).to_value()["enum"],
+            reason_schema(&mut generator)["enum"]
         );
-        assert!(
-            decode_stored_wait(serde_json::json!({"reason":"disk", "epoch":3, "extra":null}))
-                .is_err()
+        let schemas = schemas();
+        let check = |schema: serde_json::Value, value: serde_json::Value| {
+            let root = serde_json::json!({"$ref":"#/components/schemas/Test", "components":{"schemas":{"Test":schema,"JsonValue":{}}}});
+            jsonschema::validator_for(&root)
+                .expect("schema")
+                .is_valid(&value)
+        };
+        for value in [
+            serde_json::json!({"reason":"slot", "epoch":1}),
+            serde_json::json!({"reason":"pause", "epoch":1, "until":null, "extension":{"kept":true}}),
+        ] {
+            assert!(check(schemas[1].1.clone(), value.clone()));
+            assert!(!check(schemas[0].1.clone(), value));
+        }
+        for invalid in [
+            serde_json::json!({"reason":"slot", "epoch":-1}),
+            serde_json::json!({"reason":"slot", "epoch":1, "runningTurns":-1}),
+            serde_json::json!({"reason":"slot", "epoch":1, "maxRunningTurns":9007199254740992_u64}),
+        ] {
+            assert!(!check(schemas[1].1.clone(), invalid));
+        }
+        assert!(check(
+            schemas[0].1.clone(),
+            serde_json::json!({"reason":"slot", "epoch":1, "runningTurns":2, "maxRunningTurns":3})
+        ));
+        assert!(!check(
+            schemas[0].1.clone(),
+            serde_json::json!({"reason":"slot", "epoch":1, "runningTurns":2, "maxRunningTurns":3, "extension":true})
+        ));
+    }
+
+    #[test]
+    fn legacy_wait_conversion_requires_evidence() {
+        let legacy: LegacyStartWait = serde_json::from_value(serde_json::json!({"reason":"slot", "epoch":3, "runningTurns":1, "maxRunningTurns":2, "until":null})).unwrap();
+        assert_eq!(
+            legacy.into_fresh(),
+            Some(AgentStartWait::Slot {
+                epoch: 3,
+                running_turns: 1,
+                max_running_turns: 2
+            })
         );
+        let incomplete: LegacyStartWait = serde_json::from_value(
+            serde_json::json!({"reason":"slot", "epoch":3, "runningTurns":null}),
+        )
+        .unwrap();
+        assert!(incomplete.into_fresh().is_none());
     }
 
     #[test]
