@@ -142,6 +142,37 @@ async fn message_send_agent_rows_are_bounded() {
 }
 
 #[tokio::test]
+async fn message_refuses_unknown_foreign_and_deleted_targets() {
+    let (_directory, store, oracle) = frozen::state().await;
+    let worker = oracle["agents"][1].clone();
+    let mut foreign = worker.clone();
+    foreign["id"] = json!("foreign-target");
+    foreign["rootId"] = json!("foreign-target");
+    let mut deleted = worker.clone();
+    deleted["id"] = json!("deleted-target");
+    deleted["deletedAt"] = json!(1);
+    let context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().into(),
+        turn: worker["turnId"].as_str().unwrap().into(),
+    };
+    store.transaction_with(move |tx| {
+        for agent in [foreign, deleted] {
+            studio_runtime_store::AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(agent).unwrap())?;
+        }
+        let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+        for (target, expected) in [("unknown-target", "Recipient conversation was deleted"), ("foreign-target", "Communication is limited to your team or user-grouped peer chat"), ("deleted-target", "Recipient conversation was deleted")] {
+            assert!(matches!(messages::send(tx, &snapshot, &json!({"target":target,"text":"hello"}), "refusal-witness", 20.0), Err(CallbackError::Invalid(message)) if message == expected));
+        }
+        Ok::<_, CallbackError>(())
+    }).await.unwrap();
+}
+
+#[tokio::test]
 async fn message_send_reads_agent_directory_once() {
     let (_directory, store, oracle) = frozen::state().await;
     let worker = oracle["agents"][1].clone();

@@ -1,10 +1,171 @@
 use super::*;
 use crate::submit_gates::{
-    AuthorizationRecords, AuthorizationSnapshot, StoredEvent, authorize_events,
+    AgentAuthorityRow, AuthorizationRecords, AuthorizationSnapshot, ProjectAuthorityRow,
+    SnapshotError, StoredEvent, authorize_events,
 };
 use std::collections::BTreeMap;
 use studio_runtime_schema::delivery::DeliveryMoment;
 use studio_runtime_store::{AgentId, AgentRepository, SyncDocumentsRepository};
+
+fn message_agents(
+    tx: &Transaction<'_>,
+    actor: &Value,
+    target: &str,
+) -> Result<Vec<AgentAuthorityRow>, CallbackError> {
+    let root = text(actor, "rootId")?;
+    let rows = studio_runtime_store::AgentIndexedReads::message_records(
+        tx,
+        [
+            Some(text(actor, "id")?),
+            Some(root),
+            actor["parentId"].as_str(),
+            Some(target),
+        ],
+        (target == "broadcast").then_some(root),
+    )?;
+    rows.into_iter()
+        .map(|(id, raw)| {
+            let value: AgentAuthorityRow =
+                serde_json::from_str(&raw).map_err(|_| records::invalid("runtime_agents", &id))?;
+            if value.id.as_deref() != Some(id.as_str()) {
+                return Err(records::invalid("runtime_agents", &id).into());
+            }
+            Ok(value)
+        })
+        .collect()
+}
+
+fn message_projects(
+    tx: &Transaction<'_>,
+    agents: &[AgentAuthorityRow],
+) -> Result<Vec<ProjectAuthorityRow>, CallbackError> {
+    let paths = agents
+        .iter()
+        .filter_map(|agent| agent.cwd.as_deref())
+        .filter_map(studio_runtime_store::path_identity::lexical_text)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut statement = tx.prepare_cached("SELECT id,CASE WHEN json_valid(record) THEN CASE WHEN json_type(record,'$.path')='text' THEN json_extract(record,'$.path') END END,record FROM runtime_projects ORDER BY rowid")?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut projects = Vec::new();
+    for row in rows {
+        let (id, path, raw) = row?;
+        if !studio_runtime_store::path_identity::lexical_text(path.as_deref().unwrap_or(&id))
+            .is_some_and(|path| paths.contains(&path))
+        {
+            continue;
+        }
+        let project: ProjectAuthorityRow =
+            serde_json::from_str(&raw).map_err(|_| records::invalid("runtime_projects", &id))?;
+        if project.id.as_deref() != Some(id.as_str()) {
+            return Err(records::invalid("runtime_projects", &id).into());
+        }
+        projects.push(project);
+    }
+    Ok(projects)
+}
+
+struct MessageAuthority {
+    records: AuthorizationRecords,
+    agents: BTreeMap<String, Result<AgentAuthorityRow, SnapshotError>>,
+    projects: BTreeMap<String, Result<ProjectAuthorityRow, SnapshotError>>,
+}
+
+impl MessageAuthority {
+    fn new(
+        agents: &[AgentAuthorityRow],
+        projects: &[ProjectAuthorityRow],
+    ) -> Result<Self, CallbackError> {
+        let mut paths = BTreeMap::new();
+        for path in agents
+            .iter()
+            .filter_map(|agent| agent.cwd.as_deref())
+            .chain(
+                projects
+                    .iter()
+                    .filter_map(|project| project.path.as_deref()),
+            )
+        {
+            if let Some(resolved) = studio_runtime_store::path_identity::lexical_text(path) {
+                paths.insert(path.to_owned(), resolved.to_string_lossy().into_owned());
+            }
+        }
+        let agents = agents
+            .iter()
+            .map(|agent| {
+                let id = agent
+                    .id
+                    .as_ref()
+                    .ok_or_else(|| CallbackError::Stored("runtime_agents/id".into()))?;
+                Ok((id.clone(), Ok(agent.clone())))
+            })
+            .collect::<Result<_, CallbackError>>()?;
+        let mut exact = BTreeMap::new();
+        let mut respelled = BTreeMap::new();
+        for project in projects {
+            let path = project
+                .path
+                .as_ref()
+                .ok_or_else(|| CallbackError::Stored("runtime_projects/path".into()))?;
+            match paths.get(path) {
+                Some(resolved) if resolved != path => {
+                    respelled
+                        .entry(resolved.clone())
+                        .or_insert_with(|| Ok(project.clone()));
+                }
+                _ => {
+                    exact.insert(path.clone(), Ok(project.clone()));
+                }
+            }
+        }
+        for (path, project) in respelled {
+            exact.entry(path).or_insert(project);
+        }
+        Ok(Self {
+            records: AuthorizationRecords {
+                recipient_id: String::new(),
+                agents: BTreeMap::new(),
+                rooms: BTreeMap::new(),
+                complaints: BTreeMap::new(),
+                projects: BTreeMap::new(),
+                event_meta: BTreeMap::new(),
+                events: Vec::new(),
+                resolved_paths: paths,
+            },
+            agents,
+            projects: exact,
+        })
+    }
+    fn authorize(
+        &mut self,
+        recipient: &str,
+        sender: &str,
+        room_id: &str,
+        root: Option<&str>,
+        members: &[String],
+    ) -> Result<(), CallbackError> {
+        self.records.recipient_id = recipient.into();
+        let mut snapshot = AuthorizationSnapshot::from_typed(
+            &self.records,
+            &self.agents,
+            &self.projects,
+            &[sender],
+        )
+        .map_err(|error| CallbackError::Stored(error.location))?;
+        snapshot
+            .authorize_message(sender, room_id, root, members)
+            .map_err(|_| {
+                CallbackError::Invalid(
+                    "Communication is limited to your team or user-grouped peer chat",
+                )
+            })
+    }
+}
 
 pub(super) fn authorization_records(
     tx: &Transaction<'_>,
@@ -261,14 +422,17 @@ fn send_as_actor(
     if target == who {
         return Err(CallbackError::Invalid("Select another agent"));
     }
-    let agents = records::all(tx, "runtime_agents")?;
+    let agents = message_agents(tx, actor, target)?;
     let recipients = if target == "broadcast" {
         agents
             .iter()
             .filter(|a| {
-                a["rootId"] == actor["rootId"]
-                    && a["id"] != *who
-                    && !studio_runtime_store::truthy(a.get("deletedAt"))
+                a.root_id.as_deref() == actor["rootId"].as_str()
+                    && a.id.as_deref() != Some(who)
+                    && !a
+                        .deleted_at
+                        .as_ref()
+                        .is_some_and(|deleted| deleted.is_deleted())
             })
             .cloned()
             .collect::<Vec<_>>()
@@ -276,7 +440,13 @@ fn send_as_actor(
         vec![
             agents
                 .iter()
-                .find(|a| a["id"] == target && !studio_runtime_store::truthy(a.get("deletedAt")))
+                .find(|a| {
+                    a.id.as_deref() == Some(target)
+                        && !a
+                            .deleted_at
+                            .as_ref()
+                            .is_some_and(|deleted| deleted.is_deleted())
+                })
                 .cloned()
                 .ok_or(CallbackError::Invalid("Recipient conversation was deleted"))?,
         ]
@@ -288,20 +458,33 @@ fn send_as_actor(
         ids.sort();
         json!({"id":format!("private:{}:{}",ids[0],ids[1]),"kind":"private","members":ids})
     };
-    let projects = records::all(tx, "runtime_projects")?;
-    let mut authority = authorization_records_from(&agents, &projects)?;
-    let directory = crate::sync_entity_context::RoomDirectory::resolve(agents, projects)?;
+    let projects = message_projects(tx, &agents)?;
+    let mut authority = MessageAuthority::new(&agents, &projects)?;
     let broadcast = target == "broadcast";
     let mut refused = serde_json::Map::new();
     let mut first_refusal = None;
     let mut admitted = Vec::with_capacity(recipients.len());
     for recipient in recipients {
-        match authorize(&mut authority, text(&recipient, "id")?, who, &room) {
+        let recipient_id = recipient
+            .id
+            .as_deref()
+            .ok_or_else(|| CallbackError::Stored("runtime_agents/id".into()))?;
+        let members = if broadcast {
+            Vec::new()
+        } else {
+            vec![who.to_owned(), target.to_owned()]
+        };
+        match authority.authorize(
+            recipient_id,
+            who,
+            text(&room, "id")?,
+            broadcast.then(|| text(actor, "rootId")).transpose()?,
+            &members,
+        ) {
             Ok(()) => {}
             // One member record that the gate cannot check must not refuse
             // the broadcast to the other members. The result names it.
             Err(CallbackError::Stored(location)) if broadcast => {
-                let recipient_id = text(&recipient, "id")?;
                 crate::diagnostics::log_stderr(format_args!(
                     "Broadcast {id} skips member {recipient_id}: invalid stored authority at {location}"
                 ));
@@ -314,14 +497,19 @@ fn send_as_actor(
             }
             Err(error) => return Err(error),
         }
-        if recipient["id"] != recipient["rootId"] {
-            let root = event_write::checked_agent(tx, text(&recipient, "rootId")?)?;
+        if recipient.id != recipient.root_id {
+            let root = event_write::checked_agent(
+                tx,
+                recipient
+                    .root_id
+                    .as_deref()
+                    .ok_or_else(|| CallbackError::Stored("runtime_agents/rootId".into()))?,
+            )?;
             event_write::assert_delegation(&root)?;
         }
         // Python `codex_radio.guard_message`: only the sender's live shared
         // reply turn blocks a private message to a fellow room member.
-        crate::radio_runtime::guard_message(tx, who, text(&recipient, "id")?)
-            .map_err(radio_guard_error)?;
+        crate::radio_runtime::guard_message(tx, who, recipient_id).map_err(radio_guard_error)?;
         admitted.push(recipient);
     }
     // When no member can be checked, nothing is sent.
@@ -350,6 +538,7 @@ fn send_as_actor(
     room["userHidden"] = json!(false);
     records::validate("runtime_rooms", &room_id, room.clone())?;
     tx.execute("INSERT INTO runtime_rooms(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![room_id,room.to_string()])?;
+    let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
     // Python projects the room immediately after writing runtime_rooms, before
     // it enqueues recipient events. Keep the shared global sync sequence in
     // that order; the room is projected again below after the chat message
@@ -361,7 +550,12 @@ fn send_as_actor(
     }
     let mut deliveries = serde_json::Map::new();
     for recipient in recipients {
-        let recipient_id = text(&recipient, "id")?;
+        let recipient_id = recipient
+            .id
+            .as_deref()
+            .ok_or_else(|| CallbackError::Stored("runtime_agents/id".into()))?;
+        let recipient =
+            records::get(tx, "runtime_agents", recipient_id)?.ok_or(CallbackError::Stale)?;
         let active = recipient["autoWake"] == true
             && !crate::sync_entity_context::agent_view_context(tx, &recipient, None)?.empty_lead
             && !(target == "broadcast"

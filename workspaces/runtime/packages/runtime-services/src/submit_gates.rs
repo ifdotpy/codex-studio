@@ -43,7 +43,8 @@ pub struct AgentAuthorityRow {
     pub is_lead: Option<bool>,
     pub deleted_at: Option<Deletion>,
     pub cwd: Option<String>,
-    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "StoredField::is_missing")]
+    pub name: StoredField<String>,
     pub shared_room_id: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -140,6 +141,27 @@ pub enum EventDenial {
 }
 
 impl AuthorizationSnapshot {
+    pub(crate) fn authorize_message(
+        &mut self,
+        sender: &str,
+        room_id: &str,
+        root: Option<&str>,
+        members: &[String],
+    ) -> Result<(), EventDenial> {
+        let room = match root {
+            Some(root) => RoomAuthority::Broadcast {
+                root_id: Some(root.to_owned()),
+            },
+            None => RoomAuthority::Private {
+                members: members.to_vec(),
+            },
+        };
+        self.rooms.insert(room_id.to_owned(), room);
+        self.authorize(&EventSnapshot::AgentMessage {
+            sender: Some(sender.to_owned()),
+            room: Some(room_id.to_owned()),
+        })
+    }
     fn same_team(&self, root: &str, sender: Option<&str>) -> bool {
         sender
             .and_then(|id| self.agents.get(id))
@@ -439,6 +461,35 @@ fn strings(value: Option<&Value>, location: &str) -> Result<Vec<String>, Snapsho
 }
 impl AuthorizationSnapshot {
     pub fn from_records(rows: &AuthorizationRecords) -> Result<Self, SnapshotError> {
+        let agents = rows
+            .agents
+            .iter()
+            .map(|(key, raw)| {
+                (
+                    key.clone(),
+                    serde_json::from_str(raw).map_err(|_| invalid(format!("agents/{key}"))),
+                )
+            })
+            .collect();
+        let projects = rows
+            .projects
+            .iter()
+            .map(|(key, raw)| {
+                (
+                    key.clone(),
+                    serde_json::from_str(raw).map_err(|_| invalid(format!("projects/{key}"))),
+                )
+            })
+            .collect();
+        Self::from_typed(rows, &agents, &projects, &[])
+    }
+
+    pub(crate) fn from_typed(
+        rows: &AuthorizationRecords,
+        agents: &BTreeMap<String, Result<AgentAuthorityRow, SnapshotError>>,
+        projects: &BTreeMap<String, Result<ProjectAuthorityRow, SnapshotError>>,
+        required_senders: &[&str],
+    ) -> Result<Self, SnapshotError> {
         if rows.recipient_id.is_empty() {
             return Err(invalid("recipient_id"));
         }
@@ -451,11 +502,10 @@ impl AuthorizationSnapshot {
             events: Vec::new(),
         };
         let mut malformed_agents = BTreeMap::new();
-        for (key, raw) in &rows.agents {
+        for (key, row) in agents {
             let location = format!("agents/{key}");
             let authority = (|| {
-                let row: AgentAuthorityRow =
-                    serde_json::from_str(raw).map_err(|_| invalid(&location))?;
+                let row = row.clone()?;
                 let id = row
                     .id
                     .filter(|id| !id.is_empty() && id == key)
@@ -516,10 +566,9 @@ impl AuthorizationSnapshot {
                 },
             );
         }
-        for (key, raw) in &rows.projects {
+        for (key, row) in projects {
             let location = format!("projects/{key}");
-            let row: ProjectAuthorityRow =
-                serde_json::from_str(raw).map_err(|_| invalid(&location))?;
+            let row = row.clone()?;
             let original = row
                 .path
                 .filter(|path| !path.trim().is_empty())
@@ -557,6 +606,11 @@ impl AuthorizationSnapshot {
         for event in &rows.events {
             snapshot.events.push(project_event(event, &rows.event_meta));
         }
+        for sender in required_senders {
+            if let Some(error) = malformed_agents.get(*sender) {
+                return Err(error.clone());
+            }
+        }
         for event in &snapshot.events {
             let sender = match event {
                 EventSnapshot::AgentMessage { sender, .. }
@@ -586,7 +640,7 @@ impl<T> StoredField<T> {
     fn is_missing(&self) -> bool {
         matches!(self, Self::Missing)
     }
-    fn value_or<'a>(&'a self, default: Option<&'a T>) -> Option<&'a T> {
+    pub(crate) fn value_or<'a>(&'a self, default: Option<&'a T>) -> Option<&'a T> {
         match self {
             Self::Missing => default,
             Self::Null => None,
@@ -1016,5 +1070,19 @@ mod tests {
         let snapshot = AuthorizationSnapshot::from_records(&records).expect("checked rows");
         assert!(snapshot.peer_pair("left", "right"));
         assert!(!snapshot.peer_pair("left", "left"));
+        let agents = records
+            .agents
+            .iter()
+            .map(|(key, raw)| (key.clone(), Ok(serde_json::from_str(raw).unwrap())))
+            .collect();
+        let projects = records
+            .projects
+            .iter()
+            .map(|(key, raw)| (key.clone(), Ok(serde_json::from_str(raw).unwrap())))
+            .collect();
+        let shared = AuthorizationSnapshot::from_typed(&records, &agents, &projects, &[])
+            .expect("typed rows");
+        assert!(shared.peer_pair("left", "right"));
+        assert!(!shared.peer_pair("left", "left"));
     }
 }
