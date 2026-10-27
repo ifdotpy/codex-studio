@@ -23,6 +23,7 @@ const activityLabels: Record<ResourceStreamState, string> = {
   "retry-scheduled": "Retry scheduled.",
   connecting: "Connecting…",
   open: "Waiting for server updates…",
+  "storage-slow": "Local storage is slow; waiting to save updates.",
   paused: "",
   offline: "No network.",
 };
@@ -49,6 +50,8 @@ export function selectMessageConnection(
   // The network hint governs visible copy, independently of server freshness.
   if (activity === "offline")
     return { ...connection, message: activityLabels.offline, icon: "offline" };
+  if (activity === "storage-slow")
+    return { ...connection, message: activityLabels["storage-slow"] };
   if (
     health === "live" ||
     health === "paused" ||

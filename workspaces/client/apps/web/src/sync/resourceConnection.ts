@@ -36,6 +36,8 @@ export type ResourceStreamState =
   | "retry-scheduled"
   | "connecting"
   | "open"
+  /** The open stream waits for a local write that outlasted its deadline. */
+  | "storage-slow"
   | "paused"
   | "offline";
 

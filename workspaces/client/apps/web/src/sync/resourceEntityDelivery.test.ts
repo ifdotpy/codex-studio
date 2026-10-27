@@ -175,7 +175,7 @@ describe("bounded stream entity delivery", () => {
     expect(failed).not.toHaveBeenCalled();
   });
 
-  it.each(["rejection", "deadline", "capacity"])(
+  it.each(["rejection", "capacity"])(
     "stops on persistence %s and requests recovery once for all affected resources",
     async (cause) => {
       let reject!: (error: Error) => void;
@@ -195,8 +195,6 @@ describe("bounded stream entity delivery", () => {
         resources: [{ kind: "work", agentId: "lead" }],
       });
       if (cause === "rejection") reject(new Error("base mismatch"));
-      else if (cause === "deadline")
-        await vi.advanceTimersByTimeAsync(PERSIST_DEADLINE_MS);
       else
         for (let i = 0; i < MAX_PENDING_RESOURCE_FRAMES; i++)
           delivery.receive(frame(i + 3));
@@ -214,6 +212,75 @@ describe("bounded stream entity delivery", () => {
       expect(dispatch).not.toHaveBeenCalled();
     },
   );
+
+  it("keeps waiting for a write that outlasts the deadline, then applies the frame", async () => {
+    let finish!: () => void;
+    const persist = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockResolvedValue(undefined);
+    const dispatch = vi.fn();
+    const failed = vi.fn();
+    const slow = vi.fn();
+    const delivery = new ResourceEntityDelivery(
+      persist,
+      dispatch,
+      failed,
+      slow,
+    );
+    delivery.receive(frame(1));
+    delivery.receive(frame(2));
+    await vi.advanceTimersByTimeAsync(PERSIST_DEADLINE_MS * 3);
+    expect(slow).toHaveBeenCalledOnce();
+    expect(failed).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(persist).toHaveBeenCalledOnce();
+    // The slow signal settles only when the write does.
+    const settled = (slow.mock.calls[0] as [Promise<void>])[0];
+    let cleared = false;
+    void settled.then(() => (cleared = true));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cleared).toBe(false);
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cleared).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dispatch.mock.calls.map(([event]) => event.revision)).toEqual([
+      1, 2,
+    ]);
+    expect(failed).not.toHaveBeenCalled();
+  });
+
+  it("still reports a rejected slow write as a failure", async () => {
+    let reject!: (error: Error) => void;
+    const persist = vi.fn(
+      () =>
+        new Promise<void>((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const failed = vi.fn();
+    const delivery = new ResourceEntityDelivery(
+      persist,
+      vi.fn(),
+      failed,
+      vi.fn(),
+    );
+    delivery.receive(frame(1));
+    await vi.advanceTimersByTimeAsync(PERSIST_DEADLINE_MS);
+    expect(failed).not.toHaveBeenCalled();
+    reject(new Error("quota exceeded"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(failed).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      expect.objectContaining({ message: "quota exceeded" }),
+    );
+  });
 
   it("silently drops a closed source and ignores its late rejection", async () => {
     let reject!: (error: Error) => void;

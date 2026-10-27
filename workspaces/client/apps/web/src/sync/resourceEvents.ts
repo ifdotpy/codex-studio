@@ -383,6 +383,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   let stopResume: (() => void) | undefined;
 
   let validatedServerFrameAt: number | undefined;
+  let storageSlow = false;
   let healthSequence = 0;
   const peerHealth = createPeerConnectionHealth();
   const serverFrames = new WeakMap<
@@ -412,7 +413,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (pageHidden()) return "paused";
     if (source)
       return sourceOpened
-        ? "open"
+        ? storageSlow
+          ? "storage-slow"
+          : "open"
         : reconnectRetryAt !== undefined
           ? "retry-scheduled"
           : "connecting";
@@ -943,6 +946,16 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     },
     dispatchEvent,
     (event, error) => recoverResourceApplication(event.resources, error),
+    (settled) => {
+      // Backpressure: the source takes no further frame until the write ends.
+      source?.holdUntil?.(settled);
+      storageSlow = true;
+      notifyConnectionListeners();
+      void settled.then(() => {
+        storageSlow = false;
+        notifyConnectionListeners();
+      });
+    },
   );
 
   let transferAssembler: EntityTransferAssembler | undefined;
