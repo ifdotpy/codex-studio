@@ -41,7 +41,7 @@ fn authorization_records_from(
         recipient_id: String::new(),
         agents: agents
             .iter()
-            .map(|a| Ok((text(&a, "id")?.to_owned(), a.to_string())))
+            .map(|a| Ok((text(a, "id")?.to_owned(), a.to_string())))
             .collect::<Result<_, CallbackError>>()?,
         rooms: BTreeMap::new(),
         complaints: BTreeMap::new(),
