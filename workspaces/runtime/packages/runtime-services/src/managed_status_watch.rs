@@ -1466,7 +1466,10 @@ mod tests {
             },
             AgentStartWait::Disk { epoch: 4 },
             AgentStartWait::ModelCatalog { epoch: 4 },
-            AgentStartWait::ProviderSession { epoch: 4 },
+            AgentStartWait::ProviderSession {
+                epoch: 4,
+                until: None,
+            },
             AgentStartWait::Dependency { epoch: 4 },
         ] {
             crate::account_start_gate::show_blocked(&store, vec![("queued".into(), wait.clone())])

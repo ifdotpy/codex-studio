@@ -51,6 +51,9 @@ pub enum AgentStartWait {
     ProviderSession {
         #[schemars(range(min = 0, max = crate::shared_values::MAX_SAFE_INTEGER))]
         epoch: i64,
+        /// The registry knows a deadline during retry backoff, but not initial startup.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until: Option<f64>,
     },
     Dependency {
         #[schemars(range(min = 0, max = crate::shared_values::MAX_SAFE_INTEGER))]
@@ -143,9 +146,10 @@ impl LegacyStartWait {
             LegacyReason::StartQueue => Some(AgentStartWait::StartQueue { epoch: self.epoch }),
             LegacyReason::Disk => Some(AgentStartWait::Disk { epoch: self.epoch }),
             LegacyReason::ModelCatalog => Some(AgentStartWait::ModelCatalog { epoch: self.epoch }),
-            LegacyReason::ProviderSession => {
-                Some(AgentStartWait::ProviderSession { epoch: self.epoch })
-            }
+            LegacyReason::ProviderSession => Some(AgentStartWait::ProviderSession {
+                epoch: self.epoch,
+                until: self.until,
+            }),
             LegacyReason::Dependency => Some(AgentStartWait::Dependency { epoch: self.epoch }),
             LegacyReason::DispatchPending => {
                 Some(AgentStartWait::DispatchPending { epoch: self.epoch })
@@ -305,6 +309,22 @@ mod tests {
                 openapi.pointer(&format!("/components/schemas/{name}")),
                 Some(&schema)
             );
+        }
+    }
+
+    #[test]
+    fn provider_retry_deadline_survives_legacy_and_fresh_projection() {
+        for value in [
+            serde_json::json!({"reason":"provider_session","epoch":3}),
+            serde_json::json!({"reason":"provider_session","epoch":3,"until":123.5}),
+        ] {
+            let legacy: LegacyStartWait = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(legacy.into_fresh().unwrap()).unwrap(),
+                value
+            );
+            let fresh: AgentStartWait = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(fresh).unwrap(), value);
         }
     }
 

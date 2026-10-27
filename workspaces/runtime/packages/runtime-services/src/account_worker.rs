@@ -128,7 +128,7 @@ impl PreparationWaitReason {
         use studio_runtime_schema::agent_progress::AgentStartWait;
         match self {
             Self::ModelCatalog => AgentStartWait::ModelCatalog { epoch },
-            Self::ProviderSession => AgentStartWait::ProviderSession { epoch },
+            Self::ProviderSession => AgentStartWait::ProviderSession { epoch, until: None },
             Self::Dependency => AgentStartWait::Dependency { epoch },
         }
     }

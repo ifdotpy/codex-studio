@@ -279,6 +279,7 @@ test("each runtime enum alias identifies its exact component in both output mode
       schemas: {
         ...schema.components.schemas,
         JsonValue: {
+          type: ["string", "array"],
           anyOf: [
             { type: "string" },
             {
@@ -311,7 +312,7 @@ test("each runtime enum alias identifies its exact component in both output mode
     for (const [identifier, owner] of [
       ["same_values", "same-values"],
       ["AnotherOwner", "AnotherOwner"],
-    ]) {
+    ] as const) {
       const index = source.statements.findIndex(
         (node) =>
           ts.isVariableStatement(node) &&
