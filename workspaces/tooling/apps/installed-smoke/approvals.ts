@@ -4,6 +4,14 @@ import { RequestStatus } from "../../../client/apps/web/src/generated/api.ts";
 import type { components } from "../../../client/apps/web/src/generated/api.ts";
 
 type Schema = components["schemas"];
+type Request = Pick<
+  Schema["RequestEntityDto"],
+  "id" | "agent" | "method" | "status"
+>;
+type Monitor = Pick<
+  Schema["MonitorEntityDto"],
+  "id" | "agent" | "status" | "exitCode"
+>;
 const [
   url,
   agent,
@@ -55,7 +63,8 @@ const targets = [
 ] as const;
 const signal = AbortSignal.timeout(duration * 1000);
 const base = url.replace(/\/$/, "");
-const records = new Map<string, Record<string, unknown>>();
+const requests = new Map<string, Request>();
+const monitors = new Map<string, Monitor>();
 const sequences = new Map<string, number>();
 const removed = new Set<string>();
 const events: object[] = [];
@@ -64,6 +73,42 @@ const startedAt = new Date().toISOString();
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function request(value: unknown, id: string): Request {
+  if (
+    !record(value) ||
+    value.id !== id ||
+    typeof value.agent !== "string" ||
+    typeof value.method !== "string" ||
+    typeof value.status !== "string"
+  )
+    throw new Error(`Invalid request: ${id}`);
+  return {
+    id,
+    agent: value.agent,
+    method: value.method,
+    status:
+      value.status === RequestStatus.pending
+        ? RequestStatus.pending
+        : undefined,
+  };
+}
+function monitor(value: unknown, id: string): Monitor {
+  if (
+    !record(value) ||
+    value.id !== id ||
+    typeof value.agent !== "string" ||
+    typeof value.status !== "string" ||
+    (value.exitCode != null && typeof value.exitCode !== "number")
+  )
+    throw new Error(`Invalid monitor: ${id}`);
+  const status =
+    value.status === "approval" ||
+    value.status === "completed" ||
+    value.status === "cancelled"
+      ? value.status
+      : undefined;
+  return { id, agent: value.agent, status, exitCode: value.exitCode };
 }
 async function get(route: string): Promise<unknown> {
   const response = await fetch(base + route, { signal });
@@ -91,13 +136,15 @@ function apply(doc: unknown, fromStream: boolean) {
   if (doc.seq <= (sequences.get(key) ?? 0)) return;
   sequences.set(key, doc.seq);
   if (doc.op === "delete") {
-    records.delete(key);
+    if (doc.collection === "request") requests.delete(doc.id);
+    else monitors.delete(doc.id);
     if (fromStream && ready && doc.collection === "request")
       removed.add(doc.id);
   } else {
-    if (!record(doc.value)) throw new Error(`Invalid entity value: ${key}`);
-    records.set(key, doc.value);
-    if (doc.collection === "request") removed.delete(doc.id);
+    if (doc.collection === "request") {
+      requests.set(doc.id, request(doc.value, doc.id));
+      removed.delete(doc.id);
+    } else monitors.set(doc.id, monitor(doc.value, doc.id));
   }
   if (fromStream)
     events.push({
@@ -129,14 +176,16 @@ async function baseline() {
   }
 }
 function pending(t: (typeof targets)[number]) {
-  const request = records.get(`request:${t.requestId}`);
-  const monitor = records.get(`monitor:${t.monitorId}`);
+  const request = requests.get(t.requestId);
+  const monitor = monitors.get(t.monitorId);
   return (
-    request?.agent === agent &&
-    request?.method === "monitor/approve" &&
-    request?.status === RequestStatus.pending &&
-    monitor?.agent === agent &&
-    monitor?.status === "approval"
+    request !== undefined &&
+    monitor !== undefined &&
+    request.agent === agent &&
+    request.method === "monitor/approve" &&
+    request.status === RequestStatus.pending &&
+    monitor.agent === agent &&
+    monitor.status === "approval"
   );
 }
 function markerLines(file: string) {
@@ -153,16 +202,17 @@ function verify() {
       "Did not observe both exact pending approval cards before their decisions",
     );
   for (const t of targets) {
-    const monitor = records.get(`monitor:${t.monitorId}`);
+    const monitor = monitors.get(t.monitorId);
     const expected = t.decision === "accept" ? "completed" : "cancelled";
-    if (!removed.has(t.requestId) || records.has(`request:${t.requestId}`))
+    if (!removed.has(t.requestId) || requests.has(t.requestId))
       throw new Error(
         `${t.decision}: approval request removal was not witnessed over SSE`,
       );
     if (
-      monitor?.agent !== agent ||
-      monitor?.status !== expected ||
-      (t.decision === "accept" && monitor?.exitCode !== 0)
+      monitor === undefined ||
+      monitor.agent !== agent ||
+      monitor.status !== expected ||
+      (t.decision === "accept" && monitor.exitCode !== 0)
     )
       throw new Error(
         `${t.decision}: monitor did not reach ${expected} successfully`,

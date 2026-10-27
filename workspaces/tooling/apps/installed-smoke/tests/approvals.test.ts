@@ -5,6 +5,9 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import type { components } from "../../../../client/apps/web/src/generated/api.ts";
+
+type Schema = components["schemas"];
 
 for (const scenario of [
   "success",
@@ -18,65 +21,106 @@ for (const scenario of [
     const declined = path.join(dir, "declined");
     let changed = false;
     let stream: http.ServerResponse | undefined;
-    const document = (
-      collection: string,
-      id: string,
-      seq: number,
-      value?: object,
-    ) =>
-      value
-        ? { collection, id, seq, op: "upsert", value }
-        : { collection, id, seq, op: "delete" };
     const pending = [
-      document("request", "r1", 1, {
+      {
+        collection: "request",
         id: "r1",
-        agent: scenario === "wrong-owner" ? "other" : "agent",
-        method: "monitor/approve",
-        status: "pending",
-        params: { command: "echo run", cwd: "/tmp" },
-      }),
-      document("request", "r2", 2, {
+        seq: 1,
+        op: "upsert",
+        value: {
+          id: "r1",
+          agent: scenario === "wrong-owner" ? "other" : "agent",
+          method: "monitor/approve",
+          status: "pending",
+          params: { command: "echo run", cwd: "/tmp" },
+        },
+      },
+      {
+        collection: "request",
         id: "r2",
-        agent: "agent",
-        method: "monitor/approve",
-        status: "pending",
-        params: { command: "echo run", cwd: "/tmp" },
-      }),
-      document("monitor", "m1", 3, {
+        seq: 2,
+        op: "upsert",
+        value: {
+          id: "r2",
+          agent: "agent",
+          method: "monitor/approve",
+          status: "pending",
+          params: { command: "echo run", cwd: "/tmp" },
+        },
+      },
+      {
+        collection: "monitor",
         id: "m1",
-        agent: "agent",
-        status: "approval",
-      }),
-      document("monitor", "m2", 4, {
+        seq: 3,
+        op: "upsert",
+        value: { id: "m1", agent: "agent", status: "approval" },
+      },
+      {
+        collection: "monitor",
         id: "m2",
-        agent: "agent",
-        status: "approval",
-      }),
-    ];
+        seq: 4,
+        op: "upsert",
+        value: { id: "m2", agent: "agent", status: "approval" },
+      },
+    ] satisfies Schema["SyncEntity"][];
     const resolved = [
-      document("request", "r1", 5),
-      document("request", "r2", 6),
-      document("monitor", "m1", 7, {
+      { collection: "request", id: "r1", seq: 5, op: "delete" },
+      { collection: "request", id: "r2", seq: 6, op: "delete" },
+      {
+        collection: "monitor",
         id: "m1",
-        agent: "agent",
-        status: "completed",
-        exitCode: 0,
-      }),
-      document("monitor", "m2", 8, {
+        seq: 7,
+        op: "upsert",
+        value: { id: "m1", agent: "agent", status: "completed", exitCode: 0 },
+      },
+      {
+        collection: "monitor",
         id: "m2",
-        agent: "agent",
-        status: "cancelled",
-      }),
-    ];
+        seq: 8,
+        op: "upsert",
+        value: { id: "m2", agent: "agent", status: "cancelled" },
+      },
+    ] satisfies Schema["SyncEntity"][];
+    const event = (
+      reason: "initial" | "change",
+      documents: Schema["SyncEntity"][],
+    ): Schema["ResourceChangeEvent"] => ({
+      epoch: "epoch",
+      protocol: 4,
+      reason,
+      resources: [{ kind: "state" }],
+      resourceVersions: [
+        {
+          resource: { kind: "state" },
+          revision: 8,
+          entityChanges: { after: 4, through: 8, documents },
+        },
+      ],
+      revision: 8,
+      workspaceId: "fixture",
+    });
     const server = http.createServer((req, res) => {
       const url = new URL(req.url ?? "", "http://fixture");
       if (url.pathname === "/api/sync/protocol")
-        return res.end(JSON.stringify({ protocolVersion: 4 }));
+        return res.end(
+          JSON.stringify({
+            protocolVersion: 4,
+            capabilities: [],
+            maxEntityPage: 500,
+            maxOtherPage: 100,
+            maxStreamBytes: 1,
+            maxStreamDocuments: 1,
+            pullEndpoint: "/api/sync/pull",
+            scopes: [],
+            streamEndpoint: "/api/sync/stream",
+            supportedVersions: [4],
+          } satisfies Schema["SyncProtocolResponse"]),
+        );
       if (url.pathname === "/api/sync/stream") {
         stream = res;
         res.writeHead(200, { "content-type": "text/event-stream" });
         res.write(
-          `event: resources\ndata: ${JSON.stringify({ reason: "initial", resourceVersions: [] })}\n\n`,
+          `event: resources\ndata: ${JSON.stringify(event("initial", []))}\n\n`,
         );
         return;
       }
@@ -86,10 +130,12 @@ for (const scenario of [
       );
       return res.end(
         JSON.stringify({
+          generation: 1,
+          workspaceId: "fixture",
           checkpoint: { seq: documents.at(-1)?.seq ?? after },
           maxSeq: changed ? 8 : 4,
           documents,
-        }),
+        } satisfies Schema["SyncPullResponse"]),
       );
     });
     await new Promise<void>((resolve) =>
@@ -123,8 +169,9 @@ for (const scenario of [
           scenario === "no-removal"
             ? resolved.filter((doc) => doc.id !== "r2")
             : resolved;
-        stream?.write(
-          `event: resources\ndata: ${JSON.stringify({ reason: "change", resourceVersions: [{ entityChanges: { documents } }] })}\n\n`,
+        assert.ok(stream);
+        stream.write(
+          `event: resources\ndata: ${JSON.stringify(event("change", documents))}\n\n`,
         );
       }
     });
