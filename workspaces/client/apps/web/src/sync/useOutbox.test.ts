@@ -147,6 +147,7 @@ function databaseFixture(
     database,
     docs,
     add,
+    emit,
     findExecutions: () => findExecutions,
     subscriptions: () => subscriptions,
     publishReceipt: (value: unknown) => {
@@ -191,6 +192,26 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+it("decodes each outbox snapshot once when publishing", async () => {
+  vi.stubGlobal("navigator", { onLine: false });
+  const fixture = databaseFixture(
+    [3, 1, 2].map((created) => ({
+      id: `message-${created}`,
+      body: { id: `message-${created}`, room: "chat", text: "hello" },
+      status: "queued",
+      created,
+    })),
+  );
+  mocks.syncDatabase.mockResolvedValue(fixture.database);
+  const unmount = mount();
+  await flushMicrotasks();
+  const parse = vi.spyOn(JSON, "parse");
+  fixture.emit();
+  expect(parse.mock.calls.length).toBe(3);
+  parse.mockRestore();
+  unmount();
 });
 
 it("does not rescan an idle outbox on a timer", async () => {

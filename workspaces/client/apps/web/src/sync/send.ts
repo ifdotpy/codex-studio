@@ -100,13 +100,19 @@ function readIntention(payload: string): Intention {
   return JSON.parse(payload);
 }
 
-const queuedDocuments = (docs: RxDocument<SyncDocument>[]) =>
-  docs
-    .filter((doc) => readIntention(doc.getLatest().payload).status === "queued")
+const snapshots = (docs: RxDocument<SyncDocument>[]) =>
+  docs.map((doc) => ({
+    doc,
+    intention: readIntention(doc.getLatest().payload),
+  }));
+
+const queuedDocuments = (entries: ReturnType<typeof snapshots>) =>
+  entries
+    .filter(({ intention }) => intention.status === "queued")
     .sort(
       (a, b) =>
-        readIntention(a.payload).created - readIntention(b.payload).created ||
-        a.id.localeCompare(b.id),
+        a.intention.created - b.intention.created ||
+        a.doc.id.localeCompare(b.doc.id),
     );
 
 const updateIntention = (
@@ -325,11 +331,10 @@ export function createOutbox(options: {
           return intentionResult(value);
         const room = `${workspaceId}:${JSON.stringify(value.body.room)}`;
         if (sendingRooms.has(room)) return intentionResult(value);
-        const first = queuedDocuments(await db.outbox.find().exec()).find(
-          (queued) =>
-            readIntention(queued.payload).body.room === value.body.room,
-        );
-        if (first && first.id !== doc.id) return intentionResult(value);
+        const first = queuedDocuments(
+          snapshots(await db.outbox.find().exec()),
+        ).find(({ intention }) => intention.body.room === value.body.room);
+        if (first && first.doc.id !== doc.id) return intentionResult(value);
         // Serialize each chat on this device, including browsers without Web Locks.
         if (sendingRooms.has(room)) return intentionResult(value);
         sendingRooms.add(room);
@@ -641,8 +646,8 @@ export function createOutbox(options: {
           const { db } = await syncDatabase();
           const rooms = [
             ...new Set<string>(
-              queuedDocuments(await db.outbox.find().exec()).map(
-                (doc) => readIntention(doc.payload).body.room,
+              queuedDocuments(snapshots(await db.outbox.find().exec())).map(
+                ({ intention }) => intention.body.room,
               ),
             ),
           ];
@@ -653,11 +658,11 @@ export function createOutbox(options: {
               while (!stop && !isApiSchemaMismatch()) {
                 // Re-read after acceptance so a message saved during HTTP does
                 // not wait for the polling timer. Preserve order within each chat.
-                const doc = queuedDocuments(await db.outbox.find().exec()).find(
-                  (queued) => readIntention(queued.payload).body.room === room,
-                );
-                if (!doc) break;
-                const result = await once(doc).catch((e) => {
+                const queued = queuedDocuments(
+                  snapshots(await db.outbox.find().exec()),
+                ).find(({ intention }) => intention.body.room === room);
+                if (!queued) break;
+                const result = await once(queued.doc).catch((e) => {
                   // Per-message rejection is already stored beside that message.
                   if (!(e instanceof ApiError)) throw e;
                 });
@@ -705,8 +710,9 @@ export function createOutbox(options: {
           });
       };
       const handleOutboxDocuments = (docs: RxDocument<SyncDocument>[]) => {
+        const entries = snapshots(docs);
         const nextQueued = JSON.stringify(
-          queuedDocuments(docs).map((doc) => doc.id),
+          queuedDocuments(entries).map(({ doc }) => doc.id),
         );
         const queuedChanged = nextQueued !== queuedIdentity;
         if (queuedChanged) {
@@ -715,8 +721,8 @@ export function createOutbox(options: {
           void drain();
         }
         setEntries(
-          docs
-            .map((doc) => ({ id: doc.id, ...readIntention(doc.payload) }))
+          entries
+            .map(({ doc, intention }) => ({ id: doc.id, ...intention }))
             .sort((a, b) => a.created - b.created),
         );
         return queuedChanged;
