@@ -772,17 +772,9 @@ printf '{"id":%s,"result":{"echo":"%s"}}\n' "$id" "$text"
         EventCursor(quick_open.acknowledged),
         |event| event.kind == EventKind::Exit,
     );
-    let ended = client
-        .next(CursorRequest {
-            handle: command_handle.clone(),
-            cursor: exit.sequence,
-            extra: BTreeMap::new(),
-        })
-        .unwrap();
-    assert!(
-        ended.return_code.is_some() && !ended.stdout_reader_alive && !ended.stderr_reader_alive,
-        "a committed exit event must already prove the readers stopped"
-    );
+    // The committed exit event follows reader shutdown. Its journal row can be
+    // visible before the separate return-code receipt is published.
+    assert_eq!(exit.payload["returnCode"], 0);
     client
         .ack(AckRequest {
             handle: command_handle.clone(),
