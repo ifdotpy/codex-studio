@@ -84,6 +84,7 @@ default-filter = '''
     (package(=studio-runtime-store) & kind(lib) & (test(scoped_page_reads_only_its_collection_and_id) | test(pull_page_without_priority_stops_at_limit))) |
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(open_recreates_entity_scope_indexes_on_existing_state)) |
     (package(=studio-runtime-http) & kind(lib) & test(incremental_fingerprint_handles_offscreen_moves_and_deletion)) |
+    (package(=studio-runtime-http) & kind(lib) & (test(unchanged_resource_evaluations_are_paced) | test(gated_process_provider_does_not_block_another_stream))) |
     (package(=studio-runtime-services) & kind(lib) & (test(unrelated_content_reads_do_not_wait_for_a_projection) | test(older_projection_cannot_overwrite_a_newer_revision) | test(incremental_projection_receives_the_previous_entity_snapshot))) |
     (package(=studio-runtime-http) & kind(lib) & test(/^bounded_entities::tests::desktop_source_projects_legacy_native_rotation_without_mutating_status$/)) |
     (package(=studio-runtime-server) & kind(lib) & test(/^provider_ports::tests::supervisor_health_(accepts_current_protocol_and_preserves_exact_handles|rejects_incompatible_or_degraded_status)$/)) |
@@ -311,6 +312,7 @@ default-filter = '''
     (package(=studio-runtime-store) & kind(lib) & (test(scoped_page_reads_only_its_collection_and_id) | test(pull_page_without_priority_stops_at_limit))) |
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(open_recreates_entity_scope_indexes_on_existing_state)) |
     (package(=studio-runtime-http) & kind(lib) & test(incremental_fingerprint_handles_offscreen_moves_and_deletion)) |
+    (package(=studio-runtime-http) & kind(lib) & (test(unchanged_resource_evaluations_are_paced) | test(gated_process_provider_does_not_block_another_stream))) |
     (package(=studio-runtime-services) & kind(lib) & (test(unrelated_content_reads_do_not_wait_for_a_projection) | test(older_projection_cannot_overwrite_a_newer_revision) | test(incremental_projection_receives_the_previous_entity_snapshot))) |
     (package(=studio-runtime-http) & kind(lib) & test(/^bounded_entities::tests::desktop_source_projects_legacy_native_rotation_without_mutating_status$/)) |
     (package(=studio-runtime-server) & kind(lib) & test(/^provider_ports::tests::supervisor_health_(accepts_current_protocol_and_preserves_exact_handles|rejects_incompatible_or_degraded_status)$/)) |

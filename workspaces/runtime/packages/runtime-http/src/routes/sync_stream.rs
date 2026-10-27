@@ -1420,6 +1420,7 @@ async fn next_frame(
                 _ => return None,
             };
         state.last_revision = view.cursor.revision;
+        state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
         if !view.resources.is_empty() {
             state.consecutive_token_frames = 0;
             let (sequence, batch) = if state.http_state.is_some() {
@@ -1505,7 +1506,6 @@ async fn next_frame(
             if event.resources.is_empty() && state.entity_transfers.is_empty() {
                 continue;
             }
-            state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
             if let Some(http) = &state.http_state {
                 append_progress_frames(http, &view, &mut state.initial).await;
             }
@@ -5180,6 +5180,173 @@ mod tests {
                 .expect("data"),
         )
         .expect("document")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unchanged_resource_evaluations_are_paced() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use studio_runtime_services::account_session_runtime::{
+            AccountSessionError, AccountSessionPort,
+        };
+        struct CountingLimits(AtomicUsize);
+        impl AccountSessionPort for CountingLimits {
+            fn limits_snapshot(&self, account: &str) -> Result<Value, AccountSessionError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({"accountKey":account,"data":null,"error":null,"at":null}))
+            }
+        }
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let tokens = TokenRateHub::new();
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let port = Arc::new(CountingLimits(AtomicUsize::new(0)));
+        let mut http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            String::new(),
+            4321,
+            None,
+            None,
+            None,
+        );
+        http.account_session = Some(port.clone());
+        let resources = vec![json!({"kind":"limits","accountKey":"default"})];
+        notifications
+            .changes_since_with_incremental_content(&resources, None, |resource, previous| {
+                incremental_resource_content(http.clone(), resource, previous)
+            })
+            .await
+            .expect("baseline");
+        port.0.store(0, Ordering::SeqCst);
+        let mut state = test_stream(&hub, &tokens, notifications, resources);
+        state.http_state = Some(http);
+        let mut pending = Box::pin(next_frame(state));
+        assert!(futures_util::poll!(&mut pending).is_pending());
+        for _ in 0..4 {
+            hub.notify_one();
+            assert!(futures_util::poll!(&mut pending).is_pending());
+        }
+        assert_eq!(
+            port.0.load(Ordering::SeqCst),
+            1,
+            "unchanged publications share the pacing window"
+        );
+        tokio::time::advance(SYNC_FRAME_MIN_INTERVAL).await;
+        assert!(futures_util::poll!(&mut pending).is_pending());
+        assert_eq!(
+            port.0.load(Ordering::SeqCst),
+            2,
+            "the coalesced publication is evaluated at the deadline"
+        );
+    }
+
+    #[tokio::test]
+    async fn gated_process_provider_does_not_block_another_stream() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use studio_runtime_services::account_session_runtime::{
+            AccountSessionError, AccountSessionFuture, AccountSessionPort, ConnectionScope,
+            ProviderRequest, SessionReceipt,
+        };
+        struct GatedProvider {
+            entered: tokio::sync::Notify,
+            release: tokio::sync::Notify,
+            limits: AtomicUsize,
+        }
+        impl AccountSessionPort for GatedProvider {
+            fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+                Some(ConnectionScope {
+                    account: account.into(),
+                    connection: "connection".into(),
+                    generation: 1,
+                })
+            }
+            fn provider_request(
+                &self,
+                request: ProviderRequest,
+            ) -> AccountSessionFuture<'_, SessionReceipt> {
+                Box::pin(async move {
+                    assert_eq!(request.method.as_str(), "thread/read");
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                    Err(AccountSessionError::Unknown)
+                })
+            }
+            fn limits_snapshot(&self, account: &str) -> Result<Value, AccountSessionError> {
+                self.limits.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({"accountKey":account,"data":null,"error":null,"at":null}))
+            }
+        }
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("store"),
+        );
+        store.transaction(|tx| {
+            let owner = json!({"id":"owner","rootId":"owner","epoch":1,"status":"interrupted","accountKey":"default","provider":"claude","threadId":"thread","turnId":"turn","inFlight":false,"autoWake":false,"nativeResponseTurn":"turn","restartRecovery":{"stage":"held","epoch":1,"accountKey":"default","threadId":"thread","turnId":null},"disconnectRecovery":{"source":"restart","epoch":1,"accountKey":"default","threadId":"thread"}});
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('owner',?1)", [owner.to_string()])?;
+            Ok(())
+        }).await.expect("held owner");
+        let port = Arc::new(GatedProvider {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            limits: AtomicUsize::new(0),
+        });
+        let mut http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        http.account_session = Some(port.clone());
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let blocked = {
+            let notifications = notifications.clone();
+            let http = http.clone();
+            tokio::spawn(async move {
+                notifications
+                    .changes_since_with_incremental_content(
+                        &[json!({"kind":"processes","agentId":"owner"})],
+                        None,
+                        |resource, previous| {
+                            incremental_resource_content(http.clone(), resource, previous)
+                        },
+                    )
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), port.entered.notified())
+            .await
+            .expect("provider read started");
+        let tokens = TokenRateHub::new();
+        let mut other = test_stream(
+            &hub,
+            &tokens,
+            notifications,
+            vec![json!({"kind":"limits","accountKey":"default"})],
+        );
+        other.http_state = Some(http);
+        other.heartbeat = interval_at(Instant::now(), Duration::from_secs(15));
+        hub.notify_one();
+        let (frame, other) = tokio::time::timeout(Duration::from_secs(2), next_frame(other))
+            .await
+            .expect("other stream frame")
+            .expect("open stream");
+        assert_eq!(
+            event_document(frame).await["resources"][0]["kind"],
+            "limits"
+        );
+        assert_eq!(port.limits.load(Ordering::SeqCst), 1);
+        let (heartbeat, _) = tokio::time::timeout(Duration::from_secs(2), next_frame(other))
+            .await
+            .expect("other stream heartbeat")
+            .expect("open stream");
+        assert!(event_document(heartbeat).await.get("resources").is_none());
+        port.release.notify_one();
+        blocked.await.expect("provider task").expect("projection");
     }
 
     #[test]
