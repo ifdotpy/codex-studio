@@ -3,14 +3,12 @@
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
 
-use crate::StoreResult;
 use crate::records::{RecordOrder, RecordPredicate, Table, UsageResumeRecord};
 use crate::schema::{SchemaRequirements, TableRequirement};
+use crate::{StoreError, StoreResult, Transaction};
 
 pub const MAX_PERSISTED_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PERSISTED_DOCUMENT_DEPTH: usize = 128;
-/// Namespace of the single durable observation receipt per account. Unit: key prefix.
-const LIMITS_OBSERVATION_PREFIX: &str = "account-limits-observation:";
 /// Current Claude account sign-in refusal, also retained by the retired auth-wait migration.
 pub const CLAUDE_SIGN_IN_MESSAGE: &str = "Sign in with claude auth login first";
 pub const AUTH_WAIT_NOTICE_SECONDS: f64 = 1800.0;
@@ -26,8 +24,8 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
             columns: &["collection", "id", "payload", "deleted"],
         },
         TableRequirement {
-            name: "runtime_operation_receipts",
-            columns: &["id", "result"],
+            name: "runtime_account_state",
+            columns: &["account", "limits_observation"],
         },
     ],
     bootstrap_triggers: &[],
@@ -71,9 +69,99 @@ pub fn apply_limits_observation(snapshot: &mut Value, observation: &mut Value) {
     }
 }
 
-/// One ordered observation receipt per account; cursor generations are connection-local.
-pub fn limits_observation_key(account: &str) -> String {
-    format!("{LIMITS_OBSERVATION_PREFIX}{account}")
+/// Initialize only current account state; migrations seed historical generations once.
+fn ensure_account(tx: &Transaction<'_>, account: &str) -> StoreResult<()> {
+    tx.execute("INSERT INTO runtime_account_state(account,next_generation,journal_ack,recovery_required,streams) VALUES(?1,0,0,0,'null') ON CONFLICT(account) DO NOTHING", [account])?;
+    Ok(())
+}
+
+/// Last allocated direct-provider generation. Increment in the writer transaction.
+pub fn allocate_next_generation(tx: &Transaction<'_>, account: &str) -> StoreResult<u64> {
+    ensure_account(tx, account)?;
+    let generation: i64 = tx.query_row("UPDATE runtime_account_state SET next_generation=next_generation+1 WHERE account=?1 AND next_generation>=0 AND next_generation<?2 RETURNING next_generation", (account, i64::MAX), |row| row.get(0))?;
+    Ok(generation as u64)
+}
+
+/// Contiguous applied journal prefix for the current host provider generation.
+pub fn provider_checkpoint(
+    connection: &Connection,
+    account: &str,
+    generation: u64,
+) -> StoreResult<u64> {
+    let generation = i64::try_from(generation).map_err(|_| {
+        StoreError::RecordContract("provider generation exceeds SQLite integer range")
+    })?;
+    let cursor: i64 = connection.query_row("SELECT journal_ack FROM runtime_account_state WHERE account=?1 AND connection_generation=?2", rusqlite::params![account,generation], |row| row.get(0)).optional()?.unwrap_or(0);
+    u64::try_from(cursor)
+        .map_err(|_| StoreError::RecordContract("provider journal ACK is negative"))
+}
+
+/// A generation transition is explicit; an ACK can never replace another generation.
+pub fn set_provider_checkpoint(
+    tx: &Transaction<'_>,
+    account: &str,
+    generation: u64,
+    cursor: u64,
+) -> StoreResult<()> {
+    let generation = i64::try_from(generation).map_err(|_| {
+        StoreError::RecordContract("provider generation exceeds SQLite integer range")
+    })?;
+    let cursor = i64::try_from(cursor).map_err(|_| {
+        StoreError::RecordContract("provider journal ACK exceeds SQLite integer range")
+    })?;
+    ensure_account(tx, account)?;
+    let changed = tx.execute("UPDATE runtime_account_state SET connection_generation=?2,journal_ack=MAX(journal_ack,?3) WHERE account=?1 AND (connection_generation IS NULL OR connection_generation=?2)", rusqlite::params![account,generation,cursor])?;
+    if changed == 0 {
+        return Err(StoreError::RecordContract(
+            "provider checkpoint belongs to a different generation",
+        ));
+    }
+    Ok(())
+}
+
+/// Serialized stream metadata owned by the account worker; pending flushes live in outbox.
+pub fn streams(connection: &Connection, account: &str) -> StoreResult<Option<String>> {
+    Ok(connection
+        .query_row(
+            "SELECT streams FROM runtime_account_state WHERE account=?1 AND streams!='null'",
+            [account],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+pub fn put_streams(tx: &Transaction<'_>, account: &str, streams: &str) -> StoreResult<()> {
+    ensure_account(tx, account)?;
+    tx.execute(
+        "UPDATE runtime_account_state SET streams=?2 WHERE account=?1",
+        (account, streams),
+    )?;
+    Ok(())
+}
+
+/// Ordered observation metadata without a second copy of the provider snapshot.
+pub fn limits_observation(connection: &Connection, account: &str) -> StoreResult<Option<String>> {
+    Ok(connection
+        .query_row(
+            "SELECT limits_observation FROM runtime_account_state WHERE account=?1",
+            [account],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten())
+}
+
+pub fn put_limits_observation(
+    tx: &Transaction<'_>,
+    account: &str,
+    observation: &str,
+) -> StoreResult<()> {
+    ensure_account(tx, account)?;
+    tx.execute(
+        "UPDATE runtime_account_state SET limits_observation=?2 WHERE account=?1",
+        (account, observation),
+    )?;
+    Ok(())
 }
 
 /// Read the freshest durable observation used by resume checks and startup restoration.
@@ -81,21 +169,14 @@ pub fn latest_limits_snapshot(
     connection: &Connection,
     account: &str,
 ) -> StoreResult<Option<Value>> {
-    let raw: Option<String> = connection
-        .query_row(
-            "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-            [limits_observation_key(account)],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let mut receipt = raw
+    let mut observation = limits_observation(connection, account)?
         .map(|raw| serde_json::from_str::<Value>(&raw))
         .transpose()?
         .unwrap_or(Value::Null);
-    limits_snapshot_with_observation(connection, account, &mut receipt)
+    limits_snapshot_with_observation(connection, account, &mut observation)
 }
 
-/// Join one already-decoded receipt with its account entity; each document parses once.
+/// Join one already-decoded observation with its account entity; each document parses once.
 pub fn limits_snapshot_with_observation(
     connection: &Connection,
     account: &str,
@@ -119,12 +200,9 @@ pub fn limits_snapshot_with_observation(
 /// Restore bounded, validated per-account observations; invalid accounts remain isolated.
 pub fn limits_snapshots(connection: &Connection) -> StoreResult<LimitsRead> {
     let mut statement = connection.prepare(
-        "SELECT e.id,substr(CAST(e.payload AS BLOB),1,?1),length(CAST(e.payload AS BLOB)),substr(CAST(r.result AS BLOB),1,?1),length(CAST(r.result AS BLOB)) FROM sync_entities e LEFT JOIN runtime_operation_receipts r ON r.id=?2 || e.id WHERE e.collection='rateLimit' AND e.deleted=0",
+        "SELECT e.id,substr(CAST(e.payload AS BLOB),1,?1),length(CAST(e.payload AS BLOB)),substr(CAST(a.limits_observation AS BLOB),1,?1),length(CAST(a.limits_observation AS BLOB)) FROM sync_entities e LEFT JOIN runtime_account_state a ON a.account=e.id WHERE e.collection='rateLimit' AND e.deleted=0",
     )?;
-    let mut rows = statement.query(rusqlite::params![
-        MAX_PERSISTED_DOCUMENT_BYTES as i64 + 1,
-        LIMITS_OBSERVATION_PREFIX
-    ])?;
+    let mut rows = statement.query(rusqlite::params![MAX_PERSISTED_DOCUMENT_BYTES as i64 + 1])?;
     let mut result = LimitsRead {
         snapshots: Vec::new(),
         diagnostics: Vec::new(),
@@ -253,9 +331,119 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::{Value, json};
 
+    #[test]
+    fn receipt_account_checkpoint_fences_generations_and_never_regresses() {
+        let mut db = Connection::open_in_memory().expect("SQLite");
+        crate::receipt_schema::create(&db).expect("target schema");
+        let tx = db.transaction().expect("transaction");
+        assert_eq!(
+            super::provider_checkpoint(&tx, "alpha", 7).expect("empty"),
+            0
+        );
+        super::set_provider_checkpoint(&tx, "alpha", 7, 10).expect("initialize");
+        super::set_provider_checkpoint(&tx, "alpha", 7, 4).expect("repeat earlier ACK");
+        assert_eq!(
+            super::provider_checkpoint(&tx, "alpha", 7).expect("current"),
+            10
+        );
+        assert_eq!(
+            super::provider_checkpoint(&tx, "alpha", 6).expect("old generation"),
+            0
+        );
+        assert!(super::set_provider_checkpoint(&tx, "alpha", 6, 99).is_err());
+        assert!(super::set_provider_checkpoint(&tx, "alpha", 8, 1).is_err());
+        assert!(super::set_provider_checkpoint(&tx, "alpha", 7, u64::MAX).is_err());
+        assert_eq!(
+            super::provider_checkpoint(&tx, "alpha", 7).expect("unchanged"),
+            10
+        );
+        assert_eq!(super::streams(&tx, "alpha").expect("empty streams"), None);
+        super::put_streams(&tx, "alpha", "{\"revision\":\"r\",\"metadata\":{}}").expect("streams");
+        assert!(
+            super::streams(&tx, "alpha")
+                .expect("stream state")
+                .is_some()
+        );
+        assert_eq!(
+            super::allocate_next_generation(&tx, "alpha").expect("first generation"),
+            1
+        );
+        tx.commit().expect("commit");
+        assert_eq!(
+            super::provider_checkpoint(&db, "alpha", 7).expect("persisted"),
+            10
+        );
+    }
+
+    #[test]
+    fn receipt_direct_counter_rollback_and_exhaustion_preserve_other_state() {
+        let mut db = Connection::open_in_memory().expect("SQLite");
+        crate::receipt_schema::create(&db).expect("target schema");
+        db.execute("INSERT INTO runtime_account_state VALUES('alpha',41,7,'connection',10,1,'null',NULL,NULL)", []).expect("migrated counter");
+        {
+            let tx = db.transaction().expect("transaction");
+            assert_eq!(
+                super::allocate_next_generation(&tx, "alpha").expect("allocate"),
+                42
+            );
+            tx.rollback().expect("rollback");
+        }
+        let tx = db.transaction().expect("transaction");
+        assert_eq!(
+            super::allocate_next_generation(&tx, "alpha").expect("allocate after rollback"),
+            42
+        );
+        assert_eq!(
+            super::provider_checkpoint(&tx, "alpha", 7).expect("ACK preserved"),
+            10
+        );
+        tx.execute(
+            "UPDATE runtime_account_state SET next_generation=?1 WHERE account='alpha'",
+            [i64::MAX],
+        )
+        .expect("exhausted counter");
+        assert!(super::allocate_next_generation(&tx, "alpha").is_err());
+        assert_eq!(
+            super::provider_checkpoint(&tx, "alpha", 7).expect("ACK preserved"),
+            10
+        );
+    }
+
+    #[test]
+    fn receipt_account_observation_restores_without_receipt_table() {
+        let db = Connection::open_in_memory().expect("SQLite");
+        crate::receipt_schema::create(&db).expect("target schema");
+        db.execute_batch(
+            "CREATE TABLE sync_entities(collection TEXT,id TEXT,payload TEXT,deleted INTEGER)",
+        )
+        .expect("entities");
+        db.execute(
+            "INSERT INTO sync_entities VALUES('rateLimit','alpha',?1,0)",
+            [
+                json!({"value":{"accountKey":"alpha","at":1.0,"data":{"accountId":"A"}}})
+                    .to_string(),
+            ],
+        )
+        .expect("snapshot");
+        db.execute(
+            "INSERT INTO runtime_account_state VALUES('alpha',7,NULL,NULL,0,0,'null',?1,NULL)",
+            [json!({"scope":null,"cursor":0,"at":2.0}).to_string()],
+        )
+        .expect("observation");
+        let restored = limits_snapshots(&db).expect("read current account owner only");
+        assert!(restored.diagnostics.is_empty());
+        assert_eq!(restored.snapshots[0].1["at"], 2.0);
+        assert_eq!(restored.snapshots[0].1["data"]["accountId"], "A");
+        assert_eq!(
+            super::latest_limits_snapshot(&db, "alpha").expect("latest"),
+            Some(restored.snapshots[0].1.clone())
+        );
+    }
+
     fn database(payload: &Value) -> Connection {
         let connection = Connection::open_in_memory().expect("in-memory SQLite");
-        connection.execute_batch("CREATE TABLE sync_entities(collection TEXT, id TEXT, payload TEXT, deleted INTEGER); CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,result TEXT);").expect("fixture tables");
+        connection.execute_batch("CREATE TABLE sync_entities(collection TEXT, id TEXT, payload TEXT, deleted INTEGER)").expect("fixture tables");
+        crate::receipt_schema::create(&connection).expect("account state");
         if let Some(accounts) = payload
             .pointer("/value/rateLimitsByAccount")
             .and_then(Value::as_object)
@@ -325,10 +513,7 @@ mod tests {
             [],
         )
         .expect("table");
-        db.execute_batch(
-            "CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,result TEXT)",
-        )
-        .expect("receipts");
+        crate::receipt_schema::create(&db).expect("account state");
         db.execute(
             "INSERT INTO sync_entities VALUES('rateLimit','default',?1,0)",
             [deep],
@@ -376,19 +561,18 @@ mod tests {
         let db = database(
             &json!({"value":{"rateLimitsByAccount":{"alpha":{"accountKey":"alpha","at":1.0,"readAt":1.0,"data":{"accountId":"A"}}}}}),
         );
-        let key = super::limits_observation_key("alpha");
         db.execute(
-            "INSERT INTO runtime_operation_receipts(id,result) VALUES(?1,?2)",
-            rusqlite::params![key, json!({"scope":null,"cursor":0,"at":2.0}).to_string()],
+            "INSERT INTO runtime_account_state VALUES('alpha',0,NULL,NULL,0,0,'null',?1,NULL)",
+            [json!({"scope":null,"cursor":0,"at":2.0}).to_string()],
         )
-        .expect("metadata receipt");
+        .expect("account observation");
         let restored = limits_snapshots(&db).expect("restore");
         assert!(restored.diagnostics.is_empty());
         assert_eq!(restored.snapshots[0].1["at"], 2.0);
         assert!(restored.snapshots[0].1.get("readAt").is_none());
         assert_eq!(restored.snapshots[0].1["data"]["accountId"], "A");
         db.execute(
-            "UPDATE runtime_operation_receipts SET result=?1",
+            "UPDATE runtime_account_state SET limits_observation=?1",
             [json!({"at":"private-corrupt-timestamp"}).to_string()],
         )
         .expect("invalid metadata");
@@ -411,6 +595,7 @@ mod tests {
             .expect("store");
         store
             .transaction(|tx| {
+                crate::receipt_schema::create(tx)?;
                 crate::SyncDocumentsRepository::put_entity(
                     tx,
                     "workspace",
@@ -450,6 +635,7 @@ mod tests {
     fn workspace_limits_migrate_once_without_overwriting_account_entities() {
         let mut db = Connection::open_in_memory().expect("SQLite");
         db.execute_batch("CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id)); CREATE TABLE sync_documents(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER); CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,result TEXT);").expect("migration fixture");
+        crate::receipt_schema::create(&db).expect("account state");
         let tx = db.transaction().expect("transaction");
         let newer = json!({"accountKey":"alpha","at":2.0,"data":{"accountId":"newer"}});
         let beta = json!({"accountKey":"beta","at":1.0,"data":{"accountId":"beta"}});

@@ -1,7 +1,6 @@
 //! Ordered limits persistence. The journal identity and the snapshot commit together.
 use super::*;
-use rusqlite::OptionalExtension;
-use studio_runtime_store::account_state::limits_observation_key as watermark_key;
+use studio_runtime_store::account_state;
 use studio_runtime_store::{StoreError, SyncDocumentsRepository};
 
 pub(super) enum LimitsWrite {
@@ -32,7 +31,7 @@ impl LimitsWrite {
 
 // Fresh observations are durable even when their public content has not changed.
 #[derive(serde::Serialize)]
-struct ObservationReceipt<'a> {
+struct Observation<'a> {
     scope: &'a Value,
     cursor: u64,
     #[serde(flatten)]
@@ -108,14 +107,7 @@ fn commit(
         }
         return Ok((None, false));
     }
-    let key = watermark_key(account);
-    let raw_stamp: Option<String> = tx
-        .query_row(
-            "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-            [&key],
-            |row| row.get(0),
-        )
-        .optional()?;
+    let raw_stamp = account_state::limits_observation(tx, account)?;
     let mut stamp: Value = raw_stamp
         .map(|raw| serde_json::from_str(&raw))
         .transpose()
@@ -229,12 +221,12 @@ fn commit(
                 || old["stale"] != value["stale"]
         });
     let stamp = next_stamp.as_ref().unwrap_or(&stamp);
-    let receipt = serde_json::to_string(&ObservationReceipt {
+    let observation = serde_json::to_string(&Observation {
         scope: &stamp["scope"],
         cursor: stamp["cursor"].as_u64().unwrap_or(0),
         times: ObservationTimes(&value),
     })?;
-    tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'limits-observation',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result", rusqlite::params![key,receipt])?;
+    account_state::put_limits_observation(tx, account, &observation)?;
     if identical {
         return Ok((Some(value), false));
     }
@@ -266,13 +258,7 @@ pub(super) async fn read_for_resume(
         let expected = scope.clone();
         let candidate = store
             .read_async("account-session/resume-limits", move |db| {
-                let stamp: Option<String> = db
-                    .query_row(
-                        "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-                        [watermark_key(&key)],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
+                let stamp = account_state::limits_observation(db, &key)?;
                 let Some(stamp) = stamp else {
                     return Ok(None);
                 };
