@@ -1,5 +1,22 @@
 use super::storage::{Replay, replay, submitted};
 use super::*;
+
+async fn wait_vm_ready(
+    status: &mut tokio::sync::watch::Receiver<crate::provider_session_task::SessionStatus>,
+) -> bool {
+    loop {
+        match status.borrow().initialization {
+            InitializationStatus::Ready => return true,
+            InitializationStatus::Refused | InitializationStatus::Unknown => return false,
+            InitializationStatus::AwaitingReply | InitializationStatus::InitializedWritePending => {
+            }
+        }
+        if status.changed().await.is_err() {
+            return false;
+        }
+    }
+}
+
 impl Worker {
     fn retained_scope(&self) -> ConnectionScope {
         ConnectionScope {
@@ -133,6 +150,30 @@ impl Worker {
             && !self.vm_sessions.contains_key(actor)
         {
             self.restore_existing_vm_actor(actor).await;
+        }
+        if is_vm_actor
+            && let Some(actor) = actor_id.as_deref()
+            && let Some(session) = self.vm_sessions.get(actor)
+        {
+            let mut status = session.session.status.clone();
+            #[cfg(test)]
+            if status.borrow().initialization != InitializationStatus::Ready {
+                self.bridge.faults.vm_readiness_waiting.notify_one();
+            }
+            let deadline = tokio::time::Instant::from_std(request.deadline);
+            // Reattachment installs the session before its cached initialization
+            // finishes. Keep processing its journal while waiting for readiness.
+            let ready = self
+                .pump_until(async move {
+                    tokio::time::timeout_at(deadline, wait_vm_ready(&mut status))
+                        .await
+                        .unwrap_or(false)
+                })
+                .await?;
+            if !ready {
+                let _ignored = reply.send(Err(PortError::NotSent));
+                return Ok(());
+            }
         }
         if is_vm_actor
             && let Some(actor) = actor_id.as_deref()
