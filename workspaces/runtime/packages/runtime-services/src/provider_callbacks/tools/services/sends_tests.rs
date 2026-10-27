@@ -6,6 +6,7 @@ use crate::managed_host_tools::{PostCommitPort, SendPort};
 use studio_runtime_store::RuntimeStore;
 
 thread_local! { static AGENT_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+thread_local! { static AGENT_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 fn trace_agent_scans(event: rusqlite::trace::TraceEvent<'_>) {
     if let rusqlite::trace::TraceEvent::Stmt(statement, _) = event
@@ -15,6 +16,129 @@ fn trace_agent_scans(event: rusqlite::trace::TraceEvent<'_>) {
     {
         AGENT_SCANS.with(|count| count.set(count.get() + 1));
     }
+}
+
+fn trace_agent_rows(event: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Row(statement) = event {
+        let sql = statement.sql();
+        if sql.contains("FROM runtime_agents")
+            && (sql.starts_with("SELECT id,record") || sql.starts_with("SELECT record FROM"))
+        {
+            AGENT_ROWS.with(|count| count.set(count.get() + 1));
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires scoped typed message reads"]
+async fn message_ignores_unrelated_invalid_agent() {
+    message_with_unrelated_invalid("runtime_agents", json!({"id":"unrelated-invalid","rootId":"unrelated-invalid", "provider":"codex", "epoch":"invalid", "status":"idle"})).await;
+}
+
+#[tokio::test]
+#[ignore = "requires scoped typed message reads"]
+async fn message_ignores_unrelated_invalid_project() {
+    message_with_unrelated_invalid(
+        "runtime_projects",
+        json!({"id":"unrelated-invalid","path":"/unrelated-project","peerTeams":"invalid"}),
+    )
+    .await;
+}
+
+async fn message_with_unrelated_invalid(table: &'static str, record: Value) {
+    let (_directory, store, oracle) = frozen::state().await;
+    let worker = oracle["agents"][1].clone();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                &format!("INSERT INTO {table}(id,record) VALUES(?1,?2)"),
+                params!["unrelated-invalid", record.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().into(),
+        turn: worker["turnId"].as_str().unwrap().into(),
+    };
+    store
+        .transaction_with(move |tx| {
+            let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+            messages::send(
+                tx,
+                &snapshot,
+                &json!({"target":lead,"text":"hello"}),
+                "invalid-unrelated-witness",
+                20.0,
+            )
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires scoped typed message reads"]
+async fn message_send_agent_rows_are_bounded() {
+    let (_directory, store, oracle) = frozen::state().await;
+    let worker = oracle["agents"][1].clone();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
+    let seed = worker.clone();
+    store
+        .transaction(move |tx| {
+            for n in 0..64 {
+                let mut agent = seed.clone();
+                agent["id"] = json!(format!("unrelated-{n}"));
+                agent["rootId"] = agent["id"].clone();
+                studio_runtime_store::AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(agent)?,
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().into(),
+        turn: worker["turnId"].as_str().unwrap().into(),
+    };
+    let rows = store
+        .transaction_with(move |tx| {
+            let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+            AGENT_ROWS.with(|count| count.set(0));
+            tx.trace_v2(
+                rusqlite::trace::TraceEventCodes::SQLITE_TRACE_ROW,
+                Some(trace_agent_rows),
+            );
+            let result = messages::send(
+                tx,
+                &snapshot,
+                &json!({"target":lead,"text":"hello"}),
+                "rows-witness",
+                20.0,
+            );
+            tx.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_ROW, None);
+            result?;
+            Ok::<_, CallbackError>(AGENT_ROWS.with(|count| count.get()))
+        })
+        .await
+        .unwrap();
+    assert!(
+        rows <= 10,
+        "decoded {rows} agent rows for a private message"
+    );
 }
 
 #[tokio::test]
