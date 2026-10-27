@@ -315,10 +315,24 @@ async fn automatic_http_child_warms_higher_priority_catalog_before_selection() {
     assert_eq!(profile_child["provider"], "codex");
     assert_eq!(profile_child["model"], "gpt-6-luna");
     catalog.shutdown().await.unwrap();
+    store
+        .transaction(|tx| {
+            tx.execute("DELETE FROM runtime_agents WHERE id=?1", [LEAD])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut fresh = body.clone();
+    fresh["id"] = json!("dc2d6635-e504-4d2e-a5ed-a4631393e2cc");
+    let (fresh_status, _) = call(&app, fresh).await;
+    assert_eq!(
+        fresh_status, 500,
+        "new admission must fail without its parent"
+    );
     let (status, replay) = call(&app, body).await;
     assert_eq!(
         status, 200,
-        "replay must precede the closed catalog: {replay}"
+        "replay must precede parent and catalog admission: {replay}"
     );
     assert_eq!(replay["accountKey"], "a-priority");
 }
