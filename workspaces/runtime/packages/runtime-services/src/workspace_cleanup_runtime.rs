@@ -942,7 +942,7 @@ async fn complete_effect(
                 .and_then(Value::as_object_mut)
                 .ok_or(WorkspaceCleanupError::InvalidRecord)?;
             intent.insert("phase".into(), json!("written"));
-            intent.insert("receipt".into(), receipt.clone());
+            intent.insert("receipt".into(), receipt);
             apply_effect_result(&mut agent, &completed)?;
             let updated_identity = lifecycle_identity(&agent);
             agent[INTENT_FIELD]["identity"] = updated_identity;
@@ -1077,7 +1077,7 @@ async fn mark_effect(
                 return Err(WorkspaceCleanupError::Held);
             }
             intent.insert("phase".into(), json!(phase));
-            intent.insert("receipt".into(), receipt.clone());
+            intent.insert("receipt".into(), receipt);
             AgentRepository::put(
                 tx,
                 &AgentRecord::from_value(agent).map_err(StoreError::from)?,

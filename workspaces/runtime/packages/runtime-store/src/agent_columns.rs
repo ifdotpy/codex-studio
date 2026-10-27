@@ -101,7 +101,7 @@ const PROVIDER_COLUMN: AgentColumn =
 
 /// The indexed agent fields; see the module documentation. Changing this list
 /// changes the table: it needs a new dated migration that rebuilds the table.
-pub const AGENT_COLUMNS: [AgentColumn; 41] = [
+pub const AGENT_COLUMNS: [AgentColumn; 42] = [
     column("root_id", "TEXT", "record->>'$.rootId'", ""),
     column("parent_id", "TEXT", "record->>'$.parentId'", ""),
     column("status", "TEXT", "record->>'$.status'", ""),
@@ -278,6 +278,14 @@ pub const AGENT_COLUMNS: [AgentColumn; 41] = [
         "",
         "record->>'$.reviewArchiveNextAt'",
         "",
+    ),
+    // A legacy image workspace that startup has not yet finished.
+    column(
+        "legacy_unsettled",
+        "INTEGER",
+        "COALESCE(record->>'$.workspaceMode'='image' OR record->>'$.imageWorkspace'=1,0) \
+         AND COALESCE(record->>'$.legacyWorkspaceSettled',0)=0",
+        "NOT NULL",
     ),
 ];
 

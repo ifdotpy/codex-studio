@@ -1558,7 +1558,7 @@ mod tests {
             assert_eq!(decoded.as_str(), *known);
         }
         assert_eq!(
-            serde_json::from_value::<AgentStatus>(json!("running")).unwrap(),
+            serde_json::from_str::<AgentStatus>("\"running\"").unwrap(),
             AgentStatus::Running
         );
     }

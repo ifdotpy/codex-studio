@@ -41,7 +41,7 @@ const EXECUTION_FIELDS: &[&str] = &[
 ];
 
 // Shared admission predicate for the read probe and the writer's authoritative snapshot.
-const UNSETTLED_LEGACY_PREDICATE: &str = "(json_extract(record,'$.workspaceMode')='image' OR json_extract(record,'$.imageWorkspace')=1) AND COALESCE(json_extract(record,'$.legacyWorkspaceSettled'),0)=0";
+const UNSETTLED_LEGACY_PREDICATE: &str = "legacy_unsettled=1";
 
 pub async fn finish_stored_workspaces(store: &RuntimeStore) -> Result<usize, StoreError> {
     // Current workspace paging is read-only. Do not queue an empty legacy
