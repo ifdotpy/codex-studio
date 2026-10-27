@@ -1,7 +1,7 @@
 use super::{SchedulerRepository, select_turn_batch};
 use crate::records::{AgentId, AgentRecord, AgentRepository, AgentStatus};
 use crate::{QueueEvent, QueueEventId};
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -253,6 +253,44 @@ fn malformed_complaint_and_work_policy_fields_name_the_table_and_id() {
     transaction
         .rollback()
         .expect("malformed work is not claimed");
+}
+
+#[test]
+fn progress_events_decode_once_when_coalesced() {
+    let mut connection = database();
+    for (id, version) in [("first", 1), ("tie", 2)] {
+        connection.execute("UPDATE runtime_events SET kind='agent_message',text=?1 WHERE id=?2", params![json!({"sender":"child","room":"room","importance":"progress","progress_key":"work","progress_version":version,"text":id}).to_string(), id]).expect("progress event");
+    }
+    let tx = connection.transaction().expect("transaction");
+    let original: String = tx
+        .query_row(
+            "SELECT text FROM runtime_events WHERE id='tie'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("raw payload");
+    super::selection::PROGRESS_DECODES.with(|count| count.set(0));
+    let claim = SchedulerRepository::claim_for_preparation(&tx, "agent", 4, "progress", 10.0, 3)
+        .expect("claim")
+        .expect("selected");
+    assert_eq!(
+        super::selection::PROGRESS_DECODES.with(std::cell::Cell::get),
+        2
+    );
+    assert!(
+        claim
+            .events
+            .iter()
+            .any(|event| event.text.contains("earlierProgressUpdates"))
+    );
+    let stored: String = tx
+        .query_row(
+            "SELECT text FROM runtime_events WHERE id='tie'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("raw payload remains");
+    assert_eq!(stored, original);
 }
 
 #[test]

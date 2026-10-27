@@ -6,18 +6,29 @@ use std::sync::LazyLock;
 thread_local! {
     pub(super) static COMPLAINT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static DELIVERY_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static PROGRESS_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 pub(super) fn event_delivery(
     event: &QueueEvent,
     metadata: Option<&Value>,
+    payload: Option<&Value>,
 ) -> Result<
     studio_runtime_schema::DeliveryMoment,
     studio_runtime_schema::delivery::InvalidDeliveryMoment,
 > {
     #[cfg(test)]
     DELIVERY_CHECKS.with(|count| count.set(count.get() + 1));
-    studio_runtime_schema::DeliveryMoment::for_event(&event.kind, &event.text, metadata)
+    studio_runtime_schema::DeliveryMoment::for_parsed_event(&event.kind, payload, metadata)
+}
+
+fn event_payload(event: &QueueEvent) -> Option<Value> {
+    if event.kind != "agent_message" {
+        return None;
+    }
+    #[cfg(test)]
+    PROGRESS_DECODES.with(|count| count.set(count.get() + 1));
+    serde_json::from_str(&event.text).ok()
 }
 
 /// `_v5` removes the obsolete capacity-start predicate. The 2026-10-21
@@ -984,16 +995,22 @@ impl SchedulerRepository {
         }
         let mut events = Vec::with_capacity(joined.len());
         let mut metadata = BTreeMap::new();
+        let mut payloads = BTreeMap::new();
         for (event, raw) in joined {
-            if let (Some(value), _) = pending_metadata(&event, raw.as_deref())? {
+            let (value, _, payload) = pending_metadata(&event, raw.as_deref())?;
+            if let Some(value) = value {
                 metadata.insert(event.id.0.clone(), value);
+            }
+            if let Some(payload) = payload {
+                payloads.insert(event.id.0.clone(), payload);
             }
             events.push(event);
         }
 
         let (complaints, _work) = load_policy_records(transaction, &agent, &events)?;
         let obsolete_work = obsolete_work_review_ids(transaction, &agent, &events)?;
-        let prepared = prepare_pending_batch(events, metadata, &complaints, &obsolete_work)?;
+        let prepared =
+            prepare_pending_batch(events, metadata, payloads, &complaints, &obsolete_work)?;
         if single_event.is_none()
             && !preparation
             && let Some((kind, dependency)) = prepared.events.iter().find_map(|event| {
@@ -1378,7 +1395,11 @@ pub(super) fn refused(agent: &AgentRecord, reason: String) -> ClaimedEvents {
 pub(super) fn pending_metadata(
     event: &QueueEvent,
     raw: Option<&str>,
-) -> StoreResult<(Option<Value>, studio_runtime_schema::DeliveryMoment)> {
+) -> StoreResult<(
+    Option<Value>,
+    studio_runtime_schema::DeliveryMoment,
+    Option<Value>,
+)> {
     let value = raw
         .map(serde_json::from_str::<Value>)
         .transpose()
@@ -1392,9 +1413,10 @@ pub(super) fn pending_metadata(
     }) {
         return Err(invalid_object("runtime_event_meta", &event.id.0));
     }
-    let delivery = event_delivery(event, value.as_ref())
+    let payload = event_payload(event);
+    let delivery = event_delivery(event, value.as_ref(), payload.as_ref())
         .map_err(|_| invalid_object("runtime_event_meta", &event.id.0))?;
-    Ok((value, delivery))
+    Ok((value, delivery, payload))
 }
 
 impl SchedulerRepository {
@@ -1595,8 +1617,7 @@ pub(super) fn complaints_resolved(
     })
 }
 
-pub(super) fn progress_update(text: &str) -> Option<((String, String, String), u64)> {
-    let value: Value = serde_json::from_str(text).ok()?;
+pub(super) fn progress_update(value: &Value) -> Option<((String, String, String), u64)> {
     if value.get("importance")?.as_str()? != "progress" {
         return None;
     }
@@ -1643,6 +1664,7 @@ pub(super) fn obsolete_events(
 pub(super) fn prepare_pending_batch(
     events: Vec<QueueEvent>,
     mut metadata: BTreeMap<String, Value>,
+    mut payloads: BTreeMap<String, Value>,
     complaints: &BTreeSet<String>,
     obsolete_work: &BTreeSet<String>,
 ) -> StoreResult<PreparedBatch> {
@@ -1665,7 +1687,7 @@ pub(super) fn prepare_pending_batch(
             .is_some_and(truthy);
         preserved.push(saved);
         if event.kind == "agent_message"
-            && let Some((key, version)) = progress_update(&event.text)
+            && let Some((key, version)) = payloads.get(&event.id.0).and_then(progress_update)
         {
             groups.entry(key).or_default().push((index, version));
         }
@@ -1732,7 +1754,14 @@ pub(super) fn prepare_pending_batch(
         if retired.contains_key(&event.id.0) || cancelled.contains_key(&event.id.0) {
             continue;
         }
-        if let Some(text) = model_event_text(&event.text, metadata.get(&event.id.0)) {
+        let text = if event.kind == "agent_message" {
+            payloads
+                .remove(&event.id.0)
+                .and_then(|value| model_event_value(value, metadata.get(&event.id.0)))
+        } else {
+            model_event_text(&event.text, metadata.get(&event.id.0))
+        };
+        if let Some(text) = text {
             event.text = text;
         }
         prepared_events.push(event);
@@ -1755,7 +1784,19 @@ pub(super) fn model_event_text(text: &str, metadata: Option<&Value>) -> Option<S
     let count = metadata?
         .get("earlierProgressUpdates")
         .filter(|count| truthy(count))?;
-    let Ok(Value::Object(mut value)) = serde_json::from_str(text) else {
+    let value = serde_json::from_str(text).ok()?;
+    project_event_value(value, count)
+}
+
+fn model_event_value(value: Value, metadata: Option<&Value>) -> Option<String> {
+    let count = metadata?
+        .get("earlierProgressUpdates")
+        .filter(|count| truthy(count))?;
+    project_event_value(value, count)
+}
+
+fn project_event_value(value: Value, count: &Value) -> Option<String> {
+    let Value::Object(mut value) = value else {
         return None;
     };
     value.insert("earlierProgressUpdates".to_owned(), count.clone());

@@ -174,7 +174,11 @@ fn pending_steer_events(
     connection: &Connection,
     agent_id: &str,
     epoch: i64,
-) -> StoreResult<(Vec<QueueEvent>, BTreeMap<String, Value>)> {
+) -> StoreResult<(
+    Vec<QueueEvent>,
+    BTreeMap<String, Value>,
+    BTreeMap<String, Value>,
+)> {
     let metadata_column = if table_exists(connection, "runtime_event_meta")? {
         "(SELECT m.record FROM runtime_event_meta m WHERE m.id=e.id)"
     } else {
@@ -193,17 +197,21 @@ fn pending_steer_events(
     })?;
     let mut events = Vec::new();
     let mut metadata = BTreeMap::new();
+    let mut payloads = BTreeMap::new();
     for row in rows {
         let (event, raw) = row?;
-        let (meta, moment) = pending_metadata(&event, raw.as_deref())?;
+        let (meta, moment, payload) = pending_metadata(&event, raw.as_deref())?;
         if steerable(&event, meta.as_ref(), moment) {
             if let Some(meta) = meta {
                 metadata.insert(event.id.0.clone(), meta);
             }
+            if let Some(payload) = payload {
+                payloads.insert(event.id.0.clone(), payload);
+            }
             events.push(event);
         }
     }
-    Ok((events, metadata))
+    Ok((events, metadata, payloads))
 }
 
 /// Return unresolved input to the queue in its own epoch; stopped input is cancelled.
@@ -331,10 +339,11 @@ impl SchedulerRepository {
         let Some((turn_id, thread_id)) = steer_target(tx, &agent, epoch)? else {
             return Ok(None);
         };
-        let (events, metadata) = pending_steer_events(tx, agent_id, epoch)?;
+        let (events, metadata, payloads) = pending_steer_events(tx, agent_id, epoch)?;
         let (complaints, _work) = load_policy_records(tx, &agent, &events)?;
         let obsolete_work = obsolete_work_review_ids(tx, &agent, &events)?;
-        let prepared = prepare_pending_batch(events, metadata, &complaints, &obsolete_work)?;
+        let prepared =
+            prepare_pending_batch(events, metadata, payloads, &complaints, &obsolete_work)?;
         apply_preparation(tx, &prepared)?;
         let mut events = prepared.events;
         let metadata = prepared.metadata;

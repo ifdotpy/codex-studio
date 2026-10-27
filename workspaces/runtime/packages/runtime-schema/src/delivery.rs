@@ -116,12 +116,23 @@ impl DeliveryMoment {
         if let Some(delivery) = Self::metadata_delivery(metadata)? {
             return Ok(delivery);
         }
+        let message = (kind == "agent_message")
+            .then(|| serde_json::from_str::<serde_json::Value>(text).ok())
+            .flatten();
+        Self::for_parsed_event(kind, message.as_ref(), None)
+    }
+
+    /// Resolve delivery using an event payload already parsed by its caller.
+    pub fn for_parsed_event(
+        kind: &str,
+        message: Option<&serde_json::Value>,
+        metadata: Option<&serde_json::Value>,
+    ) -> Result<Self, InvalidDeliveryMoment> {
+        if let Some(delivery) = Self::metadata_delivery(metadata)? {
+            return Ok(delivery);
+        }
         Ok(if kind == "agent_message" {
-            serde_json::from_str::<serde_json::Value>(text)
-                .ok()
-                .as_ref()
-                .map(Self::message_default)
-                .unwrap_or_default()
+            message.map(Self::message_default).unwrap_or_default()
         } else {
             Self::default()
         })
