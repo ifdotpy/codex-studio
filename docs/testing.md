@@ -554,6 +554,14 @@ Python jobs, server shards, Python setup, and managed-environment installation
 are removed. Tool versions and cache keys are owned by the workflow and its
 composite actions. Heavy and load checks remain outside hosted CI.
 
+Repository owners must protect `main` with required status checks and require
+branches to be up to date before merging. Require the existing `Rust checks`,
+`Build: Rust workspace tests`, and `Rust macOS build` jobs to catch compilation
+regressions on both supported hosts. Wait for every job on the current PR head
+to succeed before merging; a local pass or a green job on one host does not
+replace the other host's result. Starting CI does not protect an unprotected
+branch. Configuring this protection requires repository administration access.
+
 ## Live UI team acceptance
 
 `workspaces/client/apps/web/scripts/verify-ui-team-scale.ts` drives a live Studio
