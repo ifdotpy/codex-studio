@@ -338,14 +338,12 @@ impl PostCommitPort for PortBundle {
                 return Ok(None);
             }
             self.dispatched.fetch_add(1, Ordering::SeqCst);
-            Ok(Some(crate::managed_host_tools::DispatchedOperation {
-                result: OperationResult {
+            Ok(Some(
+                crate::managed_host_tools::DispatchedOperation::Applied(OperationResult {
                     value: json!({"status":"dispatched"}),
                     signals: vec![WakeSignal::new("event-driver/test-dispatch")],
-                },
-                certainty: crate::managed_host_tools::DeliveryCertainty::Written,
-                applied: Some(true),
-            }))
+                }),
+            ))
         })
     }
 

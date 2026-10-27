@@ -9,6 +9,8 @@ use futures_util::future::BoxFuture;
 enum SpawnScript {
     /// Refuse before any write.
     Refuse,
+    WrittenRejection,
+    OpaqueApplied,
     /// Refuse before any write because no fresh model catalog was readable.
     CatalogUnavailable,
     /// Commit the first child row, then fail (image provisioning shape).
@@ -47,12 +49,24 @@ impl crate::provider_callbacks::RuntimeChildCreationPort for ScriptedChildCreati
         _: &'a Value,
         request_id: &'a str,
         _: f64,
-    ) -> BoxFuture<'a, Result<OperationResult, Error>> {
+    ) -> BoxFuture<'a, Result<crate::managed_host_tools::DispatchedOperation, Error>> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.entered.notify_one();
             match self.script {
                 SpawnScript::Refuse => Err(Error::Invalid("Supply 1 to 64 agents")),
+                SpawnScript::WrittenRejection => Ok(
+                    crate::managed_host_tools::DispatchedOperation::Rejected(OperationResult {
+                        value: json!({"reason":"provider rejected"}),
+                        signals: Vec::new(),
+                    }),
+                ),
+                SpawnScript::OpaqueApplied => Ok(
+                    crate::managed_host_tools::DispatchedOperation::Applied(OperationResult {
+                        value: json!({"outcome":"unknown"}),
+                        signals: Vec::new(),
+                    }),
+                ),
                 SpawnScript::CatalogUnavailable => Err(Error::Unavailable(
                     crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
                 )),
@@ -71,13 +85,22 @@ impl crate::provider_callbacks::RuntimeChildCreationPort for ScriptedChildCreati
                         .await?;
                     Err(Error::Unavailable("workspace-state/image-provisioning"))
                 }
-                SpawnScript::Hang => std::future::pending::<Result<OperationResult, Error>>().await,
+                SpawnScript::Hang => {
+                    std::future::pending::<
+                        Result<crate::managed_host_tools::DispatchedOperation, Error>,
+                    >()
+                    .await
+                }
                 SpawnScript::Release => {
                     self.release.notified().await;
-                    Ok(OperationResult {
-                        value: json!({"requestId":request_id,"agents":[]}),
-                        signals: vec![crate::managed_host_tools::WakeSignal::new("account-worker")],
-                    })
+                    Ok(crate::managed_host_tools::DispatchedOperation::Applied(
+                        OperationResult {
+                            value: json!({"requestId":request_id,"agents":[]}),
+                            signals: vec![crate::managed_host_tools::WakeSignal::new(
+                                "account-worker",
+                            )],
+                        },
+                    ))
                 }
             }
         })
@@ -90,7 +113,7 @@ impl crate::provider_callbacks::RuntimeChildCreationPort for ScriptedChildCreati
         _: &'a Value,
         _: &'a str,
         _: f64,
-    ) -> BoxFuture<'a, Result<OperationResult, Error>> {
+    ) -> BoxFuture<'a, Result<crate::managed_host_tools::DispatchedOperation, Error>> {
         Box::pin(async { Err(Error::Invalid("Native review requires a Codex agent")) })
     }
 }
@@ -224,6 +247,78 @@ async fn replay_returns_saved_result(
         "{call_id}: replay never dispatches again"
     );
     assert_eq!(request_row(store, call_id), before, "{call_id}");
+}
+
+#[tokio::test]
+async fn opaque_payload_does_not_change_fresh_applied_outcome() {
+    let (_root, store, context) = fixture().await;
+    let creation = ScriptedChildCreation::new(SpawnScript::OpaqueApplied);
+    let call_id = "settle-opaque-applied";
+    let frame = call(
+        &context,
+        call_id,
+        "orchestration_spawn",
+        json!({"agents":[]}),
+    );
+    let decision = dispatch_with_managed_tools(
+        Arc::clone(&store),
+        &context,
+        &frame,
+        20.0,
+        ports_for(&store, &context, &frame, &creation).await,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(decision, CallbackDecision::Answer(_)));
+    let row = request_row(&store, call_id);
+    assert_eq!(row["deliveryCertainty"], "written");
+    assert_eq!(row["result"]["success"], true);
+}
+
+#[tokio::test]
+async fn written_rejection_settles_and_replays_exactly() {
+    let (_root, store, context) = fixture().await;
+    let creation = ScriptedChildCreation::new(SpawnScript::WrittenRejection);
+    let call_id = "settle-written-rejection";
+    let frame = call(
+        &context,
+        call_id,
+        "orchestration_spawn",
+        json!({"agents":[]}),
+    );
+    let decision = dispatch_with_managed_tools(
+        Arc::clone(&store),
+        &context,
+        &frame,
+        20.0,
+        ports_for(&store, &context, &frame, &creation).await,
+    )
+    .await
+    .unwrap();
+    let CallbackDecision::Answer(first) = decision else {
+        panic!("first answer")
+    };
+    let ResponseBody::Result(first_body) = first.body else {
+        panic!("first result")
+    };
+    assert_terminal(&store, call_id, "not_applied", Some("written"));
+    let replay = dispatch_with_managed_tools(
+        Arc::clone(&store),
+        &context,
+        &frame,
+        40.0,
+        ports_for(&store, &context, &frame, &creation).await,
+    )
+    .await
+    .unwrap();
+    let CallbackDecision::Answer(replayed) = replay else {
+        panic!("replay answer")
+    };
+    let ResponseBody::Result(replay_body) = replayed.body else {
+        panic!("replay result")
+    };
+    assert_eq!(first_body, replay_body);
+    assert_eq!(creation.calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

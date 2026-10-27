@@ -4,8 +4,7 @@ use crate::account_session_runtime::{
 };
 use crate::account_worker::retained::RequestActor;
 use crate::managed_host_tools::{
-    Actor, AgentAncestry, DeliveryCertainty, DispatchedOperation, Error, OperationResult,
-    agent_ancestry,
+    Actor, AgentAncestry, DispatchedOperation, Error, OperationResult, agent_ancestry,
 };
 use rusqlite::Transaction;
 use serde_json::{Value, json};
@@ -175,17 +174,16 @@ fn result(value: Value) -> DispatchedOperation {
         value["status"].as_str(),
         Some("blocked" | "skipped" | "superseded" | "history_missing")
     );
-    DispatchedOperation {
-        result: OperationResult {
-            value,
-            signals: vec![],
-        },
-        certainty: if uncertain {
-            DeliveryCertainty::Unknown
-        } else {
-            DeliveryCertainty::Written
-        },
-        applied: if uncertain { None } else { Some(!refused) },
+    let result = OperationResult {
+        value,
+        signals: vec![],
+    };
+    if uncertain {
+        DispatchedOperation::Unknown(result)
+    } else if refused {
+        DispatchedOperation::Rejected(result)
+    } else {
+        DispatchedOperation::Applied(result)
     }
 }
 
@@ -1150,7 +1148,7 @@ mod tests {
         let checked = execute(store, session.clone(), &actor, &args(), "new-reset", 10.0)
             .await
             .expect("new reset");
-        assert_eq!(checked.result.value["status"], "released");
+        assert_eq!(checked.result().value["status"], "released");
         assert_eq!(
             session.unsubscribes(),
             1,
@@ -1174,7 +1172,7 @@ mod tests {
         )
         .await
         .expect("unknown response");
-        assert_eq!(lost.result.value["status"], "unconfirmed");
+        assert_eq!(lost.result().value["status"], "unconfirmed");
         let auth = session.recoveries.lock().expect("recoveries")[0].clone();
         finish_recovery(
             &store,
@@ -1186,7 +1184,7 @@ mod tests {
         let replay = execute(store, session.clone(), &actor, &args, "late-recovery", 11.0)
             .await
             .expect("durable late result");
-        assert_eq!(replay.result.value["status"], "checked");
+        assert_eq!(replay.result().value["status"], "checked");
         assert_eq!(session.recoveries.lock().expect("recoveries").len(), 1);
         assert!(session.calls.lock().expect("native calls").is_empty());
     }
@@ -1212,7 +1210,7 @@ mod tests {
             )
             .await
             .expect("manual recovery");
-            assert_eq!(checked.result.value["status"], "unconfirmed");
+            assert_eq!(checked.result().value["status"], "unconfirmed");
         }
         assert_eq!(session.recoveries.lock().expect("recoveries").len(), 1);
         assert!(session.calls.lock().expect("native calls").is_empty());
@@ -1244,15 +1242,15 @@ mod tests {
         )
         .await
         .expect("manual reset");
-        assert_eq!(first.result.value["status"], "released");
+        assert_eq!(first.result().value["status"], "released");
         assert!(
-            first.result.value["loss"]
+            first.result().value["loss"]
                 .as_str()
                 .expect("loss warning")
                 .contains("JavaScript")
         );
         assert!(
-            first.result.value["loss"]
+            first.result().value["loss"]
                 .as_str()
                 .expect("loss warning")
                 .contains("MCP")
@@ -1273,7 +1271,7 @@ mod tests {
         )
         .await
         .expect("lost response replay");
-        assert_eq!(first.result.value, replay.result.value);
+        assert_eq!(first.result().value, replay.result().value);
         assert_eq!(session.unsubscribes(), 1);
         let mut changed = args();
         changed["reason"] = json!("Changed request content");
@@ -1300,11 +1298,11 @@ mod tests {
         )
         .await
         .expect("unknown result");
-        assert_eq!(
-            first.certainty,
-            crate::managed_host_tools::DeliveryCertainty::Unknown
-        );
-        assert_eq!(first.result.value["status"], "unknown");
+        assert!(matches!(
+            first,
+            crate::managed_host_tools::DispatchedOperation::Unknown(_)
+        ));
+        assert_eq!(first.result().value["status"], "unknown");
         for request in ["unknown-1", "unknown-2"] {
             let result = execute(
                 Arc::clone(&store),
@@ -1316,7 +1314,7 @@ mod tests {
             )
             .await
             .expect("inspect uncertain release");
-            assert_eq!(result.result.value["status"], "unknown");
+            assert_eq!(result.result().value["status"], "unknown");
         }
         assert_eq!(session.unsubscribes(), 1);
         assert_eq!(worker(&store).await["nativeRelease"]["resetPending"], true);
@@ -1336,7 +1334,7 @@ mod tests {
             10.0,
         )
         .await;
-        assert!(result.is_err() || result.expect("result").result.value["status"] == "blocked");
+        assert!(result.is_err() || result.expect("result").result().value["status"] == "blocked");
         assert_eq!(session.unsubscribes(), 0);
     }
 
@@ -1355,7 +1353,7 @@ mod tests {
         )
         .await
         .expect("refused reset");
-        assert_eq!(checked.result.value["status"], "blocked");
+        assert_eq!(checked.result().value["status"], "blocked");
         assert_eq!(session.unsubscribes(), 0);
     }
 
@@ -1405,7 +1403,7 @@ mod tests {
         )
         .await
         .expect("unsubscribe result");
-        assert_eq!(checked.result.value["status"], "released");
+        assert_eq!(checked.result().value["status"], "released");
         let current = worker(&store).await;
         assert_eq!(current["nativeRelease"]["resetPending"], false);
         assert_eq!(current["nativeRelease"]["closedAt"], 11.0);
@@ -1433,7 +1431,7 @@ mod tests {
             )
             .await
             .expect("blocked reset");
-            assert_eq!(result.result.value["status"], "blocked");
+            assert_eq!(result.result().value["status"], "blocked");
             assert_eq!(session.unsubscribes(), 0);
         }
     }
@@ -1453,7 +1451,7 @@ mod tests {
         )
         .await
         .expect("confirmed closure");
-        assert_eq!(result.result.value["status"], "released");
+        assert_eq!(result.result().value["status"], "released");
         let current = worker(&store).await;
         assert_eq!(current["nativeRelease"]["resetPending"], false);
         assert_eq!(current["nativeRelease"]["closedAt"], 10.0);

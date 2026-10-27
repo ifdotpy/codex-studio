@@ -9,7 +9,7 @@ use base64::Engine;
 use serde_json::{Value, json};
 
 use crate::linux_vm_guest::{GuestError, GuestRpc};
-use crate::managed_host_tools::{Actor, DeliveryCertainty, DispatchedOperation, OperationResult};
+use crate::managed_host_tools::{Actor, DispatchedOperation, OperationResult};
 
 /// The tool name.
 pub(crate) const TOOL: &str = "layr_read";
@@ -190,14 +190,10 @@ pub(crate) async fn run(
             {
                 value["reason"] = reason.clone();
             }
-            DispatchedOperation {
-                result: OperationResult {
-                    value,
-                    signals: Vec::new(),
-                },
-                certainty: DeliveryCertainty::Written,
-                applied: Some(true),
-            }
+            DispatchedOperation::Applied(OperationResult {
+                value,
+                signals: Vec::new(),
+            })
         }
         Ok(_) => crate::host_exec::unknown("The layr command has no proven result.".into()),
         // Nothing reached the guest: a connection or request check failed first.
@@ -252,14 +248,10 @@ pub(crate) async fn run_native(
     )
     .await;
     match outcome {
-        Ok(Ok(value)) => DispatchedOperation {
-            result: OperationResult {
-                value,
-                signals: Vec::new(),
-            },
-            certainty: DeliveryCertainty::Written,
-            applied: Some(true),
-        },
+        Ok(Ok(value)) => DispatchedOperation::Applied(OperationResult {
+            value,
+            signals: Vec::new(),
+        }),
         Ok(Err(error @ crate::layr_native::NativeLayrError::Refused(_))) => {
             crate::host_exec::refused(error.to_string())
         }
