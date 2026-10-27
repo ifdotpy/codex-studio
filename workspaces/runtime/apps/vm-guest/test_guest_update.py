@@ -93,6 +93,13 @@ class GuestUpdateTests(unittest.TestCase):
         self.assertEqual(self.plan(manifest)["restarts"], ["codex-studio-share-bridge.service"])
         manifest, _ = self.files({"vm/guest/codex-studio-layr-admin.service": b"[Unit]\n"})
         self.assertEqual(self.plan(manifest)["restarts"], ["codex-studio-layr-admin.service"])
+        # A unit-only update still restarts the daemon without a staged binary.
+        directory = self.state / "updates/unit-only"
+        directory.mkdir(parents=True)
+        status = {"operationId": "unit-only", "stage": "restart_pending", "restarts": [LAYR_UNIT]}
+        asyncio.run(self.handlers.restart_when_idle(directory, status))
+        self.assertEqual(self.runner.calls[-1][0][-2:], ["restart", LAYR_UNIT])
+        self.assertNotIn("layrActivation", status)
 
     def test_provider_parts_an_older_guest_or_new_versions_need_a_reboot(self) -> None:
         # The process supervisor owns the running provider processes.
@@ -177,6 +184,13 @@ class GuestUpdateTests(unittest.TestCase):
         self.assertEqual(self.handlers.sleep.await_count, 2)
         self.assertEqual(len(self.runner.calls), 1)
         self.assertEqual(status["scheduledAt"], guest_update.DRAIN_SECONDS)
+        # A Layr update must preserve the old daemon when another request stays busy.
+        status = {"operationId": "deadline", "stage": "restart_pending", "restarts": [LAYR_UNIT]}
+        self.runner.calls.clear()
+        self.handlers.monotonic = Mock(side_effect=[0, guest_update.DRAIN_SECONDS])
+        asyncio.run(self.handlers.restart_when_idle(directory, status))
+        self.assertEqual(status["stage"], "restart_failed")
+        self.assertEqual(self.runner.calls, [])
 
     def test_a_share_bridge_restart_runs_at_once_and_completes(self) -> None:
         manifest, content = self.files({"vm/guest/share_bridge.py": b"new bridge\n"})
@@ -207,6 +221,7 @@ class GuestUpdateTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "install_failed")
         # The file is written, so a new plan sees no change; the retry still installs and restarts.
         self.runner.install_code = 0
+        (self.handlers.root.parent / "layr-install-pending.json").write_text("{}")
 
         async def retry() -> dict:
             status = await self.handlers.dispatch("retry", "update.apply", {
@@ -221,7 +236,12 @@ class GuestUpdateTests(unittest.TestCase):
         self.assertEqual([argv[-1].endswith("install.sh") for argv in commands], [True, True, False])
         # The broker requires the layr daemon, so a separate unit restarts it after the reply.
         self.assertEqual(commands[-1][0], "/usr/bin/systemd-run")
-        self.assertEqual(commands[-1][-2:], ["restart", LAYR_UNIT])
+        self.assertIn("--activate", commands[-1])
+        self.assertTrue(any(argument.endswith("install-layr.sh") for argument in commands[-1]))
+        self.assertEqual(commands[-1][-1], str(self.state / "updates/op-6/status.json"))
+        self.assertTrue(status["layrActivation"])
+        self.handlers.finish_restarts(10 ** 10)
+        self.assertEqual(self.call("update.status", {"operationId": "op-6"})["stage"], "restart_scheduled")
 
     def test_a_new_operation_after_a_failed_install_finishes_the_earlier_work(self) -> None:
         manifest, content = self.files({"vm/guest/service.py": b"new service\n"})

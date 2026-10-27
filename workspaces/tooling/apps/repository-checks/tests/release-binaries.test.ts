@@ -83,6 +83,16 @@ test("packages Layr once, reuses its release cache and hashes the signed binary"
       cachedTarget,
     ]);
     assert.equal(builds[0]!.options.env?.CARGO_INCREMENTAL, "0");
+    const sourceManifest: { revision: string } = JSON.parse(
+      await readFile(
+        path.join(repository, "workspaces/runtime/apps/layr/manifest.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(
+      builds[0]!.options.env?.LAYR_BUILD_ID,
+      sourceManifest.revision,
+    );
     assert.equal(await verifyBundledLayr(workspace, repository), version);
     assert.equal(
       execFileSync(path.join(workspace, "bin/layr"), ["--version"], {

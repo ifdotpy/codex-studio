@@ -45,6 +45,19 @@ pub struct Tree {
     pub path: PathBuf,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DirectoryRecord {
+    pub device: u64,
+    pub inode: u64,
+    pub mode: u32,
+}
+
+impl DirectoryRecord {
+    fn matches(&self, stat: &rustix::fs::Stat) -> bool {
+        is_dir(stat) && self.device == stat.st_dev as u64 && self.inode == stat.st_ino as u64
+    }
+}
+
 impl Tree {
     pub fn open(path: &Path) -> Result<Tree> {
         let fd = rustix::fs::open(path, path_flags() | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())
@@ -345,6 +358,123 @@ impl Tree {
         Ok(())
     }
 
+    /// Some macOS releases require write access on a directory that is renamed.
+    /// Restore its mode through the open descriptor, including when the rename fails.
+    pub fn rename_directory(&self, from: &str, to: &str) -> Result<()> {
+        self.rename_directory_checked(from, to, &self.directory_record(from)?)
+    }
+
+    pub fn directory_record(&self, rel: &str) -> Result<DirectoryRecord> {
+        let stat = rustix::fs::fstat(self.dir(rel)?)?;
+        Ok(DirectoryRecord { device: stat.st_dev as u64, inode: stat.st_ino as u64, mode: stat.st_mode as u32 & 0o7777 })
+    }
+
+    pub fn matches_directory(&self, rel: &str, record: &DirectoryRecord) -> bool {
+        self.parent(rel).ok().and_then(|(parent, name)| lstat_at(parent, name)).is_some_and(|stat| record.matches(&stat))
+    }
+
+    pub fn restore_directory(&self, rel: &str, record: &DirectoryRecord) -> Result<()> {
+        let directory = self.dir(rel)?;
+        anyhow::ensure!(record.matches(&rustix::fs::fstat(&directory)?), "cache directory identity changed: {rel}");
+        rustix::fs::fchmod(&directory, Mode::from_raw_mode((record.mode & 0o7777) as _))?;
+        Ok(())
+    }
+
+    pub fn sync_parent(&self, rel: &str) -> Result<()> {
+        File::from(self.parent(rel)?.0).sync_all()?;
+        Ok(())
+    }
+
+    pub fn publish_private_file(&self, rel: &str, bytes: &[u8]) -> Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::MetadataExt;
+        let temporary = format!("{rel}.tmp");
+        self.remove(&temporary)?;
+        let mut file = self.create(&temporary, 0o600)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        let identity = file.metadata()?;
+        let (parent, name) = self.parent(rel)?;
+        let (_, temporary_name) = split(&temporary);
+        rustix::fs::renameat(&parent, temporary_name, &parent, name)?;
+        let published = rustix::fs::statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW)?;
+        anyhow::ensure!(
+            FileType::from_raw_mode(published.st_mode) == FileType::RegularFile
+                && published.st_dev as u64 == identity.dev()
+                && published.st_ino as u64 == identity.ino(),
+            "cache journal identity changed during publication"
+        );
+        File::from(parent).sync_all()?;
+        Ok(())
+    }
+
+    pub fn rename_directory_checked(&self, from: &str, to: &str, record: &DirectoryRecord) -> Result<()> {
+        let (source_parent, source_name) = self.parent(from)?;
+        let (destination_parent, destination_name) = self.parent(to)?;
+        let directory = rustix::fs::openat(
+            &source_parent,
+            source_name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let stat = rustix::fs::fstat(&directory)?;
+        anyhow::ensure!(record.matches(&stat), "cache directory identity changed: {from}");
+        rustix::fs::fchmod(&directory, Mode::from_raw_mode(((stat.st_mode as u32 & 0o7777) | 0o200) as _))?;
+        #[cfg(test)]
+        {
+            let phase = if from.ends_with(".layr-new") { "replacement-writable" } else { "source-writable" };
+            cache_test_fault(phase);
+            if phase == "replacement-writable" && std::env::var("LAYR_TEST_CACHE_FAULT").as_deref() == Ok("symlink-swap") {
+                let source = self.path.join(from);
+                std::fs::rename(&source, self.path.join(format!("{from}.injected")))?;
+                std::os::unix::fs::symlink(self.path.join("outside"), source)?;
+            }
+        }
+        let rename = || -> Result<()> {
+            rustix::fs::renameat_with(
+                &source_parent,
+                source_name,
+                &destination_parent,
+                destination_name,
+                rustix::fs::RenameFlags::NOREPLACE,
+            )?;
+            if !lstat_at(&destination_parent, destination_name).is_some_and(|stat| record.matches(&stat)) {
+                rustix::fs::renameat_with(
+                    &destination_parent,
+                    destination_name,
+                    &source_parent,
+                    source_name,
+                    rustix::fs::RenameFlags::NOREPLACE,
+                )
+                .context("undo a replaced cache directory name")?;
+                anyhow::bail!("cache directory changed during rename: {from}");
+            }
+            Ok(())
+        };
+        #[cfg(feature = "overlayfs")]
+        let renamed = if crate::storage::contains_managed_tree(&self.path.join(from)) {
+            crate::storage::rename_plain_tree(&self.path.join(from), &self.path.join(to), rename)
+        } else {
+            rename()
+        };
+        #[cfg(not(feature = "overlayfs"))]
+        let renamed = rename();
+        #[cfg(test)]
+        let injected_error = renamed.is_ok() && std::env::var("LAYR_TEST_CACHE_FAULT").as_deref() == Ok("restore-error");
+        #[cfg(not(test))]
+        let injected_error = false;
+        let restored = if injected_error {
+            Err(rustix::io::Errno::IO)
+        } else {
+            rustix::fs::fchmod(&directory, Mode::from_raw_mode((record.mode & 0o7777) as _))
+        };
+        renamed.with_context(|| format!("move cache {from} to {to}"))?;
+        restored.context("restore the renamed directory mode")?;
+        File::from(source_parent).sync_all()?;
+        File::from(destination_parent).sync_all()?;
+        Ok(())
+    }
+
     pub fn chown(&self, rel: &str, u: u32, g: u32) -> Result<()> {
         if rel.is_empty() {
             #[cfg(target_os = "linux")]
@@ -405,6 +535,26 @@ impl Tree {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn cache_test_pause() {
+    let Some(root) = std::env::var_os("LAYR_TEST_CACHE_PAUSE") else { return };
+    let root = std::path::PathBuf::from(root);
+    std::fs::write(root.join("ready"), "ready").unwrap();
+    let start = std::time::Instant::now();
+    while !root.join("resume").exists() {
+        assert!(start.elapsed() < std::time::Duration::from_secs(30), "cache pause timed out");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn cache_test_fault(phase: &str) {
+    if std::env::var("LAYR_TEST_CACHE_FAULT").as_deref() == Ok(phase) {
+        // Exit without unwinding or running directory-mode cleanup.
+        std::process::exit(93);
+    }
+}
+
 fn uid(u: u32) -> rustix::fs::Uid {
     rustix::fs::Uid::from_raw(u)
 }
@@ -453,6 +603,11 @@ fn remove_at(dir: &OwnedFd, name: &str) -> Result<()> {
             }
             Err(e) => return Err(e),
         }
+    }
+    // A copied cache can contain read-only directories. Deletion needs owner write access.
+    let mode = rustix::fs::fstat(&sub)?.st_mode;
+    if mode & 0o200 == 0 {
+        rustix::fs::fchmod(&sub, Mode::from_raw_mode((mode & 0o7777) | 0o200))?;
     }
     for child in list_fd(&sub)? {
         remove_at(&sub, &child)?;

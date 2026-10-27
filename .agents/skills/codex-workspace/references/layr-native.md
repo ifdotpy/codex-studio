@@ -13,8 +13,8 @@ The original project folder is separate. Studio does not synchronize it with mai
 
 | Value           | Runtime source                                                                         |
 | --------------- | -------------------------------------------------------------------------------------- |
-| Store           | `<Studio state>/layr-native/store`                                                     |
-| Binary          | `<Studio state>/layr-native/bin/layr`, version 0.2.0                                   |
+| Store           | The chat's `layrStoreRoot`. Default: `<Studio state>/layr-native/store`.               |
+| Binary          | `<Studio state>/layr-native/bin/layr`, version 0.4.0                                   |
 | Environment     | `LAYR_ROOT` selects the store. macOS uses `LAYR_DIRECT=1`. Linux uses `LAYR_DIRECT=0`. |
 | Linux socket    | `LAYR_SOCKET=<Studio state>/layr-native/layr.sock`.                                    |
 | Worker selector | `workspace: "layr-native"`. Reviewers inherit this mode.                               |
@@ -34,7 +34,15 @@ A native Layr reviewer cannot select `shared` as its workspace.
 Read `layrReady: true` before you edit. For a lead or implementer, `cwd` names the assigned line folder.
 The `layrProjectId`, `layrLine`, and `layrStateId` fields identify its project, line, and base state.
 A reviewer's `cwd` is its private `layrScratch` folder. Its `layrReadCwd` points to main for trusted reads.
-The project ID comes from the canonical original host folder.
+New imports use the canonical original host folder for the project ID.
+An existing project can retain its own name after Studio verifies its Git origin and shared history.
+The operator can select the store with `native-layr configure --store-root`.
+The operator can select an existing project with `native-layr map --project`.
+Existing chats retain their store after this setting changes.
+Use the assigned `LAYR_ROOT`. Do not replace it with a different store.
+An incompatible format or developer package version blocks preparation.
+An old developer binary without `store-version` requires an upgrade.
+`layrVersionWarning` reports a different developer build with a compatible package and format.
 
 ## Task recipes
 
@@ -87,10 +95,10 @@ The daemon uses the same managed binary, store, and socket as the runtime.
 | ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | Prepare Linux                             | Install the managed binary first. Start that binary as root with the assigned store and socket. |
 | Start a native chat or migration          | Keep the daemon active before setup.                                                            |
-| Check an installed Linux binary's version | Keep the daemon active. The version check also uses it.                                         |
+| Check an installed Linux binary's version | Run the version command directly. It does not need a daemon.                                    |
 
 Studio does not change mounts or install the root service.
-The `layr_native::socket_path` function owns the Linux socket path.
+The `layr_native::selected_socket_path` function resolves the socket for the selected store.
 macOS uses direct execution and needs no daemon.
 
 Existing sessions retain their saved role and tool contracts.

@@ -50,6 +50,8 @@ impl Rules {
         if let Some(l) = &self.layers {
             return l.path(rel).unwrap_or_else(|_| self.root.join(rel));
         }
+        #[cfg(target_os = "macos")]
+        crate::storage::note_read(&self.root, [rel]);
         self.root.join(rel)
     }
 

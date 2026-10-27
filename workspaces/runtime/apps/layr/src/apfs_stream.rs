@@ -49,104 +49,290 @@ fn time(sec: i64, nano: i64) -> Vec<u8> {
     v.extend((nano as u32).to_le_bytes());
     v
 }
-/// A full stream is valid even when the caller offers an incremental parent.
-/// This preserves old peer and remote copy compatibility without changing their protocol.
-pub fn send(root: &Path, out: &mut dyn Write) -> Result<()> {
+/// Send the immutable tree `root`. With a `parent` that the receiver has (`parent_uuid` names
+/// it), the stream holds only the differences; a tree with hard links is sent complete.
+pub fn send(root: &Path, parent: Option<(&Path, &str)>, out: &mut dyn Write) -> Result<()> {
     let info = crate::storage::subvol_info(root)?;
     if !info.readonly {
         bail!("only immutable snapshots can be sent");
     }
     let uuid = uuid::Uuid::parse_str(info.received_uuid.as_deref().unwrap_or(&info.uuid))?;
     let name = root.file_name().context("snapshot has no name")?.as_bytes();
+    #[cfg(target_os = "macos")]
+    let plan = match parent {
+        Some((p, id)) => plan(p, root)?.map(|plan| (uuid::Uuid::parse_str(id), plan)),
+        None => None,
+    };
+    #[cfg(not(target_os = "macos"))]
+    let plan: Option<(Result<uuid::Uuid, uuid::Error>, ())> = {
+        let _ = parent;
+        None
+    };
     out.write_all(b"btrfs-stream\0\x01\0\0\0")?;
-    command(out, 1, &[(15, name), (1, uuid.as_bytes()), (2, &1u64.to_le_bytes())])?;
-    fn visit(root: &Path, rel: &Path, out: &mut dyn Write, links: &mut BTreeMap<(u64, u64), Vec<u8>>) -> Result<()> {
-        let full = root.join(rel);
-        let m = fs::symlink_metadata(&full)?;
-        if crate::stream_fs::has_acl(&full)? {
-            bail!("cannot transfer macOS access control lists to btrfs: {}", full.display());
-        }
-        let p = rel.as_os_str().as_bytes();
-        let ino = m.ino().to_le_bytes();
-        let mut linked = false;
-        if !p.is_empty() {
-            if m.is_dir() {
-                command(out, 4, &[(15, p), (3, &ino)])?;
-            } else if m.file_type().is_symlink() {
-                command(out, 8, &[(15, p), (3, &ino), (17, fs::read_link(&full)?.as_os_str().as_bytes())])?;
-            } else if m.is_file() {
-                let key = (m.dev(), m.ino());
-                if let Some(first) = links.get(&key) {
-                    command(out, 10, &[(15, p), (17, first)])?;
-                    linked = true;
-                } else {
-                    links.insert(key, p.to_vec());
-                    command(out, 3, &[(15, p), (3, &ino)])?;
-                    let mut f = File::open(&full)?;
-                    let mut buf = vec![0; 48 * 1024];
-                    let mut offset = 0u64;
-                    loop {
-                        let n = f.read(&mut buf)?;
-                        if n == 0 {
-                            break;
-                        }
-                        if buf[..n].iter().any(|b| *b != 0) {
-                            command(out, 15, &[(15, p), (18, &offset.to_le_bytes()), (19, &buf[..n])])?;
-                        }
-                        offset += n as u64;
-                    }
-                    command(out, 17, &[(15, p), (4, &m.len().to_le_bytes())])?;
-                }
-            } else {
-                bail!("cannot send special file {}", full.display());
-            }
-        }
-        if m.is_dir() {
-            for entry in fs::read_dir(&full)? {
-                visit(root, &rel.join(entry?.file_name()), out, links)?;
-            }
-        }
-        if !linked {
-            for (name, value) in crate::stream_fs::xattrs(&full)? {
-                if name == b"com.layr.subvolume"
-                    || name == b"com.layr.origin"
-                    || name == b"trusted.layr.origin"
-                    || name == b"trusted.layr.cache-restore"
-                {
-                    continue;
-                }
-                // Linux forbids user.* attributes on symlinks. Its root receiver can
-                // retain them in trusted.*, including attributes specific to macOS.
-                #[cfg(target_os = "macos")]
-                let name = if m.file_type().is_symlink() {
-                    format!("trusted.layr.apfs.{}", hex::encode(name)).into_bytes()
-                } else if name.starts_with(b"user.") {
-                    name
-                } else {
-                    format!("user.layr.apfs.{}", hex::encode(name)).into_bytes()
-                };
-                #[cfg(feature = "overlayfs")]
-                if !name.starts_with(b"user.") { bail!("cannot transfer attribute {}",String::from_utf8_lossy(&name)); }
-                command(out, 13, &[(15, p), (13, &name), (14, &value)])?;
-            }
-            if !m.file_type().is_symlink() {
-                command(out, 18, &[(15, p), (5, &((m.mode() & 0o7777) as u64).to_le_bytes())])?;
-            }
+    match plan {
+        #[cfg(target_os = "macos")]
+        Some((parent_uuid, plan)) => {
+            let parent_uuid = parent_uuid?;
             command(
                 out,
-                20,
+                2,
                 &[
-                    (15, p),
-                    (9, &time(m.ctime(), m.ctime_nsec())),
-                    (10, &time(m.mtime(), m.mtime_nsec())),
-                    (11, &time(m.atime(), m.atime_nsec())),
+                    (15, name),
+                    (1, uuid.as_bytes()),
+                    (2, &1u64.to_le_bytes()),
+                    (20, parent_uuid.as_bytes()),
+                    (21, &1u64.to_le_bytes()),
                 ],
             )?;
+            send_plan(root, &plan, out)?;
         }
-        Ok(())
+        _ => {
+            command(out, 1, &[(15, name), (1, uuid.as_bytes()), (2, &1u64.to_le_bytes())])?;
+            visit(root, Path::new(""), out, &mut BTreeMap::new())?;
+        }
     }
-    visit(root, Path::new(""), out, &mut BTreeMap::new())?;
     command(out, 21, &[])
+}
+
+fn visit(root: &Path, rel: &Path, out: &mut dyn Write, links: &mut BTreeMap<(u64, u64), Vec<u8>>) -> Result<()> {
+    let full = root.join(rel);
+    let m = fs::symlink_metadata(&full)?;
+    let p = rel.as_os_str().as_bytes();
+    let mut linked = false;
+    if !p.is_empty() {
+        if m.is_file() {
+            let key = (m.dev(), m.ino());
+            if let Some(first) = links.get(&key) {
+                command(out, 10, &[(15, p), (17, first)])?;
+                linked = true;
+            } else {
+                links.insert(key, p.to_vec());
+                create(&full, p, &m, out)?;
+            }
+        } else {
+            create(&full, p, &m, out)?;
+        }
+    }
+    if m.is_dir() {
+        for entry in fs::read_dir(&full)? {
+            visit(root, &rel.join(entry?.file_name()), out, links)?;
+        }
+    }
+    if !linked {
+        metadata(&full, p, &m, &[], out)?;
+    }
+    Ok(())
+}
+
+/// The commands that make the entry `p` (at `full`) with its content.
+fn create(full: &Path, p: &[u8], m: &fs::Metadata, out: &mut dyn Write) -> Result<()> {
+    if crate::stream_fs::has_acl(full)? {
+        bail!("cannot transfer macOS access control lists to btrfs: {}", full.display());
+    }
+    let ino = m.ino().to_le_bytes();
+    if m.is_dir() {
+        command(out, 4, &[(15, p), (3, &ino)])?;
+    } else if m.file_type().is_symlink() {
+        command(out, 8, &[(15, p), (3, &ino), (17, fs::read_link(full)?.as_os_str().as_bytes())])?;
+    } else if m.is_file() {
+        command(out, 3, &[(15, p), (3, &ino)])?;
+        let mut f = File::open(full)?;
+        let mut buf = vec![0; 48 * 1024];
+        let mut offset = 0u64;
+        loop {
+            let n = f.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            if buf[..n].iter().any(|b| *b != 0) {
+                command(out, 15, &[(15, p), (18, &offset.to_le_bytes()), (19, &buf[..n])])?;
+            }
+            offset += n as u64;
+        }
+        command(out, 17, &[(15, p), (4, &m.len().to_le_bytes())])?;
+    } else {
+        bail!("cannot send special file {}", full.display());
+    }
+    Ok(())
+}
+
+/// The attributes of an entry as the stream names them, without Layr's own markers.
+fn stream_xattrs(full: &Path, m: &fs::Metadata) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    let mut out = Vec::new();
+    for (name, value) in crate::stream_fs::xattrs(full)? {
+        if name == b"com.layr.subvolume"
+            || name == b"com.layr.origin"
+            || name == b"trusted.layr.origin"
+            || name == b"trusted.layr.cache-restore"
+        {
+            continue;
+        }
+        // Linux forbids user.* attributes on symlinks. Its root receiver can
+        // retain them in trusted.*, including attributes specific to macOS.
+        #[cfg(target_os = "macos")]
+        let name = if m.file_type().is_symlink() {
+            format!("trusted.layr.apfs.{}", hex::encode(name)).into_bytes()
+        } else if name.starts_with(b"user.") {
+            name
+        } else {
+            format!("user.layr.apfs.{}", hex::encode(name)).into_bytes()
+        };
+        #[cfg(feature = "overlayfs")]
+        if !name.starts_with(b"user.") {
+            bail!("cannot transfer attribute {}", String::from_utf8_lossy(&name));
+        }
+        let _ = m;
+        out.push((name, value));
+    }
+    Ok(out)
+}
+
+/// Attributes, mode and times of an entry. `gone` names attributes that the receiver has and
+/// the entry no longer has.
+fn metadata(full: &Path, p: &[u8], m: &fs::Metadata, gone: &[Vec<u8>], out: &mut dyn Write) -> Result<()> {
+    if crate::stream_fs::has_acl(full)? {
+        bail!("cannot transfer macOS access control lists to btrfs: {}", full.display());
+    }
+    for name in gone {
+        command(out, 14, &[(15, p), (13, name)])?;
+    }
+    for (name, value) in stream_xattrs(full, m)? {
+        command(out, 13, &[(15, p), (13, &name), (14, &value)])?;
+    }
+    if !m.file_type().is_symlink() {
+        command(out, 18, &[(15, p), (5, &((m.mode() & 0o7777) as u64).to_le_bytes())])?;
+    }
+    command(
+        out,
+        20,
+        &[
+            (15, p),
+            (9, &time(m.ctime(), m.ctime_nsec())),
+            (10, &time(m.mtime(), m.mtime_nsec())),
+            (11, &time(m.atime(), m.atime_nsec())),
+        ],
+    )
+}
+
+/// The differences from a parent tree to a child tree, in stream order.
+#[cfg(target_os = "macos")]
+struct Plan {
+    /// Paths to remove (and whether each is a folder), content before its folder.
+    remove: Vec<(String, bool)>,
+    /// Paths to make with their content, folders before their content.
+    create: Vec<String>,
+    /// Paths whose attributes, mode or times to send, with the attributes that went away.
+    meta: Vec<(String, Vec<Vec<u8>>)>,
+}
+
+/// The plan from `parent` to `child`, or `None` when a complete stream must be sent.
+#[cfg(target_os = "macos")]
+fn plan(parent: &Path, child: &Path) -> Result<Option<Plan>> {
+    use crate::fsutil::FType;
+    if !parent.is_dir() || !crate::storage::subvol_info(parent).is_ok_and(|i| i.readonly) {
+        return Ok(None);
+    }
+    let a = crate::storage::scan_with_data(parent, true)?;
+    let b = crate::storage::scan_with_data(child, true)?;
+    // Hard links need the inode map of a complete stream.
+    if a.values().chain(b.values()).any(|e| e.meta.ftype == FType::File && e.nlink > 1) {
+        return Ok(None);
+    }
+    let same_content = |rel: &str, x: &crate::storage::ScanEntry, y: &crate::storage::ScanEntry| -> Result<bool> {
+        if x.meta.size != y.meta.size {
+            return Ok(false);
+        }
+        // A shared clone with valid change counters holds the same data, as in `candidates`.
+        let shared = x.fingerprint.0 == y.fingerprint.0
+            && x.data.zip(y.data).is_some_and(|(d, e)| {
+                d.generation.is_some() && e.generation.is_some() && d.clone_id.is_some() && d.clone_id == e.clone_id
+            });
+        if shared {
+            return Ok(true);
+        }
+        // Compare in blocks: a large file never sits in memory.
+        let (mut f, mut g) = (File::open(parent.join(rel))?, File::open(child.join(rel))?);
+        let (mut p, mut q) = (vec![0u8; 1 << 16], vec![0u8; 1 << 16]);
+        loop {
+            let n = f.read(&mut p)?;
+            if n == 0 {
+                return Ok(true);
+            }
+            g.read_exact(&mut q[..n])?;
+            if p[..n] != q[..n] {
+                return Ok(false);
+            }
+        }
+    };
+    let mut gone = Vec::new();
+    let mut fresh = std::collections::BTreeSet::new();
+    for (rel, y) in &b {
+        if rel.is_empty() {
+            continue;
+        }
+        let renew = match a.get(rel) {
+            None => true,
+            Some(x) if x.meta.ftype != y.meta.ftype => true,
+            Some(x) if y.meta.ftype == FType::File => !same_content(rel, x, y)?,
+            Some(_) if y.meta.ftype == FType::Symlink => fs::read_link(parent.join(rel))? != fs::read_link(child.join(rel))?,
+            Some(_) => false,
+        };
+        if renew {
+            fresh.insert(rel.clone());
+            if a.contains_key(rel) {
+                gone.push(rel.clone());
+            }
+        }
+    }
+    gone.extend(a.keys().filter(|rel| !rel.is_empty() && !b.contains_key(*rel)).cloned());
+    // A removed path takes its content with it; the receiver removes each entry.
+    let mut remove = std::collections::BTreeSet::new();
+    for g in &gone {
+        let prefix = format!("{g}/");
+        remove.insert(g.clone());
+        remove.extend(a.range(prefix.clone()..).map(|(k, _)| k).take_while(|k| k.starts_with(&prefix)).cloned());
+    }
+    // The receiver removes and makes entries in their folders, which changes the folder times:
+    // those folders get their times again.
+    let touched: std::collections::BTreeSet<&str> =
+        remove.iter().chain(&fresh).map(|r| r.rsplit_once('/').map(|(d, _)| d).unwrap_or("")).collect();
+    let mut meta = Vec::new();
+    for (rel, y) in &b {
+        if fresh.contains(rel) {
+            meta.push((rel.clone(), Vec::new()));
+            continue;
+        }
+        let Some(x) = a.get(rel) else { continue };
+        let names = |x: &Path| -> Result<BTreeMap<Vec<u8>, Vec<u8>>> {
+            Ok(stream_xattrs(x, &fs::symlink_metadata(x)?)?.into_iter().collect())
+        };
+        let (old, new) = (names(&parent.join(rel))?, names(&child.join(rel))?);
+        let changed = x.meta.mode != y.meta.mode
+            || (x.fingerprint.4, x.fingerprint.5) != (y.fingerprint.4, y.fingerprint.5)
+            || old != new
+            || touched.contains(rel.as_str());
+        if changed {
+            meta.push((rel.clone(), old.keys().filter(|k| !new.contains_key(*k)).cloned().collect()));
+        }
+    }
+    let remove = remove.into_iter().rev().map(|r| (r.clone(), a[&r].meta.ftype == FType::Dir)).collect();
+    Ok(Some(Plan { remove, create: fresh.into_iter().collect(), meta }))
+}
+
+#[cfg(target_os = "macos")]
+fn send_plan(root: &Path, plan: &Plan, out: &mut dyn Write) -> Result<()> {
+    for (rel, dir) in &plan.remove {
+        command(out, if *dir { 12 } else { 11 }, &[(15, rel.as_bytes())])?;
+    }
+    for rel in &plan.create {
+        let full = root.join(rel);
+        create(&full, rel.as_bytes(), &fs::symlink_metadata(&full)?, out)?;
+    }
+    for (rel, gone) in &plan.meta {
+        let full = root.join(rel);
+        metadata(&full, rel.as_bytes(), &fs::symlink_metadata(&full)?, gone, out)?;
+    }
+    Ok(())
 }
 
 fn value<'a>(attrs: &[(u16, &'a [u8])], key: u16) -> Result<&'a [u8]> {
@@ -448,7 +634,7 @@ mod tests {
         crate::storage::set_readonly(&src)?;
         let id = crate::storage::subvol_info(&src)?.uuid;
         let mut bytes = Vec::new();
-        send(&src, &mut bytes)?;
+        send(&src, None, &mut bytes)?;
         let dir = s.0.join("received");
         fs::create_dir(&dir)?;
         let e = crate::recv::Expect { name: "state", uuid: &id, parent: &|_| None, clones: &[] };
@@ -471,6 +657,70 @@ mod tests {
         Ok(())
     }
     #[test]
+    #[cfg(target_os = "macos")]
+    #[ignore = "requires a case-sensitive APFS test volume"]
+    fn a_stream_against_a_parent_holds_only_the_differences() -> Result<()> {
+        use std::os::unix::ffi::OsStringExt;
+        let s = Sandbox::new();
+        let parent = s.0.join("parent");
+        crate::storage::create_subvolume(&parent)?;
+        for i in 0..200 {
+            fs::create_dir_all(parent.join(format!("d{}", i % 5)))?;
+            fs::write(parent.join(format!("d{}/f{i}", i % 5)), format!("{i}\n").repeat(500))?;
+        }
+        fs::create_dir_all(parent.join("gone/inner"))?;
+        fs::write(parent.join("gone/inner/x"), b"x")?;
+        std::os::unix::fs::symlink("d0/f0", parent.join("link"))?;
+        fs::write(parent.join("swap"), b"file")?;
+        crate::storage::set_readonly(&parent)?;
+        let child = s.0.join("child");
+        crate::storage::snapshot(&parent, &child, false)?;
+        fs::write(child.join("d1/f1"), b"changed")?;
+        fs::remove_file(child.join("d2/f2"))?;
+        fs::create_dir(child.join("new"))?;
+        fs::write(child.join("new/file"), b"new")?;
+        crate::stream_fs::attribute(&child.join("new/file"), c"user.layr.test", Some(b"v"))?;
+        fs::set_permissions(child.join("d3/f3"), fs::Permissions::from_mode(0o755))?;
+        fs::remove_dir_all(child.join("gone"))?;
+        fs::remove_file(child.join("link"))?;
+        std::os::unix::fs::symlink("d0/f5", child.join("link"))?;
+        fs::remove_file(child.join("swap"))?;
+        fs::create_dir(child.join("swap"))?;
+        crate::storage::set_readonly(&child)?;
+        let parent_id = crate::storage::subvol_info(&parent)?.uuid;
+        let id = crate::storage::subvol_info(&child)?.uuid;
+        let (mut full, mut diff) = (Vec::new(), Vec::new());
+        send(&child, None, &mut full)?;
+        send(&child, Some((&parent, &parent_id)), &mut diff)?;
+        assert!(diff.len() * 20 < full.len(), "{} of {} bytes", diff.len(), full.len());
+        let dir = s.0.join("received");
+        fs::create_dir(&dir)?;
+        let find = |u: &str| (u == parent_id).then(|| parent.clone());
+        let e = crate::recv::Expect { name: "child", uuid: &id, parent: &find, clones: &[] };
+        receive(&mut &diff[..], &dir, &e)?;
+        let got = dir.join("child");
+        let tree = |root: &Path| -> Result<BTreeMap<String, (u32, Vec<u8>)>> {
+            let mut out = BTreeMap::new();
+            crate::fsutil::walk(root, "", &mut |rel, m| {
+                let p = root.join(rel);
+                let body = if m.is_file() {
+                    fs::read(&p)?
+                } else if m.ftype == crate::fsutil::FType::Symlink {
+                    fs::read_link(&p)?.into_os_string().into_vec()
+                } else {
+                    Vec::new()
+                };
+                out.insert(rel.to_string(), (m.mode, body));
+                Ok(true)
+            })?;
+            Ok(out)
+        };
+        assert_eq!(tree(&got)?, tree(&child)?);
+        assert_eq!(crate::stream_fs::attribute(&got.join("new/file"), c"user.layr.test", None)?, b"v");
+        Ok(())
+    }
+
+    #[test]
     #[cfg(target_os="macos")]
     #[ignore = "requires a case-sensitive APFS test volume"]
     fn transfer_refuses_acl_instead_of_losing_access_rules() -> Result<()> {
@@ -483,7 +733,7 @@ mod tests {
         assert!(result.success());
         assert!(crate::stream_fs::has_acl(&root.join("file"))?);
         crate::storage::set_readonly(&root)?;
-        let error = send(&root, &mut Vec::new()).unwrap_err();
+        let error = send(&root, None, &mut Vec::new()).unwrap_err();
         assert!(error.to_string().contains("access control lists"));
         crate::storage::set_writable(&root)?;
         crate::stream_fs::clear_acl(&root.join("file"))?;

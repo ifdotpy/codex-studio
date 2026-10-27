@@ -20,6 +20,7 @@ const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, machine TEXT, seq INTEGER, time INTEGER, op TEXT, actor_uid INTEGER, raw TEXT);
 CREATE INDEX IF NOT EXISTS records_time ON records(time);
 CREATE UNIQUE INDEX IF NOT EXISTS records_seq ON records(machine, seq);
+CREATE INDEX IF NOT EXISTS records_git_import ON records(json_extract(raw, '$.r.data.state')) WHERE op='import';
 CREATE TABLE IF NOT EXISTS states (id TEXT PRIMARY KEY, display TEXT UNIQUE, kind TEXT, line TEXT, time INTEGER, rec TEXT, present INTEGER DEFAULT 1, deleted INTEGER DEFAULT 0, dropped INTEGER DEFAULT 0, machine TEXT);
 CREATE INDEX IF NOT EXISTS states_line ON states(line, kind, time);
 CREATE TABLE IF NOT EXISTS parents (state TEXT, parent TEXT, ord INTEGER, PRIMARY KEY(state, ord));
@@ -317,7 +318,10 @@ impl Db {
                         tx.execute("UPDATE approvals SET withdrawn=1 WHERE id=?1 AND uid=?2", params![id, rec.actor.uid as i64])?;
                     }
                 }
-                if a["kind"] == "approval" && rec.data.get("declassify").is_none() {
+                if a["kind"] == "approval"
+                    && rec.data.get("declassify").is_none()
+                    && !a["signer"].as_str().is_some_and(|s| s.starts_with("person:"))
+                {
                     tx.execute(
                         "INSERT OR IGNORE INTO approvals(id,state,uid,time) VALUES(?1,?2,?3,?4)",
                         params![rec.id, a["subject"]["id"].as_str(), rec.actor.uid as i64, rec.time],
@@ -364,7 +368,13 @@ impl Db {
                     params![s("machine"), s("public_key"), rec.machine],
                 )?;
             }
-            "project" | "config" | "overlay.create" | "overlay.readers" | "overlay.use" | "overlay.show-to-project" => {
+            "project"
+            | "config"
+            | "overlay.create"
+            | "overlay.readers"
+            | "overlay.mode"
+            | "overlay.use"
+            | "overlay.show-to-project" => {
                 if let Some(obj) = d.get("config").and_then(|v| v.as_object()) {
                     for (k, v) in obj {
                         let key = if foreign && local_key(k) { format!("{k}@{}", rec.machine) } else { k.clone() };
@@ -569,7 +579,7 @@ impl Db {
     pub fn approvals(&self, state: &str) -> Result<Vec<(u32, i64)>> {
         let mut st = self.conn.prepare(
             "SELECT a.uid,MAX(json_extract(a.rec,'$.time')) FROM attestations a
-            WHERE (a.local=1 OR EXISTS (SELECT 1 FROM approvals p WHERE p.id=a.id)) AND a.subject=?1 AND a.kind='approval'
+            WHERE (a.local=1 OR EXISTS (SELECT 1 FROM approvals p WHERE p.id=a.id)) AND a.subject=?1 AND a.kind='approval' AND json_extract(a.rec,'$.signer') NOT LIKE 'person:%'
             AND NOT EXISTS (SELECT 1 FROM records scoped WHERE scoped.id=a.id AND json_type(scoped.raw,'$.r.data.declassify') IS NOT NULL) AND NOT EXISTS
             (SELECT 1 FROM attestation_revocations r WHERE r.target=a.id AND r.machine=a.machine AND r.uid=a.uid AND r.ord>a.ord)
             GROUP BY a.machine,a.uid ORDER BY a.uid",
@@ -669,7 +679,24 @@ impl Db {
         Ok(self.conn.query_row("SELECT gcommit FROM git_map WHERE state=?1 LIMIT 1", params![state], |r| r.get(0)).optional()?)
     }
 
+    pub fn has_git_history(&self) -> Result<bool> {
+        Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM git_map)", [], |r| r.get(0))?)
+    }
+
+    /// Exact Git objects are part of the signed import record, never a machine-local cache.
+    pub fn git_import(&self, state: &str) -> Result<Option<serde_json::Value>> {
+        let raw: Option<String> = self.conn.query_row(
+            "SELECT json_extract(raw, '$.r.data.git') FROM records WHERE op='import' AND json_extract(raw, '$.r.data.state')=?1 AND json_type(raw, '$.r.data.git')='object' LIMIT 1",
+            params![state], |r| r.get(0),
+        ).optional()?;
+        raw.map(|s| Ok(serde_json::from_str(&s)?)).transpose()
+    }
+
     pub fn state_of_commit(&self, prefix: &str) -> Result<Vec<String>> {
+        if prefix.len() == 40 {
+            let mut st = self.conn.prepare("SELECT DISTINCT state FROM git_map WHERE gcommit=?1")?;
+            return Ok(st.query_map(params![prefix], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?);
+        }
         let mut st = self.conn.prepare("SELECT DISTINCT state FROM git_map WHERE gcommit LIKE ?1 || '%' LIMIT 3")?;
         let v = st.query_map(params![prefix], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
         Ok(v)
@@ -762,6 +789,7 @@ impl Db {
             None
         };
         if let Some(a) = a {
+            let signer = if a.signer.starts_with("person:") { &a.signer } else { &rec.machine };
             self.conn.execute(
                 "INSERT INTO attestations(id,subject,kind,rec,machine,uid,ord,local) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET local=MAX(attestations.local,excluded.local)",
                 params![
@@ -769,7 +797,7 @@ impl Db {
                     a.subject.id,
                     a.kind,
                     serde_json::to_string(&a)?,
-                    rec.machine,
+                    signer,
                     rec.actor.uid as i64,
                     ord,
                     local as i64
@@ -785,7 +813,7 @@ impl Db {
                     self.conn.execute(
                         "INSERT OR IGNORE INTO attestation_revocations(id,target,machine,uid,ord)
                          SELECT ?1,?2,?3,?4,?5 FROM attestations WHERE id=?2 AND subject=?6",
-                        params![a.attestation_id, id, rec.machine, rec.actor.uid as i64, ord, a.subject.id],
+                        params![a.attestation_id, id, signer, rec.actor.uid as i64, ord, a.subject.id],
                     )?;
                 }
             }

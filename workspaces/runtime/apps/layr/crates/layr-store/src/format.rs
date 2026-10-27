@@ -18,6 +18,14 @@ pub fn is_uuid(s: &str) -> bool {
     s.len() == 36 && uuid::Uuid::parse_str(s).map(|u| u.hyphenated().to_string() == s).unwrap_or(false)
 }
 
+/// One immutable encrypted release file, without any user-controlled path components.
+pub fn release_file(key: &str) -> bool {
+    key.strip_prefix("files/").and_then(|s| s.strip_suffix(".age")).is_some_and(is_uuid)
+}
+
+pub const RELEASE_FILE_LIMIT: u64 = 512 << 20;
+pub const RELEASE_OBJECT_LIMIT: u64 = RELEASE_FILE_LIMIT + (RELEASE_FILE_LIMIT / 65536 + 1) * 16 + 4096;
+
 pub const PART_LIMIT: usize = 16 << 20;
 pub const FULL_TREE_EVERY: usize = 32;
 pub const MAX_FILE_DELTAS: usize = 16;
@@ -67,7 +75,40 @@ pub struct Tree {
 
 impl Tree {
     pub fn canonical(&self) -> Result<Vec<u8>> {
-        canonical(&serde_json::to_value(self)?)
+        use super::canonical::string;
+        let mut out = String::from("{\"files\":{");
+        for (number, (path, entry)) in self.files.iter().enumerate() {
+            if number != 0 {
+                out.push(',');
+            }
+            string(path, &mut out);
+            out.push_str(":[");
+            string(&entry.0, &mut out);
+            out.push(',');
+            out.push_str(&entry.1.to_string());
+            out.push(',');
+            string(&entry.2, &mut out);
+            out.push_str(",[");
+            for (number, link) in entry.3.iter().enumerate() {
+                if number != 0 {
+                    out.push(',');
+                }
+                out.push('[');
+                string(&link.0, &mut out);
+                out.push(',');
+                string(&link.1, &mut out);
+                for value in [link.2 as u64, link.3, link.4] {
+                    out.push(',');
+                    out.push_str(&value.to_string());
+                }
+                out.push(',');
+                string(&link.5, &mut out);
+                out.push(']');
+            }
+            out.push_str("]]");
+        }
+        out.push_str("}}");
+        Ok(out.into_bytes())
     }
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let tree: Self = serde_json::from_slice(bytes)?;
@@ -181,11 +222,7 @@ impl Header {
         if self.v != 2 {
             bail!("unsupported tree format {}", self.v);
         }
-        if !is_uuid(&self.state)
-            || !is_uuid(&self.machine)
-            || !valid_attempt(&self.attempt)
-            || self.parts > MAX_PARTS
-        {
+        if !is_uuid(&self.state) || !is_uuid(&self.machine) || !valid_attempt(&self.attempt) || self.parts > MAX_PARTS {
             bail!("invalid tree header");
         }
         if self.btrfs.as_ref().is_some_and(|i| !is_uuid(&i.uuid) || i.transid == 0) {
@@ -210,6 +247,26 @@ pub fn split_tree(object: &[u8]) -> Result<(Header, &[u8])> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn typed_tree_encoding_matches_store_canonical_bytes() {
+        let state = "01a12290-0000-7000-8000-000000000003".to_string();
+        let entry = Entry(
+            "100644".into(),
+            123456789,
+            "ab".repeat(32),
+            vec![
+                Link(state.clone(), "0123abcd".into(), 0, 4096, 8192, "delta".into()),
+                Link(state, "0123abcd".into(), 2, 0, 65536, "full".into()),
+            ],
+        );
+        let tree =
+            Tree { files: BTreeMap::from([("plain".into(), entry.clone()), ("caf\u{e9}/\u{1f642}".into(), entry.clone())]) };
+        assert_eq!(tree.canonical().unwrap(), canonical(&serde_json::to_value(&tree).unwrap()).unwrap());
+        Tree::parse(&tree.canonical().unwrap()).unwrap();
+        let escaped = Tree { files: BTreeMap::from([("\n\t\\\"".into(), entry)]) };
+        assert_eq!(escaped.canonical().unwrap(), canonical(&serde_json::to_value(&escaped).unwrap()).unwrap());
+        assert_eq!(Tree::default().canonical().unwrap(), canonical(&serde_json::to_value(Tree::default()).unwrap()).unwrap());
+    }
     use super::*;
     const ID: &str = "01a12290-0000-7000-8000-000000000001";
     #[test]

@@ -24,6 +24,8 @@ pub(crate) struct Key {
     pub readers: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revocation: Option<String>,
+    #[serde(default)]
+    pub access_mode: layr_store::epochs::Mode,
 }
 
 #[derive(Clone)]
@@ -258,6 +260,15 @@ pub(crate) fn open_identity(
             }
         }
     }
+    if !key.hidden && key.access_mode == layr_store::epochs::Mode::Public {
+        let descriptor = super::Descriptor { format: 2, project: key.overlay.clone(), recipient: key.recipient.clone() };
+        let manifest = layr_store::public::Manifest::parse(
+            &backend.get("public.json")?.context("public overlay has no manifest")?,
+            &descriptor,
+        )?;
+        let slot = backend.get("slots/public.age")?.context("public overlay has no slot")?;
+        return Ok(Some(checked(manifest.open(&slot)?)?));
+    }
     Ok(None)
 }
 
@@ -273,6 +284,12 @@ fn layer(store: &Store, published: &Published, identity: Option<String>) -> Resu
         person: None,
         pin: None,
         aws_profile: store.aws_profile.clone(),
+        force_public: false,
+        public_clone: false,
+        public_reader: std::sync::atomic::AtomicBool::new(false),
+        epoch: None,
+        epoch_public: false,
+        publishing_epoch: false,
         layer: Some(LayerAccess { recipient: published.key.recipient.clone(), identity }),
     })
 }
@@ -308,7 +325,7 @@ fn local_key(store: &Store, id: &str, epoch: &str) -> std::path::PathBuf {
 }
 
 pub(super) fn push(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options, report: &mut Report) -> Result<()> {
-    let descriptor = store.descriptor()?;
+    let descriptor = store.root_descriptor()?;
     let trusted = trusted_keys(repo)?;
     let mut objects = Vec::new();
     for name in repo.visible_overlay_names(ctx)? {
@@ -361,8 +378,14 @@ pub(super) fn push(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options, report
             }
         }
         let revocation = orepo.p.db.overlay_config("overlay.revocation")?.and_then(|value| value.as_str().map(str::to_owned));
+        let access_mode = super::epochs::overlay_mode(&orepo)?;
+        if hidden && access_mode != layr_store::epochs::Mode::Private {
+            bail!("hidden overlays must remain private");
+        }
         let rotate = previous.as_ref().is_none_or(|old| {
-            old.key.revocation != revocation || old.key.readers.keys().any(|reader| !readers.contains_key(reader))
+            old.key.access_mode > access_mode
+                || old.key.revocation != revocation
+                || old.key.readers.keys().any(|reader| !readers.contains_key(reader))
         });
         let reader_change = previous.as_ref().is_none_or(|old| old.key.readers != readers);
         if (rotate || reader_change) && !authority.machines.contains(&store.machine) {
@@ -379,6 +402,7 @@ pub(super) fn push(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options, report
             crate::fsutil::atomic_write(&path, &keys::machine_slot(&identity, &store.key.verifying_key())?, 0o600)?;
             let key = Key {
                 hidden,
+                access_mode,
                 overlay: orepo.p.id.clone(),
                 name: name.clone(),
                 epoch,
@@ -396,9 +420,10 @@ pub(super) fn push(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options, report
         } else {
             let mut published = previous.context("overlay has no key record")?;
             // Adding a reader does not change the recipient, but its signed reader set must travel.
-            if published.key.readers != readers || published.key.hidden != hidden {
+            if published.key.readers != readers || published.key.hidden != hidden || published.key.access_mode != access_mode {
                 published.key.readers = readers.clone();
                 published.key.hidden = hidden;
+                published.key.access_mode = access_mode;
                 let mut record = Record::new("overlay.key");
                 record.data = serde_json::to_value(&published.key)?;
                 published.record = orepo.p.append(record, &ctx.actor())?;
@@ -452,6 +477,30 @@ pub(super) fn push(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options, report
             }
         }
         merge(report, writer::push_locked(&scoped, ctx, &orepo, opts)?, &name, "push");
+        if let Some(identity) = &identity {
+            if access_mode == layr_store::epochs::Mode::Service {
+                let recipient = store.service_recipient(repo)?.context("service overlay requires a configured service recipient")?;
+                scoped.backend.put_new("slots/service.age", keys::seal_slot(identity, &recipient)?)?;
+            }
+            if access_mode == layr_store::epochs::Mode::Public {
+                let descriptor = scoped.descriptor()?;
+                let manifest = if let Some(bytes) = scoped.backend.get("public.json")? {
+                    layr_store::public::Manifest::parse(&bytes, &descriptor)?
+                } else {
+                    let manifest = layr_store::public::Manifest::new(
+                        &descriptor,
+                        keys::generate_identity(),
+                        store.machine.clone(),
+                        &store.key,
+                    )?;
+                    scoped.backend.put_new("public.json", serde_json::to_vec(&manifest)?)?;
+                    manifest
+                };
+                scoped
+                    .backend
+                    .put_new("slots/public.age", keys::seal_slot(identity, &keys::recipient_of(&manifest.identity)?)?)?;
+            }
+        }
         // Publish the key after its epoch is complete. It contains the exact signed record, never an identity.
         let body = if hidden {
             keys::encrypt(&published.key.recipient, published.line.as_bytes())?
@@ -464,22 +513,26 @@ pub(super) fn push(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options, report
 }
 
 pub(super) fn fetch(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options, report: &mut Report) -> Result<()> {
-    let descriptor = store.descriptor()?;
+    let descriptor = store.root_descriptor()?;
     let trusted = trusted_keys(repo)?;
     let parent_lines: Vec<_> = repo.p.export_jsonl()?.lines().map(str::to_owned).collect();
     let mut authorities = crate::overlay_managers::from_lines(&repo.p.id, &parent_lines, &trusted)?;
     let (mut published, refused) = published(&store.backend, &repo.p.id, &descriptor.recipient, &trusted, &authorities)?;
     report.omitted.extend(refused);
-    let hidden = discover_hidden(
-        &store.backend,
-        &repo.p.id,
-        &descriptor.recipient,
-        &trusted,
-        Some((&store.machine, &store.key)),
-        store.person.as_ref(),
-        opts.paper_key.as_deref().or(store.paper_key_text.as_deref()),
-        &BTreeMap::new(),
-    )?;
+    let hidden = if store.is_public_reader() {
+        BTreeMap::new()
+    } else {
+        discover_hidden(
+            &store.backend,
+            &repo.p.id,
+            &descriptor.recipient,
+            &trusted,
+            Some((&store.machine, &store.key)),
+            store.person.as_ref(),
+            opts.paper_key.as_deref().or(store.paper_key_text.as_deref()),
+            &BTreeMap::new(),
+        )?
+    };
     let mut identities = BTreeMap::new();
     for (name, (key, identity, authority)) in hidden {
         if published.contains_key(&name) {
@@ -490,6 +543,9 @@ pub(super) fn fetch(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options, repor
         published.insert(name, key);
     }
     for (name, published) in published {
+        if store.is_public_reader() && published.key.access_mode != layr_store::epochs::Mode::Public {
+            continue;
+        }
         if !published.key.hidden && repo.overlay_info(&name)?.is_none() {
             bail!("overlay key names an unknown overlay {name}");
         }
@@ -685,6 +741,7 @@ mod tests {
             recipient: keys::recipient_of(&keys::generate_identity()).unwrap(),
             readers: BTreeMap::new(),
             revocation: None,
+            access_mode: layr_store::epochs::Mode::Private,
         })
         .unwrap();
         let line = oplog::sign_line(&rec, &signer).unwrap();

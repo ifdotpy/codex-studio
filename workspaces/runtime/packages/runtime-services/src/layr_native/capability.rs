@@ -27,8 +27,11 @@ impl NativeLayrCapability {
 pub fn capability(state_dir: &Path) -> NativeLayrCapability {
     #[cfg(target_os = "macos")]
     {
-        let _ = state_dir;
-        NativeLayrCapability::from_result(Ok(()))
+        NativeLayrCapability::from_result(
+            super::settings::selected_store(state_dir)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+        )
     }
     #[cfg(target_os = "linux")]
     {
@@ -46,7 +49,7 @@ fn linux_readiness(state_dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     // Linux statfs filesystem type identifier, BTRFS_SUPER_MAGIC.
     const BTRFS_FILESYSTEM_TYPE: u64 = 0x9123_683e;
-    let store = super::store_path(state_dir);
+    let store = super::settings::selected_store(state_dir).map_err(|e| e.to_string())?;
     if !store.is_dir()
         || rustix::fs::statfs(&store)
             .map(|info| info.f_type as u64)
@@ -58,7 +61,7 @@ fn linux_readiness(state_dir: &Path) -> Result<(), String> {
             store.display()
         ));
     }
-    let socket = super::socket_path(state_dir);
+    let socket = super::selected_socket_path(state_dir).map_err(|e| e.to_string())?;
     let refusal = || format!("Start the native Layr root daemon at {}.", socket.display());
     let metadata = std::fs::symlink_metadata(&socket).map_err(|_| refusal())?;
     if !metadata.file_type().is_socket() || metadata.uid() != 0 {

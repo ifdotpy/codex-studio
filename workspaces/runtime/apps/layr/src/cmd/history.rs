@@ -846,20 +846,12 @@ pub fn log(ctx: &Ctx, args: &[String]) -> Result<i32> {
             }
         }
     }
-    // Walk in date order.
+    // File history and browser history share traversal and first-parent change selection.
     let first_parent = a.has("--first-parent");
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut heap: std::collections::BinaryHeap<(i64, String)> = std::collections::BinaryHeap::new();
-    for i in include {
-        if !exclude.contains(&i) {
-            if let Some(s) = repo.p.db.state(&i)? {
-                if s.kind.auxiliary() {
-                    if !a.has("--all") {
-                        repo.source_state(&i)?;
-                    }
-                    continue;
-                }
-                heap.push((s.time, i));
+    if !a.has("--all") {
+        for id in &include {
+            if !exclude.contains(id) && repo.p.db.state(id)?.is_some_and(|s| s.kind.auxiliary()) {
+                repo.source_state(id)?;
             }
         }
     }
@@ -869,64 +861,58 @@ pub fn log(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let until = a.get("--until").and_then(parse_since);
     let author = a.get("--author").map(|s| regex::RegexBuilder::new(s).case_insensitive(a.has("-i")).build()).transpose()?;
     let grep = a.get("--grep").map(|s| regex::RegexBuilder::new(s).case_insensitive(a.has("-i")).build()).transpose()?;
+    if max == 0 {
+        return Ok(0);
+    }
     let mut picked: Vec<StateRec> = Vec::new();
     let mut skipped = 0;
-    while let Some((_, id)) = heap.pop() {
-        if !seen.insert(id.clone()) {
-            continue;
-        }
-        let s = match repo.p.db.state(&id)? {
-            Some(s) => s,
-            None => continue,
-        };
-        let parents: Vec<String> = if first_parent { s.parents.iter().take(1).cloned().collect() } else { s.parents.clone() };
-        for p in &parents {
-            if !exclude.contains(p) && !seen.contains(p) {
-                if let Some(ps) = repo.p.db.state(p)? {
-                    heap.push((ps.time, p.clone()));
+    layr_model::history::file_history(
+        &include,
+        &exclude,
+        first_parent,
+        |id| repo.p.db.state(id),
+        |s| {
+            if a.has("--no-merges") && s.parents.len() > 1 || a.has("--merges") && s.parents.len() < 2 {
+                return Ok(Vec::new());
+            }
+            if since.map(|t| s.time < t).unwrap_or(false) || until.map(|t| s.time > t).unwrap_or(false) {
+                return Ok(Vec::new());
+            }
+            if let Some(r) = &author {
+                if !r.is_match(&format!("{} <{}>", s.author.name, s.author.email)) {
+                    return Ok(Vec::new());
                 }
             }
-        }
-        if picked.len() >= max && !a.has("--reverse") {
-            break;
-        }
-        if a.has("--no-merges") && s.parents.len() > 1 || a.has("--merges") && s.parents.len() < 2 {
-            continue;
-        }
-        if since.map(|t| s.time < t).unwrap_or(false) || until.map(|t| s.time > t).unwrap_or(false) {
-            continue;
-        }
-        if let Some(r) = &author {
-            if !r.is_match(&format!("{} <{}>", s.author.name, s.author.email)) {
-                continue;
+            if let Some(r) = &grep {
+                if !r.is_match(&s.message) {
+                    return Ok(Vec::new());
+                }
             }
-        }
-        if let Some(r) = &grep {
-            if !r.is_match(&s.message) {
-                continue;
+            if specs.is_empty() {
+                return Ok(vec![String::new()]);
             }
-        }
-        if !specs.is_empty() {
             if !repo.p.has_state(&s.id) {
-                continue;
+                return Ok(Vec::new());
             }
-            let (_o, _t, _n, list) = state_changes(repo, &s)?;
-            if !list
-                .iter()
-                .any(|c| matches(&specs, &c.path) || c.old_path.as_deref().map(|o| matches(&specs, o)).unwrap_or(false))
-            {
-                continue;
+            let (_o, _t, _n, list) = state_changes(repo, s)?;
+            Ok(list.into_iter().flat_map(|c| std::iter::once(c.path).chain(c.old_path)).collect())
+        },
+        |path| specs.is_empty() || matches(&specs, path),
+        |s| {
+            if picked.len() >= max && !a.has("--reverse") {
+                return Ok(false);
             }
-        }
-        if skipped < skip {
-            skipped += 1;
-            continue;
-        }
-        picked.push(s);
-        if picked.len() >= max && !a.has("--reverse") {
-            break;
-        }
-    }
+            if skipped < skip {
+                skipped += 1;
+                return Ok(true);
+            }
+            picked.push(s);
+            if picked.len() >= max && !a.has("--reverse") {
+                return Ok(false);
+            }
+            Ok(true)
+        },
+    )?;
     if a.has("--reverse") {
         picked.truncate(max);
         picked.reverse();
@@ -1167,7 +1153,8 @@ pub fn blame(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let mut cur = Some(start.clone());
     while let Some(id) = cur {
         let s = repo.state(&id)?;
-        let root = match repo.state_root(&id) {
+        // Read through the layers of a thin state: no view of each state of the history.
+        let root = match repo.state_src(&id) {
             Ok(r) => r,
             Err(_) => break,
         };
@@ -1195,36 +1182,10 @@ pub fn blame(ctx: &Ctx, args: &[String]) -> Result<i32> {
     if versions.is_empty() {
         return Err(exit(128, format!("fatal: no such path '{path}'")));
     }
-    // Attribute lines from the newest version backwards.
-    let newest = String::from_utf8_lossy(&versions[0].1).into_owned();
-    let lines: Vec<&str> = newest.split_inclusive('\n').collect();
-    let mut owner: Vec<usize> = vec![0; lines.len()];
-    // map[i] = index of the line in the current older version, or None once attributed.
-    let mut map: Vec<Option<usize>> = (0..lines.len()).map(Some).collect();
-    for vi in 1..versions.len() {
-        let newer = String::from_utf8_lossy(&versions[vi - 1].1).into_owned();
-        let older = String::from_utf8_lossy(&versions[vi].1).into_owned();
-        let d = similar::TextDiff::from_lines(&older, &newer);
-        let mut new_to_old: HashMap<usize, usize> = HashMap::new();
-        for op in d.ops() {
-            if let similar::DiffOp::Equal { old_index, new_index, len } = op {
-                for k in 0..*len {
-                    new_to_old.insert(new_index + k, old_index + k);
-                }
-            }
-        }
-        for i in 0..lines.len() {
-            if let Some(m) = map[i] {
-                match new_to_old.get(&m) {
-                    Some(o) => {
-                        map[i] = Some(*o);
-                        owner[i] = vi;
-                    }
-                    None => map[i] = None,
-                }
-            }
-        }
-    }
+    let versions: Vec<_> = versions.into_iter().map(|(state, bytes)| layr_model::history::FileVersion { state, bytes }).collect();
+    let attributed = layr_model::history::blame(&versions)?;
+    let lines: Vec<_> = attributed.iter().map(|l| l.text.as_str()).collect();
+    let owner: Vec<_> = attributed.iter().map(|l| l.version).collect();
     let (from, to) = match a.get("-L") {
         Some(r) => {
             let (x, y) = r.split_once(',').unwrap_or((r, r));
@@ -1239,11 +1200,12 @@ pub fn blame(ctx: &Ctx, args: &[String]) -> Result<i32> {
         None => (1, lines.len()),
     };
     let width = lines.len().to_string().len();
-    let name_w = versions.iter().filter_map(|v| v.0.as_ref().map(|s| s.author.name.chars().count())).max().unwrap_or(10).max(10);
+    let name_w =
+        versions.iter().filter_map(|v| v.state.as_ref().map(|s| s.author.name.chars().count())).max().unwrap_or(10).max(10);
     for i in from.saturating_sub(1)..to {
         let v = &versions[owner[i]];
         let text = lines[i].trim_end_matches('\n');
-        match &v.0 {
+        match &v.state {
             None => {
                 if a.has("-s") {
                     outln!(ctx, "00000000 {:>w$}) {}", i + 1, text, w = width);

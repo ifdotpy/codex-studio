@@ -15,6 +15,39 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::process::Command;
 
+/// Bound automatic check processes before executing any project code.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn check_limits_before_exec(cmd: &mut Command, memory: u64, processes: u64, seconds: u64) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: pre_exec only calls async-signal-safe system calls with stack values.
+    unsafe {
+        cmd.pre_exec(move || {
+            for (resource, value) in [
+                // Darwin exposes RLIMIT_AS as RLIMIT_RSS and rejects an address-space cap.
+                // Keep the other hard limits there; Linux also enforces virtual memory.
+                #[cfg(target_os = "linux")]
+                (libc::RLIMIT_AS, memory),
+                (libc::RLIMIT_NPROC, processes),
+                (libc::RLIMIT_CPU, seconds),
+                (libc::RLIMIT_NOFILE, 1024),
+                (libc::RLIMIT_CORE, 0),
+                (libc::RLIMIT_FSIZE, memory),
+            ] {
+                let limit = libc::rlimit { rlim_cur: value as _, rlim_max: value as _ };
+                if libc::setrlimit(resource, &limit) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            #[cfg(target_os = "linux")]
+            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
 // ----- btrfs ioctls -----
 
 const SNAP_CREATE_V2: libc::c_ulong = 0x5000_9417;

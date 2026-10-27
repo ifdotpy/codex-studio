@@ -25,7 +25,7 @@ class Vendor(unittest.TestCase):
                 return subprocess.check_output(["git", "-C", str(source), *args], stderr=subprocess.PIPE)
             git("init", "-q")
             content = {"Cargo.toml": b'[workspace]\nmembers = ["crates/model"]\n',
-                       "Cargo.lock": b"locked", "LICENSE": b"MIT", "src/main.rs": b"fn main() {}",
+                       "Cargo.lock": b"locked", "LICENSE": b"MIT", "build.rs": b"fn main() {}", "src/main.rs": b"fn main() {}",
                        "crates/model/Cargo.toml": b'[package]\nname = "model"\n',
                        "crates/model/src/lib.rs": b"pub struct Model;"}
             for name, data in content.items():

@@ -7,7 +7,11 @@ The chat selector calls this mode **Layr**.
 
 ## Store and installation
 
-Studio owns one host store at `<Studio state>/layr-native/store`.
+Studio defaults to the host store at `<Studio state>/layr-native/store`.
+An operator can select an existing host store with `native-layr configure --store-root`.
+Studio saves this setting in `<Studio state>/layr-native/settings.json`.
+Each prepared chat records its store in `layrStoreRoot`.
+A root switch changes the destination for new chats. Existing chats retain their store and line.
 The managed `bin/layr` entry starts `bin/layr-real` with the real Git directory first in its child process's `PATH`.
 Layr can maintain its Git object store and export commits through that entry.
 The agent's `PATH` still selects the managed Git guard, which refuses Git writes in native lines.
@@ -15,10 +19,13 @@ An existing installation receives this entry when Studio checks its managed bina
 `NATIVE_LAYR_DIRECTORY` in `runtime-store/src/path.rs` owns the installation directory.
 `STORE_DIRECTORY` in `layr_native.rs` owns the store subdirectory.
 The state directory must stay outside project folders.
-The project ID is the SHA-256 of the canonical source folder path.
-Later chats for that folder reuse its main line.
+New imports use the SHA-256 of the canonical source folder path as the project ID.
+Studio reuses an existing project when its Git origin and commit history match the source folder.
+An explicit mapping selects a project when more than one project matches.
+Studio refuses an origin or history mismatch.
+Readiness records and operation receipts are separate for each store. The default store retains its original receipt paths.
 
-Studio installs Layr 0.2.3 at `<Studio state>/layr-native/bin/layr`.
+Studio installs Layr 0.4.0 at `<Studio state>/layr-native/bin/layr`.
 It never selects `~/.cargo/bin/layr` for runtime operations.
 The package build compiles the vendored source once and includes the signed executable, version, and SHA-256 manifest.
 The first native turn verifies that manifest and copies the executable into the managed binary folder.
@@ -65,6 +72,83 @@ sudo env LAYR_ROOT=/path/to/studio-state/layr-native/store \
 The daemon must run before a native chat or migration on Linux.
 Version checks of an installed Linux binary also use this daemon.
 macOS does not require this step.
+
+## Select a shared store
+
+Use an existing store outside the source project folder.
+The commands below change only Studio settings. They do not move or delete either store.
+
+```sh
+studio-runtime-server native-layr configure --state /path/to/studio-state \
+  --store-root /Users/igor/Projects/layr-store
+studio-runtime-server native-layr map --state /path/to/studio-state \
+  --project studio /Users/igor/Projects/codex-agents
+studio-runtime-server native-layr paths --state /path/to/studio-state
+```
+
+The mapping verifies the Git origin and at least one common ancestor commit.
+GitHub origins match when the GitHub repository IDs match, including a repository rename.
+Studio reads these IDs with `gh api`. The host needs `gh`, network access, and GitHub authentication.
+An unsuccessful lookup refuses the mapping.
+Other origins must have equal normalized URLs.
+The mapping record retains both origin URLs and the GitHub repository ID.
+The source and project can have different folder names.
+An existing project supplies its saved main line and caches. Studio does not import another copy.
+New implementer lines receive the caches from that main line.
+The original source folder stays separate from main.
+
+Studio uses saved caches on main's named head.
+If that head has no cache record, Studio checks up to 200 recent history records for main's newest automatic state with caches.
+Studio uses that state only when `layr diff --name-only main STATE` returns no paths.
+It never selects a cache state from another line or changes the tracked content of main.
+Otherwise, the prepared chat records `layrCacheWarning` with the main state ID and an operator command.
+For a one-time cache setup, build in the existing store's main folder.
+Keep tracked content unchanged, including the dependency lockfile.
+Then run `layr -C /path/to/store/projects/studio/lines/main save --caches` on the protected main line.
+Layr attaches these caches to the unchanged main head.
+If tracked content changes, Layr saves caches on a separate automatic state instead.
+Those caches do not automatically belong to named main.
+
+Studio requires a compatible Layr store format before it prepares a line.
+`layr store-version --json` reports the store format, package version, and build identity.
+An incompatible store returns an error that names the root and both versions.
+Studio can adopt its default store when Layr reports an older format with a metadata-only upgrade.
+The upgrade uses a durable receipt and runs once for the target format.
+A repeat reads the current compatible marker without another upgrade.
+Studio never automatically upgrades an operator-selected store or a link to an external store.
+An operator-selected store requires an explicit upgrade with the approved Layr binary.
+Make a copy of the store before the upgrade.
+Wait for its current Layr commands to finish.
+Then run:
+
+```sh
+studio-runtime-server native-layr upgrade-store --state /path/to/studio-state
+```
+
+For a shared root, Studio also inspects `~/.local/bin/layr`.
+The capability probe uses a private temporary root, so an old binary cannot change the selected store during the probe.
+That binary must support `store-version` and use the same package version and store format as the bundled binary.
+Studio reports a different build identity as `layrVersionWarning` on the prepared chat.
+Upgrade an old developer binary before you use the shared root.
+The format guard cannot protect a store from an old binary that does not implement the guard.
+
+To select the original default for new chats, run:
+
+```sh
+studio-runtime-server native-layr configure --state /path/to/studio-state --default-store
+```
+
+An earlier import in the default store retains its project ID, receipts, lines, and data.
+Legacy default-store projects reuse their ready import receipt, which records the original source path.
+New external or named project mappings always verify the origin and shared Git history.
+Chats created before a switch retain their recorded root, including records created before this setting existed.
+Their descendants use that same root. A new independent chat uses the currently selected root.
+The prepared state includes `layrStoreRoot` and `layrProjectId` for that chat.
+Unmerged work in the old root stays there until you merge or move it.
+Each store must pass the version check when Studio prepares its next native line.
+On Linux, the configured daemon must serve the selected root and compatible format.
+Each selected root has its own daemon socket under the Studio native metadata folder.
+Use the socket from `native-layr paths` when you start that root's daemon.
 
 ## First import
 
@@ -163,7 +247,7 @@ Attribute copies use descriptors or no-follow link calls on APFS and btrfs.
 Full-tree snapshots preserve empty directories, directory modes, and file mode changes in each imported head.
 The source repository root mode also applies to each staged repository root.
 
-Known Layr 0.2.3 limits:
+Known Layr 0.4.0 limits:
 
 - `caller_git` calls `command_as`, which clears `GIT_NO_LAZY_FETCH` and `GIT_OPTIONAL_LOCKS`.
   Studio refuses source object links and alternates that could reconnect a staged repository to the original object store.
@@ -173,7 +257,8 @@ Known Layr 0.2.3 limits:
   A directory attribute change alone can be absent from the saved head.
   A successful metadata fixture does not establish support for this case.
 
-Layr 0.2.3 keeps private directories writable until metadata updates finish.
+The bundled Layr 0.4.0 includes Studio's earlier fixes for private directory metadata and warm cache copies.
+It keeps private directories writable until metadata updates finish.
 The final state and line retain source directory and file modes, including `0555` and `0444`.
 The source modes stay unchanged.
 Metadata errors name the affected path and operation.
@@ -414,7 +499,7 @@ Run the focused Rust tests:
 cargo test -j 4 -p studio-runtime-services --lib layr_native
 ```
 
-Run the real host lifecycle check with a Studio-built Layr 0.2.3 binary:
+Run the real host lifecycle check with a Studio-built Layr 0.4.0 binary:
 
 ```sh
 STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/studio-state/layr-native/bin/layr \
@@ -431,7 +516,7 @@ On Linux, run this isolated check as root on btrfs.
 Check the managed Layr entry with a real Git repository and a local bare remote:
 
 ```sh
-STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.3 \
+STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.4.0 \
   CARGO_INCREMENTAL=0 cargo test -j 4 -p studio-runtime-services --lib \
   layr_native::git_guard::tests::real_managed_layr_ \
   -- --ignored --test-threads=1
@@ -443,7 +528,21 @@ They also verify that the managed Git entry still refuses agent writes.
 Check the proxy with real Layr, Git, Cargo, and pnpm callers:
 
 ```sh
-STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.3 \
+STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.4.0 \
   CARGO_INCREMENTAL=0 cargo test -j 4 -p studio-runtime-services --lib \
   layr_native::git_guard::tests::real_managed_git_proxy_ -- --ignored
 ```
+
+Measure the real preparation caller against a small existing-store fixture:
+
+```sh
+STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.4.0 \
+  CARGO_INCREMENTAL=0 cargo test -j 4 -p studio-runtime-services --lib \
+  layr_native::warm_store_tests::real_native_preparation_reuses_an_existing_projects_saved_rust_cache \
+  -- --ignored --nocapture
+```
+
+The fixture saves a Rust dependency cache and a `target/studio-test-results` witness in project `studio`.
+The real lead and worker preparation callers reuse that project.
+The check requires fresh dependency artifacts in the worker and prints both build times.
+It uses private state and does not change the developer store.

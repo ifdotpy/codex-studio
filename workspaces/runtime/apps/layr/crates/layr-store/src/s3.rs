@@ -87,6 +87,20 @@ impl S3 {
         body: Vec<u8>,
         limit: Duration,
     ) -> Result<reqwest::blocking::Response> {
+        let payload = if body.is_empty() { EMPTY_SHA256.to_string() } else { hex::encode(Sha256::digest(&body)) };
+        self.request_body(method, key, query, headers, body.into(), &payload, limit)
+    }
+
+    fn request_body(
+        &self,
+        method: Method,
+        key: &str,
+        query: &[(&str, &str)],
+        headers: &[(&str, &str)],
+        body: reqwest::blocking::Body,
+        payload: &str,
+        limit: Duration,
+    ) -> Result<reqwest::blocking::Response> {
         let credentials = if let Some(profile) = &self.profile {
             let mut cached = self.refreshed.lock().unwrap();
             if cached.as_ref().is_none_or(|(_, at)| at.elapsed() >= Duration::from_secs(300)) {
@@ -107,10 +121,9 @@ impl S3 {
             (Some(h), None) => h.to_string(),
             _ => bail!("S3 endpoint has no host"),
         };
-        let payload = if body.is_empty() { EMPTY_SHA256.to_string() } else { hex::encode(Sha256::digest(&body)) };
         let unix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let signed = aws::sign(
-            &aws::Request { method: method.as_str(), host: &host, path: &path, query, headers, payload_sha256: &payload },
+            &aws::Request { method: method.as_str(), host: &host, path: &path, query, headers, payload_sha256: payload },
             &credentials,
             &self.region,
             "s3",
@@ -134,6 +147,132 @@ impl S3 {
             request = request.body(body);
         }
         request.send().map_err(reqwest::Error::without_url).map_err(Into::into)
+    }
+
+    /// Stream a create-once object from a seekable, bounded local ciphertext spool.
+    pub fn put_file_new(&self, key: &str, mut file: std::fs::File) -> Result<bool> {
+        use std::io::{Read, Seek, SeekFrom};
+        let length = file.metadata()?.len();
+        let mut digest = Sha256::new();
+        let mut buffer = [0u8; 65536];
+        loop {
+            let n = file.read(&mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            digest.update(&buffer[..n]);
+        }
+        file.seek(SeekFrom::Start(0))?;
+        let response = self.request_body(
+            Method::PUT,
+            &self.key(key),
+            &[],
+            &[("if-none-match", "*")],
+            reqwest::blocking::Body::sized(file, length),
+            &hex::encode(digest.finalize()),
+            LIMIT + Duration::from_secs(length / SLOWEST),
+        )?;
+        match response.status().as_u16() {
+            200 | 201 | 204 => Ok(true),
+            409 | 412 => Ok(false),
+            status => bail!("S3 put: HTTP {status}"),
+        }
+    }
+
+    /// Create once with one 8 MiB multipart part in memory. Any read, size or S3
+    /// failure aborts the upload, including a caller disconnect reported by `input`.
+    pub fn put_stream_new(&self, key: &str, input: &mut dyn std::io::Read, expected: u64, maximum: u64) -> Result<bool> {
+        use std::io::Read;
+        if expected > maximum {
+            bail!("stream exceeds object limit");
+        }
+        let key = self.key(key);
+        let mut response = self.request(Method::POST, &key, &[("uploads", "")], &[], Vec::new(), LIMIT)?;
+        let status = response.status().as_u16();
+        let mut xml = String::new();
+        response.by_ref().take(65537).read_to_string(&mut xml)?;
+        if status != 200 || xml.len() > 65536 {
+            bail!("S3 create multipart: HTTP {status}");
+        }
+        let id = aws::xml_text(&xml, "UploadId").filter(|s| !s.is_empty()).context("S3 omitted upload ID")?;
+        let result = (|| -> Result<bool> {
+            let mut total = 0u64;
+            let mut complete = String::from("<CompleteMultipartUpload>");
+            for number in 1..=S3_MAX_PARTS {
+                // Never retain a previous part while allocating the next one.
+                let mut part = vec![0u8; 8 << 20];
+                let mut used = 0;
+                while used < part.len() {
+                    let n = input.read(&mut part[used..])?;
+                    if n == 0 {
+                        break;
+                    }
+                    used += n;
+                    total += n as u64;
+                    if total > maximum || total > expected {
+                        bail!("stream exceeds object limit or Content-Length");
+                    }
+                }
+                part.truncate(used);
+                if used == 0 && number > 1 {
+                    break;
+                }
+                let number = number.to_string();
+                let response =
+                    self.request(Method::PUT, &key, &[("partNumber", &number), ("uploadId", &id)], &[], part, LIMIT)?;
+                if response.status().as_u16() != 200 {
+                    bail!("S3 upload part: HTTP {}", response.status().as_u16());
+                }
+                let etag = response.headers().get("etag").context("S3 omitted part ETag")?.to_str()?;
+                complete.push_str(&format!("<Part><PartNumber>{number}</PartNumber><ETag>{}</ETag></Part>", xml_escape(etag)));
+                if used < 8 << 20 {
+                    break;
+                }
+            }
+            if total != expected {
+                bail!("stream length differs from Content-Length");
+            }
+            complete.push_str("</CompleteMultipartUpload>");
+            let mut response = self.request(
+                Method::POST,
+                &key,
+                &[("uploadId", &id)],
+                &[("if-none-match", "*"), ("content-type", "application/xml")],
+                complete.into_bytes(),
+                LIMIT,
+            )?;
+            let status = response.status().as_u16();
+            let mut xml = String::new();
+            response.by_ref().take(65537).read_to_string(&mut xml)?;
+            if xml.len() > 65536 {
+                bail!("S3 completion response too large");
+            }
+            if status == 412 {
+                return Ok(false);
+            }
+            if status != 200
+                || !xml.contains("<CompleteMultipartUploadResult")
+                || xml.contains("<Error")
+                || aws::xml_text(&xml, "ETag").is_none()
+            {
+                bail!("S3 complete multipart: HTTP {status}");
+            }
+            Ok(true)
+        })();
+        if !matches!(result, Ok(true)) {
+            self.abort(&key, &id).context("abort failed multipart upload")?;
+        }
+        result
+    }
+
+    /// Return the response stream without buffering the object in memory.
+    pub fn get_stream(&self, key: &str) -> Result<Option<reqwest::blocking::Response>> {
+        let response = self.request(Method::GET, &self.key(key), &[], &[], Vec::new(), Duration::from_secs(7200))?;
+        match response.status().as_u16() {
+            200 => Ok(Some(response)),
+            404 => Ok(None),
+            status => bail!("S3 get: HTTP {status}"),
+        }
     }
 
     /// The status and body of one signed call.
@@ -418,3 +557,7 @@ mod tests {
         assert!(s3.list("").unwrap().is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "s3_stream_tests.rs"]
+mod stream_tests;
