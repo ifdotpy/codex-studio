@@ -632,6 +632,11 @@ pub(crate) fn routes() -> RouteGroup {
     // children in codex_runtime.py:4928-4930.
     RouteGroup::new(vec![
         post("/api/agents", OperationStatus::Implemented, create_agent),
+        post(
+            "/api/agents/workspace-mode",
+            OperationStatus::Implemented,
+            switch_workspace_mode,
+        ),
         post("/api/configure", OperationStatus::Implemented, configure),
         post(
             "/api/conversation",
@@ -1303,6 +1308,24 @@ async fn configure(
     })
     .await
 }
+/// Operator action: switch one idle WT chat to Layr in place. A repeat after a lost
+/// response returns the saved association; an uncertain effect stays held.
+async fn switch_workspace_mode(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<generated::AgentWorkspaceModeRequest>,
+) -> Result<Json<generated::AgentWorkspaceModeResponse>, ApiError> {
+    use studio_runtime_services::layr_native::{NativeLayrError, switch_chat};
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let result = switch_chat(store, &body.id)
+        .await
+        .map_err(|error| match error {
+            NativeLayrError::Refused(_) => ApiError::new(StatusCode::CONFLICT, error.to_string()),
+            error => ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        })?;
+    state.event_wake.notify_one();
+    super::generated_json(result).map(Json)
+}
+
 async fn conversation(
     State(state): State<HttpState>,
     ApiJson(value): ApiJson<Value>,

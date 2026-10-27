@@ -478,6 +478,40 @@ The `selectionEstimates` report shows the costs and line counts for both modes.
 Use explicit `--skip-worktree` paths for other operator exclusions.
 Refusals include external Git object paths and prevent a real import.
 
+### Switch a WT chat to Layr in place
+
+An idle WT chat can switch to Layr and keep its transcript and provider thread.
+Use **Switch to Layr** in the chat menu, or call the API:
+
+```sh
+port=<Studio server port>
+token=$(curl -s "http://127.0.0.1:$port/api/session" | jq -r .token)
+curl -s -X POST "http://127.0.0.1:$port/api/agents/workspace-mode" \
+  -H 'content-type: application/json' -H "x-canvas-token: $token" \
+  -d '{"id":"<chat ID>","workspaceMode":"layr-native"}'
+```
+
+Switch the lead first. Its workspace becomes the project's Layr main line, with the same project identity rules as a new Layr chat.
+Then switch each implementer. Studio creates `agent-<SHA-256 of agent ID>` from main and imports the worker's Git worktree into it, as the migration does.
+The import includes ignored data and warm caches.
+An implementer can switch only when its parent is a ready Layr chat.
+Its worktree must have no uncommitted or untracked files, and its HEAD must be on a remote-tracking branch.
+Studio does not fetch. Push the branch first.
+A running turn, monitor, task, queued input, or workspace operation refuses the switch.
+New workers of a switched lead use Layr.
+Existing WT workers keep WT until you switch them.
+
+The switch writes the line under the receipt that preparation uses, so a repeat returns the same line.
+A repeat after success returns the saved association. An unknown outcome stays held for inspection.
+The Git worktree and branch stay unchanged. Remove them after review.
+
+The next turn resumes the same provider thread in the new folder.
+Claude keys its native session file by the working folder below `CLAUDE_CONFIG_DIR/projects`.
+On that resume, the Claude bridge copies the current session file to the new folder's key, as a move import does, and resumes the same session.
+The old file stays. Usage scans count each response once.
+Codex stores threads by date, not by folder. Studio sends the new `cwd` with the thread resume and with each turn.
+The bridge copies only the current native session file. Files of earlier native sessions of the chat stay in the old folder.
+
 Inspect the migration first:
 
 ```sh
