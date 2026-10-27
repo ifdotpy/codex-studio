@@ -26,10 +26,7 @@ const ENTITY_SCOPE_TEAM_PREDICATE: &str = "team";
 #[cfg(test)]
 const ENTITY_SCOPE_TOMBSTONE_KEY_PREFIX: &str = "entity_scope_tombstone:";
 
-const ENTITY_SCOPE_PREDICATE: &str = "collection NOT LIKE 'transcript:%' \
-     AND (:collections IS NULL OR collection IN (SELECT value FROM json_each(:collections))) \
-     AND (:id IS NULL OR id=:id) \
-     AND (:agent IS NULL OR (:include_team_members AND (json_extract(payload,'$.value.agent')=:agent \
+const ENTITY_SCOPE_AGENT_PREDICATE: &str = "(:agent IS NULL OR (:include_team_members AND (json_extract(payload,'$.value.agent')=:agent \
           OR json_extract(payload,'$.value.agent') IN (SELECT id FROM sync_entities WHERE collection='agentSummary' AND deleted=0 AND json_extract(payload,'$.value.rootId')=:agent))) \
           OR json_extract(payload,'$.value.rootId')=:agent OR deleted=1)";
 
@@ -392,9 +389,20 @@ impl SyncDocumentsRepository {
         let reset = interval.reset;
         let tombstone_floor = interval.tombstone_floor;
         let limit = limit.clamp(1, SYNC_ENTITY_STREAM_MAX_DOCUMENTS);
+        let collections = if collections_json.is_some() {
+            "collection IN (SELECT value FROM json_each(:collections))"
+        } else {
+            ":collections IS NULL"
+        };
+        let identity = if id.is_some() {
+            "id=:id"
+        } else {
+            ":id IS NULL"
+        };
         let mut statement = transaction.prepare_cached(&format!(
             "SELECT collection,id,seq,payload,deleted FROM sync_entities \
-             WHERE {ENTITY_SCOPE_PREDICATE} AND seq>:after AND seq<=:through \
+             WHERE collection NOT LIKE 'transcript:%' AND {collections} AND {identity} \
+               AND {ENTITY_SCOPE_AGENT_PREDICATE} AND seq>:after AND seq<=:through \
                AND (:snapshot=0 OR deleted=0) ORDER BY seq LIMIT :limit"
         ))?;
         let mut rows = statement
@@ -890,12 +898,17 @@ fn read_entity_page(
     limit: i64,
     scope: EntityPageScope<'_>,
 ) -> StoreResult<Vec<EntityRow>> {
-    let mut statement = transaction.prepare_cached(
+    let order = if scope.priority_id.is_some() {
+        "CASE WHEN collection='agentSummary' AND id=?5 THEN 0 ELSE 1 END,seq"
+    } else {
+        "seq"
+    };
+    let mut statement = transaction.prepare_cached(&format!(
         "SELECT collection,id,seq,payload,deleted FROM sync_entities \
          WHERE collection NOT LIKE 'transcript:%' AND (?7 IS NULL OR collection IN (SELECT value FROM json_each(?7))) AND seq>?1 \
            AND (deleted=0 OR seq>?2) AND (?3=0 OR deleted=0 OR seq>?4) \
-         ORDER BY CASE WHEN ?5 IS NOT NULL AND collection='agentSummary' AND id=?5 THEN 0 ELSE 1 END,seq LIMIT ?6",
-    )?;
+         ORDER BY {order} LIMIT ?6",
+    ))?;
     statement
         .query_map(
             params![
@@ -955,6 +968,114 @@ inventory::submit! {
 mod tests {
     use super::SyncDocumentsRepository;
     use rusqlite::Connection;
+
+    fn page_scan_fixture() -> Connection {
+        let db = Connection::open_in_memory().expect("memory SQLite");
+        db.execute_batch("CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
+            CREATE INDEX sync_entities_non_transcript_seq ON sync_entities(seq) WHERE collection NOT LIKE 'transcript:%';
+            CREATE INDEX sync_entities_collection_seq ON sync_entities(collection,seq);
+            CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT);
+            WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<2000)
+            INSERT INTO sync_entities SELECT 'other',printf('other-%d',x),x,'{}',0 FROM n;
+            INSERT INTO sync_entities VALUES('task','selected',2001,'{}',0);").expect("page fixture");
+        db
+    }
+
+    #[test]
+    fn scoped_page_reads_only_its_collection_and_id() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let mut db = page_scan_fixture();
+        let tx = db.transaction().expect("transaction");
+        let steps = Arc::new(AtomicUsize::new(0));
+        let counter = steps.clone();
+        tx.progress_handler(
+            1,
+            Some(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )
+        .expect("count steps");
+        let page = SyncDocumentsRepository::resume_entity_scope(
+            &tx,
+            Some(0),
+            Some(r#"["task"]"#),
+            Some("selected"),
+            None,
+            true,
+            10,
+        )
+        .expect("scoped page");
+        tx.progress_handler(0, None::<fn() -> bool>)
+            .expect("stop counting");
+        assert_eq!(page.rows.len(), 1);
+        assert!(
+            steps.load(Ordering::Relaxed) < 1000,
+            "scoped page scans unrelated rows"
+        );
+    }
+
+    #[test]
+    fn pull_page_without_priority_stops_at_limit() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let mut db = page_scan_fixture();
+        let tx = db.transaction().expect("transaction");
+        let steps = Arc::new(AtomicUsize::new(0));
+        let counter = steps.clone();
+        tx.progress_handler(
+            1,
+            Some(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )
+        .expect("count steps");
+        let rows = super::read_entity_page(
+            &tx,
+            0,
+            0,
+            false,
+            0,
+            10,
+            super::EntityPageScope {
+                collections: None,
+                priority_id: None,
+            },
+        )
+        .expect("page");
+        tx.progress_handler(0, None::<fn() -> bool>)
+            .expect("stop counting");
+        assert_eq!(rows.len(), 10);
+        assert!(
+            steps.load(Ordering::Relaxed) < 1000,
+            "unprioritized page sorts all rows"
+        );
+        tx.execute(
+            "INSERT INTO sync_entities VALUES('agentSummary','priority',2002,'{}',0)",
+            [],
+        )
+        .expect("priority row");
+        let prioritized = super::read_entity_page(
+            &tx,
+            0,
+            0,
+            true,
+            2002,
+            10,
+            super::EntityPageScope {
+                collections: None,
+                priority_id: Some("priority"),
+            },
+        )
+        .expect("priority page");
+        assert_eq!(prioritized[0].id, "priority");
+    }
 
     #[test]
     fn scope_visibility_tracks_predicate_moves_atomically_without_replaying_appends() {
@@ -1296,7 +1417,7 @@ mod tests {
     #[test]
     #[ignore = "manual isolated fingerprint benchmark"]
     fn benchmark_entity_scope_fingerprint() {
-        use super::ENTITY_SCOPE_PREDICATE;
+        use super::ENTITY_SCOPE_AGENT_PREDICATE;
         use rusqlite::named_params;
         use sha2::{Digest, Sha256};
         use std::time::Instant;
@@ -1327,7 +1448,7 @@ mod tests {
         );
         let started = Instant::now();
         for _ in 0..20 {
-            let mut statement = tx.prepare(&format!("SELECT collection,id,seq FROM sync_entities WHERE {ENTITY_SCOPE_PREDICATE} AND deleted=0 ORDER BY seq")).expect("baseline query");
+            let mut statement = tx.prepare(&format!("SELECT collection,id,seq FROM sync_entities WHERE collection NOT LIKE 'transcript:%' AND (:collections IS NULL OR collection IN (SELECT value FROM json_each(:collections))) AND (:id IS NULL OR id=:id) AND {ENTITY_SCOPE_AGENT_PREDICATE} AND deleted=0 ORDER BY seq")).expect("baseline query");
             let mut digest = Sha256::new();
             let mut rows = statement.query(named_params! { ":collections": r#"["task"]"#, ":id": Option::<&str>::None, ":agent": "agent-1", ":include_team_members": true }).expect("baseline rows");
             let mut count = 0;
