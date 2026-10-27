@@ -1,3 +1,5 @@
+import type { components } from "../../generated/api";
+type ProviderModel = components["schemas"]["ProviderModel"];
 import { ProviderKind } from "../../generated/providerKind.ts";
 /** Inherited execution model sentinel; the server receives null for this choice. */
 export const INHERITED_MODEL = "__model_default__";
@@ -12,22 +14,23 @@ export type ModelOption = {
   disabledReason?: string | undefined;
 };
 
-type CatalogModel = {
-  model: string;
-  displayName?: string;
-  description?: string;
-  provider?: string;
-  isDefault?: boolean;
-  resolvedModel?: string;
-};
+type CatalogModel = Pick<
+  ProviderModel,
+  | "model"
+  | "displayName"
+  | "description"
+  | "provider"
+  | "isDefault"
+  | "resolvedModel"
+>;
 
 /** Match stored IDs to catalog or option values; explicit aliases beat default aliases. */
 export function modelForValue<
   T extends {
-    model?: string;
+    model?: ProviderModel["model"];
     value?: string;
-    resolvedModel?: string;
-    isDefault?: boolean;
+    resolvedModel?: ProviderModel["resolvedModel"];
+    isDefault?: ProviderModel["isDefault"];
     badges?: string[];
   },
 >(rows: T[], value?: string | null): T | undefined {

@@ -451,54 +451,11 @@ fn catalog(
                 provider,
                 generation,
             };
-            let models = value["data"]
-                .as_array()
-                .ok_or_else(|| invalid("model catalog"))?
+            let models = value
+                .data
                 .iter()
-                .map(|v| {
-                    Ok(gates::ModelCapabilities {
-                        model: v["model"]
-                            .as_str()
-                            .ok_or_else(|| invalid("catalog/model"))?
-                            .into(),
-                        resolved_model: v
-                            .get("resolvedModel")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        is_default: v.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
-                        hidden: v.get("hidden").and_then(Value::as_bool).unwrap_or(false),
-                        access_programs: v
-                            .pointer("/availableAccessPrograms/cyber")
-                            .and_then(Value::as_array)
-                            .map(|values| {
-                                values
-                                    .iter()
-                                    .filter_map(Value::as_str)
-                                    .map(str::to_owned)
-                                    .collect()
-                            }),
-                        supported_efforts: v
-                            .get("supportedReasoningEfforts")
-                            .and_then(Value::as_array)
-                            .map(|a| {
-                                a.iter()
-                                    .filter_map(|v| {
-                                        v["reasoningEffort"].as_str().map(str::to_owned)
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                        default_effort: v
-                            .get("defaultReasoningEffort")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        priority: v
-                            .get("serviceTiers")
-                            .and_then(Value::as_array)
-                            .is_some_and(|a| a.iter().any(|v| v["id"] == "priority")),
-                    })
-                })
-                .collect::<Result<Vec<_>, WorkerError>>()?;
+                .map(gates::ModelCapabilities::from)
+                .collect();
             Ok((
                 identity.clone(),
                 Some(gates::CatalogObservation {
@@ -731,31 +688,17 @@ fn daybreak_program(
 }
 
 fn resolve_daybreak_program(
-    catalog: &Value,
+    catalog: &studio_runtime_schema::model_catalog::ModelCatalog,
     model: Option<&str>,
     enabled: bool,
 ) -> Result<String, WorkerError> {
     if !enabled {
         return Ok("standard".into());
     }
-    let programs = catalog
-        .get("data")
-        .and_then(Value::as_array)
-        .and_then(|rows| {
-            rows.iter().find(|row| {
-                row.get("model").and_then(Value::as_str) == model
-                    && row.get("hidden").and_then(Value::as_bool) != Some(true)
-            })
-        })
-        .and_then(|row| row.get("availableAccessPrograms"))
-        .and_then(|value| value.get("cyber"))
-        .and_then(Value::as_array);
-    let Some(programs) = programs else {
-        return Err(refusal("Daybreak is not available for this model on this account. Choose another model or turn off Daybreak".into()));
-    };
-    if programs.iter().any(|program| !program.is_string()) {
-        return Err(refusal("Daybreak model catalog is invalid".into()));
-    }
+    let programs = catalog.data.iter()
+        .find(|row| Some(row.model.as_str()) == model && row.hidden != Some(true))
+        .and_then(|row| row.cyber_programs())
+        .ok_or_else(|| refusal("Daybreak is not available for this model on this account. Choose another model or turn off Daybreak".into()))?;
     for candidate in ["daybreakBlue", "daybreakRed"] {
         if programs.iter().any(|program| program == candidate) {
             return Ok(candidate.into());
@@ -2421,8 +2364,13 @@ mod daybreak_tests {
     #[test]
     fn disabled_daybreak_uses_standard_for_fallback_model_without_catalog() {
         assert_eq!(
-            resolve_daybreak_program(&json!({}), Some("fallback-model"), false)
-                .expect("disabled Daybreak resolves to standard"),
+            resolve_daybreak_program(
+                &studio_runtime_schema::model_catalog::ModelCatalog::parse(json!({"data":[]}))
+                    .expect("empty catalog"),
+                Some("fallback-model"),
+                false
+            )
+            .expect("disabled Daybreak resolves to standard"),
             "standard"
         );
     }
@@ -2435,8 +2383,12 @@ mod daybreak_tests {
         ]});
         for (enabled, expected) in [(false, "standard"), (true, "daybreakRed")] {
             let mut snapshot = action_snapshot(enabled);
-            let program =
-                resolve_daybreak_program(&catalog, snapshot.settings.model.as_deref(), enabled);
+            let program = resolve_daybreak_program(
+                &studio_runtime_schema::model_catalog::ModelCatalog::parse(catalog.clone())
+                    .expect("fixture catalog"),
+                snapshot.settings.model.as_deref(),
+                enabled,
+            );
             assert!(
                 program.is_ok(),
                 "fallback model Daybreak resolution must succeed"

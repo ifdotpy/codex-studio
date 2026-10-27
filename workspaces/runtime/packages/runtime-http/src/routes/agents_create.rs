@@ -557,51 +557,37 @@ impl CreationCatalog for RouteCreationCatalog {
     ) -> Result<ExecutionSettings, CreateError> {
         let row = self.model_row(account_key, account, model)?;
         let supported = row
-            .get("supportedReasoningEfforts")
-            .and_then(Value::as_array)
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(|row| row.get("reasoningEffort").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            .supported_reasoning_efforts
+            .iter()
+            .flatten()
+            .map(|effort| effort.reasoning_effort.as_str())
+            .collect::<Vec<_>>();
         if effort.is_some_and(|effort| !supported.contains(&effort)) {
             return Err(CreateError::InvalidCreation("effort"));
         }
         if fast_mode
             && !row
-                .get("serviceTiers")
-                .and_then(Value::as_array)
-                .is_some_and(|tiers| {
-                    tiers
-                        .iter()
-                        .any(|tier| tier.get("id").and_then(Value::as_str) == Some("priority"))
-                })
+                .service_tiers
+                .iter()
+                .flatten()
+                .any(|tier| tier.id == "priority")
         {
             return Err(CreateError::InvalidCreation("fast_mode"));
         }
-        let native_effort = effort.map(str::to_owned).or_else(|| {
-            row.get("defaultReasoningEffort")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        });
-        let programs = row
-            .get("availableAccessPrograms")
-            .and_then(|programs| programs.get("cyber"))
-            .and_then(Value::as_array);
+        let native_effort = effort
+            .map(str::to_owned)
+            .or_else(|| row.default_reasoning_effort.clone().flatten());
+        let programs = row.cyber_programs();
         let program = if daybreak_enabled {
             programs
                 .and_then(|programs| {
                     ["daybreakBlue", "daybreakRed"]
                         .into_iter()
-                        .find(|name| programs.iter().any(|entry| entry.as_str() == Some(name)))
+                        .find(|name| programs.iter().any(|entry| entry == name))
                 })
                 .ok_or(CreateError::InvalidCreation("daybreak_enabled"))?
-        } else if programs.is_some_and(|programs| {
-            !programs
-                .iter()
-                .any(|entry| entry.as_str() == Some("standard"))
-        }) {
+        } else if programs.is_some_and(|programs| !programs.iter().any(|entry| entry == "standard"))
+        {
             return Err(CreateError::InvalidCreation("daybreak_enabled"));
         } else {
             "standard"
@@ -623,7 +609,7 @@ impl RouteCreationCatalog {
         account_key: &str,
         account: &AccountIdentity,
         model: &str,
-    ) -> Result<Value, CreateError> {
+    ) -> Result<studio_runtime_schema::model_catalog::ProviderModel, CreateError> {
         let home = account
             .home
             .as_deref()
@@ -658,14 +644,12 @@ impl RouteCreationCatalog {
             ));
         }
         value
-            .get("data")
-            .and_then(Value::as_array)
-            .and_then(|rows| {
-                rows.iter().find(|row| {
-                    !row.get("hidden").and_then(Value::as_bool).unwrap_or(false)
-                        && (row.get("model").and_then(Value::as_str) == Some(model)
-                            || row.get("resolvedModel").and_then(Value::as_str) == Some(model))
-                })
+            .data
+            .iter()
+            .find(|row| {
+                row.hidden != Some(true)
+                    && (row.model == model
+                        || row.resolved_model.as_ref().and_then(Option::as_deref) == Some(model))
             })
             .cloned()
             .ok_or(CreateError::ModelUnavailable)
@@ -1235,19 +1219,13 @@ async fn wait_for_agent_catalog(
         // reports the established 400 response.
         return Ok(());
     }
-    let has_requested_model = |value: &Value| {
-        value
-            .get("data")
-            .and_then(Value::as_array)
-            .is_some_and(|rows| {
-                rows.iter().any(|row| {
-                    !row.get("hidden").and_then(Value::as_bool).unwrap_or(false)
-                        && (row.get("model").and_then(Value::as_str)
-                            == Some(expected_model.as_str())
-                            || row.get("resolvedModel").and_then(Value::as_str)
-                                == Some(expected_model.as_str()))
-                })
-            })
+    let has_requested_model = |value: &studio_runtime_schema::model_catalog::ModelCatalog| {
+        value.data.iter().any(|row| {
+            row.hidden != Some(true)
+                && (row.model == expected_model
+                    || row.resolved_model.as_ref().and_then(Option::as_deref)
+                        == Some(expected_model.as_str()))
+        })
     };
     let mut saw_fresh_catalog = false;
     for (account, home, provider) in &accounts {

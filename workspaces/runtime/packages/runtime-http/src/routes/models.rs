@@ -5,6 +5,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::model_catalog::ModelCatalog;
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -64,12 +65,23 @@ async fn models(
     } else {
         account_catalog(&catalog, &snapshot, &account_key, retry, session).await
     };
-    let (status, value) = match result {
-        Ok(value) => (StatusCode::OK, value),
-        Err((status, value)) => (status, value),
-    };
-    let response = serde_json::from_value(value).map_err(|_| ApiError::internal())?;
-    Ok((status, Json(response)))
+    match result {
+        Ok(catalog) => {
+            // HTTP envelope metadata uses its generated contract; the validated
+            // provider models move directly into the response without reparsing.
+            let mut response: crate::generated::ModelCatalogResponse =
+                serde_json::from_value(Value::Object(catalog.extra))
+                    .map_err(|_| ApiError::internal())?;
+            response.data = Some(Some(catalog.data));
+            response.next_cursor = catalog.next_cursor;
+            Ok((StatusCode::OK, Json(response)))
+        }
+        Err((status, value)) => {
+            let response: crate::generated::ModelCatalogResponse =
+                serde_json::from_value(value).map_err(|_| ApiError::internal())?;
+            Ok((status, Json(response)))
+        }
+    }
 }
 
 async fn account_catalog(
@@ -80,7 +92,7 @@ async fn account_catalog(
     session: Option<
         std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
     >,
-) -> Result<Value, (StatusCode, Value)> {
+) -> Result<ModelCatalog, (StatusCode, Value)> {
     if account_key == "default"
         && !snapshot
             .accounts
@@ -206,7 +218,7 @@ async fn worker_catalog(
     session: Option<
         std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
     >,
-) -> Result<Value, (StatusCode, Value)> {
+) -> Result<ModelCatalog, (StatusCode, Value)> {
     let default_account = snapshot.default_account_key.as_str().unwrap_or("default");
     if parent_account == "default" && snapshot.accounts.is_empty() {
         return Err(catalog_pending());
@@ -262,27 +274,13 @@ async fn worker_catalog(
             .await
         {
             CatalogRead::Ready(value) => {
-                if let Some(rows) = value.get("data").and_then(Value::as_array) {
-                    for row in rows {
-                        let Some(model) = row
-                            .get("model")
-                            .and_then(Value::as_str)
-                            .filter(|model| !model.is_empty())
-                        else {
-                            continue;
-                        };
-                        if row.get("hidden") == Some(&Value::Bool(true))
-                            || !seen.insert(model.to_owned())
-                        {
-                            continue;
-                        }
-                        let mut row = row.clone();
-                        if let Some(row) = row.as_object_mut() {
-                            row.insert("accountKey".to_owned(), Value::String(key.clone()));
-                            row.insert("provider".to_owned(), json!(account.provider));
-                        }
-                        models.push(row);
+                for mut row in value.data {
+                    if row.hidden == Some(true) || !seen.insert(row.model.clone()) {
+                        continue;
                     }
+                    row.account_key = Some(key.clone());
+                    row.provider = Some(account.provider.key().to_owned());
+                    models.push(row);
                 }
             }
             CatalogRead::Pending => {
@@ -311,11 +309,16 @@ async fn worker_catalog(
             json!({"error": "No worker model catalog is available"}),
         ));
     }
-    let mut response = json!({"data": models, "unavailableAccounts": unavailable});
+    let mut extra = serde_json::Map::new();
+    extra.insert("unavailableAccounts".into(), json!(unavailable));
     if pending {
-        response["catalogPending"] = Value::Bool(true);
+        extra.insert("catalogPending".into(), Value::Bool(true));
     }
-    Ok(response)
+    Ok(ModelCatalog {
+        data: models,
+        next_cursor: None,
+        extra,
+    })
 }
 
 #[cfg(test)]
@@ -571,7 +574,8 @@ mod tests {
             dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
         > = std::sync::Arc::new(CatalogSession {
             pages: std::sync::Mutex::new(vec![json!({
-                "data":[{"model":"fixture-model"}],
+                "data":[{"model":"fixture-model","defaultReasoningEffort":null,"vendor":{"future":true}}],
+                "metadata":{"futurePage":true},
                 "nextCursor":null
             })]),
             requests: calls.clone(),
@@ -591,15 +595,58 @@ mod tests {
         );
 
         let expected = json!({
-            "data":[{"model":"fixture-model"}],
+            "data":[{"model":"fixture-model","defaultReasoningEffort":null,"vendor":{"future":true}}],
+                "metadata":{"futurePage":true},
             "nextCursor":null
         });
         assert_eq!(
-            first.expect("cold catalog waits for 200 response"),
+            serde_json::to_value(first.expect("cold catalog waits for 200 response"))
+                .expect("serialized catalog"),
             expected
         );
-        assert_eq!(second.expect("concurrent catalog shares result"), expected);
+        assert_eq!(
+            serde_json::to_value(second.expect("concurrent catalog shares result"))
+                .expect("serialized catalog"),
+            expected
+        );
+        let document: Value =
+            serde_json::from_str(include_str!("../../openapi.json")).expect("OpenAPI document");
+        let schema = json!({
+            "components":document["components"],
+            "$ref":"#/components/schemas/ModelCatalogResponse"
+        });
+        assert!(
+            jsonschema::validator_for(&schema)
+                .expect("HTTP schema")
+                .is_valid(&expected)
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        catalog.shutdown().await.expect("catalog task shutdown");
+    }
+
+    #[tokio::test]
+    async fn invalid_known_provider_fields_are_unavailable_to_http_and_admission() {
+        let snapshot = snapshot(json!({
+            "id":"account", "home":"/fixture", "provider":"codex", "status":"ready"
+        }));
+        let session: std::sync::Arc<
+            dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
+        > = std::sync::Arc::new(CatalogSession {
+            pages: std::sync::Mutex::new(vec![json!({
+                "data":[{"model":"valid", "supportedReasoningEfforts":[{"reasoningEffort":1}]}]
+            })]),
+            requests: Default::default(),
+        });
+        let catalog = ModelCatalogService::new();
+        catalog.set_account_session(Some(session.clone()));
+        let error = account_catalog(&catalog, &snapshot, "account", false, Some(session))
+            .await
+            .expect_err("invalid capabilities must fail the HTTP read");
+        assert_eq!(error, super::catalog_unavailable());
+        assert_eq!(
+            catalog.read_for_admission("account", "/fixture", ProviderKind::Codex),
+            studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable
+        );
         catalog.shutdown().await.expect("catalog task shutdown");
     }
 

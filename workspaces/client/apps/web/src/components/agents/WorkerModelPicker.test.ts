@@ -4,12 +4,14 @@ import {
   type WorkerModelInfo,
 } from "./WorkerModelPicker";
 
-const modelInfo = (...args: [] | [unknown]): WorkerModelInfo => {
+const modelInfo = (
+  ...args: [] | [WorkerModelInfo["availableAccessPrograms"]]
+): WorkerModelInfo => {
   const base = {
     model: "claude-sonnet",
     serviceTiers: [],
     supportedReasoningEfforts: [],
-  };
+  } satisfies WorkerModelInfo;
   return args.length ? { ...base, availableAccessPrograms: args[0] } : base;
 };
 
@@ -28,28 +30,23 @@ describe("supportsDaybreakMode", () => {
     ).toBe(false);
   });
 
-  it.each([null, "standard", { unexpected: true }])(
-    "does not grant standard mode for malformed cyber metadata: %s",
-    (cyber) => {
-      expect(supportsDaybreakMode(modelInfo({ cyber }), false)).toBe(false);
-    },
-  );
-
-  it.each([
-    ["standard", 1],
-    ["daybreakBlue", 1],
-  ])("rejects mixed-type cyber access entries: %s", (program, invalid) => {
-    const info = modelInfo({ cyber: [program, invalid] });
-    expect(supportsDaybreakMode(info, false)).toBe(false);
-    expect(supportsDaybreakMode(info, true)).toBe(false);
+  it("consumes the generated catalog contract", () => {
+    const valid = {
+      model: "future-model",
+      supportedReasoningEfforts: [{ reasoningEffort: "future-effort" }],
+      serviceTiers: [],
+    } satisfies WorkerModelInfo;
+    expect(valid.supportedReasoningEfforts[0]?.reasoningEffort).toBe(
+      "future-effort",
+    );
+    // @ts-expect-error Known catalog booleans must not widen to opaque metadata.
+    const invalidHidden: WorkerModelInfo = { ...valid, hidden: "yes" };
+    const invalidEffort: WorkerModelInfo = {
+      ...valid,
+      // @ts-expect-error Upstream-owned effort names stay strings, not untyped JSON.
+      supportedReasoningEfforts: [{ reasoningEffort: 1 }],
+    };
+    expect(invalidHidden.hidden).toBe("yes");
+    expect(invalidEffort.supportedReasoningEfforts[0]?.reasoningEffort).toBe(1);
   });
-
-  it.each([null, "bad", []])(
-    "does not grant standard mode for malformed access metadata: %s",
-    (availableAccessPrograms) => {
-      expect(
-        supportsDaybreakMode(modelInfo(availableAccessPrograms), false),
-      ).toBe(false);
-    },
-  );
 });

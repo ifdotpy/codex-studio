@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use studio_runtime_process::provider_seam::Shutdown;
 use studio_runtime_schema::ProviderKind;
+use studio_runtime_schema::model_catalog::{ModelCatalog, ProviderModel};
 use studio_runtime_schema::shared_values::{
     MODEL_CATALOG_ADMISSION_WAIT_SECONDS, MODEL_CATALOG_CACHE_TTL_SECONDS,
     MODEL_CATALOG_ITEMS_PER_PAGE, MODEL_CATALOG_MAX_FRAME_BYTES, MODEL_CATALOG_MAX_PAGES,
@@ -28,7 +29,7 @@ const MAX_CATALOG_PAGE_BYTES: usize = MODEL_CATALOG_MAX_FRAME_BYTES;
 const MAX_CATALOG_RESPONSE_BYTES: usize = MODEL_CATALOG_MAX_RESPONSE_BYTES;
 const MAX_CATALOG_PAGES: usize = MODEL_CATALOG_MAX_PAGES;
 pub type ChangeCallback =
-    Arc<dyn Fn(&str, &str, ProviderKind, Option<Value>) + Send + Sync + 'static>;
+    Arc<dyn Fn(&str, &str, ProviderKind, Option<ModelCatalog>) + Send + Sync + 'static>;
 
 /// Dependency name reported when no fresh model catalog can be read for an
 /// admission decision. The condition is transient: a later read can succeed.
@@ -55,7 +56,7 @@ pub trait ModelListPort: Send + Sync {
         account_key: &'a str,
         provider: ProviderKind,
         params: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<Value, ModelListError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<ModelCatalog, ModelListError>> + Send + 'a>>;
 }
 
 impl ModelListPort for ModelCatalogService {
@@ -64,14 +65,14 @@ impl ModelListPort for ModelCatalogService {
         account_key: &'a str,
         provider: ProviderKind,
         params: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<Value, ModelListError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<ModelCatalog, ModelListError>> + Send + 'a>> {
         Box::pin(self.list_models(account_key, provider, params))
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CatalogRead {
-    Ready(Value),
+    Ready(ModelCatalog),
     Pending,
     Unavailable,
 }
@@ -81,7 +82,7 @@ async fn read_account_session_catalog(
     account: String,
     _provider: ProviderKind,
     stop: Shutdown,
-) -> Result<Value, ()> {
+) -> Result<ModelCatalog, ()> {
     let mut shutdown = stop.subscribe();
     let mut rows = Vec::new();
     // A refresh is a new durable provider read. Page retries within this refresh
@@ -164,36 +165,30 @@ async fn read_account_session_catalog(
         if total_bytes > MAX_CATALOG_RESPONSE_BYTES {
             return Err(());
         }
-        let object = response.as_object().ok_or(())?;
-        let data = object.get("data").and_then(Value::as_array).ok_or(())?;
-        if first_page.is_none() {
-            first_page = Some(object.clone());
-        }
-        for row in data {
-            let model = row
-                .as_object()
-                .and_then(|row| row.get("model"))
-                .and_then(Value::as_str)
-                .filter(|model| !model.trim().is_empty())
-                .ok_or(())?;
-            if !seen_models.insert(model.to_owned()) {
+        let mut page = ModelCatalog::parse(response).map_err(|error| {
+            eprintln!("Invalid provider model catalog: {error}");
+        })?;
+        for row in &page.data {
+            if !seen_models.insert(row.model.clone()) {
                 return Err(());
             }
-            rows.push(row.clone());
         }
-        match object.get("nextCursor") {
-            None | Some(Value::Null) => {
+        rows.append(&mut page.data);
+        let next = page.next_cursor.clone().flatten();
+        if first_page.is_none() {
+            first_page = Some(page);
+        }
+        match next {
+            None => {
                 let mut result = first_page.ok_or(())?;
-                result.insert("data".into(), Value::Array(rows));
-                result.insert("nextCursor".into(), Value::Null);
-                return Ok(Value::Object(result));
+                result.data = rows;
+                result.next_cursor = Some(None);
+                return Ok(result);
             }
-            Some(Value::String(value))
-                if !value.is_empty() && seen_cursors.insert(value.clone()) =>
-            {
-                cursor = Some(value.clone())
+            Some(value) if !value.is_empty() && seen_cursors.insert(value.clone()) => {
+                cursor = Some(value)
             }
-            _ => return Err(()),
+            Some(_) => return Err(()),
         }
     }
     Err(())
@@ -204,7 +199,7 @@ async fn read_account_session_catalog(
 #[derive(Clone, Debug, PartialEq)]
 pub enum AdmissionCatalogRead {
     Fresh {
-        value: Value,
+        value: ModelCatalog,
         account_key: String,
         home: String,
         provider: ProviderKind,
@@ -217,7 +212,7 @@ pub enum AdmissionCatalogRead {
 
 struct CacheEntry {
     generation: u64,
-    value: Option<Value>,
+    value: Option<ModelCatalog>,
     expires_at: Option<Instant>,
     error: bool,
     pending: bool,
@@ -521,7 +516,12 @@ impl ModelCatalogService {
         }
     }
 
-    fn last_known(&self, account_key: &str, home: &str, provider: ProviderKind) -> Option<Value> {
+    fn last_known(
+        &self,
+        account_key: &str,
+        home: &str,
+        provider: ProviderKind,
+    ) -> Option<ModelCatalog> {
         if !self.account_identity_is_current(account_key, home, provider) {
             return None;
         }
@@ -704,7 +704,7 @@ impl ModelCatalogService {
             (account_key.to_owned(), home.to_owned(), provider),
             CacheEntry {
                 generation: 1,
-                value: Some(value),
+                value: Some(ModelCatalog::parse(value).expect("valid fixture catalog")),
                 expires_at: Some(Instant::now() + Duration::from_secs(30)),
                 error: false,
                 pending: false,
@@ -721,7 +721,7 @@ impl ModelCatalogService {
         account: &str,
         provider: ProviderKind,
         params: Value,
-    ) -> Result<Value, ModelListError> {
+    ) -> Result<ModelCatalog, ModelListError> {
         if params != json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE}) {
             return Err(ModelListError::InvalidParams);
         }
@@ -783,7 +783,7 @@ fn store_result(
     inner: &CatalogInner,
     key: &(String, String, ProviderKind),
     generation: u64,
-    result: Result<Value, ()>,
+    result: Result<ModelCatalog, ()>,
 ) -> bool {
     let stored = if let Ok(mut cache) = inner.state.lock()
         && let Some(entry) = cache.entries.get_mut(key)
@@ -818,11 +818,59 @@ fn store_result(
     stored
 }
 
+impl From<&ProviderModel> for crate::submit_gates::ModelCapabilities {
+    fn from(row: &ProviderModel) -> Self {
+        Self {
+            model: row.model.clone(),
+            resolved_model: row.resolved_model.clone().flatten(),
+            is_default: row.is_default.unwrap_or(false),
+            hidden: row.hidden.unwrap_or(false),
+            access_programs: row.cyber_programs().map(<[String]>::to_vec),
+            supported_efforts: row
+                .supported_reasoning_efforts
+                .iter()
+                .flatten()
+                .map(|effort| effort.reasoning_effort.clone())
+                .collect(),
+            default_effort: row.default_reasoning_effort.clone().flatten(),
+            priority: row
+                .service_tiers
+                .iter()
+                .flatten()
+                .any(|tier| tier.id == "priority"),
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
+    fn typed(value: serde_json::Value) -> studio_runtime_schema::model_catalog::ModelCatalog {
+        studio_runtime_schema::model_catalog::ModelCatalog::parse(value)
+            .expect("valid test catalog")
+    }
+
     use super::*;
 
     use std::sync::Mutex as StdMutex;
+
+    #[test]
+    fn typed_cache_and_admission_signatures() {
+        let _: fn(&ProviderModel) -> crate::submit_gates::ModelCapabilities = |model| model.into();
+        let service = ModelCatalogService::new();
+        if let AdmissionCatalogRead::Fresh { value, .. } =
+            service.read_for_admission("account", "/home", ProviderKind::Codex)
+        {
+            let _: ModelCatalog = value;
+        }
+        let entry = CacheEntry {
+            generation: 1,
+            value: None,
+            expires_at: None,
+            error: false,
+            pending: false,
+        };
+        let _: Option<ModelCatalog> = entry.value;
+    }
 
     /// Retained-session fake that answers each `model/list` with the next page.
     /// A gated fake holds every reply until `release` grants it.
@@ -874,6 +922,7 @@ pub(crate) mod tests {
             Shutdown::default(),
         )
         .await
+        .map(|catalog| serde_json::to_value(catalog).expect("catalog serializes"))
     }
     impl crate::account_session_runtime::AccountSessionPort for AccountSessionPages {
         fn current_scope(
@@ -946,7 +995,7 @@ pub(crate) mod tests {
         .await
         .expect("catalog pages");
         assert_eq!(
-            result,
+            serde_json::to_value(result).expect("catalog serializes"),
             json!({
                 "data":[{"model":"one"},{"model":"two"}],
                 "nextCursor":null,
@@ -1024,7 +1073,7 @@ pub(crate) mod tests {
         )
         .await
         .expect("catalog after lazy start");
-        assert_eq!(result["data"][0]["model"], "gpt-6-luna");
+        assert_eq!(result.data[0].model, "gpt-6-luna");
         assert!(session.started.load(Ordering::SeqCst));
     }
 
@@ -1129,7 +1178,7 @@ pub(crate) mod tests {
                 pending: true,
             },
         );
-        assert!(store_result(&service.0, &key, 7, Ok(value)));
+        assert!(store_result(&service.0, &key, 7, Ok(typed(value))));
     }
 
     #[tokio::test]
@@ -1145,7 +1194,7 @@ pub(crate) mod tests {
             key.clone(),
             CacheEntry {
                 generation: 7,
-                value: Some(json!({"data":[{"model":"stale"}]})),
+                value: Some(typed(json!({"data":[{"model":"stale"}]}))),
                 expires_at: None,
                 error: false,
                 pending: true,
@@ -1159,10 +1208,10 @@ pub(crate) mod tests {
         });
         tokio::task::yield_now().await;
         let value = json!({"data":[{"model":"fixture"}]});
-        assert!(store_result(&service.0, &key, 7, Ok(value.clone())));
+        assert!(store_result(&service.0, &key, 7, Ok(typed(value.clone()))));
         assert_eq!(
             read.await.expect("catalog waiter"),
-            CatalogRead::Ready(value)
+            CatalogRead::Ready(typed(value))
         );
     }
 
@@ -1178,10 +1227,10 @@ pub(crate) mod tests {
             service.read_until_ready("account", "/home", ProviderKind::Codex, false),
             service.read_until_ready("account", "/home", ProviderKind::Codex, false),
         );
-        let ready = CatalogRead::Ready(json!({
+        let ready = CatalogRead::Ready(typed(json!({
             "data":[{"model":"fixture"}],
             "nextCursor":null
-        }));
+        })));
         assert_eq!(first, ready);
         assert_eq!(second, ready);
         assert_eq!(pages.requests(), 1);
@@ -1233,7 +1282,7 @@ pub(crate) mod tests {
             key.clone(),
             CacheEntry {
                 generation: 7,
-                value: Some(known.clone()),
+                value: Some(typed(known.clone())),
                 expires_at: None,
                 error: false,
                 pending: true,
@@ -1255,7 +1304,7 @@ pub(crate) mod tests {
             service
                 .read_until_ready("account", "/home", ProviderKind::Codex, false)
                 .await,
-            CatalogRead::Ready(known)
+            CatalogRead::Ready(typed(known))
         );
     }
 
@@ -1297,7 +1346,9 @@ pub(crate) mod tests {
             service
                 .read_until_ready("account", "/home", ProviderKind::Codex, false)
                 .await,
-            CatalogRead::Ready(json!({"data":[{"model":"fixture"}],"nextCursor":null}))
+            CatalogRead::Ready(typed(
+                json!({"data":[{"model":"fixture"}],"nextCursor":null})
+            ))
         );
         assert_eq!(pages.requests(), 1);
         service.shutdown().await.expect("catalog task shutdown");
@@ -1343,7 +1394,7 @@ pub(crate) mod tests {
             ),
             CacheEntry {
                 generation: 7,
-                value: Some(json!({"data":[{"model":"stale"}]})),
+                value: Some(typed(json!({"data":[{"model":"stale"}]}))),
                 expires_at: None,
                 error: false,
                 pending: true,
@@ -1354,7 +1405,7 @@ pub(crate) mod tests {
             service
                 .read_until_ready("account", "/home", ProviderKind::Codex, false)
                 .await,
-            CatalogRead::Ready(json!({"data":[{"model":"stale"}]}))
+            CatalogRead::Ready(typed(json!({"data":[{"model":"stale"}]})))
         );
     }
 
@@ -1473,7 +1524,7 @@ pub(crate) mod tests {
             key.clone(),
             CacheEntry {
                 generation: 7,
-                value: Some(json!({"models":[{"model":"stale"}]})),
+                value: Some(typed(json!({"data":[{"model":"stale"}]}))),
                 expires_at: Some(Instant::now()),
                 error: false,
                 pending: false,
@@ -1495,7 +1546,7 @@ pub(crate) mod tests {
         assert!(!cache.entries[&key].pending);
         assert_eq!(
             cache.entries[&key].value,
-            Some(json!({"models":[{"model":"stale"}]}))
+            Some(typed(json!({"data":[{"model":"stale"}]})))
         );
     }
 
@@ -1512,7 +1563,7 @@ pub(crate) mod tests {
             key.clone(),
             CacheEntry {
                 generation: 7,
-                value: Some(json!({"models":[{"model":"stale"}]})),
+                value: Some(typed(json!({"data":[{"model":"stale"}]}))),
                 expires_at: Some(Instant::now() + Duration::from_secs(1)),
                 error: false,
                 pending: false,
@@ -1531,7 +1582,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             read.await,
-            CatalogRead::Ready(json!({"models":[{"model":"stale"}]})),
+            CatalogRead::Ready(typed(json!({"data":[{"model":"stale"}]}))),
         );
         assert!(
             service.0.state.lock().expect("cache").entries[&key].pending,
@@ -1563,7 +1614,7 @@ pub(crate) mod tests {
             key.clone(),
             CacheEntry {
                 generation: 7,
-                value: Some(value.clone()),
+                value: Some(typed(value.clone())),
                 expires_at: Some(expiry),
                 error: false,
                 pending: false,
@@ -1572,7 +1623,7 @@ pub(crate) mod tests {
         assert_eq!(
             service.read_for_admission(&key.0, &key.1, key.2),
             AdmissionCatalogRead::Fresh {
-                value: value.clone(),
+                value: typed(value.clone()),
                 account_key: key.0.clone(),
                 home: key.1.clone(),
                 provider: key.2,
@@ -1622,6 +1673,27 @@ pub(crate) mod tests {
                 json!({"data":[{"model":"one"},{"model":"two","hidden":true}],"nextCursor":null,"metadata":true})
             )
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn malformed_known_model_fields_fail_provider_ingress() {
+        for (field, value) in [
+            ("hidden", json!("yes")),
+            ("isDefault", json!(1)),
+            ("resolvedModel", json!(false)),
+            ("defaultReasoningEffort", json!([])),
+            ("supportedReasoningEfforts", json!([{"reasoningEffort": 4}])),
+            ("serviceTiers", json!([{"id": false}])),
+            ("availableAccessPrograms", json!({"cyber": ["standard", 1]})),
+        ] {
+            let mut row = json!({"model":"valid"});
+            row[field] = value;
+            assert_eq!(
+                scripted(vec![json!({"data":[row]})]).await,
+                Err(()),
+                "{field}"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]

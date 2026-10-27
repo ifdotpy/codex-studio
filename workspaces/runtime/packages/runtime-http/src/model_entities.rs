@@ -2,6 +2,7 @@
 
 use serde_json::{Value, json};
 use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::model_catalog::ModelCatalog;
 use studio_runtime_services::model_catalog::ChangeCallback;
 use studio_runtime_store::{RuntimeStore, StoreError, SyncDocumentsRepository, Transaction};
 use tokio::sync::mpsc;
@@ -15,7 +16,7 @@ enum ModelPublication {
     Catalog {
         account: String,
         provider: ProviderKind,
-        catalog: Option<Value>,
+        catalog: Option<ModelCatalog>,
     },
     #[cfg(test)]
     Flush(oneshot::Sender<()>),
@@ -91,36 +92,24 @@ fn publish_catalog(
     transaction: &Transaction<'_>,
     account: &str,
     provider: ProviderKind,
-    catalog: Option<&Value>,
+    catalog: Option<&ModelCatalog>,
 ) -> Result<bool, StoreError> {
     let prefix = format!("{account}{MODEL_ID_SEPARATOR}");
     let mut next_ids = std::collections::HashSet::new();
     let mut changed = false;
-    if let Some(rows) = catalog
-        .and_then(|value| value.get("data"))
-        .and_then(Value::as_array)
-    {
-        for (position, row) in rows.iter().enumerate() {
-            let Some(model) = row
-                .get("model")
-                .and_then(Value::as_str)
-                .filter(|model| !model.is_empty())
-            else {
-                continue;
-            };
-            let id = format!("{prefix}{model}");
-            let mut value = row.clone();
-            let Some(value) = value.as_object_mut() else {
-                continue;
-            };
-            value.insert("accountKey".into(), Value::String(account.to_owned()));
-            value.insert("provider".into(), json!(provider));
-            value.insert("catalogPosition".into(), json!(position));
+    if let Some(catalog) = catalog {
+        for (position, row) in catalog.data.iter().enumerate() {
+            let id = format!("{prefix}{}", row.model);
+            let mut row = row.clone();
+            row.account_key = Some(account.to_owned());
+            row.provider = Some(provider.key().to_owned());
+            // Serialization is the durable SSE boundary; metadata stays opaque.
+            row.extra.insert("catalogPosition".into(), json!(position));
             changed |= SyncDocumentsRepository::put_entity(
                 transaction,
                 MODEL_COLLECTION,
                 &id,
-                Value::Object(value.clone()),
+                json!(row),
                 false,
             )?;
             next_ids.insert(id);
@@ -155,6 +144,9 @@ fn publish_catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn typed(value: Value) -> ModelCatalog {
+        ModelCatalog::parse(value).expect("valid catalog")
+    }
     use serde_json::json;
     use studio_runtime_store::RuntimeStore;
 
@@ -174,7 +166,7 @@ mod tests {
                     tx,
                     "one",
                     ProviderKind::Codex,
-                    Some(&initial)
+                    Some(&typed(initial))
                 ))
                 .await
                 .expect("catalog publishes")
@@ -182,7 +174,12 @@ mod tests {
         let second_account = json!({"data":[{"model":"alpha","hidden":false}]});
         store
             .transaction_with(move |tx| {
-                publish_catalog(tx, "two", ProviderKind::Claude, Some(&second_account))
+                publish_catalog(
+                    tx,
+                    "two",
+                    ProviderKind::Claude,
+                    Some(&typed(second_account)),
+                )
             })
             .await
             .expect("second account publishes");
@@ -190,7 +187,7 @@ mod tests {
         let replacement = json!({"data":[{"model":"alpha","hidden":true}]});
         store
             .transaction_with(move |tx| {
-                publish_catalog(tx, "one", ProviderKind::Codex, Some(&replacement))
+                publish_catalog(tx, "one", ProviderKind::Codex, Some(&typed(replacement)))
             })
             .await
             .expect("catalog replacement publishes");
@@ -249,25 +246,25 @@ mod tests {
             "one:child",
             "",
             ProviderKind::Codex,
-            Some(json!({"data":[
+            Some(typed(json!({"data":[
                 {"model":"child-model","hidden":false}
-            ]})),
+            ]}))),
         );
         callback(
             "one",
             "",
             ProviderKind::Codex,
-            Some(json!({"data":[
+            Some(typed(json!({"data":[
                 {"model":"old-model","hidden":false}
-            ]})),
+            ]}))),
         );
         callback(
             "one",
             "",
             ProviderKind::Codex,
-            Some(json!({"data":[
+            Some(typed(json!({"data":[
                 {"model":"new-model","hidden":true}
-            ]})),
+            ]}))),
         );
 
         let (done, flushed) = oneshot::channel();

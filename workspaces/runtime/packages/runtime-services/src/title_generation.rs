@@ -19,6 +19,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use studio_runtime_schema::ProviderKind;
+use studio_runtime_schema::model_catalog::ModelCatalog;
 use studio_runtime_schema::shared_values::TITLE_EFFECT_SIGNATURE;
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
 use thiserror::Error;
@@ -333,7 +334,10 @@ enum Admission {
 }
 
 /// Select the model and optional low reasoning effort with Python's priority.
-pub fn title_model(catalog: &Value, agent: &Value) -> Result<(String, Option<String>), TitleError> {
+pub fn title_model(
+    catalog: &ModelCatalog,
+    agent: &Value,
+) -> Result<(String, Option<String>), TitleError> {
     let provider = ProviderKind::of_record(agent).map_err(|_| {
         invalid(
             "runtime_agents",
@@ -343,69 +347,44 @@ pub fn title_model(catalog: &Value, agent: &Value) -> Result<(String, Option<Str
                 .unwrap_or("<missing-id>"),
         )
     })?;
-    let rows = catalog
-        .get("data")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    let available = rows
+    let available = catalog
+        .data
         .iter()
-        .filter(|row| {
-            row.get("model")
-                .and_then(Value::as_str)
-                .is_some_and(|model| !model.is_empty())
-                && !row.get("hidden").is_some_and(truthy)
-        })
+        .filter(|row| row.hidden != Some(true))
         .collect::<Vec<_>>();
     if available.is_empty() {
         return Err(TitleError::NoModel);
     }
     let preferred = match provider {
-        ProviderKind::Claude => available.iter().find(|row| {
-            row.get("model")
-                .and_then(Value::as_str)
-                .is_some_and(|model| model.to_lowercase().contains("haiku"))
-        }),
+        ProviderKind::Claude => available
+            .iter()
+            .find(|row| row.model.to_lowercase().contains("haiku")),
         ProviderKind::Codex => available
             .iter()
-            .find(|row| {
-                row.get("model")
-                    .and_then(Value::as_str)
-                    .is_some_and(|m| m.to_lowercase().contains("mini"))
-            })
+            .find(|row| row.model.to_lowercase().contains("mini"))
             .or_else(|| {
-                available.iter().find(|row| {
-                    row.get("model")
-                        .and_then(Value::as_str)
-                        .is_some_and(|m| m.to_lowercase().contains("luna"))
-                })
+                available
+                    .iter()
+                    .find(|row| row.model.to_lowercase().contains("luna"))
             }),
     };
     let own_model = agent.get("model").and_then(Value::as_str);
     let own = available.iter().find(|row| {
         own_model.is_some_and(|model| {
-            row.get("model").and_then(Value::as_str) == Some(model)
-                || row.get("resolvedModel").and_then(Value::as_str) == Some(model)
+            row.model == model
+                || row.resolved_model.as_ref().and_then(Option::as_deref) == Some(model)
         })
     });
     if provider == ProviderKind::Claude && preferred.is_none() && own.is_none() {
         return Err(TitleError::ChatModelUnavailable);
     }
     let selected = preferred.or(own).unwrap_or(&available[0]);
-    let model = selected
-        .get("model")
-        .and_then(Value::as_str)
-        .filter(|model| !model.is_empty())
-        .ok_or(TitleError::NoModel)?
-        .to_owned();
+    let model = selected.model.clone();
     let low = selected
-        .get("supportedReasoningEfforts")
-        .and_then(Value::as_array)
-        .is_some_and(|items| {
-            items
-                .iter()
-                .any(|item| item.get("reasoningEffort").and_then(Value::as_str) == Some("low"))
-        });
+        .supported_reasoning_efforts
+        .iter()
+        .flatten()
+        .any(|effort| effort.reasoning_effort == "low");
     Ok((model, low.then(|| "low".to_owned())))
 }
 
@@ -511,7 +490,7 @@ pub async fn generate(
     store: &RuntimeStore,
     port: &dyn TitleRequestPort,
     agent_id: &str,
-    catalog: &Value,
+    catalog: &ModelCatalog,
     request_id: &str,
     deadline: SystemTime,
 ) -> Result<TitleResult, TitleError> {
@@ -523,7 +502,7 @@ pub async fn generate_admitted(
     store: &RuntimeStore,
     port: &dyn TitleRequestPort,
     agent_id: &str,
-    catalog: &Value,
+    catalog: &ModelCatalog,
     request_id: &str,
     deadline: SystemTime,
 ) -> Result<TitleResult, TitleError> {
@@ -534,7 +513,7 @@ async fn generate_inner(
     store: &RuntimeStore,
     port: &dyn TitleRequestPort,
     agent_id: &str,
-    catalog: &Value,
+    catalog: &ModelCatalog,
     request_id: &str,
     deadline: SystemTime,
     admitted: bool,
@@ -914,7 +893,7 @@ async fn generate_inner(
 fn make_snapshot(
     connection: &Connection,
     agent_id: &str,
-    catalog: &Value,
+    catalog: &ModelCatalog,
     request_id: &str,
 ) -> Result<Snapshot, TitleError> {
     let raw_agent = connection
@@ -1198,15 +1177,18 @@ mod tests {
                 agent["provider"] = provider;
             }
             assert!(
-                matches!(title_model(&catalog, &agent), Err(TitleError::InvalidStoredObject { table: "runtime_agents", id }) if id == "a"),
+                matches!(title_model(&ModelCatalog::parse(catalog.clone()).expect("valid fixture catalog"), &agent), Err(TitleError::InvalidStoredObject { table: "runtime_agents", id }) if id == "a"),
                 "{agent}"
             );
         }
         for (provider, expected) in [("codex", "gpt-mini"), ("claude", "claude-haiku")] {
             assert_eq!(
-                title_model(&catalog, &json!({"provider":provider}))
-                    .expect("known provider")
-                    .0,
+                title_model(
+                    &ModelCatalog::parse(catalog.clone()).expect("valid fixture catalog"),
+                    &json!({"provider":provider})
+                )
+                .expect("known provider")
+                .0,
                 expected
             );
         }
@@ -1221,7 +1203,11 @@ mod tests {
             {"model":"hidden-mini","hidden":true}
         ]});
         assert_eq!(
-            title_model(&catalog, &agent).expect("model"),
+            title_model(
+                &ModelCatalog::parse(catalog.clone()).expect("valid fixture catalog"),
+                &agent
+            )
+            .expect("model"),
             ("gpt-mini".into(), Some("low".into()))
         );
     }

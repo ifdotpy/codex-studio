@@ -153,7 +153,12 @@ export function newChatDefault(
 /** The model a new chat starts with when the person chose no model. */
 export function defaultChatModel(
   provider: string | null | undefined,
-  models: Array<{ model: string; resolvedModel?: string; isDefault?: boolean }>,
+  models: Array<
+    Pick<
+      components["schemas"]["ProviderModel"],
+      "model" | "resolvedModel" | "isDefault"
+    >
+  >,
 ): string | undefined {
   if (
     provider === ProviderKind.Claude &&

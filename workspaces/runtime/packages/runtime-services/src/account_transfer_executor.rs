@@ -477,60 +477,12 @@ async fn read_catalog(
             },
         )
         .await?;
-        let data = response["data"]
-            .as_array()
-            .ok_or(TransferError::Refused("Invalid destination model catalog"))?;
-        rows.extend(data.iter().cloned());
-        match response.get("nextCursor") {
-            None | Some(Value::Null) => {
-                let models = rows
-                    .iter()
-                    .map(|row| {
-                        Ok(ModelCapabilities {
-                            model: row["model"]
-                                .as_str()
-                                .ok_or(TransferError::Refused("Invalid catalog model"))?
-                                .into(),
-                            resolved_model: row
-                                .get("resolvedModel")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                            is_default: row
-                                .get("isDefault")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false),
-                            hidden: row.get("hidden").and_then(Value::as_bool).unwrap_or(false),
-                            access_programs: row
-                                .pointer("/availableAccessPrograms/cyber")
-                                .and_then(Value::as_array)
-                                .map(|values| {
-                                    values
-                                        .iter()
-                                        .filter_map(Value::as_str)
-                                        .map(str::to_owned)
-                                        .collect()
-                                }),
-                            supported_efforts: row["supportedReasoningEfforts"]
-                                .as_array()
-                                .map(|efforts| {
-                                    efforts
-                                        .iter()
-                                        .filter_map(|v| {
-                                            v["reasoningEffort"].as_str().map(str::to_owned)
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default(),
-                            default_effort: row
-                                .get("defaultReasoningEffort")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                            priority: row["serviceTiers"]
-                                .as_array()
-                                .is_some_and(|tiers| tiers.iter().any(|v| v["id"] == "priority")),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, TransferError>>()?;
+        let page = studio_runtime_schema::model_catalog::ModelCatalog::parse(response)
+            .map_err(|_| TransferError::Refused("Invalid destination model catalog"))?;
+        rows.extend(page.data);
+        match page.next_cursor.flatten() {
+            None => {
+                let models = rows.iter().map(ModelCapabilities::from).collect();
                 return Ok(CatalogObservation {
                     identity: CatalogIdentity {
                         account_key: context.account.into(),
@@ -542,7 +494,7 @@ async fn read_catalog(
                     models,
                 });
             }
-            Some(Value::String(value)) if !value.is_empty() && seen.insert(value.clone()) => {
+            Some(value) if !value.is_empty() && seen.insert(value.clone()) => {
                 cursor = Some(value.clone())
             }
             _ => return Err(TransferError::Refused("Invalid destination model cursor")),

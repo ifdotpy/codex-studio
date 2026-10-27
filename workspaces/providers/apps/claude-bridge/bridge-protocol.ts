@@ -157,23 +157,18 @@ export interface BridgeRateLimits {
   accountId?: string | undefined;
   claudeRateLimit?: unknown;
 }
-export type BridgeModel = {
-  id: ModelInfo["value"];
-  model: ModelInfo["value"];
-  resolvedModel: string | null;
-  displayName: string;
-  description: ModelInfo["description"];
-  isDefault: boolean;
-  hidden: false;
-  supportedReasoningEfforts: {
-    reasoningEffort: NonNullable<ModelInfo["supportedEffortLevels"]>[number];
-    description: string;
-  }[];
+// Studio owns the consumed projection; model values still come from SDK ModelInfo.
+type CatalogModel = import("./runtime-contract.generated.ts").ProviderModel;
+export type BridgeModel = CatalogModel & {
+  supportedReasoningEfforts: Array<
+    NonNullable<CatalogModel["supportedReasoningEfforts"]>[number] & {
+      reasoningEffort: NonNullable<ModelInfo["supportedEffortLevels"]>[number];
+    }
+  >;
   defaultReasoningEffort: Extract<
     NonNullable<ModelInfo["supportedEffortLevels"]>[number],
     "medium"
   > | null;
-  serviceTiers: { id: "priority"; name: "Fast" }[];
 };
 export type BridgeMoveProof = MoveProof & {
   compiledToolsJson?: string | undefined;

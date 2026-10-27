@@ -18,74 +18,22 @@ import { serverResourceScope } from "../../servers/registry";
 import type { Snapshot } from "../../types";
 import { subscribeStateProjection } from "../../sync/client";
 
-export type WorkerModelInfo = {
-  model: string;
-  provider?: string;
-  resolvedModel?: string;
-  displayName?: string;
-  description?: string;
-  hidden?: boolean;
-  isDefault?: boolean;
-  defaultReasoningEffort?: string;
-  availableAccessPrograms?: unknown;
-  serviceTiers: { id: string; description?: string }[];
-  supportedReasoningEfforts: { reasoningEffort: string }[];
+import type { components } from "../../generated/api";
+import type { KnownApiFields } from "../../apiTypes";
+
+type ProviderModel = KnownApiFields<components["schemas"]["ProviderModel"]>;
+export type WorkerModelInfo = ProviderModel & {
+  serviceTiers: NonNullable<ProviderModel["serviceTiers"]>;
+  supportedReasoningEfforts: NonNullable<
+    ProviderModel["supportedReasoningEfforts"]
+  >;
 };
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const modelInfo = (value: unknown): WorkerModelInfo | null => {
-  if (!isRecord(value) || typeof value.model !== "string") return null;
-  const serviceTiers = Array.isArray(value.serviceTiers)
-    ? value.serviceTiers.flatMap((tier) =>
-        isRecord(tier) && typeof tier.id === "string"
-          ? [
-              {
-                id: tier.id,
-                ...(typeof tier.description === "string"
-                  ? { description: tier.description }
-                  : {}),
-              },
-            ]
-          : [],
-      )
-    : [];
-  const supportedReasoningEfforts = Array.isArray(
-    value.supportedReasoningEfforts,
-  )
-    ? value.supportedReasoningEfforts.flatMap((effort) =>
-        isRecord(effort) && typeof effort.reasoningEffort === "string"
-          ? [{ reasoningEffort: effort.reasoningEffort }]
-          : [],
-      )
-    : [];
-  return {
-    model: value.model,
-    ...(typeof value.provider === "string" ? { provider: value.provider } : {}),
-    ...(typeof value.resolvedModel === "string"
-      ? { resolvedModel: value.resolvedModel }
-      : {}),
-    ...(typeof value.displayName === "string"
-      ? { displayName: value.displayName }
-      : {}),
-    ...(typeof value.description === "string"
-      ? { description: value.description }
-      : {}),
-    ...(typeof value.hidden === "boolean" ? { hidden: value.hidden } : {}),
-    ...(typeof value.isDefault === "boolean"
-      ? { isDefault: value.isDefault }
-      : {}),
-    ...(typeof value.defaultReasoningEffort === "string"
-      ? { defaultReasoningEffort: value.defaultReasoningEffort }
-      : {}),
-    ...(Object.hasOwn(value, "availableAccessPrograms")
-      ? { availableAccessPrograms: value.availableAccessPrograms }
-      : {}),
-    serviceTiers,
-    supportedReasoningEfforts,
-  };
-};
+const modelInfo = (value: ProviderModel): WorkerModelInfo => ({
+  ...value,
+  serviceTiers: value.serviceTiers ?? [],
+  supportedReasoningEfforts: value.supportedReasoningEfforts ?? [],
+});
 
 export const isDaybreakAlias = (model: string) =>
   /^gpt-daybreak-(blue|red)-latest$/.test(model);
@@ -96,13 +44,8 @@ const cyberAccessPrograms = (
   if (!info || !Object.hasOwn(info, "availableAccessPrograms"))
     return undefined;
   const access = info.availableAccessPrograms;
-  if (!isRecord(access)) return null;
-  if (!("cyber" in access)) return undefined;
-  const cyber = access.cyber;
-  if (!Array.isArray(cyber)) return null;
-  if (!cyber.every((program): program is string => typeof program === "string"))
-    return null;
-  return cyber;
+  if (access === null) return null;
+  return access?.cyber;
 };
 
 export function daybreakProgram(info?: WorkerModelInfo): string | null {
@@ -241,12 +184,7 @@ function publishCatalog(
 }
 
 function modelRows(data: GetResult<"/api/models">): WorkerModelInfo[] {
-  return Array.isArray(data.data)
-    ? data.data.flatMap((row) => {
-        const parsed = modelInfo(row);
-        return parsed ? [parsed] : [];
-      })
-    : [];
+  return Array.isArray(data.data) ? data.data.map(modelInfo) : [];
 }
 
 function readModelCatalog(
@@ -362,10 +300,7 @@ function subscribeModelCatalog(
     const stop = subscribeState(
       (snapshot) => {
         const rows = projectedModelRows(snapshot, accountKey, workers);
-        const models = rows.flatMap((row) => {
-          const parsed = modelInfo(row);
-          return parsed ? [parsed] : [];
-        });
+        const models = rows.map(modelInfo);
         const loaded = snapshot.entitiesComplete === true;
         publishCatalog(entry, { models, error: "", pending: !loaded, loaded });
       },
@@ -399,14 +334,9 @@ export async function readWorkerModels(
       (snapshot) => {
         if (settled || !snapshot.entitiesComplete) return;
         settled = true;
-        const models = projectedModelRows(
-          snapshot,
-          accountKey,
-          workers,
-        ).flatMap((row) => {
-          const parsed = modelInfo(row);
-          return parsed ? [parsed] : [];
-        });
+        const models = projectedModelRows(snapshot, accountKey, workers).map(
+          modelInfo,
+        );
         resolve(models);
         stop?.();
       },

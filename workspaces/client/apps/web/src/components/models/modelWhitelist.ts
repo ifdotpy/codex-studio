@@ -1,3 +1,4 @@
+import type { components } from "../../generated/api";
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useServerStorage } from "../../servers/ServerServicesContext";
 import { serverLocalStorage } from "../../servers/storage";
@@ -93,7 +94,7 @@ export function modelWhitelistKey(model: {
   provider?: string | undefined;
   model?: string;
   value?: string;
-  resolvedModel?: string;
+  resolvedModel?: components["schemas"]["ProviderModel"]["resolvedModel"];
 }) {
   return `${model.provider || ""}:${model.resolvedModel || model.model || model.value}`;
 }

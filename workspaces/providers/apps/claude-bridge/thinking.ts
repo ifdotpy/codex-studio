@@ -6,9 +6,13 @@ export type ClaudeSettings = Pick<Settings, "env"> &
     "permissionMode" | "thinking" | "autoCompactWindow"
   >;
 
-export type ThinkingModel = Partial<
-  Pick<ModelInfo, "value" | "resolvedModel" | "description">
-> & { model?: ModelInfo["value"] };
+export type ThinkingModel = Partial<Pick<ModelInfo, "value">> &
+  Partial<
+    Pick<
+      import("./runtime-contract.generated.ts").ProviderModel,
+      "model" | "resolvedModel" | "description"
+    >
+  >;
 
 // Resolve aliases from the current account catalog, not a fixed alias mapping.
 export function requiresThinking(
