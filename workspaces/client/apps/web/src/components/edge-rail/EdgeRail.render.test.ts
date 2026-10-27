@@ -89,3 +89,30 @@ test("attention adds just the messages button with its badge", () => {
   expect(html).toContain('aria-label="Messages, 3 need you"');
   expect(html).toContain("edge-rail-badge");
 });
+
+test("shows the team button with its counts only for chats with a team", () => {
+  const withTeam = render({
+    ...props,
+    team: { active: 1, total: 3, onClick: action },
+  });
+  expect(withTeam).toContain('aria-label="Team, 1 of 3 working"');
+  expect(withTeam).toContain(">1/3<");
+  expect(withTeam.match(/<button/g)).toHaveLength(4);
+  expect(render(props)).not.toContain("Team,");
+});
+
+test("a short rail keeps the first buttons and the menu; the rest move into the menu", () => {
+  const team = { active: 1, total: 2, onClick: action };
+  const full = render({ ...props, team });
+  expect(full.match(/<button/g)).toHaveLength(4);
+  // Two targets and one gap: the sidebar button and the menu.
+  const short = render({
+    ...props,
+    team,
+    geometry: { ...props.geometry!, height: 44 * 2 + 8 },
+  });
+  expect(short.match(/<button/g)).toHaveLength(2);
+  expect(short).toContain('aria-label="Toggle conversations"');
+  expect(short).toContain('aria-label="Chat actions"');
+  expect(short).not.toContain("Team, 1 of 2 working");
+});

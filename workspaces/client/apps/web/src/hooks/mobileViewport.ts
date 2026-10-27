@@ -14,6 +14,9 @@ import {
   type NativeViewportState,
 } from "../native/nativeViewport";
 
+/** Root attribute: the native top status strip holds the edge rail, not a page inset. */
+export const viewportTopStripAttribute = "data-viewport-top-strip";
+
 const selectedComposers = new WeakSet<HTMLTextAreaElement>();
 
 /** Mark automatic chat selection so its first touch can open the software keyboard. */
@@ -86,7 +89,7 @@ export function useMobileViewport(active: boolean, compact = false) {
         const current = /^matrix\((?:[^,]+,){5}\s*([^)]+)\)$/.exec(
           getComputedStyle(node).transform,
         );
-        if (current) start = parseFloat(current[1]);
+        if (current?.[1]) start = parseFloat(current[1]);
         composerMotion.cancel();
       }
       const motion = node.animate(
@@ -130,6 +133,7 @@ export function useMobileViewport(active: boolean, compact = false) {
       composerMotion?.cancel();
       composerMotion = null;
       root.removeAttribute("data-viewport-native-keyboard");
+      root.removeAttribute(viewportTopStripAttribute);
       root.removeAttribute("data-viewport-surface");
       root.removeAttribute("data-viewport-keyboard");
       root.removeAttribute("data-viewport-keyboard-compact");
@@ -174,6 +178,18 @@ export function useMobileViewport(active: boolean, compact = false) {
       root.setAttribute("data-viewport-surface", "");
       if (native) root.setAttribute("data-viewport-native-keyboard", "");
       else root.removeAttribute("data-viewport-native-keyboard");
+      // The iPhone Duo in portrait has its status strip on top. Like the
+      // system apps, the page runs under it and the edge rail floats there.
+      const nativeInsets = nativeViewport()?.insets;
+      const stripMin = layoutValues.edgeRail.minInset;
+      if (
+        nativeInsets &&
+        window.innerHeight > window.innerWidth &&
+        nativeInsets.top >= stripMin &&
+        Math.max(nativeInsets.left, nativeInsets.right) < stripMin
+      )
+        root.setAttribute(viewportTopStripAttribute, "");
+      else root.removeAttribute(viewportTopStripAttribute);
       const width = viewport?.width || window.innerWidth;
       const sameWidth = !fullWidth || width === fullWidth;
       const editable = document.activeElement as HTMLElement | null;

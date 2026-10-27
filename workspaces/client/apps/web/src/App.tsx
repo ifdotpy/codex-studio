@@ -2611,7 +2611,8 @@ export default function App({ active = true }: { active?: boolean }) {
       >
         Chat settings
       </Menu.Item>
-      {hasTeam && (
+      {/* With the rail, Team has its own rail button. */}
+      {hasTeam && !railGeometry && (
         <Menu.Item
           id="chat-actions-team"
           aria-label="Team"
@@ -2774,7 +2775,11 @@ export default function App({ active = true }: { active?: boolean }) {
         geometry={railGeometry}
         sidebar={{
           id: "sidebar-toggle",
-          label: sidebarCompact ? "Back to chats" : "Toggle conversations",
+          label: sidebarCompact
+            ? "Back to chats"
+            : sidebarCollapsed
+              ? "Show conversations"
+              : "Hide conversations",
           expanded: sidebarCompact ? sidebar : !sidebarCollapsed,
           onClick: toggleSidebar,
         }}
@@ -2787,6 +2792,18 @@ export default function App({ active = true }: { active?: boolean }) {
             setWorkspaceOpen(true);
           },
         }}
+        team={
+          hasTeam
+            ? {
+                active: workers.filter((worker) =>
+                  busy.has(worker.status ?? ""),
+                ).length,
+                total: workers.length,
+                expanded: narrowTeam ? teamOpen : wideTeamOpen,
+                onClick: toggleTeam,
+              }
+            : undefined
+        }
         menu={chatActionsMenu}
         menuButtonRef={chatActionsButton}
       />

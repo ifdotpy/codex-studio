@@ -158,14 +158,22 @@ for (const capability of [
       await rail
         .getByRole("button", { name: "Chat actions", exact: true })
         .focus();
+      // Two targets fit: the sidebar button and the menu. Team and Messages
+      // become the first menu items; the rail does not scroll.
+      await expect(rail.getByRole("button")).toHaveCount(2);
       await page.keyboard.press("Enter");
       await expect(item).toBeVisible();
-      await expect(item).toBeFocused();
-      await page.keyboard.press("Escape");
+      const team = page.getByRole("menuitem", { name: "Team, 1 of 3 working" });
+      await expect(team).toBeFocused();
+      await expect(
+        page.getByRole("menuitem", { name: "Messages, 3 need you" }),
+      ).toBeVisible();
+      await team.click();
+      await expect(page.locator("#last-action")).toHaveText("Team");
       await expect(item).toHaveCount(0);
       expect(
         await rail.evaluate((node) => node.scrollHeight > node.clientHeight),
-      ).toBe(true);
+      ).toBe(false);
       await page.evaluate(() => {
         (
           document.querySelector<HTMLElement>("#root") ??

@@ -4,7 +4,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: var(--layout-edge-rail-button-gap);
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -44,19 +44,27 @@
   outline-offset: -2px;
 }
 
+/* Counts sit inside the round button, centered under the icon, so they stay
+   inside the side strip column. */
 .edge-rail-badge {
   position: absolute;
-  right: 0;
-  bottom: 0;
-  max-width: 100%;
+  bottom: 5px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 8px);
   overflow: hidden;
-  border-radius: 4px;
+  border-radius: 6px;
   background: var(--mantine-color-body);
   color: var(--mantine-color-text);
   font-size: 10px;
-  line-height: 1.2;
-  padding: 1px 3px;
+  font-variant-numeric: tabular-nums;
+  line-height: 12px;
+  padding: 0 3px;
+  white-space: nowrap;
   pointer-events: none;
+}
+.edge-rail .edge-rail-button:has(.edge-rail-badge) svg {
+  transform: translateY(-6px);
 }
 
 /* Paint the pane under the system strip; root padding still bounds its content. */
@@ -103,4 +111,23 @@ html:has(.workspace[data-edge-rail="true"])
   height: var(--viewport-safe-bottom);
   background: var(--mantine-color-body);
   pointer-events: none;
+}
+
+/* On touch, the opened menu focuses its first item and WebKit keeps the last
+   touched row hovered: two rows looked selected. Only a pressed row or a
+   keyboard-focused row is highlighted there. */
+@media (hover: none), (pointer: coarse) {
+  .edge-rail-menu
+    .mantine-Menu-item:is(:hover, :focus, [data-menu-active]):not(
+      :focus-visible,
+      :active
+    ) {
+    background-color: transparent;
+  }
+}
+
+/* Duo portrait: a row of buttons in the top status strip. */
+.edge-rail[data-side="top"] {
+  overflow-x: auto;
+  overflow-y: hidden;
 }

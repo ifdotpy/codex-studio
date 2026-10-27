@@ -53,6 +53,15 @@ html body #root {
   padding-left: var(--viewport-safe-left);
 }
 
+/* Native shell, portrait top status strip (mobileViewport.ts): while the
+   edge rail floats in the strip beside the clock, the page runs under it.
+   Pages without the rail (no open chat) keep the strip as the top inset. */
+html[data-viewport-top-strip]:has(> body > .edge-rail[data-side="top"]) {
+  --viewport-device-safe-top: 0px;
+  /* Drawers and modals still start below the strip and its rail row. */
+  --viewport-overlay-inset-top: var(--native-safe-top, 0px);
+}
+
 html[data-viewport-surface],
 html[data-viewport-surface] body {
   width: 100%;
@@ -71,12 +80,16 @@ html[data-viewport-surface] body #root {
 /* Portal containers do not inherit the root's padding. */
 html body .mantine-Drawer-inner,
 html body .mantine-Modal-inner {
-  top: var(--viewport-surface-top);
+  top: calc(
+    var(--viewport-surface-top) + var(--viewport-overlay-inset-top, 0px)
+  );
   bottom: auto;
   left: var(--viewport-safe-left);
   right: var(--viewport-safe-right);
   width: auto;
-  height: var(--viewport-surface-height);
+  height: calc(
+    var(--viewport-surface-height) - var(--viewport-overlay-inset-top, 0px)
+  );
 }
 
 html body .mantine-Modal-content {

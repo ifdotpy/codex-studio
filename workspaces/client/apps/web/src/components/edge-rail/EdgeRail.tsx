@@ -4,30 +4,46 @@ import { createPortal } from "react-dom";
 import { ActionIcon, Menu, Tooltip } from "@mantine/core";
 import { useMergedRef } from "@mantine/hooks";
 import { layoutValues } from "../../layout/layout-contract.generated";
-import { MessageSquare, MoreHorizontal, PanelLeft } from "lucide-react";
+import {
+  MessageSquare,
+  MoreHorizontal,
+  TextAlignStart,
+  Users,
+} from "lucide-react";
 import type { EdgeRailGeometry } from "./edgeRailPolicy";
 import "./edge-rail.css";
 
 interface RailAction {
   onClick: () => void;
-  id?: string;
-  disabled?: boolean;
-  expanded?: boolean;
+  id?: string | undefined;
+  disabled?: boolean | undefined;
+  expanded?: boolean | undefined;
+}
+
+interface RailEntry {
+  key: string;
+  label: string;
+  icon: ReactNode;
+  action: RailAction;
+  badge?: ReactNode;
 }
 
 export interface EdgeRailProps {
   geometry: EdgeRailGeometry | null;
-  sidebar: RailAction & { label?: string };
-  messages?: RailAction & { count: number };
+  sidebar: RailAction & { label?: string | undefined };
+  messages?: (RailAction & { count: number }) | undefined;
+  /** The chat team; absent for chats without one. Counts are workers. */
+  team?: (RailAction & { active: number; total: number }) | undefined;
   /** Existing Menu.Item children retain their handlers and permissions. */
   menu?: ReactNode;
-  menuButtonRef?: Ref<HTMLButtonElement>;
+  menuButtonRef?: Ref<HTMLButtonElement> | undefined;
 }
 
 export function EdgeRail({
   geometry,
   sidebar,
   messages,
+  team,
   menu,
   menuButtonRef,
 }: EdgeRailProps) {
@@ -42,16 +58,26 @@ export function EdgeRail({
     }
   }, [geometry?.height, geometry?.side, geometry?.top]);
   if (!geometry) return null;
-  const position = geometry.side === "right" ? "left" : "right";
+  const row = geometry.side === "top";
+  const position =
+    geometry.side === "top"
+      ? "bottom"
+      : geometry.side === "right"
+        ? "left"
+        : "right";
   // The button column centers on the system status column, so it sits
   // closer to the screen edge than the strip center.
   const outerPadding = geometry.center - geometry.targetSize / 2;
   const innerGap = geometry.width - geometry.center - geometry.targetSize / 2;
-  const railBottom = geometry.top + geometry.height;
-  // The menu starts at its button and ends at the rail bottom (above Home);
-  // longer menus scroll inside.
+  const railBottom = row
+    ? window.innerHeight - geometry.bottom
+    : geometry.top + geometry.height;
+  const menuOffset = innerGap + layoutValues.edgeRail.menuGap;
+  // The menu starts at its button (below it for a top row) and ends at the
+  // rail bottom or above Home; longer menus scroll inside.
   const measureMenu = () => {
-    const top = menuButton.current?.getBoundingClientRect().top;
+    const rect = menuButton.current?.getBoundingClientRect();
+    const top = rect && (row ? rect.bottom + menuOffset : rect.top);
     const root = document.documentElement;
     const offsetTop = parseFloat(
       getComputedStyle(root).getPropertyValue("--mobile-viewport-top"),
@@ -64,14 +90,9 @@ export function EdgeRail({
         ),
       );
   };
-  function button(
-    label: string,
-    icon: ReactNode,
-    action: RailAction,
-    badge?: ReactNode,
-  ) {
+  function button({ key, label, icon, action, badge }: RailEntry) {
     return (
-      <Tooltip label={label} position={position} withinPortal>
+      <Tooltip key={key} label={label} position={position} withinPortal>
         <ActionIcon
           id={action.id}
           className="edge-rail-button"
@@ -91,6 +112,41 @@ export function EdgeRail({
       </Tooltip>
     );
   }
+  const entries: RailEntry[] = [
+    {
+      key: "sidebar",
+      label: sidebar.label || "Toggle conversations",
+      icon: <TextAlignStart size={20} />,
+      action: sidebar,
+    },
+  ];
+  if (team)
+    entries.push({
+      key: "team",
+      label: `Team, ${team.active} of ${team.total} working`,
+      icon: <Users size={20} />,
+      action: team,
+      badge: `${team.active}/${team.total}`,
+    });
+  if (messages && messages.count > 0)
+    entries.push({
+      key: "messages",
+      label: `Messages, ${messages.count} need you`,
+      icon: <MessageSquare size={20} />,
+      action: messages,
+      badge: messages.count,
+    });
+  // A short rail (a call pill lengthens the status column) keeps the first
+  // buttons and the menu; the other buttons become the first menu items.
+  const gap = layoutValues.edgeRail.buttonGap;
+  const fits = Math.floor(
+    (geometry.height + gap) / (geometry.targetSize + gap),
+  );
+  const shown =
+    menu != null && entries.length + 1 > fits
+      ? Math.max(0, fits - 1)
+      : entries.length;
+  const overflow = entries.slice(shown);
   const rail = (
     <nav
       ref={railRef}
@@ -98,45 +154,44 @@ export function EdgeRail({
       aria-label="Conversation actions"
       data-side={geometry.side}
       style={
-        {
-          width: geometry.width,
-          top: `calc(var(--mobile-viewport-top, 0px) + ${geometry.top}px)`,
-          height: geometry.height,
-          [geometry.side]: 0,
-          [geometry.side === "right" ? "paddingRight" : "paddingLeft"]:
-            outerPadding,
-          alignItems: geometry.side === "right" ? "flex-end" : "flex-start",
-          "--edge-rail-target": `${geometry.targetSize}px`,
-        } as CSSProperties
+        row
+          ? ({
+              // A row in the top strip, ending before the clock and Wi-Fi.
+              top: "var(--mobile-viewport-top, 0px)",
+              left: 0,
+              width: geometry.height,
+              height: geometry.width,
+              paddingTop: outerPadding,
+              flexDirection: "row",
+              alignItems: "flex-start",
+              justifyContent: "flex-end",
+              "--edge-rail-target": `${geometry.targetSize}px`,
+            } as CSSProperties)
+          : ({
+              width: geometry.width,
+              top: `calc(var(--mobile-viewport-top, 0px) + ${geometry.top}px)`,
+              height: geometry.height,
+              [geometry.side]: 0,
+              [geometry.side === "right" ? "paddingRight" : "paddingLeft"]:
+                outerPadding,
+              alignItems: geometry.side === "right" ? "flex-end" : "flex-start",
+              "--edge-rail-target": `${geometry.targetSize}px`,
+            } as CSSProperties)
       }
     >
-      {button(
-        sidebar.label || "Toggle conversations",
-        <PanelLeft size={20} />,
-        sidebar,
-      )}
-      {messages &&
-        messages.count > 0 &&
-        button(
-          messages.count > 0
-            ? `Messages, ${messages.count} need you`
-            : "Messages",
-          <MessageSquare size={20} />,
-          messages,
-          messages.count > 0 ? messages.count : undefined,
-        )}
+      {entries.slice(0, shown).map(button)}
       {menu != null && (
         <Menu
           withInitialFocusPlaceholder={false}
-          position={`${position}-start`}
+          position={row ? "bottom-end" : `${position}-start`}
           withinPortal
-          offset={innerGap + layoutValues.edgeRail.menuGap}
+          offset={menuOffset}
           onOpen={measureMenu}
           middlewares={{
             flip: false,
             shift: {
               padding: {
-                top: geometry.top,
+                top: row ? geometry.width : geometry.top,
                 bottom: geometry.bottom,
                 left: geometry.side === "left" ? geometry.width : 0,
                 right: geometry.side === "right" ? geometry.width : 0,
@@ -161,6 +216,18 @@ export function EdgeRail({
               overflowY: "auto",
             }}
           >
+            {overflow.map(({ key, label, icon, action, badge }) => (
+              <Menu.Item
+                key={key}
+                leftSection={icon}
+                rightSection={badge}
+                disabled={action.disabled === true}
+                onClick={action.onClick}
+              >
+                {label}
+              </Menu.Item>
+            ))}
+            {overflow.length > 0 && menu != null && <Menu.Divider />}
             {menu}
           </Menu.Dropdown>
         </Menu>
