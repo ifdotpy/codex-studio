@@ -21,6 +21,19 @@ import {
 import { test } from "../playwright.ts";
 import { setupControl, setupToggle } from "../fixtures/setup-controls.ts";
 
+type ResetModel = NonNullable<DaybreakReset["models"]>[number];
+type ResetOptions = Pick<DaybreakReset, "agent" | "defaults"> & {
+  models?: Array<
+    Pick<ResetModel, "model"> & {
+      serviceTiers: Pick<ResetModel["serviceTiers"][number], "id">[];
+      supportedReasoningEfforts: Pick<
+        ResetModel["supportedReasoningEfforts"][number],
+        "reasoningEffort"
+      >[];
+    }
+  >;
+};
+
 test("Daybreak settings", async ({ context }) => {
   test.setTimeout(60_000);
   // Exercise the real settings component without a backend or model request.
@@ -98,14 +111,11 @@ test("Daybreak settings", async ({ context }) => {
     await page.waitForFunction(() => !!window.reset, undefined, {
       timeout: 5_000,
     });
-    const reset = async (options?: DaybreakReset) => {
-      // Keep Playwright's handle mapping outside the recursive model JSON types.
-      await page.evaluate((serialized) => {
+    const reset = async (options?: ResetOptions) => {
+      await page.evaluate((options) => {
         localStorage.clear();
-        const options: DaybreakReset | undefined =
-          serialized === undefined ? undefined : JSON.parse(serialized);
         window.reset!(options);
-      }, JSON.stringify(options));
+      }, options);
       await page
         .getByRole("button", {
           name: options?.defaults ? "Subagent defaults" : "Main agent settings",
