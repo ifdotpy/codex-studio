@@ -242,7 +242,9 @@ function projectSnapshotCollections(
   const requests =
     prior && !changed.has("request")
       ? prior.runtime.requests
-      : entityValues(values, "request");
+      : entityValues(values, "request").filter(
+          (request) => request.status == null || request.status === "pending",
+        );
   const rules =
     prior && !changed.has("rule")
       ? prior.runtime.rules
