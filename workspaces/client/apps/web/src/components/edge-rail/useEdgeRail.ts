@@ -62,7 +62,15 @@ export function useEdgeRail(
           getComputedStyle(root),
           hasTouchCapability(coarse.matches, navigator.maxTouchPoints),
         ),
-        { minimumInset, statusReserve, targetSize },
+        {
+          minimumInset,
+          statusReserve: document.documentElement.hasAttribute(
+            "data-duo-proportions",
+          )
+            ? layoutValues.duo.railTop
+            : statusReserve,
+          targetSize,
+        },
       );
       setGeometry((current) =>
         JSON.stringify(current) === JSON.stringify(next) ? current : next,

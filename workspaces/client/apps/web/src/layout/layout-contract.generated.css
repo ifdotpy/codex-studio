@@ -151,4 +151,26 @@
   --layout-keyboard-focus-sample-window: 600ms;
   --layout-keyboard-stable-sample-duration: 300ms;
   --layout-keyboard-focus-open-grace: 2000ms;
+  --layout-duo-height-min: 500px;
+  --layout-duo-height-max: 700px;
+  --layout-duo-width-max: 1024px;
+  --layout-duo-conversation-min: 34rem;
+  --layout-duo-reading-max: 478px;
+  --layout-duo-body-font: 17px;
+  --layout-duo-body-line-height: 1.6em;
+  --layout-duo-row-min: 50px;
+  --layout-duo-header-control: 48px;
+  --layout-duo-header-gap: 12px;
+  --layout-duo-composer-min: 97px;
+  --layout-duo-composer-radius: 24px;
+  --layout-duo-rail-top: 124px;
+  --layout-duo-rail-gap: 13px;
+  --layout-duo-message-inset: 12px;
+  --layout-duo-column-gutter: 20px;
+  --layout-duo-latest-gap: 36px;
+  --layout-duo-title-height: 64px;
+  --layout-duo-title-inset: 12px;
+  --layout-duo-title-opacity: 0.82;
+  --layout-duo-title-blur: 12px;
+  --layout-duo-transcript-fade: 16px;
 }

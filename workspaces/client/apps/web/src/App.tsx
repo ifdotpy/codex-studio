@@ -9,6 +9,7 @@ import { EdgeRail } from "./components/edge-rail/EdgeRail";
 import { useEdgeRail } from "./components/edge-rail/useEdgeRail";
 import { useWorkspacePanelWidth } from "./components/shell/workspacePanelWidth";
 import { useWorkspaceLayout } from "./layout/useWorkspaceLayout";
+import { useDuoSurface } from "./layout/useDuoSurface";
 import { layoutQueries } from "./layout/layout-contract.generated";
 import { restoreSidebarFocus } from "./components/sidebar/SidebarFrame";
 import {
@@ -932,6 +933,7 @@ export default function App({ active = true }: { active?: boolean }) {
   );
   const room = data?.runtime?.rooms?.find((r) => r.id === opened);
   const railGeometry = useEdgeRail(undefined, active && !!data && !room?.radio);
+  const duoSurface = useDuoSurface();
   const [railTools] = useState(createConversationMenuTools);
   const legacy = data?.chats.find((c) => c.id === opened);
   const roomRoots = room ? roomLeadIds(room, agents) : [];
@@ -3102,9 +3104,15 @@ export default function App({ active = true }: { active?: boolean }) {
               />
             ) : (
               <SelectedConversation
+                duo={rowLayout.duo}
                 headerToolsInMenu={menuHeaderTools}
                 onRailToolsChange={railTools.publish}
-                transcriptHeading={railGeometry ? conversationTitle : undefined}
+                transcriptHeading={
+                  railGeometry && !duoSurface ? conversationTitle : undefined
+                }
+                transcriptTitleBar={
+                  railGeometry && duoSurface ? conversationTitle : undefined
+                }
                 visible={!(mobileClient && sidebar)}
                 projectName={projectName}
                 recentChats={

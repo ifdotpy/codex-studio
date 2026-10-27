@@ -5,6 +5,7 @@ import {
 } from "./touchCapability";
 import { useEffect } from "react";
 import { layoutValues } from "../layout/layout-contract.generated";
+import { isDuoLayout, isDuoSurface } from "../layout/deriveWorkspaceLayout";
 
 const selectedComposers = new WeakSet<HTMLTextAreaElement>();
 
@@ -61,6 +62,8 @@ export function useMobileViewport(active: boolean, compact = false) {
       root.removeAttribute("data-viewport-keyboard");
       root.removeAttribute("data-viewport-keyboard-compact");
       root.removeAttribute("data-viewport-short-landscape");
+      root.removeAttribute("data-duo-proportions");
+      root.removeAttribute("data-duo-ui");
       for (const property of [
         "--mobile-viewport-height",
         "--mobile-viewport-top",
@@ -130,6 +133,24 @@ export function useMobileViewport(active: boolean, compact = false) {
         width > fullHeight &&
         fullHeight < layoutValues.header.shortLandscapeMaxHeight;
       const surfaceHeight = overlay ? fullHeight : height;
+      if (
+        isDuoSurface({
+          width,
+          height: fullHeight,
+          primaryCoarse: primaryPointer.matches,
+        })
+      )
+        root.setAttribute("data-duo-ui", "");
+      else root.removeAttribute("data-duo-ui");
+      if (
+        isDuoLayout({
+          width,
+          height: fullHeight,
+          primaryCoarse: primaryPointer.matches,
+        })
+      )
+        root.setAttribute("data-duo-proportions", "");
+      else root.removeAttribute("data-duo-proportions");
       if (keyboard && height < layoutValues.keyboard.compactMaxHeight)
         root.setAttribute("data-viewport-keyboard-compact", "");
       else root.removeAttribute("data-viewport-keyboard-compact");

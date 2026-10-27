@@ -63,6 +63,7 @@ import {
 import SidebarRow from "./SidebarRow";
 import { needsYou, projectStateCounts } from "./sidebar/fleet";
 import ProjectStateCounts from "./sidebar/ProjectStateCounts";
+import { useDuoSurface } from "../layout/useDuoSurface";
 import { SidebarWarningsTarget } from "./SidebarWarnings";
 import {
   activeLayrReadiness,
@@ -178,6 +179,7 @@ export default function Sidebar(p: SidebarProps) {
 }
 
 function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
+  const duoSurface = useDuoSurface();
   const { canPickDirectory, pickDirectory, revealPath } =
     useServerFileDialogs();
   const services = p.services;
@@ -1328,7 +1330,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             <strong>LAYR</strong> <span>Studio</span>
           </span>
         </a>
-        <SidebarWarningsTarget />
+        {!duoSurface && <SidebarWarningsTarget />}
         <ActionIcon
           className="sidebar-search"
           aria-label="Search chats"
@@ -1338,7 +1340,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         >
           <Search size={18} />
         </ActionIcon>
-        {p.settings && (
+        {!duoSurface && p.settings && (
           <ActionIcon
             variant="subtle"
             aria-label="Studio settings"
@@ -1348,7 +1350,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             <Settings size={18} />
           </ActionIcon>
         )}
-        {compact && (
+        {!duoSurface && compact && (
           <ActionIcon aria-label="Close conversations" onClick={closeSidebar}>
             <X size={20} />
           </ActionIcon>
@@ -1997,6 +1999,11 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           </p>
         )}
       </nav>
+      {duoSurface && (
+        <footer className="sidebar-utility-footer">
+          <SidebarWarningsTarget utility settings={p.settings} />
+        </footer>
+      )}
     </>
   );
   const dialogProject = dialog ? groupMap.get(dialog.path) : undefined;
