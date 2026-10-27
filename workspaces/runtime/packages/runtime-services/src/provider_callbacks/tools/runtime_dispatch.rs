@@ -1170,6 +1170,7 @@ mod tests {
         let actor = crate::managed_host_tools::Actor::from_record(&record.value(), "lead", 1)
             .expect("actor");
         let context = crate::provider_callbacks::CallbackContext {
+            stream_id: "default".into(),
             agent: "lead".into(),
             account: "default".into(),
             connection: "fixture".into(),
