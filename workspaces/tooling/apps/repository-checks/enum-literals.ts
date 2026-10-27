@@ -122,11 +122,23 @@ export function enumLiteralDiagnostics(
         "name" in declaration &&
         declaration.name &&
         (ts.isIdentifier(declaration.name as ts.Node) ||
-          ts.isStringLiteral(declaration.name as ts.Node)) &&
-        (declaration.name as ts.Identifier | ts.StringLiteral).text ===
-          owner.name
-      )
-        return true;
+          ts.isStringLiteral(declaration.name as ts.Node))
+      ) {
+        const name = (declaration.name as ts.Identifier | ts.StringLiteral)
+          .text;
+        const schemaProperty =
+          ts.isPropertySignature(declaration) &&
+          ts.isTypeLiteralNode(declaration.parent) &&
+          ts.isPropertySignature(declaration.parent.parent) &&
+          declaration.parent.parent.name.getText() === "schemas";
+        if (
+          (schemaProperty && name === owner.component) ||
+          ((ts.isTypeAliasDeclaration(declaration) ||
+            ts.isVariableDeclaration(declaration)) &&
+            name === owner.name)
+        )
+          return true;
+      }
       let found = false;
       const walk = (node: ts.Node) => {
         if (found) return;

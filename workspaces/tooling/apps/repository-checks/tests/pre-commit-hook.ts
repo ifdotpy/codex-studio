@@ -501,6 +501,74 @@ try {
     writeFileSync(path.join(root, target), "const broken = ;\n");
     const accepted = lint();
     assert.equal(accepted.status, 0, accepted.stdout + accepted.stderr);
+    const bridgeRoot = "workspaces/providers/apps/fixture-bridge";
+    stage(
+      root,
+      `${bridgeRoot}/package.json`,
+      '{"name":"fixture-bridge","type":"module","exports":"./index.ts"}',
+    );
+    const bridge = `${bridgeRoot}/index.ts`;
+    const enumBridge =
+      'export type { Reason } from "../../../client/apps/web/src/generated/api";\n';
+    stage(root, bridge, enumBridge);
+    symlinkSync(
+      path.join(root, bridgeRoot),
+      path.join(root, "workspaces/client/apps/web/node_modules/fixture-bridge"),
+      "dir",
+    );
+    stage(
+      root,
+      target,
+      'import type { Reason } from "fixture-bridge";\nexport function waiting(reason: Reason) { return reason === "slot"; }\n',
+    );
+    writeFileSync(path.join(root, bridge), "export type Reason = string;\n");
+    const indexRejects = lint();
+    assert.notEqual(
+      indexRejects.status,
+      0,
+      indexRejects.stdout + indexRejects.stderr,
+    );
+    assert.match(
+      indexRejects.stdout + indexRejects.stderr,
+      /import and use Reason/,
+    );
+    stage(root, bridge, "export type Reason = string;\n");
+    writeFileSync(path.join(root, bridge), enumBridge);
+    const indexAccepts = lint();
+    assert.equal(
+      indexAccepts.status,
+      0,
+      indexAccepts.stdout + indexAccepts.stderr,
+    );
+    const facade = "workspaces/client/apps/web/src/wasm/client.ts";
+    const realFacade = readFileSync(path.join(repositoryRoot, facade), "utf8");
+    stage(root, facade, realFacade);
+    const rustOwned = "workspaces/client/apps/web/src/generated/rustOwned.ts";
+    stage(
+      root,
+      rustOwned,
+      readFileSync(path.join(repositoryRoot, rustOwned), "utf8"),
+    );
+    git(root, "commit", "--quiet", "-m", "prepare staged wasm facade");
+    stage(
+      root,
+      target,
+      'import { sha256 } from "./wasm/client";\nexport async function check(bytes: Uint8Array): Promise<Uint8Array> { return sha256(bytes); }\n',
+    );
+    const cleanWasm = lint();
+    assert.equal(cleanWasm.status, 0, cleanWasm.stdout + cleanWasm.stderr);
+    stage(root, facade, realFacade + "\n");
+    const facadeNeedsBinding = lint();
+    assert.notEqual(
+      facadeNeedsBinding.status,
+      0,
+      facadeNeedsBinding.stdout + facadeNeedsBinding.stderr,
+    );
+    assert.match(
+      facadeNeedsBinding.stdout + facadeNeedsBinding.stderr,
+      /Cannot resolve TypeScript dependencies/,
+    );
+    stage(root, facade, realFacade);
     const wholeLint = () =>
       command(
         process.execPath,

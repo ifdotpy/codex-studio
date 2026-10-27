@@ -304,6 +304,11 @@ test("generated component aliases and computed keys reach the enum checker", asy
     components: {
       schemas: {
         "special-name": { type: "string", enum: ["__proto__", "other"] },
+        Dto: {
+          type: "object",
+          properties: { reason: { $ref: "#/components/schemas/special-name" } },
+          required: ["reason"],
+        },
       },
     },
   };
@@ -327,15 +332,16 @@ test("generated component aliases and computed keys reach the enum checker", asy
     writeFileSync(owner, generated.stdout);
     writeFileSync(
       target,
-      'import type { special_name } from "./generated"; declare function use(value: special_name): void; use("__proto__");',
+      'import type { components } from "./generated"; declare function use(value: components["schemas"]["special-name"]): void; use("__proto__"); declare const dto: components["schemas"]["Dto"]; if (dto.reason === "__proto__") {}',
     );
     const program = ts.createProgram([owner, target], {
       strict: true,
       noEmit: true,
     });
     const findings = enumLiteralFindings(program, [target], [owner]);
-    assert.equal(findings.length, 1, findings.join("\n"));
-    assert.match(findings[0] ?? "", /special_name\["__proto__"\]/);
+    assert.equal(findings.length, 2, findings.join("\n"));
+    for (const finding of findings)
+      assert.match(finding, /special_name\["__proto__"\]/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

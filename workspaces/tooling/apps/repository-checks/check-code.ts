@@ -21,6 +21,8 @@ import {
   mkdirSync,
   symlinkSync,
   cpSync,
+  readFileSync,
+  readdirSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -105,6 +107,7 @@ function checkEnums(
   root: string,
   relativeTargets: string[],
   json: boolean,
+  staged = false,
 ): number {
   const configPath = path.join(
     root,
@@ -126,10 +129,45 @@ function checkEnums(
     throw new Error("Cannot parse web TypeScript configuration");
   const targets = relativeTargets.map((file) => path.join(root, file));
   const owners = enumOwners.map((file) => path.join(root, file));
-  const program = ts.createProgram([...targets, ...owners], {
-    ...config.options,
-    noUncheckedSideEffectImports: true,
-  });
+  const options = { ...config.options, noUncheckedSideEffectImports: true };
+  const host = ts.createCompilerHost(options);
+  const wasmFacade = path.join(
+    root,
+    "workspaces/client/apps/web/src/wasm/client.ts",
+  );
+  const wasmDeclaration = path.join(
+    root,
+    "workspaces/client/apps/web/src/wasm/generated/client.d.ts",
+  );
+  if (
+    staged &&
+    !existsSync(wasmDeclaration) &&
+    existsSync(wasmFacade) &&
+    !targets.includes(wasmFacade)
+  ) {
+    // The checked-in facade explicitly owns its public signatures; derive a
+    // declaration without building or inventing a type for the generated binding.
+    const result = ts.transpileDeclaration(readFileSync(wasmFacade, "utf8"), {
+      fileName: wasmFacade,
+      reportDiagnostics: true,
+      compilerOptions: { isolatedDeclarations: true },
+    });
+    if (result.diagnostics?.length)
+      throw new Error(
+        "WASM facade requires explicit exported types for staged enum checks",
+      );
+    const original = host.getSourceFile;
+    host.getSourceFile = (
+      file,
+      languageVersion,
+      onError,
+      shouldCreateNewSourceFile,
+    ) =>
+      file === wasmFacade
+        ? ts.createSourceFile(file, result.outputText, languageVersion, true)
+        : original(file, languageVersion, onError, shouldCreateNewSourceFile);
+  }
+  const program = ts.createProgram([...targets, ...owners], options, host);
   const missing = ts
     .getPreEmitDiagnostics(program)
     .filter((diagnostic) =>
@@ -240,10 +278,7 @@ function main() {
     );
     const enumTargets = check !== "format" ? lintPaths.filter(enumTarget) : [];
     const enumSources = enumTargets.length
-      ? [...indexPaths].filter(
-          (file) =>
-            /\.tsx?$/.test(file) || path.basename(file) === "package.json",
-        )
+      ? [...indexPaths].filter((file) => /\.(?:[cm]?[jt]sx?|json)$/.test(file))
       : [];
     const policyPaths = [
       ...new Set([
@@ -299,20 +334,51 @@ function main() {
         );
       }
       const packageDirectories = [
-        "",
-        ...[...indexPaths]
-          .filter((file) => path.basename(file) === "package.json")
-          .map((file) => path.dirname(file)),
+        ...new Set([
+          "",
+          ...[...indexPaths]
+            .filter((file) => path.basename(file) === "package.json")
+            .map((file) =>
+              path.dirname(file) === "." ? "" : path.dirname(file),
+            ),
+        ]),
       ];
-      for (const directory of new Set(packageDirectories)) {
+      const workspacePackages = new Map(
+        packageDirectories.map((directory) => [
+          path.resolve(repositoryRoot, directory),
+          path.resolve(temporaryRoot, directory),
+        ]),
+      );
+      function linkEntry(source: string, destination: string) {
+        let actual: string;
+        try {
+          actual = realpathSync(source);
+        } catch {
+          return;
+        }
+        symlinkSync(
+          workspacePackages.get(actual) ?? source,
+          destination,
+          "dir",
+        );
+      }
+      for (const directory of packageDirectories) {
         const source = path.join(repositoryRoot, directory, "node_modules");
         const destination = path.join(temporaryRoot, directory, "node_modules");
-        if (existsSync(source)) {
-          mkdirSync(path.dirname(destination), { recursive: true });
-          symlinkSync(source, destination, "dir");
+        if (!existsSync(source)) continue;
+        mkdirSync(destination, { recursive: true });
+        for (const entry of readdirSync(source)) {
+          if (entry.startsWith(".")) continue;
+          const from = path.join(source, entry);
+          const to = path.join(destination, entry);
+          if (entry.startsWith("@")) {
+            mkdirSync(to, { recursive: true });
+            for (const name of readdirSync(from))
+              linkEntry(path.join(from, name), path.join(to, name));
+          } else linkEntry(from, to);
         }
       }
-      const status = checkEnums(temporaryRoot, enumTargets, false);
+      const status = checkEnums(temporaryRoot, enumTargets, false, true);
       if (status !== 0) return status;
     }
 
