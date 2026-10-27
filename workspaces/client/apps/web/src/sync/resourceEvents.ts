@@ -2405,6 +2405,14 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       },
       pause: pauseTransport,
     });
+    // A stopped coordinator does not hear `online`; resample it on start.
+    if (connectionState.phase === "offline" && navigator.onLine !== false)
+      setConnection({
+        phase: "reconnecting",
+        attempt: 1,
+        cause: "network-online",
+        activity: "connecting",
+      });
     if (pageHidden() || connectionState.phase === "offline") {
       if (connectionState.phase !== "offline")
         setConnection({ phase: "paused" });

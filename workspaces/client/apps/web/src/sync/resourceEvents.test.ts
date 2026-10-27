@@ -1932,6 +1932,39 @@ describe("shared resource event transport", () => {
     stop();
   });
 
+  it("reconnects a restarted coordinator that missed the online event while stopped", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    const listeners = new Map<string, () => void>();
+    vi.stubGlobal("window", {
+      addEventListener: (name: string, listener: () => void) =>
+        listeners.set(name, listener),
+      removeEventListener: (name: string) => listeners.delete(name),
+    });
+    const navigatorStub = { onLine: true };
+    vi.stubGlobal("navigator", navigatorStub);
+    const transport = await loadTransport();
+    const stopFirst = transport.watchResourceChanges(
+      { kind: "state" },
+      vi.fn(),
+    );
+    await vi.advanceTimersByTimeAsync(20);
+    expect(Source.instances).toHaveLength(1);
+    navigatorStub.onLine = false;
+    listeners.get("offline")?.();
+    stopFirst();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(listeners.has("online")).toBe(false);
+    // Connectivity returns while no coordinator listens for it.
+    navigatorStub.onLine = true;
+    const stopSecond = transport.watchResourceChanges(
+      { kind: "state" },
+      vi.fn(),
+    );
+    await vi.advanceTimersByTimeAsync(20);
+    expect(Source.instances).toHaveLength(2);
+    stopSecond();
+  });
+
   it("an online event interrupts an existing backoff", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     const listeners = new Map<string, () => void>();
