@@ -10,6 +10,7 @@ use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequir
 use crate::{
     EventWriteRepository, ExecutionHistoryRepository, QueueEvent, StoreError, StoreResult,
 };
+use studio_runtime_schema::persistence::ExecutionReceiptKind;
 
 pub type AccountWakePage = BTreeMap<String, Vec<WakeCandidate>>;
 
@@ -178,6 +179,12 @@ mod tests {
     }
     fn database() -> Connection {
         let mut connection = Connection::open_in_memory().expect("memory database opens");
+        crate::receipt_schema::create(&connection).expect("receipt schema");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT);",
+            )
+            .expect("settings");
         connection
             .execute_batch(
                 &crate::agent_columns::fixture_sql("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);
@@ -188,8 +195,6 @@ mod tests {
                  CREATE TABLE runtime_events(
                    id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,
                    created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
-                 CREATE TABLE runtime_operation_receipts(
-                   id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
                  CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                    PRIMARY KEY(collection,id));
@@ -433,7 +438,7 @@ mod tests {
                     )
                     .expect("uncertain");
                 let snapshot = |db: &Connection| {
-                    ["SELECT record FROM runtime_agents ORDER BY id", "SELECT status||coalesce(turn_id,'')||coalesce(error,'') FROM runtime_events ORDER BY id", "SELECT record FROM runtime_execution_runs ORDER BY id", "SELECT record FROM runtime_execution_attempts ORDER BY id", "SELECT signature||result FROM runtime_operation_receipts ORDER BY id"]
+                    ["SELECT record FROM runtime_agents ORDER BY id", "SELECT status||coalesce(turn_id,'')||coalesce(error,'') FROM runtime_events ORDER BY id", "SELECT record FROM runtime_execution_runs ORDER BY id", "SELECT record FROM runtime_execution_attempts ORDER BY id", "SELECT signature||result FROM request_results ORDER BY id"]
                         .map(|sql| db.prepare(sql).expect("prepare").query_map([], |row| row.get::<_, String>(0)).expect("query").collect::<Result<Vec<_>,_>>().expect("rows"))
                 };
                 let before = snapshot(&connection);
@@ -698,18 +703,16 @@ mod tests {
     }
 
     #[test]
-    fn invalid_agent_hold_receipt_excludes_agent_from_wake_page() {
+    fn invalid_agent_hold_excludes_agent_from_wake_page() {
         let connection = database();
         connection
             .execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                "UPDATE runtime_agents SET hold_status=?1,hold_incident='incident' WHERE id='agent'",
                 rusqlite::params![
-                    format!("{}agent", crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX),
-                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
-                    r#"{"held":true}"#,
+                    studio_runtime_schema::persistence::HoldStatus::Invalid,
                 ],
             )
-            .expect("invalid agent hold receipt writes");
+            .expect("invalid agent hold writes");
 
         let page =
             SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 8, 8, 0.0)

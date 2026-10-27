@@ -1,8 +1,18 @@
 //! Execution evidence shares the lifecycle transaction; no commits or provider retries here.
+use crate::request_results::{Admission, AdmittedRequest, RequestResults, ResultEnvelope};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{AgentRecord, StoreError, StoreResult};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use studio_runtime_schema::persistence::{
+    AttemptSubmission, ExecutionReceiptKind, ExecutionStatus, RequestIdentity,
+};
+
+#[derive(serde::Deserialize)]
+pub struct AttemptReceipt {
+    pub input: Value,
+    pub result: Value,
+}
 
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
@@ -39,7 +49,7 @@ impl ExecutionHistoryRepository {
     pub fn replay(
         tx: &Transaction<'_>,
         id: &str,
-        kind: &str,
+        kind: ExecutionReceiptKind,
         input: &Value,
     ) -> StoreResult<Option<Value>> {
         match Self::saved_result(tx, id, kind, input)? {
@@ -56,7 +66,7 @@ impl ExecutionHistoryRepository {
     pub fn replay_settled(
         tx: &Transaction<'_>,
         id: &str,
-        kind: &str,
+        kind: ExecutionReceiptKind,
         input: &Value,
     ) -> StoreResult<Option<Value>> {
         Ok(Self::saved_result(tx, id, kind, input)?
@@ -66,41 +76,78 @@ impl ExecutionHistoryRepository {
     fn saved_result(
         tx: &Transaction<'_>,
         id: &str,
-        kind: &str,
+        kind: ExecutionReceiptKind,
         input: &Value,
     ) -> StoreResult<Option<(bool, Value)>> {
-        let Some(saved) = Self::attempt(tx, id)? else {
+        let Some(receipt) = Self::receipt(tx, id, kind)? else {
             return Ok(None);
         };
-        let Some(receipt) = saved.get("receipts").and_then(|r| r.get(kind)) else {
+        Ok(Some((receipt.input == *input, receipt.result)))
+    }
+    pub fn admission(db: &rusqlite::Connection, id: &str) -> StoreResult<Option<AdmittedRequest>> {
+        db.query_row(
+            "SELECT json_extract(record,'$.admission') FROM runtime_execution_attempts WHERE id=?1",
+            [id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+        .map(|raw| serde_json::from_str(&raw).map_err(StoreError::from))
+        .transpose()
+    }
+    /// Read exact cached suboperation evidence; the execution record carries no response bodies.
+    pub fn receipt(
+        db: &rusqlite::Connection,
+        id: &str,
+        kind: ExecutionReceiptKind,
+    ) -> StoreResult<Option<AttemptReceipt>> {
+        let Some(admission) = Self::admission(db, id)? else {
             return Ok(None);
         };
-        let result = receipt
-            .get("result")
-            .cloned()
-            .ok_or_else(|| Self::invalid("runtime_execution_attempts", id))?;
-        Ok(Some((receipt.get("input") == Some(input), result)))
+        let key = admission.derive_result("execution-attempt-result", &[kind.as_str()], "");
+        let signature: Option<String> = db
+            .query_row(
+                "SELECT signature FROM request_results WHERE id=?1",
+                [key.id()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(signature) = signature else {
+            return Ok(None);
+        };
+        let saved = RequestResults::replay(db, key.id(), &signature, (now() * 1000.0) as i64)
+            .map_err(result_error)?;
+        saved
+            .map(|saved| {
+                let envelope: ResultEnvelope<Value> = serde_json::from_str(&saved.result)?;
+                Ok(AttemptReceipt {
+                    input: serde_json::from_str(&signature)?,
+                    result: envelope.reply,
+                })
+            })
+            .transpose()
     }
     pub fn save_receipt(
         tx: &Transaction<'_>,
         id: &str,
-        kind: &str,
+        kind: ExecutionReceiptKind,
         input: Value,
         result: Value,
     ) -> StoreResult<()> {
-        if let Some(previous) = Self::replay(tx, id, kind, &input)? {
-            return if previous == result {
-                Ok(())
-            } else {
-                Err(Self::invalid("runtime_execution_attempts", id))
-            };
-        }
-        let path = format!("$.receipts.{kind}");
-        let changed = tx.execute(
-            "UPDATE runtime_execution_attempts SET record=json_set(record,?1,json(?2)) WHERE id=?3",
-            params![path, json!({"input":input,"result":result}).to_string(), id],
-        )?;
-        if changed != 1 {
+        let admission = Self::admission(tx, id)?
+            .ok_or_else(|| Self::invalid("runtime_execution_attempts", id))?;
+        let admitted = admission.derive_result(
+            "execution-attempt-result",
+            &[kind.as_str()],
+            &input.to_string(),
+        );
+        let envelope = ResultEnvelope {
+            actor: None,
+            reply: result,
+            references: vec![id.into()],
+        };
+        let saved = RequestResults::settle(tx, &admitted, &envelope).map_err(result_error)?;
+        if serde_json::from_str::<ResultEnvelope<Value>>(&saved.result)? != envelope {
             return Err(Self::invalid("runtime_execution_attempts", id));
         }
         Ok(())
@@ -115,18 +162,43 @@ impl ExecutionHistoryRepository {
         .map(|s| decode("runtime_execution_attempts", id, &s))
         .transpose()
     }
-    /// The newest created run of this actor, across every account and epoch.
-    /// Filtering scope first could select stale evidence after an account move.
-    pub fn latest_run(tx: &Transaction<'_>, agent: &str) -> StoreResult<Option<Value>> {
+    /// Read the current execution by its owner pointer. History order never grants authority.
+    pub fn current_run(tx: &Transaction<'_>, agent: &AgentRecord) -> StoreResult<Option<Value>> {
+        let Some(id) = agent
+            .extra
+            .get("activeExecution")
+            .and_then(|pointer| pointer["runId"].as_str())
+        else {
+            return Ok(None);
+        };
         tx.query_row(
-            "SELECT id,record FROM runtime_execution_runs WHERE agent=?1 ORDER BY created DESC,rowid DESC LIMIT 1",
-            [agent],
-            |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)),
-        ).optional()?.map(|(id,raw)|{
-            let run=decode("runtime_execution_runs",&id,&raw)?;
-            if run["agent"]!=agent {return Err(Self::invalid("runtime_execution_runs",&id));}
+            "SELECT record FROM runtime_execution_runs WHERE id=?1",
+            [id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|raw| {
+            let run = decode("runtime_execution_runs", id, &raw)?;
+            if run["agent"] != agent.id.0 {
+                return Err(Self::invalid("runtime_execution_runs", id));
+            }
             Ok(run)
-        }).transpose()
+        })
+        .transpose()
+    }
+
+    pub(crate) fn current_pointer(
+        tx: &Transaction<'_>,
+        agent: &AgentRecord,
+    ) -> StoreResult<Option<Value>> {
+        let Some(id) = agent
+            .extra
+            .get("startAttempt")
+            .and_then(|attempt| attempt["id"].as_str())
+        else {
+            return Ok(agent.extra.get("activeExecution").cloned());
+        };
+        Ok(Self::attempt(tx, id)?.map(|attempt| json!({"runId":attempt["runId"],"attemptId":id})))
     }
     pub(crate) fn invalid(table: &str, id: &str) -> StoreError {
         StoreError::InvalidSyncObject {
@@ -216,17 +288,21 @@ impl ExecutionHistoryRepository {
             .filter(|v| v.is_string())
             .or_else(|| attempt.get("observedTurnId").filter(|v| v.is_string()));
         let evidence = if attempt["turnId"].is_string() {
-            "accepted"
+            AttemptSubmission::Accepted
         } else if turn.is_some() {
-            "observed"
+            AttemptSubmission::Observed
         } else {
-            attempt["executionOutcome"].as_str().unwrap_or(
-                if submitted == super::scheduler::StartSubmission::Submitted {
-                    "unknown"
-                } else {
-                    "unsent"
-                },
-            )
+            attempt
+                .get("executionOutcome")
+                .map(|value| serde_json::from_value::<AttemptSubmission>(value.clone()))
+                .transpose()?
+                .unwrap_or(
+                    if submitted == super::scheduler::StartSubmission::Submitted {
+                        AttemptSubmission::Unknown
+                    } else {
+                        AttemptSubmission::Unsent
+                    },
+                )
         };
         if let Some(turn) = turn {
             run["turnId"] = turn.clone();
@@ -240,7 +316,18 @@ impl ExecutionHistoryRepository {
         }
         run["latestAttemptId"] = json!(id);
         if !terminal(&run["status"]) {
-            run["status"] = json!(if turn.is_some() { "running" } else { evidence });
+            run["status"] = json!(if turn.is_some() {
+                ExecutionStatus::Running
+            } else {
+                match evidence {
+                    AttemptSubmission::Accepted => ExecutionStatus::Accepted,
+                    AttemptSubmission::Observed => ExecutionStatus::Observed,
+                    AttemptSubmission::Pending => ExecutionStatus::Pending,
+                    AttemptSubmission::Rejected => ExecutionStatus::Rejected,
+                    AttemptSubmission::Unknown => ExecutionStatus::Unknown,
+                    AttemptSubmission::Unsent => ExecutionStatus::Unsent,
+                }
+            });
         }
         for key in [
             "disconnectRecovery",
@@ -261,11 +348,37 @@ impl ExecutionHistoryRepository {
         }
         let mut saved = attempt.clone();
         if let Some(previous) = Self::attempt(tx, id)? {
-            for key in ["inputIdentity", "claimResult", "receipts"] {
+            for key in [
+                "inputIdentity",
+                "claimResult",
+                "terminalRepair",
+                "admission",
+                "rootRequestId",
+                "providerSubmission",
+                "firstEventId",
+            ] {
                 if let Some(value) = previous.get(key) {
                     saved[key] = value.clone();
                 }
             }
+        }
+        if saved.get("admission").is_none() {
+            let root = RequestIdentity::issue_root();
+            let identity = RequestIdentity::new("execution-attempt", &[&agent.id.0], &root, &[id])
+                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+            let signature =
+                json!({"agent":agent.id.0,"epoch":agent.epoch,"attempt":id}).to_string();
+            let admission =
+                match RequestResults::admit(tx, &identity, &signature, (now() * 1000.0) as i64)
+                    .map_err(result_error)?
+                {
+                    Admission::Fresh(admitted) => admitted,
+                    Admission::Replay(_) => {
+                        return Err(Self::invalid("runtime_execution_attempts", id));
+                    }
+                };
+            saved["admission"] = serde_json::to_value(admission)?;
+            saved["rootRequestId"] = json!(root);
         }
         saved["runId"] = run["id"].clone();
         saved["submission"] = json!(evidence);
@@ -300,12 +413,11 @@ impl ExecutionHistoryRepository {
             )
             .optional()?
             .flatten();
-        let turn = agent
+        let run_id = agent
             .extra
-            .get("turnId")
-            .or_else(|| agent.extra.get("lastCompletedTurn"))
-            .and_then(Value::as_str);
-        let row:Option<(String,String)> = tx.query_row("SELECT id,record FROM runtime_execution_runs WHERE id=(SELECT run FROM runtime_execution_attempts WHERE id=?1) OR (agent=?2 AND account=?3 AND thread IS ?4 AND turn=?5) ORDER BY created DESC LIMIT 1",params![previous,agent.id.0,agent.extra.get("accountKey").and_then(Value::as_str).unwrap_or("default"),agent.extra.get("threadId").and_then(Value::as_str),turn],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            .get("activeExecution")
+            .and_then(|pointer| pointer["runId"].as_str());
+        let row:Option<(String,String)> = tx.query_row("SELECT id,record FROM runtime_execution_runs WHERE id=coalesce(?1,(SELECT run FROM runtime_execution_attempts WHERE id=?2))",params![run_id,previous],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
         let Some((id, raw)) = row else {
             return Ok(());
         };
@@ -348,7 +460,7 @@ impl ExecutionHistoryRepository {
         tx: &Transaction<'_>,
         agent_id: &str,
         turn_id: &str,
-        status: &str,
+        status: ExecutionStatus,
         error: Option<&Value>,
     ) -> StoreResult<()> {
         let mut stmt = tx.prepare_cached("SELECT r.id,r.record FROM runtime_execution_runs r JOIN runtime_agents a ON a.id=r.agent WHERE r.agent=?1 AND r.turn=?2 AND r.account=a.account_key AND r.thread IS a.thread_id ORDER BY r.created,r.id")?;
@@ -365,7 +477,7 @@ impl ExecutionHistoryRepository {
             let run = decode("runtime_execution_runs", id, raw)?;
             if !terminal(&run["status"]) {
                 open.push(run);
-            } else if run["status"] != status
+            } else if run["status"] != json!(status)
                 || run.get("error").unwrap_or(&Value::Null) != error.unwrap_or(&Value::Null)
             {
                 return Err(Self::invalid("runtime_execution_runs", id));
@@ -409,6 +521,9 @@ fn now() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |d| d.as_secs_f64())
 }
+fn result_error(error: crate::request_results::RequestResultError) -> StoreError {
+    StoreError::SchemaMismatch(error.to_string())
+}
 
 fn decode(table: &str, id: &str, raw: &str) -> StoreResult<Value> {
     let invalid = || ExecutionHistoryRepository::invalid(table, id);
@@ -420,6 +535,7 @@ fn decode(table: &str, id: &str, raw: &str) -> StoreResult<Value> {
             ["agent", "accountKey", "status"]
                 .iter()
                 .all(|key| record[*key].is_string())
+                && serde_json::from_value::<ExecutionStatus>(record["status"].clone()).is_ok()
                 && record["created"].as_f64().is_some_and(f64::is_finite)
                 && [
                     "threadId",
@@ -432,6 +548,13 @@ fn decode(table: &str, id: &str, raw: &str) -> StoreResult<Value> {
                 .all(|key| record[*key].is_null() || record[*key].is_string())
         } else {
             record["runId"].is_string()
+                && record.get("submission").is_none_or(|value| {
+                    serde_json::from_value::<AttemptSubmission>(value.clone()).is_ok()
+                })
+                && record.get("turnStatus").is_none_or(|value| {
+                    value.is_null()
+                        || serde_json::from_value::<ExecutionStatus>(value.clone()).is_ok()
+                })
                 && record["events"]
                     .as_array()
                     .is_some_and(|ids| ids.iter().all(Value::is_string))
@@ -445,3 +568,89 @@ fn decode(table: &str, id: &str, raw: &str) -> StoreResult<Value> {
 }
 
 inventory::submit! { crate::repositories::SchemaRegistration { repository: "execution_history", requirements: &REQUIREMENTS } }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attempt_replay_lives_in_request_results_and_keeps_exact_outcome() {
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        crate::receipt_schema::create(&db).expect("receipt schema");
+        db.execute_batch("CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT);
+            CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT,record TEXT);
+            INSERT INTO runtime_execution_attempts VALUES('attempt','run','{\"id\":\"attempt\",\"runId\":\"run\",\"epoch\":1,\"events\":[]}');")
+            .expect("execution owner");
+        let tx = db.transaction().expect("transaction");
+        let root = RequestIdentity::issue_root();
+        let identity = RequestIdentity::new("execution-attempt", &["agent"], &root, &["attempt"])
+            .expect("identity");
+        let Admission::Fresh(admission) =
+            RequestResults::admit(&tx, &identity, "attempt", (now() * 1000.0) as i64)
+                .expect("admission")
+        else {
+            panic!("fresh")
+        };
+        tx.execute(
+            "UPDATE runtime_execution_attempts SET record=json_set(record,'$.admission',json(?1))",
+            [serde_json::to_string(&admission).expect("token")],
+        )
+        .expect("persist admission");
+        let input = json!({"agent":"agent","epoch":1,"input":{"reason":"held"}});
+        let reply = json!({"bound":true,"interrupt":false});
+        ExecutionHistoryRepository::save_receipt(
+            &tx,
+            "attempt",
+            ExecutionReceiptKind::StartResult,
+            input.clone(),
+            reply.clone(),
+        )
+        .expect("settle");
+        assert_eq!(
+            ExecutionHistoryRepository::replay(
+                &tx,
+                "attempt",
+                ExecutionReceiptKind::StartResult,
+                &input
+            )
+            .expect("replay"),
+            Some(reply)
+        );
+        assert_eq!(
+            ExecutionHistoryRepository::replay_settled(
+                &tx,
+                "attempt",
+                ExecutionReceiptKind::StartResult,
+                &json!({"changed":true})
+            )
+            .expect("stale settlement"),
+            Some(json!(false))
+        );
+        assert!(
+            ExecutionHistoryRepository::replay(
+                &tx,
+                "attempt",
+                ExecutionReceiptKind::StartResult,
+                &json!({"changed":true})
+            )
+            .is_err()
+        );
+        assert!(
+            ExecutionHistoryRepository::attempt(&tx, "attempt")
+                .expect("owner")
+                .expect("attempt")
+                .get("receipts")
+                .is_none()
+        );
+        let count: i64 = tx
+            .query_row("SELECT COUNT(*) FROM request_results", [], |row| row.get(0))
+            .expect("results");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn execution_decode_rejects_an_unknown_status() {
+        let run = json!({"id":"run","agent":"agent","accountKey":"default","epoch":1,"status":"invented","created":1.0});
+        assert!(decode("runtime_execution_runs", "run", &run.to_string()).is_err());
+    }
+}
