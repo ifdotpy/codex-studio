@@ -860,11 +860,11 @@ mod projection_plan_tests {
     #[test]
     fn complaint_names_preserve_missing_and_null() {
         for (agent, expected) in [
-            (json!({"id":"author"}), json!("author")),
-            (json!({"id":"author","name":null}), json!(null)),
-            (json!({"id":"author","name":"Author"}), json!("Author")),
+            (r#"{"id":"author"}"#, json!("author")),
+            (r#"{"id":"author","name":null}"#, json!(null)),
+            (r#"{"id":"author","name":"Author"}"#, json!("Author")),
         ] {
-            let agents = [serde_json::from_value(agent).expect("typed agent")];
+            let agents = [serde_json::from_str(agent).expect("typed agent")];
             let view = super::complaint_entity_view(
                 &json!({"id":"complaint","author":"author","text":"Question"}),
                 &super::ComplaintViewContext { agents: &agents },
