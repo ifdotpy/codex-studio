@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { CARGO_BUILD_JOBS } from "../gate-config.ts";
 
 const rootUrl = new URL("../../../../../", import.meta.url);
 const root = fileURLToPath(rootUrl);
@@ -82,6 +85,7 @@ test("Cargo.toml keeps the selected Rust and Clippy rules at deny level", () => 
     "large_futures",
     "wildcard_enum_match_arm",
     "match_wildcard_for_single_variants",
+    "rest_pat_in_fully_bound_structs",
   ]) {
     assert.equal(clippy.get(name), '"deny"', `Cargo.toml: ${name}`);
   }
@@ -121,5 +125,117 @@ test("the parity witness rejects a missing or changed consumer setting", () => {
     assert.throws(() => assertConfigParity(owner, changed, "changed fixture"), {
       name: "AssertionError",
     });
+  }
+});
+
+test("native Clippy rejects dispatch patterns that hide contract additions", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "studio-lint-contract-"));
+  try {
+    const manifest = read("Cargo.toml");
+    writeFileSync(
+      path.join(directory, "Cargo.toml"),
+      `[package]
+name = "studio-lint-contract-witness"
+version = "0.0.0"
+edition.workspace = true
+[lib]
+path = "lib.rs"
+[workspace]
+[lints]
+workspace = true
+[workspace.package]
+${section(manifest, "workspace.package")}
+[workspace.lints.rust]
+${section(manifest, "workspace.lints.rust")}
+[workspace.lints.clippy]
+${section(manifest, "workspace.lints.clippy")}`,
+    );
+    writeFileSync(path.join(directory, "clippy.toml"), read("clippy.toml"));
+    writeFileSync(
+      path.join(directory, "rust-toolchain.toml"),
+      read("rust-toolchain.toml"),
+    );
+    const source = `
+pub enum State { Ready, Running, Settled }
+pub fn terminal(state: State) -> bool {
+    match state { State::Settled => true, State::Ready | State::Running => false }
+}
+pub struct Receipt { pub request_id: u64 }
+pub fn request_id(receipt: Receipt) -> u64 {
+    let Receipt { request_id } = receipt;
+    request_id
+}
+`;
+    const check = (text: string) => {
+      writeFileSync(path.join(directory, "lib.rs"), text);
+      const result = spawnSync(
+        "cargo",
+        ["clippy", "--offline", "-j", String(CARGO_BUILD_JOBS)],
+        {
+          cwd: directory,
+          encoding: "utf8",
+          timeout: 30_000,
+          // A dependency-free fixture must never contend for a workspace target.
+          env: {
+            ...process.env,
+            CARGO_TARGET_DIR: path.join(directory, "target"),
+            CLIPPY_CONF_DIR: directory,
+          },
+        },
+      );
+      assert.ifError(result.error);
+      return result;
+    };
+    const baseline = check(source);
+    assert.equal(baseline.status, 0, baseline.stdout + baseline.stderr);
+    for (const [name, text, diagnostic] of [
+      [
+        "wildcard enum arm",
+        source.replace("State::Ready | State::Running", "_"),
+        /#wildcard_enum_match_arm/,
+      ],
+      [
+        "single remaining variant",
+        source.replace(
+          "State::Settled => true, State::Ready | State::Running => false",
+          "State::Ready | State::Running => false, _ => true",
+        ),
+        /#match_wildcard_for_single_variants/,
+      ],
+      [
+        "redundant struct rest",
+        source.replace(
+          "Receipt { request_id } =",
+          "Receipt { request_id, .. } =",
+        ),
+        /#rest_pat_in_fully_bound_structs/,
+      ],
+      [
+        "new enum variant",
+        source.replace(
+          "Ready, Running, Settled",
+          "Ready, Running, Settled, Uncertain",
+        ),
+        /E0004/,
+      ],
+      [
+        "new struct field",
+        source.replace(
+          "pub request_id: u64",
+          "pub request_id: u64, pub sequence: u64",
+        ),
+        /E0027/,
+      ],
+    ] as const) {
+      const result = check(text);
+      assert.notEqual(
+        result.status,
+        0,
+        `${name} must fail under root Cargo.toml policy`,
+      );
+      assert.match(result.stderr, diagnostic, name);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });

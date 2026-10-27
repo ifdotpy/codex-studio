@@ -43,6 +43,8 @@ await_holding_refcell_ref = "deny"
 large_futures = "deny"
 wildcard_enum_match_arm = "deny"
 match_wildcard_for_single_variants = "deny"
+# Fully bound contracts must expose new fields to the compiler.
+rest_pat_in_fully_bound_structs = "deny"
 
 [workspace.dependencies]
 schemars = { version = "=1.2.3", features = ["derive"] }
