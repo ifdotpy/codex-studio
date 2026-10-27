@@ -66,6 +66,26 @@ fn database() -> Connection {
 }
 
 #[test]
+fn thread_attempt_rejects_mismatched_physical_agent_id() {
+    let connection = database();
+    let record = json!({"id":"other","rootId":"agent","epoch":4,"status":"running",
+        "provider":"codex","accountKey":"account","threadId":"thread",
+        "turnEpoch":4,"autoWake":true,"inFlight":true,
+        "startAttempt":{"id":"attempt","epoch":4,"submitted":true,"accountKey":"account",
+            "threadId":"thread","connectionGeneration":1,"requestTicket":"ticket"}});
+    connection
+        .execute(
+            "UPDATE runtime_agents SET record=?1 WHERE id='agent'",
+            [record.to_string()],
+        )
+        .unwrap();
+    assert!(
+        SchedulerRepository::find_attempt_for_thread(&connection, "account", 1, "thread", None)
+            .is_err()
+    );
+}
+
+#[test]
 fn terminal_pending_ownership_includes_unresolved_non_initial_inputs() {
     let connection = database();
     connection
