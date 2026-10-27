@@ -362,6 +362,7 @@ const PROVIDER_OPENAPI_SITES: &[&str] = &[
     "/components/schemas/LazyAccountTransferSourceRecordResponse/properties/provider",
     "/components/schemas/SummaryAccount/properties/provider",
     "/components/schemas/TransferMemberNotice/properties/provider/anyOf/1",
+    "/components/schemas/ModelEntityDto/allOf/1/properties/provider",
 ];
 
 const PROVIDER_PERSISTED_RECORDS: &[(&str, &str)] = &[

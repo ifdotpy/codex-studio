@@ -279,7 +279,7 @@ async fn worker_catalog(
                         continue;
                     }
                     row.account_key = Some(key.clone());
-                    row.provider = Some(account.provider.key().to_owned());
+                    row.provider = Some(account.provider);
                     models.push(row);
                 }
             }

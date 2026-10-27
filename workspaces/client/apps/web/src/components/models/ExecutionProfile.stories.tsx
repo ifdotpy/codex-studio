@@ -5,7 +5,10 @@ import { Paper, Stack } from "@mantine/core";
 import { AgentSetupPicker, type SetupRole } from "../agents/AgentSetupPicker";
 import { ExecutionSummaryTrigger } from "../agents/ExecutionSummaryTrigger";
 import { ExecutionSettings } from "../agents/ExecutionSettings";
-import { ModelCatalogReader } from "../agents/WorkerModelPicker";
+import {
+  ModelCatalogReader,
+  type WorkerModelInfo,
+} from "../agents/WorkerModelPicker";
 import type { Agent } from "../../types";
 import "../agents/chat-settings-dialog.css";
 import { ModelField } from "./ModelField";
@@ -201,19 +204,22 @@ const previewCatalog = [
     description: "Fast implementation tasks.",
   },
   { model: "gpt-6.1-sol", isDefault: false, description: "Complex reasoning." },
-].map((row) => ({
-  ...row,
-  provider: "codex",
-  supportedReasoningEfforts: [
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-    "ultra",
-  ].map((reasoningEffort) => ({ reasoningEffort })),
-  serviceTiers: [{ id: "priority" }],
-}));
+].map(
+  (row) =>
+    ({
+      ...row,
+      provider: "codex",
+      supportedReasoningEfforts: [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+      ].map((reasoningEffort) => ({ reasoningEffort })),
+      serviceTiers: [{ id: "priority" }],
+    }) satisfies WorkerModelInfo,
+);
 const previewReader: ContextType<typeof ModelCatalogReader> = {
   scope: "execution-panel-story",
   read: async () => ({ data: previewCatalog }),

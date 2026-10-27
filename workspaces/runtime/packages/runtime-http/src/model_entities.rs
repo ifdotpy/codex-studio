@@ -102,7 +102,7 @@ fn publish_catalog(
             let id = format!("{prefix}{}", row.model);
             let mut row = row.clone();
             row.account_key = Some(account.to_owned());
-            row.provider = Some(provider.key().to_owned());
+            row.provider = Some(provider);
             // Serialization is the durable SSE boundary; metadata stays opaque.
             row.extra.insert("catalogPosition".into(), json!(position));
             changed |= SyncDocumentsRepository::put_entity(

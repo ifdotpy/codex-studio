@@ -15110,7 +15110,7 @@ export interface components {
       accountKey: string;
       /** @description Zero-based order within this account's provider model catalog. */
       catalogPosition: number;
-      provider: string;
+      provider: components["schemas"]["ProviderKind"];
     };
     ModelReasoningEffort: {
       reasoningEffort: string;
@@ -18705,7 +18705,7 @@ export interface components {
       hidden?: boolean | undefined;
       isDefault?: boolean | undefined;
       model: string;
-      provider?: string | undefined;
+      provider?: components["schemas"]["ProviderKind"] | undefined;
       resolvedModel?: string | null | undefined;
       serviceTiers?: components["schemas"]["ModelServiceTier"][] | undefined;
       supportedReasoningEfforts?:

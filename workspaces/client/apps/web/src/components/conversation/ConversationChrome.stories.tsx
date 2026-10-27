@@ -1,3 +1,4 @@
+import type { WorkerModelInfo } from "../agents/WorkerModelPicker";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 import { ActionIcon, Button, Textarea } from "@mantine/core";
@@ -56,7 +57,7 @@ const lead = {
   workerModel: "gpt-6-luna",
   contextUsage: { tokens: 64000, window: 200000 },
 } as Agent;
-const models = ["gpt-6-astra", "gpt-6-luna"].map((model) => ({
+const models = ["gpt-6-astra", "gpt-6-luna"].map((model): WorkerModelInfo => ({
   model,
   displayName: model,
   provider: "codex",

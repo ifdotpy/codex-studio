@@ -1,6 +1,7 @@
 //! Studio's consumed model catalog projection. Model IDs, efforts, service tier
 //! IDs and unknown provider metadata remain upstream-owned, open values.
 
+use crate::ProviderKind;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
@@ -19,8 +20,8 @@ pub struct ProviderModel {
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
-    #[schemars(with = "String")]
-    pub provider: Option<String>,
+    #[schemars(with = "ProviderKind")]
+    pub provider: Option<ProviderKind>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -170,8 +171,10 @@ pub fn schemas() -> Map<String, Value> {
     let mut schemas = generator.take_definitions(true);
     // OpenAPI's existing JsonValue owns the recursive opaque JSON leaf.
     for schema in schemas.values_mut() {
-        schema["additionalProperties"] =
-            serde_json::json!({"$ref":"#/components/schemas/JsonValue"});
+        if schema.get("additionalProperties") == Some(&Value::Bool(true)) {
+            schema["additionalProperties"] =
+                serde_json::json!({"$ref":"#/components/schemas/JsonValue"});
+        }
     }
     schemas
 }
@@ -192,6 +195,12 @@ mod tests {
             let parsed = ModelCatalog::parse(value.clone()).expect("valid open catalog");
             assert_eq!(serde_json::to_value(parsed).expect("serialize"), value);
         }
+        for provider in ProviderKind::ALL {
+            let value = json!({"data":[{"model":"future", "provider":provider}]});
+            let parsed = ModelCatalog::parse(value.clone()).expect("known Studio provider");
+            assert_eq!(parsed.data[0].provider, Some(provider));
+            assert_eq!(serde_json::to_value(parsed).expect("serialize"), value);
+        }
     }
 
     #[test]
@@ -202,6 +211,9 @@ mod tests {
             json!({"components":{"schemas":schemas}, "$ref":"#/components/schemas/ModelCatalog"});
         let validator = jsonschema::validator_for(&schema).expect("schema compiles");
         for (field, invalid) in [
+            ("provider", json!("future-provider")),
+            ("provider", json!(null)),
+            ("provider", json!(3)),
             ("hidden", json!(null)),
             ("hidden", json!("true")),
             ("isDefault", json!(1)),

@@ -41,12 +41,18 @@ describe("supportsDaybreakMode", () => {
     );
     // @ts-expect-error Known catalog booleans must not widen to opaque metadata.
     const invalidHidden: WorkerModelInfo = { ...valid, hidden: "yes" };
+    const invalidProvider: WorkerModelInfo = {
+      ...valid,
+      // @ts-expect-error Catalog provider identity comes from ProviderKind.
+      provider: "future-provider",
+    };
     const invalidEffort: WorkerModelInfo = {
       ...valid,
       // @ts-expect-error Upstream-owned effort names stay strings, not untyped JSON.
       supportedReasoningEfforts: [{ reasoningEffort: 1 }],
     };
     expect(invalidHidden.hidden).toBe("yes");
+    expect(invalidProvider.provider).toBe("future-provider");
     expect(invalidEffort.supportedReasoningEfforts[0]?.reasoningEffort).toBe(1);
   });
 });

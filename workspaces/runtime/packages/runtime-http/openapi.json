@@ -30731,7 +30731,7 @@
                 "type": "integer"
               },
               "provider": {
-                "type": "string"
+                "$ref": "#/components/schemas/ProviderKind"
               }
             },
             "required": [
@@ -39125,7 +39125,7 @@
             "type": "string"
           },
           "provider": {
-            "type": "string"
+            "$ref": "#/components/schemas/ProviderKind"
           },
           "resolvedModel": {
             "type": [

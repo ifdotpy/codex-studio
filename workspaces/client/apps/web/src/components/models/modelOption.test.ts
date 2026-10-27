@@ -9,11 +9,11 @@ import {
 } from "./modelOption";
 
 describe("modelDisplayName", () => {
-  it("does not infer a known provider from part of an explicit provider name", () => {
+  it("uses the explicit account provider instead of inferring it from descriptions", () => {
     expect(
       modelDisplayName({
         model: "custom",
-        provider: "claude-mirror",
+        provider: "codex",
         displayName: "Private model",
         description: "Claude Opus 4.6 · Compatibility protocol",
       }),
@@ -134,7 +134,7 @@ it("selects the non-default Claude alias for a stored resolved model id", () => 
       provider: "claude",
       resolvedModel: "claude-opus-5-5",
     },
-  ];
+  ] satisfies Parameters<typeof toModelOptions>[0];
   const options = toModelOptions(catalog, { currentValue: "claude-opus-5-5" });
   expect(
     options

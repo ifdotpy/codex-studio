@@ -451,7 +451,7 @@ describe("resource read callers", () => {
       model: string,
       hidden: boolean,
       catalogPosition: number,
-    ) => ({
+    ): NonNullable<Snapshot["runtime"]["modelsByAccount"]>[string][number] => ({
       accountKey,
       model,
       hidden,

@@ -225,6 +225,11 @@ export interface components {
     } & {
       [key: string]: unknown;
     };
+    /**
+     * @description The provider that owns an account and every agent on it.
+     * @enum {string}
+     */
+    ProviderKind: "codex" | "claude";
     ProviderModel: {
       accountKey?: string | undefined;
       availableAccessPrograms?:
@@ -237,7 +242,7 @@ export interface components {
       hidden?: boolean | undefined;
       isDefault?: boolean | undefined;
       model: string;
-      provider?: string | undefined;
+      provider?: components["schemas"]["ProviderKind"] | undefined;
       resolvedModel?: string | null | undefined;
       serviceTiers?: components["schemas"]["ModelServiceTier"][] | undefined;
       supportedReasoningEfforts?:
@@ -351,6 +356,7 @@ export type ModelAccessPrograms = components["schemas"]["ModelAccessPrograms"];
 export type ModelReasoningEffort =
   components["schemas"]["ModelReasoningEffort"];
 export type ModelServiceTier = components["schemas"]["ModelServiceTier"];
+export type ProviderKind = components["schemas"]["ProviderKind"];
 export type ProviderModel = components["schemas"]["ProviderModel"];
 export type RateLimitBucketDto = components["schemas"]["RateLimitBucketDto"];
 export type RateLimitWindowDto = components["schemas"]["RateLimitWindowDto"];
