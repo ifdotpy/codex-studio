@@ -13,6 +13,15 @@ pub const DEFAULT_AGENT_WORKSPACE_MODE: &str = "worktree";
 pub const ALWAYS_NATIVE_SYSTEMS: &[&str] = &["Darwin"];
 /// Server system names that require a ready native capability.
 pub const CAPABILITY_NATIVE_SYSTEMS: &[&str] = &["Linux"];
+/// Project workspace policy that allows only native Layr chats and workers.
+/// Stored on the project record as `workspacePolicy`; absent means no policy.
+pub const PROJECT_LAYR_NATIVE_POLICY: &str = "layr-native";
+/// Project records and request bodies that carry the workspace policy, as (schema, property).
+const PROJECT_POLICY_PROPERTIES: [(&str, &str); 3] = [
+    ("ProjectWriteRequest", "workspace_policy"),
+    ("Project", "workspacePolicy"),
+    ("ProjectMutationRecord", "workspacePolicy"),
+];
 
 pub fn default_chat_workspace_mode(system: &str, native_ready: bool) -> &'static str {
     if ALWAYS_NATIVE_SYSTEMS.contains(&system)
@@ -57,6 +66,18 @@ pub fn update_openapi(document: &mut Value) {
         }
         document["components"]["schemas"][name]["properties"]["workspaceMode"] = property;
     }
+    for (schema, property) in PROJECT_POLICY_PROPERTIES {
+        document["components"]["schemas"][schema]["properties"][property] =
+            project_policy_property();
+    }
+}
+
+fn project_policy_property() -> Value {
+    json!({
+        "anyOf": [{"enum": [PROJECT_LAYR_NATIVE_POLICY], "type": "string"}, {"type": "null"}],
+        "default": null,
+        "title": "Workspace Policy"
+    })
 }
 
 pub fn check_openapi(document: &Value) -> Result<(), String> {
@@ -68,6 +89,15 @@ pub fn check_openapi(document: &Value) -> Result<(), String> {
         {
             return Err(format!(
                 "{name}.workspaceMode must match runtime-schema/src/workspace_modes.rs"
+            ));
+        }
+    }
+    for (schema, property) in PROJECT_POLICY_PROPERTIES {
+        if document["components"]["schemas"][schema]["properties"][property]
+            != project_policy_property()
+        {
+            return Err(format!(
+                "{schema}.{property} must match runtime-schema/src/workspace_modes.rs"
             ));
         }
     }

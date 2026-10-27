@@ -9,6 +9,7 @@ export type LocationProject = {
   id: string;
   path: string;
   name: string;
+  workspacePolicy?: string | null | undefined;
   homeServerId?: string | null | undefined;
   compact?: boolean | undefined;
   locations?: ProjectLocation[] | null | undefined;
