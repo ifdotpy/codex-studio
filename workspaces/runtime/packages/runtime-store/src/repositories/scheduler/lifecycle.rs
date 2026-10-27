@@ -744,14 +744,10 @@ impl SchedulerRepository {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        let [(_, record)] = rows.as_slice() else {
+        let [(id, record)] = rows.as_slice() else {
             return Ok((!rows.is_empty(), None));
         };
-        let agent: AgentRecord =
-            serde_json::from_str(record).map_err(|_| StoreError::InvalidSyncObject {
-                scope: "runtime_agents".to_owned(),
-                id: rows[0].0.clone(),
-            })?;
+        let agent = decode_agent(connection, id, record)?;
         let Some(attempt) = stored_attempt(&agent).and_then(Value::as_object) else {
             return Ok((true, None));
         };
