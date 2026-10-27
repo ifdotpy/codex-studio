@@ -1341,7 +1341,7 @@ async fn next_frame(
         return Some((Ok(event), state));
     }
     while let Some(transfer) = state.entity_transfers.front_mut() {
-        match transfer.next() {
+        match transfer.next().await {
             Ok(Some(event)) => return Some((Ok(event), state)),
             Ok(None) => {
                 state.entity_transfers.pop_front();
