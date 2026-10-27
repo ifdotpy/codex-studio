@@ -62,3 +62,24 @@ test("uses existing viewport bottom compensation instead of a keyboard guess", (
     ).insets.bottom,
   ).toBe(0);
 });
+
+test("reads the native status column edges when the shell sets them", () => {
+  const vars: Record<string, string> = {
+    "--native-status-column-bottom": "190px",
+    "--native-status-column-left": "867px",
+  };
+  const style = {
+    paddingTop: "0px",
+    paddingRight: "82px",
+    paddingBottom: "34px",
+    paddingLeft: "0px",
+    height: "669px",
+    getPropertyValue: (name: string) => vars[name] ?? "",
+  };
+  expect(readEdgeRailViewport(style, true).statusColumn).toEqual({
+    bottom: 190,
+    left: 867,
+  });
+  delete vars["--native-status-column-bottom"];
+  expect(readEdgeRailViewport(style, true).statusColumn).toBeUndefined();
+});

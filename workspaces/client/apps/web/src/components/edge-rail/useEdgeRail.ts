@@ -4,6 +4,7 @@ import {
 } from "../../hooks/touchCapability";
 import { useEffect, useState } from "react";
 import { layoutValues } from "../../layout/layout-contract.generated";
+import { viewportTopStripAttribute } from "../../hooks/mobileViewport";
 import {
   edgeRailGeometry,
   type EdgeRailGeometry,
@@ -15,21 +16,47 @@ export const layoutEdgeRailMetrics: EdgeRailMetrics = {
   minimumInset: layoutValues.edgeRail.minInset,
   statusReserve: layoutValues.edgeRail.statusReserve,
   targetSize: layoutValues.edgeRail.buttonSize,
+  statusColumnCenter: layoutValues.edgeRail.statusColumnCenter,
+  topStatusReserve: layoutValues.edgeRail.topStatusReserve,
 };
 
 type RootStyle = Pick<
   CSSStyleDeclaration,
   "height" | "paddingTop" | "paddingRight" | "paddingBottom" | "paddingLeft"
->;
+> &
+  Partial<Pick<CSSStyleDeclaration, "width" | "getPropertyValue">>;
+
+/** The native shell's status column edges (nativeViewport.ts), when set. */
+function statusColumn(style: RootStyle) {
+  const read = (name: string) =>
+    Number.parseFloat(style.getPropertyValue?.(name) ?? "");
+  const bottom = read("--native-status-column-bottom");
+  const left = read("--native-status-column-left");
+  return Number.isFinite(bottom) && Number.isFinite(left)
+    ? { statusColumn: { bottom, left } }
+    : {};
+}
 
 /** Read resolved CSS lengths. The viewport owner supplies all compensation. */
 export function readEdgeRailViewport(
   style: RootStyle,
   coarsePointer: boolean,
+  topStrip = false,
 ): EdgeRailViewport {
   return {
     coarsePointer,
     viewportHeight: Number.parseFloat(style.height),
+    ...(style.width ? { viewportWidth: Number.parseFloat(style.width) } : {}),
+    // The viewport owner moved a native top strip out of the page inset
+    // (data-viewport-top-strip); its height is the shell's top inset.
+    ...(topStrip && style.getPropertyValue
+      ? {
+          topStrip: Number.parseFloat(
+            style.getPropertyValue("--native-safe-top"),
+          ),
+        }
+      : {}),
+    ...statusColumn(style),
     insets: {
       top: Number.parseFloat(style.paddingTop),
       right: Number.parseFloat(style.paddingRight),
@@ -45,7 +72,13 @@ export function useEdgeRail(
   enabled = true,
 ) {
   const [geometry, setGeometry] = useState<EdgeRailGeometry | null>(null);
-  const { minimumInset, statusReserve, targetSize } = metrics;
+  const {
+    minimumInset,
+    statusReserve,
+    targetSize,
+    statusColumnCenter,
+    topStatusReserve,
+  } = metrics;
   useEffect(() => {
     if (!enabled) {
       setGeometry(null);
@@ -61,8 +94,15 @@ export function useEdgeRail(
         readEdgeRailViewport(
           getComputedStyle(root),
           hasTouchCapability(coarse.matches, navigator.maxTouchPoints),
+          document.documentElement.hasAttribute(viewportTopStripAttribute),
         ),
-        { minimumInset, statusReserve, targetSize },
+        {
+          minimumInset,
+          statusReserve,
+          targetSize,
+          statusColumnCenter,
+          topStatusReserve,
+        },
       );
       setGeometry((current) =>
         JSON.stringify(current) === JSON.stringify(next) ? current : next,
@@ -92,6 +132,13 @@ export function useEdgeRail(
       window.visualViewport?.removeEventListener("resize", schedule);
       window.visualViewport?.removeEventListener("scroll", schedule);
     };
-  }, [enabled, minimumInset, statusReserve, targetSize]);
+  }, [
+    enabled,
+    minimumInset,
+    statusReserve,
+    targetSize,
+    statusColumnCenter,
+    topStatusReserve,
+  ]);
   return enabled ? geometry : null;
 }

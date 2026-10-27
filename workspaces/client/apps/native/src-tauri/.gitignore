@@ -1,2 +1,4 @@
 # Tauri regenerates these schemas when it builds the native host.
 /gen/schemas/
+# Local iOS shell server address, compiled in by build.rs; never committed.
+/ios-default-server.txt

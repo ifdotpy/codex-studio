@@ -757,6 +757,42 @@ export const layoutTokens = {
     purpose:
       "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 20em) {",
   },
+  "edgeRail.statusColumnCenter": {
+    value: 48,
+    unit: "px",
+    purpose:
+      "Distance from the outer screen edge to the center of the system status column (clock, Wi-Fi) in the iPhone Duo side strip; rail buttons center on it (measured on the device, iOS 27.2)",
+  },
+  "sidebar.headingStackMax": {
+    value: 288,
+    unit: "px",
+    purpose:
+      "Chat list width at or below which the Projects heading label takes its own row above its four touch targets",
+  },
+  "sidebar.headerStackMax": {
+    value: 240,
+    unit: "px",
+    purpose:
+      "Sidebar header width at or below which the brand shares its row with the close button and the other actions move to a second row",
+  },
+  "edgeRail.topStatusReserve": {
+    value: 136,
+    unit: "px",
+    purpose:
+      "Width kept clear at the right end of the iPhone Duo portrait top strip for the clock and Wi-Fi; the top rail row ends before it (clock left edge measured at 121 px from the right edge)",
+  },
+  "edgeRail.menuGap": {
+    value: 8,
+    unit: "px",
+    purpose:
+      "Space between the rail chat actions menu and the inner edge of the side strip",
+  },
+  "edgeRail.buttonGap": {
+    value: 8,
+    unit: "px",
+    purpose:
+      "Space between rail buttons; the rail moves buttons that do not fit into the chat actions menu",
+  },
   "edgeRail.buttonSize": {
     value: 48,
     unit: "px",
@@ -815,6 +851,12 @@ export const layoutTokens = {
     purpose:
       "Maximum transform matrix serialization error when retaining the current keyboard animation target",
   },
+  "keyboard.nativeMotionHold": {
+    value: 64,
+    unit: "ms",
+    purpose:
+      "Delay of the native iOS shell closing composer animation after its start frame; longer than the WebKit commit latency, so the first presented frame shows the start position",
+  },
   "keyboard.focusSampleWindow": {
     value: 600,
     unit: "ms",
@@ -843,6 +885,8 @@ export const layoutValues = {
     min: 13,
     drawerMax: 22.5,
     resizeHitWidth: 0.5,
+    headingStackMax: 288,
+    headerStackMax: 240,
   },
   serverSelector: {
     preferred: 16.875,
@@ -898,6 +942,7 @@ export const layoutValues = {
     compactMaxHeight: 400,
     motionDuration: 400,
     motionTargetTolerance: 0.1,
+    nativeMotionHold: 64,
     focusSampleWindow: 600,
     stableSampleDuration: 300,
     focusOpenGrace: 2000,
@@ -997,6 +1042,10 @@ export const layoutValues = {
   edgeRail: {
     minInset: 64,
     statusReserve: 112,
+    statusColumnCenter: 48,
+    topStatusReserve: 136,
+    menuGap: 8,
+    buttonGap: 8,
     buttonSize: 48,
   },
   legacy_main_App: {
@@ -1123,6 +1172,8 @@ export const layoutQueries = {
   teamCompact: "(width < 960px)",
   teamInline: "(width >= 960px)",
   toolsCompact: "(width < 900px)",
+  sidebarHeadingStacked: "(width <= 288px)",
+  sidebarHeaderStacked: "(width <= 240px)",
   teamToggleCompact: "(width <= 660px)",
 } as const;
 export const layerZIndex = layoutValues.layers;

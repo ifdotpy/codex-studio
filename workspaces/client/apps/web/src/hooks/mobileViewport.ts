@@ -5,6 +5,17 @@ import {
 } from "./touchCapability";
 import { useEffect } from "react";
 import { layoutValues } from "../layout/layout-contract.generated";
+import {
+  nativeKeyboardDuration,
+  nativeKeyboardEasing,
+  nativeKeyboardMotion,
+  nativeViewport,
+  nativeViewportEvent,
+  type NativeViewportState,
+} from "../native/nativeViewport";
+
+/** Root attribute: the native top status strip holds the edge rail, not a page inset. */
+export const viewportTopStripAttribute = "data-viewport-top-strip";
 
 const selectedComposers = new WeakSet<HTMLTextAreaElement>();
 
@@ -45,18 +56,84 @@ export function useMobileViewport(active: boolean, compact = false) {
     let fullHeight = previousFrame?.height || 0;
     let fullWidth = previousFrame?.width || 0;
     let keyboardRecoveryPending = false;
+    // The native iOS shell reports the keyboard before UIKit animates it and
+    // keeps WebKit's own keyboard viewport changes off.
+    let nativeKeyboard = nativeViewport()?.keyboard ?? null;
     let composer: HTMLElement | null = null;
     let messages: HTMLElement | null = null;
     const recoveryFrames = new Set<number>();
+    // In the native shell the composer moves by a Web Animation, not a CSS
+    // transition. WebKit stops rendering for 80 to 260 ms when the keyboard
+    // opens or closes, and the first paint after it is slow. A transition, or
+    // an animation that starts before that paint is committed, counts the
+    // lost time and its first presented frame jumps. The animation holds its
+    // start position and plays from the next rendered frame. A downward
+    // (closing) motion plays from the second one and waits
+    // keyboard.nativeMotionHold more, so its first presented frame still
+    // shows the start position. An upward (opening) motion starts at once:
+    // the rising keyboard covers its first frames, and a later start leaves
+    // the composer under the keyboard.
+    let composerMotion: Animation | null = null;
+    let composerMotionFrame = 0;
+    const moveComposer = (node: HTMLElement, from: number, to: number) => {
+      if (
+        !nativeKeyboard ||
+        typeof node.animate !== "function" ||
+        Math.abs(from - to) <= layoutValues.keyboard.motionTargetTolerance
+      )
+        return;
+      let start = from;
+      const closing = to > from;
+      if (composerMotion && composerMotion.playState !== "finished") {
+        // Continue from the current position when the target changes mid-motion.
+        const current = /^matrix\((?:[^,]+,){5}\s*([^)]+)\)$/.exec(
+          getComputedStyle(node).transform,
+        );
+        if (current?.[1]) start = parseFloat(current[1]);
+        composerMotion.cancel();
+      }
+      const motion = node.animate(
+        [
+          { transform: `translateY(${start}px)` },
+          { transform: `translateY(${to}px)` },
+        ],
+        {
+          duration: nativeKeyboardDuration(nativeKeyboard),
+          easing: nativeKeyboardEasing(nativeKeyboard.curve),
+          delay: closing ? layoutValues.keyboard.nativeMotionHold : 0,
+          fill: "backwards",
+        },
+      );
+      motion.pause();
+      composerMotion = motion;
+      cancelAnimationFrame(composerMotionFrame);
+      const play = () => {
+        composerMotionFrame = 0;
+        if (composerMotion === motion) motion.play();
+      };
+      composerMotionFrame = requestAnimationFrame(() => {
+        composerMotionFrame = closing ? requestAnimationFrame(play) : 0;
+        if (!closing) play();
+      });
+    };
     const resetComposer = () => {
+      const shift = parseFloat(
+        composer?.style.getPropertyValue("--keyboard-composer-shift") ?? "",
+      );
       composer?.removeAttribute("data-keyboard-floating");
       composer?.style.removeProperty("--keyboard-composer-shift");
       messages?.style.removeProperty("--keyboard-scroll-clearance");
+      if (composer && Number.isFinite(shift)) moveComposer(composer, shift, 0);
       composer?.getBoundingClientRect();
       messages?.getBoundingClientRect();
     };
     const clear = () => {
       resetComposer();
+      cancelAnimationFrame(composerMotionFrame);
+      composerMotion?.cancel();
+      composerMotion = null;
+      root.removeAttribute("data-viewport-native-keyboard");
+      root.removeAttribute(viewportTopStripAttribute);
       root.removeAttribute("data-viewport-surface");
       root.removeAttribute("data-viewport-keyboard");
       root.removeAttribute("data-viewport-keyboard-compact");
@@ -66,6 +143,7 @@ export function useMobileViewport(active: boolean, compact = false) {
         "--mobile-viewport-top",
         "--mobile-safe-area-bottom",
         "--mobile-safe-area-top",
+        "--keyboard-motion",
       ])
         root.style.removeProperty(property);
     };
@@ -87,31 +165,47 @@ export function useMobileViewport(active: boolean, compact = false) {
       )
         return;
       const layoutHeight = Math.max(root.clientHeight, window.innerHeight);
-      const height = Math.min(
-        viewport?.height || window.innerHeight,
-        layoutHeight,
-      );
+      const native = nativeViewport() !== undefined;
+      const nativeOverlap = Math.max(0, nativeKeyboard?.overlap ?? 0);
+      const height = native
+        ? layoutHeight - Math.min(nativeOverlap, layoutHeight)
+        : Math.min(viewport?.height || window.innerHeight, layoutHeight);
       // iOS can shrink innerHeight and pan the visual viewport at the same time.
       // Its offset remains relative to the layout viewport after that shrink.
-      const top = Math.max(0, viewport?.offsetTop ?? 0);
+      const top = native ? 0 : Math.max(0, viewport?.offsetTop ?? 0);
       if (!Number.isFinite(height) || height <= 0 || !Number.isFinite(top))
         return;
       root.setAttribute("data-viewport-surface", "");
+      if (native) root.setAttribute("data-viewport-native-keyboard", "");
+      else root.removeAttribute("data-viewport-native-keyboard");
+      // The iPhone Duo in portrait has its status strip on top. Like the
+      // system apps, the page runs under it and the edge rail floats there.
+      const nativeInsets = nativeViewport()?.insets;
+      const stripMin = layoutValues.edgeRail.minInset;
+      if (
+        nativeInsets &&
+        window.innerHeight > window.innerWidth &&
+        nativeInsets.top >= stripMin &&
+        Math.max(nativeInsets.left, nativeInsets.right) < stripMin
+      )
+        root.setAttribute(viewportTopStripAttribute, "");
+      else root.removeAttribute(viewportTopStripAttribute);
       const width = viewport?.width || window.innerWidth;
       const sameWidth = !fullWidth || width === fullWidth;
       const editable = document.activeElement as HTMLElement | null;
       const hasEditableFocus =
         !!editable &&
         (editable.matches?.("input, textarea") || editable.isContentEditable);
-      const keyboard =
-        !!viewport &&
-        primaryPointer.matches &&
-        (hasEditableFocus || composerClosing) &&
-        Math.max(
-          layoutHeight - height,
-          sameWidth ? fullHeight - height : 0,
-          top,
-        ) > layoutValues.keyboard.occlusionMin;
+      const keyboard = native
+        ? nativeOverlap > layoutValues.keyboard.occlusionMin
+        : !!viewport &&
+          primaryPointer.matches &&
+          (hasEditableFocus || composerClosing) &&
+          Math.max(
+            layoutHeight - height,
+            sameWidth ? fullHeight - height : 0,
+            top,
+          ) > layoutValues.keyboard.occlusionMin;
       if (!keyboard || !sameWidth) {
         composerClosing = false;
         fullHeight = height;
@@ -144,13 +238,13 @@ export function useMobileViewport(active: boolean, compact = false) {
       root.style.setProperty("--mobile-viewport-top", `${top}px`);
       root.style.setProperty(
         "--mobile-safe-area-bottom",
-        keyboard && !overlay ? "0px" : "env(safe-area-inset-bottom)",
+        keyboard && !overlay ? "0px" : "var(--viewport-device-safe-bottom)",
       );
       root.style.setProperty(
         "--mobile-safe-area-top",
         top > 0
-          ? `max(0px, calc(env(safe-area-inset-top) - ${top}px))`
-          : "env(safe-area-inset-top)",
+          ? `max(0px, calc(var(--viewport-device-safe-top) - ${top}px))`
+          : "var(--viewport-device-safe-top)",
       );
       const nextComposer =
         Array.from(document.querySelectorAll<HTMLElement>("#composer")).find(
@@ -201,8 +295,15 @@ export function useMobileViewport(active: boolean, compact = false) {
             !Number.isFinite(previous) ||
             Math.abs(previous - value) >
               layoutValues.keyboard.motionTargetTolerance
-          )
+          ) {
             node.style.setProperty(property, `${value}px`);
+            if (node === composer)
+              moveComposer(
+                node,
+                Number.isFinite(previous) ? previous : 0,
+                value,
+              );
+          }
         };
         retainTarget(composer, "--keyboard-composer-shift", composerShift);
         composer.setAttribute("data-keyboard-floating", "");
@@ -232,6 +333,20 @@ export function useMobileViewport(active: boolean, compact = false) {
       if (!frame) frame = requestAnimationFrame(update);
     };
     const composerResize = new ResizeObserver(schedule);
+    const receiveNative = (event: Event) => {
+      const state = (event as CustomEvent<NativeViewportState>).detail;
+      if (!state || state.keyboard === nativeKeyboard) return schedule();
+      nativeKeyboard = state.keyboard;
+      // The composer starts with the same timing as the keyboard, in the
+      // frame that receives the event, before UIKit's animation advances.
+      if (nativeKeyboard)
+        root.style.setProperty(
+          "--keyboard-motion",
+          nativeKeyboardMotion(nativeKeyboard),
+        );
+      update();
+    };
+    window.addEventListener(nativeViewportEvent, receiveNative);
     const content = new MutationObserver(() => {
       if (!composer?.isConnected) schedule();
     });
@@ -327,7 +442,14 @@ export function useMobileViewport(active: boolean, compact = false) {
       next(1);
     };
     const focusWithoutNativePan = (event: Event) => {
-      if (!viewport || !primaryPointer.matches) return;
+      // The native shell removes WebKit's keyboard pan. There a programmatic
+      // refocus of an already focused composer does not show the keyboard.
+      if (
+        !viewport ||
+        nativeViewport() !== undefined ||
+        !primaryPointer.matches
+      )
+        return;
       if (
         event.type === "pointerdown" &&
         (event as PointerEvent).pointerType === "mouse"
@@ -424,6 +546,7 @@ export function useMobileViewport(active: boolean, compact = false) {
       window.removeEventListener("resize", viewportChanged);
       window.removeEventListener("orientationchange", viewportChanged);
       window.removeEventListener("scroll", viewportChanged);
+      window.removeEventListener(nativeViewportEvent, receiveNative);
       clear();
     };
   }, [active, compact]);

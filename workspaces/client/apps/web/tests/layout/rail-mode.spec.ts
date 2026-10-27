@@ -64,8 +64,7 @@ for (const check of [
         await expect(rail.getByRole("button")).toHaveText(["", ""]);
         await expect(
           rail.getByRole("button", {
-            name: "Toggle conversations",
-            exact: true,
+            name: /^(Show|Hide) conversations$/,
           }),
         ).toBeVisible();
         await expect(
@@ -96,8 +95,7 @@ for (const check of [
           rail.getByRole("button", { name: "Messages, 1 need you" }),
         ).toBeVisible();
         const sidebarToggle = rail.getByRole("button", {
-          name: "Toggle conversations",
-          exact: true,
+          name: /^(Show|Hide) conversations$/,
         });
         const messagesToggle = rail.getByRole("button", {
           name: "Messages, 1 need you",
