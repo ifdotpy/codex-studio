@@ -80,6 +80,11 @@ struct Entry {
     params: Value,
 }
 
+/// The unflushed batch; stream identity and base remain on current metadata.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(transparent)]
+pub(crate) struct NotificationPendingStreams(Vec<Shared<Entry>>);
+
 #[derive(Clone, Debug, PartialEq)]
 struct AnalyticsCapture {
     key: StreamKey,
@@ -623,6 +628,18 @@ impl NotificationStreamBuffer {
     /// The durable JSON text of this buffer: its metadata, and its entries
     /// with pending deltas (`None` when nothing is pending).
     pub(crate) fn persisted_text(&self) -> serde_json::Result<(String, Option<String>)> {
+        let (metadata, pending) = self.persisted_parts()?;
+        Ok((
+            metadata,
+            pending
+                .map(|pending| serde_json::to_string(&pending))
+                .transpose()?,
+        ))
+    }
+
+    pub(crate) fn persisted_parts(
+        &self,
+    ) -> serde_json::Result<(String, Option<NotificationPendingStreams>)> {
         let metadata = serde_json::to_string(&StreamMetadata {
             entries: self
                 .entries
@@ -648,13 +665,32 @@ impl NotificationStreamBuffer {
             .entries
             .iter()
             .filter(|entry| entry.count > 0)
+            .cloned()
             .collect::<Vec<_>>();
         let pending = if pending.is_empty() {
             None
         } else {
-            Some(serde_json::to_string(&pending)?)
+            Some(NotificationPendingStreams(pending))
         };
         Ok((metadata, pending))
+    }
+
+    pub(crate) fn restore_pending(
+        &mut self,
+        pending: NotificationPendingStreams,
+    ) -> Result<(), NotificationDispatchError> {
+        for entry in pending.0 {
+            let target = self
+                .entries
+                .iter_mut()
+                .find(|target| target.key == entry.key && target.key.agent_id == entry.key.agent_id)
+                .ok_or(NotificationDispatchError::invalid_account())?;
+            target.pending.clone_from(&entry.pending);
+            target.count = entry.count;
+            target.params.clone_from(&entry.params);
+        }
+        self.rebuild_runtime_state();
+        Ok(())
     }
 
     pub(crate) fn pending_bytes(&self) -> usize {
@@ -696,13 +732,13 @@ impl NotificationStreamBuffer {
             .base
             .as_deref()
     }
-    pub(super) fn preserve_base(&mut self, key: &StreamKey, hash: String) -> bool {
+    pub(super) fn preserve_base(&mut self, key: &StreamKey, text: String) -> bool {
         if let Some(index) = self.indexes.entries.get(key).copied()
             && let Some(entry) = self.entries.get_mut(index)
             && entry.flushed
             && entry.base.is_none()
         {
-            entry.base = Some(hash);
+            entry.base = Some(text);
             return true;
         }
         false

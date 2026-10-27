@@ -6,15 +6,11 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Value;
 
 use crate::repositories::transcript::{TranscriptItem, TranscriptRepository, TranscriptStoreError};
-use crate::{EventWriteReceipt, EventWriteRepository, StoreError, StoreResult};
+use crate::{StoreError, StoreResult};
 
 const EVENT_META_TABLE: &[crate::schema::TableRequirement] = &[crate::schema::TableRequirement {
     name: "runtime_event_meta",
     columns: &["id", "record"],
-}];
-const RECEIPT_TABLE: &[crate::schema::TableRequirement] = &[crate::schema::TableRequirement {
-    name: "runtime_operation_receipts",
-    columns: &["id", "signature", "result"],
 }];
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -41,10 +37,6 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
             tables: EVENT_META_TABLE,
         },
         crate::schema::ConditionalTableRequirement {
-            table_exists: "runtime_operation_receipts",
-            tables: RECEIPT_TABLE,
-        },
-        crate::schema::ConditionalTableRequirement {
             table_exists: "runtime_item_fulltext",
             tables: &[crate::schema::TableRequirement {
                 name: "runtime_item_fulltext",
@@ -61,15 +53,41 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 };
 
 impl NotificationDispatchRepository {
-    /// Temporary base only when item/started replaced a flushed stream's text.
-    pub fn stream_base(tx: &Transaction<'_>, id: &str) -> StoreResult<Option<String>> {
-        Ok(EventWriteRepository::receipt(tx, id)?.map(|row| row.result))
+    /// The input event owns publication identity even after its replay body expires.
+    pub fn submission_owner(
+        tx: &Transaction<'_>,
+        agent: &str,
+        event: &str,
+    ) -> StoreResult<Option<Value>> {
+        if Self::user_event(tx, agent, event)?.is_none() {
+            return Err(invalid_record("runtime_events", event));
+        }
+        Ok(Self::event_metadata(tx, event)?
+            .and_then(|meta| meta.get("providerSubmission").cloned()))
     }
-    pub fn put_stream_base(tx: &Transaction<'_>, id: &str, text: Option<&str>) -> StoreResult<()> {
-        if let Some(text) = text {
-            tx.execute_cached("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'stream-base',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result", params![id, serde_json::to_string(text).map_err(|_| invalid_record("runtime_operation_receipts", id))?])?;
-        } else {
-            tx.execute_cached("DELETE FROM runtime_operation_receipts WHERE id=?1", [id])?;
+
+    pub fn put_submission_owner(
+        tx: &Transaction<'_>,
+        attempt: Option<&str>,
+        events: &[&str],
+        owner: &Value,
+    ) -> StoreResult<()> {
+        let raw = serde_json::to_string(owner)?;
+        for event in events {
+            Self::event_metadata(tx, event)?;
+            tx.execute_cached(
+                "INSERT INTO runtime_event_meta(id,record) VALUES(?1,json_object('providerSubmission',json(?2))) ON CONFLICT(id) DO UPDATE SET record=json_set(record,'$.providerSubmission',json(?2))",
+                params![event, raw],
+            )?;
+        }
+        if let Some(attempt) = attempt {
+            let changed = tx.execute_cached(
+                "UPDATE runtime_execution_attempts SET record=json_set(record,'$.providerSubmission',json(?2)) WHERE id=?1",
+                params![attempt, raw],
+            )?;
+            if changed != 1 {
+                return Err(invalid_record("runtime_execution_attempts", attempt));
+            }
         }
         Ok(())
     }
@@ -322,31 +340,6 @@ impl NotificationDispatchRepository {
             return Err(invalid_record("runtime_event_meta", event_id));
         }
         Ok(Some(value))
-    }
-
-    pub fn notification_receipt(
-        transaction: &Transaction<'_>,
-        id: &str,
-    ) -> StoreResult<Option<EventWriteReceipt>> {
-        EventWriteRepository::receipt(transaction, id)
-    }
-
-    pub fn put_notification_receipt(
-        transaction: &Transaction<'_>,
-        id: &str,
-        signature: &str,
-        result: &str,
-    ) -> StoreResult<()> {
-        EventWriteRepository::put_receipt(transaction, id, signature, result)
-    }
-
-    pub fn replace_notification_receipt(
-        transaction: &Transaction<'_>,
-        id: &str,
-        signature: &str,
-        result: &str,
-    ) -> StoreResult<()> {
-        EventWriteRepository::replace_receipt(transaction, id, signature, result)
     }
 }
 

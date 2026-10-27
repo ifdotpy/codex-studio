@@ -100,7 +100,7 @@ fn failed_notification_transaction_discards_staged_stream_changes() {
     let mut db = super::tests::database();
     let tx = db.transaction().expect("test transaction");
     tx.execute_batch(
-        "CREATE TEMP TRIGGER fail_notification_receipt BEFORE INSERT ON runtime_operation_receipts
+        "CREATE TEMP TRIGGER fail_notification_receipt BEFORE INSERT ON runtime_outbox
          BEGIN SELECT RAISE(ABORT, 'receipt failpoint'); END;",
     )
     .expect("receipt failpoint installs");

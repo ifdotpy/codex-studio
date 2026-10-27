@@ -1,18 +1,181 @@
 //! Submission validation, team-boundary policy, and canonical input records.
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use studio_runtime_store::{NotificationDispatchRepository, SchedulerRepository, Transaction};
+use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
+use studio_runtime_store::{
+    ExecutionHistoryRepository, NotificationDispatchRepository, SchedulerRepository, Transaction,
+};
 
 use super::{
-    ITEM_PREVIEW_CHARS, NotificationDispatchError, PreparedSubmission, SubmissionAuthorization,
-    stored, validate_agent_write_fields,
+    DispatchOutcome, ITEM_PREVIEW_CHARS, NotificationDispatchError, PreparedSubmission,
+    SubmissionAuthorization, checked_outcome, in_savepoint, saved_text, sha256_json, stored,
+    validate_agent_write_fields,
 };
+
+/// The input owner keeps the publication fence independently of response expiry.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderSubmission {
+    attempt_id: Option<String>,
+    first_event_id: String,
+    admission: AdmittedRequest,
+    publication_outcome: DispatchOutcome,
+}
+
+pub(super) fn record_submission(
+    tx: &Transaction<'_>,
+    agent: &str,
+    submission: &PreparedSubmission,
+    authorization: SubmissionAuthorization<'_>,
+) -> Result<DispatchOutcome, NotificationDispatchError> {
+    in_savepoint(tx, || {
+        let item = format!("{agent}:{}", submission.first_event_id);
+        let record = submission_record(&item, submission);
+        let signature = sha256_json(&json!({
+            "agent": agent,
+            "firstEventId": submission.first_event_id,
+            "submittedAt": submission.submitted_at,
+            "createdAt": submission.created_at,
+            "record": record,
+            "text": submission.text,
+            "inputTexts": submission.inputs.iter().map(|input| &input.text).collect::<Vec<_>>(),
+        }))?;
+        if let Some(owner) =
+            NotificationDispatchRepository::submission_owner(tx, agent, &submission.first_event_id)?
+        {
+            let owner: ProviderSubmission = serde_json::from_value(owner)
+                .map_err(|_| stored("runtime_event_meta", &submission.first_event_id))?;
+            if owner.first_event_id != submission.first_event_id {
+                return Err(NotificationDispatchError::ConflictingInput);
+            }
+            let replacing = matches!(authorization, SubmissionAuthorization::Start { attempt_id } if owner.attempt_id.as_deref() != Some(attempt_id));
+            if !replacing {
+                if owner.admission.signature() != signature {
+                    return Err(NotificationDispatchError::ConflictingInput);
+                }
+                return replay_submission(tx, agent, &item, &owner.admission);
+            }
+        }
+        validate_submission(tx, agent, submission, authorization)?;
+        let (attempt_id, root) = match authorization {
+            SubmissionAuthorization::AcknowledgedSteer { admission } => (None, admission.clone()),
+            SubmissionAuthorization::Start { attempt_id } => (
+                Some(attempt_id.to_owned()),
+                ExecutionHistoryRepository::admission(tx, attempt_id)?
+                    .ok_or_else(|| stored("runtime_execution_attempts", attempt_id))?,
+            ),
+            SubmissionAuthorization::Current => {
+                let current = NotificationDispatchRepository::agent_record(tx, agent)?
+                    .ok_or_else(|| stored("runtime_agents", agent))?;
+                let attempt = current
+                    .pointer("/activeExecution/attemptId")
+                    .or_else(|| current.pointer("/startAttempt/id"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| stored("runtime_agents", agent))?;
+                let root = ExecutionHistoryRepository::admission(tx, attempt)?
+                    .ok_or_else(|| stored("runtime_execution_attempts", attempt))?;
+                (Some(attempt.to_owned()), root)
+            }
+        };
+        let admission = root.derive_result(
+            "provider-submission",
+            &[&submission.first_event_id],
+            &signature,
+        );
+        let same_item = match NotificationDispatchRepository::transcript_item(tx, agent, &item)? {
+            Some((existing, created)) => {
+                let same = existing == record
+                    && saved_text(tx, &item, &existing)? == submission.text
+                    && created == submission.created_at;
+                if !same && !matches!(authorization, SubmissionAuthorization::Start { .. }) {
+                    return Err(NotificationDispatchError::ConflictingInput);
+                }
+                same
+            }
+            None => false,
+        };
+        if !same_item {
+            NotificationDispatchRepository::put_transcript_item(
+                tx,
+                &item,
+                agent,
+                &record,
+                submission.created_at,
+                &submission.text,
+                true,
+            )?;
+        }
+        for input in &submission.inputs {
+            NotificationDispatchRepository::link_transcript_item_to_event(
+                tx, agent, &input.id, &item,
+            )?;
+        }
+        let owner = ProviderSubmission {
+            attempt_id,
+            first_event_id: submission.first_event_id.clone(),
+            admission,
+            publication_outcome: DispatchOutcome::Written,
+        };
+        NotificationDispatchRepository::put_submission_owner(
+            tx,
+            owner.attempt_id.as_deref(),
+            &submission
+                .inputs
+                .iter()
+                .map(|input| input.id.as_str())
+                .collect::<Vec<_>>(),
+            &serde_json::to_value(&owner)?,
+        )?;
+        RequestResults::settle(
+            tx,
+            &owner.admission,
+            &ResultEnvelope {
+                actor: Some(agent.to_owned()),
+                reply: &owner.publication_outcome,
+                references: vec![item],
+            },
+        )?;
+        Ok(owner.publication_outcome)
+    })
+}
+
+fn replay_submission(
+    tx: &Transaction<'_>,
+    agent: &str,
+    item: &str,
+    admission: &AdmittedRequest,
+) -> Result<DispatchOutcome, NotificationDispatchError> {
+    let now = chrono::Utc::now().timestamp_millis();
+    let saved = RequestResults::replay(tx, admission.id(), admission.signature(), now)?;
+    let Some(saved) = saved else {
+        let floor = now.saturating_sub(studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS);
+        if admission.created() <= floor {
+            return Err(
+                studio_runtime_store::request_results::RequestResultError::Identity(
+                    studio_runtime_schema::persistence::RequestIdentityError::Expired {
+                        issued_ms: admission.created(),
+                        expired_before_ms: floor,
+                    },
+                )
+                .into(),
+            );
+        }
+        return Err(stored("request_results", admission.id()));
+    };
+    let envelope: ResultEnvelope<DispatchOutcome> = serde_json::from_str(&saved.result)
+        .map_err(|_| stored("request_results", admission.id()))?;
+    if envelope.actor.as_deref() != Some(agent) || envelope.references != [item] {
+        return Err(stored("request_results", admission.id()));
+    }
+    checked_outcome(envelope.reply)
+}
 
 pub(super) fn validate_submission(
     transaction: &Transaction<'_>,
     agent_id: &str,
     submission: &PreparedSubmission,
-    authorization: SubmissionAuthorization,
+    authorization: SubmissionAuthorization<'_>,
 ) -> Result<(), NotificationDispatchError> {
     if submission.first_event_id.is_empty()
         || submission.inputs.is_empty()
