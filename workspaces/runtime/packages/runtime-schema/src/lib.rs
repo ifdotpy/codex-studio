@@ -16,6 +16,7 @@ pub mod json_compat;
 pub mod model_catalog;
 pub mod multi_server_protocol;
 pub mod pricing;
+pub mod process_controls;
 pub mod provider_diagnostics;
 pub mod provider_errors;
 pub mod provider_input;
@@ -23,6 +24,7 @@ pub mod provider_kind;
 pub mod provider_lifecycle;
 pub mod provider_method_policy;
 pub mod provider_rate_limits;
+pub mod question_answers;
 pub mod queue_command;
 pub mod records;
 pub mod shared_values;
@@ -775,6 +777,7 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         "SubscriptionCursor",
         "SubscriptionReplyKind",
         "ResourceProgressEvent",
+        "VaultPullOutcome",
         "ResourceEntityTransferEvent",
         "EntityChangeBatch",
         "RoomEntityDto",

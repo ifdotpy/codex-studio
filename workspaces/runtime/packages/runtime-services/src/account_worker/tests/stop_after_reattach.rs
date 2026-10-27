@@ -8,14 +8,14 @@
 //! the turns ran on and their `cargo nextest` and `just test-fast` commands ran
 //! for 15 more minutes. The Codex app-server also keeps a thread's unified exec
 //! processes after an interrupt, so the stop must end them too.
+
 use super::*;
+use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use crate::account_session_runtime::{
-    AccountSessionError, AccountSessionRuntime, NotSentReason, ProviderRequest, ProviderResponse,
-    RequestCertainty, RetainedAccountSession, SessionFuture, SessionReceipt,
+    AccountSessionError, AccountSessionRuntime, ProviderRequest, RetainedAccountSession,
+    SessionFuture, SessionReceipt,
 };
-use crate::account_worker::retained::{
-    PortError, RequestResult, RetainedSessionPort, SessionRequest,
-};
+use crate::account_worker::retained::{PortError, RetainedSessionPort, SessionRequest};
 use crate::agent_management::Action;
 use crate::lifecycle_effects::ProductionLifecyclePorts;
 use crate::recovery_history::ConnectionScope;
@@ -43,11 +43,8 @@ impl RetainedAccountSession for WorkerSession {
                 return Ok(SessionReceipt {
                     scope: request.expected_scope.unwrap_or(scope),
                     operation: request.operation,
-                    ticket: None,
-                    certainty: RequestCertainty::NotSent,
-                    result: None,
-                    not_sent_reason: Some(NotSentReason::ExpectedScopeMismatch),
                     replayed: false,
+                    outcome: ReceiptOutcome::ExpectedScopeMismatch,
                 });
             }
             let receipt = port
@@ -74,28 +71,7 @@ impl RetainedAccountSession for WorkerSession {
                         AccountSessionError::Refused("Provider request was refused")
                     }
                 })?;
-            let (certainty, result) = match receipt.result {
-                RequestResult::Reply(value) => (
-                    RequestCertainty::Written,
-                    Some(ProviderResponse::Reply(value)),
-                ),
-                RequestResult::Rejected(value) => (
-                    RequestCertainty::Written,
-                    Some(ProviderResponse::Rejected(value)),
-                ),
-                RequestResult::NotSent => (RequestCertainty::NotSent, None),
-                RequestResult::Unknown => (RequestCertainty::Unknown, None),
-            };
-            Ok(SessionReceipt {
-                scope: receipt.scope,
-                operation: receipt.operation,
-                ticket: Some(receipt.ticket),
-                certainty,
-                result,
-                not_sent_reason: (certainty == RequestCertainty::NotSent)
-                    .then_some(NotSentReason::WorkerNotSent),
-                replayed: receipt.replayed,
-            })
+            Ok(receipt.into())
         })
     }
 }
@@ -435,11 +411,8 @@ impl RetainedAccountSession for NoLiveWorker {
                     generation: 0,
                 }),
                 operation: request.operation,
-                ticket: None,
-                certainty: RequestCertainty::NotSent,
-                result: None,
-                not_sent_reason: Some(NotSentReason::NoLiveAccountWorker),
                 replayed: false,
+                outcome: ReceiptOutcome::NoLiveAccountWorker,
             })
         })
     }

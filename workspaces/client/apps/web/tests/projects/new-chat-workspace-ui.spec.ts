@@ -109,7 +109,7 @@ async function setup(
         const creation = fixturePostBody<"/api/leads">(body);
         creations.push(creation);
 
-        const row: import("../../src/types.ts").Agent = {
+        const row: import("../../src/generated/api.ts").AgentEntityDto = {
           ...snapshot.threads[0],
           id: creation.id!,
           name: "New chat",

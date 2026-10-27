@@ -13,6 +13,7 @@ use std::{
 };
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{
     account_driver::AccountDriver,
     account_session_runtime::{
@@ -74,16 +75,23 @@ impl RetainedAccountSession for Session {
         let method = request.method;
         Box::pin(async move {
             Ok(SessionReceipt {
+                outcome: {
+                    let ticket = RequestTicket {
+                        generation: 1,
+                        id: RequestId::String("fixture".into()),
+                        method,
+                    };
+                    match certainty {
+                        RequestCertainty::Written => ReceiptOutcome::Written {
+                            ticket,
+                            response: ProviderResponse::Reply(result),
+                        },
+                        RequestCertainty::Unknown => ReceiptOutcome::Unknown { ticket },
+                        RequestCertainty::NotSent => ReceiptOutcome::NoLiveAccountWorker,
+                    }
+                },
                 scope,
                 operation,
-                ticket: Some(RequestTicket {
-                    generation: 1,
-                    id: RequestId::String("fixture".into()),
-                    method,
-                }),
-                certainty,
-                result: Some(ProviderResponse::Reply(result)),
-                not_sent_reason: None,
                 replayed: false,
             })
         })

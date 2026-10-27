@@ -5,6 +5,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::process_controls::{
+    ProcessActionResult, ProcessActionStatus, ProcessControlRequest, ProcessEntry, ProcessOutcome,
+    ProcessReceipt, Request,
+};
 use studio_runtime_store::{StoreError, Transaction};
 
 #[derive(Debug, thiserror::Error)]
@@ -327,14 +331,20 @@ pub fn validate_response(owner: &Value, target: &Value, connection: Option<&str>
 
 pub enum Claim {
     Replay(Value),
-    New { record: Value, targets: Vec<Value> },
+    New {
+        record: Value,
+        targets: Vec<Value>,
+        result: ProcessActionResult,
+    },
 }
 pub fn claim(
     tx: &Transaction<'_>,
-    request: &Value,
+    request: &Request,
     connections: &Connections,
     now: f64,
 ) -> Result<Claim, Error> {
+    let command = request.command();
+    let request = request.raw();
     let id = text(request, "requestId", "");
     let signature = digest(request);
     let prior: Option<(String, String)> = tx
@@ -352,7 +362,7 @@ pub fn claim(
             ));
         }
         let record: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
-        return Ok(Claim::Replay(record["result"].clone()));
+        return Ok(Claim::Replay(decode_result(&record)?));
     }
     let scope = text(request, "agent", "");
     let (owners, processes) = processes(tx, scope, connections)?;
@@ -367,7 +377,11 @@ pub fn claim(
     let action = text(request, "action", "");
     let mut targets = Vec::new();
     let mut entries = Vec::new();
-    let response = if matches!(action, "stop_response" | "background_command") {
+    let response = if matches!(
+        command,
+        ProcessControlRequest::StopResponse { .. }
+            | ProcessControlRequest::BackgroundCommand { .. }
+    ) {
         if !validate_response(
             owner,
             &request["responseTarget"],
@@ -379,17 +393,34 @@ pub fn claim(
         }
         request["responseTarget"].clone()
     } else {
-        let selected = if action == "stop_selected" {
-            vec![request["process"].clone()]
-        } else {
-            request["processes"].as_array().cloned().unwrap_or_default()
+        let (selected, include_descendants) = match command {
+            ProcessControlRequest::StopSelected {
+                process,
+                include_descendants,
+                ..
+            } => (std::slice::from_ref(process), *include_descendants),
+            ProcessControlRequest::StopOwned {
+                processes,
+                include_descendants,
+                ..
+            } => (processes.as_slice(), *include_descendants),
+            ProcessControlRequest::StopResponse { .. }
+            | ProcessControlRequest::BackgroundCommand { .. } => {
+                unreachable!("response commands handled above")
+            }
         };
         let mut seen = HashSet::new();
-        for identity in selected {
-            let found = processes.iter().find(|p| matches(p, &identity));
-            let error = if !seen.insert(identity["key"].clone().to_string()) {
+        for (index, identity) in selected.iter().enumerate() {
+            // Keep numeric spellings in identity comparisons as well as the signature.
+            let raw_identity = if matches!(command, ProcessControlRequest::StopSelected { .. }) {
+                &request["process"]
+            } else {
+                &request["processes"][index]
+            };
+            let found = processes.iter().find(|p| matches(p, raw_identity));
+            let error = if !seen.insert(&identity.key) {
                 Some("A process identity was repeated")
-            } else if request["includeDescendants"] != true && identity["agent"] != scope {
+            } else if !include_descendants && identity.agent != scope {
                 Some("Worker processes are outside this stop scope")
             } else if found.is_none() {
                 Some("This process changed or finished. Refresh the process list")
@@ -399,22 +430,45 @@ pub fn claim(
                 None
             };
             if let Some(error) = error {
-                entries.push(json!({"key":identity["key"],"agent":identity["agent"],"status":"stale","error":error}));
+                entries.push(ProcessEntry {
+                    key: identity.key.clone(),
+                    agent: identity.agent.clone(),
+                    source: None,
+                    generation: None,
+                    outcome: ProcessOutcome::Stale {
+                        error: error.into(),
+                    },
+                });
             } else if let Some(process) = found {
-                entries.push(json!({"key":process["key"],"agent":process["agent"],"source":process["source"],"generation":process["generation"],"status":"pending"}));
+                entries.push(ProcessEntry {
+                    key: text(process, "key", "").to_owned(),
+                    agent: text(process, "agent", "").to_owned(),
+                    source: Some(text(process, "source", "").to_owned()),
+                    generation: Some(text(process, "generation", "").to_owned()),
+                    outcome: ProcessOutcome::Pending,
+                });
                 targets.push(process.clone());
             }
         }
         Value::Null
     };
-    let result = json!({"requestId":id,"status":"uncertain","processes":entries});
-    let record = json!({"requestId":id,"signature":signature,"phase":"dispatching","scopeAgent":scope,"scopeAccountKey":request["accountKey"],"scopeEpoch":request["epoch"],"action":action,"responseTarget":response,"processes":entries,"created":now,"result":result});
+    let result = ProcessActionResult {
+        request_id: id.into(),
+        status: ProcessActionStatus::Uncertain,
+        processes: entries,
+        response: None,
+    };
+    let record = json!({"requestId":id,"signature":signature,"phase":"dispatching","scopeAgent":scope,"scopeAccountKey":request["accountKey"],"scopeEpoch":request["epoch"],"action":action,"responseTarget":response,"processes":result.processes,"created":now,"result":result});
     tx.execute(
         "INSERT INTO runtime_process_actions(id,signature,record) VALUES(?,?,?)",
         params![id, signature, canonical(&record)],
     )
     .map_err(StoreError::from)?;
-    Ok(Claim::New { record, targets })
+    Ok(Claim::New {
+        record,
+        targets,
+        result,
+    })
 }
 pub fn save(tx: &Transaction<'_>, record: &Value) -> Result<(), Error> {
     tx.execute(
@@ -424,10 +478,15 @@ pub fn save(tx: &Transaction<'_>, record: &Value) -> Result<(), Error> {
     .map_err(StoreError::from)?;
     Ok(())
 }
-pub fn receipt(connection: &Connection, query: &Value) -> Result<Value, Error> {
+fn decode_result(record: &Value) -> Result<Value, Error> {
+    let result = record["result"].clone();
+    ProcessActionResult::validate(&result).map_err(StoreError::from)?;
+    Ok(result)
+}
+pub fn receipt(connection: &Connection, query: &Value) -> Result<ProcessReceipt, Error> {
     let exists:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_process_actions')",[],|r|r.get(0)).map_err(StoreError::from)?;
     if !exists {
-        return Ok(json!({"found":false,"result":null}));
+        return Ok(ProcessReceipt::not_found());
     }
     let record = raw(
         connection,
@@ -439,7 +498,9 @@ pub fn receipt(connection: &Connection, query: &Value) -> Result<Value, Error> {
         && record["scopeAccountKey"] == query["accountKey"]
         && record["scopeEpoch"] == query["epoch"]
     {
-        return Ok(json!({"found":true,"result":record["result"]}));
+        return ProcessReceipt::found(record["result"].clone())
+            .map_err(StoreError::from)
+            .map_err(Error::from);
     }
-    Ok(json!({"found":false,"result":null}))
+    Ok(ProcessReceipt::not_found())
 }

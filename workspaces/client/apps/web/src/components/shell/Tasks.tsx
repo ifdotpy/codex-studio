@@ -127,7 +127,7 @@ function TaskEditor({
   onClose,
 }: {
   task?: ReviewTask | undefined;
-  tasks: ReviewTask[];
+  tasks: readonly ReviewTask[];
   write: Write;
   busy: boolean;
   onClose: () => void;
@@ -135,7 +135,9 @@ function TaskEditor({
   const [title, setTitle] = useState(task?.title || "");
   const [description, setDescription] = useState(task?.description || "");
   const [owner, setOwner] = useState(task?.owner || "");
-  const [dependencies, setDependencies] = useState(task?.dependencies || []);
+  const [dependencies, setDependencies] = useState(() => [
+    ...(task?.dependencies || []),
+  ]);
   const [status, setStatus] = useState<"ready" | "blocked" | "">(
     task ? "" : "ready",
   );

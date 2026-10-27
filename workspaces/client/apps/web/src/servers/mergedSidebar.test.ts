@@ -322,7 +322,10 @@ describe("complete multi-server sidebar projection", () => {
       assert.ok(value.sidebar.projects[0] != null);
       value.sidebar.projects[0].folders = [{ id: "folder", name: "Notes" }];
       assert.ok(value.sidebar.threads[0] != null);
-      value.sidebar.threads[0].projectFolder = "folder";
+      value.sidebar.threads[0] = {
+        ...value.sidebar.threads[0],
+        projectFolder: "folder",
+      };
       value.sidebar.peerTeams = [
         { id: "team", name: value.id, projectPath: path, members: ["same"] },
       ];

@@ -1,6 +1,6 @@
 import { required } from "./performance-fixture.ts";
 import { installResponsivenessFixture } from "./ui-responsiveness.fixture.ts";
-import type { Agent } from "../../src/types.ts";
+import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
 import type { PerformanceTranscriptItem as Message } from "./performance-fixture.ts";
 import { transcriptFixtureAgent } from "./performance-fixture.ts";
 import {

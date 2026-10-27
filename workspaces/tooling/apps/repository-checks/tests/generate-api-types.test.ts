@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { createReadStream, readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import ts from "typescript";
@@ -138,4 +140,207 @@ test("the recursive JsonValue alias stays strict", () => {
     );
     visit(alias.type);
   }
+});
+
+test("recursive generation handles array-only schemas and properties named JsonValue", () => {
+  const document = {
+    ...schema,
+    components: {
+      schemas: {
+        AEntityDto: {
+          type: "object",
+          required: ["JsonValue"],
+          properties: { JsonValue: { type: "string" } },
+        },
+        JsonValue: {
+          type: ["null", "string", "array"],
+          anyOf: [
+            { type: "null" },
+            { type: "string" },
+            {
+              type: "array",
+              items: { $ref: "#/components/schemas/JsonValue" },
+            },
+          ],
+        },
+      },
+    },
+  } satisfies OpenAPI3;
+  for (const mode of ["-", "--rust-owned"]) {
+    const result = spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL("../generate-api-types.ts", import.meta.url)),
+        mode,
+      ],
+      { input: JSON.stringify(document), encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const file = "/generated-api-witness.ts";
+    const input = `${result.stdout}
+const entity: AEntityDto = { JsonValue: "preserved" };
+const json: JsonValue = { nested: [null, "value", false, 1] };
+// @ts-expect-error Required properties remain required.
+const missing: AEntityDto = {};
+// @ts-expect-error A same-named property keeps its original type.
+const wrong: AEntityDto = { JsonValue: null };
+// @ts-expect-error Recursive JSON cannot contain undefined.
+const invalidJson: JsonValue = { nested: [undefined] };
+`;
+    const host = ts.createCompilerHost({});
+    const readSource = host.getSourceFile.bind(host);
+    host.getSourceFile = (name, ...args) =>
+      name === file
+        ? ts.createSourceFile(name, input, ts.ScriptTarget.Latest, true)
+        : readSource(name, ...args);
+    const program = ts.createProgram(
+      [file],
+      {
+        strict: true,
+        exactOptionalPropertyTypes: true,
+        noEmit: true,
+        skipLibCheck: true,
+        target: ts.ScriptTarget.ESNext,
+      },
+      host,
+    );
+    assert.deepEqual(
+      ts
+        .getPreEmitDiagnostics(program)
+        .map((diagnostic) =>
+          ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+        ),
+      [],
+    );
+  }
+});
+
+test("the repository OpenAPI preserves committed declarations without format churn", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      fileURLToPath(new URL("../generate-api-types.ts", import.meta.url)),
+      fileURLToPath(
+        new URL(
+          "../../../../runtime/packages/runtime-http/openapi.json",
+          import.meta.url,
+        ),
+      ),
+    ],
+    { encoding: "utf8", maxBuffer: Infinity },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const declarations = (text: string) => {
+    const source = ts.createSourceFile(
+      "api.ts",
+      text,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    return source.statements
+      .filter(
+        (node) =>
+          ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node),
+      )
+      .map((node) => node.getText(source));
+  };
+  assert.deepEqual(
+    declarations(result.stdout),
+    declarations(
+      readFileSync(
+        new URL(
+          "../../../../client/apps/web/src/generated/api.ts",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ),
+  );
+});
+
+test("runtime enum exports use schema-owned strings and reject non-string enums", async () => {
+  const statuses = {
+    RequestStatus: { type: "string", enum: ["pending", "uncertain"] },
+    TaskStatus: { type: "string", enum: ["running", "lost"] },
+    TransferStatus: { type: "string", enum: ["pending", "completed"] },
+  } satisfies NonNullable<NonNullable<OpenAPI3["components"]>["schemas"]>;
+  const document = {
+    ...schema,
+    components: { schemas: statuses },
+  } satisfies OpenAPI3;
+  const generate = (input: OpenAPI3) =>
+    spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL("../generate-api-types.ts", import.meta.url)),
+        "--rust-owned",
+      ],
+      { input: JSON.stringify(input), encoding: "utf8" },
+    );
+  const result = generate(document);
+  assert.equal(result.status, 0, result.stderr);
+  const javascript = ts.transpileModule(result.stdout, {
+    compilerOptions: { module: ts.ModuleKind.ESNext },
+  }).outputText;
+  const exports = await import(
+    `data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`
+  );
+  for (const [name, definition] of Object.entries(statuses))
+    assert.deepEqual(
+      exports[name],
+      Object.fromEntries(definition.enum.map((value) => [value, value])),
+    );
+  const invalid = generate({
+    ...document,
+    components: { schemas: { TransferStatus: { type: "number", enum: [1] } } },
+  });
+  assert.notEqual(invalid.status, 0);
+  assert.match(invalid.stderr, /TransferStatus must be a closed string enum/);
+});
+
+test("API generation rejects a document without its recursive JSON owner", () => {
+  const result = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL("../generate-api-types.ts", import.meta.url)), "-"],
+    { input: JSON.stringify(schema), encoding: "utf8" },
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /must define a recursive JsonValue component/);
+});
+
+test("streamed OpenAPI stdin preserves file-input generation across pipe backpressure", async () => {
+  const generator = fileURLToPath(
+    new URL("../generate-api-types.ts", import.meta.url),
+  );
+  const input = fileURLToPath(
+    new URL(
+      "../../../../runtime/packages/runtime-http/openapi.json",
+      import.meta.url,
+    ),
+  );
+  const expected = spawnSync(process.execPath, [generator, input], {
+    encoding: "utf8",
+    maxBuffer: Infinity,
+  });
+  assert.equal(expected.status, 0, expected.stderr);
+  const child = spawn(process.execPath, [generator, "-"], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let output = "";
+  let errors = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+    output += chunk;
+  });
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+    errors += chunk;
+  });
+  const completed = once(child, "close");
+  const [transferred, exited] = await Promise.allSettled([
+    pipeline(createReadStream(input, { highWaterMark: 4096 }), child.stdin),
+    completed,
+  ]);
+  assert.ok(exited.status === "fulfilled", errors);
+  assert.equal(exited.value[0], 0, errors);
+  assert.equal(transferred.status, "fulfilled", errors);
+  assert.equal(output, expected.stdout);
 });

@@ -28,7 +28,8 @@ export type {
   TranscriptPageData,
 } from "./apiTypes";
 import type { JsonInput, TranscriptWireItem } from "./apiTypes";
-export type Agent = AgentEntityDto;
+import type { DeepReadonly } from "rxdb";
+export type Agent = DeepReadonly<AgentEntityDto>;
 export type Chat = ChatEntityDto;
 export type PeerTeam = PeerTeamEntityDto;
 export type Room = RoomEntityDto;
@@ -126,7 +127,7 @@ export type Message = Omit<
     | "sending"
     | "paused"
     | undefined;
-  nativeError?: JsonInput | undefined;
+  nativeError?: DeepReadonly<JsonInput> | undefined;
   role: NonNullable<TranscriptWireItem["role"]>;
   text: NonNullable<TranscriptWireItem["text"]>;
   accountKey?: string | undefined;

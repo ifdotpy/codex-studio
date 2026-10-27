@@ -1,6 +1,8 @@
 import { expect, it, vi } from "vitest";
 import { createDataObserver } from "./data";
 import type { ResourceRef } from "./contracts";
+import type { ResourceDataSelectors, ViewRecovery } from "./selectData";
+import type { TranscriptProjectionPayload } from "../client";
 import type { ResourceVersion } from "../resourceEvents";
 import type { ObserveSubscriptionData } from "./module";
 // Partial sync fixtures: these cases never enter the transcript observer path.
@@ -41,7 +43,7 @@ it.each([
       () => ({ get }) as { get: typeof get } & SyncFixture,
       events,
       undefined,
-      get,
+      { processes: get, complaint: get, room: get, "terminal-output": get },
     )(ref as ResourceRef, accept, vi.fn());
     receive({
       epoch: "server",
@@ -82,7 +84,7 @@ it("an oversized view recovers once and subsequent complete frames resume zero-r
     () => ({}) as SyncFixture,
     events,
     undefined,
-    read,
+    { processes: read },
   )({ kind: "processes", agentId: "lead" }, accept, vi.fn());
   expect(read).not.toHaveBeenCalled();
   receive({ epoch: "server", revision: 1 });
@@ -120,7 +122,7 @@ it("work baselines and updates use the entity observer even when view recovery e
     () => ({}) as SyncFixture,
     events,
     observe as ObserveSubscriptionData,
-    recover,
+    { processes: recover },
   )(ref, accept, vi.fn());
   expect(observe).toHaveBeenCalledOnce();
   const first = { items: [{ id: "assignment", title: "Before" }], tasks: [] };
@@ -145,4 +147,59 @@ it("work baselines and updates use the entity observer even when view recovery e
   dispose();
   expect(stopEvents).toHaveBeenCalledOnce();
   expect(stopEntities).toHaveBeenCalledOnce();
+});
+
+// Server recovery and local selectors must preserve the resource's generated data type.
+const invalidRecovery: ViewRecovery = {
+  // @ts-expect-error A process recovery must return ProcessList, never terminal output.
+  processes: async () => ({
+    text: "output",
+    offset: 0,
+    status: "running",
+    truncated: false,
+  }),
+};
+const invalidSelector: ResourceDataSelectors<void> = {
+  // @ts-expect-error A task list selector cannot publish work assignment data.
+  tasks: () => ({ rootId: "lead", items: [], tasks: [] }),
+};
+void invalidRecovery;
+void invalidSelector;
+
+it("publishes partial local transcript metadata without inventing server fields", () => {
+  let publish: (data: TranscriptProjectionPayload) => void = () => {};
+  const unsubscribe = vi.fn();
+  const sync: SyncFixture = {
+    subscribeTranscriptProjection: (_scope, accept) => {
+      publish = accept;
+      return unsubscribe;
+    },
+  };
+  const events = {
+    watchResourceChanges: vi.fn(() => () => {}),
+    watchResourceConnection: () => () => {},
+  };
+  const accepted: (TranscriptProjectionPayload | undefined)[] = [];
+  const stop = createDataObserver(() => sync, events)(
+    { kind: "transcript", agentId: "lead" },
+    (data) => {
+      if (data) {
+        // @ts-expect-error Local cache metadata may omit this required server response field.
+        const completeServerFlag: boolean = data.truncated;
+        void completeServerFlag;
+      }
+      accepted.push(data);
+    },
+    vi.fn(),
+  );
+  const local = {
+    items: [],
+  } satisfies NonNullable<TranscriptProjectionPayload>;
+  publish(local);
+  publish(null);
+  expect(accepted).toEqual([local, undefined]);
+  expect(accepted[0]).toBe(local);
+  expect(events.watchResourceChanges).not.toHaveBeenCalled();
+  stop();
+  expect(unsubscribe).toHaveBeenCalledOnce();
 });

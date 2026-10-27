@@ -21,7 +21,10 @@ export const backgroundTaskId = (p: Json) =>
     ? p.backgroundTaskId
     : undefined;
 
-export type BackgroundRequest = PostBody<"/api/processes/action">;
+export type BackgroundRequest = Extract<
+  PostBody<"/api/processes/action">,
+  { action: "background_command" }
+>;
 type BackgroundResult = PostResult<"/api/processes/action">;
 type Api = Pick<ServerApi, "get" | "post">;
 
@@ -38,19 +41,32 @@ function outcome(
   result: BackgroundResult,
   request: BackgroundRequest,
 ): BackgroundOutcome {
-  const response = result.response || {};
-  const status = typeof response.status === "string" ? response.status : "";
-  if (result.status === "uncertain" || status === "uncertain")
+  const response = result.response;
+  const status = response?.status;
+  if (result.status === "uncertain")
     return { kind: "uncertain", request, message: UNKNOWN };
-  if (status === "backgrounded") return { kind: "backgrounded" };
-  if (status === "not_running") return { kind: "notRunning" };
-  return {
-    kind: "failed",
-    message:
-      (typeof response.error === "string" && response.error) ||
-      result.error ||
-      "The command did not move to the background.",
-  };
+  switch (status) {
+    case "uncertain":
+      return { kind: "uncertain", request, message: UNKNOWN };
+    case "backgrounded":
+      return { kind: "backgrounded" };
+    case "not_running":
+      return { kind: "notRunning" };
+    case undefined:
+    case "requested":
+    case "stale":
+    case "failed":
+      return {
+        kind: "failed",
+        message:
+          (response && "error" in response && response.error) ||
+          "The command did not move to the background.",
+      };
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
+  }
 }
 
 async function submit(
@@ -120,6 +136,6 @@ export async function checkCommandBackground(
   } catch {
     return { kind: "uncertain", request, message: UNKNOWN };
   }
-  if (!receipt.found || !receipt.result) return submit(api, request);
+  if (!receipt.found) return submit(api, request);
   return outcome(receipt.result, request);
 }

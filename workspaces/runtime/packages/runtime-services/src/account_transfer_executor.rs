@@ -5,6 +5,7 @@
 //! Provider writes are guarded by the transfer driver's durable intent and exact
 //! SessionReceipt; an Unknown outcome is never resent.
 
+use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use crate::{
     account_session_runtime::{
         AccountSessionError, AccountSessionPort, ProviderRequest, ProviderResponse,
@@ -305,12 +306,11 @@ async fn session_reply(
                     .as_str()
                     .unwrap_or_default()
                     .into(),
-                ticket: Some(ticket),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(value.clone())),
-                not_sent_reason: None,
-
                 replayed: false,
+                outcome: ReceiptOutcome::Written {
+                    ticket,
+                    response: ProviderResponse::Reply(value.clone()),
+                },
             },
             value,
         ));
@@ -356,21 +356,21 @@ async fn session_reply(
                 "The retained provider request failed; inspect its durable intent",
             ),
         })?;
-        let certainty = receipt.certainty;
-        let ticket = receipt.ticket.as_ref().map(|ticket| {
+        let certainty = receipt.certainty();
+        let ticket = receipt.ticket().map(|ticket| {
             json!({
                 "generation":ticket.generation,
                 "id":ticket.id,
                 "method":ticket.method.as_str(),
             })
         });
-        let result = receipt.result.as_ref().map(|value| match value {
+        let result = receipt.response().map(|value| match value {
             ProviderResponse::Reply(value) => json!({"kind":"reply","value":value}),
             ProviderResponse::Rejected(value) => json!({"kind":"rejected","value":value}),
         });
         let exact = json!({"operation":receipt.operation,"scope":receipt.scope,
             "certainty":certainty.as_str(),"ticket":ticket,
-            "notSentReason":receipt.not_sent_reason.map(|reason| format!("{reason:?}"))});
+            "notSentReason":receipt.not_sent_reason().map(|reason| format!("{reason:?}"))});
         driver::provider_read_receipt(
             context.store,
             driver::ProviderReadReceipt {
@@ -390,14 +390,13 @@ async fn session_reply(
         }
         if receipt.operation != call.operation
             || receipt.scope != scope
-            || receipt.certainty != RequestCertainty::Written
-            || receipt.ticket.is_none()
+            || receipt.certainty() != RequestCertainty::Written
         {
             return Err(TransferError::Refused(
                 "The retained read receipt is not Written on the expected connection",
             ));
         }
-        let response = match receipt.result.clone() {
+        let response = match receipt.response().cloned() {
             Some(ProviderResponse::Reply(value)) => value,
             Some(ProviderResponse::Rejected(_)) | None => {
                 return Err(TransferError::Refused(
@@ -408,7 +407,7 @@ async fn session_reply(
         return Ok((receipt, response));
     }
     let receipt = last_receipt.ok_or(TransferError::Refused("Provider read was not sent"))?;
-    if receipt.certainty == RequestCertainty::NotSent {
+    if receipt.certainty() == RequestCertainty::NotSent {
         return Err(TransferError::Refused(
             "Provider read was not sent after retry",
         ));
@@ -1098,23 +1097,35 @@ impl TransferTransport for AccountTransferExecutor {
             let session_receipt = self.session.provider_request(request).await;
             match session_receipt {
                 Ok(receipt) => {
-                    let result = match receipt.result {
-                        Some(ProviderResponse::Reply(value)) => Some(value),
-                        Some(ProviderResponse::Rejected(value)) => Some(json!({"rejected":value})),
-                        None => None,
+                    let certainty = receipt.certainty();
+                    let ticket_value = receipt.ticket().map(|ticket| json!({
+                        "generation": ticket.generation, "id": ticket.id, "method": ticket.method.as_str(),
+                    }));
+                    let reason = receipt
+                        .not_sent_reason()
+                        .map(|reason| format!("{reason:?}"));
+                    let result = match receipt.outcome {
+                        ReceiptOutcome::Written {
+                            response: ProviderResponse::Reply(value),
+                            ..
+                        } => Some(value),
+                        ReceiptOutcome::Written {
+                            response: ProviderResponse::Rejected(value),
+                            ..
+                        } => Some(json!({"rejected":value})),
+                        ReceiptOutcome::WorkerNotSent { .. }
+                        | ReceiptOutcome::Unknown { .. }
+                        | ReceiptOutcome::NoLiveAccountWorker
+                        | ReceiptOutcome::ExpectedScopeMismatch
+                        | ReceiptOutcome::DeadlineExpired
+                        | ReceiptOutcome::NotHandedOff => None,
                     };
-                    let exact = json!({"operation":receipt.operation,"scope":receipt.scope,"certainty":receipt.certainty.as_str(),
-                    "ticket":receipt.ticket.map(|ticket| json!({
-                        "generation": ticket.generation,
-                        "id": ticket.id,
-                        "method": ticket.method.as_str(),
-                    })),
-                    "notSentReason":receipt.not_sent_reason.map(|reason| format!("{reason:?}")),
-                    "result":result});
+                    let exact = json!({"operation":receipt.operation,"scope":receipt.scope,"certainty":certainty.as_str(),
+                        "ticket":ticket_value,"notSentReason":reason,"result":result});
                     TransferDispatch {
                         receipt: exact,
                         result,
-                        certainty: receipt.certainty,
+                        certainty,
                     }
                 }
                 Err(error) => {
@@ -1410,6 +1421,7 @@ mod destination_settings_tests {
 #[allow(clippy::unwrap_used)]
 mod retained_executor_tests {
     use super::*;
+    use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use crate::account_session_runtime::{
         AccountSessionError, ConnectionScope, ProviderRequest, RequestCertainty, SessionReceipt,
     };
@@ -1463,15 +1475,15 @@ mod retained_executor_tests {
             SessionReceipt {
                 scope: Self::scope(account),
                 operation,
-                ticket: Some(RequestTicket {
-                    generation: 7,
-                    id: RequestId::Number(1),
-                    method,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(value)),
-                not_sent_reason: None,
                 replayed: false,
+                outcome: ReceiptOutcome::Written {
+                    ticket: RequestTicket {
+                        generation: 7,
+                        id: RequestId::Number(1),
+                        method,
+                    },
+                    response: ProviderResponse::Reply(value),
+                },
             }
         }
     }
@@ -1529,9 +1541,9 @@ mod retained_executor_tests {
                             request.method,
                             json!({"thread":{"id":"target-thread"}}),
                         );
-                        receipt.certainty = RequestCertainty::Unknown;
-                        receipt.ticket = None;
-                        receipt.result = None;
+                        receipt.outcome = ReceiptOutcome::Unknown {
+                            ticket: receipt.ticket().expect("written fixture ticket").clone(),
+                        };
                         return Ok(receipt);
                     }
                     Method::Initialize

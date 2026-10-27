@@ -2,6 +2,7 @@
 //! decisions remain in the worker. Wakes are hints over committed SQLite rows.
 //! Registered runtime difference: `image-workspace-dependency-hold` persists
 //! an image-workspace refusal on the agent and leaves its input event pending.
+
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -11,6 +12,7 @@ use std::{
     time::Duration,
 };
 use studio_runtime_process::provider_seam::{OpenOptions, ProviderTaskFactory, Shutdown};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{
     account_driver::AccountChangeSignal,
     account_worker::{
@@ -620,7 +622,10 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
             .and_then(|sessions| sessions.get(&request.account).cloned());
         Box::pin(async move {
             let Some(session) = session.filter(|session| session.is_live()) else {
-                return Ok(not_sent_receipt(request, studio_runtime_services::account_session_runtime::NotSentReason::NoLiveAccountWorker));
+                return Ok(not_sent_receipt(
+                    request,
+                    ReceiptOutcome::NoLiveAccountWorker,
+                ));
             };
             dispatch_request(session, request).await
         })
@@ -631,11 +636,8 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
         request: studio_runtime_services::account_session_runtime::TransferProviderRequest,
     ) -> studio_runtime_services::account_session_runtime::SessionFuture {
         use studio_runtime_services::{
-            account_session_runtime::{
-                AccountSessionError, NotSentReason, ProviderResponse, RequestCertainty,
-                SessionReceipt,
-            },
-            account_worker::retained::{RequestResult, SessionRequest, TransferAuthorization},
+            account_session_runtime::{AccountSessionError, SessionReceipt},
+            account_worker::retained::{SessionRequest, TransferAuthorization},
         };
         let session = self
             .sessions
@@ -646,20 +648,17 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
             let not_sent = |reason| SessionReceipt {
                 scope: request.expected_scope.clone(),
                 operation: request.operation.clone(),
-                ticket: None,
-                certainty: RequestCertainty::NotSent,
-                result: None,
-                not_sent_reason: Some(reason),
+                outcome: reason,
 
                 replayed: false,
             };
             let Some(session) = session.filter(|session| session.is_live()) else {
-                return Ok(not_sent(NotSentReason::NoLiveAccountWorker));
+                return Ok(not_sent(ReceiptOutcome::NoLiveAccountWorker));
             };
             if session.scope() != &request.expected_scope
                 || request.expected_scope.account != request.source_account
             {
-                return Ok(not_sent(NotSentReason::ExpectedScopeMismatch));
+                return Ok(not_sent(ReceiptOutcome::ExpectedScopeMismatch));
             }
             let allowed_params = request.params.as_object().is_some_and(|params| {
                 params.len() == 1
@@ -704,34 +703,18 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                 .await;
             match response {
                 Ok(receipt) if receipt.scope == scope && receipt.operation == operation => {
-                    let (certainty, result) = match receipt.result {
-                        RequestResult::Reply(value) => (
-                            RequestCertainty::Written,
-                            Some(ProviderResponse::Reply(value)),
-                        ),
-                        RequestResult::Rejected(value) => (
-                            RequestCertainty::Written,
-                            Some(ProviderResponse::Rejected(value)),
-                        ),
-                        RequestResult::NotSent => (RequestCertainty::NotSent, None),
-                        RequestResult::Unknown => (RequestCertainty::Unknown, None),
-                    };
-                    Ok(SessionReceipt {
-                        scope: receipt.scope,
-                        operation: receipt.operation,
-                        ticket: Some(receipt.ticket),
-                        certainty,
-                        result,
-                        not_sent_reason: None,
-                        replayed: false,
-                    })
+                    let mut receipt: SessionReceipt = receipt.into();
+                    receipt.replayed = false;
+                    Ok(receipt)
                 }
                 Ok(_) => Err(AccountSessionError::Unknown),
-                Err(studio_runtime_services::account_worker::retained::PortError::NotSent)
-                | Err(studio_runtime_services::account_worker::retained::PortError::Identity)
+                Err(studio_runtime_services::account_worker::retained::PortError::NotSent) => {
+                    Ok(not_sent(ReceiptOutcome::NotHandedOff))
+                }
+                Err(studio_runtime_services::account_worker::retained::PortError::Identity)
                 | Err(
                     studio_runtime_services::account_worker::retained::PortError::ScopeMismatch,
-                ) => Ok(not_sent(NotSentReason::WorkerNotSent)),
+                ) => Ok(not_sent(ReceiptOutcome::ExpectedScopeMismatch)),
                 Err(studio_runtime_services::account_worker::retained::PortError::Unknown) => {
                     Err(AccountSessionError::Unknown)
                 }
@@ -808,7 +791,7 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
 
 fn not_sent_receipt(
     request: studio_runtime_services::account_session_runtime::ProviderRequest,
-    reason: studio_runtime_services::account_session_runtime::NotSentReason,
+    reason: ReceiptOutcome,
 ) -> studio_runtime_services::account_session_runtime::SessionReceipt {
     studio_runtime_services::account_session_runtime::SessionReceipt {
         scope: request.expected_scope.unwrap_or(
@@ -819,10 +802,7 @@ fn not_sent_receipt(
             },
         ),
         operation: request.operation,
-        ticket: None,
-        certainty: studio_runtime_services::account_session_runtime::RequestCertainty::NotSent,
-        result: None,
-        not_sent_reason: Some(reason),
+        outcome: reason,
         replayed: false,
     }
 }
@@ -834,10 +814,7 @@ async fn dispatch_request(
     studio_runtime_services::account_session_runtime::SessionReceipt,
     studio_runtime_services::account_session_runtime::AccountSessionError,
 > {
-    use studio_runtime_services::{
-        account_session_runtime::{ProviderResponse, RequestCertainty, SessionReceipt},
-        account_worker::retained::{RequestResult, SessionRequest},
-    };
+    use studio_runtime_services::account_worker::retained::SessionRequest;
 
     let scope = port.scope().clone();
     if request
@@ -847,7 +824,7 @@ async fn dispatch_request(
     {
         return Ok(not_sent_receipt(
             request,
-            studio_runtime_services::account_session_runtime::NotSentReason::ExpectedScopeMismatch,
+            ReceiptOutcome::ExpectedScopeMismatch,
         ));
     }
     let fallback_request = request.clone();
@@ -864,17 +841,22 @@ async fn dispatch_request(
     };
     let receipt = match port.request(retained_request).await {
         Ok(receipt) => receipt,
-        Err(studio_runtime_services::account_worker::retained::PortError::NotSent)
-        | Err(studio_runtime_services::account_worker::retained::PortError::Deadline) => {
+        Err(studio_runtime_services::account_worker::retained::PortError::NotSent) => {
             return Ok(not_sent_receipt(
                 fallback_request,
-                studio_runtime_services::account_session_runtime::NotSentReason::DeadlineExpired,
+                ReceiptOutcome::NotHandedOff,
+            ));
+        }
+        Err(studio_runtime_services::account_worker::retained::PortError::Deadline) => {
+            return Ok(not_sent_receipt(
+                fallback_request,
+                ReceiptOutcome::DeadlineExpired,
             ));
         }
         Err(studio_runtime_services::account_worker::retained::PortError::ScopeMismatch) => {
             return Ok(not_sent_receipt(
                 fallback_request,
-                studio_runtime_services::account_session_runtime::NotSentReason::ExpectedScopeMismatch,
+                ReceiptOutcome::ExpectedScopeMismatch,
             ));
         }
         Err(error) => {
@@ -899,29 +881,7 @@ async fn dispatch_request(
             });
         }
     };
-    let (certainty, result) = match receipt.result {
-        RequestResult::Reply(value) => (
-            RequestCertainty::Written,
-            Some(ProviderResponse::Reply(value)),
-        ),
-        RequestResult::Rejected(value) => (
-            RequestCertainty::Written,
-            Some(ProviderResponse::Rejected(value)),
-        ),
-        RequestResult::NotSent => (RequestCertainty::NotSent, None),
-        RequestResult::Unknown => (RequestCertainty::Unknown, None),
-    };
-    Ok(SessionReceipt {
-        scope: receipt.scope,
-        operation: receipt.operation,
-        ticket: Some(receipt.ticket),
-        certainty,
-        result,
-        not_sent_reason: (certainty == RequestCertainty::NotSent).then_some(
-            studio_runtime_services::account_session_runtime::NotSentReason::WorkerNotSent,
-        ),
-        replayed: receipt.replayed,
-    })
+    Ok(receipt.into())
 }
 
 impl AccountRegistry {
@@ -2758,13 +2718,13 @@ mod tests {
             })
             .await
             .expect("absence is a known pre-handoff result");
-        assert_eq!(receipt.certainty, RequestCertainty::NotSent);
+        assert_eq!(receipt.certainty(), RequestCertainty::NotSent);
         assert_eq!(
-            receipt.not_sent_reason,
+            receipt.not_sent_reason(),
             Some(NotSentReason::NoLiveAccountWorker)
         );
-        assert!(receipt.ticket.is_none());
-        assert!(receipt.result.is_none());
+        assert!(receipt.ticket().is_none());
+        assert!(receipt.response().is_none());
         assert!(!changes.has_changed().expect("change watcher remains open"));
     }
 }

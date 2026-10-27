@@ -1,5 +1,4 @@
 import { required } from "../../src/components/componentTestFixtures.ts";
-import { radioSnapshot } from "./radio-fixture.ts";
 import type { components } from "../../src/generated/api.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 import type { PostBody } from "../../src/api.ts";
@@ -37,11 +36,12 @@ test("radio create browser", async ({ page: runnerPage }) => {
             if (
               handleEntitySyncFixtureRequest(req, res, {
                 workspaceId: "1234567890abcdef1234567890abcdef",
-                snapshot: radioSnapshot({
+                snapshot: {
                   stateDir: "create-test",
-                  threads: [],
+                  chats: [],
+                  edges: [],
                   runtime: { rooms: [], projects: [], requests: [] },
-                }),
+                },
                 onStreamReady: (notify) =>
                   notify([
                     { kind: "models" },

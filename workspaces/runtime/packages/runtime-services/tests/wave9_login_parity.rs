@@ -1,4 +1,5 @@
 use crate::login_fixtures as claude_fixture;
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 
 use claude_fixture::{Fixture as ClaudeFixture, Script};
 use serde_json::{Value, json};
@@ -14,8 +15,8 @@ use studio_runtime_services::{
     account_driver::{AccountDriver, AuthMetadata, AuthStatus},
     account_session_runtime::{
         AccountSessionError, AccountSessionPort, AccountSessionRuntime, ConnectionScope,
-        LoginRequest, ProviderRequest, ProviderResponse, RequestCertainty, RetainedAccountSession,
-        SessionFuture, SessionFutureScope, SessionReceipt,
+        LoginRequest, ProviderRequest, ProviderResponse, RetainedAccountSession, SessionFuture,
+        SessionFutureScope, SessionReceipt,
     },
     claude_login::ports::{LoginEvent, LoginReceipts},
 };
@@ -199,16 +200,15 @@ impl RetainedAccountSession for CodexSession {
             Ok(SessionReceipt {
                 scope: scope.clone(),
                 operation: operation.clone(),
-                ticket: Some(RequestTicket {
-                    generation: scope.generation,
-                    id: RequestId::String(operation),
-                    method,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(result)),
-                not_sent_reason: None,
-
                 replayed: false,
+                outcome: ReceiptOutcome::Written {
+                    ticket: RequestTicket {
+                        generation: scope.generation,
+                        id: RequestId::String(operation),
+                        method,
+                    },
+                    response: ProviderResponse::Reply(result),
+                },
             })
         })
     }

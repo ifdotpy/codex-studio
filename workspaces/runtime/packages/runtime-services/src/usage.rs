@@ -876,14 +876,14 @@ where
         let name = codex_model_name(&response.model);
         let tokens = response.tokens;
         let total = tokens.total().ok_or(UsageError::Scan)?;
-        let input = total - tokens.output;
+        let input = total - tokens.output();
         // The shared conversion has already split Codex's inclusive input.
         let usage = crate::pricing::TokenUsage {
-            input_tokens: Some(tokens.uncached_input as f64),
-            cached_input_tokens: Some(tokens.cache_read_input as f64),
-            cache_write_input_tokens: Some(tokens.cache_write_input as f64),
-            cache_write_input_1h_tokens: tokens.cache_write_input_1h.map(|n| n as f64),
-            output_tokens: Some(tokens.output as f64),
+            input_tokens: Some(tokens.uncached_input() as f64),
+            cached_input_tokens: Some(tokens.cache_read_input() as f64),
+            cache_write_input_tokens: Some(tokens.cache_write_input() as f64),
+            cache_write_input_1h_tokens: tokens.cache_write_input_1h().map(|n| n as f64),
+            output_tokens: Some(tokens.output() as f64),
         };
         let cost = catalog
             .as_ref()

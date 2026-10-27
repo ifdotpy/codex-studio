@@ -121,7 +121,9 @@ pub fn parse_analytics_usage_row(
 ) -> Result<UsageObservation, UsageParseError> {
     if let Some(value) = row.get("studioUsage") {
         if row.get("usageIdentity").is_some() || row.get("receiptKey").is_some() {
-            return Ok(super::ledger::UsageLedgerRow::from_analytics(provider, row)?.studio_usage);
+            return Ok(
+                super::ledger::UsageLedgerRow::from_analytics(provider, row)?.into_observation(),
+            );
         }
         return Ok(UsageObservation::deserialize(value)?);
     }
@@ -206,18 +208,18 @@ fn tokens(value: &Value, input_uncached: bool) -> Result<UsageTokens, UsageParse
         let write = write.min(input - read);
         (input - read - write, read, write)
     };
-    Ok(UsageTokens {
+    UsageTokens::new(
         uncached_input,
         cache_read_input,
         cache_write_input,
-        cache_write_input_1h: None,
-        output: count("outputTokens", true)?,
-        reasoning_output: value
+        None,
+        count("outputTokens", true)?,
+        value
             .get("reasoningOutputTokens")
             .filter(|v| !v.is_null())
             .map(|v| legacy_count(v, "reasoningOutputTokens"))
             .transpose()?,
-    })
+    )
 }
 
 #[cfg(test)]

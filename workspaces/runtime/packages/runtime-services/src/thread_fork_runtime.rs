@@ -191,8 +191,7 @@ pub async fn dispatch_reserved_via_broker(
     if receipt.operation != request.ticket.request
         || receipt.scope != scope
         || receipt
-            .ticket
-            .as_ref()
+            .ticket()
             .is_some_and(|ticket| ticket.method != method || ticket.generation != scope.generation)
     {
         return Err(NativeError::Changed);

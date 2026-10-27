@@ -1,7 +1,9 @@
 //! Skills, capabilities, finder and native command operations backed by saved agent state.
+
 use studio_runtime_schema::shared_values::{
     NATIVE_TERMINAL_ITEMS_PER_PAGE, NATIVE_TERMINAL_MAX_PAGES,
 };
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 
 use axum::Json;
 use axum::extract::State;
@@ -538,9 +540,7 @@ pub(super) async fn provider_call(
     method: &str,
     params: Value,
 ) -> Result<Value, ApiError> {
-    use studio_runtime_services::account_session_runtime::{
-        ProviderRequest, ProviderResponse, RequestCertainty,
-    };
+    use studio_runtime_services::account_session_runtime::{ProviderRequest, ProviderResponse};
     let method_value = studio_runtime_providers::Method::from_wire(method).ok_or_else(|| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -582,7 +582,7 @@ pub(super) async fn provider_call(
         })?;
     if receipt.operation != expected_operation
         || receipt.scope != expected_scope
-        || receipt.ticket.as_ref().is_some_and(|issued| {
+        || receipt.ticket().is_some_and(|issued| {
             issued.generation != expected_scope.generation || issued.method != method_value
         })
     {
@@ -591,17 +591,27 @@ pub(super) async fn provider_call(
             "Native provider receipt belongs to a different session",
         ));
     }
-    match (receipt.certainty, receipt.result) {
-        (RequestCertainty::Written, Some(ProviderResponse::Reply(value))) => Ok(value),
-        (RequestCertainty::Written, Some(ProviderResponse::Rejected(_))) => Err(ApiError::new(
+    match receipt.outcome {
+        ReceiptOutcome::Written {
+            response: ProviderResponse::Reply(value),
+            ..
+        } => Ok(value),
+        ReceiptOutcome::Written {
+            response: ProviderResponse::Rejected(_),
+            ..
+        } => Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "Native provider rejected the request",
         )),
-        (RequestCertainty::NotSent, _) => Err(ApiError::new(
+        ReceiptOutcome::WorkerNotSent { .. }
+        | ReceiptOutcome::ExpectedScopeMismatch
+        | ReceiptOutcome::DeadlineExpired
+        | ReceiptOutcome::NotHandedOff
+        | ReceiptOutcome::NoLiveAccountWorker => Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "Native provider request was not sent",
         )),
-        _ => Err(ApiError::new(
+        ReceiptOutcome::Unknown { .. } => Err(ApiError::new(
             StatusCode::CONFLICT,
             "Native request outcome is unknown; inspect its receipt before retrying",
         )),

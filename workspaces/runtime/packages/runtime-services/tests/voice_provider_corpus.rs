@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::account_session_runtime::{
     AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
     RequestCertainty, SessionReceipt,
@@ -967,16 +968,30 @@ impl AccountSessionPort for MockAccountSession {
                 .pop_front()
                 .expect("scripted session outcome");
             Ok(SessionReceipt {
+                outcome: {
+                    let ticket = RequestTicket {
+                        generation: self.scope.generation,
+                        id: RequestId::Number(1),
+                        method: request.method,
+                    };
+                    match (certainty, result) {
+                        (RequestCertainty::Written, Some(response)) => {
+                            ReceiptOutcome::Written { ticket, response }
+                        }
+                        (RequestCertainty::Written, None) | (RequestCertainty::Unknown, _) => {
+                            ReceiptOutcome::Unknown {
+                                ticket: RequestTicket {
+                                    generation: self.scope.generation,
+                                    id: RequestId::Number(1),
+                                    method: request.method,
+                                },
+                            }
+                        }
+                        (RequestCertainty::NotSent, _) => ReceiptOutcome::NoLiveAccountWorker,
+                    }
+                },
                 scope: self.scope.clone(),
                 operation: request.operation,
-                ticket: Some(RequestTicket {
-                    generation: self.scope.generation,
-                    id: RequestId::Number(1),
-                    method: request.method,
-                }),
-                certainty,
-                result,
-                not_sent_reason: None,
                 replayed: false,
             })
         })

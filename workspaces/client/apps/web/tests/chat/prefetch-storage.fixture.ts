@@ -1,5 +1,5 @@
 import type { components } from "../../src/generated/api.ts";
-import type { Agent } from "../../src/types.ts";
+import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
 
 export function completedTranscriptAgent(agent: Agent) {
   return {

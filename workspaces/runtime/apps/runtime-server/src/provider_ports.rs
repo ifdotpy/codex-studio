@@ -304,11 +304,11 @@ async fn provider_read(
         .ok()?;
     if receipt.scope != *scope
         || receipt.operation != operation
-        || receipt.certainty != RequestCertainty::Written
+        || receipt.certainty() != RequestCertainty::Written
     {
         return None;
     }
-    match receipt.result? {
+    match receipt.into_response()? {
         ProviderResponse::Reply(value) => Some(value),
         ProviderResponse::Rejected(_) => None,
     }
@@ -463,7 +463,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 home.retain();
                 return fallback();
             };
-            match started.certainty {
+            match started.certainty() {
                 RequestCertainty::NotSent => {
                     home.release();
                     return title_receipt(&request, WriteOutcome::NotSent, None);
@@ -474,7 +474,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 }
                 RequestCertainty::Written => {}
             }
-            if matches!(started.result.as_ref(), Some(ProviderResponse::Rejected(_))) {
+            if matches!(started.response(), Some(ProviderResponse::Rejected(_))) {
                 home.release();
                 return title_receipt(&request, WriteOutcome::Written, None);
             }
@@ -518,7 +518,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 home.retain();
                 return fallback();
             };
-            match turn.certainty {
+            match turn.certainty() {
                 RequestCertainty::NotSent => {
                     // Keep the exact cwd for a retry that inspects ThreadStart.
                     return title_receipt(&request, WriteOutcome::NotSent, None);
@@ -529,7 +529,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 }
                 RequestCertainty::Written => {}
             }
-            if matches!(turn.result.as_ref(), Some(ProviderResponse::Rejected(_))) {
+            if matches!(turn.response(), Some(ProviderResponse::Rejected(_))) {
                 home.release();
                 return title_receipt(&request, WriteOutcome::Written, None);
             }
@@ -565,7 +565,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                     )
                     .await;
                 if let Some(listed) = listed
-                    && listed.certainty == RequestCertainty::Written
+                    && listed.certainty() == RequestCertainty::Written
                     && let Some(turns) = listed
                         .pipe_response_value()
                         .and_then(|value| value.get("data"))
@@ -658,7 +658,7 @@ trait SessionReceiptExt {
 
 impl SessionReceiptExt for SessionReceipt {
     fn pipe_response_value(&self) -> Option<&Value> {
-        match self.result.as_ref()? {
+        match self.response()? {
             ProviderResponse::Reply(value) => Some(value),
             ProviderResponse::Rejected(_) => None,
         }
@@ -754,6 +754,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime};
     use studio_runtime_providers::Method;
+    use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use studio_runtime_services::account_session_runtime::{
         AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest,
         ProviderResponse, RequestCertainty, SessionReceipt,
@@ -787,7 +788,7 @@ mod tests {
                 });
                 let operation = request.operation.clone();
                 let mut requests = self.requests.lock().expect("fixture request list");
-                requests.push(request);
+                requests.push(request.clone());
                 let certainty = if self.unknown_start && method == Method::ThreadStart {
                     RequestCertainty::Unknown
                 } else {
@@ -945,12 +946,40 @@ mod tests {
                     | Method::ProtocolError => None,
                 };
                 Ok(SessionReceipt {
+                    outcome: {
+                        let ticket = studio_runtime_providers::RequestTicket {
+                            generation: request
+                                .expected_scope
+                                .as_ref()
+                                .map_or(1, |scope| scope.generation),
+                            id: studio_runtime_providers::RequestId::String(
+                                request.operation.clone(),
+                            ),
+                            method: request.method,
+                        };
+                        match (certainty, result) {
+                            (RequestCertainty::Written, Some(response)) => {
+                                ReceiptOutcome::Written { ticket, response }
+                            }
+                            (RequestCertainty::Written, None) | (RequestCertainty::Unknown, _) => {
+                                ReceiptOutcome::Unknown {
+                                    ticket: studio_runtime_providers::RequestTicket {
+                                        generation: request
+                                            .expected_scope
+                                            .as_ref()
+                                            .map_or(1, |scope| scope.generation),
+                                        id: studio_runtime_providers::RequestId::String(
+                                            request.operation.clone(),
+                                        ),
+                                        method: request.method,
+                                    },
+                                }
+                            }
+                            (RequestCertainty::NotSent, _) => ReceiptOutcome::NoLiveAccountWorker,
+                        }
+                    },
                     scope,
                     operation,
-                    ticket: None,
-                    certainty,
-                    result,
-                    not_sent_reason: None,
                     replayed: false,
                 })
             })

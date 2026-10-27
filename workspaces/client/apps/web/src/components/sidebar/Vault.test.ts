@@ -7,7 +7,8 @@ import {
   pullText,
   firstProfile,
   pullVault,
-  runJob,
+  loginVault,
+  setupVault,
   vaultLabel,
   type ProjectVault,
 } from "./Vault";
@@ -19,6 +20,96 @@ const vault = (fields: Partial<ProjectVault> = {}): ProjectVault => ({
   site: "https://desk.example.com/",
   ...fields,
 });
+
+type Progress = import("../../sync/resourceEvents").ResourceProgress;
+function jobFrames(path: string): {
+  running: Progress;
+  update: Progress;
+  done: Progress;
+} {
+  if (path === "/api/vault/setup") {
+    const resource = {
+      kind: "vault-job-progress",
+      job: "setup",
+      requestId: "r1",
+    } as const;
+    return {
+      running: {
+        resource,
+        value: { requestId: "r1", state: "running", prefix: "demo" },
+      },
+      update: {
+        resource,
+        value: {
+          requestId: "r1",
+          state: "running",
+          prefix: "demo",
+          progress: "creating",
+        },
+      },
+      done: {
+        resource,
+        value: {
+          requestId: "r1",
+          state: "done",
+          prefix: "demo",
+          site: "https://desk.example/",
+        },
+      },
+    };
+  }
+  if (path === "/api/vault/aws-login") {
+    const resource = {
+      kind: "vault-job-progress",
+      job: "login",
+      requestId: "r1",
+    } as const;
+    return {
+      running: { resource, value: { requestId: "r1", state: "running" } },
+      update: {
+        resource,
+        value: {
+          requestId: "r1",
+          state: "running",
+          page: "https://device.example/",
+          code: "fixture",
+        },
+      },
+      done: { resource, value: { requestId: "r1", state: "done" } },
+    };
+  }
+  const resource = {
+    kind: "vault-job-progress",
+    job: "pull",
+    requestId: "r1",
+  } as const;
+  return {
+    running: {
+      resource,
+      value: { requestId: "r1", state: "running", folder: "/fixture/demo" },
+    },
+    update: {
+      resource,
+      value: {
+        requestId: "r1",
+        state: "running",
+        folder: "/fixture/demo",
+        files: 1,
+      },
+    },
+    done: {
+      resource,
+      value: {
+        requestId: "r1",
+        state: "done",
+        folder: "/fixture/demo",
+        seq: 7,
+        files: 3,
+        bytes: 1024,
+      },
+    },
+  };
+}
 
 describe("vault menu", () => {
   it("labels the vault by its writer report", () => {
@@ -60,9 +151,8 @@ describe("vault menu", () => {
         version?: import("../../sync/resourceEvents").ResourceVersion,
       ) => void;
       const remove = vi.fn();
-      const post = vi
-        .fn()
-        .mockResolvedValue({ requestId: "r1", state: "running" });
+      const frames = jobFrames(url);
+      const post = vi.fn().mockResolvedValue(frames.running.value);
       const resources = {
         watchResourceChanges: vi.fn((_resource, accept) => {
           changed = accept;
@@ -72,37 +162,47 @@ describe("vault menu", () => {
       };
       const updates = vi.fn();
       try {
-        const pending = runJob(
-          { post } as never,
-          url,
-          { requestId: "r1" },
-          { resources, onUpdate: updates },
-        );
+        const backend = { post } as never;
+        const options = { resources, onUpdate: updates };
+        const pending =
+          url === "/api/vault/aws-login"
+            ? loginVault(
+                backend,
+                { requestId: "r1", profile: "fixture" },
+                options,
+              )
+            : url === "/api/vault/setup"
+              ? setupVault(
+                  backend,
+                  {
+                    requestId: "r1",
+                    projectId: "p1",
+                    prefix: "demo",
+                    profile: "fixture",
+                    region: "eu-central-1",
+                  },
+                  options,
+                )
+              : pullVault(backend, "p1", null, { requestId: "r1", ...options });
         await vi.advanceTimersByTimeAsync(10_000);
         expect(post).toHaveBeenCalledTimes(1);
-        const resource = required(
+        expect(
           required(resources.watchResourceChanges.mock.calls[0])[0],
-        );
+        ).toEqual(frames.running.resource);
         changed({ epoch: "e", revision: 2 });
         changed({
           epoch: "e",
           revision: 3,
-          progress: {
-            resource,
-            value: { requestId: "r1", state: "running", progress: "creating" },
-          },
+          progress: frames.update,
         });
         await vi.advanceTimersByTimeAsync(10_000);
         expect(post).toHaveBeenCalledTimes(1);
         changed({
           epoch: "e",
           revision: 4,
-          progress: { resource, value: { requestId: "r1", state: "done" } },
+          progress: frames.done,
         });
-        await expect(pending).resolves.toEqual({
-          requestId: "r1",
-          state: "done",
-        });
+        await expect(pending).resolves.toEqual(frames.done.value);
         expect(remove).toHaveBeenCalledTimes(2);
         expect(updates).toHaveBeenCalledTimes(3);
       } finally {
@@ -121,7 +221,8 @@ describe("vault menu", () => {
         folder: "/Downloads/demo",
         seq: 12,
         files: 340,
-      });
+        bytes: 1024,
+      } satisfies import("./Vault").VaultPull);
     const done = await pullVault({ post } as never, "p1", "/Downloads", {
       requestId: "r1",
     });
@@ -133,16 +234,90 @@ describe("vault menu", () => {
     );
   });
 
+  it("ignores other jobs and reconnects with the original pull request", async () => {
+    let changed!: (
+      version?: import("../../sync/resourceEvents").ResourceVersion,
+    ) => void;
+    let connected!: (
+      state: import("../../sync/resourceEvents").ResourceConnectionState,
+    ) => void;
+    const frames = jobFrames("/api/vault/pull");
+    const post = vi
+      .fn()
+      .mockResolvedValueOnce(frames.running.value)
+      .mockResolvedValueOnce(frames.done.value);
+    const remove = vi.fn();
+    const updates = vi.fn();
+    const pending = pullVault({ post } as never, "p1", null, {
+      requestId: "r1",
+      onUpdate: updates,
+      resources: {
+        watchResourceChanges: (_resource, accept) => {
+          changed = accept;
+          return remove;
+        },
+        watchResourceConnection: (accept) => {
+          connected = (state) =>
+            accept(state, state === "offline" ? "offline" : "open", {});
+          return remove;
+        },
+      },
+    });
+    await Promise.resolve();
+    changed({
+      epoch: "e",
+      revision: 2,
+      progress: jobFrames("/api/vault/aws-login").done,
+    });
+    changed({
+      epoch: "e",
+      revision: 3,
+      progress: {
+        resource: {
+          kind: "vault-job-progress",
+          job: "pull",
+          requestId: "another",
+        },
+        value: {
+          requestId: "another",
+          state: "done",
+          folder: "/other",
+          seq: 1,
+          files: 1,
+          bytes: 1,
+        },
+      },
+    });
+    expect(updates).toHaveBeenCalledTimes(1);
+    connected("offline");
+    connected("live");
+    await expect(pending).resolves.toEqual(frames.done.value);
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[0]).toEqual(post.mock.calls[1]);
+    expect(required(post.mock.calls[1])[1]).toEqual({
+      projectId: "p1",
+      requestId: "r1",
+    });
+    expect(remove).toHaveBeenCalledTimes(2);
+  });
+
   it("stops watching when the view closes without cancelling the server job", async () => {
     const remove = vi.fn();
     const controller = new AbortController();
-    const post = vi
-      .fn()
-      .mockResolvedValue({ requestId: "r1", state: "running" });
-    const pending = runJob(
+    const post = vi.fn().mockResolvedValue({
+      requestId: "r1",
+      state: "running",
+      prefix: "demo",
+    } satisfies import("./Vault").VaultSetupJob);
+    const pending = setupVault(
       { post } as never,
-      "/api/vault/setup",
-      { requestId: "r1" },
+      {
+        requestId: "r1",
+        projectId: "p1",
+        prefix: "demo",
+        profile: "fixture",
+        region: "eu-central-1",
+      },
       {
         signal: controller.signal,
         resources: {
@@ -242,3 +417,25 @@ describe("vault menu", () => {
     expect(firstProfile({ ...facts, profiles: [] })).toBeNull();
   });
 });
+
+// Compile-time witnesses exercise the public caller and generated outcome owner.
+function vaultJobContracts(
+  backend: Pick<import("./services").SidebarBackend, "post">,
+) {
+  // @ts-expect-error Setup cannot receive an unlock request body.
+  void setupVault(backend, { projectId: "p1", words: "fixture" });
+  // @ts-expect-error A completed pull must carry its counts and destination.
+  const missingOutcome: import("./Vault").VaultPull = {
+    requestId: "r1",
+    state: "done",
+    folder: "/fixture/demo",
+  };
+  void missingOutcome;
+  const wrongJob: Extract<Progress, { resource: { job: "pull" } }> = {
+    resource: { kind: "vault-job-progress", job: "pull", requestId: "r1" },
+    // @ts-expect-error A pull resource cannot carry a login completion.
+    value: { requestId: "r1", state: "done" },
+  };
+  void wrongJob;
+}
+void vaultJobContracts;

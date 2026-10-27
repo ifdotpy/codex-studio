@@ -30,7 +30,7 @@ import {
   RefreshCw,
   CircleDollarSign,
 } from "lucide-react";
-import type { Agent, Json, Snapshot } from "../types";
+import type { Agent, Snapshot } from "../types";
 import { errorText, type GetResult } from "../api";
 import { useServerSessionCosts } from "../servers/ServerServicesContext";
 import { useRecoveredLimit } from "./useRecoveredLimit";
@@ -78,7 +78,7 @@ const displayAccountName = (account?: UsageAccount) =>
       });
 const accountProvider = (account?: UsageAccount) => account?.provider || "";
 
-type UsageLimitSnapshot = AccountLimitsSnapshot | Json;
+type UsageLimitSnapshot = AccountLimitsSnapshot;
 
 type LimitWindow = {
   label: string;

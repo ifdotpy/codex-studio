@@ -39,6 +39,10 @@
           ],
           "title": "Limitname"
         },
+        "planType": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }],
+          "title": "Plantype"
+        },
         "primary": {
           "anyOf": [
             {
@@ -190,7 +194,7 @@
       "type": "object"
     },
     "RateLimitWindow": {
-      "additionalProperties": false,
+      "additionalProperties": { "$ref": "#/$defs/JsonValue" },
       "properties": {
         "resetsAt": {
           "anyOf": [

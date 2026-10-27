@@ -1544,13 +1544,16 @@ it("a late terminal follower consumes owner merged views without repeated recove
   });
   await vi.advanceTimersByTimeAsync(0);
   const follower = await fixture(true);
-  const recover = vi.fn(async () => merged);
+  const recover = vi.fn(async () => {
+    if (!merged) throw new Error("Missing persisted terminal output");
+    return merged;
+  });
   const accept = vi.fn();
   const stop = createDataObserver(
     () => ({}) as ReturnType<Parameters<typeof createDataObserver>[0]>,
     follower.transport,
     undefined,
-    recover,
+    { "terminal-output": recover },
   )(resource, accept, vi.fn());
   const relay = () => {
     const message = owner.posted

@@ -123,15 +123,6 @@ it("returns limits only for the selected account and matching native identity", 
   assert.equal(accountLimits(a, "a", "native-a"), a);
   assert.equal(accountLimits(a, "b"), null);
   assert.equal(accountLimits(a, "a", "replacement-login"), null);
-  assert.equal(
-    accountLimits(
-      { accountKey: "a", data: { accountId: 42 } },
-      "a",
-      "native-a",
-    ),
-    null,
-    "malformed native identity does not match the selected account",
-  );
   const legacyWithoutAccountId = { accountKey: "a", data: {} };
   assert.equal(
     accountLimits(legacyWithoutAccountId, "a", "native-a"),
@@ -142,10 +133,7 @@ it("returns limits only for the selected account and matching native identity", 
     accountLimits(legacyWithoutData, "a", "native-a"),
     legacyWithoutData,
   );
-  assert.equal(accountLimits({ data: {} }, "a"), null);
-  assert.equal(accountLimits({ data: {} }, "default"), null);
   assert.equal(accountLimits(null, "default"), null);
-  assert.equal(accountLimits("not an object", "a"), null);
 
   const generatedResponse = {
     accountKey: "a",
@@ -160,20 +148,6 @@ it("returns limits only for the selected account and matching native identity", 
   assert.equal(
     accountLimits(generatedResponse, "a", "native-a"),
     generatedResponse,
-  );
-  assert.equal(
-    accountLimits(
-      {
-        ...generatedResponse,
-        data: {
-          ...generatedResponse.data,
-          rateLimits: { primary: { usedPercent: "25" } },
-        },
-      },
-      "a",
-      "native-a",
-    ),
-    null,
   );
   const generatedSnapshot = {
     accountKey: "a",
@@ -191,7 +165,37 @@ it("returns limits only for the selected account and matching native identity", 
     accountLimits(generatedSnapshot, "a", "native-a"),
     generatedSnapshot,
   );
-  console.log("Account limits ownership: 11 passed");
+});
+
+it("rejects malformed durable limits while retaining legacy data and vendor windows", () => {
+  const records = {
+    badIdentity: { accountKey: "badIdentity", data: { accountId: 42 } },
+    badWindow: {
+      accountKey: "badWindow",
+      data: { rateLimits: { primary: { usedPercent: "25" } } },
+    },
+    missingAccount: { data: {} },
+    scalar: "not an object",
+    legacy: { accountKey: "legacy" },
+    vendor: {
+      accountKey: "vendor",
+      data: {
+        rateLimits: {
+          planType: "plus",
+          primary: { usedPercent: 25, vendorWindow: { opaque: true } },
+        },
+      },
+    },
+  };
+  const cache = createAccountLimitsCache({
+    getItem: () => JSON.stringify(records),
+    setItem: () => {},
+  });
+  cache.configureLimitsCache("persisted");
+  expect(cache.cachedLimitsByAccount()).toEqual({
+    legacy: records.legacy,
+    vendor: records.vendor,
+  });
 });
 
 it("uses matching, error-free snapshot timestamps for limits freshness", () => {

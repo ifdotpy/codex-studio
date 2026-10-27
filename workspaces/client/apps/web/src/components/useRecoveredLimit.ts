@@ -2,11 +2,12 @@ import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useRef } from "react";
 import "../api";
 import { limitRecovered } from "../usage/limitRecovery";
-import type { Agent, Json } from "../types";
+import type { Agent } from "../types";
+import type { AccountLimitsSnapshot } from "../usage/accountUsage";
 
 export function useRecoveredLimit(
   agent: Agent,
-  limits: Json | null,
+  limits: AccountLimitsSnapshot | null,
   now: number,
 ) {
   const { saved, save } = useServerApi();

@@ -4,6 +4,7 @@ import VaultSetup from "./VaultSetup";
 import type {
   ResourceRef,
   ResourceVersion,
+  ResourceProgress,
 } from "../../sync/subscriptions/events";
 
 type Reply = Record<string, unknown>;
@@ -22,7 +23,7 @@ function server({ keys = false, signedIn = true } = {}) {
       { name: "work", sso: true, signedIn: state.signedIn },
     ],
   });
-  const jobs = new Map<string, Reply>();
+  const jobs = new Map<string, ResourceProgress>();
   const listeners = new Map<string, (version?: ResourceVersion) => void>();
   const resources = {
     watchResourceChanges(
@@ -40,10 +41,11 @@ function server({ keys = false, signedIn = true } = {}) {
       if (resource.kind !== "vault-job-progress") return () => {};
       const key = resource.requestId;
       listeners.set(key, accept);
+      const progress = jobs.get(key);
       accept({
         epoch: "story",
         revision: 1,
-        progress: { resource, value: jobs.get(key) as never },
+        ...(progress ? { progress } : {}),
       });
       return () => {
         listeners.delete(key);
@@ -56,18 +58,28 @@ function server({ keys = false, signedIn = true } = {}) {
     if (path === "/api/vault/setup/facts") return facts();
     const requestId = String(body.requestId);
     if (path === "/api/vault/aws-login" || path === "/api/vault/setup") {
-      const value = {
-        requestId,
-        state: "running",
-        ...(path === "/api/vault/aws-login"
-          ? { page: "https://device.example/?code=WXYZ", code: "WXYZ" }
+      const progress: ResourceProgress =
+        path === "/api/vault/aws-login"
+          ? {
+              resource: { kind: "vault-job-progress", job: "login", requestId },
+              value: {
+                requestId,
+                state: "running",
+                page: "https://device.example/?code=WXYZ",
+                code: "WXYZ",
+              },
+            }
           : {
-              prefix: "my-project",
-              progress: "studio-vault-my-project: CREATE_IN_PROGRESS",
-            }),
-      };
-      jobs.set(requestId, value);
-      return value;
+              resource: { kind: "vault-job-progress", job: "setup", requestId },
+              value: {
+                requestId,
+                state: "running",
+                prefix: "my-project",
+                progress: "studio-vault-my-project: CREATE_IN_PROGRESS",
+              },
+            };
+      jobs.set(requestId, progress);
+      return progress.value;
     }
     throw new Error(`no fake for ${path}`);
   };
@@ -75,21 +87,23 @@ function server({ keys = false, signedIn = true } = {}) {
     const [requestId] = listeners.keys();
     if (requestId === undefined) throw new Error("Missing vault job listener");
     if (job === "login") state.signedIn = true;
-    const value = {
-      requestId,
-      state: "done" as const,
-      prefix: "my-project",
-      site: "https://desk.example.com/my-project/",
-    };
-    jobs.set(requestId, value);
-    listeners.get(requestId)?.({
-      epoch: "story",
-      revision: 2,
-      progress: {
-        resource: { kind: "vault-job-progress", job, requestId },
-        value,
-      },
-    });
+    const progress: ResourceProgress =
+      job === "login"
+        ? {
+            resource: { kind: "vault-job-progress", job, requestId },
+            value: { requestId, state: "done" },
+          }
+        : {
+            resource: { kind: "vault-job-progress", job, requestId },
+            value: {
+              requestId,
+              state: "done",
+              prefix: "my-project",
+              site: "https://desk.example.com/my-project/",
+            },
+          };
+    jobs.set(requestId, progress);
+    listeners.get(requestId)?.({ epoch: "story", revision: 2, progress });
   };
   return { state, finish, backend: { post: post as never, resources } };
 }

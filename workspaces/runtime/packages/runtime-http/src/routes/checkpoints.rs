@@ -370,10 +370,10 @@ async fn restore_owned(
     };
     if receipt.operation != provider_operation
         || receipt.scope != scope
-        || receipt.certainty
+        || receipt.certainty()
             != studio_runtime_services::account_session_runtime::RequestCertainty::Written
     {
-        let unknown = receipt.certainty
+        let unknown = receipt.certainty()
             == studio_runtime_services::account_session_runtime::RequestCertainty::Unknown;
         settle_restore_failure(
             &store,
@@ -388,7 +388,7 @@ async fn restore_owned(
             "Native thread result is unknown; inspect workspace recovery before retrying",
         ));
     }
-    let response = match receipt.result {
+    let response = match receipt.into_response() {
         Some(studio_runtime_services::account_session_runtime::ProviderResponse::Reply(value)) => {
             value
         }

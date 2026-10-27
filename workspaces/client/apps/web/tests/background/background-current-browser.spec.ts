@@ -145,7 +145,7 @@ test("Background Current Browser", async ({
     });
     await page.goto(server.resolvedUrls!.local[0]! + "fixture");
     await page.waitForFunction(() => !!window.renderFixture);
-    const agents: import("../../src/types.ts").Agent[] = [
+    const agents: import("../../src/generated/api.ts").AgentEntityDto[] = [
       { id: "lead", rootId: "lead", name: "Lead" },
       { id: "worker", rootId: "lead", name: "Worker" },
       { id: "other", rootId: "other", name: "Other" },

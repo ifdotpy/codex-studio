@@ -147,10 +147,10 @@ test("Session Poll Browser", async ({
       "rotated",
     );
     assert.equal(
-      await page.evaluate(
-        () =>
-          (window.snapshot.data!.runtime as Record<string, JsonValue>).marker,
-      ),
+      await page.evaluate(() => {
+        const runtime = window.snapshot.data!.runtime;
+        return "marker" in runtime ? runtime.marker : undefined;
+      }),
       "replicated",
     );
     for (const failure of [503, 404]) {

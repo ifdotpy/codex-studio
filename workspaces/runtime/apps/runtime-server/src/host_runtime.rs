@@ -1158,7 +1158,7 @@ async fn read_vm_codex_bootstrap(
             )
             .await
             .map_err(|_| WorkerError::PreparationPending("provider-session/account-read".into()))?;
-        if receipt.certainty
+        if receipt.certainty()
             != studio_runtime_services::account_session_runtime::RequestCertainty::Written
         {
             return Err(WorkerError::PreparationPending(
@@ -1166,7 +1166,7 @@ async fn read_vm_codex_bootstrap(
             ));
         }
         if !matches!(
-            receipt.result,
+            receipt.response().cloned(),
             Some(studio_runtime_services::account_session_runtime::ProviderResponse::Reply(_))
         ) {
             return Err(WorkerError::PreparationPending(
@@ -2311,14 +2311,13 @@ mod voice_composition_tests {
     use studio_runtime_services::{
         account_driver::AccountDriver,
         account_session_runtime::{
-            AccountSessionError, AccountSessionRuntime, ConnectionScope, NotSentReason,
-            ProviderRequest, ProviderResponse, RequestCertainty, RetainedAccountSession,
-            SessionFuture, SessionReceipt as AccountSessionReceipt,
+            AccountSessionError, AccountSessionRuntime, ConnectionScope, ProviderRequest,
+            RetainedAccountSession, SessionFuture, SessionReceipt as AccountSessionReceipt,
         },
         account_worker::{
             AccountHandle, StoreBridge,
             preparation::PreparationResources,
-            retained::{PortError, RequestResult, SessionRequest},
+            retained::{PortError, SessionRequest},
             start_account_worker_with_preparation,
         },
         callback_runtime::{CallbackReplyPort, CallbackRuntime},
@@ -2373,28 +2372,9 @@ mod voice_composition_tests {
                             AccountSessionError::Refused("Provider request was refused")
                         }
                     })?;
-                let (certainty, result) = match retained.result {
-                    RequestResult::Reply(value) => (
-                        RequestCertainty::Written,
-                        Some(ProviderResponse::Reply(value)),
-                    ),
-                    RequestResult::Rejected(value) => (
-                        RequestCertainty::Written,
-                        Some(ProviderResponse::Rejected(value)),
-                    ),
-                    RequestResult::NotSent => (RequestCertainty::NotSent, None),
-                    RequestResult::Unknown => (RequestCertainty::Unknown, None),
-                };
-                Ok(AccountSessionReceipt {
-                    scope: retained.scope,
-                    operation: retained.operation,
-                    ticket: Some(retained.ticket),
-                    certainty,
-                    result,
-                    not_sent_reason: (certainty == RequestCertainty::NotSent)
-                        .then_some(NotSentReason::WorkerNotSent),
-                    replayed: false,
-                })
+                let mut receipt: AccountSessionReceipt = retained.into();
+                receipt.replayed = false;
+                Ok(receipt)
             })
         }
     }

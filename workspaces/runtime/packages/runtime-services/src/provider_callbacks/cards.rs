@@ -3,6 +3,9 @@ use rusqlite::Transaction;
 use serde_json::{Value, json};
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_providers::{RequestId, ResponseBody};
+use studio_runtime_schema::question_answers::{
+    QuestionApproval, QuestionCardAnswer, QuestionDecision,
+};
 use studio_runtime_store::{QuestionsWriteRepository, RuntimeStore, system_reads as records};
 
 /// The native provider requests that wait for the user as a request card. The
@@ -178,13 +181,13 @@ pub(super) fn immediate(
     if studio_runtime_store::truthy(snapshot.actor().get("deletedAt")) {
         return Ok(Some(match input.method.as_str() {
             "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
-                ResponseBody::Result(json!({"decision":"decline"}))
+                ResponseBody::Result(json!({"decision":QuestionDecision::Decline}))
             }
             "item/permissions/requestApproval" => {
                 ResponseBody::Result(json!({"permissions":{},"scope":"turn"}))
             }
             "mcpServer/elicitation/request" => {
-                ResponseBody::Result(json!({"action":"decline","content":null}))
+                ResponseBody::Result(json!({"action":QuestionDecision::Decline,"content":null}))
             }
             _ => ResponseBody::Error(
                 json!({"code":-32600,"message":"This agent is unavailable and cannot handle this request."}),
@@ -203,15 +206,17 @@ pub(super) fn immediate(
 /// Tool approvals share the same answer conversion as explicit user answers.
 /// Questions and elicitation always continue to require an answer from the user.
 fn full_access_answer(method: &str, params: &Value) -> Result<Option<Value>, CallbackError> {
-    if !matches!(
-        method,
-        "item/commandExecution/requestApproval"
-            | "item/fileChange/requestApproval"
-            | "item/permissions/requestApproval"
-    ) {
-        return Ok(None);
-    }
-    answer_value(method, params, &json!({"decision":"accept"})).map(|(result, _)| Some(result))
+    let data = QuestionApproval {
+        decision: QuestionDecision::Accept,
+    };
+    let answer = match method {
+        "item/commandExecution/requestApproval" => QuestionCardAnswer::Command(data),
+        "item/fileChange/requestApproval" => QuestionCardAnswer::File(data),
+        "item/permissions/requestApproval" => QuestionCardAnswer::Permissions(data),
+        _ => return Ok(None),
+    };
+    let answer = serde_json::to_value(answer)?;
+    answer_value(method, params, &answer["data"]).map(|(result, _)| Some(result))
 }
 
 pub(super) fn save(tx: &Transaction<'_>, card: &Value) -> Result<(), CallbackError> {
@@ -304,16 +309,11 @@ pub fn answer_value(
     params: &Value,
     data: &Value,
 ) -> Result<(Value, Value), CallbackError> {
-    let choice = || -> Result<&str, CallbackError> {
-        let decision = match data.get("decision") {
-            None => "decline",
-            Some(Value::String(value)) => value.as_str(),
-            Some(_) => return Err(CallbackError::Invalid("Choose accept, decline or cancel")),
-        };
-        if matches!(decision, "accept" | "decline" | "cancel") {
-            Ok(decision)
-        } else {
-            Err(CallbackError::Invalid("Choose accept, decline or cancel"))
+    let choice = || -> Result<QuestionDecision, CallbackError> {
+        match data.get("decision") {
+            None => Ok(QuestionDecision::Decline),
+            Some(value) => serde_json::from_value(value.clone())
+                .map_err(|_| CallbackError::Invalid("Choose accept, decline or cancel")),
         }
     };
     let result = match method {
@@ -330,10 +330,11 @@ pub fn answer_value(
             json!({"answers":data["answers"]})
         }
         "item/permissions/requestApproval" => {
-            json!({"permissions":if data["decision"]=="accept" {params.get("permissions").cloned().unwrap_or(json!({}))}else{json!({})},"scope":"turn"})
+            json!({"permissions":if matches!(serde_json::from_value(data["decision"].clone()), Ok(QuestionDecision::Accept)) {params.get("permissions").cloned().unwrap_or(json!({}))}else{json!({})},"scope":"turn"})
         }
         "mcpServer/elicitation/request" => {
-            json!({"action":choice()?,"content":if choice()?=="accept" {data.get("content").cloned().unwrap_or(Value::Null)} else {Value::Null}})
+            let decision = choice()?;
+            json!({"action":decision,"content":if matches!(decision, QuestionDecision::Accept) {data.get("content").cloned().unwrap_or(Value::Null)} else {Value::Null}})
         }
         _ => return Err(CallbackError::Invalid("Unsupported request type")),
     };
@@ -823,7 +824,7 @@ pub async fn prepare_delete(
                 // checked before prepare_answer_in writes durable intent.
                 provider_context(tx, &card)?;
                 let data = if method == "mcpServer/elicitation/request" {
-                    json!({"decision":"cancel"})
+                    json!({"decision":QuestionDecision::Cancel})
                 } else {
                     json!({"answers":{}})
                 };

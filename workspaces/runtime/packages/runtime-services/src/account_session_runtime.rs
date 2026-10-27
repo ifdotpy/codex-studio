@@ -338,20 +338,18 @@ pub async fn limits(
     port: &dyn AccountSessionPort,
     account: &str,
     cached: bool,
-) -> Result<Value, AccountSessionError> {
+) -> Result<LimitsSnapshot, AccountSessionError> {
     let snapshot = LimitsSnapshot::read(account, port.limits_snapshot(account)?)?;
     let now = timestamp()?;
     match snapshot.decision(cached, now) {
-        LimitsDecision::Cached => Ok(snapshot.into_value()),
+        LimitsDecision::Cached => Ok(snapshot),
         LimitsDecision::Refresh => {
             port.refresh_limits(account).await?;
-            Ok(snapshot.into_value())
+            Ok(snapshot)
         }
-        LimitsDecision::Read => Ok(LimitsSnapshot::read(
-            account,
-            port.read_limits_if_stale(account).await?,
-        )?
-        .into_value()),
+        LimitsDecision::Read => {
+            LimitsSnapshot::read(account, port.read_limits_if_stale(account).await?)
+        }
     }
 }
 
@@ -370,6 +368,33 @@ mod limits_freshness_tests {
     };
 
     const NOW: f64 = 1_000.0;
+
+    #[test]
+    fn limits_ingress_preserves_vendor_windows_and_rejects_invalid_consumed_fields() {
+        let original = json!({
+            "accountKey":"default", "at":NOW,
+            "data":{"source":null,"rateLimits":{"planType":"plus", "secondary":null,"primary":{
+                "usedPercent":42, "resetsAt":null,"vendorWindow":{"opaque":[null, true]}
+            }}, "vendorData":{"opaque":null}}
+        });
+        assert_eq!(
+            LimitsSnapshot::read("default", original.clone())
+                .unwrap()
+                .into_value(),
+            original
+        );
+        for data in [
+            json!({"rateLimits":{"primary":{"usedPercent":"42"}}}),
+            json!({"rateLimits":{"spendControlReached":"false"}}),
+            json!({"rateLimitResetCredits":{"credits":[{"id":"credit"}]}}),
+        ] {
+            assert!(
+                LimitsSnapshot::read("default", json!({"accountKey":"default","data":data}))
+                    .is_err()
+            );
+        }
+        assert!(LimitsSnapshot::read("other", original).is_err());
+    }
 
     fn snapshot(at: Value, read_at: Value, data: Value, error: Value, checked_at: Value) -> Value {
         json!({
@@ -548,17 +573,126 @@ impl RequestCertainty {
         }
     }
 }
+/// Delivery evidence returned by the retained broker. Worker outcomes retain
+/// the issued ticket; pre-handoff refusals have no provider ticket.
+pub enum SessionOutcome {
+    Written {
+        ticket: RequestTicket,
+        response: ProviderResponse,
+    },
+    WorkerNotSent {
+        ticket: RequestTicket,
+    },
+    Unknown {
+        ticket: RequestTicket,
+    },
+    /// The retained owner proved non-delivery before issuing a ticket, but
+    /// supplied no more specific cause.
+    NotHandedOff,
+    NoLiveAccountWorker,
+    ExpectedScopeMismatch,
+    DeadlineExpired,
+}
+
 pub struct SessionReceipt {
     pub scope: ConnectionScope,
     pub operation: String,
-    /// Missing only when the retained owner proves the request was not handed
-    /// off (for example, no live account worker exists).
-    pub ticket: Option<RequestTicket>,
-    pub certainty: RequestCertainty,
-    pub result: Option<ProviderResponse>,
-    pub not_sent_reason: Option<NotSentReason>,
+    pub outcome: SessionOutcome,
     /// True only when the retained broker returned a checkpoint-verified replay.
     pub replayed: bool,
+}
+
+impl SessionReceipt {
+    pub fn certainty(&self) -> RequestCertainty {
+        match self.outcome {
+            SessionOutcome::Written { .. } => RequestCertainty::Written,
+            SessionOutcome::Unknown { .. } => RequestCertainty::Unknown,
+            SessionOutcome::WorkerNotSent { .. }
+            | SessionOutcome::NoLiveAccountWorker
+            | SessionOutcome::ExpectedScopeMismatch
+            | SessionOutcome::DeadlineExpired
+            | SessionOutcome::NotHandedOff => RequestCertainty::NotSent,
+        }
+    }
+
+    pub fn ticket(&self) -> Option<&RequestTicket> {
+        match &self.outcome {
+            SessionOutcome::Written { ticket, .. }
+            | SessionOutcome::WorkerNotSent { ticket }
+            | SessionOutcome::Unknown { ticket } => Some(ticket),
+            SessionOutcome::NoLiveAccountWorker
+            | SessionOutcome::ExpectedScopeMismatch
+            | SessionOutcome::DeadlineExpired
+            | SessionOutcome::NotHandedOff => None,
+        }
+    }
+
+    pub fn response(&self) -> Option<&ProviderResponse> {
+        match &self.outcome {
+            SessionOutcome::Written { response, .. } => Some(response),
+            SessionOutcome::WorkerNotSent { .. }
+            | SessionOutcome::Unknown { .. }
+            | SessionOutcome::NoLiveAccountWorker
+            | SessionOutcome::ExpectedScopeMismatch
+            | SessionOutcome::DeadlineExpired
+            | SessionOutcome::NotHandedOff => None,
+        }
+    }
+
+    pub fn into_response(self) -> Option<ProviderResponse> {
+        match self.outcome {
+            SessionOutcome::Written { response, .. } => Some(response),
+            SessionOutcome::WorkerNotSent { .. }
+            | SessionOutcome::Unknown { .. }
+            | SessionOutcome::NoLiveAccountWorker
+            | SessionOutcome::ExpectedScopeMismatch
+            | SessionOutcome::DeadlineExpired
+            | SessionOutcome::NotHandedOff => None,
+        }
+    }
+
+    /// Legacy diagnostic classification, not proof that a worker ticket exists.
+    /// `NotHandedOff` retains the generic "did not accept" diagnostic; callers
+    /// needing delivery evidence must inspect the outcome or its ticket.
+    pub fn not_sent_reason(&self) -> Option<NotSentReason> {
+        match self.outcome {
+            SessionOutcome::WorkerNotSent { .. } | SessionOutcome::NotHandedOff => {
+                Some(NotSentReason::WorkerNotSent)
+            }
+            SessionOutcome::NoLiveAccountWorker => Some(NotSentReason::NoLiveAccountWorker),
+            SessionOutcome::ExpectedScopeMismatch => Some(NotSentReason::ExpectedScopeMismatch),
+            SessionOutcome::DeadlineExpired => Some(NotSentReason::DeadlineExpired),
+            SessionOutcome::Written { .. } | SessionOutcome::Unknown { .. } => None,
+        }
+    }
+}
+
+impl From<crate::account_worker::retained::SessionReceipt> for SessionReceipt {
+    fn from(receipt: crate::account_worker::retained::SessionReceipt) -> Self {
+        use crate::account_worker::retained::RequestResult;
+        let outcome = match receipt.result {
+            RequestResult::Reply(value) => SessionOutcome::Written {
+                ticket: receipt.ticket,
+                response: ProviderResponse::Reply(value),
+            },
+            RequestResult::Rejected(value) => SessionOutcome::Written {
+                ticket: receipt.ticket,
+                response: ProviderResponse::Rejected(value),
+            },
+            RequestResult::NotSent => SessionOutcome::WorkerNotSent {
+                ticket: receipt.ticket,
+            },
+            RequestResult::Unknown => SessionOutcome::Unknown {
+                ticket: receipt.ticket,
+            },
+        };
+        Self {
+            scope: receipt.scope,
+            operation: receipt.operation,
+            outcome,
+            replayed: receipt.replayed,
+        }
+    }
 }
 
 fn provider_receipt_matches(
@@ -569,11 +703,11 @@ fn provider_receipt_matches(
 ) -> Result<(), AccountSessionError> {
     let same_identity = receipt.operation == operation && receipt.scope.account == account;
     let valid_scope = match expected_scope {
-        None => receipt.certainty == RequestCertainty::NotSent,
+        None => receipt.certainty() == RequestCertainty::NotSent,
         Some(scope) if receipt.scope == *scope => true,
         Some(scope) => {
             receipt.replayed
-                && receipt.certainty == RequestCertainty::Written
+                && receipt.certainty() == RequestCertainty::Written
                 && receipt.scope.generation < scope.generation
                 && receipt.scope.account == scope.account
         }
@@ -705,6 +839,8 @@ async fn persist_limits(
     value: Value,
     continuation_wake: Option<Arc<Notify>>,
 ) -> Result<(), AccountSessionError> {
+    let value =
+        LimitsSnapshot::read(&account, value).map_err(|_| AccountSessionError::Persistence)?;
     limits::persist(
         store,
         refreshed_limits,
@@ -1420,8 +1556,8 @@ impl AccountSessionPort for AccountSessionRuntime {
                                 )
                                 .await;
                             match response {
-                                Ok(response) if response.certainty == RequestCertainty::NotSent => {
-                                    let reason = response.not_sent_reason;
+                                Ok(response) if response.certainty() == RequestCertainty::NotSent => {
+                                    let reason = response.not_sent_reason();
                                     crate::diagnostics::log_stderr(format_args!(
                                         "account sign-in {} for {account} was not sent: {reason:?}",
                                         request.login_id
@@ -1429,8 +1565,8 @@ impl AccountSessionPort for AccountSessionRuntime {
                                     (None, false, Some(login_not_sent_cause(reason)))
                                 }
                                 Ok(response) => (
-                                    if response.certainty == RequestCertainty::Written {
-                                        match response.result {
+                                    if response.certainty() == RequestCertainty::Written {
+                                        match response.response().cloned() {
                                             Some(ProviderResponse::Reply(value)) => Some(value),
                                             Some(ProviderResponse::Rejected(_)) | None => None,
                                         }
@@ -1554,7 +1690,7 @@ impl AccountSessionPort for AccountSessionRuntime {
                         .await;
                     if response
                         .as_ref()
-                        .is_ok_and(|receipt| receipt.certainty == RequestCertainty::NotSent)
+                        .is_ok_and(|receipt| receipt.certainty() == RequestCertainty::NotSent)
                     {
                         let driver = Arc::clone(&runtime.driver);
                         let request_id = request.to_owned();
@@ -1567,14 +1703,13 @@ impl AccountSessionPort for AccountSessionRuntime {
                         .map_err(mutation_error);
                     }
                     let confirmed = response.ok().is_some_and(|receipt| {
-                        receipt.certainty == RequestCertainty::Written
-                            && matches!(
-                                receipt.result.as_ref().and_then(|result| match result {
-                                    ProviderResponse::Reply(value) => value["status"].as_str(),
-                                    ProviderResponse::Rejected(_) => None,
-                                }),
-                                Some("canceled" | "notFound")
-                            )
+                        matches!(
+                            receipt.response().and_then(|result| match result {
+                                ProviderResponse::Reply(value) => value["status"].as_str(),
+                                ProviderResponse::Rejected(_) => None,
+                            }),
+                            Some("canceled" | "notFound")
+                        )
                     });
                     let driver = Arc::clone(&runtime.driver);
                     let request_id = request.to_owned();
@@ -1664,12 +1799,11 @@ async fn read_limits_with_freshness(
         if runtime.current_scope(account).as_ref() != Some(&scope)
             || receipt.scope != scope
             || receipt.operation != operation
-            || receipt.certainty != RequestCertainty::Written
-            || receipt.ticket.is_none()
+            || receipt.certainty() != RequestCertainty::Written
         {
             return Err(AccountSessionError::Unknown);
         }
-        match receipt.result {
+        match receipt.into_response() {
             Some(ProviderResponse::Reply(data)) => Ok(data),
             Some(ProviderResponse::Rejected(_)) | None => {
                 Err(AccountSessionError::Refused("Account limits read failed"))
@@ -1690,7 +1824,7 @@ async fn read_limits_with_freshness(
             let mut failed = current;
             failed["error"] = Value::String(error.to_string());
             failed["checkedAt"] = serde_json::json!(timestamp()?);
-            let failed = LimitsSnapshot::read(account, failed)?.into_value();
+            let failed = LimitsSnapshot::read(account, failed)?;
             limits::persist(
                 runtime
                     .store
@@ -1714,7 +1848,7 @@ async fn read_limits_with_freshness(
     let now = timestamp()?;
     let value =
         serde_json::json!({"accountKey":account,"data":data,"at":now,"readAt":now,"error":null});
-    let value = LimitsSnapshot::read(account, value)?.into_value();
+    let value = LimitsSnapshot::read(account, value)?;
     let scope = read_scope.ok_or(AccountSessionError::Unknown)?;
     limits::persist(
         runtime
@@ -1914,8 +2048,8 @@ pub fn normalize_profile(
 #[cfg(test)]
 mod historical_receipt_tests {
     use super::{
-        AccountSessionError, ConnectionScope, ProviderResponse, RequestCertainty, SessionReceipt,
-        provider_receipt_matches,
+        AccountSessionError, ConnectionScope, Method, ProviderResponse, RequestCertainty,
+        RequestTicket, SessionOutcome, SessionReceipt, provider_receipt_matches,
     };
     use serde_json::json;
 
@@ -1932,14 +2066,23 @@ mod historical_receipt_tests {
         certainty: RequestCertainty,
         replayed: bool,
     ) -> SessionReceipt {
+        let ticket = RequestTicket {
+            generation: scope.generation,
+            id: studio_runtime_providers::RequestId::String("fixture".into()),
+            method: Method::ThreadFork,
+        };
+        let outcome = match certainty {
+            RequestCertainty::Written => SessionOutcome::Written {
+                ticket,
+                response: ProviderResponse::Reply(json!({"thread":{"id":"branch-thread"}})),
+            },
+            RequestCertainty::Unknown => SessionOutcome::Unknown { ticket },
+            RequestCertainty::NotSent => SessionOutcome::NoLiveAccountWorker,
+        };
         SessionReceipt {
             scope,
             operation: "branch:request-1".into(),
-            ticket: None,
-            certainty,
-            result: (certainty == RequestCertainty::Written)
-                .then(|| ProviderResponse::Reply(json!({"thread":{"id":"branch-thread"}}))),
-            not_sent_reason: None,
+            outcome,
             replayed,
         }
     }
@@ -2126,8 +2269,8 @@ mod limits_runtime_tests {
 
     use super::{
         AccountSessionError, AccountSessionPort, AccountSessionRuntime, ConnectionScope,
-        LoginRequest, ProviderRequest, ProviderResponse, RequestCertainty, RetainedAccountSession,
-        SessionFuture, SessionFutureScope, SessionReceipt,
+        LoginRequest, ProviderRequest, ProviderResponse, RetainedAccountSession, SessionFuture,
+        SessionFutureScope, SessionReceipt,
     };
     use crate::{account_driver::AccountDriver, account_policy::AccountPolicyState};
     use futures_util::FutureExt;
@@ -2208,17 +2351,17 @@ mod limits_runtime_tests {
                     Reply::Rejected => ProviderResponse::Rejected(json!({"message":"fixture"})),
                 };
                 Ok(SessionReceipt {
-                    ticket: Some(RequestTicket {
-                        generation: scope.generation,
-                        id: RequestId::String(operation.clone()),
-                        method,
-                    }),
-                    scope,
-                    operation,
-                    certainty: RequestCertainty::Written,
-                    result: Some(result),
-                    not_sent_reason: None,
+                    scope: scope.clone(),
+                    operation: operation.clone(),
                     replayed: false,
+                    outcome: crate::account_session_runtime::SessionOutcome::Written {
+                        ticket: RequestTicket {
+                            generation: scope.generation,
+                            id: RequestId::String(operation.clone()),
+                            method,
+                        },
+                        response: result,
+                    },
                 })
             })
         }

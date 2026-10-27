@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use studio_runtime_providers::Method;
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::account_session_runtime::{
     AccountSessionError, AccountSessionPort, ProviderRequest, ProviderResponse, RequestCertainty,
 };
@@ -419,24 +420,17 @@ async fn branch(
         };
         let result = port.provider_request(request).await;
         match result {
-            Ok(receipt) if receipt.certainty == RequestCertainty::Written => match receipt.result {
-                Some(ProviderResponse::Reply(value)) => value,
-                Some(ProviderResponse::Rejected(error)) => {
+            Ok(studio_runtime_services::account_session_runtime::SessionReceipt {
+                outcome: ReceiptOutcome::Written { response, .. },
+                ..
+            }) => match response {
+                ProviderResponse::Reply(value) => value,
+                ProviderResponse::Rejected(error) => {
                     settle_failure(&store, &operation_id, false, &error.to_string()).await?;
                     return Err(bad_request(&error.to_string()));
                 }
-                _ => {
-                    settle_failure(
-                        &store,
-                        &operation_id,
-                        true,
-                        "Provider fork outcome is unknown",
-                    )
-                    .await?;
-                    return Err(unavailable());
-                }
             },
-            Ok(receipt) if receipt.certainty == RequestCertainty::NotSent => {
+            Ok(receipt) if receipt.certainty() == RequestCertainty::NotSent => {
                 settle_failure(&store, &operation_id, false, "Provider fork was not sent").await?;
                 return Err(unavailable());
             }
@@ -595,7 +589,7 @@ async fn provider_request(
                 | AccountSessionError::InvalidResponse(_)
                 | AccountSessionError::Persistence => bad_request(&error.to_string()),
             })?;
-    if receipt.certainty == RequestCertainty::NotSent {
+    if receipt.certainty() == RequestCertainty::NotSent {
         // A worker can disappear between ensuring the account session and
         // submitting the request. A NotSent receipt permits retrying, but the
         // operation identity and payload remain unchanged.
@@ -616,12 +610,21 @@ async fn provider_request(
                 | AccountSessionError::Persistence => bad_request(&error.to_string()),
             })?;
     }
-    match (receipt.certainty, receipt.result) {
-        (RequestCertainty::Written, Some(ProviderResponse::Reply(value))) => Ok(value),
-        (RequestCertainty::Written, Some(ProviderResponse::Rejected(error))) => {
-            Err(bad_request(&error.to_string()))
-        }
-        _ => Err(unavailable()),
+    match receipt.outcome {
+        ReceiptOutcome::Written {
+            response: ProviderResponse::Reply(value),
+            ..
+        } => Ok(value),
+        ReceiptOutcome::Written {
+            response: ProviderResponse::Rejected(error),
+            ..
+        } => Err(bad_request(&error.to_string())),
+        ReceiptOutcome::Unknown { .. }
+        | ReceiptOutcome::WorkerNotSent { .. }
+        | ReceiptOutcome::NoLiveAccountWorker
+        | ReceiptOutcome::ExpectedScopeMismatch
+        | ReceiptOutcome::DeadlineExpired
+        | ReceiptOutcome::NotHandedOff => Err(unavailable()),
     }
 }
 
@@ -1162,6 +1165,7 @@ inventory::submit! { crate::routes::manifest::RouteModuleRegistration { name:"br
 mod tests {
     use super::*;
     use std::sync::Mutex;
+    use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use studio_runtime_services::account_session_runtime::{
         AccountSessionFuture, ConnectionScope, SessionReceipt,
     };
@@ -1365,15 +1369,15 @@ mod tests {
                 Ok(SessionReceipt {
                     scope: self.current_scope(&request.account).expect("scope"),
                     operation: request.operation,
-                    ticket: Some(studio_runtime_providers::RequestTicket {
-                        generation: 1,
-                        id: studio_runtime_providers::RequestId::String("fixture".into()),
-                        method: request.method,
-                    }),
-                    certainty: RequestCertainty::Written,
-                    result: Some(ProviderResponse::Reply(result)),
-                    not_sent_reason: None,
                     replayed: false,
+                    outcome: ReceiptOutcome::Written {
+                        ticket: studio_runtime_providers::RequestTicket {
+                            generation: 1,
+                            id: studio_runtime_providers::RequestId::String("fixture".into()),
+                            method: request.method,
+                        },
+                        response: ProviderResponse::Reply(result),
+                    },
                 })
             })
         }

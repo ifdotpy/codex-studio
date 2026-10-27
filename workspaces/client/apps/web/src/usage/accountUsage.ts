@@ -1,28 +1,18 @@
 import { serverLocalStorage } from "../servers/storage";
 import type { JsonInput, JsonInputOf, Json } from "../types";
 import type { ApiError, GetResult } from "../api";
-import type { components } from "../generated/api";
 import { ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS } from "../generated/sharedValues";
-import { providerLimitData, providerRateLimitsDataDto } from "./providerLimits";
+import { storedLimitData } from "./providerLimits";
 
 export type JsonObject = Json;
 
-type AccountRateLimitsDto = JsonInputOf<
-  components["schemas"]["AccountRateLimitsDto"]
->;
 type UsageLimitsResponse = JsonInputOf<GetResult<"/api/limits">>;
 type ClientLimitMetadata = { loading?: boolean; stale?: boolean };
 export type AccountLimitsReadError = Pick<ApiError, "message" | "status"> & {
   location?: string[];
 };
-export type AccountLimitsSnapshot =
-  | (Pick<AccountRateLimitsDto, "accountKey" | "at" | "data" | "error"> &
-      ClientLimitMetadata & { readError?: AccountLimitsReadError })
-  | (Pick<
-      UsageLimitsResponse,
-      "accountKey" | "at" | "checkedAt" | "data" | "error" | "readAt"
-    > &
-      ClientLimitMetadata & { readError?: AccountLimitsReadError });
+export type AccountLimitsSnapshot = UsageLimitsResponse &
+  ClientLimitMetadata & { readError?: AccountLimitsReadError };
 
 export function limitsReadSucceeded(
   snapshot: Pick<AccountLimitsSnapshot, "error">,
@@ -44,9 +34,8 @@ export function jsonObject(
     : null;
 }
 
-function isAccountLimitsSnapshot(
-  value: JsonInput,
-): value is AccountLimitsSnapshot {
+// Local storage is untrusted; streamed/API responses already carry the contract.
+function isStoredAccountLimitsSnapshot(value: JsonInput): boolean {
   const limits = jsonObject(value);
   const readError = jsonObject(limits?.readError);
   if (
@@ -77,26 +66,20 @@ function isAccountLimitsSnapshot(
     (limits.stale !== undefined && typeof limits.stale !== "boolean") ||
     (limits.data !== undefined &&
       limits.data !== null &&
-      !providerLimitData(limits.data) &&
-      !providerRateLimitsDataDto(limits.data))
+      !storedLimitData(limits.data))
   )
     return false;
   return true;
 }
 
 export function accountLimits(
-  value: JsonInput | null | undefined,
+  value: AccountLimitsSnapshot | null | undefined,
   accountKey: string,
   accountId?: string | null,
 ): AccountLimitsSnapshot | null {
-  if (
-    !value ||
-    !isAccountLimitsSnapshot(value) ||
-    value.accountKey !== accountKey
-  )
-    return null;
+  if (!value || value.accountKey !== accountKey) return null;
   const limits = value;
-  const data = jsonObject(limits.data);
+  const data = limits.data;
   if (accountId && data?.accountId != null && data.accountId !== accountId)
     return null;
   return limits;
@@ -111,7 +94,7 @@ export function shouldReplaceLimitsSnapshot(
 }
 
 export function limitsSnapshotIsFresh(
-  value: JsonInput | null | undefined,
+  value: AccountLimitsSnapshot | null | undefined,
   accountKey: string,
   accountId?: string | null,
   now = Date.now() / 1000,
@@ -138,11 +121,16 @@ export function createAccountLimitsCache(
     cacheScope = scope;
     cache = {};
     try {
-      const stored = JSON.parse(
+      const stored: Record<string, JsonInput> = JSON.parse(
         storage.getItem(`codex-limits:${scope}`) || "{}",
       );
       for (const [key, value] of Object.entries(stored)) {
-        const snapshot = accountLimits(value as JsonInput, key);
+        // This cache is written by cacheAccountLimits. Its existing guard checks
+        // the envelope/data, not every saved field. Eligibility retains its
+        // serialized contract and use-time identity/freshness checks.
+        const snapshot = isStoredAccountLimitsSnapshot(value)
+          ? accountLimits(value as AccountLimitsSnapshot, key)
+          : null;
         if (snapshot) cache[key] = snapshot;
       }
     } catch {

@@ -10,7 +10,8 @@ import ConnectionRecovery, {
   canCheckConnection,
   matchingConnectionCheck,
 } from "./ConnectionRecovery";
-import type { Agent, Json, Message } from "../types";
+import type { Agent, Message } from "../types";
+import type { AccountLimitsSnapshot } from "../usage/accountUsage";
 import { agentErrorLabel } from "../types";
 import { Button } from "@mantine/core";
 import { CircleAlert } from "lucide-react";
@@ -73,7 +74,7 @@ export function NativeError({
 }: {
   agent: Agent;
   planType?: string | undefined;
-  limits?: Json | null;
+  limits?: AccountLimitsSnapshot | null;
   openLimits?: () => void;
   /** Read the account limits of this chat again. */
   refreshLimits?: () => void;

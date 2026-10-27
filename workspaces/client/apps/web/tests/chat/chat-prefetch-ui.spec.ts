@@ -12,7 +12,7 @@ import type { BrowserContext, Page, Route } from "@playwright/test";
 import type { ViteDevServer } from "vite";
 import { SYNC_PROTOCOL_VERSION } from "../../src/generated/api.ts";
 import type { components } from "../../src/generated/api.ts";
-import type { Agent } from "../../src/types.ts";
+import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
 import {
   fixturePullResult,
   type LegacySyncDocument,

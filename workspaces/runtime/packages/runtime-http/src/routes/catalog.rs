@@ -2,6 +2,7 @@
 
 use axum::Json;
 use axum::extract::State;
+use studio_runtime_services::account_session_runtime::LimitsSnapshot;
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -98,16 +99,18 @@ async fn limits(
         .as_ref()
         .ok_or_else(ApiError::internal)?;
     let snapshot = account_policy.limits(account_key);
-    if cached
-        && (snapshot.get("data").is_some_and(|data| !data.is_null())
-            || snapshot
+    if snapshot.get("data").is_some_and(|data| !data.is_null())
+        || (cached
+            && snapshot
                 .get("error")
                 .is_some_and(|error| !error.is_null() && error != ""))
     {
-        return limits_response(&state, snapshot, agent_id).await;
-    }
-    if snapshot.get("data").is_some_and(|data| !data.is_null()) {
-        return limits_response(&state, snapshot, agent_id).await;
+        return limits_response(
+            &state,
+            LimitsSnapshot::read(account_key, snapshot).map_err(|_| ApiError::internal())?,
+            agent_id,
+        )
+        .await;
     }
     let snapshot = limit_error_snapshot(&state, account_key, "Account limits could not be read.")?;
     limits_response(&state, snapshot, agent_id).await
@@ -115,9 +118,10 @@ async fn limits(
 
 async fn limits_response(
     state: &HttpState,
-    mut snapshot: serde_json::Value,
+    snapshot: LimitsSnapshot,
     agent_id: Option<String>,
 ) -> Result<Json<crate::generated::UsageLimitsResponse>, ApiError> {
+    let mut snapshot = snapshot.into_value();
     if let Some(id) = agent_id {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let agent = store
@@ -155,7 +159,7 @@ fn limit_error_snapshot(
     state: &HttpState,
     account_key: &str,
     message: &str,
-) -> Result<serde_json::Value, ApiError> {
+) -> Result<LimitsSnapshot, ApiError> {
     let account_policy = state
         .account_policy
         .as_ref()
@@ -175,7 +179,7 @@ fn limit_error_snapshot(
                 .as_secs_f64(),
         ),
     );
-    Ok(snapshot)
+    LimitsSnapshot::read(account_key, snapshot).map_err(|_| ApiError::internal())
 }
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
@@ -199,6 +203,75 @@ mod tests {
     };
     use studio_runtime_store::RuntimeStore;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn limits_route_preserves_checked_fields_and_vendor_extensions() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let data = json!({
+            "accountId":"native-account", "ordinaryUsageAllowed":false,
+            "rateLimits":{"planType":"plus","spendControlReached":true,"secondary":null,"primary":{
+                "usedPercent":42,"resetsAt":null,"vendorWindow":{"opaque":[null,true]}
+            }},
+            "rateLimitResetCredits":{"credits":[{
+                "id":"credit","status":"available","resetType":"five_hour",
+                "vendorCredit":{"opaque":null}
+            }]},
+            "vendorData":{"opaque":null}
+        });
+        let registry = serde_json::to_vec(&json!({
+            "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
+            "defaultAccountKey":"default",
+            "accounts":{"default":{
+                "id":"default","provider":"codex","home":root.path(),
+                "label":"Default","source":"Fixture","status":"signedOut"
+            }},"logins":{}
+        }))
+        .expect("registry JSON");
+        let policy = AccountPolicyState::from_startup(
+            Some(&registry),
+            [(
+                "default".into(),
+                json!({"accountKey":"default","at":1000,"data":data}),
+            )],
+        )
+        .expect("checked startup limits");
+        assert!(policy.limits_diagnostics().is_empty());
+        let state = crate::HttpState::new(
+            "fixture-token".into(),
+            "fixture".into(),
+            root.path().display().to_string(),
+            49171,
+            None,
+            Some(store),
+            Some(Arc::new(policy)),
+        );
+        let request = Request::builder()
+            .uri("/api/limits?cached=1")
+            .header("host", "127.0.0.1:49171")
+            .header("x-canvas-token", "fixture-token")
+            .header(crate::API_SCHEMA_HASH_HEADER, crate::api_schema_hash())
+            .extension(ConnectInfo(
+                "127.0.0.1:12345"
+                    .parse::<std::net::SocketAddr>()
+                    .expect("address"),
+            ))
+            .body(Body::empty())
+            .expect("request");
+        let response = crate::router(state)
+            .expect("router")
+            .oneshot(request)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        let body: Value = serde_json::from_slice(&body).expect("JSON");
+        assert_eq!(body["accountKey"], "default");
+        assert_eq!(body["data"], data);
+        assert!(body.get("eligibility").is_none());
+    }
 
     #[tokio::test]
     #[allow(clippy::disallowed_methods)] // Test fixture writes and rereads the registry file.

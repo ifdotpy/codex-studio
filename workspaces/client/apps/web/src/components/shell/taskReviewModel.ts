@@ -1,11 +1,12 @@
-import type { GetResult, PostBody } from "../../api";
+import type { PostBody } from "../../api";
 import {
   DEFAULT_GATE_TIMEOUT_MS,
   MAX_GATE_TIMEOUT_MS,
   MAX_RESULT_SCHEMA_BYTES,
 } from "../../generated/taskReview";
 
-export type ReviewTask = GetResult<"/api/work">["items"][number];
+import type { ReviewTask } from "../../sync/subscriptions/workData";
+export type { ReviewTask } from "../../sync/subscriptions/workData";
 export type TaskConfiguration = Extract<
   PostBody<"/api/work">,
   { action: "create" | "update" }

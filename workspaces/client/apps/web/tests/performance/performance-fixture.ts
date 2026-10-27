@@ -1,4 +1,4 @@
-import type { Agent } from "../../src/types.ts";
+import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
 import type { components } from "../../src/generated/api.ts";
 import type { AddressInfo } from "node:net";
 import type { ViteDevServer } from "vite";

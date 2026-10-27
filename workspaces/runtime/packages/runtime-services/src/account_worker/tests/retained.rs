@@ -1,7 +1,6 @@
 use super::*;
 use crate::account_session_runtime::{
-    AccountSessionError, AccountSessionPort, ProviderRequest, ProviderResponse, RequestCertainty,
-    SessionReceipt,
+    AccountSessionError, AccountSessionPort, ProviderRequest, SessionReceipt,
 };
 use crate::account_worker::retained::{
     PortError, RequestActor, RequestResult, RetainedSessionPort, SessionRequest,
@@ -88,27 +87,7 @@ impl AccountSessionPort for ResetBrokerSession {
                     AccountSessionError::Refused("Retained reset request was refused")
                 }
             })?;
-            let (certainty, result) = match receipt.result {
-                RequestResult::Reply(value) => (
-                    RequestCertainty::Written,
-                    Some(ProviderResponse::Reply(value)),
-                ),
-                RequestResult::Rejected(value) => (
-                    RequestCertainty::Written,
-                    Some(ProviderResponse::Rejected(value)),
-                ),
-                RequestResult::NotSent => (RequestCertainty::NotSent, None),
-                RequestResult::Unknown => return Err(AccountSessionError::Unknown),
-            };
-            Ok(SessionReceipt {
-                scope: receipt.scope,
-                operation: receipt.operation,
-                ticket: Some(receipt.ticket),
-                certainty,
-                result,
-                not_sent_reason: None,
-                replayed: receipt.replayed,
-            })
+            Ok(receipt.into())
         })
     }
 }

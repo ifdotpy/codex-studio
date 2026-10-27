@@ -2,6 +2,7 @@ use super::{
     SafetyBufferingError as Error, SafetyDecision, SafetyRetryStage as Stage, SafetySnapshot,
     decide_action, public_receipt,
 };
+use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use crate::{
     account_session_runtime::{
         AccountSessionError, AccountSessionPort, ProviderRequest, ProviderResponse,
@@ -314,7 +315,7 @@ async fn drive(
                     if !persist_stage_receipt(&store, &mut operation, stage, &receipt).await? {
                         return public_receipt(&operation);
                     }
-                    if receipt.certainty == RequestCertainty::NotSent
+                    if receipt.certainty() == RequestCertainty::NotSent
                         && sent_retry < NOT_SENT_RETRIES
                     {
                         sent_retry += 1;
@@ -397,26 +398,33 @@ async fn drive(
                 }
             }
         };
-        if receipt.certainty == RequestCertainty::NotSent {
-            operation["dispatch"] = json!("ready");
-            persist_operation(&store, &mut operation).await?;
-            return public_receipt(&operation);
-        }
-        if receipt.certainty == RequestCertainty::Unknown {
-            operation["stage"] = json!(Stage::Unknown.as_str());
-            operation["dispatch"] = json!("unknown");
-            operation["error"] = json!("Provider request outcome is unknown");
-            persist_operation(&store, &mut operation).await?;
-            return public_receipt(&operation);
-        }
-        let body = match receipt.result {
-            Some(ProviderResponse::Reply(value)) => value,
-            Some(ProviderResponse::Rejected(_)) => {
+        let (ticket, response) = match receipt.outcome {
+            ReceiptOutcome::WorkerNotSent { .. }
+            | ReceiptOutcome::NoLiveAccountWorker
+            | ReceiptOutcome::ExpectedScopeMismatch
+            | ReceiptOutcome::DeadlineExpired
+            | ReceiptOutcome::NotHandedOff => {
+                operation["dispatch"] = json!("ready");
+                persist_operation(&store, &mut operation).await?;
+                return public_receipt(&operation);
+            }
+            ReceiptOutcome::Unknown { .. } => {
+                operation["stage"] = json!(Stage::Unknown.as_str());
+                operation["dispatch"] = json!("unknown");
+                operation["error"] = json!("Provider request outcome is unknown");
+                persist_operation(&store, &mut operation).await?;
+                return public_receipt(&operation);
+            }
+            ReceiptOutcome::Written { ticket, response } => (ticket, response),
+        };
+        let body = match response {
+            ProviderResponse::Reply(value) => value,
+            ProviderResponse::Rejected(_) => {
                 if stage == Stage::Start
                     && !settle_start_rejected(
                         &store,
                         &mut operation,
-                        receipt.ticket.as_ref(),
+                        Some(&ticket),
                         "Provider rejected turn/start",
                     )
                     .await?
@@ -428,13 +436,6 @@ async fn drive(
                 operation["error"] = json!("Provider rejected the safety retry request");
                 persist_operation(&store, &mut operation).await?;
                 return Err(Error::ProviderRejected);
-            }
-            None => {
-                operation["stage"] = json!(Stage::Unknown.as_str());
-                operation["dispatch"] = json!("unknown");
-                operation["error"] = json!("Provider receipt has no result");
-                persist_operation(&store, &mut operation).await?;
-                return public_receipt(&operation);
             }
         };
         operation
@@ -927,7 +928,7 @@ async fn persist_stage_receipt(
     stage: Stage,
     receipt: &SessionReceipt,
 ) -> Result<bool, Error> {
-    let result = match &receipt.result {
+    let result = match &receipt.response().cloned() {
         Some(ProviderResponse::Reply(value)) => value.clone(),
         Some(ProviderResponse::Rejected(reason)) => json!({"rejected":reason}),
         None => Value::Null,
@@ -935,27 +936,27 @@ async fn persist_stage_receipt(
     let receipt_value = json!({
         "operation":receipt.operation,
         "scope":receipt.scope,
-        "ticket":receipt.ticket.as_ref().map(|ticket| json!({
+        "ticket":receipt.ticket().map(|ticket| json!({
             "generation":ticket.generation,
             "id":ticket.id,
             "method":ticket.method.as_str()
         })),
-        "certainty":match receipt.certainty {
+        "certainty":match receipt.certainty() {
             RequestCertainty::Written => "written",
             RequestCertainty::NotSent => "not_sent",
             RequestCertainty::Unknown => "unknown"
         },
-        "notSentReason":receipt.not_sent_reason.map(|reason| format!("{reason:?}")),
+        "notSentReason":receipt.not_sent_reason().map(|reason| format!("{reason:?}")),
         "result":result
     });
     let id = required_str(operation, "id")?.to_owned();
     let expected_agent = operation.get("agent").cloned();
     let expected_epoch = operation.get("epoch").cloned();
     let expected_account = operation.get("accountKey").cloned();
-    let ticket = receipt.ticket.clone();
-    let certainty_unknown = receipt.certainty == RequestCertainty::Unknown;
+    let ticket = receipt.ticket().cloned();
+    let certainty_unknown = receipt.certainty() == RequestCertainty::Unknown;
     let receipt_generation = receipt.scope.generation;
-    let reply = match &receipt.result {
+    let reply = match &receipt.response().cloned() {
         Some(ProviderResponse::Reply(value)) => Some(value.clone()),
         _ => None,
     };

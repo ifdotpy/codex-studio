@@ -347,7 +347,7 @@ mod tests {
     fn invalid_limit_is_diagnostic_and_absent_cache_uses_default_shape() {
         let state = AccountPolicyState::from_startup(
             Some(REGISTRY),
-            [("alpha".into(), json!({"accountKey":"alpha","data":{"rateLimits":{"primary":{"usedPercent":1,"notAWindowField":true}}}}))],
+            [("alpha".into(), json!({"accountKey":"alpha","data":{"rateLimits":{"primary":{"usedPercent":"1","providerWindow":{"x":1}}}}}))],
         ).expect("bad cache does not stop startup");
         assert_eq!(state.limits("alpha")["data"], Value::Null);
         assert_eq!(state.limits_diagnostics().len(), 1);
@@ -355,16 +355,20 @@ mod tests {
             state.limits_diagnostics()[0].workspace_row,
             "workspace/current"
         );
+        assert_eq!(
+            state.limits_diagnostics()[0].pointer,
+            "/rateLimitsByAccount/alpha/data"
+        );
     }
 
     #[test]
-    fn storage_extension_rejected_by_python_restore_is_an_uncached_limit() {
+    fn startup_preserves_vendor_window_and_reset_credit_extensions() {
         let input = json!({"accountKey":"default","at":1.0,"data":{"rateLimits":{"primary":{"usedPercent":12,"providerWindow":{"x":1}}},"rateLimitResetCredits":{"providerOwned":true}}});
         let state =
             AccountPolicyState::from_startup(Some(REGISTRY), [("default".into(), input.clone())])
-                .expect("Python restore rejection does not stop startup");
-        assert!(state.limits("default")["data"].is_null());
-        assert_eq!(state.limits_diagnostics().len(), 1);
+                .expect("provider extensions survive startup");
+        assert_eq!(state.limits("default"), input);
+        assert!(state.limits_diagnostics().is_empty());
     }
 
     #[test]

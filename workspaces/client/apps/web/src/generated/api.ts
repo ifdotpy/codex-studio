@@ -13968,6 +13968,11 @@ export interface components {
       /** Size */
       size: number;
     };
+    FoundProcessReceipt: {
+      /** @constant */
+      found: true;
+      result: components["schemas"]["ProcessActionResult"];
+    };
     /** HistoricalInputProofRecordResponse */
     HistoricalInputProofRecordResponse: {
       /**
@@ -15034,6 +15039,11 @@ export interface components {
      * @enum {string}
      */
     MigrationTarget: "canvas" | "analytics" | "account_registry" | "supervisor";
+    MissingProcessReceipt: {
+      /** @constant */
+      found: false;
+      result: null;
+    };
     /** MissingToolRequestResponse */
     MissingToolRequestResponse: {
       /** Id */
@@ -17651,40 +17661,15 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
-    /** ProcessActionResult */
     ProcessActionResult: {
-      /**
-       * Error
-       * @default null
-       */
-      error?: null | string | undefined;
-      /**
-       * Processes
-       * @default []
-       */
-      processes?:
-        | {
-            [key: string]: components["schemas"]["JsonValue"] | undefined;
-          }[]
-        | undefined;
-      /** Requestid */
+      /** @default [] */
+      processes?: components["schemas"]["ProcessEntry"][] | undefined;
       requestId: string;
-      /**
-       * Response
-       * @default null
-       */
-      response?:
-        | {
-            [key: string]: components["schemas"]["JsonValue"] | undefined;
-          }
-        | null
-        | undefined;
-      /**
-       * Status
-       * @enum {string}
-       */
-      status: "completed" | "partial" | "uncertain";
+      response?: components["schemas"]["ResponseEntry"] | null | undefined;
+      status: components["schemas"]["ProcessActionStatus"];
     };
+    /** @enum {string} */
+    ProcessActionStatus: "completed" | "partial" | "uncertain";
     /** ProcessCapabilities */
     ProcessCapabilities: {
       /** Readoutput */
@@ -17696,49 +17681,123 @@ export interface components {
       /** Stop */
       stop: boolean;
     };
-    /** ProcessControlRequest */
-    ProcessControlRequest: {
-      /** Accountkey */
-      accountKey: string;
-      /**
-       * Action
-       * @enum {string}
-       */
-      action:
-        | "stop_selected"
-        | "stop_owned"
-        | "stop_response"
-        | "background_command";
-      /** Agent */
+    ProcessControlRequest:
+      | {
+          accountKey: string;
+          /** @constant */
+          action: "stop_selected";
+          agent: string;
+          /** Format: uint64 */
+          epoch: number;
+          /** @default false */
+          includeDescendants?: boolean | undefined;
+          itemId?: null | undefined;
+          process: components["schemas"]["ProcessIdentity"];
+          /**
+           * @default []
+           * @constant
+           */
+          processes?: never[] | undefined;
+          requestId: string;
+          responseTarget?: null | undefined;
+        }
+      | {
+          accountKey: string;
+          /** @constant */
+          action: "stop_owned";
+          agent: string;
+          /** Format: uint64 */
+          epoch: number;
+          /** @default false */
+          includeDescendants?: boolean | undefined;
+          itemId?: null | undefined;
+          process?: null | undefined;
+          processes: components["schemas"]["ProcessIdentity"][];
+          requestId: string;
+          responseTarget?: null | undefined;
+        }
+      | {
+          accountKey: string;
+          /** @constant */
+          action: "stop_response";
+          agent: string;
+          /** Format: uint64 */
+          epoch: number;
+          /**
+           * @default false
+           * @constant
+           */
+          includeDescendants?: false | undefined;
+          itemId?: null | undefined;
+          process?: null | undefined;
+          /**
+           * @default []
+           * @constant
+           */
+          processes?: never[] | undefined;
+          requestId: string;
+          responseTarget: components["schemas"]["ProcessResponseTarget"];
+        }
+      | {
+          accountKey: string;
+          /** @constant */
+          action: "background_command";
+          agent: string;
+          /** Format: uint64 */
+          epoch: number;
+          /**
+           * @default false
+           * @constant
+           */
+          includeDescendants?: false | undefined;
+          itemId: string;
+          process?: null | undefined;
+          /**
+           * @default []
+           * @constant
+           */
+          processes?: never[] | undefined;
+          requestId: string;
+          responseTarget: components["schemas"]["ProcessResponseTarget"];
+        };
+    ProcessEntry: {
       agent: string;
-      /** Epoch */
-      epoch: number;
-      /**
-       * Includedescendants
-       * @default false
-       */
-      includeDescendants?: boolean | undefined;
-      /**
-       * Itemid
-       * @description Running command item that moves to the background
-       * @default null
-       */
-      itemId?: string | null | undefined;
-      /** @default null */
-      process?: components["schemas"]["ProcessIdentity"] | null | undefined;
-      /**
-       * Processes
-       * @default []
-       */
-      processes?: components["schemas"]["ProcessIdentity"][] | undefined;
-      /** Requestid */
-      requestId: string;
-      /** @default null */
-      responseTarget?:
-        | components["schemas"]["ProcessResponseTarget"]
-        | null
-        | undefined;
-    };
+      generation?: string | null | undefined;
+      key: string;
+      source?: string | null | undefined;
+    } & (
+      | {
+          /** @constant */
+          status: "pending";
+        }
+      | {
+          /** @constant */
+          status: "stopped";
+        }
+      | {
+          /** @constant */
+          status: "already_finished";
+        }
+      | {
+          /** @constant */
+          status: "requested";
+        }
+      | {
+          error: string;
+          /** @constant */
+          status: "stale";
+        }
+      | {
+          error: string;
+          /** @constant */
+          status: "failed";
+        }
+      | {
+          error?: unknown | undefined;
+          /** @constant */
+          status: "uncertain";
+        }
+    );
     /** ProcessesResource */
     ProcessesResource: {
       agentId: string;
@@ -17748,17 +17807,12 @@ export interface components {
        */
       kind: "processes";
     };
-    /** ProcessIdentity */
     ProcessIdentity: {
-      /** Accountkey */
       accountKey: string;
-      /** Agent */
       agent: string;
-      /** Epoch */
+      /** Format: uint64 */
       epoch: number;
-      /** Generation */
       generation: string;
-      /** Key */
       key: string;
     };
     /**
@@ -17797,13 +17851,9 @@ export interface components {
         | null
         | undefined;
     };
-    /** ProcessReceipt */
-    ProcessReceipt: {
-      /** Found */
-      found: boolean;
-      /** @default null */
-      result?: components["schemas"]["ProcessActionResult"] | null | undefined;
-    };
+    ProcessReceipt:
+      | components["schemas"]["FoundProcessReceipt"]
+      | components["schemas"]["MissingProcessReceipt"];
     /** ProcessRecord */
     ProcessRecord: {
       /** Cpupercent */
@@ -17816,19 +17866,13 @@ export interface components {
       /** Rssmib */
       rssMiB: number;
     };
-    /** ProcessResponseTarget */
     ProcessResponseTarget: {
-      /** Accountkey */
       accountKey: string;
-      /** Agent */
       agent: string;
-      /** Connectionid */
       connectionId: string;
-      /** Epoch */
+      /** Format: uint64 */
       epoch: number;
-      /** Threadid */
       threadId: string;
-      /** Turnid */
       turnId: string;
     };
     /** ProcessTree */
@@ -18852,6 +18896,12 @@ export interface components {
        */
       protocol: 1;
     };
+    QuestionAnswerStrings: {
+      answers: string[];
+    };
+    QuestionApproval: {
+      decision: components["schemas"]["QuestionDecision"];
+    };
     /** QuestionBody */
     QuestionBody: {
       /**
@@ -18862,12 +18912,55 @@ export interface components {
       /** Id */
       id: string;
     };
+    /**
+     * @description The method selects the required answer fields. The renderer sends only data;
+     *     the stored request method remains the server's authority.
+     */
+    QuestionCardAnswer:
+      | {
+          data: components["schemas"]["QuestionApproval"];
+          /** @constant */
+          method: "item/commandExecution/requestApproval";
+        }
+      | {
+          data: components["schemas"]["QuestionApproval"];
+          /** @constant */
+          method: "item/fileChange/requestApproval";
+        }
+      | {
+          data: components["schemas"]["QuestionApproval"];
+          /** @constant */
+          method: "item/permissions/requestApproval";
+        }
+      | {
+          data: components["schemas"]["QuestionSelections"];
+          /** @constant */
+          method: "item/tool/requestUserInput";
+        }
+      | {
+          data: components["schemas"]["QuestionSelections"];
+          /** @constant */
+          method: "agent/asyncQuestion";
+        }
+      | {
+          data: components["schemas"]["QuestionElicitation"];
+          /** @constant */
+          method: "mcpServer/elicitation/request";
+        };
+    /** @enum {string} */
+    QuestionDecision: "accept" | "decline" | "cancel";
     /** QuestionDeferBody */
     QuestionDeferBody: {
       /** Deferred */
       deferred: boolean;
       /** Id */
       id: string;
+    };
+    QuestionElicitation: {
+      content: {
+        [key: string]: components["schemas"]["JsonValue"] | undefined;
+      };
+      decision: components["schemas"]["QuestionDecision"];
     };
     /** QuestionEntry */
     QuestionEntry: {
@@ -18916,6 +19009,11 @@ export interface components {
       description?: null | string | undefined;
       /** Label */
       label: string;
+    };
+    QuestionSelections: {
+      answers: {
+        [key: string]: components["schemas"]["QuestionAnswerStrings"];
+      };
     };
     QueueCancelBody: {
       /**
@@ -19057,65 +19155,29 @@ export interface components {
      * @description Known rate-limit fields plus provider-owned fields passed through unchanged.
      */
     RateLimitBucket: {
-      /** @default null */
       individualLimit?:
         | components["schemas"]["RateLimitIndividualLimit"]
         | null
         | undefined;
-      /**
-       * Limitid
-       * @default null
-       */
-      limitId?: null | string | undefined;
-      /**
-       * Limitname
-       * @default null
-       */
-      limitName?: null | string | undefined;
-      /** @default null */
+      /** Limitid */
+      limitId?: string | null | undefined;
+      /** Limitname */
+      limitName?: string | null | undefined;
+      /** Plantype */
+      planType?: string | null | undefined;
       primary?: components["schemas"]["RateLimitWindow"] | null | undefined;
-      /**
-       * Ratelimitreachedtype
-       * @default null
-       */
-      rateLimitReachedType?: null | string | undefined;
-      /** @default null */
+      /** Ratelimitreachedtype */
+      rateLimitReachedType?: string | null | undefined;
       secondary?: components["schemas"]["RateLimitWindow"] | null | undefined;
-      /**
-       * Spendcontrolreached
-       * @default null
-       */
+      /** Spendcontrolreached */
       spendControlReached?: boolean | null | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
-    /**
-     * RateLimitBucketDto
-     * @description Known rate-limit fields plus fields owned by the active provider.
-     */
-    RateLimitBucketDto: {
-      /** Limitid */
-      limitId?: null | string | undefined;
-      /** Limitname */
-      limitName?: null | string | undefined;
-      /** Plantype */
-      planType?: null | string | undefined;
-      primary?: components["schemas"]["RateLimitWindowDto"] | null | undefined;
-      /** Ratelimitreachedtype */
-      rateLimitReachedType?: null | string | undefined;
-      secondary?:
-        | components["schemas"]["RateLimitWindowDto"]
-        | null
-        | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
+    RateLimitBucketDto: components["schemas"]["RateLimitBucket"];
     /** RateLimitIndividualLimit */
     RateLimitIndividualLimit: {
-      /**
-       * Remainingpercent
-       * @default null
-       */
+      /** Remainingpercent */
       remainingPercent?: number | null | undefined;
     };
     /**
@@ -19123,15 +19185,9 @@ export interface components {
      * @description A provider reset-credit record; native service fields remain extensible.
      */
     RateLimitResetCredit: {
-      /**
-       * Expiresat
-       * @default null
-       */
+      /** Expiresat */
       expiresAt?: number | null | undefined;
-      /**
-       * Grantedat
-       * @default null
-       */
+      /** Grantedat */
       grantedAt?: number | null | undefined;
       /** Id */
       id: string;
@@ -19147,86 +19203,26 @@ export interface components {
      * @description Provider-owned reset-credit summary with the known count and credit fields.
      */
     RateLimitResetCredits: {
-      /**
-       * Availablecount
-       * @default null
-       */
+      /** Availablecount */
       availableCount?: number | null | undefined;
-      /**
-       * Credits
-       * @default []
-       */
+      /** Credits */
       credits?: components["schemas"]["RateLimitResetCredit"][] | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
-    /**
-     * RateLimitsDataDto
-     * @description Known renderer-facing fields with provider JSON extension payloads.
-     *
-     *     ``codex_records.RateLimitDataRecord`` describes the storage projection, but
-     *     rate-limit snapshots also pass through provider reset-credit data whose
-     *     complete provider-owned shape is not fixed by this repository.
-     */
-    RateLimitsDataDto: {
-      /** Accountid */
-      accountId?: null | string | undefined;
-      /** Ordinaryusageallowed */
-      ordinaryUsageAllowed?: boolean | null | undefined;
-      rateLimitResetCredits?:
-        | components["schemas"]["JsonValue"]
-        | null
-        | undefined;
-      rateLimits?:
-        | components["schemas"]["RateLimitBucketDto"]
-        | null
-        | undefined;
-      /** Ratelimitsbylimitid */
-      rateLimitsByLimitId?:
-        | {
-            [key: string]: components["schemas"]["RateLimitBucketDto"];
-          }
-        | null
-        | undefined;
-      /** Signedin */
-      signedIn?: boolean | null | undefined;
-      /** Status */
-      status?: null | string | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
+    RateLimitsDataDto: components["schemas"]["UsageLimitsData"];
     /** RateLimitWindow */
     RateLimitWindow: {
-      /**
-       * Resetsat
-       * @default null
-       */
-      resetsAt?: number | null | undefined;
-      /**
-       * Usedpercent
-       * @default null
-       */
-      usedPercent?: number | null | undefined;
-      /**
-       * Windowdurationmins
-       * @default null
-       */
-      windowDurationMins?: number | null | undefined;
-    };
-    /**
-     * RateLimitWindowDto
-     * @description Known usage window fields plus provider-specific window metadata.
-     */
-    RateLimitWindowDto: {
       /** Resetsat */
-      resetsAt?: null | number | undefined;
+      resetsAt?: number | null | undefined;
       /** Usedpercent */
-      usedPercent?: null | number | undefined;
+      usedPercent?: number | null | undefined;
       /** Windowdurationmins */
-      windowDurationMins?: null | number | undefined;
+      windowDurationMins?: number | null | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    RateLimitWindowDto: components["schemas"]["RateLimitWindow"];
     /** ReadStateBody */
     ReadStateBody: {
       /** Expected Revision */
@@ -20182,6 +20178,38 @@ export interface components {
       /** Workspaceid */
       workspaceId: string;
     };
+    ResponseEntry: {
+      agent: string;
+      itemId?: string | null | undefined;
+    } & (
+      | {
+          /** @constant */
+          status: "requested";
+        }
+      | {
+          /** @constant */
+          status: "backgrounded";
+        }
+      | {
+          /** @constant */
+          status: "not_running";
+        }
+      | {
+          error: string;
+          /** @constant */
+          status: "stale";
+        }
+      | {
+          error: string;
+          /** @constant */
+          status: "failed";
+        }
+      | {
+          error?: string | null | undefined;
+          /** @constant */
+          status: "uncertain";
+        }
+    );
     /**
      * RestartEnvironmentKey
      * @enum {string}
@@ -26139,48 +26167,28 @@ export interface components {
      * @description Known usage projection plus account-service fields passed through unchanged.
      */
     UsageLimitsData: {
-      /**
-       * Accountid
-       * @default null
-       */
-      accountId?: null | string | undefined;
-      /**
-       * Ordinaryusageallowed
-       * @default null
-       */
+      /** Accountid */
+      accountId?: string | null | undefined;
+      /** Ordinaryusageallowed */
       ordinaryUsageAllowed?: boolean | null | undefined;
-      /** @default null */
       rateLimitResetCredits?:
         | components["schemas"]["RateLimitResetCredits"]
         | null
         | undefined;
-      /** @default null */
       rateLimits?: components["schemas"]["RateLimitBucket"] | null | undefined;
-      /**
-       * Ratelimitsbylimitid
-       * @default null
-       */
+      /** Ratelimitsbylimitid */
       rateLimitsByLimitId?:
         | {
             [key: string]: components["schemas"]["RateLimitBucket"];
           }
         | null
         | undefined;
-      /**
-       * Signedin
-       * @default null
-       */
+      /** Signedin */
       signedIn?: boolean | null | undefined;
-      /**
-       * Source
-       * @default null
-       */
-      source?: null | string | undefined;
-      /**
-       * Status
-       * @default null
-       */
-      status?: null | string | undefined;
+      /** Source */
+      source?: string | null | undefined;
+      /** Status */
+      status?: string | null | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
@@ -26619,14 +26627,32 @@ export interface components {
       resource: components["schemas"]["VaultJobProgressResource"];
       /** Revision */
       revision: number;
-      value:
-        | components["schemas"]["VaultSetupResponse"]
-        | components["schemas"]["VaultLoginResponse"]
-        | components["schemas"]["VaultPullResponse"]
-        | null;
+      value: unknown;
       /** Workspaceid */
       workspaceId: string;
-    };
+    } & (
+      | {
+          resource: components["schemas"]["VaultJobProgressResource"] & {
+            /** @constant */
+            job: "setup";
+          };
+          value: components["schemas"]["VaultSetupResponse"] | null;
+        }
+      | {
+          resource: components["schemas"]["VaultJobProgressResource"] & {
+            /** @constant */
+            job: "login";
+          };
+          value: components["schemas"]["VaultLoginResponse"] | null;
+        }
+      | {
+          resource: components["schemas"]["VaultJobProgressResource"] & {
+            /** @constant */
+            job: "pull";
+          };
+          value: components["schemas"]["VaultPullResponse"] | null;
+        }
+    );
     /** VaultJobProgressResource */
     VaultJobProgressResource: {
       /** @enum {string} */
@@ -26637,6 +26663,11 @@ export interface components {
        */
       kind: "vault-job-progress";
       requestId: string;
+    };
+    /** VaultLoginDone */
+    VaultLoginDone: {
+      /** @constant */
+      state: "done";
     };
     /**
      * VaultLoginRequest
@@ -26675,6 +26706,31 @@ export interface components {
        * @enum {string}
        */
       state: "running" | "done" | "failed";
+    } & (
+      | {
+          /** @constant */
+          state: "running";
+        }
+      | components["schemas"]["VaultLoginDone"]
+      | {
+          /** @constant */
+          state: "failed";
+        }
+    );
+    /** VaultPullBytes */
+    VaultPullBytes: number;
+    /** VaultPullDone */
+    VaultPullDone: {
+      /** @constant */
+      state: "done";
+    } & components["schemas"]["VaultPullOutcome"];
+    /** VaultPullFiles */
+    VaultPullFiles: number;
+    /** VaultPullOutcome */
+    VaultPullOutcome: {
+      bytes: components["schemas"]["VaultPullBytes"];
+      files: components["schemas"]["VaultPullFiles"];
+      seq: components["schemas"]["VaultPullSequence"];
     };
     /**
      * VaultPullRequest
@@ -26702,7 +26758,7 @@ export interface components {
        * Bytes
        * @default null
        */
-      bytes?: number | null | undefined;
+      bytes?: components["schemas"]["VaultPullBytes"] | null | undefined;
       /**
        * Error
        * @default null
@@ -26712,7 +26768,7 @@ export interface components {
        * Files
        * @default null
        */
-      files?: number | null | undefined;
+      files?: components["schemas"]["VaultPullFiles"] | null | undefined;
       /** Folder */
       folder: string;
       /** Requestid */
@@ -26721,13 +26777,25 @@ export interface components {
        * Seq
        * @default null
        */
-      seq?: number | null | undefined;
+      seq?: components["schemas"]["VaultPullSequence"] | null | undefined;
       /**
        * State
        * @enum {string}
        */
       state: "running" | "done" | "failed";
-    };
+    } & (
+      | {
+          /** @constant */
+          state: "running";
+        }
+      | components["schemas"]["VaultPullDone"]
+      | {
+          /** @constant */
+          state: "failed";
+        }
+    );
+    /** VaultPullSequence */
+    VaultPullSequence: number;
     /**
      * VaultReadinessEvent
      * @description Transient subscribed progress; never persisted to the server or client entity store.
@@ -26755,6 +26823,12 @@ export interface components {
        */
       kind: "vault-readiness";
       prefix: string;
+    };
+    /** VaultSetupDone */
+    VaultSetupDone: {
+      site: string;
+      /** @constant */
+      state: "done";
     };
     /**
      * VaultSetupFactsRequest
@@ -26834,7 +26908,21 @@ export interface components {
        * @enum {string}
        */
       state: "running" | "done" | "failed" | "signin";
-    };
+    } & (
+      | {
+          /** @constant */
+          state: "running";
+        }
+      | components["schemas"]["VaultSetupDone"]
+      | {
+          /** @constant */
+          state: "failed";
+        }
+      | {
+          /** @constant */
+          state: "signin";
+        }
+    );
     /**
      * VaultUnlockRequest
      * @description The paper words of the project's vault, to keep its key on this Mac.

@@ -1115,7 +1115,7 @@ mod native_review_preflight_tests {
             .expect("guest request receipt");
         assert!(selected_guest.is_some());
         assert_eq!(receipt.scope, scope);
-        assert_eq!(receipt.certainty, RequestCertainty::Written);
+        assert_eq!(receipt.certainty(), RequestCertainty::Written);
         assert_eq!(
             guest.calls.lock().expect("guest calls")[0].0,
             "provider.rpc"

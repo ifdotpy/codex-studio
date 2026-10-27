@@ -1,4 +1,5 @@
 //! The UI's HTTP caller inherits the current Claude permissions before commit.
+
 #![allow(clippy::unwrap_used, clippy::disallowed_methods)]
 use axum::{
     body::{Body, to_bytes},
@@ -8,6 +9,7 @@ use axum::{
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_http::{HttpState, router};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{account_driver::AccountDriver, account_session_runtime::*};
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore};
 use tower::ServiceExt;
@@ -31,17 +33,17 @@ impl AccountSessionPort for Catalog {
             Ok(SessionReceipt {
                 scope: request.expected_scope.unwrap(),
                 operation: request.operation,
-                ticket: Some(studio_runtime_providers::RequestTicket {
-                    generation: 1,
-                    id: studio_runtime_providers::RequestId::String("catalog".into()),
-                    method: request.method,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(
-                    json!({"data":[{"model":"claude-haiku-4-5","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
-                )),
-                not_sent_reason: None,
                 replayed: false,
+                outcome: ReceiptOutcome::Written {
+                    ticket: studio_runtime_providers::RequestTicket {
+                        generation: 1,
+                        id: studio_runtime_providers::RequestId::String("catalog".into()),
+                        method: request.method,
+                    },
+                    response: ProviderResponse::Reply(
+                        json!({"data":[{"model":"claude-haiku-4-5","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
+                    ),
+                },
             })
         })
     }
@@ -211,16 +213,16 @@ impl AccountSessionPort for RoutingCatalog {
             Ok(SessionReceipt {
                 scope: request.expected_scope.unwrap(),
                 operation: request.operation,
-                ticket: Some(studio_runtime_providers::RequestTicket {
-                    generation: 1,
-                    id: studio_runtime_providers::RequestId::String("catalog".into()),
-                    method: request.method,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(
-                    json!({"data":[{"model":"gpt-6-luna","supportedReasoningEfforts":[{"reasoningEffort":"high"}]}],"nextCursor":null}),
-                )),
-                not_sent_reason: None,
+                outcome: ReceiptOutcome::Written {
+                    ticket: studio_runtime_providers::RequestTicket {
+                        generation: 1,
+                        id: studio_runtime_providers::RequestId::String("catalog".into()),
+                        method: request.method,
+                    },
+                    response: ProviderResponse::Reply(
+                        json!({"data":[{"model":"gpt-6-luna","supportedReasoningEfforts":[{"reasoningEffort":"high"}]}],"nextCursor":null}),
+                    ),
+                },
                 replayed: false,
             })
         })

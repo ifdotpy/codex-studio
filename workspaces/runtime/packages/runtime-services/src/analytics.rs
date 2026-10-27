@@ -243,7 +243,7 @@ fn message_info(
                 studio_runtime_schema::usage::ledger::UsageLedgerRow::from_typed_analytics(
                     &response,
                 )
-                .map(|ledger| ledger.studio_usage)
+                .map(|ledger| ledger.into_observation())
                 .ok()
             } else {
                 result.provider.and_then(|provider| {

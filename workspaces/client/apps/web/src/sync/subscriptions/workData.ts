@@ -5,10 +5,10 @@ import type {
   components,
 } from "../../generated/api";
 type SyncEntityPayload = DeepReadonly<MutableSyncEntityPayload>;
-type ReviewTask = DeepReadonly<
+export type ReviewTask = DeepReadonly<
   KnownApiFields<components["schemas"]["WorkItem"]>
 >;
-type WorkList = Omit<
+export type WorkList = Omit<
   DeepReadonly<components["schemas"]["WorkList"]>,
   "items" | "tasks"
 > &

@@ -16,7 +16,8 @@ import { ExecutionSettings } from "../agents/ExecutionSettings";
 import Usage, { type UsageAccount } from "../Usage";
 import { createServerServices } from "../../servers/serverServices";
 import { ServerServicesProvider } from "../../servers/ServerServicesContext";
-import type { Agent, Json } from "../../types";
+import type { Agent } from "../../types";
+import type { AccountLimitsSnapshot } from "../../usage/accountUsage";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
 import "./empty-chat-settings.css";
 
@@ -66,7 +67,7 @@ const models = ["gpt-6-astra", "gpt-6-luna"].map((model): WorkerModelInfo => ({
   supportedReasoningEfforts: [{ reasoningEffort: "high" }],
 }));
 const catalog = { models, loading: false, error: "", retry: fn() };
-const limits: Json = {
+const limits: AccountLimitsSnapshot = {
   accountKey: "default",
   data: {
     accountId: "story-account",

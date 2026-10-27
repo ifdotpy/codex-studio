@@ -1,4 +1,5 @@
 import type { AccountLimitsSnapshot } from "./accountUsage";
+import { createAccountLimitsCache } from "./accountUsage";
 import type { JsonInputOf, Agent } from "../types";
 import type { components } from "../generated/api";
 import assert from "node:assert/strict";
@@ -47,6 +48,50 @@ const limits = (
     eligibility: decision(),
     ...overrides,
   }) satisfies RecoveryLimits;
+
+test("recovery callers retain the generated eligibility contract", () => {
+  const invalid = () =>
+    limitRecovered(
+      agent,
+      {
+        accountKey: "work",
+        eligibility: {
+          ...decision(),
+          // @ts-expect-error A malformed decision cannot enter the recovery caller.
+          canRun: "true",
+        },
+      },
+      now,
+    );
+  assert.equal(typeof invalid, "function");
+});
+
+test("restored eligibility retains its identity and expires at use time", () => {
+  const records = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => records.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      records.set(key, value);
+    },
+  };
+  const cache = createAccountLimitsCache(storage);
+  cache.configureLimitsCache("server");
+  const available = limits(
+    {},
+    { eligibility: decision({ allowed: true, canRun: true }) },
+  );
+  cache.cacheAccountLimits(available);
+  const restored = createAccountLimitsCache(storage);
+  restored.configureLimitsCache("server");
+  const snapshot = restored.cachedAccountLimits("work");
+  assert.deepEqual(snapshot, available);
+  assert.equal(limitRecovered(agent, snapshot, now), true);
+  assert.equal(limitRecovered(agent, snapshot, now + 6), false);
+  assert.equal(
+    limitRecovered({ ...agent, model: "other" }, snapshot, now),
+    false,
+  );
+});
 
 test("future and ambiguous vendor error records cannot enable limit recovery", () => {
   for (const codexErrorInfo of [

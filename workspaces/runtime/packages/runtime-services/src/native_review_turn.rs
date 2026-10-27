@@ -14,9 +14,11 @@
 //!   replays the saved receipt and never sends a second `review/start`.
 //! - The thread start is saved as `submitted` before the provider write. A
 //!   saved `submitted` or `unknown` start is never sent again.
+
+use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use crate::{
     account_session_runtime::{
-        AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse, RequestCertainty,
+        AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
     },
     account_worker::{WorkerError, preparation, retained::RequestActor},
     native_action_ports::{MessageNativeAdmission, NativeActionAcceptance},
@@ -537,15 +539,21 @@ impl ReviewPreparation {
             Ok(receipt) if receipt.scope != *scope || receipt.operation != operation => {
                 ("unknown", None)
             }
-            Ok(receipt) => match (receipt.certainty, receipt.result) {
-                (RequestCertainty::Written, Some(ProviderResponse::Reply(value))) => {
-                    ("accepted", Some(value))
-                }
-                (RequestCertainty::Written, Some(ProviderResponse::Rejected(_))) => {
-                    ("rejected", None)
-                }
-                (RequestCertainty::NotSent, None) => ("not_sent", None),
-                _ => ("unknown", None),
+            Ok(receipt) => match receipt.outcome {
+                ReceiptOutcome::Written {
+                    response: ProviderResponse::Reply(value),
+                    ..
+                } => ("accepted", Some(value)),
+                ReceiptOutcome::Written {
+                    response: ProviderResponse::Rejected(_),
+                    ..
+                } => ("rejected", None),
+                ReceiptOutcome::WorkerNotSent { .. }
+                | ReceiptOutcome::NoLiveAccountWorker
+                | ReceiptOutcome::ExpectedScopeMismatch
+                | ReceiptOutcome::DeadlineExpired
+                | ReceiptOutcome::NotHandedOff => ("not_sent", None),
+                ReceiptOutcome::Unknown { .. } => ("unknown", None),
             },
             Err(_) => ("unknown", None),
         };
@@ -599,6 +607,7 @@ impl ReviewPreparation {
 #[allow(clippy::unwrap_used)]
 pub(crate) mod tests {
     use super::*;
+    use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use crate::account_session_runtime::{AccountSessionFuture, SessionReceipt};
     use std::sync::Mutex;
     use studio_runtime_providers::{RequestId, RequestTicket};
@@ -848,26 +857,23 @@ pub(crate) mod tests {
                     )),
                     method: request.method,
                 };
-                let (certainty, result) = match reply {
-                    Reply::Accept => (
-                        RequestCertainty::Written,
-                        Some(ProviderResponse::Reply(value)),
-                    ),
-                    Reply::Reject => (
-                        RequestCertainty::Written,
-                        Some(ProviderResponse::Rejected(
+                let outcome = match reply {
+                    Reply::Accept => ReceiptOutcome::Written {
+                        ticket,
+                        response: ProviderResponse::Reply(value),
+                    },
+                    Reply::Reject => ReceiptOutcome::Written {
+                        ticket,
+                        response: ProviderResponse::Rejected(
                             json!({"code":-32600,"message":"refused"}),
-                        )),
-                    ),
-                    Reply::Unknown => (RequestCertainty::Unknown, None),
+                        ),
+                    },
+                    Reply::Unknown => ReceiptOutcome::Unknown { ticket },
                 };
                 Ok(SessionReceipt {
+                    outcome,
                     scope: Self::scope(),
                     operation: request.operation,
-                    ticket: Some(ticket),
-                    certainty,
-                    result,
-                    not_sent_reason: None,
                     replayed: false,
                 })
             })

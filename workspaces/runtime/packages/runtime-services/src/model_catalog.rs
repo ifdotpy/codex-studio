@@ -1,5 +1,6 @@
 //! Bounded, process-local model catalog reads for display.
 
+use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::future::Future;
@@ -129,7 +130,7 @@ async fn read_account_session_catalog(
             "model-list:{account}:{refresh_id}:{page_index}:{}",
             cursor.as_deref().unwrap_or("first")
         );
-        use crate::account_session_runtime::{ProviderRequest, ProviderResponse, RequestCertainty};
+        use crate::account_session_runtime::{ProviderRequest, ProviderResponse};
         let request = session_clone.provider_request(ProviderRequest {
             account: account_clone,
             operation: operation.clone(),
@@ -146,15 +147,11 @@ async fn read_account_session_catalog(
                 let receipt = result.map_err(|_| ())?.map_err(|_| ())?;
                 if receipt.scope != current_scope
                     || receipt.operation != operation
-                    || receipt.certainty != RequestCertainty::Written
-                    || receipt.ticket.is_none()
                 {
                     return Err(());
                 }
-                match receipt.result {
-                    Some(ProviderResponse::Reply(value)) => value,
-                    Some(ProviderResponse::Rejected(_)) | None => return Err(()),
-                }
+                let ReceiptOutcome::Written { response: ProviderResponse::Reply(value), .. } = receipt.outcome else { return Err(()); };
+                value
             },
         };
         let bytes = serde_json::to_vec(&response).map_err(|_| ())?.len();
@@ -945,9 +942,8 @@ pub(crate) mod tests {
             crate::account_session_runtime::SessionReceipt,
         > {
             Box::pin(async move {
-                use crate::account_session_runtime::{
-                    ProviderResponse, RequestCertainty, SessionReceipt,
-                };
+                use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
+                use crate::account_session_runtime::{ProviderResponse, SessionReceipt};
                 self.params.lock().expect("params").push(request.params);
                 self.operations
                     .lock()
@@ -965,17 +961,17 @@ pub(crate) mod tests {
                 Ok(SessionReceipt {
                     scope,
                     operation: request.operation,
-                    ticket: Some(studio_runtime_providers::RequestTicket {
-                        id: studio_runtime_providers::RequestId::String("catalog-test".into()),
-                        generation: 4,
-                        method: studio_runtime_providers::Method::ModelList,
-                    }),
-                    certainty: RequestCertainty::Written,
-                    result: Some(ProviderResponse::Reply(
-                        self.pages.lock().expect("pages").remove(0),
-                    )),
-                    not_sent_reason: None,
                     replayed: false,
+                    outcome: ReceiptOutcome::Written {
+                        ticket: studio_runtime_providers::RequestTicket {
+                            id: studio_runtime_providers::RequestId::String("catalog-test".into()),
+                            generation: 4,
+                            method: studio_runtime_providers::Method::ModelList,
+                        },
+                        response: ProviderResponse::Reply(
+                            self.pages.lock().expect("pages").remove(0),
+                        ),
+                    },
                 })
             })
         }

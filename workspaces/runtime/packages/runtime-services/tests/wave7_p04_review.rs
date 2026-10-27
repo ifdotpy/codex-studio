@@ -676,26 +676,42 @@ async fn non_radio_async_answer_is_steered_and_acknowledged() {
         AgentRepository::put(tx, &record)?;
         Ok(())
     }).await.unwrap();
-    card(&store, &json!({"id":"question","agent":agent,"epoch":3,"turnId":"turn-0","method":"agent/asyncQuestion","status":"pending","params":{"questions":[{"id":"q","question":"Choose"}]}})).await;
+    card(&store, &json!({"id":"question","agent":agent,"epoch":3,"turnId":"turn-0","method":"agent/asyncQuestion","status":"pending","params":{"questions":[{"id":"q","question":"Choose"},{"id":"secret","question":"Token","isSecret":true},{"id":"legacy","question":"Optional"}]}})).await;
     let prepared = PreparedHost::load(&store).await.unwrap();
     let agent_for_write = agent.clone();
     store
         .transaction_with_error(move |tx| {
-            let data = json!({"answers":{"q":{"answers":["yes"]}}});
+            let data = json!({"answers":{"q":{"answers":["yes"]},"secret":{"answers":["private"]},"legacy":{"answers":null}},"decision":null});
+            let input = |data, now| AsyncQuestionAnswerInput {
+                id: "question", data, admission: &Allow, prepared: &prepared, now,
+                validate: |_: &serde_json::Value| true,
+            };
+            let mut malformed = data.clone();
+            malformed["answers"]["q"]["answers"] = json!(["yes", 7]);
+            assert!(answer_async_question(tx, input(&malformed, 29.0)).is_err());
             answer_async_question(
                 tx,
                 AsyncQuestionAnswerInput {
                     id: "question",
                     data: &data,
-                    text: "yes",
                     admission: &Allow,
                     prepared: &prepared,
                     now: 30.0,
                     validate: |_: &serde_json::Value| true,
                 },
             )?;
+            assert!(!answer_async_question(tx, input(&data, 30.5))?.event_inserted);
+            let mut changed = data.clone();
+            changed.as_object_mut().unwrap().remove("decision");
+            assert!(answer_async_question(tx, input(&changed, 30.6)).is_err(), "null and omission keep distinct raw signatures");
+            let record: String = tx.query_row("SELECT record FROM runtime_requests WHERE id='question'", [], |row| row.get(0)).map_err(studio_runtime_store::StoreError::from)?;
+            let record: serde_json::Value = serde_json::from_str(&record)?;
+            assert_eq!(record["answerHistory"][0]["answer"], json!(["yes"]));
+            assert_eq!(record["answerHistory"][1]["answer"], json!("[redacted]"));
+            assert_eq!(record["answerHistory"][2]["answer"], json!([]));
             let claim = SchedulerRepository::claim_steer(tx, &agent_for_write, 3, "steer", 31.0)?
                 .expect("answer must be eligible for the running turn");
+            assert_eq!(claim.events[0].text, "Choose\nyes\nToken\nprivate\nOptional");
             assert_eq!(
                 claim
                     .events

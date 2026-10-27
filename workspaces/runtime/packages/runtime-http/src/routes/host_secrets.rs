@@ -742,7 +742,9 @@ async fn run_login_job(
                 &job_client,
                 VaultJobKind::Login,
                 &request_id,
-                serde_json::json!({"state":"done"}),
+                serde_json::json!(crate::generated::VaultLoginDone {
+                    state: crate::generated::VaultLoginDoneState::Done
+                }),
             )
             .await;
         }
@@ -855,7 +857,10 @@ async fn run_setup_job(job: SetupJob) {
                         &job_client,
                         VaultJobKind::Setup,
                         &request_id,
-                        serde_json::json!({"state":"done","site":site}),
+                        serde_json::json!(crate::generated::VaultSetupDone {
+                            state: crate::generated::VaultSetupDoneState::Done,
+                            site
+                        }),
                     )
                     .await
                 }
@@ -1024,17 +1029,25 @@ async fn run_pull_job(
         Ok(result) if result.timed_out => {
             serde_json::json!({"state":"failed","error":"layr-desk pull timed out"})
         }
-        Ok(result) if result.code == Some(0) => match serde_json::from_str::<Value>(&result.stdout)
-        {
-            Ok(value)
-                if value.get("seq").is_some()
-                    && value.get("files").is_some()
-                    && value.get("bytes").is_some() =>
-            {
-                serde_json::json!({"state":"done","seq":value["seq"],"files":value["files"],"bytes":value["bytes"]})
+        Ok(result) if result.code == Some(0) => {
+            let outcome = serde_json::from_str::<Value>(&result.stdout)
+                .ok()
+                .filter(|value| {
+                    studio_runtime_schema::validate("VaultPullOutcome", value).unwrap_or(false)
+                })
+                .and_then(|value| {
+                    serde_json::from_value::<crate::generated::VaultPullOutcome>(value).ok()
+                });
+            match outcome {
+                Some(outcome) => serde_json::json!(crate::generated::VaultPullDone {
+                    state: crate::generated::VaultPullDoneState::Done,
+                    seq: outcome.seq,
+                    files: outcome.files,
+                    bytes: outcome.bytes,
+                }),
+                None => serde_json::json!({"state":"failed","error":"KeyError: 'seq'"}),
             }
-            _ => serde_json::json!({"state":"failed","error":"KeyError: 'seq'"}),
-        },
+        }
         Ok(result) => {
             serde_json::json!({"state":"failed","error":desk_reason(&result.stderr,&result.stdout)})
         }
@@ -1338,7 +1351,11 @@ mod tests {
                     }
                     VaultJobKind::Pull => json!({"state":"running", "files":1}),
                 },
-                json!({"state":"done"}),
+                match kind {
+                    VaultJobKind::Login => json!({"state":"done"}),
+                    VaultJobKind::Setup => json!({"state":"done", "site":"https://desk.example/"}),
+                    VaultJobKind::Pull => json!({"state":"done", "seq":7, "files":3, "bytes":1024}),
+                },
             ] {
                 let before = state.sync_changes.snapshot().revision;
                 super::finish_job(&client, kind, "one", fields.clone()).await;
@@ -1844,6 +1861,80 @@ mod tests {
         assert_eq!(job["state"], "done");
         assert_eq!(job["site"], "https://desk.example/");
         assert_eq!(receiver.borrow_and_update().revision, 1);
+        owner.shutdown().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn vault_pull_preserves_integral_decimal_command_counters() {
+        let root = tempfile::tempdir().unwrap();
+        let (owner, client) = test_job_client().await;
+        let request_id = "decimal-pull";
+        reserve_job(
+            &client,
+            VaultJobKind::Pull,
+            request_id,
+            json!({"requestId":request_id,"state":"running","folder":"/fixture/demo"}),
+        )
+        .await
+        .unwrap();
+        let host_command = fake_host_command(
+            root.path(),
+            "printf '%s\\n' '{\"seq\":7.0,\"files\":3.0,\"bytes\":1024.0,\"extension\":true}'",
+        );
+        super::run_pull_job(request_id.to_owned(), vec![], host_command, client.clone()).await;
+        let job = find_job(&client, VaultJobKind::Pull, request_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job["state"], "done");
+        assert_eq!(job["seq"], json!(7.0));
+        assert_eq!(job["files"], json!(3.0));
+        assert_eq!(job["bytes"], json!(1024.0));
+        owner.shutdown().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn vault_pull_rejects_malformed_success_counters() {
+        let root = tempfile::tempdir().unwrap();
+        let (owner, client) = test_job_client().await;
+        for (index, output) in [
+            r#"{"seq":null,"files":3,"bytes":1024}"#,
+            r#"{"seq":7,"files":"3","bytes":1024}"#,
+            r#"{"seq":7,"files":3}"#,
+            r#"{"seq":-1,"files":3,"bytes":1024}"#,
+            r#"{"seq":7,"files":3,"bytes":9007199254740992}"#,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let request_id = format!("bad-pull-{index}");
+            reserve_job(
+                &client,
+                VaultJobKind::Pull,
+                &request_id,
+                json!({"requestId":request_id,"state":"running","folder":"/fixture/demo"}),
+            )
+            .await
+            .unwrap();
+            let script = format!("printf '%s\\n' '{output}'");
+            super::run_pull_job(
+                request_id.clone(),
+                vec![],
+                fake_host_command(root.path(), &script),
+                client.clone(),
+            )
+            .await;
+            let job = find_job(&client, VaultJobKind::Pull, &request_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                job["state"], "failed",
+                "malformed command output must not publish success: {output}"
+            );
+        }
         owner.shutdown().await.unwrap();
     }
 

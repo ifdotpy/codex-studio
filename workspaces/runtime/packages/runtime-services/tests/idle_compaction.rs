@@ -1,10 +1,12 @@
 //! Production timer admission and native hand-off, with a scripted provider.
+
 #![allow(clippy::unwrap_used)]
 use rusqlite::Transaction;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_schema::idle_compaction::{Mode, Settings};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{
     account_session_runtime::*,
     idle_compaction::{self as idle, Episode, Host},
@@ -50,20 +52,20 @@ impl AccountSessionPort for Session {
             Ok(SessionReceipt {
                 scope: Self::scope(),
                 operation: request.operation.clone(),
-                ticket: Some(RequestTicket {
-                    id: RequestId::String(format!(
-                        "retained:default:{}",
-                        studio_runtime_store::sha256_hex(request.operation.as_bytes())
-                    )),
-                    generation: 1,
-                    method: request.method,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(
-                    json!({"turn":{"id":"compact-turn","status":"inProgress"}}),
-                )),
-                not_sent_reason: None,
                 replayed: false,
+                outcome: ReceiptOutcome::Written {
+                    ticket: RequestTicket {
+                        id: RequestId::String(format!(
+                            "retained:default:{}",
+                            studio_runtime_store::sha256_hex(request.operation.as_bytes())
+                        )),
+                        generation: 1,
+                        method: request.method,
+                    },
+                    response: ProviderResponse::Reply(
+                        json!({"turn":{"id":"compact-turn","status":"inProgress"}}),
+                    ),
+                },
             })
         })
     }

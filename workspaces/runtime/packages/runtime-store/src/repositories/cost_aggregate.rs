@@ -114,11 +114,11 @@ struct UsageCostFields<'a> {
 impl From<&UsageTokens> for CostTokens {
     fn from(tokens: &UsageTokens) -> Self {
         Self {
-            input_tokens: Some(tokens.uncached_input as f64),
-            cached_input_tokens: Some(tokens.cache_read_input as f64),
-            cache_write_input_tokens: Some(tokens.cache_write_input as f64),
-            cache_write_input_1h_tokens: tokens.cache_write_input_1h.map(|n| n as f64),
-            output_tokens: Some(tokens.output as f64),
+            input_tokens: Some(tokens.uncached_input() as f64),
+            cached_input_tokens: Some(tokens.cache_read_input() as f64),
+            cache_write_input_tokens: Some(tokens.cache_write_input() as f64),
+            cache_write_input_1h_tokens: tokens.cache_write_input_1h().map(|n| n as f64),
+            output_tokens: Some(tokens.output() as f64),
         }
     }
 }
@@ -129,7 +129,7 @@ fn cost_observation(
 ) -> StoreResult<Option<UsageObservation>> {
     if record.get("studioUsage").is_some() {
         return studio_runtime_schema::usage::ledger::UsageLedgerRow::from_typed_analytics(record)
-            .map(|ledger| Some(ledger.studio_usage))
+            .map(|ledger| Some(ledger.into_observation()))
             .map_err(|error| StoreError::SchemaValidation(error.to_string()));
     }
     let provider =
@@ -384,7 +384,7 @@ pub fn partition_journal_receipts(
             continue;
         }
         match studio_runtime_schema::usage::ledger::UsageLedgerRow::from_typed_analytics(&value)
-            .map(|ledger| ledger.studio_usage)
+            .map(|ledger| ledger.into_observation())
         {
             Ok(UsageObservation::Response {
                 evidence: UsageEvidence::Live | UsageEvidence::Recovered,
@@ -1514,7 +1514,7 @@ mod tests {
             let (rows, truncated) = super::recorded_responses_bounded(tx, &agents, 1)?;
             assert!(truncated);
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].tokens.as_ref().expect("known tokens").output, 2);
+            assert_eq!(rows[0].tokens.as_ref().expect("known tokens").output(), 2);
             assert_eq!(super::recorded_responses(tx, &agents)?.len(), 2);
             let receipts = ["legacy", "final", "missing"].map(|id| ("acct".to_owned(), "thread".to_owned(), id.to_owned())).into();
             let partition = super::partition_journal_receipts(tx, &receipts, &receipt_members())?;

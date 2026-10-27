@@ -1,4 +1,5 @@
 //! Typed HTTP boundary for persisted agent operations.
+
 use super::extractors::ApiJson;
 use super::manifest::{OperationStatus, RouteGroup, post};
 use crate::{error::ApiError, generated, router::HttpState};
@@ -1727,10 +1728,11 @@ mod title_http_tests {
         time::Duration,
     };
     use studio_runtime_providers::{Method, RequestId, RequestTicket};
+    use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use studio_runtime_services::{
         account_session_runtime::{
             AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
-            ProviderResponse, RequestCertainty, SessionReceipt,
+            ProviderResponse, SessionReceipt,
         },
         title_generation::{TitleReceipt, TitleRequest, TitleRequestPort, WriteOutcome},
     };
@@ -1761,18 +1763,18 @@ mod title_http_tests {
                 Ok(SessionReceipt {
                     scope,
                     operation: request.operation,
-                    ticket: Some(RequestTicket {
-                        id: RequestId::String("fake-model-list".into()),
-                        generation: 4,
-                        method: Method::ModelList,
-                    }),
-                    certainty: RequestCertainty::Written,
-                    result: Some(ProviderResponse::Reply(json!({
-                        "data":[{"model":"gpt-6-mini"}],
-                        "nextCursor":null
-                    }))),
-                    not_sent_reason: None,
                     replayed: false,
+                    outcome: ReceiptOutcome::Written {
+                        ticket: RequestTicket {
+                            id: RequestId::String("fake-model-list".into()),
+                            generation: 4,
+                            method: Method::ModelList,
+                        },
+                        response: ProviderResponse::Reply(json!({
+                            "data":[{"model":"gpt-6-mini"}],
+                            "nextCursor":null
+                        })),
+                    },
                 })
             })
         }

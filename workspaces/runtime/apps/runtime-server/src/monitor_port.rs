@@ -730,10 +730,10 @@ impl RetainedMonitorPort {
             })?;
         // AccountSessionRuntime owns receipt identity/scope validation, including
         // committed replays from the original connection after a restart.
-        let config = match config_receipt.result {
-            Some(ProviderResponse::Reply(value))
-                if config_receipt.certainty == RequestCertainty::Written =>
-            {
+        let config_certainty = config_receipt.certainty();
+        let config_reason = config_receipt.not_sent_reason();
+        let config = match config_receipt.into_response() {
+            Some(ProviderResponse::Reply(value)) => {
                 let response: ConfigurationResponse =
                     serde_json::from_value(value).map_err(|_| {
                         MonitorError::Refused("Monitor configuration response is invalid")
@@ -752,8 +752,8 @@ impl RetainedMonitorPort {
             }
             _ => {
                 return Err(MonitorError::ConfigurationReceipt {
-                    certainty: config_receipt.certainty,
-                    reason: config_receipt.not_sent_reason,
+                    certainty: config_certainty,
+                    reason: config_reason,
                 });
             }
         };
@@ -786,11 +786,11 @@ impl RetainedMonitorPort {
         if receipt.operation != operation {
             return Submission::Unknown;
         }
-        match receipt.certainty {
+        match receipt.certainty() {
             RequestCertainty::Written => Submission::Written,
             RequestCertainty::Unknown => Submission::Unknown,
             RequestCertainty::NotSent => Submission::NotSent {
-                reason: match receipt.not_sent_reason {
+                reason: match receipt.not_sent_reason() {
                     Some(BrokerNotSentReason::NoLiveAccountWorker)
                     | Some(BrokerNotSentReason::ExpectedScopeMismatch) => {
                         NotSentReason::SessionMissing
@@ -961,12 +961,8 @@ impl RetainedMonitorPort {
         )
         .await
         .map_err(|error| format!("Monitor configuration was not read: {error}"))?;
-        let config = match config.result {
-            Some(ProviderResponse::Reply(value))
-                if config.certainty == RequestCertainty::Written =>
-            {
-                value["config"].clone()
-            }
+        let config = match config.into_response() {
+            Some(ProviderResponse::Reply(value)) => value["config"].clone(),
             Some(ProviderResponse::Rejected(value)) => return Err(value.to_string()),
             _ => return Err("Monitor configuration read is unknown".into()),
         };
@@ -1061,8 +1057,8 @@ impl RetainedMonitorPort {
             )
             .await
         {
-            Ok(receipt) if receipt.certainty == RequestCertainty::Written => {
-                let Some(ProviderResponse::Reply(result)) = receipt.result else {
+            Ok(receipt) if receipt.certainty() == RequestCertainty::Written => {
+                let Some(ProviderResponse::Reply(result)) = receipt.into_response() else {
                     return CheckReconciliation::Unknown;
                 };
                 if result["accepted"] == true {
@@ -1255,11 +1251,11 @@ impl MonitorNative for RetainedMonitorPort {
             if receipt.operation != *identity {
                 return Submission::Unknown;
             }
-            if receipt.certainty != RequestCertainty::Written {
+            if receipt.certainty() != RequestCertainty::Written {
                 return Self::submission(receipt, identity);
             }
             if method == Method::CommandExecTerminate {
-                return self.terminate_submission(&process_id, receipt.result);
+                return self.terminate_submission(&process_id, receipt.into_response());
             }
             if method == Method::CommandExec {
                 // The barrier only orders the command's output before its exit.
@@ -1283,7 +1279,7 @@ impl MonitorNative for RetainedMonitorPort {
                 if id.is_empty() {
                     return Submission::Unknown;
                 }
-                let Some(response) = receipt.result else {
+                let Some(response) = receipt.into_response() else {
                     return Submission::Unknown;
                 };
                 // The process ended with this result. Hold it until the store
@@ -1297,7 +1293,7 @@ impl MonitorNative for RetainedMonitorPort {
                 }
             } else if method == Method::CommandExecWrite || method == Method::CommandExecResize {
                 let ticket = identity.rsplit(':').next().unwrap_or(identity).to_owned();
-                let reply = match receipt.result {
+                let reply = match receipt.into_response() {
                     Some(ProviderResponse::Reply(value)) => InputReply::Acknowledged(value),
                     Some(ProviderResponse::Rejected(value)) => {
                         InputReply::Rejected(value.to_string())
@@ -1459,10 +1455,10 @@ impl MonitorPort for RetainedMonitorPort {
                 Ok(receipt) => receipt,
                 Err(_) => return Ok(ReattachOutcome::Pending),
             };
-            if receipt.certainty != RequestCertainty::Written {
+            if receipt.certainty() != RequestCertainty::Written {
                 return Ok(ReattachOutcome::Pending);
             }
-            let observation: OperationObservation = match receipt.result {
+            let observation: OperationObservation = match receipt.into_response() {
                 Some(ProviderResponse::Reply(value)) => match serde_json::from_value(value) {
                     Ok(observation) => observation,
                     Err(_) => {
@@ -1698,12 +1694,8 @@ async fn run_probe(
         Instant::now() + Duration::from_secs(20),
     )
     .await?;
-    let config = match config_receipt.result {
-        Some(ProviderResponse::Reply(value))
-            if config_receipt.certainty == RequestCertainty::Written =>
-        {
-            value["config"].clone()
-        }
+    let config = match config_receipt.into_response() {
+        Some(ProviderResponse::Reply(value)) => value["config"].clone(),
         Some(ProviderResponse::Rejected(value)) => return Err(value.to_string()),
         _ => return Err("Provider configuration read is unknown".into()),
     };
@@ -1729,10 +1721,10 @@ async fn run_probe(
         Instant::now() + Duration::from_secs(65),
     )
     .await?;
-    if receipt.certainty != RequestCertainty::Written {
+    if receipt.certainty() != RequestCertainty::Written {
         return Err("Liveness command outcome is unknown; it will not be resent".into());
     }
-    match receipt.result {
+    match receipt.into_response() {
         Some(ProviderResponse::Reply(value)) => {
             let code = value["exitCode"].as_i64();
             let stdout = value["stdout"].as_str().unwrap_or_default();
@@ -1823,6 +1815,7 @@ fn apply_turn_permissions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use studio_runtime_services::rules_engine::RuleSnapshot;
     use studio_runtime_store::{AgentRecord, AgentRepository, RuleRecord, RulesRepository};
 
@@ -1903,12 +1896,40 @@ mod tests {
                     std::future::pending::<()>().await;
                 }
                 Ok(SessionReceipt {
+                    outcome: {
+                        let ticket = studio_runtime_providers::RequestTicket {
+                            generation: request
+                                .expected_scope
+                                .as_ref()
+                                .map_or(1, |scope| scope.generation),
+                            id: studio_runtime_providers::RequestId::String(
+                                request.operation.clone(),
+                            ),
+                            method: request.method,
+                        };
+                        match (RequestCertainty::Written, lock(&self.terminate).clone()) {
+                            (RequestCertainty::Written, Some(response)) => {
+                                ReceiptOutcome::Written { ticket, response }
+                            }
+                            (RequestCertainty::Written, None) | (RequestCertainty::Unknown, _) => {
+                                ReceiptOutcome::Unknown {
+                                    ticket: studio_runtime_providers::RequestTicket {
+                                        generation: request
+                                            .expected_scope
+                                            .as_ref()
+                                            .map_or(1, |scope| scope.generation),
+                                        id: studio_runtime_providers::RequestId::String(
+                                            request.operation.clone(),
+                                        ),
+                                        method: request.method,
+                                    },
+                                }
+                            }
+                            (RequestCertainty::NotSent, _) => ReceiptOutcome::NoLiveAccountWorker,
+                        }
+                    },
                     scope: request.expected_scope.clone().expect("scope"),
                     operation: request.operation,
-                    ticket: None,
-                    certainty: RequestCertainty::Written,
-                    result: lock(&self.terminate).clone(),
-                    not_sent_reason: None,
                     replayed: false,
                 })
             })
@@ -1963,12 +1984,21 @@ mod tests {
                 Box::pin(async move {
                     assert_eq!(request.method, Method::CommandExec);
                     Ok(SessionReceipt {
+                        outcome: ReceiptOutcome::Written {
+                            ticket: studio_runtime_providers::RequestTicket {
+                                generation: request
+                                    .expected_scope
+                                    .as_ref()
+                                    .map_or(1, |scope| scope.generation),
+                                id: studio_runtime_providers::RequestId::String(
+                                    request.operation.clone(),
+                                ),
+                                method: request.method,
+                            },
+                            response: ProviderResponse::Reply(json!({"exitCode":1})),
+                        },
                         scope: request.expected_scope.clone().expect("scope"),
                         operation: request.operation,
-                        ticket: None,
-                        certainty: RequestCertainty::Written,
-                        result: Some(ProviderResponse::Reply(json!({"exitCode":1}))),
-                        not_sent_reason: None,
                         replayed: false,
                     })
                 })
@@ -2090,12 +2120,21 @@ mod tests {
                 Box::pin(async move {
                     assert_eq!(request.method, Method::CommandExec);
                     Ok(SessionReceipt {
+                        outcome: ReceiptOutcome::Written {
+                            ticket: studio_runtime_providers::RequestTicket {
+                                generation: request
+                                    .expected_scope
+                                    .as_ref()
+                                    .map_or(1, |scope| scope.generation),
+                                id: studio_runtime_providers::RequestId::String(
+                                    request.operation.clone(),
+                                ),
+                                method: request.method,
+                            },
+                            response: ProviderResponse::Reply(json!({"exitCode":1})),
+                        },
                         scope: request.expected_scope.clone().expect("scope"),
                         operation: request.operation,
-                        ticket: None,
-                        certainty: RequestCertainty::Written,
-                        result: Some(ProviderResponse::Reply(json!({"exitCode":1}))),
-                        not_sent_reason: None,
                         replayed: false,
                     })
                 })
@@ -2232,7 +2271,7 @@ mod tests {
                 SessionReceipt,
             > {
                 Box::pin(async move {
-                    let mut scope = request.expected_scope.expect("scope");
+                    let mut scope = request.expected_scope.clone().expect("scope");
                     let (result, replayed) = match request.method {
                         Method::ConfigRead => {
                             if self.refuse_config_once.swap(false, Ordering::SeqCst) {
@@ -2394,12 +2433,21 @@ mod tests {
                         | Method::ProtocolError => panic!("unexpected monitor preparation request"),
                     };
                     Ok(SessionReceipt {
+                        outcome: ReceiptOutcome::Written {
+                            ticket: studio_runtime_providers::RequestTicket {
+                                generation: request
+                                    .expected_scope
+                                    .as_ref()
+                                    .map_or(1, |scope| scope.generation),
+                                id: studio_runtime_providers::RequestId::String(
+                                    request.operation.clone(),
+                                ),
+                                method: request.method,
+                            },
+                            response: ProviderResponse::Reply(result),
+                        },
                         scope,
                         operation: request.operation,
-                        ticket: None,
-                        certainty: RequestCertainty::Written,
-                        result: Some(ProviderResponse::Reply(result)),
-                        not_sent_reason: None,
                         replayed,
                     })
                 })
@@ -2694,14 +2742,23 @@ mod tests {
                     );
                     self.status_requests.fetch_add(1, Ordering::SeqCst);
                     Ok(SessionReceipt {
+                        outcome: ReceiptOutcome::Written {
+                            ticket: studio_runtime_providers::RequestTicket {
+                                generation: request
+                                    .expected_scope
+                                    .as_ref()
+                                    .map_or(1, |scope| scope.generation),
+                                id: studio_runtime_providers::RequestId::String(
+                                    request.operation.clone(),
+                                ),
+                                method: request.method,
+                            },
+                            response: ProviderResponse::Rejected(
+                                json!({"code":-32601,"message":"method not found"}),
+                            ),
+                        },
                         scope: request.expected_scope.expect("scope"),
                         operation: request.operation,
-                        ticket: None,
-                        certainty: RequestCertainty::Written,
-                        result: Some(ProviderResponse::Rejected(
-                            json!({"code":-32601,"message":"method not found"}),
-                        )),
-                        not_sent_reason: None,
                         replayed: false,
                     })
                 })
@@ -3023,12 +3080,32 @@ mod tests {
                             Some(ProviderResponse::Reply(response))
                         };
                     Ok(SessionReceipt {
+                        outcome: {
+                            let ticket = studio_runtime_providers::RequestTicket {
+                                generation: request
+                                    .expected_scope
+                                    .as_ref()
+                                    .map_or(1, |scope| scope.generation),
+                                id: studio_runtime_providers::RequestId::String(
+                                    request.operation.clone(),
+                                ),
+                                method: request.method,
+                            };
+                            match (RequestCertainty::Written, result) {
+                                (RequestCertainty::Written, Some(response)) => {
+                                    ReceiptOutcome::Written { ticket, response }
+                                }
+                                (RequestCertainty::Written, None)
+                                | (RequestCertainty::Unknown, _) => {
+                                    ReceiptOutcome::Unknown { ticket }
+                                }
+                                (RequestCertainty::NotSent, _) => {
+                                    ReceiptOutcome::NoLiveAccountWorker
+                                }
+                            }
+                        },
                         scope: request.expected_scope.expect("scope"),
                         operation: request.operation,
-                        ticket: None,
-                        certainty: RequestCertainty::Written,
-                        result,
-                        not_sent_reason: None,
                         replayed: false,
                     })
                 })

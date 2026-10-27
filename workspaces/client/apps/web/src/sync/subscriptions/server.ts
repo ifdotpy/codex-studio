@@ -45,25 +45,17 @@ export function createServerSubscriptions(options: ServerSubscriptionOptions) {
       sync,
       transport,
       createEntityDataObserver(() => sync().syncDatabase()),
-      async (ref) => {
-        switch (ref.kind) {
-          case "processes":
-            return api.get("/api/processes", { query: { agent: ref.agentId } });
-          case "complaint":
-            return api.get("/api/complaint", {
-              query: { id: ref.complaintId },
-            });
-          case "room":
-            return ref.legacy
-              ? api.get("/api/messages", { query: { room: ref.roomId } })
-              : api.get("/api/agent-chat", { query: { room: ref.roomId } });
-          case "terminal-output":
-            return api.get("/api/terminals/output", {
-              query: { id: ref.terminalId },
-            });
-          default:
-            throw new Error("Unsupported view recovery");
-        }
+      {
+        processes: (ref) =>
+          api.get("/api/processes", { query: { agent: ref.agentId } }),
+        complaint: (ref) =>
+          api.get("/api/complaint", { query: { id: ref.complaintId } }),
+        room: (ref) =>
+          ref.legacy
+            ? api.get("/api/messages", { query: { room: ref.roomId } })
+            : api.get("/api/agent-chat", { query: { room: ref.roomId } }),
+        "terminal-output": (ref) =>
+          api.get("/api/terminals/output", { query: { id: ref.terminalId } }),
       },
     ),
   );

@@ -23,7 +23,8 @@ import type { ServerResponse } from "node:http";
 import type { components } from "../../src/generated/api.ts";
 import type { PostBody, GetResult } from "../../src/apiTypes.ts";
 import type { ResourceRef, ResourceChangeEvent } from "../playwright.ts";
-import type { Agent, BackgroundTask, Monitor } from "../../src/types.ts";
+import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
+import type { BackgroundTask, Monitor } from "../../src/types.ts";
 test("Terminal dock transport", async () => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(

@@ -2,9 +2,10 @@ use rusqlite::{Connection, Transaction};
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::workspace_operations::ProviderTicket;
 use studio_runtime_services::{
-    account_session_runtime::{ConnectionScope, NotSentReason, RequestCertainty, SessionReceipt},
+    account_session_runtime::{ConnectionScope, SessionReceipt},
     context_repair::{HistoryRewrite, RepairError, RepairEventSummary},
     native_actions::*,
     native_review::{self, ReviewPlan},
@@ -356,14 +357,12 @@ fn changed_payload_and_foreign_receipts_leave_intent_held() {
 #[test]
 fn invalid_worker_not_sent_receipts_keep_intent_unknown_and_unclaimable() {
     let case = &corpus()["actions"][0];
-    for receipt_ticket in [
-        None,
-        Some(RequestTicket {
+    {
+        let receipt_ticket = RequestTicket {
             id: RequestId::String("foreign-ticket".into()),
             generation: ticket().generation,
             method: Method::from_wire("thread/compact/start").expect("known method"),
-        }),
-    ] {
+        };
         let mut db = db(case);
         reserve_case(&mut db, case);
         let tx = db.transaction().expect("begin claim");
@@ -371,17 +370,15 @@ fn invalid_worker_not_sent_receipts_keep_intent_unknown_and_unclaimable() {
         tx.commit().expect("persist claim before native handoff");
 
         let receipt = SessionReceipt {
+            outcome: ReceiptOutcome::WorkerNotSent {
+                ticket: receipt_ticket,
+            },
             scope: ConnectionScope {
                 account: "default".into(),
                 connection: "connection".into(),
                 generation: ticket().generation,
             },
             operation: ticket().operation,
-            ticket: receipt_ticket,
-            certainty: RequestCertainty::NotSent,
-            result: None,
-            not_sent_reason: Some(NotSentReason::WorkerNotSent),
-
             replayed: false,
         };
         let tx = db.transaction().expect("begin receipt settlement");

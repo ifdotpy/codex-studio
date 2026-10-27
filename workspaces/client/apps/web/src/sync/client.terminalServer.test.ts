@@ -210,7 +210,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
       watchResourceConnection: () => () => {},
     },
     undefined,
-    recover,
+    { "terminal-output": recover },
   )(resource, accept, failed);
   const applied = new ReplaySubject<ResourceChangeEvent>();
   const delivery = new ResourceEntityDelivery(

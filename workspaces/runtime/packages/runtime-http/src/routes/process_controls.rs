@@ -8,6 +8,10 @@ use axum::{Extension, Json, extract::State, http::StatusCode};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::process_controls::{
+    ProcessActionResult, ProcessActionStatus, ProcessControlRequest, ProcessOutcome,
+    ProcessReceipt, Request, ResponseEntry, ResponseOutcome,
+};
 use studio_runtime_schema::shared_values::{
     NATIVE_TERMINAL_ITEMS_PER_PAGE, NATIVE_TERMINAL_MAX_PAGES,
 };
@@ -18,12 +22,6 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::{AgentRecord, RuntimeStore};
 
-struct HttpError(ApiError);
-impl From<studio_runtime_store::StoreError> for HttpError {
-    fn from(error: studio_runtime_store::StoreError) -> Self {
-        Self(ApiError::stored(error))
-    }
-}
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/processes", OperationStatus::Implemented, listing),
@@ -97,7 +95,7 @@ async fn listing(
 async fn receipt(
     State(state): State<HttpState>,
     params: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ProcessReceipt>, ApiError> {
     let query = Value::Object((*params.into_typed()).clone());
     let store = store(&state)?;
     let value = store
@@ -107,97 +105,20 @@ async fn receipt(
         .await?;
     Ok(Json(value))
 }
-fn validate(request: &Value) -> Result<(), ApiError> {
-    let processes = request["processes"]
-        .as_array()
-        .is_some_and(|a| !a.is_empty());
-    let process = !request["process"].is_null();
-    let response = !request["responseTarget"].is_null();
-    let item = !request["itemId"].is_null();
-    if (text(request, "action") == "background_command")
-        != request["itemId"]
-            .as_str()
-            .is_some_and(|id| !id.is_empty() && id.len() <= 200)
-        || (item && !request["itemId"].is_string())
-    {
-        return Err(invalid("Background move requires exactly one command item"));
-    }
-    match text(request, "action") {
-        "stop_selected" if !process || processes => {
-            return Err(invalid("Select exactly one process to stop"));
-        }
-        "stop_owned" if process => {
-            return Err(invalid("Owned process stop accepts a process snapshot"));
-        }
-        "stop_owned" if !processes => {
-            return Err(invalid("No owned process identities were supplied"));
-        }
-        "stop_response" | "background_command" => {
-            let name = if text(request, "action") == "stop_response" {
-                "Response stop"
-            } else {
-                "Background move"
-            };
-            if process || processes {
-                return Err(ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    format!("{name} does not accept process identities"),
-                ));
-            }
-            if !response {
-                return Err(ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    format!("{name} requires the current response identity"),
-                ));
-            }
-            if ["agent", "accountKey", "epoch"]
-                .iter()
-                .any(|k| request[k] != request["responseTarget"][k])
-            {
-                return Err(invalid(
-                    "Response identity does not match the process owner",
-                ));
-            }
-            if request["includeDescendants"] == true {
-                return Err(invalid("Descendant scope applies only to process stop"));
-            }
-        }
-        _ => {}
-    }
-    if !matches!(
-        text(request, "action"),
-        "stop_response" | "background_command"
-    ) && response
-    {
-        return Err(invalid(
-            "Response identity applies only to response stop and background move",
-        ));
-    }
-    Ok(())
-}
 async fn action(
     State(state): State<HttpState>,
     runtime: Option<Extension<Arc<MonitorRuntime>>>,
-    ApiJson(request): ApiJson<Value>,
+    ApiJson(request): ApiJson<Request>,
 ) -> Result<Json<Value>, ApiError> {
-    validate(&request)?;
-    let store = store(&state)?;
-    super::sync_delta::write_external_async(
-        store,
-        move || async move {
-            execute(state, runtime.map(|Extension(r)| r), request)
-                .await
-                .map_err(HttpError)
-        },
-        |e| e.0,
-    )
-    .await
-    .map(Json)
+    execute(state, runtime.map(|Extension(r)| r), request)
+        .await
+        .map(Json)
 }
+
 async fn execute(
     state: HttpState,
     runtime: Option<Arc<MonitorRuntime>>,
-    request: Value,
+    request: Request,
 ) -> Result<Value, ApiError> {
     let store = store(&state)?;
     let claim_state = state.clone();
@@ -206,108 +127,112 @@ async fn execute(
         studio_runtime_services::event_write::unix_time().map_err(|_| ApiError::internal())?;
     let claim = store
         .transaction_with(move |tx| {
-            let owners = controls::owners(tx, text(&claim_request, "agent"))?;
+            let owners = controls::owners(tx, &claim_request.command().scope().agent)?;
             controls::claim(tx, &claim_request, &connections(&claim_state, &owners), now)
         })
         .await
         .map_err(error)?;
-    let (mut record, targets) = match claim {
+    let (mut record, targets, mut result) = match claim {
         controls::Claim::Replay(value) => return Ok(value),
-        controls::Claim::New { record, targets } => (record, targets),
+        controls::Claim::New {
+            record,
+            targets,
+            result,
+        } => (record, targets, result),
     };
-    if request["action"] == "background_command" {
-        let outcome = match background_command(
-            &state,
-            &record["responseTarget"],
-            text(&request, "itemId"),
-            text(&request, "requestId"),
-        )
-        .await
-        {
-            Ok(outcome) => outcome,
-            Err(_) => {
-                json!({"status":"uncertain","error":"The background move outcome is unknown. Inspect its receipt before retrying"})
-            }
-        };
-        record["phase"] = json!(if outcome["status"] == "uncertain" {
-            "uncertain"
-        } else {
-            "completed"
-        });
-        let mut response = outcome;
-        response["agent"] = request["agent"].clone();
-        response["itemId"] = request["itemId"].clone();
-        record["result"] = json!({"requestId":request["requestId"],"status":record["phase"],"processes":[],"response":response});
-    } else if request["action"] == "stop_response" {
-        let outcome = match stop_response(
-            &state,
-            &record["responseTarget"],
-            text(&request, "requestId"),
-        )
-        .await
-        {
-            Ok(outcome) => outcome,
-            Err(_) => {
-                json!({"status":"uncertain","error":"The response stop outcome is unknown. Inspect its receipt before retrying"})
-            }
-        };
-        record["phase"] = json!(if outcome["status"] == "uncertain" {
-            "uncertain"
-        } else {
-            "completed"
-        });
-        let mut response = outcome;
-        response["agent"] = request["agent"].clone();
-        record["result"] = json!({"requestId":request["requestId"],"status":record["phase"],"processes":[],"response":response});
-    } else {
-        for target in targets {
-            let outcome = match stop_process(
+    let scope = request.command().scope();
+    match request.command() {
+        ProcessControlRequest::BackgroundCommand { item_id, .. } => {
+            let outcome = background_command(
                 &state,
-                runtime.as_ref(),
-                &target,
-                text(&request, "requestId"),
+                &record["responseTarget"],
+                item_id,
+                &scope.request_id,
             )
             .await
-            {
-                Ok(outcome) => outcome,
-                Err(_) => {
-                    json!({"status":"uncertain","error":"The process stop outcome is unknown. Inspect its receipt before retrying"})
-                }
-            };
-            if let Some(entry) = record["processes"]
-                .as_array_mut()
-                .expect("processes")
-                .iter_mut()
-                .find(|p| p["key"] == target["key"])
-            {
-                entry
-                    .as_object_mut()
-                    .expect("process")
-                    .extend(outcome.as_object().expect("outcome").clone());
-            }
-            record["result"]["processes"] = record["processes"].clone();
-            save(&store, record.clone()).await?;
+            .unwrap_or_else(|_| ResponseOutcome::Uncertain {
+                error: Some(
+                    "The background move outcome is unknown. Inspect its receipt before retrying"
+                        .into(),
+                ),
+            });
+            result.status = response_status(&outcome);
+            result.response = Some(ResponseEntry {
+                agent: scope.agent.clone(),
+                item_id: Some(item_id.clone()),
+                outcome,
+            });
         }
-        let entries = record["processes"].as_array().expect("processes");
-        let status = if entries.iter().any(|e| e["status"] == "uncertain") {
-            "uncertain"
-        } else if entries
-            .iter()
-            .any(|e| matches!(e["status"].as_str(), Some("failed" | "stale")))
-        {
-            "partial"
-        } else {
-            "completed"
-        };
-        record["phase"] = json!(if status == "uncertain" {
-            "uncertain"
-        } else {
-            "completed"
-        });
-        record["result"] = json!({"requestId":request["requestId"],"status":status,"processes":record["processes"]});
+        ProcessControlRequest::StopResponse { .. } => {
+            let outcome = stop_response(&state, &record["responseTarget"], &scope.request_id)
+                .await
+                .unwrap_or_else(|_| ResponseOutcome::Uncertain {
+                    error: Some(
+                        "The response stop outcome is unknown. Inspect its receipt before retrying"
+                            .into(),
+                    ),
+                });
+            result.status = response_status(&outcome);
+            result.response = Some(ResponseEntry {
+                agent: scope.agent.clone(),
+                item_id: None,
+                outcome,
+            });
+        }
+        ProcessControlRequest::StopSelected { .. } | ProcessControlRequest::StopOwned { .. } => {
+            for target in targets {
+                let outcome = stop_process(&state, runtime.as_ref(), &target, &scope.request_id).await
+                    .unwrap_or_else(|_| ProcessOutcome::Uncertain { error: Some("The process stop outcome is unknown. Inspect its receipt before retrying".into()) });
+                if let Some(entry) = result
+                    .processes
+                    .iter_mut()
+                    .find(|p| p.key == text(&target, "key"))
+                {
+                    entry.outcome = outcome;
+                }
+                update_record(&mut record, &result);
+                save(&store, record.clone()).await?;
+            }
+            result.status = if result
+                .processes
+                .iter()
+                .any(|p| matches!(p.outcome, ProcessOutcome::Uncertain { .. }))
+            {
+                ProcessActionStatus::Uncertain
+            } else if result.processes.iter().any(|p| {
+                matches!(
+                    p.outcome,
+                    ProcessOutcome::Failed { .. } | ProcessOutcome::Stale { .. }
+                )
+            }) {
+                ProcessActionStatus::Partial
+            } else {
+                ProcessActionStatus::Completed
+            };
+        }
     }
-    save(&store, record.clone()).await?;
-    Ok(record["result"].clone())
+    record["phase"] = json!(if result.status == ProcessActionStatus::Uncertain {
+        "uncertain"
+    } else {
+        "completed"
+    });
+    update_record(&mut record, &result);
+    save(&store, record).await?;
+    Ok(json!(result))
+}
+fn response_status(outcome: &ResponseOutcome) -> ProcessActionStatus {
+    match outcome {
+        ResponseOutcome::Uncertain { .. } => ProcessActionStatus::Uncertain,
+        ResponseOutcome::Requested
+        | ResponseOutcome::Backgrounded
+        | ResponseOutcome::NotRunning
+        | ResponseOutcome::Stale { .. }
+        | ResponseOutcome::Failed { .. } => ProcessActionStatus::Completed,
+    }
+}
+fn update_record(record: &mut Value, result: &ProcessActionResult) {
+    record["processes"] = json!(result.processes);
+    record["result"] = json!(result);
 }
 async fn save(store: &RuntimeStore, record: Value) -> Result<(), ApiError> {
     store
@@ -372,37 +297,43 @@ async fn stop_process(
     runtime: Option<&Arc<MonitorRuntime>>,
     process: &Value,
     request_id: &str,
-) -> Result<Value, ApiError> {
+) -> Result<ProcessOutcome, ApiError> {
     if process["source"] == "monitor" {
         let Some(runtime) = runtime else {
-            return Ok(json!({"status":"failed","error":"Monitor runtime is unavailable"}));
+            return Ok(ProcessOutcome::Failed {
+                error: "Monitor runtime is unavailable".into(),
+            });
         };
         let now =
             studio_runtime_services::event_write::unix_time().map_err(|_| ApiError::internal())?;
         return match runtime.cancel_process(process.clone(), now).await {
             Ok(result) => Ok(if result["status"] == "cancelled" {
-                json!({"status":"stopped"})
+                ProcessOutcome::Stopped
             } else if matches!(result["status"].as_str(), Some("completed" | "failed")) {
-                json!({"status":"already_finished"})
+                ProcessOutcome::AlreadyFinished
             } else if result["cancelRequested"] == true && result["error"].is_null() {
-                json!({"status":"requested"})
+                ProcessOutcome::Requested
             } else {
-                json!({"status":"uncertain","error":result["error"]})
+                ProcessOutcome::Uncertain {
+                    error: Some(result["error"].clone()),
+                }
             }),
             Err(studio_runtime_services::monitor_policy::MonitorError::Refused(message)) => {
-                Ok(json!({"status":"stale","error":message}))
+                Ok(ProcessOutcome::Stale {
+                    error: message.into(),
+                })
             }
-            Err(_) => {
-                Ok(json!({"status":"uncertain","error":"The monitor stop outcome is unknown"}))
-            }
+            Err(_) => Ok(ProcessOutcome::Uncertain {
+                error: Some("The monitor stop outcome is unknown".into()),
+            }),
         };
     }
     let (port, scope, mut ticket) = match bind(state, process).await {
         Ok(binding) => binding,
         Err(_) => {
-            return Ok(
-                json!({"status":"stale","error":"The native process owner changed. Refresh the process list"}),
-            );
+            return Ok(ProcessOutcome::Stale {
+                error: "The native process owner changed. Refresh the process list".into(),
+            });
         }
     };
     let operation = format!(
@@ -462,14 +393,14 @@ async fn stop_process(
         params["cursor"] = json!(cursor);
     }
     if !found {
-        return Ok(json!({"status":"already_finished"}));
+        return Ok(ProcessOutcome::AlreadyFinished);
     }
     // Recheck the stored process after native discovery, before any stop request.
     let (_, current_scope, _) = bind(state, process).await?;
     if current_scope != scope {
-        return Ok(
-            json!({"status":"stale","error":"The native process connection changed before stop"}),
-        );
+        return Ok(ProcessOutcome::Stale {
+            error: "The native process connection changed before stop".into(),
+        });
     }
     let result = super::catalog_agent::provider_call(
         &port,
@@ -490,9 +421,11 @@ async fn stop_process(
     .await?;
     if !claude {
         return Ok(if result["terminated"] == true {
-            json!({"status":"stopped"})
+            ProcessOutcome::Stopped
         } else {
-            json!({"status":"uncertain","error":"The provider did not confirm that the process stopped"})
+            ProcessOutcome::Uncertain {
+                error: Some("The provider did not confirm that the process stopped".into()),
+            }
         });
     }
     let after = super::catalog_agent::provider_call(
@@ -507,13 +440,17 @@ async fn stop_process(
     let tasks = after["tasks"]
         .as_array()
         .ok_or_else(|| invalid("Invalid native task state"))?;
-    Ok(json!({"status":if tasks.iter().any(|t|t["task_id"]==task) {"requested"} else {"stopped"}}))
+    Ok(if tasks.iter().any(|t| t["task_id"] == task) {
+        ProcessOutcome::Requested
+    } else {
+        ProcessOutcome::Stopped
+    })
 }
 async fn stop_response(
     state: &HttpState,
     target: &Value,
     request_id: &str,
-) -> Result<Value, ApiError> {
+) -> Result<ResponseOutcome, ApiError> {
     let expected = target.clone();
     let request_id = request_id.to_owned();
     let binding = async {
@@ -552,9 +489,9 @@ async fn stop_response(
     let (port, scope, ticket, claude) = match binding {
         Ok(binding) => binding,
         Err(_) => {
-            return Ok(
-                json!({"status":"stale","error":"The response changed. Refresh the process list"}),
-            );
+            return Ok(ResponseOutcome::Stale {
+                error: "The response changed. Refresh the process list".into(),
+            });
         }
     };
     let mut params = json!({"threadId":target["threadId"],"turnId":target["turnId"]});
@@ -570,14 +507,14 @@ async fn stop_response(
         params,
     )
     .await?;
-    Ok(json!({"status":"requested"}))
+    Ok(ResponseOutcome::Requested)
 }
 async fn background_command(
     state: &HttpState,
     target: &Value,
     item_id: &str,
     request_id: &str,
-) -> Result<Value, ApiError> {
+) -> Result<ResponseOutcome, ApiError> {
     let expected = target.clone();
     let request_id = request_id.to_owned();
     let binding = async {
@@ -613,15 +550,15 @@ async fn background_command(
     let (port, scope, ticket, supported) = match binding {
         Ok(binding) => binding,
         Err(_) => {
-            return Ok(
-                json!({"status":"stale","error":"The response changed. Refresh the conversation"}),
-            );
+            return Ok(ResponseOutcome::Stale {
+                error: "The response changed. Refresh the conversation".into(),
+            });
         }
     };
     if !supported {
-        return Ok(
-            json!({"status":"failed","error":"This provider cannot move a running command to the background"}),
-        );
+        return Ok(ResponseOutcome::Failed {
+            error: "This provider cannot move a running command to the background".into(),
+        });
     }
     let result = match super::catalog_agent::provider_call(
         &port,
@@ -641,15 +578,18 @@ async fn background_command(
                 StatusCode::BAD_REQUEST | StatusCode::SERVICE_UNAVAILABLE
             ) =>
         {
-            return Ok(json!({"status":"failed","error":error.message()}));
+            return Ok(ResponseOutcome::Failed {
+                error: error.message().into(),
+            });
         }
         Err(error) => return Err(error),
     };
     Ok(match result["status"].as_str() {
-        Some(status @ ("backgrounded" | "not_running")) => json!({"status":status}),
-        _ => {
-            json!({"status":"uncertain","error":"The provider returned an unknown background move result"})
-        }
+        Some("backgrounded") => ResponseOutcome::Backgrounded,
+        Some("not_running") => ResponseOutcome::NotRunning,
+        _ => ResponseOutcome::Uncertain {
+            error: Some("The provider returned an unknown background move result".into()),
+        },
     })
 }
 inventory::submit! {crate::routes::manifest::RouteModuleRegistration {name:"process_controls",routes:Some(routes),dependencies:&["provider-session/native-request","provider-session/monitor-commands"]}}

@@ -1,5 +1,6 @@
 import type { Agent } from "../../src/types.ts";
 import type { Account } from "../../src/components/Accounts.tsx";
+import type { AccountLimitsSnapshot } from "../../src/usage/accountUsage.ts";
 import { fixtureRoot } from "./usage-fixture.ts";
 
 import React, { useState } from "react";
@@ -66,7 +67,7 @@ function Fixture() {
   const [at, setAt] = useState(now);
   const [limitsOpen, setLimitsOpen] = useState(false);
   window.refreshFixture = () => setAt(Date.now() / 1000);
-  const limits = {
+  const limits: AccountLimitsSnapshot = {
     accountKey: "claude",
     at,
     eligibility: {

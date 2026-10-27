@@ -1,6 +1,7 @@
 import { required } from "../teams/helpers.ts";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
-import type { Agent, Monitor, BackgroundTask } from "../../src/types.ts";
+import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
+import type { Monitor, BackgroundTask } from "../../src/types.ts";
 import type { PostBody, PostResult, GetResult } from "../../src/apiTypes.ts";
 type FixtureSync = Parameters<typeof handleEntitySyncFixtureRequest>[2];
 type RecordedBody = Partial<

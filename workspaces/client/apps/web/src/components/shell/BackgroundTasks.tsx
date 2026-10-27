@@ -87,9 +87,9 @@ export const backgroundProcessGroups = [
   ["tool", "Other tools"],
   ["backgroundTask", "Background tasks"],
 ] as const satisfies ReadonlyArray<readonly [RendererTaskKind, string]>;
-export const responseStopIdentity = (
-  target: ProcessResponseTarget | null | undefined,
-) => (target ? { responseTarget: target } : {});
+export const responseStopIdentity = (target: ProcessResponseTarget) => ({
+  responseTarget: target,
+});
 export const responseOwnerIdentityKey = (
   owner:
     | Pick<
@@ -367,7 +367,7 @@ export default function BackgroundTasks({
           .join(", ");
         notify(
           result.status === "partial"
-            ? `Some processes did not stop: ${outcomes || result.error || "see each process result"}`
+            ? `Some processes did not stop: ${outcomes || "see each process result"}`
             : `Stop result: ${outcomes || result.response?.status || "unknown"}`,
         );
       }
@@ -408,11 +408,7 @@ export default function BackgroundTasks({
         },
       });
       if (controlScope.current !== controlStorageKey) return;
-      if (
-        !receipt.found ||
-        !receipt.result ||
-        receipt.result.status === "uncertain"
-      ) {
+      if (!receipt.found || receipt.result.status === "uncertain") {
         notify(
           "The stop result is still unknown. Check its receipt again later.",
         );
@@ -426,7 +422,7 @@ export default function BackgroundTasks({
         .join(", ");
       notify(
         receipt.result.status === "partial"
-          ? `Some processes did not stop: ${outcomes || receipt.result.error || "see each process result"}`
+          ? `Some processes did not stop: ${outcomes || "see each process result"}`
           : `Stop result: ${outcomes || receipt.result.response?.status || "unknown"}`,
       );
       await refresh();
@@ -455,7 +451,6 @@ export default function BackgroundTasks({
           >;
         },
   ) => {
-    const { action } = control;
     if (
       !leadId ||
       !scopeOwner ||
@@ -469,41 +464,55 @@ export default function BackgroundTasks({
       notify("Check the earlier stop result before starting another stop.");
       return;
     }
-    const body: PostBody<"/api/processes/action"> = {
-      action,
+    const scope = {
       requestId: crypto.randomUUID(),
       agent: leadId,
       accountKey: scopeOwner.accountKey || "default",
       epoch: scopeOwner.epoch,
-      ...(action === "stop_response"
-        ? responseStopIdentity(responseTarget)
-        : {}),
-      ...(control.action === "stop_selected"
-        ? {
-            process: processIdentity(control.process),
-            ...(control.process.agent !== leadId && includeWorkers
-              ? { includeDescendants: true }
-              : {}),
-          }
-        : {}),
-      ...(action === "stop_owned"
-        ? {
-            processes: processTasks
-              .filter(activeTask)
-              .filter(
-                (task) =>
-                  task.capabilities.stop &&
-                  (task.agent === leadId ||
-                    (includeWorkers && owner(task.agent)?.rootId === leadId)),
-              )
-              .map(processIdentity),
-            includeDescendants: includeWorkers,
-          }
-        : {}),
     };
-    if (action === "stop_response" && !responseTarget) {
-      notify("Refresh the process list before stopping this response.");
-      return;
+    let body: PostBody<"/api/processes/action">;
+    switch (control.action) {
+      case "stop_response":
+        if (!responseTarget) {
+          notify("Refresh the process list before stopping this response.");
+          return;
+        }
+        body = {
+          ...scope,
+          action: control.action,
+          ...responseStopIdentity(responseTarget),
+        };
+        break;
+      case "stop_selected":
+        body = {
+          ...scope,
+          action: control.action,
+          process: processIdentity(control.process),
+          ...(control.process.agent !== leadId && includeWorkers
+            ? { includeDescendants: true }
+            : {}),
+        };
+        break;
+      case "stop_owned":
+        body = {
+          ...scope,
+          action: control.action,
+          processes: processTasks
+            .filter(activeTask)
+            .filter(
+              (task) =>
+                task.capabilities.stop &&
+                (task.agent === leadId ||
+                  (includeWorkers && owner(task.agent)?.rootId === leadId)),
+            )
+            .map(processIdentity),
+          includeDescendants: includeWorkers,
+        };
+        break;
+      default: {
+        const exhaustive: never = control;
+        return exhaustive;
+      }
     }
     sessionStorage.setItem(controlStorageKey, JSON.stringify(body));
     setPendingControl(body);
@@ -646,7 +655,7 @@ export default function BackgroundTasks({
       {controlResult?.response && (
         <p role={controlResult.status === "uncertain" ? "alert" : "status"}>
           Response stop: {String(controlResult.response.status)}
-          {typeof controlResult.response.error === "string"
+          {"error" in controlResult.response && controlResult.response.error
             ? `, ${controlResult.response.error}`
             : ""}
         </p>
@@ -657,19 +666,17 @@ export default function BackgroundTasks({
           className="process-control-results"
         >
           {controlResult.processes.map((item, index) => {
-            const key = typeof item.key === "string" ? item.key : "";
+            const key = item.key;
             const process = processRecords.find(
               (candidate) => candidate.key === key,
             );
             return (
               <li key={`${key}:${index}`}>
-                {process?.name ||
-                  (typeof item.agent === "string"
-                    ? owner(item.agent)?.name
-                    : null) ||
-                  "Process"}
-                : {String(item.status || "unknown")}
-                {typeof item.error === "string" ? `, ${item.error}` : ""}
+                {process?.name || owner(item.agent)?.name || "Process"}:{" "}
+                {item.status}
+                {"error" in item && typeof item.error === "string"
+                  ? `, ${item.error}`
+                  : ""}
               </li>
             );
           })}

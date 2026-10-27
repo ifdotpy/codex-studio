@@ -293,11 +293,14 @@ mod tests {
 
     #[test]
     fn reads_valid_account_map() {
-        let alpha = json!({"accountKey":"alpha","at":1.0,"data":{"status":"ready"}});
+        let alpha = json!({"accountKey":"alpha","at":1.0,"data":{"status":"ready",
+            "rateLimits":{"primary":{"usedPercent":12,"providerWindow":{"x":1}}}}
+        });
         let db = database(
             &json!({"value":{"rateLimitsByAccount":{"alpha":alpha},"rateLimits":{"accountKey":"default","at":null,"data":{"status":"ready"}}}}),
         );
         let restored = limits_snapshots(&db).expect("read");
+        assert!(restored.diagnostics.is_empty());
         assert!(restored.snapshots.contains(&("alpha".to_owned(), alpha)));
         assert!(!restored.snapshots.iter().any(|(key, _)| key == "default"));
         assert!(!restored.snapshots.iter().any(|(key, _)| key == "missing"));
@@ -357,7 +360,7 @@ mod tests {
         let payload = json!({"value": {
             "rateLimitsByAccount": {"default": {
                 "accountKey":"default", "at":1.0,
-                "data":{"rateLimits":{"primary":{"usedPercent":1,"placeholder":"x"}}}
+                "data":{"rateLimits":{"primary":{"usedPercent":"1","placeholder":"x"}}}
             }},
             "rateLimits":{"accountKey":"default","at":2.0,"data":{"status":"legacy"}}
         }});

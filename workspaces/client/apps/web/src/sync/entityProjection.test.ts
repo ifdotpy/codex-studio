@@ -372,7 +372,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
       state,
       [
         initial[0],
-        entityRow("agent", "b", {} as Agent, 5, {
+        entityRow("agent", "b", { id: "b" }, 5, {
           _deleted: true,
         }),
         initial[2],
@@ -1104,7 +1104,7 @@ it("handles explicit deletes, unseen tombstones, and re-created rows", () => {
   snapshot = applyEntityRows(
     state,
     [
-      entityRow("agent", "a", {} as Agent, 3, {
+      entityRow("agent", "a", { id: "a" }, 3, {
         _deleted: true,
       }),
     ],
@@ -1544,7 +1544,7 @@ it("bounds retained tombstones after deletes and missing rows", () => {
   applyEntityRows(
     explicit,
     [
-      entityRow("agent", "a0", {} as Agent, 5001, {
+      entityRow("agent", "a0", { id: "a0" }, 5001, {
         _deleted: true,
       }),
     ],

@@ -12,9 +12,9 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use studio_runtime_providers::Method;
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::account_session_runtime::{
-    AccountSessionError, AccountSessionPort, NotSentReason, ProviderRequest, ProviderResponse,
-    RequestCertainty,
+    AccountSessionError, AccountSessionPort, ProviderRequest, ProviderResponse,
 };
 use studio_runtime_store::{AgentId, AgentRepository};
 
@@ -225,21 +225,24 @@ async fn provider_request(
                 ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
             }
         })?;
-    match (receipt.certainty, receipt.result) {
-        (RequestCertainty::Written, Some(ProviderResponse::Reply(value))) => Ok(value),
-        (RequestCertainty::Written, Some(ProviderResponse::Rejected(error))) => {
-            Err(ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))
-        }
-        (RequestCertainty::NotSent, _)
-            if receipt.not_sent_reason == Some(NotSentReason::NoLiveAccountWorker) =>
-        {
-            Err(unavailable())
-        }
-        (RequestCertainty::NotSent, _) => Err(ApiError::new(
+    match receipt.outcome {
+        ReceiptOutcome::Written {
+            response: ProviderResponse::Reply(value),
+            ..
+        } => Ok(value),
+        ReceiptOutcome::Written {
+            response: ProviderResponse::Rejected(error),
+            ..
+        } => Err(ApiError::new(StatusCode::BAD_REQUEST, error.to_string())),
+        ReceiptOutcome::NoLiveAccountWorker => Err(unavailable()),
+        ReceiptOutcome::WorkerNotSent { .. }
+        | ReceiptOutcome::ExpectedScopeMismatch
+        | ReceiptOutcome::DeadlineExpired
+        | ReceiptOutcome::NotHandedOff => Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "Provider request was not sent",
         )),
-        _ => Err(ApiError::new(
+        ReceiptOutcome::Unknown { .. } => Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "Provider request outcome is unknown",
         )),

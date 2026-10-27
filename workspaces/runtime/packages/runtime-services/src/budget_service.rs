@@ -309,9 +309,9 @@ async fn prepare_legacy_gap_coverage(
             for (agent, state) in states {
                 let inventory=studio_runtime_store::analytics_capture::AnalyticsCaptureRepository::usage_inventory(&db,&agent)?;
                 if inventory.truncated {continue;}
-                let gaps=inventory.rows.iter().filter(|row|row.pre_ledger).filter_map(|row|match &row.ledger.studio_usage {studio_runtime_schema::usage::UsageObservation::Gap{response_id,..}=>Some(response_id.clone()),studio_runtime_schema::usage::UsageObservation::Response { .. } | studio_runtime_schema::usage::UsageObservation::Cumulative { .. }=>None}).collect::<std::collections::BTreeSet<_>>();
+                let gaps=inventory.rows.iter().filter(|row|row.pre_ledger).filter_map(|row|match row.ledger.studio_usage() {studio_runtime_schema::usage::UsageObservation::Gap{response_id,..}=>Some(response_id.clone()),studio_runtime_schema::usage::UsageObservation::Response { .. } | studio_runtime_schema::usage::UsageObservation::Cumulative { .. }=>None}).collect::<std::collections::BTreeSet<_>>();
                 if gaps.is_empty() {continue;}
-                let finals=inventory.rows.iter().filter_map(|row|match &row.ledger.studio_usage {studio_runtime_schema::usage::UsageObservation::Response{response_id,evidence,..} if *evidence!=studio_runtime_schema::usage::UsageEvidence::Legacy=>Some(response_id.as_str()),studio_runtime_schema::usage::UsageObservation::Response { .. } | studio_runtime_schema::usage::UsageObservation::Cumulative { .. } | studio_runtime_schema::usage::UsageObservation::Gap { .. }=>None}).collect::<std::collections::BTreeSet<_>>();
+                let finals=inventory.rows.iter().filter_map(|row|match row.ledger.studio_usage() {studio_runtime_schema::usage::UsageObservation::Response{response_id,evidence,..} if *evidence!=studio_runtime_schema::usage::UsageEvidence::Legacy=>Some(response_id.as_str()),studio_runtime_schema::usage::UsageObservation::Response { .. } | studio_runtime_schema::usage::UsageObservation::Cumulative { .. } | studio_runtime_schema::usage::UsageObservation::Gap { .. }=>None}).collect::<std::collections::BTreeSet<_>>();
                 let pending=gaps.iter().filter(|id|!finals.contains(id.as_str())).map(|id|studio_runtime_schema::usage::ledger::response_receipt_key(&agent,id)).collect();
                 proofs.push((agent, state, pending));
             }
@@ -388,9 +388,9 @@ async fn prepare_legacy_counter_ownership(
                 };
                 if params.get("agentId").is_some()
                     && let Ok(row) = UsageLedgerRow::from_analytics(provider, &params)
-                    && let Some(key) = row.receipt_key
+                    && let Some(key) = row.receipt_key()
                 {
-                    keys.push(key);
+                    keys.push(key.to_owned());
                 }
                 for key in keys {
                     if let Some(old) = BudgetRepository::usage(tx, &key)?
@@ -424,13 +424,13 @@ async fn prepare_legacy_counter_ownership(
             if inventory.truncated {continue;}
             let mut owner:Option<UsageLedgerRow>=None;let mut ambiguous=false;
             for row in &inventory.rows {
-                let Parsed::Cumulative{total,last,..}=&row.ledger.studio_usage else {continue};
-                if last.as_ref().unwrap_or(total).total()!=Some(old.tokens) || row.ledger.receipt_key.as_deref()!=Some(old.id.as_str()) && !(row.pre_ledger && row.legacy_keys.contains(&old.id)) {continue;}
-                if owner.as_ref().is_some_and(|previous|previous.usage_identity!=row.ledger.usage_identity) {ambiguous=true;break;}
+                let Parsed::Cumulative{total,last,..}=row.ledger.studio_usage() else {continue};
+                if last.as_ref().unwrap_or(total).total()!=Some(old.tokens) || row.ledger.receipt_key()!=Some(old.id.as_str()) && !(row.pre_ledger && row.legacy_keys.contains(&old.id)) {continue;}
+                if owner.as_ref().is_some_and(|previous|previous.usage_identity()!=row.ledger.usage_identity()) {ambiguous=true;break;}
                 owner=Some(row.ledger.clone());
             }
             if !ambiguous && let Some(mut ledger)=owner {
-                ledger.receipt_key=Some(old.id.clone());proven.push((old,studio_runtime_store::budget::BudgetUsageDetails{ledger,before_cutoff:true}));
+                ledger.set_receipt_key(Some(old.id.clone()));proven.push((old,studio_runtime_store::budget::BudgetUsageDetails{ledger,before_cutoff:true}));
             }
         }
         Ok::<_,BudgetError>(proven)
@@ -525,7 +525,7 @@ pub async fn prepare_legacy_corrections(
                 );
                 let Some(old) = BudgetRepository::usage(
                     tx,
-                    incoming.receipt_key.as_deref().ok_or_else(|| {
+                    incoming.receipt_key().ok_or_else(|| {
                         studio_runtime_store::StoreError::SchemaMismatch(
                             "response receipt is missing".into(),
                         )
@@ -567,13 +567,13 @@ pub async fn prepare_legacy_corrections(
             for (old, thread, response, cutoff) in candidates {
                 let provenance=studio_runtime_store::analytics_capture::AnalyticsCaptureRepository::usage_provenance(&db,&old.agent,thread.as_deref(),&response)?;
                 let Some((mut ledger,estimated)) = provenance else { continue };
-                let consistent=match &ledger.studio_usage {
+                let consistent=match ledger.studio_usage() {
                     ParsedUsage::Response { tokens,.. } => old.kind=="response" && tokens.total()==Some(old.tokens) && old.breakdown.as_ref().is_none_or(|previous|previous==tokens),
                     ParsedUsage::Gap {..} => old.kind=="notice" && old.tokens==0 && old.breakdown.is_none(),
                     ParsedUsage::Cumulative { .. }=>false,
                 };
-                if !consistent || ledger.usage_identity != studio_runtime_schema::usage::ledger::UsageIdentity::new(&old.agent, thread.as_deref(), &ledger.studio_usage) { continue; }
-                ledger.receipt_key = Some(old.id.clone());
+                if !consistent || ledger.usage_identity() != &studio_runtime_schema::usage::ledger::UsageIdentity::new(&old.agent, thread.as_deref(), ledger.studio_usage()) { continue; }
+                ledger.set_receipt_key(Some(old.id.clone()));
                 let before_cutoff = estimated || old.at <= cutoff;
                 proven.push((old, studio_runtime_store::budget::BudgetUsageDetails { ledger, before_cutoff }));
             }

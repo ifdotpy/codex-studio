@@ -47,7 +47,6 @@ describe("response stop identity", () => {
       turnId: "turn-current",
     } satisfies NonNullable<Parameters<typeof responseStopIdentity>[0]>;
     expect(responseStopIdentity(target)).toEqual({ responseTarget: target });
-    expect(responseStopIdentity(null)).toEqual({});
   });
 });
 

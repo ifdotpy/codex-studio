@@ -286,7 +286,7 @@ impl AnalyticsCaptureRepository {
                     let legacy_keys =
                         studio_runtime_schema::usage::ledger::legacy_analytics_receipt_keys(
                             &value,
-                            &ledger.studio_usage,
+                            ledger.studio_usage(),
                         );
                     result.rows.push(UsageInventoryRow {
                         ledger,
@@ -830,7 +830,7 @@ mod cost_hint_tests {
             for (provider, expected) in [(json!("codex"), UsageScope::CodexThread), (json!("claude"), UsageScope::ClaudeQuery)] {
                 AnalyticsCaptureRepository::write(tx, CaptureTable::Agents, &json!({"id":"agent","provider":provider}))?;
                 let inventory = AnalyticsCaptureRepository::usage_inventory(tx, "agent")?;
-                assert!(matches!(&inventory.rows[0].ledger.studio_usage, UsageObservation::Cumulative { scope, .. } if *scope == expected));
+                assert!(matches!(&inventory.rows[0].ledger.studio_usage(), UsageObservation::Cumulative { scope, .. } if *scope == expected));
             }
             AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &json!({"id":"legacy-response","agentId":"agent","rootId":"agent","threadId":"thread","at":1,"responseId":"response","last":{"inputTokens":12,"cachedInputTokens":3,"cacheWriteInputTokens":2,"outputTokens":7},"total":{}}))?;
             for provider in [json!("future"), json!(""), Value::Null] {

@@ -349,6 +349,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::{Arc, Mutex};
     use studio_runtime_providers::{Method, RequestId, RequestTicket};
+    use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use studio_runtime_services::account_session_runtime::{
         AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest,
         ProviderResponse, RequestCertainty, SessionReceipt,
@@ -406,12 +407,24 @@ mod tests {
                     )
                 };
                 Ok(SessionReceipt {
+                    outcome: {
+                        match (certainty, result) {
+                            (RequestCertainty::Written, Some(response)) => {
+                                ReceiptOutcome::Written {
+                                    ticket: ticket.expect("written fixture ticket"),
+                                    response,
+                                }
+                            }
+                            (RequestCertainty::Written, None) | (RequestCertainty::Unknown, _) => {
+                                ReceiptOutcome::Unknown {
+                                    ticket: ticket.expect("unknown fixture ticket"),
+                                }
+                            }
+                            (RequestCertainty::NotSent, _) => ReceiptOutcome::NoLiveAccountWorker,
+                        }
+                    },
                     scope: self.scope.clone(),
                     operation: request.operation,
-                    ticket,
-                    certainty,
-                    result,
-                    not_sent_reason: None,
                     replayed: false,
                 })
             })

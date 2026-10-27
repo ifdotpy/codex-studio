@@ -268,6 +268,7 @@ test("pnpm Node test selection uses the native test-name filter", () => {
           "Cargo zero-match summaries",
           "workspaces/tooling/apps/repository-checks/tests/compiler-policy.test.ts",
           "workspaces/tooling/apps/repository-checks/tests/rust-lint-policy.test.ts",
+          "workspaces/tooling/apps/repository-checks/tests/session-receipt-contract.test.ts",
           "workspaces/tooling/apps/repository-checks/tests/gates.test.ts",
           "workspaces/tooling/apps/repository-checks/tests/facade.test.ts",
           "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.ts",

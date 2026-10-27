@@ -210,19 +210,20 @@ fn validate_usage(value: &Value) -> StoreResult<()> {
     if let Some(details) = &row.details {
         use studio_runtime_schema::usage::{UsageObservation, ledger::UsageIdentity};
         let ledger = &details.ledger;
-        let thread = match &ledger.usage_identity {
-            UsageIdentity::Cumulative { thread_id, .. } => thread_id.as_deref(),
-            UsageIdentity::Response { .. } => None,
+        let agent = match ledger.usage_identity() {
+            UsageIdentity::Cumulative { agent, .. } | UsageIdentity::Response { agent, .. } => {
+                agent
+            }
         };
-        let (kind, total) = match &ledger.studio_usage {
+        let (kind, total) = match ledger.studio_usage() {
             UsageObservation::Response { tokens, .. } => ("response", tokens.total()),
             UsageObservation::Gap { .. } => ("notice", Some(0)),
             UsageObservation::Cumulative { total, last, .. } => {
                 ("notice", last.as_ref().unwrap_or(total).total())
             }
         };
-        if ledger.receipt_key.as_deref() != Some(row.id.as_str())
-            || ledger.usage_identity != UsageIdentity::new(&row.agent, thread, &ledger.studio_usage)
+        if ledger.receipt_key() != Some(row.id.as_str())
+            || agent != &row.agent
             || row.kind != kind
             || total != Some(row.tokens)
         {
@@ -230,7 +231,7 @@ fn validate_usage(value: &Value) -> StoreResult<()> {
                 "invalid runtime_budget_usage/details identity or tokens".into(),
             ));
         }
-        if let UsageObservation::Response { tokens, .. } = &ledger.studio_usage
+        if let UsageObservation::Response { tokens, .. } = ledger.studio_usage()
             && row
                 .breakdown
                 .as_ref()

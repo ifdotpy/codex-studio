@@ -39,7 +39,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let document: serde_json::Value = serde_json::from_slice(&fs::read(&spec_path)?)?;
     let mut analyzer = SchemaAnalyzer::new(document)?;
     let mut analysis = analyzer.analyze()?;
+    // The OpenAPI leaves own integer bounds. Preserve JSON number spellings
+    // such as 7.0; the pull-output ingress validates them before typed decoding.
     for (name, owner) in [
+        ("VaultPullSequence", "serde_json::Number"),
+        ("VaultPullFiles", "serde_json::Number"),
+        ("VaultPullBytes", "serde_json::Number"),
         (
             "ProviderModel",
             "studio_runtime_schema::model_catalog::ProviderModel",

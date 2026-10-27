@@ -8,10 +8,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 use studio_runtime_providers::{RequestId, RequestTicket};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{
     account_session_runtime::{
-        AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse, RequestCertainty,
-        SessionReceipt,
+        AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse, SessionReceipt,
     },
     lifecycle_effects::ProductionLifecyclePorts as ProductionLifecycleAdapter,
 };
@@ -1212,16 +1212,15 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
                 Ok(SessionReceipt {
                     scope: self.scope.clone(),
                     operation: request.operation.clone(),
-                    ticket: Some(RequestTicket {
-                        generation: self.scope.generation,
-                        id: RequestId::String(request.operation),
-                        method: request.method,
-                    }),
-                    certainty: RequestCertainty::Written,
-                    result: Some(ProviderResponse::Reply(json!({"ok":true}))),
-                    not_sent_reason: None,
-
                     replayed: false,
+                    outcome: ReceiptOutcome::Written {
+                        ticket: RequestTicket {
+                            generation: self.scope.generation,
+                            id: RequestId::String(request.operation),
+                            method: request.method,
+                        },
+                        response: ProviderResponse::Reply(json!({"ok":true})),
+                    },
                 })
             })
         }
@@ -1987,12 +1986,20 @@ async fn production_unknown_interrupt_is_never_resent_on_repeated_stop() {
                     .expect("broker calls")
                     .push(request.clone());
                 Ok(SessionReceipt {
+                    outcome: ReceiptOutcome::Unknown {
+                        ticket: studio_runtime_providers::RequestTicket {
+                            generation: request
+                                .expected_scope
+                                .as_ref()
+                                .map_or(1, |scope| scope.generation),
+                            id: studio_runtime_providers::RequestId::String(
+                                request.operation.clone(),
+                            ),
+                            method: request.method,
+                        },
+                    },
                     scope: self.scope.clone(),
                     operation: request.operation,
-                    ticket: None,
-                    certainty: RequestCertainty::Unknown,
-                    result: None,
-                    not_sent_reason: None,
                     replayed: false,
                 })
             })

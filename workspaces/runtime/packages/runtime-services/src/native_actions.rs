@@ -1,8 +1,9 @@
 //! Native maintenance intents. Admission, hand-off and settlement each commit
 //! separately; a committed hand-off is never automatically resent after restart.
+use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use crate::account_session_runtime::{
-    AccountSessionError, AccountSessionPort, NotSentReason, ProviderRequest, ProviderResponse,
-    RequestCertainty, SessionReceipt,
+    AccountSessionError, AccountSessionPort, ProviderRequest, ProviderResponse, RequestCertainty,
+    SessionReceipt,
 };
 use crate::account_worker::retained::RequestActor;
 use crate::workspace_operations::ProviderTicket;
@@ -528,44 +529,17 @@ fn validate_provider_receipt(expected: &NativeRequest, receipt: &SessionReceipt)
         return Err(NativeError::Changed);
     }
     let method = Method::from_wire(&expected.method).ok_or(NativeError::Invalid("method"))?;
-    match receipt.certainty {
-        RequestCertainty::NotSent => {
-            if receipt.result.is_some() || receipt.not_sent_reason.is_none() {
-                return Err(NativeError::Changed);
-            }
-            if receipt.not_sent_reason == Some(NotSentReason::WorkerNotSent)
-                && receipt.ticket.is_none()
-            {
-                return Err(NativeError::Changed);
-            }
-            if let Some(provider_ticket) = receipt.ticket.as_ref() {
-                let expected_id = format!(
-                    "retained:{}:{}",
-                    ticket.account,
-                    studio_runtime_store::sha256_hex(ticket.operation.as_bytes())
-                );
-                if provider_ticket.generation != ticket.generation
-                    || provider_ticket.method != method
-                    || provider_ticket.id != RequestId::String(expected_id)
-                {
-                    return Err(NativeError::Changed);
-                }
-            }
-        }
-        RequestCertainty::Written | RequestCertainty::Unknown => {
-            let provider_ticket = receipt.ticket.as_ref().ok_or(NativeError::Changed)?;
-            let expected_id = format!(
-                "retained:{}:{}",
-                ticket.account,
-                studio_runtime_store::sha256_hex(ticket.operation.as_bytes())
-            );
-            if provider_ticket.generation != ticket.generation
-                || provider_ticket.method != method
-                || provider_ticket.id != RequestId::String(expected_id)
-                || (receipt.certainty == RequestCertainty::Written) != receipt.result.is_some()
-            {
-                return Err(NativeError::Changed);
-            }
+    if let Some(provider_ticket) = receipt.ticket() {
+        let expected_id = format!(
+            "retained:{}:{}",
+            ticket.account,
+            studio_runtime_store::sha256_hex(ticket.operation.as_bytes())
+        );
+        if provider_ticket.generation != ticket.generation
+            || provider_ticket.method != method
+            || provider_ticket.id != RequestId::String(expected_id)
+        {
+            return Err(NativeError::Changed);
         }
     }
     Ok(())
@@ -691,13 +665,9 @@ pub async fn execute_provider_prepared(
                 deadline: Instant::now() + NATIVE_ACTION_TIMEOUT,
             })
             .await;
-        let retryable = matches!(
-            &provider,
-            Ok(SessionReceipt {
-                certainty: RequestCertainty::NotSent,
-                ..
-            })
-        );
+        let retryable = provider
+            .as_ref()
+            .is_ok_and(|receipt| receipt.certainty() == RequestCertainty::NotSent);
         let id = request.request_id.clone();
         let settle_effects = Arc::clone(&effects);
         let settled = store
@@ -761,11 +731,9 @@ pub fn fail_pending(tx: &Transaction<'_>, id: &str, error: &str) -> Result<()> {
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod native_action_retry_tests {
-    use super::{NativeRequest, RequestCertainty, SessionReceipt, validate_provider_receipt};
-    use crate::{
-        account_session_runtime::{ConnectionScope, NotSentReason},
-        workspace_operations::ProviderTicket,
-    };
+    use super::{NativeRequest, SessionReceipt, validate_provider_receipt};
+    use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
+    use crate::{account_session_runtime::ConnectionScope, workspace_operations::ProviderTicket};
     use serde_json::json;
     use studio_runtime_providers::{Method, RequestId, RequestTicket};
 
@@ -785,7 +753,7 @@ mod native_action_retry_tests {
         );
     }
 
-    fn worker_not_sent_receipt(ticket: Option<RequestTicket>) -> SessionReceipt {
+    fn worker_not_sent_receipt(ticket: RequestTicket) -> SessionReceipt {
         SessionReceipt {
             scope: ConnectionScope {
                 account: "default".into(),
@@ -793,10 +761,7 @@ mod native_action_retry_tests {
                 generation: 4,
             },
             operation: "attempt".into(),
-            ticket,
-            certainty: RequestCertainty::NotSent,
-            result: None,
-            not_sent_reason: Some(NotSentReason::WorkerNotSent),
+            outcome: ReceiptOutcome::WorkerNotSent { ticket },
             replayed: false,
         }
     }
@@ -826,20 +791,15 @@ mod native_action_retry_tests {
             method: Method::from_wire("thread/compact/start").expect("known method"),
         };
         assert!(
-            validate_provider_receipt(&request, &worker_not_sent_receipt(Some(matching_ticket)))
-                .is_ok()
+            validate_provider_receipt(&request, &worker_not_sent_receipt(matching_ticket)).is_ok()
         );
-        assert!(matches!(
-            validate_provider_receipt(&request, &worker_not_sent_receipt(None)),
-            Err(super::NativeError::Changed)
-        ));
         let foreign_ticket = RequestTicket {
             id: RequestId::String("foreign-ticket".into()),
             generation: 4,
             method: Method::from_wire("thread/compact/start").expect("known method"),
         };
         assert!(matches!(
-            validate_provider_receipt(&request, &worker_not_sent_receipt(Some(foreign_ticket))),
+            validate_provider_receipt(&request, &worker_not_sent_receipt(foreign_ticket)),
             Err(super::NativeError::Changed)
         ));
     }
@@ -864,15 +824,21 @@ pub fn settle_provider(
                 params: Value::Null,
             };
             validate_provider_receipt(&expected, receipt)?;
-            match (&receipt.certainty, &receipt.result) {
-                (RequestCertainty::Written, Some(ProviderResponse::Reply(value))) => {
-                    Delivery::Written(value.clone())
-                }
-                (RequestCertainty::Written, Some(ProviderResponse::Rejected(value))) => {
-                    Delivery::Rejected(value.clone())
-                }
-                (RequestCertainty::NotSent, None) => Delivery::NotSent,
-                _ => Delivery::Unknown,
+            match &receipt.outcome {
+                ReceiptOutcome::Written {
+                    response: ProviderResponse::Reply(value),
+                    ..
+                } => Delivery::Written(value.clone()),
+                ReceiptOutcome::Written {
+                    response: ProviderResponse::Rejected(value),
+                    ..
+                } => Delivery::Rejected(value.clone()),
+                ReceiptOutcome::WorkerNotSent { .. }
+                | ReceiptOutcome::NoLiveAccountWorker
+                | ReceiptOutcome::ExpectedScopeMismatch
+                | ReceiptOutcome::DeadlineExpired
+                | ReceiptOutcome::NotHandedOff => Delivery::NotSent,
+                ReceiptOutcome::Unknown { .. } => Delivery::Unknown,
             }
         }
         Err(_) => Delivery::Unknown,
@@ -985,11 +951,21 @@ pub async fn update_action_settings(
         let status = match &provider {
             Ok(receipt) => {
                 validate_provider_receipt(&expected, receipt)?;
-                match (&receipt.certainty, &receipt.result) {
-                    (RequestCertainty::Written, Some(ProviderResponse::Reply(_))) => "acknowledged",
-                    (RequestCertainty::Written, Some(ProviderResponse::Rejected(_))) => "rejected",
-                    (RequestCertainty::NotSent, None) => "not_sent",
-                    _ => "unknown",
+                match &receipt.outcome {
+                    ReceiptOutcome::Written {
+                        response: ProviderResponse::Reply(_),
+                        ..
+                    } => "acknowledged",
+                    ReceiptOutcome::Written {
+                        response: ProviderResponse::Rejected(_),
+                        ..
+                    } => "rejected",
+                    ReceiptOutcome::WorkerNotSent { .. }
+                    | ReceiptOutcome::NoLiveAccountWorker
+                    | ReceiptOutcome::ExpectedScopeMismatch
+                    | ReceiptOutcome::DeadlineExpired
+                    | ReceiptOutcome::NotHandedOff => "not_sent",
+                    ReceiptOutcome::Unknown { .. } => "unknown",
                 }
             }
             Err(_) => "unknown",

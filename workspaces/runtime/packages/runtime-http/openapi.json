@@ -28060,6 +28060,22 @@
         "title": "FileInfo",
         "type": "object"
       },
+      "FoundProcessReceipt": {
+        "properties": {
+          "found": {
+            "const": true,
+            "type": "boolean"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ProcessActionResult"
+          }
+        },
+        "required": [
+          "found",
+          "result"
+        ],
+        "type": "object"
+      },
       "HistoricalInputProofRecordResponse": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -30559,6 +30575,22 @@
           "supervisor"
         ],
         "type": "string"
+      },
+      "MissingProcessReceipt": {
+        "properties": {
+          "found": {
+            "const": false,
+            "type": "boolean"
+          },
+          "result": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "found",
+          "result"
+        ],
+        "type": "object"
       },
       "MissingToolRequestResponse": {
         "additionalProperties": {
@@ -36330,66 +36362,46 @@
         "type": "object"
       },
       "ProcessActionResult": {
-        "additionalProperties": false,
         "properties": {
-          "error": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
           "processes": {
             "default": [],
             "items": {
-              "additionalProperties": {
-                "$ref": "#/components/schemas/JsonValue"
-              },
-              "type": "object"
+              "$ref": "#/components/schemas/ProcessEntry"
             },
-            "title": "Processes",
             "type": "array"
           },
           "requestId": {
-            "title": "Requestid",
+            "maxLength": 200,
+            "minLength": 1,
             "type": "string"
           },
           "response": {
             "anyOf": [
               {
-                "additionalProperties": {
-                  "$ref": "#/components/schemas/JsonValue"
-                },
-                "type": "object"
+                "$ref": "#/components/schemas/ResponseEntry"
               },
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Response"
+            ]
           },
           "status": {
-            "enum": [
-              "completed",
-              "partial",
-              "uncertain"
-            ],
-            "title": "Status",
-            "type": "string"
+            "$ref": "#/components/schemas/ProcessActionStatus"
           }
         },
         "required": [
           "requestId",
           "status"
         ],
-        "title": "ProcessActionResult",
         "type": "object"
+      },
+      "ProcessActionStatus": {
+        "enum": [
+          "completed",
+          "partial",
+          "uncertain"
+        ],
+        "type": "string"
       },
       "ProcessCapabilities": {
         "additionalProperties": false,
@@ -36421,102 +36433,370 @@
         "type": "object"
       },
       "ProcessControlRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "accountKey": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Accountkey",
-            "type": "string"
-          },
-          "action": {
-            "enum": [
-              "stop_selected",
-              "stop_owned",
-              "stop_response",
-              "background_command"
-            ],
-            "title": "Action",
-            "type": "string"
-          },
-          "agent": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Agent",
-            "type": "string"
-          },
-          "epoch": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Epoch",
-            "type": "integer"
-          },
-          "includeDescendants": {
-            "default": false,
-            "title": "Includedescendants",
-            "type": "boolean"
-          },
-          "itemId": {
-            "anyOf": [
-              {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "accountKey": {
                 "maxLength": 200,
                 "minLength": 1,
                 "type": "string"
               },
-              {
+              "action": {
+                "const": "stop_selected",
+                "type": "string"
+              },
+              "agent": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "epoch": {
+                "format": "uint64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "includeDescendants": {
+                "default": false,
+                "type": "boolean"
+              },
+              "itemId": {
                 "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Running command item that moves to the background",
-            "title": "Itemid"
-          },
-          "process": {
-            "anyOf": [
-              {
+              },
+              "process": {
                 "$ref": "#/components/schemas/ProcessIdentity"
               },
-              {
+              "processes": {
+                "const": [],
+                "default": [],
+                "maxItems": 0,
+                "type": "array"
+              },
+              "requestId": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "responseTarget": {
                 "type": "null"
               }
-            ],
-            "default": null
-          },
-          "processes": {
-            "default": [],
-            "items": {
-              "$ref": "#/components/schemas/ProcessIdentity"
             },
-            "maxItems": 500,
-            "title": "Processes",
-            "type": "array"
+            "required": [
+              "action",
+              "requestId",
+              "agent",
+              "accountKey",
+              "epoch",
+              "process"
+            ],
+            "type": "object"
           },
-          "requestId": {
+          {
+            "additionalProperties": false,
+            "properties": {
+              "accountKey": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "action": {
+                "const": "stop_owned",
+                "type": "string"
+              },
+              "agent": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "epoch": {
+                "format": "uint64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "includeDescendants": {
+                "default": false,
+                "type": "boolean"
+              },
+              "itemId": {
+                "type": "null"
+              },
+              "process": {
+                "type": "null"
+              },
+              "processes": {
+                "items": {
+                  "$ref": "#/components/schemas/ProcessIdentity"
+                },
+                "maxItems": 500,
+                "minItems": 1,
+                "type": "array"
+              },
+              "requestId": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "responseTarget": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "action",
+              "requestId",
+              "agent",
+              "accountKey",
+              "epoch",
+              "processes"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "accountKey": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "action": {
+                "const": "stop_response",
+                "type": "string"
+              },
+              "agent": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "epoch": {
+                "format": "uint64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "includeDescendants": {
+                "const": false,
+                "default": false,
+                "type": "boolean"
+              },
+              "itemId": {
+                "type": "null"
+              },
+              "process": {
+                "type": "null"
+              },
+              "processes": {
+                "const": [],
+                "default": [],
+                "maxItems": 0,
+                "type": "array"
+              },
+              "requestId": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "responseTarget": {
+                "$ref": "#/components/schemas/ProcessResponseTarget"
+              }
+            },
+            "required": [
+              "action",
+              "requestId",
+              "agent",
+              "accountKey",
+              "epoch",
+              "responseTarget"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "accountKey": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "action": {
+                "const": "background_command",
+                "type": "string"
+              },
+              "agent": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "epoch": {
+                "format": "uint64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "includeDescendants": {
+                "const": false,
+                "default": false,
+                "type": "boolean"
+              },
+              "itemId": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "process": {
+                "type": "null"
+              },
+              "processes": {
+                "const": [],
+                "default": [],
+                "maxItems": 0,
+                "type": "array"
+              },
+              "requestId": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "responseTarget": {
+                "$ref": "#/components/schemas/ProcessResponseTarget"
+              }
+            },
+            "required": [
+              "action",
+              "requestId",
+              "agent",
+              "accountKey",
+              "epoch",
+              "responseTarget",
+              "itemId"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ProcessEntry": {
+        "oneOf": [
+          {
+            "properties": {
+              "status": {
+                "const": "pending",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "stopped",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "already_finished",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "requested",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "type": "string"
+              },
+              "status": {
+                "const": "stale",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "error"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "type": "string"
+              },
+              "status": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "error"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": true,
+              "status": {
+                "const": "uncertain",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "agent": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Requestid",
             "type": "string"
           },
-          "responseTarget": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ProcessResponseTarget"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
+          "generation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
-          "action",
-          "requestId",
-          "agent",
-          "accountKey",
-          "epoch"
+          "key",
+          "agent"
         ],
-        "title": "ProcessControlRequest",
         "type": "object"
       },
       "ProcessIdentity": {
@@ -36525,31 +36805,27 @@
           "accountKey": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Accountkey",
             "type": "string"
           },
           "agent": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Agent",
             "type": "string"
           },
           "epoch": {
+            "format": "uint64",
             "maximum": 9007199254740991,
             "minimum": 0,
-            "title": "Epoch",
             "type": "integer"
           },
           "generation": {
             "maxLength": 256,
             "minLength": 1,
-            "title": "Generation",
             "type": "string"
           },
           "key": {
             "maxLength": 2048,
             "minLength": 1,
-            "title": "Key",
             "type": "string"
           }
         },
@@ -36560,7 +36836,6 @@
           "accountKey",
           "epoch"
         ],
-        "title": "ProcessIdentity",
         "type": "object"
       },
       "ProcessKind": {
@@ -36636,29 +36911,14 @@
         "type": "object"
       },
       "ProcessReceipt": {
-        "additionalProperties": false,
-        "properties": {
-          "found": {
-            "title": "Found",
-            "type": "boolean"
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/FoundProcessReceipt"
           },
-          "result": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ProcessActionResult"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
+          {
+            "$ref": "#/components/schemas/MissingProcessReceipt"
           }
-        },
-        "required": [
-          "found"
-        ],
-        "title": "ProcessReceipt",
-        "type": "object"
+        ]
       },
       "ProcessRecord": {
         "additionalProperties": false,
@@ -36703,37 +36963,32 @@
           "accountKey": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Accountkey",
             "type": "string"
           },
           "agent": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Agent",
             "type": "string"
           },
           "connectionId": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Connectionid",
             "type": "string"
           },
           "epoch": {
+            "format": "uint64",
             "maximum": 9007199254740991,
             "minimum": 0,
-            "title": "Epoch",
             "type": "integer"
           },
           "threadId": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Threadid",
             "type": "string"
           },
           "turnId": {
             "maxLength": 200,
             "minLength": 1,
-            "title": "Turnid",
             "type": "string"
           }
         },
@@ -36745,7 +37000,6 @@
           "threadId",
           "turnId"
         ],
-        "title": "ProcessResponseTarget",
         "type": "object"
       },
       "ProcessTree": {
@@ -39516,6 +39770,31 @@
         "title": "PullResult",
         "type": "object"
       },
+      "QuestionAnswerStrings": {
+        "properties": {
+          "answers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "answers"
+        ],
+        "type": "object"
+      },
+      "QuestionApproval": {
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/QuestionDecision"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      },
       "QuestionBody": {
         "additionalProperties": false,
         "properties": {
@@ -39542,6 +39821,115 @@
         "title": "QuestionBody",
         "type": "object"
       },
+      "QuestionCardAnswer": {
+        "description": "The method selects the required answer fields. The renderer sends only data;\nthe stored request method remains the server's authority.",
+        "oneOf": [
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/QuestionApproval"
+              },
+              "method": {
+                "const": "item/commandExecution/requestApproval",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/QuestionApproval"
+              },
+              "method": {
+                "const": "item/fileChange/requestApproval",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/QuestionApproval"
+              },
+              "method": {
+                "const": "item/permissions/requestApproval",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/QuestionSelections"
+              },
+              "method": {
+                "const": "item/tool/requestUserInput",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/QuestionSelections"
+              },
+              "method": {
+                "const": "agent/asyncQuestion",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/QuestionElicitation"
+              },
+              "method": {
+                "const": "mcpServer/elicitation/request",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "data"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "QuestionDecision": {
+        "enum": [
+          "accept",
+          "decline",
+          "cancel"
+        ],
+        "type": "string"
+      },
       "QuestionDeferBody": {
         "additionalProperties": false,
         "properties": {
@@ -39559,6 +39947,24 @@
           "deferred"
         ],
         "title": "QuestionDeferBody",
+        "type": "object"
+      },
+      "QuestionElicitation": {
+        "properties": {
+          "content": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/QuestionDecision"
+          }
+        },
+        "required": [
+          "decision",
+          "content"
+        ],
         "type": "object"
       },
       "QuestionEntry": {
@@ -39681,6 +40087,20 @@
           "label"
         ],
         "title": "QuestionOption",
+        "type": "object"
+      },
+      "QuestionSelections": {
+        "properties": {
+          "answers": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/QuestionAnswerStrings"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "answers"
+        ],
         "type": "object"
       },
       "QueueCancelBody": {
@@ -40150,32 +40570,40 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "limitId": {
             "anyOf": [
               {
-                "type": "null"
+                "type": "string"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Limitid"
           },
           "limitName": {
             "anyOf": [
               {
-                "type": "null"
+                "type": "string"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Limitname"
+          },
+          "planType": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plantype"
           },
           "primary": {
             "anyOf": [
@@ -40185,19 +40613,17 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "rateLimitReachedType": {
             "anyOf": [
               {
-                "type": "null"
+                "type": "string"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Ratelimitreachedtype"
           },
           "secondary": {
@@ -40208,8 +40634,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "spendControlReached": {
             "anyOf": [
@@ -40220,7 +40645,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Spendcontrolreached"
           }
         },
@@ -40228,78 +40652,7 @@
         "type": "object"
       },
       "RateLimitBucketDto": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "description": "Known rate-limit fields plus fields owned by the active provider.",
-        "properties": {
-          "limitId": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Limitid"
-          },
-          "limitName": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Limitname"
-          },
-          "planType": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Plantype"
-          },
-          "primary": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RateLimitWindowDto"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "rateLimitReachedType": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Ratelimitreachedtype"
-          },
-          "secondary": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RateLimitWindowDto"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "title": "RateLimitBucketDto",
-        "type": "object"
+        "$ref": "#/components/schemas/RateLimitBucket"
       },
       "RateLimitIndividualLimit": {
         "additionalProperties": false,
@@ -40312,13 +40665,12 @@
                 "type": "integer"
               },
               {
-                "type": "null"
+                "type": "number"
               },
               {
-                "type": "number"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Remainingpercent"
           }
         },
@@ -40339,13 +40691,12 @@
                 "type": "integer"
               },
               {
-                "type": "null"
+                "type": "number"
               },
               {
-                "type": "number"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Expiresat"
           },
           "grantedAt": {
@@ -40356,13 +40707,12 @@
                 "type": "integer"
               },
               {
-                "type": "null"
+                "type": "number"
               },
               {
-                "type": "number"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Grantedat"
           },
           "id": {
@@ -40403,11 +40753,9 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Availablecount"
           },
           "credits": {
-            "default": [],
             "items": {
               "$ref": "#/components/schemas/RateLimitResetCredit"
             },
@@ -40419,7 +40767,9 @@
         "type": "object"
       },
       "RateLimitWindow": {
-        "additionalProperties": false,
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
         "properties": {
           "resetsAt": {
             "anyOf": [
@@ -40429,13 +40779,12 @@
                 "type": "integer"
               },
               {
-                "type": "null"
+                "type": "number"
               },
               {
-                "type": "number"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Resetsat"
           },
           "usedPercent": {
@@ -40446,13 +40795,12 @@
                 "type": "integer"
               },
               {
-                "type": "null"
+                "type": "number"
               },
               {
-                "type": "number"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Usedpercent"
           },
           "windowDurationMins": {
@@ -40463,13 +40811,12 @@
                 "type": "integer"
               },
               {
-                "type": "null"
+                "type": "number"
               },
               {
-                "type": "number"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Windowdurationmins"
           }
         },
@@ -40477,135 +40824,10 @@
         "type": "object"
       },
       "RateLimitWindowDto": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "description": "Known usage window fields plus provider-specific window metadata.",
-        "properties": {
-          "resetsAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Resetsat"
-          },
-          "usedPercent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Usedpercent"
-          },
-          "windowDurationMins": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Windowdurationmins"
-          }
-        },
-        "title": "RateLimitWindowDto",
-        "type": "object"
+        "$ref": "#/components/schemas/RateLimitWindow"
       },
       "RateLimitsDataDto": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "description": "Known renderer-facing fields with provider JSON extension payloads.\n\n``codex_records.RateLimitDataRecord`` describes the storage projection, but\nrate-limit snapshots also pass through provider reset-credit data whose\ncomplete provider-owned shape is not fixed by this repository.",
-        "properties": {
-          "accountId": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Accountid"
-          },
-          "ordinaryUsageAllowed": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ordinaryusageallowed"
-          },
-          "rateLimitResetCredits": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/JsonValue"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "rateLimits": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RateLimitBucketDto"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "rateLimitsByLimitId": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "$ref": "#/components/schemas/RateLimitBucketDto"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ratelimitsbylimitid"
-          },
-          "signedIn": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Signedin"
-          },
-          "status": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Status"
-          }
-        },
-        "title": "RateLimitsDataDto",
-        "type": "object"
+        "$ref": "#/components/schemas/UsageLimitsData"
       },
       "ReadStateBody": {
         "additionalProperties": false,
@@ -43120,6 +43342,113 @@
           "removed"
         ],
         "title": "ResourceTokenRatesEvent",
+        "type": "object"
+      },
+      "ResponseEntry": {
+        "oneOf": [
+          {
+            "properties": {
+              "status": {
+                "const": "requested",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "backgrounded",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "not_running",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "type": "string"
+              },
+              "status": {
+                "const": "stale",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "error"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "type": "string"
+              },
+              "status": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "error"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "const": "uncertain",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "agent": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "itemId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent"
+        ],
         "type": "object"
       },
       "RestartEnvironmentKey": {
@@ -58015,13 +58344,12 @@
           "accountId": {
             "anyOf": [
               {
-                "type": "null"
+                "type": "string"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Accountid"
           },
           "ordinaryUsageAllowed": {
@@ -58033,7 +58361,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Ordinaryusageallowed"
           },
           "rateLimitResetCredits": {
@@ -58044,8 +58371,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "rateLimits": {
             "anyOf": [
@@ -58055,8 +58381,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "rateLimitsByLimitId": {
             "anyOf": [
@@ -58070,7 +58395,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Ratelimitsbylimitid"
           },
           "signedIn": {
@@ -58082,31 +58406,28 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Signedin"
           },
           "source": {
             "anyOf": [
               {
-                "type": "null"
+                "type": "string"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Source"
           },
           "status": {
             "anyOf": [
               {
-                "type": "null"
+                "type": "string"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
             "title": "Status"
           }
         },
@@ -59205,6 +59526,122 @@
       "VaultJobProgressEvent": {
         "additionalProperties": false,
         "description": "Transient subscribed progress; never persisted to the server or client entity store.",
+        "oneOf": [
+          {
+            "properties": {
+              "resource": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/VaultJobProgressResource"
+                  },
+                  {
+                    "properties": {
+                      "job": {
+                        "const": "setup",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "job"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/VaultSetupResponse"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "resource",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "resource": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/VaultJobProgressResource"
+                  },
+                  {
+                    "properties": {
+                      "job": {
+                        "const": "login",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "job"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/VaultLoginResponse"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "resource",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "resource": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/VaultJobProgressResource"
+                  },
+                  {
+                    "properties": {
+                      "job": {
+                        "const": "pull",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "job"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/VaultPullResponse"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "resource",
+              "value"
+            ],
+            "type": "object"
+          }
+        ],
         "properties": {
           "epoch": {
             "minLength": 1,
@@ -59227,22 +59664,7 @@
             "title": "Revision",
             "type": "integer"
           },
-          "value": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/VaultSetupResponse"
-              },
-              {
-                "$ref": "#/components/schemas/VaultLoginResponse"
-              },
-              {
-                "$ref": "#/components/schemas/VaultPullResponse"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
+          "value": {},
           "workspaceId": {
             "minLength": 1,
             "title": "Workspaceid",
@@ -59289,6 +59711,19 @@
         "title": "VaultJobProgressResource",
         "type": "object"
       },
+      "VaultLoginDone": {
+        "properties": {
+          "state": {
+            "const": "done",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "VaultLoginDone",
+        "type": "object"
+      },
       "VaultLoginRequest": {
         "additionalProperties": false,
         "description": "Sign in to an AWS profile. A repeated requestId returns the same sign-in.",
@@ -59314,6 +59749,35 @@
       "VaultLoginResponse": {
         "additionalProperties": false,
         "description": "One AWS sign-in: running (page and code once AWS gives them), done or failed.",
+        "oneOf": [
+          {
+            "properties": {
+              "state": {
+                "const": "running",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/VaultLoginDone"
+          },
+          {
+            "properties": {
+              "state": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
         "properties": {
           "code": {
             "anyOf": [
@@ -59372,6 +59836,58 @@
         "title": "VaultLoginResponse",
         "type": "object"
       },
+      "VaultPullBytes": {
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "title": "VaultPullBytes",
+        "type": "integer"
+      },
+      "VaultPullDone": {
+        "allOf": [
+          {
+            "properties": {
+              "state": {
+                "const": "done",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/VaultPullOutcome"
+          }
+        ],
+        "title": "VaultPullDone"
+      },
+      "VaultPullFiles": {
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "title": "VaultPullFiles",
+        "type": "integer"
+      },
+      "VaultPullOutcome": {
+        "properties": {
+          "bytes": {
+            "$ref": "#/components/schemas/VaultPullBytes"
+          },
+          "files": {
+            "$ref": "#/components/schemas/VaultPullFiles"
+          },
+          "seq": {
+            "$ref": "#/components/schemas/VaultPullSequence"
+          }
+        },
+        "required": [
+          "seq",
+          "files",
+          "bytes"
+        ],
+        "title": "VaultPullOutcome",
+        "type": "object"
+      },
       "VaultPullRequest": {
         "additionalProperties": false,
         "description": "Pull the latest vault state into a new folder below `to` (Downloads when left out).\nA repeated requestId returns the same pull.",
@@ -59410,13 +59926,40 @@
       "VaultPullResponse": {
         "additionalProperties": false,
         "description": "One pull of a vault state into a Mac folder: running, done (seq, files, bytes) or\nfailed (error).",
+        "oneOf": [
+          {
+            "properties": {
+              "state": {
+                "const": "running",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/VaultPullDone"
+          },
+          {
+            "properties": {
+              "state": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
         "properties": {
           "bytes": {
             "anyOf": [
               {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
+                "$ref": "#/components/schemas/VaultPullBytes"
               },
               {
                 "type": "null"
@@ -59440,9 +59983,7 @@
           "files": {
             "anyOf": [
               {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
+                "$ref": "#/components/schemas/VaultPullFiles"
               },
               {
                 "type": "null"
@@ -59462,9 +60003,7 @@
           "seq": {
             "anyOf": [
               {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
+                "$ref": "#/components/schemas/VaultPullSequence"
               },
               {
                 "type": "null"
@@ -59490,6 +60029,12 @@
         ],
         "title": "VaultPullResponse",
         "type": "object"
+      },
+      "VaultPullSequence": {
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "title": "VaultPullSequence",
+        "type": "integer"
       },
       "VaultReadinessEvent": {
         "additionalProperties": false,
@@ -59555,6 +60100,23 @@
           "prefix"
         ],
         "title": "VaultReadinessResource",
+        "type": "object"
+      },
+      "VaultSetupDone": {
+        "properties": {
+          "site": {
+            "type": "string"
+          },
+          "state": {
+            "const": "done",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "site"
+        ],
+        "title": "VaultSetupDone",
         "type": "object"
       },
       "VaultSetupFactsRequest": {
@@ -59686,6 +60248,47 @@
       "VaultSetupResponse": {
         "additionalProperties": false,
         "description": "One vault setup: running (progress), done (site), failed (error), or signin when the\nAWS profile needs a sign-in first.",
+        "oneOf": [
+          {
+            "properties": {
+              "state": {
+                "const": "running",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/VaultSetupDone"
+          },
+          {
+            "properties": {
+              "state": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "state": {
+                "const": "signin",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
         "properties": {
           "error": {
             "anyOf": [

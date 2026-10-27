@@ -622,7 +622,9 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     crate::agent_progress::check_schema_parity(openapi)?;
     crate::studio_errors::check_schema_parity(openapi)?;
     crate::queue_command::check_schema_parity(openapi)?;
+    crate::question_answers::check_schema_parity(openapi)?;
     crate::claude_controls::check_schema_parity(openapi)?;
+    crate::process_controls::check_schema_parity(openapi)?;
     crate::records::check_schema_parity(openapi)?;
     crate::task_gate::check_api_contract(openapi)?;
     crate::task_command::check_api_contract(openapi)?;
@@ -1004,11 +1006,59 @@ fn supervisor_handshake_schema() -> Value {
         .to_value()
 }
 
+// Committed storage schemas annotate safe integers; HTTP schemas spell out the
+// same shared bound for validators and generated Rust consumers.
+fn materialize_safe_integers(schema: &mut Value) {
+    match schema {
+        Value::Object(object) => {
+            if object.remove("x-safe-integer") == Some(Value::String("unsigned".into())) {
+                object.insert("minimum".into(), serde_json::json!(0));
+                object.insert(
+                    "maximum".into(),
+                    serde_json::json!(values::MAX_SAFE_INTEGER),
+                );
+            }
+            for child in object.values_mut() {
+                materialize_safe_integers(child);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                materialize_safe_integers(child);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
 /// Render every contract file. `with_api_types` also runs Node for web types.
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
     check_backend_kind_parity(root)?;
     check_provider_sql_parity(root)?;
     let mut openapi = read_json(root, OPENAPI_PATH)?;
+    // The checked limits ingress schema also owns HTTP, SSE and bridge leaves.
+    let mut limits: Value = serde_json::from_str(
+        &include_str!("schemas/workspace-usage-limits.schema.json")
+            .replace("#/$defs/", "#/components/schemas/"),
+    )
+    .map_err(|error| error.to_string())?;
+    materialize_safe_integers(&mut limits);
+    for (name, schema) in limits["$defs"]
+        .as_object()
+        .ok_or("limits definitions must be an object")?
+    {
+        if name != "UsageLimitsResponse" && name != "SyncEntity" && name != "JsonValue" {
+            openapi["components"]["schemas"][name] = schema.clone();
+        }
+    }
+    for (alias, owner) in [
+        ("RateLimitsDataDto", "UsageLimitsData"),
+        ("RateLimitBucketDto", "RateLimitBucket"),
+        ("RateLimitWindowDto", "RateLimitWindow"),
+    ] {
+        openapi["components"]["schemas"][alias] =
+            serde_json::json!({"$ref":format!("#/components/schemas/{owner}")});
+    }
     crate::records::refresh_openapi(&mut openapi)?;
     crate::task_command::apply_api_contract(&mut openapi);
     for (name, schema) in crate::studio_errors::schemas()? {
@@ -1026,6 +1076,14 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         *openapi
             .pointer_mut(&format!("/components/schemas/{name}"))
             .ok_or_else(|| format!("OpenAPI is missing Rust-owned {name}"))? = schema;
+    }
+    for (name, schema) in crate::process_controls::schemas() {
+        openapi["components"]["schemas"][name] = schema;
+    }
+    openapi["components"]["schemas"]["AnswerBody"]["properties"]["decision"] =
+        crate::question_answers::answer_body_decision();
+    for (name, schema) in crate::question_answers::schemas() {
+        openapi["components"]["schemas"][name] = schema;
     }
     for (name, schema) in crate::usage::schemas() {
         openapi["components"]["schemas"][name] = schema;
@@ -1292,6 +1350,9 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         for name in [
             "RateLimitBucketDto",
             "RateLimitWindowDto",
+            "RateLimitBucket",
+            "RateLimitWindow",
+            "RateLimitIndividualLimit",
             "JsonValue",
             "ClaudeSessionSettings",
             "ClaudeCustomModel",
@@ -1417,6 +1478,34 @@ pub fn repository_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_limit_consumers_share_checked_fields_and_open_vendor_windows() {
+        let document = read_json(&repository_root(), OPENAPI_PATH).expect("OpenAPI source");
+        for name in ["UsageLimitsData", "RateLimitsDataDto"] {
+            let schema = serde_json::json!({
+                "$ref":format!("#/components/schemas/{name}"),
+                "components":document["components"]
+            });
+            let validator = jsonschema::validator_for(&schema).expect("limits schema");
+            assert!(
+                !validator.is_valid(&serde_json::json!({
+                    "rateLimits":{"spendControlReached":"false"}
+                })),
+                "{name} must reject malformed consumed spend control"
+            );
+            assert!(
+                !validator.is_valid(&serde_json::json!({
+                    "rateLimitResetCredits":{"credits":[{"id":"credit"}]}
+                })),
+                "{name} must require credit identity, status and reset type"
+            );
+            assert!(validator.is_valid(&serde_json::json!({
+                "vendorData":{"opaque":null},
+                "rateLimits":{"planType":"plus","primary":{"usedPercent":42,"vendorWindow":{"opaque":true}}}
+            })), "{name} must preserve vendor extensions");
+        }
+    }
 
     #[test]
     fn transfer_notices_use_the_provider_identity_contract() {

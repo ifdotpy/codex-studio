@@ -117,11 +117,10 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                 Ok(_) => return Err(VoiceWriteCertainty::Unknown),
                 Err(certainty) => return Err(certainty),
             };
-            match receipt.result {
+            match receipt.response() {
                 Some(ProviderResponse::Reply(value))
-                    if receipt.certainty == RequestCertainty::Written
-                        && value.pointer("/account/type").and_then(Value::as_str)
-                            == Some("chatgpt") =>
+                    if value.pointer("/account/type").and_then(Value::as_str)
+                        == Some("chatgpt") =>
                 {
                     Ok(VoiceConnectionScope {
                         agent_id,
@@ -133,11 +132,7 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                     })
                 }
                 Some(ProviderResponse::Rejected(_)) => Err(VoiceWriteCertainty::Rejected),
-                Some(ProviderResponse::Reply(_))
-                    if receipt.certainty == RequestCertainty::Written =>
-                {
-                    Err(VoiceWriteCertainty::Rejected)
-                }
+                Some(ProviderResponse::Reply(_)) => Err(VoiceWriteCertainty::Rejected),
                 _ => Err(VoiceWriteCertainty::Unknown),
             }
         })
@@ -189,7 +184,7 @@ impl VoiceRequestPort for AccountSessionVoicePort {
             let certainty =
                 validate_receipt(&receipt, &operation_id, method, Some(&expected_scope))
                     .err()
-                    .unwrap_or(match receipt.result {
+                    .unwrap_or(match receipt.response() {
                         Some(ProviderResponse::Reply(_)) => VoiceWriteCertainty::Written,
                         Some(ProviderResponse::Rejected(_)) => VoiceWriteCertainty::Rejected,
                         None => VoiceWriteCertainty::Unknown,
@@ -350,25 +345,16 @@ fn validate_receipt(
     let mismatch = receipt.operation != operation
         || expected_scope.is_some_and(|expected| receipt.scope != *expected)
         || receipt
-            .ticket
-            .as_ref()
+            .ticket()
             .is_some_and(|ticket| !ticket_matches(ticket, method, receipt.scope.generation));
     if mismatch {
-        return Err(match receipt.certainty {
+        return Err(match receipt.certainty() {
             RequestCertainty::NotSent => VoiceWriteCertainty::NotSent,
             RequestCertainty::Written | RequestCertainty::Unknown => VoiceWriteCertainty::Unknown,
         });
     }
-    if receipt.certainty == RequestCertainty::Written
-        && !receipt
-            .ticket
-            .as_ref()
-            .is_some_and(|ticket| ticket_matches(ticket, method, receipt.scope.generation))
-    {
-        return Err(VoiceWriteCertainty::Unknown);
-    }
-    if receipt.certainty != RequestCertainty::Written {
-        return Err(map_certainty(receipt.certainty));
+    if receipt.certainty() != RequestCertainty::Written {
+        return Err(map_certainty(receipt.certainty()));
     }
     Ok(receipt.scope.clone())
 }

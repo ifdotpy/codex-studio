@@ -1,4 +1,5 @@
 //! Project deletion is exercised through its authenticated HTTP caller.
+
 use crate::monitor_runtime_fixtures as fixtures;
 use axum::{
     Extension,
@@ -544,10 +545,11 @@ async fn project_deletion_prunes_sidebar_and_preserves_history() {
 #[tokio::test]
 async fn project_deletion_unknown_interrupt_is_not_repeated() {
     use std::sync::Mutex;
+    use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use studio_runtime_services::{
         account_session_runtime::{
             AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest,
-            RequestCertainty, SessionReceipt,
+            SessionReceipt,
         },
         lifecycle_effects::ProductionLifecyclePorts,
     };
@@ -581,16 +583,24 @@ async fn project_deletion_unknown_interrupt_is_not_repeated() {
                     .expect("calls")
                     .push(request.operation.clone());
                 Ok(SessionReceipt {
+                    outcome: ReceiptOutcome::Unknown {
+                        ticket: studio_runtime_providers::RequestTicket {
+                            generation: request
+                                .expected_scope
+                                .as_ref()
+                                .map_or(1, |scope| scope.generation),
+                            id: studio_runtime_providers::RequestId::String(
+                                request.operation.clone(),
+                            ),
+                            method: request.method,
+                        },
+                    },
                     scope: ConnectionScope {
                         account: "account".into(),
                         connection: "connection".into(),
                         generation: 7,
                     },
                     operation: request.operation,
-                    ticket: None,
-                    certainty: RequestCertainty::Unknown,
-                    result: None,
-                    not_sent_reason: None,
                     replayed: false,
                 })
             })

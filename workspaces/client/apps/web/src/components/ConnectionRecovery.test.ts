@@ -44,16 +44,19 @@ test.each([null, "turn-1"])(
       turnId,
     );
     expect(canCheckConnection(agent)).toBe(true);
-    agent.connectionCheck = {
-      at: 10,
-      epoch: 4,
-      accountKey: "default",
-      threadId: "thread-1",
-      turnId,
-      previousError: LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
-      nativeState: "idle",
-    };
-    expect(matchingConnectionCheck(agent)).toBeTruthy();
+    const checked = {
+      ...agent,
+      connectionCheck: {
+        at: 10,
+        epoch: 4,
+        accountKey: "default",
+        threadId: "thread-1",
+        turnId,
+        previousError: LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+        nativeState: "idle",
+      },
+    } satisfies Agent;
+    expect(matchingConnectionCheck(checked)).toBeTruthy();
   },
 );
 

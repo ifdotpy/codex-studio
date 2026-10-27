@@ -450,8 +450,8 @@ fn exact_response_replay_is_noop_and_conflicting_replay_records_fault() {
         .expect("persisted typed breakdown");
     let tokens: studio_runtime_schema::usage::UsageTokens =
         serde_json::from_str(&raw).expect("shared token owner");
-    assert_eq!(tokens.uncached_input, 20);
-    assert_eq!(tokens.output, 0);
+    assert_eq!(tokens.uncached_input(), 20);
+    assert_eq!(tokens.output(), 0);
     assert_eq!(raw, serde_json::to_string(&tokens).expect("canonical JSON"));
     for (total, input, output) in [(21, 21, 0), (20, 19, 1)] {
         let tx = connection.transaction().expect("conflict transaction");

@@ -252,40 +252,47 @@ export interface components {
       [key: string]: unknown;
     };
     /**
-     * RateLimitBucketDto
-     * @description Known rate-limit fields plus fields owned by the active provider.
+     * RateLimitBucket
+     * @description Known rate-limit fields plus provider-owned fields passed through unchanged.
      */
-    RateLimitBucketDto: {
-      /** Limitid */
-      limitId?: null | string | undefined;
-      /** Limitname */
-      limitName?: null | string | undefined;
-      /** Plantype */
-      planType?: null | string | undefined;
-      primary?: components["schemas"]["RateLimitWindowDto"] | null | undefined;
-      /** Ratelimitreachedtype */
-      rateLimitReachedType?: null | string | undefined;
-      secondary?:
-        | components["schemas"]["RateLimitWindowDto"]
+    RateLimitBucket: {
+      individualLimit?:
+        | components["schemas"]["RateLimitIndividualLimit"]
         | null
         | undefined;
+      /** Limitid */
+      limitId?: string | null | undefined;
+      /** Limitname */
+      limitName?: string | null | undefined;
+      /** Plantype */
+      planType?: string | null | undefined;
+      primary?: components["schemas"]["RateLimitWindow"] | null | undefined;
+      /** Ratelimitreachedtype */
+      rateLimitReachedType?: string | null | undefined;
+      secondary?: components["schemas"]["RateLimitWindow"] | null | undefined;
+      /** Spendcontrolreached */
+      spendControlReached?: boolean | null | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
-    /**
-     * RateLimitWindowDto
-     * @description Known usage window fields plus provider-specific window metadata.
-     */
-    RateLimitWindowDto: {
+    RateLimitBucketDto: components["schemas"]["RateLimitBucket"];
+    /** RateLimitIndividualLimit */
+    RateLimitIndividualLimit: {
+      /** Remainingpercent */
+      remainingPercent?: number | null | undefined;
+    };
+    /** RateLimitWindow */
+    RateLimitWindow: {
       /** Resetsat */
-      resetsAt?: null | number | undefined;
+      resetsAt?: number | null | undefined;
       /** Usedpercent */
-      usedPercent?: null | number | undefined;
+      usedPercent?: number | null | undefined;
       /** Windowdurationmins */
-      windowDurationMins?: null | number | undefined;
+      windowDurationMins?: number | null | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    RateLimitWindowDto: components["schemas"]["RateLimitWindow"];
     TerminalTurn: {
       id: string;
       status: components["schemas"]["TerminalTurnStatus"];
@@ -358,7 +365,11 @@ export type ModelReasoningEffort =
 export type ModelServiceTier = components["schemas"]["ModelServiceTier"];
 export type ProviderKind = components["schemas"]["ProviderKind"];
 export type ProviderModel = components["schemas"]["ProviderModel"];
+export type RateLimitBucket = components["schemas"]["RateLimitBucket"];
 export type RateLimitBucketDto = components["schemas"]["RateLimitBucketDto"];
+export type RateLimitIndividualLimit =
+  components["schemas"]["RateLimitIndividualLimit"];
+export type RateLimitWindow = components["schemas"]["RateLimitWindow"];
 export type RateLimitWindowDto = components["schemas"]["RateLimitWindowDto"];
 export type TerminalTurn = components["schemas"]["TerminalTurn"];
 export type TerminalTurnStatus = components["schemas"]["TerminalTurnStatus"];

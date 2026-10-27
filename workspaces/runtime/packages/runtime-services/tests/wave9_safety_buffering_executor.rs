@@ -11,10 +11,11 @@ use std::{
     time::Duration,
 };
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{
     account_session_runtime::{
         AccountSessionError, AccountSessionFuture, AccountSessionPort, ConnectionScope,
-        NotSentReason, ProviderRequest, ProviderResponse, RequestCertainty, SessionReceipt,
+        ProviderRequest, ProviderResponse, SessionReceipt,
     },
     account_worker::preparation::PreparationResources,
     account_worker::retained::RequestActor,
@@ -101,13 +102,20 @@ impl AccountSessionPort for Session<'_> {
             }
             if self.unknown_receipt_at == Some(call_index) {
                 return Ok(SessionReceipt {
+                    outcome: ReceiptOutcome::Unknown {
+                        ticket: studio_runtime_providers::RequestTicket {
+                            generation: request
+                                .expected_scope
+                                .as_ref()
+                                .map_or(1, |scope| scope.generation),
+                            id: studio_runtime_providers::RequestId::String(
+                                request.operation.clone(),
+                            ),
+                            method: request.method,
+                        },
+                    },
                     scope: self.scope.clone(),
                     operation: request.operation,
-                    ticket: None,
-                    certainty: RequestCertainty::Unknown,
-                    result: None,
-                    not_sent_reason: None,
-
                     replayed: false,
                 });
             }
@@ -121,13 +129,20 @@ impl AccountSessionPort for Session<'_> {
                 if !*used {
                     *used = true;
                     return Ok(SessionReceipt {
+                        outcome: ReceiptOutcome::WorkerNotSent {
+                            ticket: studio_runtime_providers::RequestTicket {
+                                generation: request
+                                    .expected_scope
+                                    .as_ref()
+                                    .map_or(1, |scope| scope.generation),
+                                id: studio_runtime_providers::RequestId::String(
+                                    request.operation.clone(),
+                                ),
+                                method: request.method,
+                            },
+                        },
                         scope: self.scope.clone(),
                         operation: request.operation.clone(),
-                        ticket: None,
-                        certainty: RequestCertainty::NotSent,
-                        result: None,
-                        not_sent_reason: Some(NotSentReason::WorkerNotSent),
-
                         replayed: false,
                     });
                 }
@@ -286,22 +301,19 @@ impl AccountSessionPort for Session<'_> {
             Ok(SessionReceipt {
                 scope: self.scope.clone(),
                 operation: request.operation.clone(),
-                ticket: Some(RequestTicket {
-                    generation: self.scope.generation,
-                    id: RequestId::String(request.operation),
-                    method: request.method,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(
-                    if self.reject_start && request.method == Method::TurnStart {
+                replayed: false,
+                outcome: ReceiptOutcome::Written {
+                    ticket: RequestTicket {
+                        generation: self.scope.generation,
+                        id: RequestId::String(request.operation),
+                        method: request.method,
+                    },
+                    response: if self.reject_start && request.method == Method::TurnStart {
                         ProviderResponse::Rejected(json!({"message":"start rejected"}))
                     } else {
                         ProviderResponse::Reply(result)
                     },
-                ),
-                not_sent_reason: None,
-
-                replayed: false,
+                },
             })
         })
     }
@@ -542,16 +554,15 @@ impl AccountSessionPort for StartBlockingSession {
             Ok(SessionReceipt {
                 scope: self.scope.clone(),
                 operation: request.operation.clone(),
-                ticket: Some(RequestTicket {
-                    generation: self.scope.generation,
-                    id: RequestId::String(request.operation),
-                    method: request.method,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(result)),
-                not_sent_reason: None,
-
                 replayed: false,
+                outcome: ReceiptOutcome::Written {
+                    ticket: RequestTicket {
+                        generation: self.scope.generation,
+                        id: RequestId::String(request.operation),
+                        method: request.method,
+                    },
+                    response: ProviderResponse::Reply(result),
+                },
             })
         })
     }
@@ -639,15 +650,21 @@ impl AccountSessionPort for BlockingSession {
                 .recv()
                 .expect("release blocked provider");
             Ok(SessionReceipt {
+                outcome: ReceiptOutcome::Written {
+                    ticket: studio_runtime_providers::RequestTicket {
+                        generation: request
+                            .expected_scope
+                            .as_ref()
+                            .map_or(1, |scope| scope.generation),
+                        id: studio_runtime_providers::RequestId::String(request.operation.clone()),
+                        method: request.method,
+                    },
+                    response: ProviderResponse::Reply(
+                        json!({"data":[{"id":"turn","status":"inProgress"}]}),
+                    ),
+                },
                 scope: self.scope.clone(),
                 operation: request.operation,
-                ticket: None,
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(
-                    json!({"data":[{"id":"turn","status":"inProgress"}]}),
-                )),
-                not_sent_reason: None,
-
                 replayed: false,
             })
         })

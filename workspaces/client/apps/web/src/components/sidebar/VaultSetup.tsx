@@ -19,7 +19,8 @@ import { errorText } from "../../api";
 import type { SidebarBackend } from "./services";
 import {
   firstProfile,
-  runJob,
+  loginVault,
+  setupVault,
   type VaultEntry,
   type VaultLogin,
   type VaultSetupFacts,
@@ -72,11 +73,11 @@ export default function VaultSetup({
   const load = useCallback(
     async (name?: string) => {
       try {
-        const found = (await backend.post(
+        const found = await backend.post(
           "/api/vault/setup/facts",
           { projectId, ...(name ? { prefix: name } : {}) },
           { timeoutMs: 30000 },
-        )) as VaultSetupFacts;
+        );
         if (!open.current) return null;
         setFacts(found);
         setPrefix(found.prefix);
@@ -135,9 +136,8 @@ export default function VaultSetup({
     if (!profile) return;
     setError(null);
     try {
-      const done = await runJob<VaultLogin>(
+      const done = await loginVault(
         backend,
-        "/api/vault/aws-login",
         { profile, requestId: crypto.randomUUID() },
         {
           resources,
@@ -160,9 +160,8 @@ export default function VaultSetup({
     if (!profile) return;
     setError(null);
     try {
-      const done = await runJob<VaultSetupJob>(
+      const done = await setupVault(
         backend,
-        "/api/vault/setup",
         { projectId, requestId: crypto.randomUUID(), prefix, profile, region },
         {
           resources,

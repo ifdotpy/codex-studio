@@ -91,6 +91,7 @@ import {
 } from "../types";
 import Usage from "./Usage";
 import type { UsageAccount } from "./Usage";
+import type { AccountLimitsSnapshot } from "../usage/accountUsage";
 import PromptNavigator from "./PromptNavigator";
 import { usePromptRecall } from "./usePromptRecall";
 import PromptComposer, {
@@ -263,7 +264,7 @@ export default function Conversation(p: {
   refresh: () => Promise<void>;
   accountsState: ReturnType<typeof useAccounts>;
   notify: (s: string) => void;
-  limits: Json | null;
+  limits: AccountLimitsSnapshot | null;
   limitsAccounts?: UsageAccount[];
   limitsLoading?: boolean;
   jumpTarget?: { messageId: string; requestId: string } | undefined;

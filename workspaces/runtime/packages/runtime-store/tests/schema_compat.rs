@@ -211,7 +211,7 @@ async fn provider_identity_migration_preserves_historical_orphan_usage() {
                 .expect("complete legacy provenance");
         assert!(estimated);
         assert!(matches!(
-            provenance.studio_usage,
+            provenance.studio_usage(),
             UsageObservation::Response {
                 evidence: studio_runtime_schema::usage::UsageEvidence::Legacy,
                 ..

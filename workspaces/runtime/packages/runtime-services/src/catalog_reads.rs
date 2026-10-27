@@ -1,5 +1,6 @@
 //! Pure projections used by the skills and capabilities discovery endpoints.
 
+use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
@@ -70,9 +71,7 @@ pub async fn account_session_exchange(
     requests: Vec<ProviderRequest>,
     timeout: Duration,
 ) -> Result<Vec<Result<Value, CatalogReadError>>, CatalogReadError> {
-    use crate::account_session_runtime::{
-        ProviderRequest as SessionRequest, ProviderResponse, RequestCertainty,
-    };
+    use crate::account_session_runtime::{ProviderRequest as SessionRequest, ProviderResponse};
 
     const OPERATION_PREFIX: &str = "catalog-discovery";
     static REQUEST_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -105,19 +104,20 @@ pub async fn account_session_exchange(
             })
             .await
             .map_err(|_| CatalogReadError::ProviderExchangeFailed)?;
+        let ReceiptOutcome::Written { ticket, response } = receipt.outcome else {
+            return Err(CatalogReadError::ProviderExchangeFailed);
+        };
         if receipt.scope != scope
             || receipt.operation != operation
-            || receipt.certainty != RequestCertainty::Written
-            || receipt.ticket.as_ref().is_none_or(|ticket| {
-                ticket.method != method || ticket.generation != scope.generation
-            })
+            || ticket.method != method
+            || ticket.generation != scope.generation
         {
             return Err(CatalogReadError::ProviderExchangeFailed);
         }
-        match receipt.result {
-            Some(ProviderResponse::Reply(response)) => responses.push(Ok(response)),
-            Some(ProviderResponse::Rejected(_)) | None => {
-                responses.push(Err(CatalogReadError::ProviderExchangeFailed));
+        match response {
+            ProviderResponse::Reply(response) => responses.push(Ok(response)),
+            ProviderResponse::Rejected(_) => {
+                responses.push(Err(CatalogReadError::ProviderExchangeFailed))
             }
         }
     }
@@ -482,9 +482,8 @@ mod tests {
             crate::account_session_runtime::SessionReceipt,
         > {
             Box::pin(async move {
-                use crate::account_session_runtime::{
-                    ProviderResponse, RequestCertainty, SessionReceipt,
-                };
+                use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
+                use crate::account_session_runtime::{ProviderResponse, SessionReceipt};
                 let scope = request
                     .expected_scope
                     .clone()
@@ -506,15 +505,15 @@ mod tests {
                 Ok(SessionReceipt {
                     scope,
                     operation,
-                    ticket: Some(studio_runtime_providers::RequestTicket {
-                        generation: 7,
-                        id: studio_runtime_providers::RequestId::String("fixture".to_owned()),
-                        method,
-                    }),
-                    certainty: RequestCertainty::Written,
-                    result: Some(ProviderResponse::Reply(response)),
-                    not_sent_reason: None,
                     replayed: false,
+                    outcome: ReceiptOutcome::Written {
+                        ticket: studio_runtime_providers::RequestTicket {
+                            generation: 7,
+                            id: studio_runtime_providers::RequestId::String("fixture".to_owned()),
+                            method,
+                        },
+                        response: ProviderResponse::Reply(response),
+                    },
                 })
             })
         }

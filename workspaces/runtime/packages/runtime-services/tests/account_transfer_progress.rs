@@ -1,12 +1,13 @@
 //! Transfer progress through production preparation and terminal settlement.
+
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{
     account_session_runtime::{
         AccountSessionError, AccountSessionFuture, AccountSessionPort, ConnectionScope,
-        ProviderRequest, ProviderResponse, RequestCertainty, SessionReceipt,
-        TransferProviderRequest,
+        ProviderRequest, ProviderResponse, SessionReceipt, TransferProviderRequest,
     },
     account_transfer::Action,
     account_transfer_driver as driver,
@@ -222,15 +223,15 @@ impl CompletingSession {
                 .current_scope(account)
                 .expect("scope"),
             operation,
-            ticket: Some(RequestTicket {
-                generation: 1,
-                id: RequestId::String(format!("native-{}", method.as_str())),
-                method,
-            }),
-            certainty: RequestCertainty::Written,
-            result: Some(ProviderResponse::Reply(result)),
-            not_sent_reason: None,
             replayed: false,
+            outcome: ReceiptOutcome::Written {
+                ticket: RequestTicket {
+                    generation: 1,
+                    id: RequestId::String(format!("native-{}", method.as_str())),
+                    method,
+                },
+                response: ProviderResponse::Reply(result),
+            },
         }
     }
 }

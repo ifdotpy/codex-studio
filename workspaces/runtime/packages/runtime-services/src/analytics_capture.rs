@@ -1478,9 +1478,9 @@ fn usage_key(meta: &Value, observation: &UsageObservation) -> String {
 }
 /// Compatibility presentation for existing analytics charts; accounting uses studioUsage.
 pub(crate) fn analytics_tokens(tokens: &UsageTokens) -> Value {
-    json!({"inputTokens": tokens.uncached_input.saturating_add(tokens.cache_read_input).saturating_add(tokens.cache_write_input),
-        "cachedInputTokens":tokens.cache_read_input,"cacheWriteInputTokens":tokens.cache_write_input,
-        "outputTokens":tokens.output,"reasoningOutputTokens":tokens.reasoning_output,"totalTokens":tokens.total()})
+    json!({"inputTokens": tokens.uncached_input().saturating_add(tokens.cache_read_input()).saturating_add(tokens.cache_write_input()),
+        "cachedInputTokens":tokens.cache_read_input(),"cacheWriteInputTokens":tokens.cache_write_input(),
+        "outputTokens":tokens.output(),"reasoningOutputTokens":tokens.reasoning_output(),"totalTokens":tokens.total()})
 }
 fn legacy_usage_key(meta: &Value, legacy: &LegacyUsageTotals, params: &Value) -> String {
     if legacy.response_id.is_none() {
@@ -1584,7 +1584,7 @@ fn usage(
                 .clone()
                 .or_else(|| meta["turnId"].as_str().map(str::to_owned)),
             response: response_id.clone(),
-            output_tokens: tokens.output as f64,
+            output_tokens: tokens.output() as f64,
         });
     }
     let existing = rows.exact_response.as_ref().or(rows.usage.as_ref());
@@ -1595,22 +1595,22 @@ fn usage(
             observation,
         );
         out.unknown_usage = Some(
-            json!({"identity":ledger.usage_identity,"observationKey":ledger.observation_key(),"fault":studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT}),
+            json!({"identity":ledger.usage_identity(),"observationKey":ledger.observation_key(),"fault":studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT}),
         );
         return;
     }
     if let Some(previous) = existing
         && let Ok(old) = UsageLedgerRow::from_analytics(provider, previous)
     {
-        match correction(&old.studio_usage, &observation) {
+        match correction(old.studio_usage(), &observation) {
             UsageCorrection::Apply | UsageCorrection::UnresolvedGap => {}
             decision @ UsageCorrection::Replay
             | decision @ UsageCorrection::ResponseReplayConflict => {
                 out.response_replay_conflict = decision == UsageCorrection::ResponseReplayConflict;
                 if let (Some(rate), UsageObservation::Response { tokens, .. }) =
-                    (&mut out.response_rate, &old.studio_usage)
+                    (&mut out.response_rate, old.studio_usage())
                 {
-                    rate.output_tokens = tokens.output as f64;
+                    rate.output_tokens = tokens.output() as f64;
                 }
                 return;
             }
@@ -1633,16 +1633,16 @@ fn usage(
         observation.clone(),
     );
     if let Some(old) = existing.and_then(|row| UsageLedgerRow::from_analytics(provider, row).ok())
-        && old.receipt_key.is_some()
+        && old.receipt_key().is_some()
     {
-        ledger.receipt_key = old.receipt_key;
+        ledger.set_receipt_key(old.receipt_key().map(str::to_owned));
     }
     let mut row = merge(
         meta,
         json!({"id":id,"at":q.at,"recordedAt":q.recorded_at,"source":q.source.name(),
         "timestampSource":timestamp_source(q),"counterDomain":domain(&observation),"fingerprint":fingerprint(&observation),
         "last":{},"total":{},"delta":{},"studioUsage":observation,
-        "usageIdentity":ledger.usage_identity,"receiptKey":ledger.receipt_key}),
+        "usageIdentity":ledger.usage_identity(),"receiptKey":ledger.receipt_key()}),
     );
     match &observation {
         UsageObservation::Response {

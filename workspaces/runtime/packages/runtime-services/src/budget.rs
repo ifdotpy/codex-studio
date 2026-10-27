@@ -452,7 +452,7 @@ impl UsageObservation {
         validate("BudgetCapture", params, "tokenUsage")?;
         let parsed = supplied
             .as_ref()
-            .map(|row| Ok(row.studio_usage.clone()))
+            .map(|row| Ok(row.studio_usage().clone()))
             .or_else(|| observation.cloned().map(Ok))
             .unwrap_or_else(|| parse_token_usage(snapshot.provider, params));
         let typed = parsed.as_ref().ok().cloned();
@@ -584,7 +584,9 @@ impl UsageObservation {
         let ledger = supplied.or_else(|| {
             typed.map(|observation| UsageLedgerRow::capture(&a.id, thread.as_deref(), observation))
         });
-        let unresolved_receipt = ledger.as_ref().is_some_and(|row| row.receipt_key.is_none());
+        let unresolved_receipt = ledger
+            .as_ref()
+            .is_some_and(|row| row.receipt_key().is_none());
         let scalar_key = scalar_counter.as_ref().map(|legacy| {
             studio_runtime_schema::usage::ledger::legacy_counter_observation_key(
                 &a.id,
@@ -597,7 +599,7 @@ impl UsageObservation {
             .map(UsageLedgerRow::observation_key)
             .or_else(|| scalar_key.clone());
         let key = match &ledger {
-            Some(row) => row.receipt_key.clone().unwrap_or_default(),
+            Some(row) => row.receipt_key().map(str::to_owned).unwrap_or_default(),
             None => scalar_key.clone().unwrap_or_else(|| {
                 sha256_hex(python_json_with_separators(&identity, ",", ":").as_bytes())
             }),
@@ -619,7 +621,7 @@ impl UsageObservation {
                 if restoring {
                     studio_runtime_schema::usage::ledger::legacy_analytics_receipt_keys(
                         params,
-                        &row.studio_usage,
+                        row.studio_usage(),
                     )
                 } else {
                     studio_runtime_schema::usage::ledger::legacy_receipt_keys(
@@ -627,7 +629,7 @@ impl UsageObservation {
                         &a.account_key,
                         identity_turn.as_deref(),
                         params,
-                        &row.studio_usage,
+                        row.studio_usage(),
                     )
                 }
             })
@@ -641,7 +643,7 @@ impl UsageObservation {
         let canonical_capture_key = if !restoring
             && (scalar_key.is_some()
                 || matches!(
-                    ledger.as_ref().map(|row| &row.studio_usage),
+                    ledger.as_ref().map(|row| row.studio_usage()),
                     Some(studio_runtime_schema::usage::UsageObservation::Cumulative { .. })
                 )) {
             Some(key.clone())
@@ -650,7 +652,7 @@ impl UsageObservation {
         };
         let identity = ledger
             .as_ref()
-            .map(|row| row.usage_identity.clone())
+            .map(|row| row.usage_identity().clone())
             .unwrap_or_else(|| match &response {
                 Some(response_id) if exact => {
                     studio_runtime_schema::usage::ledger::UsageIdentity::Response {
@@ -710,13 +712,13 @@ impl UsageObservation {
             && row
                 .details
                 .as_ref()
-                .is_none_or(|details| details.ledger.usage_identity == self.identity)
+                .is_none_or(|details| details.ledger.usage_identity() == &self.identity)
     }
     pub(crate) fn reuse_receipt(&mut self, key: String) {
         self.key = key.clone();
         self.unresolved_receipt = false;
         if let Some(ledger) = &mut self.ledger {
-            ledger.receipt_key = Some(key);
+            ledger.set_receipt_key(Some(key));
         }
     }
     pub(crate) fn mark_unknown_receipt(&mut self) {
@@ -834,10 +836,10 @@ pub fn capture(
     let mut replacement_before = None;
     if let (Some(incoming), Some(old)) = (&p.ledger, previous.and_then(|row| row.details.as_ref()))
     {
-        if incoming.usage_identity != old.ledger.usage_identity {
+        if incoming.usage_identity() != old.ledger.usage_identity() {
             return Err(invalid("runtime_budget_usage/identity"));
         }
-        match correction(&old.ledger.studio_usage, &incoming.studio_usage) {
+        match correction(old.ledger.studio_usage(), incoming.studio_usage()) {
             UsageCorrection::UnresolvedGap => {}
             UsageCorrection::Replay if !p.exact && !p.gap => {}
             UsageCorrection::Replay => {
@@ -872,7 +874,7 @@ pub fn capture(
             }
         }
     }
-    let is_final = p.ledger.as_ref().is_some_and(|row| matches!(&row.studio_usage, studio_runtime_schema::usage::UsageObservation::Response { evidence, .. } if *evidence != UsageEvidence::Legacy));
+    let is_final = p.ledger.as_ref().is_some_and(|row| matches!(row.studio_usage(), studio_runtime_schema::usage::UsageObservation::Response { evidence, .. } if *evidence != UsageEvidence::Legacy));
     if is_final {
         state.unresolved_gaps.retain(|key| key != &p.key);
         if state.unresolved_gaps.is_empty()
@@ -1484,7 +1486,7 @@ mod typed_usage_tests {
                 .as_ref()
                 .expect("typed gap")
                 .ledger
-                .studio_usage,
+                .studio_usage(),
             studio_runtime_schema::usage::UsageObservation::Gap { .. }
         ));
         snapshot.state = gap.state;

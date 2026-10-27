@@ -369,7 +369,7 @@ pub async fn consume_reset(
         Ok(receipt)
             if receipt.operation == operation
                 && receipt.scope == scope
-                && receipt.certainty == RequestCertainty::NotSent =>
+                && receipt.certainty() == RequestCertainty::NotSent =>
         {
             attempt.status = "pending".to_owned();
             attempt.certainty = Some("not_sent".to_owned());
@@ -379,10 +379,9 @@ pub async fn consume_reset(
         Ok(receipt)
             if receipt.operation == operation
                 && receipt.scope == scope
-                && receipt.certainty == RequestCertainty::Written
-                && receipt.ticket.is_some() =>
+                && receipt.certainty() == RequestCertainty::Written =>
         {
-            let outcome = receipt.result.and_then(|result| match result {
+            let outcome = receipt.response().cloned().and_then(|result| match result {
                 ProviderResponse::Reply(value) => value
                     .get("outcome")
                     .and_then(Value::as_str)
@@ -436,6 +435,7 @@ mod tests {
         Attempt, RESET_OPERATION_PREFIX, RESET_REQUEST_LOCK, consume_reset as consume_reset_async,
         read_attempts as read_attempts_async, save_attempt as save_attempt_async,
     };
+    use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use crate::account_session_runtime::{
         AccountSessionError, AccountSessionFuture, AccountSessionPort, ConnectionScope,
         ProviderRequest, ProviderResponse, RequestCertainty, SessionReceipt,
@@ -558,12 +558,24 @@ mod tests {
                 };
                 self.in_flight.fetch_sub(1, Ordering::SeqCst);
                 Ok(SessionReceipt {
+                    outcome: {
+                        match (certainty, result) {
+                            (RequestCertainty::Written, Some(response)) => {
+                                ReceiptOutcome::Written {
+                                    ticket: ticket.expect("written fixture ticket"),
+                                    response,
+                                }
+                            }
+                            (RequestCertainty::Written, None) | (RequestCertainty::Unknown, _) => {
+                                ReceiptOutcome::Unknown {
+                                    ticket: ticket.expect("unknown fixture ticket"),
+                                }
+                            }
+                            (RequestCertainty::NotSent, _) => ReceiptOutcome::NoLiveAccountWorker,
+                        }
+                    },
                     scope: self.scope.clone(),
                     operation: request.operation,
-                    ticket,
-                    certainty,
-                    result,
-                    not_sent_reason: None,
                     replayed: false,
                 })
             })

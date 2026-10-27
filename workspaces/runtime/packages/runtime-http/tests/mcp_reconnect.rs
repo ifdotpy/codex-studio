@@ -1,4 +1,5 @@
 //! Reconnect authorization, session identity and durable HTTP replay witnesses.
+
 #![allow(clippy::unwrap_used, clippy::disallowed_methods)]
 use axum::{
     body::{Body, to_bytes},
@@ -8,6 +9,7 @@ use axum::{
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use studio_runtime_http::{HttpState, router};
+use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::{account_policy::AccountPolicyState, account_session_runtime::*};
 use studio_runtime_store::RuntimeStore;
 use tower::ServiceExt;
@@ -60,24 +62,43 @@ impl AccountSessionPort for Session {
                 _ => panic!("unexpected method"),
             };
             Ok(SessionReceipt {
+                outcome: {
+                    let ticket = studio_runtime_providers::RequestTicket {
+                        generation: scope().generation,
+                        id: studio_runtime_providers::RequestId::String(request.operation.clone()),
+                        method: request.method,
+                    };
+                    match (
+                        if self.unknown {
+                            RequestCertainty::Unknown
+                        } else {
+                            RequestCertainty::Written
+                        },
+                        if self.unknown {
+                            None
+                        } else {
+                            Some(ProviderResponse::Reply(result))
+                        },
+                    ) {
+                        (RequestCertainty::Written, Some(response)) => {
+                            ReceiptOutcome::Written { ticket, response }
+                        }
+                        (RequestCertainty::Written, None) | (RequestCertainty::Unknown, _) => {
+                            ReceiptOutcome::Unknown {
+                                ticket: studio_runtime_providers::RequestTicket {
+                                    generation: scope().generation,
+                                    id: studio_runtime_providers::RequestId::String(
+                                        request.operation.clone(),
+                                    ),
+                                    method: request.method,
+                                },
+                            }
+                        }
+                        (RequestCertainty::NotSent, _) => ReceiptOutcome::NoLiveAccountWorker,
+                    }
+                },
                 scope: scope(),
                 operation: request.operation.clone(),
-                ticket: Some(studio_runtime_providers::RequestTicket {
-                    generation: scope().generation,
-                    id: studio_runtime_providers::RequestId::String(request.operation),
-                    method: request.method,
-                }),
-                certainty: if self.unknown {
-                    RequestCertainty::Unknown
-                } else {
-                    RequestCertainty::Written
-                },
-                result: if self.unknown {
-                    None
-                } else {
-                    Some(ProviderResponse::Reply(result))
-                },
-                not_sent_reason: None,
                 replayed: false,
             })
         })

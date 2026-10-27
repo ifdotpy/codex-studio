@@ -1,5 +1,6 @@
 import { desktopFixture } from "../files/desktop.fixture.ts";
-import type { JsonInput, Agent } from "../../src/types.ts";
+import type { JsonInput } from "../../src/types.ts";
+import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 declare global {
   interface Window {
