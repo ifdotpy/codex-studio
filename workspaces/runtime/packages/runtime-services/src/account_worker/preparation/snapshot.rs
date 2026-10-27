@@ -120,6 +120,34 @@ pub struct PreparationFilesystem {
     browser: Option<crate::browser::AccountBrowser>,
     mcp_servers: Vec<String>,
     receipt_cwd: Option<(String, String, bool)>,
+    native_layr: Option<NativeLayrFilesystem>,
+}
+
+#[derive(Clone)]
+struct NativeLayrFilesystem {
+    identity: Value,
+    root: PathBuf,
+    environment: Map<String, Value>,
+    state_root: PathBuf,
+    reviewer: Option<(String, Map<String, Value>)>,
+}
+
+fn native_layr_identity(record: &Value) -> Value {
+    if record["layrStoreRoot"].is_string() {
+        json!(["root", record["layrStoreRoot"]])
+    } else if record["layrReady"] == true {
+        json!([
+            "ready",
+            record["role"] == "reviewer",
+            record[if record["role"] == "reviewer" {
+                "layrReadCwd"
+            } else {
+                "cwd"
+            }]
+        ])
+    } else {
+        json!(["selected"])
+    }
 }
 
 impl PreparationResources {
@@ -251,18 +279,75 @@ impl PreparationResources {
             browser,
             mcp_servers,
             receipt_cwd,
+            native_layr: None,
         }));
         self
     }
 
-    pub(crate) async fn for_sql(&self) -> Result<Self, WorkerError> {
+    fn capture_native_layr(
+        mut self,
+        state_root: &Path,
+        record: &Value,
+    ) -> Result<Self, WorkerError> {
+        if crate::layr_native::is_native(record) {
+            let root = crate::layr_native::settings::record_store(state_root, record)
+                .map_err(|_| invalid("native-layr/store"))?;
+            let environment = crate::layr_native::thread_environment_in_store(state_root, &root);
+            let inputs = self
+                .filesystem_inputs
+                .as_mut()
+                .ok_or_else(|| invalid("thread guidance filesystem inputs"))?;
+            let reviewer = record["layrScratch"].as_str().map(|scratch| {
+                (
+                    scratch.to_owned(),
+                    crate::layr_native::reviewer_environment(state_root, scratch),
+                )
+            });
+            Arc::make_mut(inputs).native_layr = Some(NativeLayrFilesystem {
+                identity: native_layr_identity(record),
+                root,
+                environment,
+                state_root: state_root.to_path_buf(),
+                reviewer,
+            });
+        }
+        Ok(self)
+    }
+
+    fn native_layr<'a>(
+        &'a self,
+        state_root: &Path,
+        record: &Value,
+    ) -> Result<&'a NativeLayrFilesystem, WorkerError> {
+        let captured = self
+            .filesystem_inputs
+            .as_ref()
+            .and_then(|inputs| inputs.native_layr.as_ref())
+            .ok_or_else(|| invalid("native-layr/filesystem inputs"))?;
+        if captured.identity != native_layr_identity(record) || captured.state_root != state_root {
+            return Err(refusal("native-layr/store-changed".into()));
+        }
+        Ok(captured)
+    }
+
+    pub(crate) async fn for_sql(
+        &self,
+        state_root: &Path,
+        record: &Value,
+    ) -> Result<Self, WorkerError> {
         let resources = self.clone();
+        let state_root = state_root.to_path_buf();
+        let record = record.clone();
         studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/thread-guidance/filesystem",
-            move || resources.capture_filesystem(None),
+            move || {
+                resources
+                    .capture_filesystem(None)
+                    .capture_native_layr(&state_root, &record)
+            },
         )
         .await
-        .map_err(|_| WorkerError::TaskFailed)
+        .map_err(|_| WorkerError::TaskFailed)?
     }
 
     pub(crate) async fn for_receipt(
@@ -271,34 +356,36 @@ impl PreparationResources {
         agent_id: &str,
         prepared_cwd: Option<&str>,
     ) -> Result<Self, WorkerError> {
-        let receipt_cwd = if let Some(prepared_cwd) = prepared_cwd {
+        let record = {
             let agent_id = agent_id.to_owned();
-            let stored = store
+            store
                 .read_async("runtime-services/thread-receipt/cwd", move |tx| {
                     Ok::<_, WorkerError>(
-                        AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.and_then(
-                            |agent| {
-                                agent
-                                    .extra
-                                    .get("cwd")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_owned)
-                            },
-                        ),
+                        AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                            .map(|agent| agent.value()),
                     )
                 })
-                .await?;
-            stored.map(|stored| (stored, prepared_cwd.to_owned()))
-        } else {
-            None
+                .await?
         };
+        let receipt_cwd = record
+            .as_ref()
+            .and_then(|record| record["cwd"].as_str())
+            .zip(prepared_cwd)
+            .map(|(stored, prepared)| (stored.to_owned(), prepared.to_owned()));
         let resources = self.clone();
+        let state_root = store.root().to_path_buf();
         studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/thread-receipt/filesystem",
-            move || resources.capture_filesystem(receipt_cwd),
+            move || {
+                let resources = resources.capture_filesystem(receipt_cwd);
+                match record {
+                    Some(record) => resources.capture_native_layr(&state_root, &record),
+                    None => Ok(resources),
+                }
+            },
         )
         .await
-        .map_err(|_| WorkerError::TaskFailed)
+        .map_err(|_| WorkerError::TaskFailed)?
     }
 
     pub fn with_account_session(
@@ -680,8 +767,10 @@ pub(super) fn guidance(
         ));
     }
     if crate::layr_native::is_native(record) {
-        for (name, value) in crate::layr_native::thread_environment_for_record(state_root, record)
-            .map_err(|_| invalid("native-layr/store"))?
+        for (name, value) in resources
+            .native_layr(state_root, record)?
+            .environment
+            .clone()
         {
             thread_config.insert(format!("shell_environment_policy.set.{name}"), value);
         }
@@ -1082,6 +1171,7 @@ fn frozen_params(record: &Value) -> Result<Option<thread::FrozenParams>, WorkerE
 }
 
 fn native_claude_options(
+    resources: &PreparationResources,
     record: &Value,
     state_root: &Path,
 ) -> Result<serde_json::Map<String, Value>, WorkerError> {
@@ -1091,16 +1181,19 @@ fn native_claude_options(
         let scratch = record["layrScratch"]
             .as_str()
             .ok_or_else(|| invalid("native-reviewer/scratch"))?;
-        let root = crate::layr_native::settings::record_store(state_root, record)
-            .map_err(|_| invalid("native-layr/store"))?;
+        let captured = resources.native_layr(state_root, record)?;
+        let root = &captured.root;
+        let environment = captured
+            .reviewer
+            .as_ref()
+            .filter(|(stored, _)| stored == scratch)
+            .ok_or_else(|| refusal("native-layr/scratch-changed".into()))?;
         options.insert("sandbox".into(),json!({"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,
             "filesystem":{"allowWrite":[scratch],"denyWrite":[root]},
             "network":{"allowedDomains":[],"strictAllowlist":true,"allowUnixSockets":[],"allowAllUnixSockets":false}}));
         options.insert(
             "nativeReviewerEnvironment".into(),
-            Value::Object(crate::layr_native::reviewer_environment(
-                state_root, scratch,
-            )),
+            Value::Object(environment.1.clone()),
         );
     }
     Ok(options)
@@ -1193,7 +1286,7 @@ pub(super) fn thread_snapshot(
             role,
             is_lead: lead,
             needs_title: flag(record, "needsTitle")?,
-            claude_options: native_claude_options(record, state_root)?,
+            claude_options: native_claude_options(resources, record, state_root)?,
             daybreak_enabled: stored(record, "daybreakEnabled")?,
             cyber_access_program: stored(record, "cyberAccessProgram")?,
         },
@@ -1559,7 +1652,10 @@ mod resource_tests {
         state_root: &std::path::Path,
     ) -> Result<crate::thread_prepare::GuidanceBundle, super::WorkerError> {
         super::guidance(
-            &resources.clone().capture_filesystem(None),
+            &resources
+                .clone()
+                .capture_filesystem(None)
+                .capture_native_layr(state_root, record)?,
             record,
             state_root,
         )
@@ -1822,7 +1918,9 @@ mod resource_tests {
         let mut resources =
             PreparationResources::bundled(String::new(), ModelCatalogService::new())
                 .expect("runtime resources")
-                .capture_filesystem(None);
+                .capture_filesystem(None)
+                .capture_native_layr(Path::new("/state"), &json!({"workspaceMode":"layr-native"}))
+                .expect("native Layr inputs");
         resources
             .legacy_tools
             .iter_mut()
@@ -2268,6 +2366,31 @@ mod resource_tests {
 mod workspace_fence_tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn native_layr_capture_preserves_alias_identity_and_rejects_changed_association() {
+        let state = tempfile::tempdir().expect("state");
+        let root = crate::layr_native::store_path(state.path());
+        std::fs::create_dir_all(&root).expect("store");
+        let alias = state.path().join("store-alias");
+        std::os::unix::fs::symlink(&root, &alias).expect("alias");
+        let record = json!({"workspaceMode":"layr-native", "layrStoreRoot":alias});
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources")
+            .capture_filesystem(None)
+            .capture_native_layr(state.path(), &record)
+            .expect("capture");
+        let captured = resources
+            .native_layr(state.path(), &record)
+            .expect("association");
+        assert_eq!(
+            captured.environment["LAYR_SOCKET"],
+            json!(crate::layr_native::socket_path(state.path()))
+        );
+        let changed = json!({"workspaceMode":"layr-native", "layrStoreRoot":root});
+        assert!(resources.native_layr(state.path(), &changed).is_err());
+    }
+
     #[test]
     fn task_result_schema_native_and_legacy_catalogs_use_the_owner() {
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
@@ -2351,7 +2474,13 @@ mod workspace_fence_tests {
             .await
             .expect("store");
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
-            .expect("resources");
+            .expect("resources")
+            .capture_filesystem(None)
+            .capture_native_layr(
+                Path::new("/state"),
+                &json!({"workspaceMode":"layr-native", "layrStoreRoot":"/state/layr-native/store", "layrScratch":"/private/reviewer-scratch"}),
+            )
+            .expect("native Layr inputs");
         store
             .transaction_with(move |tx| {
                 let root = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
