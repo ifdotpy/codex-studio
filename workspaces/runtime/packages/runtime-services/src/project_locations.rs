@@ -3,12 +3,52 @@ use crate::event_write::{python_json, request_signature, truthy};
 pub use crate::relocation::RelocationError as LocationError;
 use crate::relocation::{checked, identity, invalid, timestamp};
 use rusqlite::{OptionalExtension, Transaction};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use studio_runtime_store::{
     ProjectLocationsRepository as Repository, ProjectsRepository, RuntimeStore,
 };
+
+/// Exact location response shared by HTTP ingress and durable completion.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationResult {
+    pub request_id: String,
+    pub outcome: LocationOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<LocationValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocationOutcome {
+    Applied,
+    NotApplied,
+    Unknown,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationValue {
+    pub server_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub home_project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed: Option<bool>,
+}
 
 #[derive(Clone, Copy, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -209,21 +249,8 @@ pub fn complete_in_transaction(
         CompletionSnapshot::from_records(&raw, project.as_ref().map(|(_, value)| value))?;
     let decision = snapshot.decide(receipt, local_server, now)?;
     if decision.apply {
-        if receipt["outcome"] == "applied" {
-            let signature = &snapshot.outbox.body.payload.signature;
-            if let Some((prior_signature, prior)) = ProjectsRepository::receipt(tx, key)? {
-                if prior_signature != *signature || prior != *receipt {
-                    return Err(LocationError::Refused(
-                        "This request ID has different content",
-                    ));
-                }
-            } else {
-                ProjectsRepository::save_receipt(tx, key, signature, receipt)?;
-            }
-            Repository::registration_receipt(tx, project_id, key, receipt)?;
-            if let Some(project) = decision.project {
-                ProjectsRepository::put_project(tx, &project)?;
-            }
+        if !replayed_location(tx, &raw, receipt, now)? {
+            settle_location(tx, project_id, key, &raw, receipt, decision.project)?;
         }
         Repository::complete(tx, key, receipt, now)?;
     }
@@ -240,7 +267,7 @@ pub(crate) fn normalize_project(
 
 /// Python `applied` after the paired driver already completed the outbox row
 /// with `receipt`: commit the home location and its receipts once.
-pub(crate) fn apply_completed_in_transaction(
+pub fn apply_completed_in_transaction(
     tx: &Transaction<'_>,
     key: &str,
     server: &str,
@@ -255,17 +282,7 @@ pub(crate) fn apply_completed_in_transaction(
             "The location transport ticket has different content",
         ));
     }
-    let signature = raw
-        .pointer("/body/payload/signature")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("runtime_server_outbox", "/body/payload/signature"))?
-        .to_owned();
-    if let Some((prior_signature, prior)) = ProjectsRepository::receipt(tx, key)? {
-        if prior_signature != signature || prior != *receipt {
-            return Err(LocationError::Refused(
-                "This request ID has different content",
-            ));
-        }
+    if replayed_location(tx, &raw, receipt, now)? {
         return Ok(());
     }
     // Decide as Python does before the outbox completion in the same commit.
@@ -283,11 +300,111 @@ pub(crate) fn apply_completed_in_transaction(
     if !decision.apply {
         return Ok(());
     }
-    ProjectsRepository::save_receipt(tx, key, &signature, receipt)?;
-    Repository::registration_receipt(tx, &project_id, key, receipt)?;
-    if let Some(project) = decision.project {
-        ProjectsRepository::put_project(tx, &project)?;
+    settle_location(tx, &project_id, key, &raw, receipt, decision.project)?;
+    Ok(())
+}
+
+fn request_error(
+    error: studio_runtime_store::request_results::RequestResultError,
+) -> LocationError {
+    use studio_runtime_store::request_results::RequestResultError;
+    match error {
+        RequestResultError::Sql(error) => LocationError::Sqlite(error),
+        RequestResultError::Json(error) => LocationError::Store(error.into()),
+        RequestResultError::Identity(_) => {
+            LocationError::Refused("The location result has expired")
+        }
+        RequestResultError::Conflict { .. } => {
+            LocationError::Refused("This request ID has different content")
+        }
     }
+}
+
+fn replayed_location(
+    tx: &Transaction<'_>,
+    raw: &Value,
+    receipt: &Value,
+    now: f64,
+) -> Result<bool, LocationError> {
+    let result_id = raw
+        .pointer("/body/payload/resultId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("runtime_server_outbox", "/body/payload/resultId"))?;
+    let signature = raw
+        .pointer("/body/payload/signature")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("runtime_server_outbox", "/body/payload/signature"))?;
+    let Some(saved) = crate::event_write::replay_request::<LocationResult>(
+        tx,
+        result_id,
+        signature,
+        (now * 1000.0) as i64,
+    )
+    .map_err(request_error)?
+    else {
+        return Ok(false);
+    };
+    let mut expected: LocationResult =
+        serde_json::from_value(receipt.clone()).map_err(studio_runtime_store::StoreError::from)?;
+    if expected.project_id.is_none() {
+        expected.project_id = saved.reply.project_id.clone();
+    }
+    if saved.reply != expected {
+        return Err(LocationError::Refused(
+            "This request ID has different content",
+        ));
+    }
+    Ok(true)
+}
+
+fn settle_location(
+    tx: &Transaction<'_>,
+    project_id: &str,
+    key: &str,
+    raw: &Value,
+    receipt: &Value,
+    project: Option<Value>,
+) -> Result<(), LocationError> {
+    let request = ProjectsRepository::location_request(tx, project_id, key)?.ok_or(
+        LocationError::Refused("The location request has no admitted project intent"),
+    )?;
+    if raw
+        .pointer("/body/payload/resultId")
+        .and_then(Value::as_str)
+        != Some(request.id())
+        || raw
+            .pointer("/body/payload/signature")
+            .and_then(Value::as_str)
+            != Some(request.signature())
+    {
+        return Err(LocationError::Refused(
+            "The location request has different admitted content",
+        ));
+    }
+    let mut reply: LocationResult =
+        serde_json::from_value(receipt.clone()).map_err(studio_runtime_store::StoreError::from)?;
+    let mut project = project
+        .or(ProjectsRepository::get(tx, project_id)?.map(|(_, project)| project))
+        .ok_or(LocationError::Refused("The project no longer exists"))?;
+    if project
+        .pointer("/registration/requestId")
+        .and_then(Value::as_str)
+        == Some(key)
+    {
+        reply.project_id = Some(project_id.to_owned());
+        use studio_runtime_schema::persistence::WorkEffectStatus;
+        project["registration"]["status"] = json!(match reply.outcome {
+            LocationOutcome::Applied => WorkEffectStatus::Applied,
+            LocationOutcome::NotApplied => WorkEffectStatus::Failed,
+            LocationOutcome::Unknown =>
+                return Err(LocationError::Refused(
+                    "The location outcome is still unknown"
+                )),
+        });
+    }
+    ProjectsRepository::put_project(tx, &project)?;
+    crate::event_write::settle_request(tx, &request, None, &reply).map_err(request_error)?;
+    ProjectsRepository::remove_location_request(tx, project_id, key)?;
     Ok(())
 }
 

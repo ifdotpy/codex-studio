@@ -5,6 +5,7 @@ use crate::{
     agent_management::{Action, ManagementError},
 };
 use rusqlite::{Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -22,6 +23,21 @@ pub struct Request {
     pub request_id: String,
     pub expected_workspace_id: String,
     pub expected_project_seq: i64,
+}
+#[derive(Serialize, Deserialize)]
+struct DeleteReply {
+    id: String,
+    request_id: String,
+    outcome: DeleteOutcome,
+    #[serde(rename = "deletedAgentIds")]
+    deleted_agent_ids: BTreeSet<String>,
+    #[serde(rename = "deletedRoomIds")]
+    deleted_room_ids: BTreeSet<String>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DeleteOutcome {
+    Deleted,
 }
 #[derive(Debug, Error)]
 pub enum Error {
@@ -41,6 +57,8 @@ pub enum Error {
     Lifecycle(#[from] ManagementError),
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error(transparent)]
+    Request(#[from] studio_runtime_store::request_results::RequestResultError),
 }
 impl From<rusqlite::Error> for Error {
     fn from(error: rusqlite::Error) -> Self {
@@ -88,16 +106,38 @@ fn delete_in_transaction(
     ])
     .to_string();
     let receipt_id = format!("project-delete:{}", request.request_id);
-    if let Some((saved, result)) = ProjectsRepository::receipt(tx, &receipt_id)? {
-        return if saved == signature {
-            Ok((result, false))
-        } else {
-            Err(Error::RequestConflict)
-        };
+    let now_ms = (now * 1000.0) as i64;
+    if let Some(result) =
+        crate::event_write::replay_request::<DeleteReply>(tx, &receipt_id, &signature, now_ms)?
+    {
+        return Ok((
+            serde_json::to_value(result.reply).map_err(StoreError::from)?,
+            false,
+        ));
     }
     if workspace != request.expected_workspace_id {
         return Err(Error::Workspace);
     }
+    let admission = crate::event_write::admit_request(
+        tx,
+        "project-delete",
+        &[&server, &workspace, "owner-api"],
+        &request.request_id,
+        &[&request.id],
+        &signature,
+        now_ms,
+    )?;
+    let admitted = match admission {
+        studio_runtime_store::request_results::Admission::Replay(stored) => {
+            let result: studio_runtime_store::request_results::ResultEnvelope<DeleteReply> =
+                serde_json::from_str(&stored.result).map_err(StoreError::from)?;
+            return Ok((
+                serde_json::to_value(result.reply).map_err(StoreError::from)?,
+                false,
+            ));
+        }
+        studio_runtime_store::request_results::Admission::Fresh(admitted) => admitted,
+    };
     let (_, project) = ProjectsRepository::get(tx, &request.id)?.ok_or(Error::NotFound)?;
     if project.get("id").and_then(Value::as_str) != Some(request.id.as_str()) {
         return Err(Error::Membership);
@@ -145,13 +185,19 @@ fn delete_in_transaction(
     let rooms = retire_rooms(tx, &project_ids, &paths, &selected, now)?;
     for id in &project_ids {
         if ProjectsRepository::remove(tx, id)? {
-            ProjectsRepository::record_destructive_removal(tx, id)?;
+            ProjectsRepository::record_destructive_removal(tx, id, &request.request_id, now_ms)?;
         }
         prune_sidebar(tx, id, &paths, &selected)?;
     }
-    let reply = json!({"id":request.id,"request_id":request.request_id,"outcome":"deleted","deletedAgentIds":selected,"deletedRoomIds":rooms});
-    ProjectsRepository::save_receipt(tx, &receipt_id, &signature, &reply)?;
-    Ok((reply, true))
+    let reply = DeleteReply {
+        id: request.id.clone(),
+        request_id: request.request_id.clone(),
+        outcome: DeleteOutcome::Deleted,
+        deleted_agent_ids: selected,
+        deleted_room_ids: rooms,
+    };
+    crate::event_write::settle_request(tx, &admitted, None, &reply)?;
+    Ok((serde_json::to_value(reply).map_err(StoreError::from)?, true))
 }
 fn project_scope(
     tx: &Transaction<'_>,
