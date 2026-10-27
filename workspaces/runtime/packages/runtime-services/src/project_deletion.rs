@@ -209,7 +209,7 @@ fn project_scope(
         .and_then(Value::as_str)
         .ok_or(Error::Membership)?
         .to_owned()]);
-    let records = ProjectsRepository::list(tx)?;
+    let records = ProjectsRepository::owned(tx)?;
     let mut paths = BTreeSet::new();
     loop {
         let count = ids.len();
@@ -284,6 +284,13 @@ fn project_scope(
     Ok((ids, paths))
 }
 fn project_paths(project: &Value, server: &str) -> Result<BTreeSet<String>, Error> {
+    if project
+        .get("locationIntents")
+        .and_then(Value::as_object)
+        .is_some_and(|intents| !intents.is_empty())
+    {
+        return Err(Error::Remote);
+    }
     if project.get("homeServerId").and_then(Value::as_str) != Some(server) {
         return Err(Error::Remote);
     }

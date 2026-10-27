@@ -114,6 +114,16 @@ impl ProjectsRepository {
     }
 
     pub fn list(connection: &Connection) -> StoreResult<Vec<(String, Value)>> {
+        Ok(Self::owned(connection)?
+            .into_iter()
+            .filter(|(_, project)| {
+                project.get("sidebarHidden").and_then(Value::as_bool) != Some(true)
+            })
+            .collect())
+    }
+
+    /// Active project owners, including projects hidden from navigation.
+    pub fn owned(connection: &Connection) -> StoreResult<Vec<(String, Value)>> {
         let mut statement = connection.prepare_cached(
             "SELECT id,record FROM runtime_projects WHERE json_extract(record,'$.removal') IS NULL ORDER BY json_extract(record,'$.created'),id",
         )?;
@@ -258,16 +268,28 @@ impl ProjectsRepository {
              ON CONFLICT(id) DO UPDATE SET record=excluded.record",
             params![id, record],
         )?;
-        SyncDocumentsRepository::put_entity(transaction, "project", id, project.clone(), false)?;
+        SyncDocumentsRepository::put_entity(
+            transaction,
+            "project",
+            id,
+            project.clone(),
+            project.get("sidebarHidden").and_then(Value::as_bool) == Some(true),
+        )?;
         Ok(())
     }
 
     pub fn remove(transaction: &Transaction<'_>, id: &str) -> StoreResult<bool> {
-        let existing = Self::get(transaction, id)?;
-        if existing.is_none() {
+        let Some((_, mut existing)) = Self::get(transaction, id)? else {
+            return Ok(false);
+        };
+        if existing.get("sidebarHidden").and_then(Value::as_bool) == Some(true) {
             return Ok(false);
         }
-        let removed = transaction.execute("DELETE FROM runtime_projects WHERE id=?1", [id])? > 0;
+        existing["sidebarHidden"] = json!(true);
+        let removed = transaction.execute(
+            "UPDATE runtime_projects SET record=?2 WHERE id=?1",
+            params![id, existing.to_string()],
+        )? > 0;
         if removed {
             SyncDocumentsRepository::put_entity(transaction, "project", id, json!({}), true)?;
             let mut statement = transaction.prepare_cached(
@@ -359,6 +381,9 @@ impl ProjectsRepository {
         let project_path = room.get("projectPath").and_then(Value::as_str);
         let teams = if let Some(path) = project_path {
             Self::get(transaction, path)?
+                .filter(|(_, project)| {
+                    project.get("sidebarHidden").and_then(Value::as_bool) != Some(true)
+                })
                 .and_then(|(_, project)| {
                     project.get("peerTeams").and_then(Value::as_array).cloned()
                 })
@@ -454,6 +479,46 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidebar_hide_retains_pending_location_owner() {
+        use crate::request_results::{Admission, RequestResults};
+        use studio_runtime_schema::persistence::RequestIdentity;
+        let mut db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+            CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
+            CREATE TABLE sync_documents(seq INTEGER);
+            CREATE TABLE sync_versions(seq INTEGER);
+            CREATE TABLE runtime_orchestration_settings(id TEXT,record TEXT);").expect("schema");
+        crate::receipt_schema::create(&db).expect("request schema");
+        let tx = db.transaction().expect("transaction");
+        ProjectsRepository::put_project(&tx, &json!({"id":"p","locations":[]})).expect("project");
+        let root = RequestIdentity::issue_root();
+        let identity =
+            RequestIdentity::new("project-location", &["server", "ui"], &root, &["location"])
+                .expect("identity");
+        let now = identity.issued_ms();
+        let Admission::Fresh(admitted) =
+            RequestResults::admit(&tx, &identity, "signature", now).expect("admit")
+        else {
+            panic!("fresh request")
+        };
+        ProjectsRepository::put_location_request(&tx, "p", "operation", &admitted).expect("intent");
+        assert!(ProjectsRepository::remove(&tx, "p").expect("hide"));
+        assert_eq!(
+            ProjectsRepository::location_request(&tx, "p", "operation").expect("intent"),
+            Some(admitted)
+        );
+        assert!(ProjectsRepository::list(&tx).expect("sidebar").is_empty());
+        assert_eq!(
+            ProjectsRepository::get(&tx, "p")
+                .expect("owner")
+                .expect("retained")
+                .1["sidebarHidden"],
+            true
+        );
+        assert!(!ProjectsRepository::remove(&tx, "p").expect("second hide"));
+    }
 
     #[test]
     fn destructive_fence_survives_sidebar_removal_on_project_owner() {
