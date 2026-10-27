@@ -17,21 +17,71 @@ const JSON_VALUE_ALIAS =
   "export type JsonValue = null | boolean | number | string | JsonValue[] " +
   "| { [key: string]: JsonValue };";
 
-// Runtime consumers use these closed domains from the same schema as their types.
-function runtimeEnumValues(document: import("openapi-typescript").OpenAPI3) {
-  return ["RequestStatus", "TaskStatus", "TransferStatus"]
-    .flatMap((name) => {
-      const schema = document.components?.schemas?.[name];
-      if (!schema) return [];
-      if (
-        !("enum" in schema) ||
-        !schema.enum?.every((value) => typeof value === "string")
+function identifierForComponent(name: string) {
+  let identifier = name.replace(/[^a-zA-Z0-9_$]/g, "_");
+  if (!/^[a-zA-Z_$]/.test(identifier)) identifier = `_${identifier}`;
+  if (
+    ts
+      .createScanner(
+        ts.ScriptTarget.Latest,
+        false,
+        ts.LanguageVariant.Standard,
+        identifier,
       )
-        throw new Error(`${name} must be a closed string enum`);
+      .scan() !== ts.SyntaxKind.Identifier
+  )
+    identifier = `_${identifier}`;
+  return identifier;
+}
+
+// Runtime consumers use these closed domains from the same schema as their types.
+function runtimeEnumValues(
+  document: import("openapi-typescript").OpenAPI3,
+  rustOwned: boolean,
+) {
+  const names = new Set<string>();
+  return Object.entries(document.components?.schemas ?? {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([name, schema]) => {
+      if (
+        ("type" in schema && schema.type !== "string") ||
+        !("enum" in schema) ||
+        !schema.enum?.length ||
+        !schema.enum.every((value) => typeof value === "string")
+      )
+        return [];
+      const identifier = identifierForComponent(name);
+      const schemas = document.components?.schemas ?? {};
+      const typeCollision =
+        ["paths", "webhooks", "components", "operations", "JsonValue"].includes(
+          identifier,
+        ) ||
+        Object.keys(schemas).some(
+          (other) =>
+            other !== name &&
+            (rustOwned ||
+              other.endsWith("EntityDto") ||
+              other === "SyncEntityPayload") &&
+            identifierForComponent(other) === identifier,
+        );
+      if (names.has(identifier) || typeCollision)
+        throw new Error(`Invalid or colliding enum component name: ${name}`);
+      names.add(identifier);
+      if (new Set(schema.enum).size !== schema.enum.length)
+        throw new Error(`Duplicate enum value in ${name}`);
       const entries = schema.enum.map(
-        (value) => `${JSON.stringify(value)}: ${JSON.stringify(value)}`,
+        (value) =>
+          `${value === "__proto__" ? `[${JSON.stringify(value)}]` : JSON.stringify(value)}: ${JSON.stringify(value)}`,
       );
-      return [`export const ${name} = { ${entries.join(", ")} } as const;`];
+      const union =
+        !rustOwned &&
+        !name.endsWith("EntityDto") &&
+        name !== "SyncEntityPayload"
+          ? `\nexport type ${identifier} = (typeof ${identifier})[keyof typeof ${identifier}];`
+          : "";
+      return [
+        `export const ${identifier} = { ${entries.join(", ")} } as const;${union}`,
+      ];
     })
     .join("\n");
 }
@@ -151,7 +201,7 @@ const generated = COMMENT_HEADER + optionalPropertyInputs(nodes);
 const declarations = recursiveJsonValue
   ? `${generated}\n${JSON_VALUE_ALIAS}`
   : generated;
-const runtimeValues = runtimeEnumValues(document);
+const runtimeValues = runtimeEnumValues(document, rustOwned);
 const runtimeDeclarations = runtimeValues ? `${runtimeValues}\n` : "";
 process.stdout.write(
   format(
@@ -162,7 +212,8 @@ process.stdout.write(
           .filter((name) => name !== "JsonValue" || !recursiveJsonValue)
           .sort()
           .map(
-            (name) => `export type ${name} = components["schemas"]["${name}"];`,
+            (name) =>
+              `export type ${identifierForComponent(name)} = components["schemas"][${JSON.stringify(name)}];`,
           )
           .join("\n")}\n`
       : `${declarations}${entityAliases(document)}\n${runtimeDeclarations}`,

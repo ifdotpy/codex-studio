@@ -600,9 +600,13 @@ pub fn legacy_notice_response_association(params: &Value) -> Option<&str> {
 
 /// OpenAPI fragments rendered from the accounting owner, including named leaf types.
 pub fn schemas() -> serde_json::Map<String, Value> {
+    schemas_with_definitions_path("/components/schemas")
+}
+
+pub(crate) fn schemas_with_definitions_path(path: &'static str) -> serde_json::Map<String, Value> {
     let mut generator = schemars::generate::SchemaSettings::draft2020_12()
         .for_serialize()
-        .with(|s| s.definitions_path = "/components/schemas".into())
+        .with(|s| s.definitions_path = path.into())
         .into_generator();
     generator.subschema_for::<UsageObservation>();
     generator.subschema_for::<ledger::UsageLedgerRow>();
