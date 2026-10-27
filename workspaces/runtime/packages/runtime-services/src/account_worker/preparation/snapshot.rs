@@ -2054,20 +2054,7 @@ mod resource_tests {
         for (root, ready, expected_root) in [
             (json!(alias), false, alias.clone()),
             (json!(custom.path()), false, custom.path().to_owned()),
-<<<<<<< head
-            // The saved selection is canonical: macOS temporary folders resolve /var to /private/var.
-            (
-                Value::Null,
-                false,
-                studio_runtime_store::path_identity::CanonicalPath::existing(custom.path())
-                    .expect("canonical custom store")
-                    .into_path_buf(),
-            ),
-||||||| base
-            (Value::Null, false, custom.path().to_owned()),
-=======
             (Value::Null, false, canonical_custom),
->>>>>>> main
             (Value::Null, true, default_root.clone()),
         ] {
             let record = json!({"id":"reviewer", "rootId":"reviewer", "epoch":1,
@@ -2715,19 +2702,6 @@ mod workspace_fence_tests {
         let captured = resources
             .native_layr(state.path(), &record)
             .expect("association");
-<<<<<<< head
-        // Only Linux uses the root daemon socket; macOS runs Layr directly.
-        if cfg!(target_os = "linux") {
-            assert_eq!(
-                captured.environment["LAYR_SOCKET"],
-                json!(crate::layr_native::socket_path(state.path()))
-            );
-||||||| base
-        assert_eq!(
-            captured.environment["LAYR_SOCKET"],
-            json!(crate::layr_native::socket_path(state.path()))
-        );
-=======
         if cfg!(target_os = "linux") {
             assert_eq!(
                 captured.environment["LAYR_SOCKET"],
@@ -2736,7 +2710,6 @@ mod workspace_fence_tests {
         } else {
             assert_eq!(captured.environment["LAYR_DIRECT"], "1");
             assert_eq!(captured.environment["LAYR_ROOT"], json!(alias));
->>>>>>> main
         }
         let changed = json!({"workspaceMode":"layr-native", "layrStoreRoot":root});
         assert!(resources.native_layr(state.path(), &changed).is_err());
