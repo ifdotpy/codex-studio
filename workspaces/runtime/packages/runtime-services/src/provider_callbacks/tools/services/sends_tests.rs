@@ -196,7 +196,7 @@ async fn count_message_agent_rows(unrelated: usize) -> usize {
         preparation: None,
     });
     let prefix = lead[..8].to_owned();
-    let rows = store
+    store
         .transaction_with(move |tx| {
             let snapshot = super::super::super::storage::snapshot(tx, &context)?;
             AGENT_ROWS.with(|count| count.set(0));
@@ -220,8 +220,7 @@ async fn count_message_agent_rows(unrelated: usize) -> usize {
             Ok::<_, CallbackError>(AGENT_ROWS.with(|count| count.get()))
         })
         .await
-        .unwrap();
-    rows
+        .unwrap()
 }
 
 #[tokio::test]
