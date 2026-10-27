@@ -667,8 +667,7 @@ export function createApiScope(options: ApiScopeOptions) {
         requestOptions.readMetadata.etag =
           response.headers.get("ETag") || undefined;
       if (!response.ok) throw errorPayload(result.error, response.status);
-      if (!("data" in result)) return undefined;
-      if (result.data === null)
+      if (!("data" in result) || result.data == null)
         throw new Error("Successful response did not contain a body.");
       return result.data as GetResult<Path>;
     } catch (error) {
@@ -743,11 +742,7 @@ export function createApiScope(options: ApiScopeOptions) {
         throw new ApiSchemaMismatchError(true);
       if (!result.response.ok)
         throw errorPayload(result.error, result.response.status);
-      if (!("data" in result)) {
-        await mutation?.finish();
-        return undefined as PostResult<Path>;
-      }
-      if (result.data === null)
+      if (!("data" in result) || result.data == null)
         throw new Error("Successful response did not contain a body.");
       const data = result.data as PostResult<Path>;
       await mutation?.finish();

@@ -94,6 +94,7 @@ export default {
       "src/native/frame.test.ts",
       "src/native/externalLinks.test.ts",
       "src/api.test.ts",
+      "src/servers/apiScope.test.ts",
       "src/types.test.ts",
       "src/components/shell/WorkspaceBadge.test.ts",
       "src/components/backgroundTaskModel.test.ts",
