@@ -59,6 +59,10 @@ pub enum ProviderResponse {
 /// only allow-listed read methods may omit an actor.
 #[derive(Clone)]
 pub struct ProviderRequest {
+    /// Stable root persisted by the owner before admitting this provider obligation.
+    pub root_request_id: String,
+    /// Exact effect admission, when the owning transaction already admitted the call.
+    pub admitted_request: Option<studio_runtime_store::request_results::AdmittedRequest>,
     pub account: String,
     pub operation: String,
     pub actor: Option<RequestActor>,
@@ -988,7 +992,7 @@ impl AccountSessionRuntime {
     async fn exchange(
         &self,
         account: &str,
-        _for_login: bool,
+        root_request_id: String,
         operation: String,
         method: &'static str,
         params: Value,
@@ -1006,6 +1010,8 @@ impl AccountSessionRuntime {
             tokio::time::timeout_at(
                 deadline,
                 session.request(ProviderRequest {
+                    root_request_id,
+                    admitted_request: None,
                     account: account.to_owned(),
                     operation: operation.clone(),
                     actor: None,
@@ -1588,7 +1594,7 @@ impl AccountSessionPort for AccountSessionRuntime {
                             let response = runtime
                                 .exchange(
                                     account,
-                                    request.account_key.is_some(),
+                                    request.login_id.clone(),
                                     request.login_id.clone(),
                                     "account/login/start",
                                     serde_json::json!({"type":"chatgptDeviceCode"}),
@@ -1721,7 +1727,7 @@ impl AccountSessionPort for AccountSessionRuntime {
                     let response = runtime
                         .exchange(
                             account,
-                            receipt.get("reauthAccountKey").is_some(),
+                            request.to_owned(),
                             format!("{request}:cancel"),
                             "account/login/cancel",
                             serde_json::json!({"loginId":receipt["loginId"]}),
@@ -1825,6 +1831,8 @@ async fn read_limits_with_freshness(
         let receipt = AccountSessionPort::provider_request(
             runtime,
             ProviderRequest {
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
                 account: account.to_owned(),
                 operation: operation.clone(),
                 actor: None,
