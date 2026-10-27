@@ -94,6 +94,7 @@ export default {
       "src/native/frame.test.ts",
       "src/native/externalLinks.test.ts",
       "src/api.test.ts",
+      "src/servers/apiScope.test.ts",
       "src/types.test.ts",
       "src/components/shell/WorkspaceBadge.test.ts",
       "src/components/backgroundTaskModel.test.ts",
@@ -114,6 +115,7 @@ export default {
       "src/uiTeamScaleAudit.test.ts",
       "src/verifyRustChatLifecycle.test.ts",
       "src/components/agents/AgentProgress.test.ts",
+      "src/components/agents/SubagentConcurrencyControl.test.ts",
       "src/components/agents/ExecutionSettings.receipt.test.ts",
       "src/components/agents/ExecutionSettings.test.ts",
       "src/components/agents/WorkerModelPicker.test.ts",
@@ -154,6 +156,8 @@ export default {
       // Bounded account, queue and cost consumers apply stream values without reads.
       "src/components/resourceReadRecovery.test.ts",
       "src/components/RealtimeVoice.test.ts",
+      "src/components/voiceEvent.test.ts",
+      "src/native/voice.test.ts",
       // Normal draft changes use RxDB's master stream; recovery reads its durable checkpoint.
       "src/sync/client.draftStream.test.ts",
       // A complete state batch advances the durable projection with no new pull; storage failures, gaps, reconnects and epochs still reconcile.

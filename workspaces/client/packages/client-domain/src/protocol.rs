@@ -4,6 +4,17 @@ use std::io;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Events emitted by the native voice peer to its subscribing view.
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum NativeVoiceEvent {
+    Message { data: String },
+    State { state: String },
+    Error { message: String },
+    Microphone { state: String },
+    Channel { state: String },
+}
+
 pub const MAX_FRAME: usize = 1024 * 1024;
 pub const MAX_MESSAGE: usize = 32 * 1024 * 1024;
 

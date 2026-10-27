@@ -55,6 +55,37 @@ const response = (value: unknown, hash = API_SCHEMA_HASH) =>
   });
 
 describe("concurrent servers in one interface", () => {
+  it("retains the exact uncertain mutation after an empty successful response", async () => {
+    const disk = memory();
+    const requests: Request[] = [];
+    const api = scope(
+      "a",
+      async (request) => {
+        requests.push(request);
+        return new Response(null, {
+          status: 200,
+          headers: { "Content-Length": "0" },
+        });
+      },
+      disk,
+    );
+    const body = { rows: [] };
+    await expect(api.post("/api/sync/drafts", body)).rejects.toThrow(
+      "Successful response did not contain a body.",
+    );
+    const key = Array.from({ length: disk.length }, (_, i) => disk.key(i)).find(
+      (value) => value?.includes("studio-server-write:"),
+    );
+    expect(key).toBeTruthy();
+    if (!key) throw new Error("Mutation journal missing");
+    const saved = JSON.parse(disk.getItem(key) || "null");
+    expect(saved).toMatchObject({
+      uncertain: true,
+      requestId: requests[0]?.headers.get("X-Studio-Request-Id"),
+    });
+    expect(requests).toHaveLength(1);
+    expect(await requests[0]?.json()).toEqual(body);
+  });
   it("persists changed UI values once per owner and observes intervening storage edits", () => {
     const disk = memory();
     const write = vi.spyOn(disk, "setItem");

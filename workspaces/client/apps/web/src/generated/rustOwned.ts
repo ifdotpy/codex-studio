@@ -115,6 +115,33 @@ export interface components {
       length: number;
       nodes: components["schemas"]["MarkdownNode"][];
     };
+    /** @description Events emitted by the native voice peer to its subscribing view. */
+    NativeVoiceEvent:
+      | {
+          data: string;
+          /** @constant */
+          type: "message";
+        }
+      | {
+          state: string;
+          /** @constant */
+          type: "state";
+        }
+      | {
+          message: string;
+          /** @constant */
+          type: "error";
+        }
+      | {
+          state: string;
+          /** @constant */
+          type: "microphone";
+        }
+      | {
+          state: string;
+          /** @constant */
+          type: "channel";
+        };
     RecoveryStatus: {
       blocked: string | null;
       degraded: boolean;
@@ -191,6 +218,7 @@ export type MarkdownBlock = components["schemas"]["MarkdownBlock"];
 export type MarkdownNode = components["schemas"]["MarkdownNode"];
 export type MarkdownSentence = components["schemas"]["MarkdownSentence"];
 export type MarkdownTree = components["schemas"]["MarkdownTree"];
+export type NativeVoiceEvent = components["schemas"]["NativeVoiceEvent"];
 export type RecoveryStatus = components["schemas"]["RecoveryStatus"];
 export type ReplyTimingDiagnostic =
   components["schemas"]["ReplyTimingDiagnostic"];

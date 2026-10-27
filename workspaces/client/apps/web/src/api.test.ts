@@ -1,4 +1,5 @@
 import { required } from "./components/componentTestFixtures.ts";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
@@ -16,6 +17,45 @@ import {
 } from "./api";
 
 describe("OpenAPI transport facade", () => {
+  it("requires bodies for all successful GET and POST operations in the OpenAPI owner", () => {
+    const spec: unknown = JSON.parse(
+      readFileSync(
+        new URL(
+          "../../../../runtime/packages/runtime-http/openapi.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    expect(spec).toBeTypeOf("object");
+    if (
+      !spec ||
+      typeof spec !== "object" ||
+      !("paths" in spec) ||
+      !spec.paths ||
+      typeof spec.paths !== "object"
+    )
+      throw new Error("OpenAPI paths missing");
+    for (const operations of Object.values(spec.paths)) {
+      if (!operations || typeof operations !== "object") continue;
+      for (const method of ["get", "post"] as const) {
+        if (!(method in operations)) continue;
+        const operation = operations[method];
+        if (
+          !operation ||
+          typeof operation !== "object" ||
+          !("responses" in operation) ||
+          !operation.responses ||
+          typeof operation.responses !== "object"
+        )
+          continue;
+        for (const [status, response] of Object.entries(operation.responses)) {
+          if (status.startsWith("2"))
+            expect(response).toHaveProperty("content");
+        }
+      }
+    }
+  });
   beforeEach(() => {
     setToken("test-token");
     setWorkspace("workspace-a");
@@ -81,6 +121,25 @@ describe("OpenAPI transport facade", () => {
 
     await expect(get("/api/session")).rejects.toBeInstanceOf(ApiError);
   });
+
+  it.each([200, 204])(
+    "rejects absent required success bodies (HTTP %i)",
+    async (status) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response(null, { status, headers: { "Content-Length": "0" } }),
+        ),
+      );
+      await expect(get("/api/session")).rejects.toThrow(
+        "Successful response did not contain a body.",
+      );
+      await expect(post("/api/sync/drafts", { rows: [] })).rejects.toThrow(
+        "Successful response did not contain a body.",
+      );
+    },
+  );
 
   it("preserves structured download errors after OpenAPI parsing", async () => {
     const fetch = vi.fn(async () =>

@@ -20,6 +20,7 @@ import {
 } from "./draftSyncNotice";
 
 import { encodeDraftPayload } from "./draftPayload";
+import { decodeDraftVersion } from "./draftDecoder";
 import {
   readDraftJournal,
   writeDraftJournal,
@@ -83,7 +84,11 @@ export function createBrowserDrafts(options: {
     const [writer] = useState(() => randomUUID());
     const [recovery] = useState(() => {
       try {
-        return { entries: readDraftJournal(storageKey.current), error: "" };
+        let error = "";
+        const entries = readDraftJournal(storageKey.current, () => {
+          error = "Some saved drafts could not be read. Keep this chat open.";
+        });
+        return { entries, error };
       } catch {
         return {
           entries: [] as PendingDraft[],
@@ -179,7 +184,7 @@ export function createBrowserDrafts(options: {
           const latest = doc.getLatest();
           let version = decoded.current.get(latest);
           if (!version) {
-            version = JSON.parse(latest.payload) as DraftVersion;
+            version = decodeDraftVersion(JSON.parse(latest.payload));
             decoded.current.set(latest, version);
           }
           return version;
@@ -353,7 +358,11 @@ export function createBrowserDrafts(options: {
         }
         const previous = current.current;
         storageKey.current = targetKey;
-        for (const entry of readDraftJournal(targetKey))
+        for (const entry of readDraftJournal(targetKey, () =>
+          reportLocalError(
+            "Some saved drafts could not be read. Keep this chat open.",
+          ),
+        ))
           journal.current.set(entry.key, entry);
         markPending();
         for (const entry of entries()) {
@@ -377,7 +386,11 @@ export function createBrowserDrafts(options: {
       flushing.current = (async () => {
         let connecting = false;
         try {
-          for (const entry of readDraftJournal(storageKey.current)) {
+          for (const entry of readDraftJournal(storageKey.current, () =>
+            reportLocalError(
+              "Some saved drafts could not be read. Keep this chat open.",
+            ),
+          )) {
             const old = journal.current.get(entry.key);
             if (!old || entry.version.updated > old.version.updated)
               journal.current.set(entry.key, entry);
@@ -394,8 +407,9 @@ export function createBrowserDrafts(options: {
             for (const entry of batch) {
               const item = entry.version;
               const old = await db.drafts.findOne(item.id).exec();
-              const previous: DraftVersion | undefined =
-                old && JSON.parse(old.payload);
+              const previous: DraftVersion | undefined = old
+                ? decodeDraftVersion(JSON.parse(old.payload))
+                : undefined;
               // A recovered older edit must not replace a newer branch from another tab.
               const newer = previous && previous.updated > item.updated;
               const chosen = newer ? previous : item;
@@ -427,7 +441,11 @@ export function createBrowserDrafts(options: {
               markPending();
             }
           }
-          reportLocalError("");
+          let invalid = false;
+          readDraftJournal(storageKey.current, () => {
+            invalid = true;
+          });
+          if (!invalid) reportLocalError("");
           reconcile(decodeDrafts(await db.drafts.find().exec()));
         } catch {
           if (connecting) reportSyncFailure("replication");
@@ -537,7 +555,15 @@ export function createBrowserDrafts(options: {
       const publication = createFrameBatch(() => {
         const docs = pendingDocuments;
         pendingDocuments = undefined;
-        if (!stopped && docs) reconcile(decodeDrafts(docs));
+        if (!stopped && docs) {
+          try {
+            reconcile(decodeDrafts(docs));
+          } catch {
+            reportLocalError(
+              "Some saved drafts could not be read. Keep this chat open.",
+            );
+          }
+        }
       });
       let retry: ReturnType<typeof setTimeout> | undefined;
       const bootstrapRetryDelays = [1_000, 3_000, 10_000];
