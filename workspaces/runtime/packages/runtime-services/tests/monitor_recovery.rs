@@ -27,6 +27,27 @@ fn record(store: &RuntimeStore, id: &str) -> Value {
         .clone()
 }
 
+#[test]
+fn stall_probe_generation_requires_start_but_inactive_residue_is_readable() {
+    let root = fixtures::tempdir();
+    let case = running(&fixtures::corpus(root.path()));
+    let mut record = case["before"].clone();
+    record["stallProbeGeneration"] = json!(0);
+    for started in [None, Some(Value::Null)] {
+        if let Some(started) = started {
+            record["stallProbeStarted"] = started;
+        }
+        assert!(MonitorSnapshot::checked(record.clone(), case["actor"].clone()).is_err());
+    }
+    record["stallProbeStarted"] = json!(2000.0);
+    assert!(MonitorSnapshot::checked(record.clone(), case["actor"].clone()).is_ok());
+    record
+        .as_object_mut()
+        .expect("record")
+        .remove("stallProbeGeneration");
+    assert!(MonitorSnapshot::checked(record, case["actor"].clone()).is_ok());
+}
+
 #[tokio::test]
 async fn local_cancel_persists_before_fake_provider_termination() {
     use std::sync::{Arc, Mutex};
