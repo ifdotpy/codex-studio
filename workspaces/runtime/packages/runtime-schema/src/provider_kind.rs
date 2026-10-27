@@ -114,6 +114,7 @@ impl ProviderKind {
     }
 }
 
+#[deny(clippy::disallowed_types)]
 impl FromStr for ProviderKind {
     type Err = UnknownProvider;
 

@@ -141,6 +141,8 @@ edition.workspace = true
 [lib]
 path = "lib.rs"
 [workspace]
+[dependencies]
+serde_json = "1"
 [lints]
 workspace = true
 [workspace.package]
@@ -156,6 +158,11 @@ ${section(manifest, "workspace.lints.clippy")}`,
       read("rust-toolchain.toml"),
     );
     const source = `
+use serde_json::Value as Json;
+#[deny(clippy::disallowed_types)]
+pub fn typed_owner() {}
+#[allow(dead_code)]
+fn opaque_boundary(_: Json) {}
 pub enum State { Ready, Running, Settled }
 pub fn terminal(state: State) -> bool {
     match state { State::Settled => true, State::Ready | State::Running => false }
@@ -189,6 +196,22 @@ pub fn request_id(receipt: Receipt) -> u64 {
     const baseline = check(source);
     assert.equal(baseline.status, 0, baseline.stdout + baseline.stderr);
     for (const [name, text, diagnostic] of [
+      [
+        "qualified JSON value in typed owner",
+        source.replace(
+          "pub fn typed_owner() {}",
+          "pub fn typed_owner() { let _: Option<serde_json::Value> = None; }",
+        ),
+        /disallowed type `serde_json::Value`/,
+      ],
+      [
+        "aliased JSON value in typed owner",
+        source.replace(
+          "pub fn typed_owner() {}",
+          "pub fn typed_owner() { let _: Option<Json> = None; }",
+        ),
+        /disallowed type `serde_json::Value`/,
+      ],
       [
         "wildcard enum arm",
         source.replace("State::Ready | State::Running", "_"),
@@ -238,4 +261,18 @@ pub fn request_id(receipt: Receipt) -> u64 {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("closed provider parsing opts into the Value restriction", () => {
+  assert.match(read("clippy.toml"), /disallowed-types\s*=.*serde_json::Value/);
+  assert.equal(
+    assignments(section(read("Cargo.toml"), "workspace.lints.clippy")).get(
+      "disallowed_types",
+    ),
+    '"allow"',
+  );
+  assert.match(
+    read("workspaces/runtime/packages/runtime-schema/src/provider_kind.rs"),
+    /#\[deny\(clippy::disallowed_types\)\]\s*impl FromStr for ProviderKind/,
+  );
 });
