@@ -1,13 +1,19 @@
 import { useState } from "react";
 import { ActionIcon, Badge, Modal, Tabs, Text } from "@mantine/core";
 import { CircleAlert, Info } from "lucide-react";
+import { useAppLog } from "../appLog";
 import { displayError, errorDetails } from "../errorPresentation";
 import type { components } from "../generated/api";
 import type { Message } from "../types";
 import ErrorDescription from "./ErrorDescription";
 import { isNonBlockingWarning } from "./NativeNotice";
 import "./conversation-warnings.css";
-import { StudioErrorList, useStudioErrors } from "./StudioErrors";
+import {
+  LEVELS,
+  LEVEL_COLORS,
+  StudioErrorList,
+  useStudioErrors,
+} from "./StudioErrors";
 
 type NativeNotice =
   | components["schemas"]["NativeNoticeRecord"]
@@ -49,17 +55,26 @@ export default function ConversationWarnings({
   openAgent?: (id: string) => void;
 }) {
   const errors = useStudioErrors();
+  const logs = useAppLog();
   const [openScope, setOpenScope] = useState<string | null>(null);
   const accountNotices =
     notices?.filter((notice) => notice.accountKey === accountKey) || [];
   const chatWarnings = messages.filter(isNonBlockingWarning);
-  const hasWarning =
-    errors.items.length > 0 ||
-    accountNotices.some((notice) => !isInfoNotice(notice)) ||
-    chatWarnings.length > 0;
+  const highest = LEVELS.find(
+    (level) =>
+      errors.items.some((item) => item.level === level) ||
+      (level === "warning" &&
+        (accountNotices.some((notice) => !isInfoNotice(notice)) ||
+          chatWarnings.length > 0)) ||
+      (level === "log" && logs.length > 0),
+  );
+  const hasWarning = highest !== undefined && highest !== "log";
   const noticeCount = accountNotices.length + chatWarnings.length;
-  const title = hasWarning || noticeCount === 0 ? "Warnings" : "Notices";
-  const count = noticeCount + errors.items.length;
+  const title =
+    hasWarning || (noticeCount === 0 && logs.length === 0)
+      ? "Warnings"
+      : "Notices";
+  const count = noticeCount + errors.items.length + logs.length;
   const opened = openScope === scope;
 
   return (
@@ -67,7 +82,7 @@ export default function ConversationWarnings({
       <ActionIcon
         className={`conversation-warning-trigger${hasWarning ? "" : " conversation-info-trigger"}`}
         variant="subtle"
-        color={hasWarning ? "orange" : "blue"}
+        color={highest ? LEVEL_COLORS[highest] : "blue"}
         aria-label={title}
         title={`${title} (${count})`}
         onClick={() => {
@@ -107,7 +122,9 @@ export default function ConversationWarnings({
               Notices{noticeCount > 0 && ` (${noticeCount})`}
             </Tabs.Tab>
             <Tabs.Tab value="errors">
-              App errors{errors.items.length > 0 && ` (${errors.items.length})`}
+              App errors
+              {errors.items.length + logs.length > 0 &&
+                ` (${errors.items.length + logs.length})`}
             </Tabs.Tab>
           </Tabs.List>
           <Tabs.Panel value="notices" pt="md">

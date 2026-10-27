@@ -105,7 +105,15 @@ async fn call_with_id(
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status().as_u16();
     let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
-    (status, serde_json::from_slice(&bytes).unwrap())
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    if method == "GET" && path == "/api/studio-errors" && status == 200 {
+        for row in value["items"].as_array().unwrap() {
+            let kind: studio_runtime_schema::studio_errors::Kind =
+                serde_json::from_value(row["kind"].clone()).unwrap();
+            assert_eq!(row["level"], json!(kind.level()), "{row}");
+        }
+    }
+    (status, value)
 }
 
 fn monitor(
@@ -184,6 +192,7 @@ async fn studio_errors_list_studio_caused_endings_and_hide_a_dismissed_row() {
     assert_eq!(items[0]["count"], 1);
     let row = items[0]["id"].as_str().unwrap().to_owned();
     assert_eq!(items[0]["kind"], "monitor_outcome_lost");
+    assert_eq!(items[0]["level"], "error");
     assert_eq!(items[0]["action"], "check");
     assert_eq!(items[0]["agentName"], "Fixture worker");
 
@@ -801,6 +810,7 @@ async fn malformed_and_unclassified_source_failures_remain_visible_without_priva
     let rows = body["items"].as_array().unwrap();
     let malformed = rows.iter().find(|row| row["id"] == "monitor:one").unwrap();
     assert_eq!(malformed["kind"], "stored_record_invalid");
+    assert_eq!(malformed["level"], "critical");
     assert_eq!(malformed["diagnostics"]["causes"][0]["pointer"], "/log");
     let unknown = rows
         .iter()

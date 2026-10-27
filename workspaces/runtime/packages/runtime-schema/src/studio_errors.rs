@@ -37,7 +37,38 @@ pub enum Kind {
     ScheduleStalled,
 }
 
+/// Severity of an app error or local log entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioErrorLevel {
+    Critical,
+    Error,
+    Warning,
+    Log,
+}
+
 impl Kind {
+    pub fn level(self) -> StudioErrorLevel {
+        match self {
+            // Invalid retained data can prevent reliable recovery or interpretation.
+            Self::StoredRecordInvalid => StudioErrorLevel::Critical,
+            Self::MonitorOutcomeLost
+            | Self::MonitorNotRecorded
+            | Self::InputUnconfirmed
+            | Self::InputUncertain
+            | Self::InputStuck
+            | Self::TurnDisconnected
+            | Self::WorkspaceFailed
+            | Self::HttpFailure
+            | Self::RecoveryFailed
+            | Self::UnclassifiedFailure => StudioErrorLevel::Error,
+            Self::TurnStalled
+            | Self::InputNotStarted
+            | Self::SessionNotStarted
+            | Self::ScheduleStalled => StudioErrorLevel::Warning,
+        }
+    }
+
     pub fn reason(self) -> &'static str {
         match self {
             Self::MonitorOutcomeLost => {
@@ -337,6 +368,7 @@ pub struct Diagnostics {
 pub struct StudioError {
     pub id: String,
     pub kind: Kind,
+    pub level: StudioErrorLevel,
     pub reason: String,
     #[serde(flatten)]
     pub target: Target,
@@ -395,7 +427,7 @@ mod tests {
 
     #[test]
     fn incident_actions_require_real_agent_destinations_and_keep_unknown_outcomes() {
-        let mut row = json!({"id":"http:request", "kind":"http_failure", "reason":"Request failed", "action":"details", "detail":"store_data", "subject":"GET /api/monitor/log", "at":1,"diagnostics":{"context":{"source":"http","route":"GET /api/monitor/log","requestId":null,"status":503,"class":"store_data"},"certainty":"read_only","causes":[]}});
+        let mut row = json!({"id":"http:request", "kind":"http_failure", "level":"error", "reason":"Request failed", "action":"details", "detail":"store_data", "subject":"GET /api/monitor/log", "at":1,"diagnostics":{"context":{"source":"http","route":"GET /api/monitor/log","requestId":null,"status":503,"class":"store_data"},"certainty":"read_only","causes":[]}});
         let server: StudioError =
             serde_json::from_value(row.clone()).expect("server incident has no fake agent");
         assert!(matches!(server.target, Target::Details));
@@ -438,6 +470,7 @@ mod tests {
         let incident = StudioError {
             id: "monitor:watch".into(),
             kind: Kind::MonitorOutcomeLost,
+            level: Kind::MonitorOutcomeLost.level(),
             reason: Kind::MonitorOutcomeLost.reason().into(),
             target: Target::Check {
                 agent_id: "agent".into(),
@@ -482,5 +515,20 @@ mod tests {
             None,
             "{payload}"
         );
+    }
+}
+
+#[cfg(test)]
+mod level_tests {
+    use super::{Kind, StudioErrorLevel};
+    #[test]
+    fn levels_reflect_the_consequence() {
+        // Corrupt retained records undermine reliable recovery.
+        assert_eq!(
+            Kind::StoredRecordInvalid.level(),
+            StudioErrorLevel::Critical
+        );
+        assert_eq!(Kind::HttpFailure.level(), StudioErrorLevel::Error);
+        assert_eq!(Kind::TurnStalled.level(), StudioErrorLevel::Warning);
     }
 }

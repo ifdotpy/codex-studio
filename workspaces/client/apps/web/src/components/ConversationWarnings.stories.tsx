@@ -1,3 +1,4 @@
+import { StudioErrorLevel } from "../generated/api";
 import { useState } from "react";
 import { Button } from "@mantine/core";
 import type { Meta, StoryObj } from "@storybook/react-vite";
@@ -10,6 +11,7 @@ import { StudioErrorsProvider, type StudioErrorItem } from "./StudioErrors";
 const errors: StudioErrorItem[] = ["one", "two", "three"].map((id) => ({
   id: `monitor:${id}`,
   kind: "monitor_outcome_lost",
+  level: StudioErrorLevel.error,
   diagnostics: {
     context: { source: "monitor", requestId: id, turnId: null, epoch: 0 },
     certainty: "unknown",
