@@ -100,6 +100,19 @@ fn typed_response_deserialization_preserves_unknown_outcomes_and_remote_errors()
 }
 
 #[test]
+fn malformed_or_conflicting_supervisor_error_is_unknown() {
+    for response in [
+        r#"{"requestId":17,"error":42,"result":{"acknowledged":9}}"#,
+        r#"{"requestId":17,"error":"refused","result":{"acknowledged":9}}"#,
+    ] {
+        assert!(matches!(
+            response_value::<AckResult>(SupervisorAction::Ack, 17, response),
+            Err(SupervisorError::UnknownOutcome { request_id: 17, .. })
+        ));
+    }
+}
+
+#[test]
 fn event_payload_and_unknown_kind_round_trip() {
     let event: SupervisorEvent = serde_json::from_value(serde_json::json!({
         "sequence": 2, "kind": "future-event", "payload": "{\"x\":1}", "generation": 4, "extension": true

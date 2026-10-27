@@ -467,7 +467,7 @@ pub(crate) fn request_frame<R: SupervisorRequest>(
 #[derive(Deserialize)]
 struct ResponseEnvelope {
     #[serde(rename = "requestId")]
-    request_id: Option<Box<RawValue>>,
+    request_id: Option<u64>,
     error: Option<Box<RawValue>>,
     result: Option<Box<RawValue>>,
 }
@@ -481,19 +481,15 @@ pub(crate) fn response_value<O: for<'de> Deserialize<'de>>(
         Ok(response) => response,
         Err(_) => return Err(SupervisorError::UnknownOutcome { action, request_id }),
     };
-    if response
-        .request_id
-        .as_deref()
-        .and_then(|raw| serde_json::from_str::<u64>(raw.get()).ok())
-        != Some(request_id)
-    {
+    if response.request_id != Some(request_id) {
         return Err(SupervisorError::UnknownOutcome { action, request_id });
     }
-    if let Some(message) = response
-        .error
-        .as_deref()
-        .and_then(|raw| serde_json::from_str::<String>(raw.get()).ok())
-    {
+    if let Some(error) = response.error {
+        let message = serde_json::from_str::<String>(error.get())
+            .map_err(|_| SupervisorError::UnknownOutcome { action, request_id })?;
+        if response.result.is_some() {
+            return Err(SupervisorError::UnknownOutcome { action, request_id });
+        }
         return Err(SupervisorError::Remote { action, message });
     }
     match response.result {
