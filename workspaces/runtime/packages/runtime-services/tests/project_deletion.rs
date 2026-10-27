@@ -46,6 +46,47 @@ impl CreationCatalog for Catalog {
         })
     }
 }
+struct ChildEnvironment {
+    catalog: Arc<Catalog>,
+    home: String,
+}
+
+impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment for ChildEnvironment {
+    fn select_worker_account(
+        &self,
+        request: studio_runtime_services::provider_callbacks::WorkerAccountRequest<'_>,
+    ) -> Result<
+        (String, AccountIdentity),
+        studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError,
+    > {
+        assert_eq!(request.requested_account_key, Some("default"));
+        Ok((
+            "default".into(),
+            AccountIdentity {
+                provider: studio_runtime_providers::ProviderKind::Codex,
+                home: Some(self.home.clone()),
+                account_id: None,
+                email: None,
+            },
+        ))
+    }
+    fn catalog(&self) -> &dyn CreationCatalog {
+        self.catalog.as_ref()
+    }
+    fn prepare_workspace(
+        &self,
+        _: &RuntimeStore,
+        _: &studio_runtime_store::AgentRecord,
+        _: &Value,
+        _: &str,
+    ) -> Result<
+        Box<dyn studio_runtime_services::monitor_runtime::WorkspaceAdmission + Send + Sync>,
+        studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError,
+    > {
+        Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable("fixture/workspace"))
+    }
+}
+
 fn accounts() -> AccountPolicyState {
     AccountPolicyState::from_startup(Some(&serde_json::to_vec(&json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","provider":studio_runtime_schema::ProviderKind::Codex,"home":"/fixture-provider-home","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{},"deleteReceipts":{}})).expect("current registry JSON")),[]).expect("accounts")
 }
@@ -410,6 +451,10 @@ async fn project_deletion_fences_prepared_spawn_and_includes_prior_spawn() {
             release: Mutex::new(release_rx),
         });
         let worker_store = store.clone();
+        let environment = ChildEnvironment {
+            catalog: catalog.clone(),
+            home: store.root().to_string_lossy().into_owned(),
+        };
         let account_driver = driver(store.root());
         let pending = tokio::spawn(async move {
             let accounts = accounts();
@@ -418,7 +463,7 @@ async fn project_deletion_fences_prepared_spawn_and_includes_prior_spawn() {
                 accounts: Some(&accounts),
                 driver: Some(account_driver),
                 catalog: Some(catalog),
-                managed_creation_environment: None,
+                managed_creation_environment: Some(&environment),
                 validate: Arc::new(|_, _| true),
             };
             agents_create::agent(
@@ -429,7 +474,7 @@ async fn project_deletion_fences_prepared_spawn_and_includes_prior_spawn() {
                     workspace: Some("shared".into()),
                     account: Some("default".into()),
                     prompt: "Task".into(),
-                    intent: json!({"model":"gpt-fixture"}),
+                    intent: json!({"model":"gpt-fixture","effort":null}),
                     ..Default::default()
                 },
             )
