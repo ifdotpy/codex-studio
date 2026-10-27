@@ -1,6 +1,11 @@
 import ts from "typescript";
 
-type Owner = { name: string; members: Map<string, string>; file: string };
+type Owner = {
+  name: string;
+  component: string;
+  members: Map<string, string>;
+  file: string;
+};
 
 // Generated const objects own wire values; do not maintain a second value list here.
 function owners(program: ts.Program, files: readonly string[]): Owner[] {
@@ -31,20 +36,46 @@ function owners(program: ts.Program, files: readonly string[]): Owner[] {
             !ts.isStringLiteral(property.initializer) ||
             !(
               ts.isIdentifier(property.name) ||
-              ts.isStringLiteral(property.name)
+              ts.isStringLiteral(property.name) ||
+              (ts.isComputedPropertyName(property.name) &&
+                ts.isStringLiteral(property.name.expression))
             )
           ) {
             members.clear();
             break;
           }
-          members.set(property.initializer.text, property.name.text);
+          const name = ts.isComputedPropertyName(property.name)
+            ? (property.name.expression as ts.StringLiteral).text
+            : property.name.text;
+          members.set(property.initializer.text, name);
         }
         if (members.size)
-          result.push({ name: declaration.name.text, members, file });
+          result.push({
+            name: declaration.name.text,
+            component: componentName(source, declaration.name.text),
+            members,
+            file,
+          });
       }
     }
   }
   return result;
+}
+
+function componentName(source: ts.SourceFile, name: string): string {
+  const alias = source.statements.find(
+    (statement) =>
+      ts.isTypeAliasDeclaration(statement) && statement.name.text === name,
+  );
+  if (
+    alias &&
+    ts.isTypeAliasDeclaration(alias) &&
+    ts.isIndexedAccessTypeNode(alias.type) &&
+    ts.isLiteralTypeNode(alias.type.indexType) &&
+    ts.isStringLiteral(alias.type.indexType.literal)
+  )
+    return alias.type.indexType.literal.text;
+  return name;
 }
 
 function literalValues(type: ts.Type): string[] | undefined {
@@ -58,14 +89,24 @@ function literalValues(type: ts.Type): string[] | undefined {
   return result;
 }
 
-export function enumLiteralFindings(
+export type EnumLiteralDiagnostic = {
+  file: string;
+  line: number;
+  column: number;
+  owner: string;
+  ownerFile: string;
+  member: string;
+  literal: string;
+};
+
+export function enumLiteralDiagnostics(
   program: ts.Program,
   targets: readonly string[],
   ownerFiles: readonly string[],
-): string[] {
+): EnumLiteralDiagnostic[] {
   const checker = program.getTypeChecker();
   const allOwners = owners(program, ownerFiles);
-  const findings: string[] = [];
+  const findings: EnumLiteralDiagnostic[] = [];
   function referencesOwner(
     symbol: ts.Symbol | undefined,
     owner: Owner,
@@ -76,10 +117,31 @@ export function enumLiteralFindings(
     if (symbol.flags & ts.SymbolFlags.Alias)
       symbol = checker.getAliasedSymbol(symbol);
     for (const declaration of symbol.declarations ?? []) {
-      if (declaration.getSourceFile().fileName === owner.file) return true;
+      if (
+        declaration.getSourceFile().fileName === owner.file &&
+        "name" in declaration &&
+        declaration.name &&
+        (ts.isIdentifier(declaration.name as ts.Node) ||
+          ts.isStringLiteral(declaration.name as ts.Node)) &&
+        (declaration.name as ts.Identifier | ts.StringLiteral).text ===
+          owner.name
+      )
+        return true;
       let found = false;
       const walk = (node: ts.Node) => {
         if (found) return;
+        if (
+          ts.isIndexedAccessTypeNode(node) &&
+          ts.isLiteralTypeNode(node.indexType) &&
+          ts.isStringLiteral(node.indexType.literal)
+        ) {
+          const member = checker.getPropertyOfType(
+            checker.getTypeAtLocation(node.objectType),
+            node.indexType.literal.text,
+          );
+          if (referencesOwner(member, owner, seen)) found = true;
+          return;
+        }
         if (
           ts.isIdentifier(node) &&
           referencesOwner(checker.getSymbolAtLocation(node), owner, seen)
@@ -146,7 +208,15 @@ export function enumLiteralFindings(
           } else if (ts.isVariableDeclaration(parent))
             symbol = checker.getSymbolAtLocation(parent.name);
         }
-        const values = type && literalValues(type);
+        const declaration =
+          symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+        const declaredType =
+          symbol && declaration
+            ? checker.getTypeOfSymbolAtLocation(symbol, declaration)
+            : undefined;
+        const values =
+          (declaredType && literalValues(declaredType)) ??
+          (type && literalValues(type));
         const matches =
           values &&
           allOwners.filter(
@@ -159,15 +229,17 @@ export function enumLiteralFindings(
           );
         if (matches?.length) {
           const pos = source.getLineAndCharacterOfPosition(node.getStart());
-          const alternatives = matches
-            .map(
-              (owner) =>
-                `${owner.name}[${JSON.stringify(owner.members.get(node.text))}] from ${owner.file}`,
-            )
-            .join(" or ");
-          findings.push(
-            `${file}:${pos.line + 1}:${pos.character + 1}: import and use ${alternatives} instead of ${JSON.stringify(node.text)}`,
-          );
+          for (const owner of matches) {
+            findings.push({
+              file,
+              line: pos.line + 1,
+              column: pos.character + 1,
+              owner: owner.name,
+              ownerFile: owner.file,
+              member: owner.members.get(node.text)!,
+              literal: node.text,
+            });
+          }
         }
       }
       ts.forEachChild(node, visit);
@@ -175,4 +247,15 @@ export function enumLiteralFindings(
     visit(source);
   }
   return findings;
+}
+
+export function enumLiteralFindings(
+  program: ts.Program,
+  targets: readonly string[],
+  ownerFiles: readonly string[],
+): string[] {
+  return enumLiteralDiagnostics(program, targets, ownerFiles).map(
+    (finding) =>
+      `${finding.file}:${finding.line}:${finding.column}: import and use ${finding.owner}[${JSON.stringify(finding.member)}] from ${finding.ownerFile} instead of ${JSON.stringify(finding.literal)}`,
+  );
 }

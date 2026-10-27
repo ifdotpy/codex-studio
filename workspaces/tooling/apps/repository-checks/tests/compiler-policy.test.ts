@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -110,7 +110,7 @@ test("local and hosted gate compositions enforce root lint", () => {
     );
     assert.equal(lint.length, 1, `${gate} must run root lint exactly once`);
     assert.equal(lint[0]?.options?.script, "lint:all");
-    assert.equal(lint[0]?.requires, undefined);
+    assert.equal(lint[0]?.requires, "wasm");
   }
 });
 
@@ -219,6 +219,7 @@ test("generated enum owners reject raw literals in typed positions", async () =>
       'const object: { reason: Reason } = { reason: "slot" };',
       'declare const dto: Dto; switch (dto.reason) { case "slot": break; }',
       'const object: Dto = { reason: "slot" };',
+      'let chosen: Reason = Reason.slot; if (chosen === "slot") {}',
     ]) {
       const findings = check(prefix + body);
       assert.equal(findings.length, 1, body);
@@ -246,4 +247,147 @@ test("contract gates execute schema compile-fail doctests", () => {
       ["cargo", ["test", "--locked", "-p", "studio-runtime-schema", "--doc"]],
     ]);
   }
+});
+
+test("enum diagnostics distinguish equal generated domains and computed keys", async () => {
+  const { enumLiteralFindings } = await import("../enum-literals.ts");
+  const directory = mkdtempSync(path.join(tmpdir(), "studio-enum-owners-"));
+  try {
+    const owner = path.join(directory, "generated.ts");
+    const target = path.join(directory, "consumer.ts");
+    writeFileSync(
+      owner,
+      `export interface components { schemas: { ExecutionAction: "review" | "compact"; NativeAction: "review" | "compact"; Special: "__proto__" | "other" } }
+export const ExecutionAction = { review: "review", compact: "compact" } as const;
+export const NativeAction = { review: "review", compact: "compact" } as const;
+export const Special = { ["__proto__"]: "__proto__", other: "other" } as const;
+export type ExecutionAction = components["schemas"]["ExecutionAction"];
+export type NativeAction = components["schemas"]["NativeAction"];
+export type Special = components["schemas"]["Special"];
+`,
+    );
+    writeFileSync(
+      target,
+      `import type {ExecutionAction, NativeAction, Special} from "./generated";
+declare const execution: ExecutionAction; declare const native: NativeAction; declare function useSpecial(value: Special): void;
+if (execution === "review") {} if (native === "review") {} useSpecial("__proto__");
+`,
+    );
+    const program = ts.createProgram([owner, target], {
+      strict: true,
+      noEmit: true,
+    });
+    const findings = enumLiteralFindings(program, [target], [owner]);
+    assert.equal(findings.length, 3);
+    assert.match(findings[0] ?? "", /use ExecutionAction\["review"\]/);
+    assert.doesNotMatch(findings[0] ?? "", /NativeAction/);
+    assert.match(findings[1] ?? "", /use NativeAction\["review"\]/);
+    assert.doesNotMatch(findings[1] ?? "", /ExecutionAction/);
+    assert.match(findings[2] ?? "", /use Special\["__proto__"\]/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("whole-repository lint runs the owned enum checker", () => {
+  const packageJson = JSON.parse(
+    readFileSync(path.join(root, "package.json"), "utf8"),
+  );
+  assert.match(packageJson.scripts["lint:all"], /check-code\.ts lint-all/);
+});
+
+test("generated component aliases and computed keys reach the enum checker", async () => {
+  const { enumLiteralFindings } = await import("../enum-literals.ts");
+  const document = {
+    openapi: "3.1.0",
+    info: { title: "enum witness", version: "1" },
+    components: {
+      schemas: {
+        "special-name": { type: "string", enum: ["__proto__", "other"] },
+      },
+    },
+  };
+  const generated = spawnSync(
+    process.execPath,
+    [
+      process.env.STUDIO_TEST_ENUM_GENERATOR ??
+        path.join(
+          root,
+          "workspaces/tooling/apps/repository-checks/generate-api-types.ts",
+        ),
+      "--rust-owned",
+    ],
+    { cwd: root, input: JSON.stringify(document), encoding: "utf8" },
+  );
+  assert.equal(generated.status, 0, generated.stderr);
+  const directory = mkdtempSync(path.join(tmpdir(), "studio-generated-owner-"));
+  try {
+    const owner = path.join(directory, "generated.ts");
+    const target = path.join(directory, "consumer.ts");
+    writeFileSync(owner, generated.stdout);
+    writeFileSync(
+      target,
+      'import type { special_name } from "./generated"; declare function use(value: special_name): void; use("__proto__");',
+    );
+    const program = ts.createProgram([owner, target], {
+      strict: true,
+      noEmit: true,
+    });
+    const findings = enumLiteralFindings(program, [target], [owner]);
+    assert.equal(findings.length, 1, findings.join("\n"));
+    assert.match(findings[0] ?? "", /special_name\["__proto__"\]/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("contract gates select runtime-services typed owner doctests", () => {
+  const fast = gateSteps(root, "test-fast").filter((step) =>
+    step.id?.startsWith("services-doctests"),
+  );
+  assert.deepEqual(
+    fast.map((step) => step.commands),
+    [
+      [
+        [
+          "cargo",
+          [
+            "test",
+            "--locked",
+            "-p",
+            "studio-runtime-services",
+            "--doc",
+            "ControlInvocation",
+          ],
+        ],
+      ],
+      [
+        [
+          "cargo",
+          [
+            "test",
+            "--locked",
+            "-p",
+            "studio-runtime-services",
+            "--doc",
+            "provider_receipt",
+          ],
+        ],
+      ],
+    ],
+  );
+  const comprehensive = gateSteps(root, "test-comprehensive").filter((step) =>
+    step.id?.startsWith("services-doctests"),
+  );
+  assert.deepEqual(
+    comprehensive.map((step) => step.commands),
+    [
+      [
+        [
+          "cargo",
+          ["test", "--locked", "-p", "studio-runtime-services", "--doc"],
+        ],
+      ],
+    ],
+  );
 });

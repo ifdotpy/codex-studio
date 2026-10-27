@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import ts from "typescript";
-import { enumLiteralFindings } from "./enum-literals.ts";
+import { enumLiteralDiagnostics } from "./enum-literals.ts";
 
 import {
   JAVASCRIPT_EXCEPTIONS_FILE,
@@ -20,6 +20,7 @@ import {
   writeFileSync,
   mkdirSync,
   symlinkSync,
+  cpSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -89,13 +90,112 @@ function run(binary: string, args: string[], cwd: string) {
   return result.status ?? 1;
 }
 
+const enumOwners = [
+  "workspaces/client/apps/web/src/generated/api.ts",
+  "workspaces/client/apps/web/src/generated/providerKind.ts",
+];
+function enumTarget(file: string) {
+  return (
+    file.startsWith("workspaces/client/apps/web/src/") &&
+    /\.tsx?$/.test(file) &&
+    !file.includes("/generated/")
+  );
+}
+function checkEnums(
+  root: string,
+  relativeTargets: string[],
+  json: boolean,
+): number {
+  const configPath = path.join(
+    root,
+    "workspaces/client/apps/web/tsconfig.json",
+  );
+  const config = ts.getParsedCommandLineOfConfigFile(
+    configPath,
+    {},
+    {
+      ...ts.sys,
+      onUnRecoverableConfigFileDiagnostic(diagnostic) {
+        throw new Error(
+          ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+        );
+      },
+    },
+  );
+  if (!config || config.errors.length)
+    throw new Error("Cannot parse web TypeScript configuration");
+  const targets = relativeTargets.map((file) => path.join(root, file));
+  const owners = enumOwners.map((file) => path.join(root, file));
+  const program = ts.createProgram([...targets, ...owners], {
+    ...config.options,
+    noUncheckedSideEffectImports: true,
+  });
+  const missing = ts
+    .getPreEmitDiagnostics(program)
+    .filter((diagnostic) =>
+      [2305, 2307, 2688, 2724, 2792, 7016].includes(diagnostic.code),
+    );
+  if (missing.length)
+    throw new Error(
+      `Cannot resolve TypeScript dependencies: ${ts.formatDiagnosticsWithColorAndContext(missing, { getCurrentDirectory: () => root, getCanonicalFileName: (file) => file, getNewLine: () => "\n" })}`,
+    );
+  const findings = enumLiteralDiagnostics(program, targets, owners).map(
+    (finding) => ({
+      ...finding,
+      file: path.relative(root, finding.file),
+      ownerFile: path.relative(root, finding.ownerFile),
+    }),
+  );
+  if (json) console.log(JSON.stringify(findings, null, 2));
+  else
+    for (const finding of findings)
+      console.error(
+        `Enum policy: ${finding.file}:${finding.line}:${finding.column}: import and use ${finding.owner}[${JSON.stringify(finding.member)}] from ${finding.ownerFile} instead of ${JSON.stringify(finding.literal)}`,
+      );
+  return findings.length ? 1 : 0;
+}
+
 function main() {
+  if (mode === "lint-all") {
+    const args = process.argv.slice(3).filter((arg) => arg !== "--");
+    const status = run(
+      path.join(repositoryRoot, "node_modules", ".bin", "oxlint"),
+      ["--deny-warnings", ...args],
+      repositoryRoot,
+    );
+    if (status !== 0) return status;
+    const paths = args
+      .filter((arg) => !arg.startsWith("-"))
+      .map((arg) =>
+        path
+          .relative(repositoryRoot, path.resolve(repositoryRoot, arg))
+          .replaceAll(path.sep, "/"),
+      );
+    const targets = [...getIndexPaths()]
+      .filter(enumTarget)
+      .filter(
+        (file) =>
+          !paths.length ||
+          paths.includes("") ||
+          paths.some(
+            (selected) => file === selected || file.startsWith(`${selected}/`),
+          ),
+      );
+    return targets.length ? checkEnums(repositoryRoot, targets, false) : 0;
+  }
+  if (mode === "enums" && (check === undefined || check === "--json")) {
+    return checkEnums(
+      repositoryRoot,
+      [...getIndexPaths()].filter(enumTarget),
+      check === "--json",
+    );
+  }
   if (
     mode !== "staged" ||
     (check !== undefined && check !== "lint" && check !== "format")
   ) {
     throw new Error(
-      "Usage: node workspaces/tooling/apps/repository-checks/check-code.ts staged [lint|format]",
+      "Usage: node workspaces/tooling/apps/repository-checks/check-code.ts staged [lint|format] | enums [--json]",
     );
   }
 
@@ -138,17 +238,12 @@ function main() {
         "utf8",
       ),
     );
-    const enumTargets =
-      check !== "format"
-        ? lintPaths.filter(
-            (file) =>
-              file.startsWith("workspaces/client/apps/web/src/") &&
-              /\.tsx?$/.test(file) &&
-              !file.includes("/generated/"),
-          )
-        : [];
+    const enumTargets = check !== "format" ? lintPaths.filter(enumTarget) : [];
     const enumSources = enumTargets.length
-      ? [...indexPaths].filter((file) => /\.tsx?$/.test(file))
+      ? [...indexPaths].filter(
+          (file) =>
+            /\.tsx?$/.test(file) || path.basename(file) === "package.json",
+        )
       : [];
     const policyPaths = [
       ...new Set([
@@ -191,46 +286,34 @@ function main() {
     }
 
     if (enumTargets.length) {
-      const generatedOwners = [
-        "workspaces/client/apps/web/src/generated/api.ts",
-        "workspaces/client/apps/web/src/generated/providerKind.ts",
-      ].map((file) => path.join(temporaryRoot, file));
-      symlinkSync(
-        path.join(repositoryRoot, "node_modules"),
-        path.join(temporaryRoot, "node_modules"),
-        "dir",
-      );
-      const configPath = path.join(
-        temporaryRoot,
-        "workspaces/client/apps/web/tsconfig.json",
-      );
-      const config = ts.getParsedCommandLineOfConfigFile(
-        configPath,
-        {},
-        {
-          ...ts.sys,
-          onUnRecoverableConfigFileDiagnostic(diagnostic) {
-            throw new Error(
-              ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
-            );
-          },
-        },
-      );
-      if (!config || config.errors.length)
-        throw new Error("Cannot parse staged web TypeScript configuration");
-      const targets = enumTargets.map((file) => path.join(temporaryRoot, file));
-      const program = ts.createProgram(
-        [...targets, ...generatedOwners],
-        config.options,
-      );
-      const findings = enumLiteralFindings(program, targets, generatedOwners);
-      if (findings.length) {
-        for (const finding of findings)
-          console.error(
-            `Enum policy: ${finding.replaceAll(`${temporaryRoot}/`, "")}`,
-          );
-        return 1;
+      // Generated WASM declarations are build outputs, not Git-index source.
+      const wasmOutput = "workspaces/client/apps/web/src/wasm/generated";
+      if (existsSync(path.join(repositoryRoot, wasmOutput))) {
+        mkdirSync(path.dirname(path.join(temporaryRoot, wasmOutput)), {
+          recursive: true,
+        });
+        cpSync(
+          path.join(repositoryRoot, wasmOutput),
+          path.join(temporaryRoot, wasmOutput),
+          { recursive: true },
+        );
       }
+      const packageDirectories = [
+        "",
+        ...[...indexPaths]
+          .filter((file) => path.basename(file) === "package.json")
+          .map((file) => path.dirname(file)),
+      ];
+      for (const directory of new Set(packageDirectories)) {
+        const source = path.join(repositoryRoot, directory, "node_modules");
+        const destination = path.join(temporaryRoot, directory, "node_modules");
+        if (existsSync(source)) {
+          mkdirSync(path.dirname(destination), { recursive: true });
+          symlinkSync(source, destination, "dir");
+        }
+      }
+      const status = checkEnums(temporaryRoot, enumTargets, false);
+      if (status !== 0) return status;
     }
 
     const binDirectory = path.join(repositoryRoot, "node_modules", ".bin");

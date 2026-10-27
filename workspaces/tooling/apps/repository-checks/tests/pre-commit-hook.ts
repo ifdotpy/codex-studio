@@ -448,6 +448,11 @@ try {
       "workspaces/client/apps/web/src/generated/providerKind.ts",
       'export const ProviderKind = { Codex: "codex", Claude: "claude" } as const;\n',
     );
+    stage(
+      root,
+      "workspaces/client/apps/web/package.json",
+      '{"name":"fixture-web"}',
+    );
     const target = "workspaces/client/apps/web/src/startWait.ts";
     stage(
       root,
@@ -464,17 +469,72 @@ try {
         ],
         root,
       );
+    stage(root, target, 'import { value } from "web-only-package"; value();\n');
+    const missing = lint();
+    assert.notEqual(missing.status, 0, missing.stdout + missing.stderr);
+    assert.match(
+      missing.stdout + missing.stderr,
+      /Cannot resolve TypeScript dependencies/,
+    );
+    const dependency = path.join(
+      root,
+      "workspaces/client/apps/web/node_modules/web-only-package",
+    );
+    mkdirSync(dependency, { recursive: true });
+    writeFileSync(
+      path.join(dependency, "index.d.ts"),
+      "export declare function value(): void;\n",
+    );
+    stage(
+      root,
+      target,
+      'import { value } from "web-only-package"; value();\nimport type { Reason } from "./generated/api";\nexport function waiting(reason: Reason) { return reason === "slot"; }\n',
+    );
     const rejected = lint();
     assert.notEqual(rejected.status, 0, rejected.stdout + rejected.stderr);
     assert.match(rejected.stdout + rejected.stderr, /import and use Reason/);
     stage(
       root,
       target,
-      'import { Reason } from "./generated/api";\nexport function waiting(reason: Reason) { return reason === Reason.slot; }\n',
+      'import { value } from "web-only-package"; value();\nimport { Reason } from "./generated/api";\nexport function waiting(reason: Reason) { return reason === Reason.slot; }\n',
     );
     writeFileSync(path.join(root, target), "const broken = ;\n");
     const accepted = lint();
     assert.equal(accepted.status, 0, accepted.stdout + accepted.stderr);
+    const wholeLint = () =>
+      command(
+        process.execPath,
+        [
+          "workspaces/tooling/apps/repository-checks/check-code.ts",
+          "lint-all",
+          target,
+        ],
+        root,
+      );
+    writeFileSync(
+      path.join(root, target),
+      'import { Reason } from "./generated/api";\nexport function waiting(reason: Reason) { return reason === Reason.slot; }\n',
+    );
+    const wholeAccepted = wholeLint();
+    assert.equal(
+      wholeAccepted.status,
+      0,
+      wholeAccepted.stdout + wholeAccepted.stderr,
+    );
+    writeFileSync(
+      path.join(root, target),
+      'import type { Reason } from "./generated/api";\nexport function waiting(reason: Reason) { return reason === "slot"; }\n',
+    );
+    const wholeRejected = wholeLint();
+    assert.notEqual(
+      wholeRejected.status,
+      0,
+      wholeRejected.stdout + wholeRejected.stderr,
+    );
+    assert.match(
+      wholeRejected.stdout + wholeRejected.stderr,
+      /import and use Reason/,
+    );
   }
   console.log("Pre-commit staged-content fixtures passed.");
 } finally {
