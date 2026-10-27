@@ -4,6 +4,7 @@ import { serverStoragePrefix } from "../servers/storage";
 import {
   defaultStudioPreferences,
   parseStudioPreferences,
+  normalizeStudioPreferences,
   applyStudioPreferences,
   studioPreferencesStorageKey,
 } from "../studioPreferences";
@@ -29,12 +30,30 @@ const listeners = new Set<() => void>();
 function cache(storage: Storage, scope: PreferenceScope): PreferenceFields {
   const key = `${preferenceCacheKey}:${scope}`;
   try {
-    const fields = prunePreferenceFields(
-      JSON.parse(storage.getItem(key) || "{}"),
-    );
-    if (scope !== "user") return fields;
+    const parsed: unknown = JSON.parse(storage.getItem(key) || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return {};
+    const entries = Object.entries(parsed);
+    const valid = Object.fromEntries(
+      entries.filter(
+        ([, field]) =>
+          field &&
+          typeof field === "object" &&
+          !Array.isArray(field) &&
+          "value" in field &&
+          "timestamp" in field &&
+          typeof field.timestamp === "number" &&
+          Number.isSafeInteger(field.timestamp) &&
+          field.timestamp >= 0 &&
+          "writer" in field &&
+          typeof field.writer === "string" &&
+          field.writer.length > 0,
+      ),
+    ) as PreferenceFields;
+    const fields = prunePreferenceFields(valid);
     const validFields = Object.fromEntries(
       Object.entries(fields).filter(([name, field]) => {
+        if (scope !== "user") return true;
         let parts: unknown;
         try {
           parts = JSON.parse(name);
@@ -51,19 +70,17 @@ function cache(storage: Storage, scope: PreferenceScope): PreferenceFields {
         )
           return false;
         try {
-          parseStudioPreferences(
-            JSON.stringify({
-              ...defaultStudioPreferences,
-              [fieldName]: field.value,
-            }),
-          );
+          normalizeStudioPreferences({
+            ...defaultStudioPreferences,
+            [fieldName]: field.value,
+          });
           return true;
         } catch {
           return false;
         }
       }),
     );
-    if (Object.keys(validFields).length !== Object.keys(fields).length)
+    if (Object.keys(validFields).length !== entries.length)
       storage.setItem(key, JSON.stringify(validFields));
     return validFields;
   } catch {

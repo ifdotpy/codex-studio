@@ -41,6 +41,29 @@ beforeEach(() => {
   vi.stubGlobal("StorageEvent", FakeStorageEvent);
 });
 describe("UI preference cache", () => {
+  it("repairs a malformed cached timestamp without losing other fields", () => {
+    const storage = memoryStorage();
+    const bad = '["codex-project-tree:x","open"]';
+    const good = '["codex-project-tree:y","open"]';
+    storage.setItem(
+      `${preferenceCacheKey}:server`,
+      JSON.stringify({
+        [bad]: { value: true, timestamp: "bad", writer: "writer" },
+        [good]: { value: true, timestamp: 10, writer: "writer" },
+      }),
+    );
+    capturePreferenceWrite("codex-project-compact:z", "true", null, storage);
+    const fields = readPreferenceFields("server", storage);
+    expect(fields[bad]).toBeUndefined();
+    expect(fields[good]).toEqual({
+      value: true,
+      timestamp: 10,
+      writer: "writer",
+    });
+    expect(
+      Number.isSafeInteger(fields['["codex-project-compact:z"]']?.timestamp),
+    ).toBe(true);
+  });
   it("keeps one secure writer identity on HTTP without crypto.randomUUID", () => {
     const getRandomValues = vi.fn((bytes: Uint8Array) => bytes.fill(0x12));
     vi.stubGlobal("crypto", { getRandomValues });
