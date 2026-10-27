@@ -182,7 +182,7 @@ pub fn request_id(receipt: Receipt) -> u64 {
           cwd: directory,
           encoding: "utf8",
           timeout: 30_000,
-          // A dependency-free fixture must never contend for a workspace target.
+          // Keep fixture outputs isolated from the prepared workspace target.
           env: {
             ...process.env,
             CARGO_TARGET_DIR: path.join(directory, "target"),

@@ -1,8 +1,8 @@
 import test from "node:test";
-import type { GateStep } from "../facade.ts";
+import type { GateStep, PackageManifest } from "../facade.ts";
 import assert from "node:assert/strict";
 
-import { executeRecipe, gateSteps } from "../facade.ts";
+import { commandFor, discover, executeRecipe, gateSteps } from "../facade.ts";
 import { runLogged } from "../owned-process.ts";
 import {
   chmodSync,
@@ -381,6 +381,75 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
     gateSteps(process.cwd(), "test-fast-rest-non-rust").every(
       (s) => !s.requiresCargo,
     ),
+  );
+});
+
+test("compiler policy witnesses run after dependency preparation outside the JS lane", () => {
+  for (const name of ["test-fast", "test-comprehensive", "test-fast-rest"]) {
+    const steps = gateSteps(process.cwd(), name);
+    const policy = steps.find((step) => step.id === "rust-lint-policy");
+    assert.ok(policy);
+    assert.equal(policy.lane, "rust");
+    assert.equal(policy.requires, "workspace");
+    assert.equal(policy.requiresCargo, true);
+    assert.deepEqual(policy.commands, [
+      ["pnpm", ["--dir", process.cwd(), "run", "test:rust-lint-policy"]],
+    ]);
+  }
+  const nonRust = gateSteps(process.cwd(), "test-fast-rest-non-rust");
+  assert.ok(nonRust.every((step) => step.id !== "rust-lint-policy"));
+  assert.equal(
+    nonRust.find((step) => step.id === "tooling")?.options?.script,
+    "test:tooling:js",
+  );
+  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+  const rust = workflow.split("  rust:\n")[1]?.split("  rust-macos:\n")[0];
+  assert.ok(rust);
+  assert.match(rust, /run: pnpm run test:rust-lint-policy/);
+  assert.ok(
+    rust.indexOf("cargo clippy --workspace") <
+      rust.indexOf("run: pnpm run test:rust-lint-policy"),
+  );
+  const manifest: PackageManifest = JSON.parse(
+    readFileSync("package.json", "utf8"),
+  );
+  const files = (script: string) => {
+    const command = manifest.scripts?.[script];
+    assert.ok(command, script);
+    assert.ok(command.startsWith("node --test "), script);
+    return command.slice("node --test ".length).split(/\s+/);
+  };
+  // test:tooling owns the complete list; its two gate consumers must partition it.
+  const policyFiles = files("test:rust-lint-policy");
+  assert.deepEqual(policyFiles, [
+    "workspaces/tooling/apps/repository-checks/tests/rust-lint-policy.test.ts",
+  ]);
+  assert.deepEqual(
+    files("test:tooling:js"),
+    files("test:tooling").filter((file) => !policyFiles.includes(file)),
+  );
+  const tooling = discover(process.cwd()).find(
+    (item) => item.name === "codex-studio-tooling",
+  );
+  assert.ok(tooling);
+  assert.deepEqual(
+    commandFor(process.cwd(), tooling, "test", "native Clippy"),
+    [
+      [
+        "pnpm",
+        [
+          "--filter",
+          tooling.name,
+          "exec",
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern",
+          "native Clippy",
+          ...files("test:tooling"),
+        ],
+      ],
+    ],
   );
 });
 

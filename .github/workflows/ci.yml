@@ -33,6 +33,8 @@ jobs:
         run: cargo fmt --check
       - name: Rust Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Rust compiler policy witnesses
+        run: pnpm run test:rust-lint-policy
       - name: Rust documentation tests
         run: cargo test --doc --workspace --locked
 
