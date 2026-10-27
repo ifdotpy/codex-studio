@@ -1,3 +1,4 @@
+import { AgentStatus } from "../../generated/api";
 import { RetainedWorktree } from "./RetainedWorktrees";
 import { providerLabel } from "../../generated/providerKind.ts";
 import { useServerApi } from "../../servers/ServerServicesContext";
@@ -206,24 +207,25 @@ const WorkerCardView = memo(function WorkerCardView({
           ? indicator?.label || statusLabel(agent.status)
           : awaitingAnswer
             ? "Needs your answer"
-            : agent.status === "starting" && agent.worktreePreparation
+            : agent.status === AgentStatus.starting && agent.worktreePreparation
               ? agent.worktreePreparation === "waiting"
                 ? "Waiting to prepare folder"
                 : "Preparing folder"
-              : deferred && agent.status === "approval"
+              : deferred && agent.status === AgentStatus.approval
                 ? "Question deferred"
-                : agent.status === "starting" &&
+                : agent.status === AgentStatus.starting &&
                     (agent.startAttempt?.prepareError ||
                       agent.startAttempt?.responseError)
                   ? "Waiting for Codex"
                   : [
-                      agent.status === "completed"
+                      agent.status === AgentStatus.completed
                         ? "Finished"
-                        : agent.status === "failed"
+                        : agent.status === AgentStatus.failed
                           ? diskHeld
                             ? DISK_FULL_WAIT_LABEL
                             : "Failed"
-                          : agent.status === "running" && agent.inFlight
+                          : agent.status === AgentStatus.running &&
+                              agent.inFlight
                             ? statusLabel(
                                 agent.status,
                                 agent.activity?.phase || undefined,

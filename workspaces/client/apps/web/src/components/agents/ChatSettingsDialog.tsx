@@ -1,3 +1,4 @@
+import { AgentSource } from "../../generated/api";
 import { ProviderKind } from "../../generated/providerKind.ts";
 import { lazy, Suspense } from "react";
 import { Button, Group, Modal, Stack } from "@mantine/core";
@@ -53,7 +54,7 @@ export function ChatSettingsDialog(p: Props) {
     >
       <div className="chat-execution-settings">
         <Stack gap="sm">
-          {root?.source === "managed" && (
+          {root?.source === AgentSource.managed && (
             <section aria-label="Team">
               <div className="execution-team-fields">
                 <SubagentConcurrencyControl
@@ -82,7 +83,7 @@ export function ChatSettingsDialog(p: Props) {
           )}
           <section aria-label="Permissions">
             <Stack gap="sm" id="chat-settings-permissions">
-              {p.agent?.source === "managed" &&
+              {p.agent?.source === AgentSource.managed &&
                 p.agent.provider === ProviderKind.Codex && (
                   <ExecutionPermissions
                     settingsRow

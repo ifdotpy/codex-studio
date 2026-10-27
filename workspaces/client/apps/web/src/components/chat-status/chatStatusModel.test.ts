@@ -1,3 +1,11 @@
+import {
+  AgentSource,
+  AgentStatus,
+  ComplaintStatus,
+  RequestStatus,
+  TaskKind,
+  TaskStatus,
+} from "../../generated/api";
 import { required } from "../componentTestFixtures";
 import type { Agent, Snapshot } from "../../types";
 import type { ChatActivity } from "./chatStatusModel";
@@ -67,9 +75,9 @@ it("keeps unread and attention indicators correct with summaries and empty panel
   const summary: Agent = {
     id: "chat",
     name: "Chat",
-    source: "managed",
+    source: AgentSource.managed,
     isLead: true,
-    status: "completed",
+    status: AgentStatus.completed,
     threadId: "thread",
     lastCompletedTurn: "turn",
     lastCompletedTurnStatus: "completed",
@@ -84,7 +92,11 @@ it("keeps unread and attention indicators correct with summaries and empty panel
   assert.equal(
     required(
       chatIndicators(
-        snapshot({ ...summary, status: "waiting", hasBackgroundWork: true }),
+        snapshot({
+          ...summary,
+          status: AgentStatus.waiting,
+          hasBackgroundWork: true,
+        }),
       ).get("chat"),
     ).kind,
     "working",
@@ -112,9 +124,9 @@ it("classifies unread, work, answer, error and paused states from current runtim
     id: "lead",
     rootId: "lead",
     name: "Lead",
-    source: "managed",
+    source: AgentSource.managed,
     isLead: true,
-    status: "completed",
+    status: AgentStatus.completed,
     autoWake: true,
     threadId: "thread",
     lastCompletedTurn: "turn",
@@ -175,7 +187,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
       state(
         { ...lead, status },
         {
-          monitors: [{ agent: "lead", status: "running" }],
+          monitors: [{ agent: "lead", status: TaskStatus.running }],
         },
       ),
       "working",
@@ -183,7 +195,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
     assert.equal(
       chatWaitState(
         snapshot([lead, { ...child, status }], {
-          monitors: [{ agent: "child", status: "running" }],
+          monitors: [{ agent: "child", status: TaskStatus.running }],
         }),
         lead,
       ).live,
@@ -192,19 +204,19 @@ it("classifies unread, work, answer, error and paused states from current runtim
   }
   assert.equal(
     state(lead, {
-      monitors: [{ agent: "lead", status: "running" }],
+      monitors: [{ agent: "lead", status: TaskStatus.running }],
     }),
     "working",
   );
   assert.equal(
     state(lead, {
-      monitors: [{ agent: "lead", status: "completed" }],
+      monitors: [{ agent: "lead", status: TaskStatus.completed }],
     }),
     "unread",
   );
   assert.equal(
     state(lead, {
-      tasks: [{ agent: "lead", status: "running" }],
+      tasks: [{ agent: "lead", status: TaskStatus.running }],
     }),
     "working",
   );
@@ -212,20 +224,20 @@ it("classifies unread, work, answer, error and paused states from current runtim
     state(
       { ...lead, status: "running" },
       {
-        requests: [{ agent: "lead", status: "pending", epoch: 2 }],
+        requests: [{ agent: "lead", status: RequestStatus.pending, epoch: 2 }],
       },
     ),
     "answer",
   );
   assert.equal(
     state(lead, {
-      requests: [{ agent: "lead", status: "pending", epoch: 1 }],
+      requests: [{ agent: "lead", status: RequestStatus.pending, epoch: 1 }],
     }),
     "unread",
   );
   assert.equal(
     state(lead, {
-      requests: [{ agent: "lead", status: "answered" }],
+      requests: [{ agent: "lead", status: RequestStatus.answered }],
     }),
     "unread",
   );
@@ -234,7 +246,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
       requests: [
         {
           agent: "lead",
-          status: "pending",
+          status: RequestStatus.pending,
           deferred: true,
         },
       ],
@@ -248,7 +260,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
         requests: [
           {
             agent: "lead",
-            status: "pending",
+            status: RequestStatus.pending,
             deferred: true,
           },
         ],
@@ -266,7 +278,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
           leadId: "lead",
           recipient: "lead",
           needsResponse: true,
-          status: "open",
+          status: ComplaintStatus.open,
         },
       ],
     }),
@@ -279,7 +291,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
           leadId: "lead",
           recipient: "user",
           needsResponse: true,
-          status: "open",
+          status: ComplaintStatus.open,
         },
       ],
     }),
@@ -292,7 +304,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
           leadId: "lead",
           recipient: "user",
           needsResponse: false,
-          status: "resolved",
+          status: ComplaintStatus.resolved,
         },
       ],
     }),
@@ -312,9 +324,9 @@ it("classifies unread, work, answer, error and paused states from current runtim
   );
   assert.equal(
     required(
-      chatIndicators(snapshot([lead, { ...child, status: "running" }])).get(
-        "lead",
-      ),
+      chatIndicators(
+        snapshot([lead, { ...child, status: AgentStatus.running }]),
+      ).get("lead"),
     ).kind,
     "working",
   );
@@ -322,8 +334,8 @@ it("classifies unread, work, answer, error and paused states from current runtim
     required(
       chatIndicators(
         snapshot([
-          { ...lead, status: "waiting" },
-          { ...child, status: "running" },
+          { ...lead, status: AgentStatus.waiting },
+          { ...child, status: AgentStatus.running },
         ]),
       ).get("lead"),
     ).kind,
@@ -336,7 +348,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
         requests: [
           {
             agent: "child",
-            status: "pending",
+            status: RequestStatus.pending,
             epoch: 2,
           },
         ],
@@ -358,7 +370,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
     state(
       { ...lead, status: "approval" },
       {
-        requests: [{ agent: "lead", status: "pending", epoch: 1 }],
+        requests: [{ agent: "lead", status: RequestStatus.pending, epoch: 1 }],
       },
     ),
     "none",
@@ -370,7 +382,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
         leadId: "lead",
         recipient: "user",
         needsResponse: true,
-        status: "open",
+        status: ComplaintStatus.open,
       },
     ],
     userTasks: [
@@ -402,7 +414,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
     assert.equal(
       state(agent, {
         ...inboxAttention,
-        requests: [{ agent: "lead", status: "pending", epoch: 2 }],
+        requests: [{ agent: "lead", status: RequestStatus.pending, epoch: 2 }],
       }),
       "answer",
       "An actual pending question still takes priority over inbox items",
@@ -421,7 +433,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
 
   const pausedChild: Agent = {
     ...child,
-    status: "paused",
+    status: AgentStatus.paused,
     autoWake: false,
     inFlight: false,
   };
@@ -451,12 +463,16 @@ it("classifies unread, work, answer, error and paused states from current runtim
   assert.equal(
     chatActivities(
       snapshot([lead, pausedChild], {
-        tasks: [{ ...command, status: "completed" }],
+        tasks: [{ ...command, status: TaskStatus.completed }],
       }),
     ).size,
     0,
   );
-  const activeChild: Agent = { ...child, status: "running", inFlight: true };
+  const activeChild: Agent = {
+    ...child,
+    status: AgentStatus.running,
+    inFlight: true,
+  };
   assert.equal(
     required(
       chatActivities(snapshot([lead, activeChild], { tasks: [command] })).get(
@@ -481,7 +497,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
   // The bar above the chat shows only monitors and commands outside their turn.
   const turnChild: Agent = {
     ...child,
-    status: "running",
+    status: AgentStatus.running,
     inFlight: true,
     turnId: "t2",
   };
@@ -499,7 +515,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
   assert.deepEqual(strip([{ ...command, turnId: "t1" }]), [command.id]);
   assert.deepEqual(strip([command], [], [lead, pausedChild]), [command.id]);
   assert.deepEqual(
-    strip([], [{ id: "watch", agent: child.id, status: "running" }]),
+    strip([], [{ id: "watch", agent: child.id, status: TaskStatus.running }]),
     ["watch"],
   );
   assert.deepEqual(strip([]), []);
@@ -513,7 +529,11 @@ it("classifies unread, work, answer, error and paused states from current runtim
     "PASS visible activity reasons match spinner, including live commands from stopped workers and scope boundaries",
   );
 
-  const waitingLead: Agent = { ...lead, status: "waiting", inFlight: false };
+  const waitingLead: Agent = {
+    ...lead,
+    status: AgentStatus.waiting,
+    inFlight: false,
+  };
   const waitState = (
     agents: Agent[] = [waitingLead],
     runtime: Parameters<typeof componentSnapshot>[1] = {},
@@ -539,8 +559,10 @@ it("classifies unread, work, answer, error and paused states from current runtim
     });
   }
   assert.equal(
-    waitState([waitingLead, { ...child, status: "completed", inFlight: true }])
-      .live,
+    waitState([
+      waitingLead,
+      { ...child, status: AgentStatus.completed, inFlight: true },
+    ]).live,
     true,
   );
   for (const status of [
@@ -561,27 +583,29 @@ it("classifies unread, work, answer, error and paused states from current runtim
       {
         ...child,
         source: "local" as NonNullable<Agent["source"]>,
-        status: "running",
+        status: AgentStatus.running,
       },
     ]).live,
     false,
     "only managed children can keep a conversation waiting",
   );
   assert.equal(
-    waitState([waitingLead, { ...child, status: "running", parentId: "other" }])
-      .live,
+    waitState([
+      waitingLead,
+      { ...child, status: AgentStatus.running, parentId: "other" },
+    ]).live,
     false,
   );
   const ownCommand = {
     ...command,
     agent: "lead",
-    kind: "command",
+    kind: TaskKind.command,
   } satisfies Snapshot["runtime"]["tasks"][number];
   const ownMonitor: Snapshot["runtime"]["monitors"][number] = {
     id: "monitor",
     agent: "lead",
     command: "watch build",
-    status: "running",
+    status: TaskStatus.running,
   };
   for (const status of ["starting", "running", "approval"] as const) {
     assert.equal(
@@ -610,7 +634,12 @@ it("classifies unread, work, answer, error and paused states from current runtim
   assert.equal(
     waitState(undefined, {
       tasks: [
-        { ...ownCommand, command: undefined, kind: "tool", query: "search" },
+        {
+          ...ownCommand,
+          command: undefined,
+          kind: TaskKind.tool,
+          query: "search",
+        },
       ],
     }).live,
     false,
@@ -688,7 +717,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
   );
   const parked: Agent = {
     ...waitingLead,
-    status: "parked",
+    status: AgentStatus.parked,
     parkedEvent: "build-ready",
     autoWake: false,
   };
@@ -700,7 +729,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
   const input: Snapshot["runtime"]["requests"][number] = {
     id: "input",
     agent: "lead",
-    status: "pending",
+    status: RequestStatus.pending,
     epoch: 2,
   };
   assert.equal(
@@ -747,8 +776,8 @@ it("classifies unread, work, answer, error and paused states from current runtim
     );
   const twoWorkers: Agent[] = [
     waitingLead,
-    { ...child, status: "running" },
-    { ...child, id: "child-2", status: "queued" },
+    { ...child, status: AgentStatus.running },
+    { ...child, id: "child-2", status: AgentStatus.queued },
   ];
   assert.equal(waitState(twoWorkers).label, "Waiting for 2 agents");
   assert.equal(
@@ -777,9 +806,9 @@ const makeAgent = (overrides: Partial<Agent> = {}): Agent => ({
   id: "lead",
   rootId: "lead",
   name: "Lead",
-  source: "managed",
+  source: AgentSource.managed,
   isLead: true,
-  status: "completed",
+  status: AgentStatus.completed,
   autoWake: true,
   epoch: 2,
   threadId: "thread",
@@ -804,7 +833,7 @@ it("keeps a parent waiting for a child with current command or monitor work", ()
     const work: Snapshot["runtime"]["tasks"][number] = {
       id: "work",
       agent: child.id,
-      status: "running",
+      status: TaskStatus.running,
       command: "watch build",
     };
     for (const status of ["starting", "running", "approval"] as const) {
@@ -860,7 +889,7 @@ it("keeps a parent waiting for a child with current command or monitor work", ()
         {
           agent: child.id,
           epoch: child.epoch,
-          status: "pending",
+          status: RequestStatus.pending,
         },
       ],
     });
@@ -872,7 +901,7 @@ it("keeps a parent waiting for a child with current command or monitor work", ()
   assert.equal(
     chatWaitState(
       makeSnapshot([lead, child], {
-        tasks: [{ id: "tool", agent: child.id, status: "running" }],
+        tasks: [{ id: "tool", agent: child.id, status: TaskStatus.running }],
       }),
       lead,
     ).live,
@@ -1017,7 +1046,7 @@ it("indexes one wide team's children once for all chat indicators", () => {
       {
         id: "watch",
         agent: required(children[0]).id,
-        status: "running",
+        status: TaskStatus.running,
         epoch: 2,
       },
     ],
@@ -1086,13 +1115,13 @@ it("maps live runtime records to sorted caller-visible activities", () => {
   });
   const snapshot = makeSnapshot([lead, child], {
     tasks: [
-      { id: "z", agent: "child", status: "running", created: 10 },
+      { id: "z", agent: "child", status: TaskStatus.running, created: 10 },
       {
         id: "command",
         agent: "child",
-        kind: "command",
+        kind: TaskKind.command,
         command: "git status",
-        status: "approval",
+        status: TaskStatus.approval,
         created: 2,
         turnId: "old",
       },
@@ -1101,17 +1130,17 @@ it("maps live runtime records to sorted caller-visible activities", () => {
         agent: "child",
         query: "search query",
         type: "search",
-        status: "starting",
+        status: TaskStatus.starting,
         created: 2,
         turnId: "current",
       },
       {
         id: "ignored-status",
         agent: "child",
-        status: "completed",
+        status: TaskStatus.completed,
         command: "done",
       },
-      { id: "unknown-agent", agent: "missing", status: "running" },
+      { id: "unknown-agent", agent: "missing", status: TaskStatus.running },
     ],
     monitors: [
       {
@@ -1119,14 +1148,14 @@ it("maps live runtime records to sorted caller-visible activities", () => {
         agent: "child",
         command: "watch",
         name: "watcher",
-        status: "running",
+        status: TaskStatus.running,
         created: 2,
       },
       {
         id: "monitor-no-command",
         agent: "child",
         name: "watcher without a command",
-        status: "running",
+        status: TaskStatus.running,
         created: 2,
       },
     ],
@@ -1191,7 +1220,14 @@ it("maps live runtime records to sorted caller-visible activities", () => {
 
   const selfActivity = chatActivities(
     makeSnapshot([lead], {
-      tasks: [{ id: "self", agent: "lead", status: "running", command: "pwd" }],
+      tasks: [
+        {
+          id: "self",
+          agent: "lead",
+          status: TaskStatus.running,
+          command: "pwd",
+        },
+      ],
     }),
   );
   assert.deepEqual(
@@ -1201,7 +1237,11 @@ it("maps live runtime records to sorted caller-visible activities", () => {
   const unknownRootActivity = chatActivities(
     makeSnapshot(
       [makeAgent({ id: "orphan", rootId: "missing-root", inFlight: true })],
-      { tasks: [{ id: "orphan-task", agent: "orphan", status: "running" }] },
+      {
+        tasks: [
+          { id: "orphan-task", agent: "orphan", status: TaskStatus.running },
+        ],
+      },
     ),
   );
   assert.equal(unknownRootActivity.has("missing-root"), false);
@@ -1254,47 +1294,47 @@ it("uses the runtime command, turn, epoch and fallback rules for activities", ()
         {
           id: "command-kind-only",
           agent: "lead",
-          kind: "command",
-          status: "running",
+          kind: TaskKind.command,
+          status: TaskStatus.running,
           type: "exec",
         },
         {
           id: "command-without-kind",
           agent: "lead",
-          status: "running",
+          status: TaskStatus.running,
           command: "git diff",
         },
         {
           id: "same-turn",
           agent: "lead",
-          status: "running",
+          status: TaskStatus.running,
           command: "pwd",
           turnId: "turn-3",
         },
         {
           id: "different-turn",
           agent: "lead",
-          status: "running",
+          status: TaskStatus.running,
           command: "ls",
           turnId: "turn-2",
         },
         {
           id: "unscoped-turn",
           agent: "lead",
-          status: "running",
+          status: TaskStatus.running,
           command: "cat",
         },
         {
           id: "agent-without-epoch",
           agent: "no-epoch",
-          status: "running",
+          status: TaskStatus.running,
           name: "named task",
         },
         {
           id: "tool-by-kind",
           agent: "child",
-          kind: "tool",
-          status: "running",
+          kind: TaskKind.tool,
+          status: TaskStatus.running,
           type: "exec",
         },
       ],
@@ -1390,7 +1430,7 @@ it("uses the runtime command, turn, epoch and fallback rules for activities", ()
           {
             id: "actual",
             agent: "concrete",
-            status: "running",
+            status: TaskStatus.running,
             command: "make",
           },
         ],
@@ -1435,10 +1475,15 @@ it("builds live wait labels only from current owned triggers", () => {
   const snapshot = makeSnapshot([lead, child], {
     requests: [
       { id: "pending", agent: "lead", epoch: 2 },
-      { id: "deferred", agent: "lead", status: "pending", deferred: true },
-      { id: "answered", agent: "lead", status: "answered" },
+      {
+        id: "deferred",
+        agent: "lead",
+        status: RequestStatus.pending,
+        deferred: true,
+      },
+      { id: "answered", agent: "lead", status: RequestStatus.answered },
       { id: "stale", agent: "lead", epoch: 1 },
-      { id: "child", agent: "child", status: "pending" },
+      { id: "child", agent: "child", status: RequestStatus.pending },
     ],
   });
   const state = chatWaitState(
@@ -1566,8 +1611,15 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
     autoWake: false,
   });
   const snapshot = makeSnapshot([agent, child], {
-    requests: [{ agent: "child", status: "pending", epoch: 2 }],
-    tasks: [{ id: "task", agent: "lead", command: "build", status: "running" }],
+    requests: [{ agent: "child", status: RequestStatus.pending, epoch: 2 }],
+    tasks: [
+      {
+        id: "task",
+        agent: "lead",
+        command: "build",
+        status: TaskStatus.running,
+      },
+    ],
   });
   const indicators = chatIndicators(snapshot, () => null);
   assert.deepEqual(required(indicators.get("lead")), {
@@ -1720,7 +1772,7 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
           requests: [
             {
               agent: "child",
-              status: "pending",
+              status: RequestStatus.pending,
               epoch: 2,
             },
           ],

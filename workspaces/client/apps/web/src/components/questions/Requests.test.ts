@@ -1,3 +1,4 @@
+import { QuestionDecision, RequestStatus } from "../../generated/api";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { components } from "../../generated/api";
@@ -73,7 +74,7 @@ it("Answer expands and hides the editor inside the same request card", () => {
     id: "question",
     agent: "lead",
     method: "agent/asyncQuestion",
-    status: "pending",
+    status: RequestStatus.pending,
     params: { questions: [{ id: "choice", question: "Continue?" }] },
   } satisfies components["schemas"]["RequestEntityDto"];
   const closed = render(request);
@@ -113,7 +114,7 @@ for (const decision of ["accept", "decline"] as const) {
       id: "approval",
       agent: "lead",
       method: "item/commandExecution/requestApproval",
-      status: "pending",
+      status: RequestStatus.pending,
       params: { command: "pwd" },
     } satisfies components["schemas"]["RequestEntityDto"];
     const before = render(request);
@@ -151,7 +152,7 @@ function questionAnswerConstructionWitness() {
   // @ts-expect-error elicitation requires content alongside its decision
   const missingContent: Answer = {
     method: "mcpServer/elicitation/request",
-    data: { decision: "accept" },
+    data: { decision: QuestionDecision.accept },
   };
   const wrongMethod: Answer = {
     method: "item/commandExecution/requestApproval",
@@ -168,7 +169,7 @@ for (const threadId of [null, "thread-1"]) {
       id: "approval",
       agent: "lead",
       method: "item/commandExecution/requestApproval",
-      status: "pending",
+      status: RequestStatus.pending,
       params: { threadId, command: "pwd" },
     } satisfies components["schemas"]["RequestEntityDto"];
     const card = render(request, [

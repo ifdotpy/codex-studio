@@ -1,3 +1,10 @@
+import {
+  AgentSource,
+  AgentStatus,
+  ProviderKind,
+  TransferScope,
+  TransferStatus,
+} from "../../generated/api";
 import { Button, NativeSelect, Switch, Textarea } from "@mantine/core";
 import type { PostBody, PostResult } from "../../apiTypes";
 import { AccountTransferStatus } from "../Accounts";
@@ -164,12 +171,12 @@ function invoke(element: ReactElement<unknown>) {
 const initial: Agent = {
   id: "lead",
   isLead: true,
-  provider: "codex",
-  source: "managed",
+  provider: ProviderKind.codex,
+  source: AgentSource.managed,
   accountKey: "default",
   model: "gpt-6-astra",
   effort: "medium",
-  status: "idle",
+  status: AgentStatus.idle,
 };
 function render(
   agent?: Agent,
@@ -288,8 +295,8 @@ test("transfer actions retain response identity and retry the same request after
     id: "saved-transfer",
     leadId: initial.id,
     targetAccountKey: "work",
-    scope: "team",
-    status: "pending",
+    scope: TransferScope.team,
+    status: TransferStatus.pending,
     created: 1,
     updated: 2,
     members: {},
@@ -462,7 +469,9 @@ test("chat settings retains the known Codex permission caller and the Claude set
       (node) => node.type === ExecutionPermissions,
     ),
   ).toBe(true);
-  const claude = children(chatSettings({ ...initial, provider: "claude" }));
+  const claude = children(
+    chatSettings({ ...initial, provider: ProviderKind.claude }),
+  );
   expect(claude.some((node) => node.type === ExecutionPermissions)).toBe(false);
   expect(
     claude.some(
@@ -596,7 +605,7 @@ test("a failed model save leaves the composer trigger on its canonical model", a
 test("queued settings and account changes keep their canonical scope", async () => {
   const active: Agent = {
     ...initial,
-    status: "running",
+    status: AgentStatus.running,
     nextTurnSettingsSupported: true,
   };
   const queued: Agent = {
@@ -909,7 +918,12 @@ for (const status of ["running", "approval"] as const) {
       tasks: [],
     });
     const element = createElement(ClaudeSettings, {
-      agent: { ...initial, provider: "claude", status, inFlight: true },
+      agent: {
+        ...initial,
+        provider: ProviderKind.claude,
+        status,
+        inFlight: true,
+      },
     });
     invoke(element);
     for (const effect of h.effects.splice(0)) effect();
@@ -928,7 +942,7 @@ test("Codex explains when Ask takes effect for a turn started with Full", () => 
   const controls = render(
     {
       ...initial,
-      status: "running",
+      status: AgentStatus.running,
       inFlight: true,
       yoloMode: false,
     },
@@ -1003,7 +1017,7 @@ for (const [first, opposite] of [
       },
     );
     const element = createElement(ClaudeSettings, {
-      agent: { ...initial, provider: "claude" },
+      agent: { ...initial, provider: ProviderKind.claude },
     });
     const control = () =>
       children(invoke(element)).find(
@@ -1072,7 +1086,7 @@ test("a late Claude success preserves the newer unresolved permission request", 
     },
   );
   const element = createElement(ClaudeSettings, {
-    agent: { ...initial, provider: "claude" },
+    agent: { ...initial, provider: ProviderKind.claude },
   });
   const control = () =>
     children(invoke(element)).find(

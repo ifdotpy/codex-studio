@@ -1,3 +1,4 @@
+import { WorkspaceMode } from "../../generated/api";
 import { useEffect, useState } from "react";
 import { Button } from "@mantine/core";
 import { errorText, type GetResult } from "../../api";
@@ -24,7 +25,7 @@ export function RetainedWorktree({ agent }: { agent: Agent }) {
         <strong>
           {cleanup.phase === "unknown"
             ? "Cleanup outcome unconfirmed"
-            : agent.worktree || agent.workspaceMode === "worktree"
+            : agent.worktree || agent.workspaceMode === WorkspaceMode.worktree
               ? "Worktree retained"
               : "Workspace retained"}
         </strong>

@@ -1,3 +1,4 @@
+import { RequestStatus } from "../../generated/api";
 import type { components } from "../../generated/api";
 import type { Message } from "../../types";
 
@@ -259,7 +260,7 @@ function toolState(item: Message, payload: JsonObject): QuestionCardState {
 
 /** A live request that waits for the user's answer to an agent question. */
 export const isPendingQuestionRequest = (request: RequestDto) =>
-  request.status === "pending" &&
+  request.status === RequestStatus.pending &&
   ["item/tool/requestUserInput", "agent/asyncQuestion"].includes(
     request.method || "",
   );
@@ -306,7 +307,8 @@ export function transcriptRequests(
 ): Map<string, RequestDto | null> {
   const pending = requests.filter(
     (request) =>
-      !request.deferred && (!request.status || request.status === "pending"),
+      !request.deferred &&
+      (!request.status || request.status === RequestStatus.pending),
   );
   const byId = new Map(pending.map((request) => [request.id, request]));
   const byItem = new Map<string, RequestDto>(

@@ -1,3 +1,9 @@
+import {
+  AgentRole,
+  AgentSource,
+  AgentStatus,
+  RequestStatus,
+} from "../../generated/api";
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
@@ -9,10 +15,10 @@ const now = Math.floor(Date.now() / 1000);
 const lead: Agent = {
   id: "lead",
   name: "Studio release",
-  role: "lead",
+  role: AgentRole.lead,
   isLead: true,
-  source: "managed",
-  status: "running",
+  source: AgentSource.managed,
+  status: AgentStatus.running,
   inFlight: true,
   model: "gpt-6-astra",
   created: now - 195,
@@ -22,21 +28,21 @@ const workerFixtures: Agent[] = [
   {
     id: "question",
     name: "Permissions review",
-    status: "approval",
-    role: "reviewer",
+    status: AgentStatus.approval,
+    role: AgentRole.reviewer,
     overview: { task: "Confirm the allowed command scope" },
   },
   {
     id: "error",
     name: "Обновление индексов для нескольких проектов и проверка восстановления после перезапуска",
-    status: "failed",
+    status: AgentStatus.failed,
     error: "Type check failed in the project adapter.",
     overview: { task: "Repair the project migration" },
   },
   {
     id: "running",
     name: "Transcript worker",
-    status: "running",
+    status: AgentStatus.running,
     inFlight: true,
     activity: { phase: "tool", at: now - 74 },
     commandProgress: [
@@ -52,29 +58,29 @@ const workerFixtures: Agent[] = [
   {
     id: "child",
     name: "Mobile reviewer",
-    status: "running",
+    status: AgentStatus.running,
     inFlight: true,
     parentId: "running",
-    role: "reviewer",
+    role: AgentRole.reviewer,
     overview: { task: "Check 320px composition and long bilingual titles" },
   },
   {
     id: "paused",
     name: "Package verification",
-    status: "paused",
+    status: AgentStatus.paused,
     autoWake: false,
     overview: { task: "Wait for the integration branch" },
   },
   {
     id: "none",
     name: "Queue recovery",
-    status: "idle",
+    status: AgentStatus.idle,
     overview: { task: "Preserve drafts after reconnect" },
   },
   {
     id: "unread",
     name: "Новые результаты проверки доступности интерфейса",
-    status: "completed",
+    status: AgentStatus.completed,
     threadId: "thread-result",
     lastCompletedTurn: "turn-result",
     lastCompletedTurnStatus: "completed",
@@ -86,7 +92,7 @@ const workerFixtures: Agent[] = [
   {
     id: "finished",
     name: "Storage adapter",
-    status: "completed",
+    status: AgentStatus.completed,
     overview: {
       task: "Inspect request identities",
       result: "Request identities remain stable across retries.",
@@ -95,7 +101,7 @@ const workerFixtures: Agent[] = [
   ...Array.from({ length: 12 }, (_, index): Agent => ({
     id: `done-${index}`,
     name: `Completed review ${index + 1}`,
-    status: "completed",
+    status: AgentStatus.completed,
   })),
 ];
 const workers: Agent[] = workerFixtures.map((agent) => ({
@@ -103,8 +109,8 @@ const workers: Agent[] = workerFixtures.map((agent) => ({
   source: "managed",
   rootId: lead.id,
   parentId: agent.parentId || lead.id,
-  model: agent.role === "reviewer" ? "opus" : "gpt-6-luna",
-  provider: agent.role === "reviewer" ? "claude" : "codex",
+  model: agent.role === AgentRole.reviewer ? "opus" : "gpt-6-luna",
+  provider: agent.role === AgentRole.reviewer ? "claude" : "codex",
   created: now - 180,
   updated: now - 20,
   effort: "medium",
@@ -123,7 +129,9 @@ const snapshot: Snapshot = {
     tasks: [],
     monitors: [],
     complaints: [],
-    requests: [{ id: "request", agent: "question", status: "pending" }],
+    requests: [
+      { id: "request", agent: "question", status: RequestStatus.pending },
+    ],
     rules: [],
     projects: [],
     peerTeams: [],
