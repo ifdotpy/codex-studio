@@ -51,20 +51,35 @@ const RULE_CHECK_SETTLE_RETRY_SECONDS: u64 = 5;
 const NO_ACTIVE_COMMAND_EXEC: &str = "no active command/exec for process id";
 
 // These are projections of external provider responses, not owned input envelopes.
-#[derive(Deserialize, serde::Serialize)]
+#[derive(Clone, Debug)]
+enum CommandExit {
+    Exited { code: i64, error: Option<String> },
+    Error(String),
+}
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CommandExit {
+struct CommandExitWire {
     #[serde(default)]
     exit_code: Option<i64>,
     #[serde(default)]
     error: Option<String>,
 }
+impl<'de> Deserialize<'de> for CommandExit {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = CommandExitWire::deserialize(deserializer)?;
+        match (wire.exit_code, wire.error) {
+            (Some(code), error) => Ok(Self::Exited { code, error }),
+            (None, Some(error)) if !error.is_empty() => Ok(Self::Error(error)),
+            (None, _) => Err(serde::de::Error::custom("missing terminal outcome")),
+        }
+    }
+}
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum CommandResponse {
     Result { result: CommandExit },
-    Error { error: Value },
     Direct(CommandExit),
+    Error { error: Value },
 }
 #[derive(Deserialize)]
 struct ConfigurationResponse {
@@ -187,19 +202,24 @@ impl RetainedMonitorPort {
         operation: &Operation,
         response: ProviderResponse,
     ) -> Result<(), MonitorError> {
-        let (code, error) = match response {
-            ProviderResponse::Reply(value) => {
-                let result: CommandExit = serde_json::from_value(value)
-                    .map_err(|_| MonitorError::Refused("Invalid monitor exit response"))?;
-                (result.exit_code, result.error)
-            }
-            ProviderResponse::Rejected(value) => (None, Some(value.to_string())),
+        let outcome = match response {
+            ProviderResponse::Reply(value) => serde_json::from_value(value)
+                .map_err(|_| MonitorError::Refused("Invalid monitor exit response"))?,
+            ProviderResponse::Rejected(value) => CommandExit::Error(value.to_string()),
         };
-        if code.is_none() && error.as_deref().is_none_or(str::is_empty) {
-            return Err(MonitorError::Refused(
-                "Monitor result has no definitive outcome",
-            ));
-        }
+        self.enqueue_command_exit(id, operation, outcome).await
+    }
+
+    async fn enqueue_command_exit(
+        &self,
+        id: &str,
+        operation: &Operation,
+        outcome: CommandExit,
+    ) -> Result<(), MonitorError> {
+        let (code, error) = match outcome {
+            CommandExit::Exited { code, error } => (Some(code), error),
+            CommandExit::Error(error) => (None, Some(error)),
+        };
         monitor_event_queue::enqueue_exit(
             &self.store,
             id,
@@ -1512,21 +1532,18 @@ impl MonitorPort for RetainedMonitorPort {
             if let Some(response) = response {
                 let response: CommandResponse = match serde_json::from_value(response) {
                     Ok(response) => response,
-                    Err(_) => return Ok(ReattachOutcome::Pending),
+                    Err(_) => {
+                        return Ok(ReattachOutcome::Gone(
+                            MonitorRecoveryReason::InvalidTerminalReceipt.code().into(),
+                        ));
+                    }
                 };
-                let response = match response {
-                    CommandResponse::Result { result } => ProviderResponse::Reply(
-                        serde_json::to_value(result)
-                            .map_err(studio_runtime_store::StoreError::from)?,
-                    ),
-                    CommandResponse::Error { error } => ProviderResponse::Rejected(error),
-                    CommandResponse::Direct(result) => ProviderResponse::Reply(
-                        serde_json::to_value(result)
-                            .map_err(studio_runtime_store::StoreError::from)?,
-                    ),
+                let outcome = match response {
+                    CommandResponse::Result { result } | CommandResponse::Direct(result) => result,
+                    CommandResponse::Error { error } => CommandExit::Error(error.to_string()),
                 };
                 return match self
-                    .command_result(snapshot.id(), operation, response)
+                    .enqueue_command_exit(snapshot.id(), operation, outcome)
                     .await
                 {
                     Ok(()) => Ok(ReattachOutcome::TerminalQueued),
@@ -1920,6 +1937,16 @@ mod tests {
 
     struct NoSession;
     impl AccountSessionPort for NoSession {}
+
+    #[test]
+    fn terminal_exit_requires_a_definitive_outcome() {
+        assert!(serde_json::from_value::<CommandExit>(json!({})).is_err());
+        assert!(serde_json::from_value::<CommandExit>(json!({"error":""})).is_err());
+        assert!(
+            serde_json::from_value::<CommandExit>(json!({"exitCode":1,"error":"diagnostic"}))
+                .is_ok()
+        );
+    }
 
     #[tokio::test]
     async fn startup_resources_refuse_replacement() {
