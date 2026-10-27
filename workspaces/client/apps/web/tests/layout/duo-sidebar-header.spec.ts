@@ -1,6 +1,12 @@
+import { duoPhoneUserAgent } from "./duo-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
-test.use({ hasTouch: true, reducedMotion: "reduce", serviceWorkers: "block" });
+test.use({
+  userAgent: duoPhoneUserAgent,
+  hasTouch: true,
+  reducedMotion: "reduce",
+  serviceWorkers: "block",
+});
 for (const size of [
   { width: 951, height: 669 },
   { width: 653, height: 951 },
@@ -19,7 +25,7 @@ for (const size of [
       if (!(await sidebar.isVisible()))
         await page.locator("#sidebar-toggle").click();
       await expect(sidebar).toBeVisible();
-      if (size.height > size.width) {
+      if ((await sidebar.getAttribute("data-presentation")) === "drawer") {
         await expect(sidebar).toBeFocused();
         await expect(sidebar).toHaveCSS("outline-style", "none");
         await page.screenshot({
@@ -87,6 +93,10 @@ test("A Duo drawer returns focus to its rail opener after Escape and an outside 
       insets: { top: 0, right: 84, bottom: 34, left: 0 },
     });
     await page.setViewportSize({ width: 653, height: 951 });
+    test.skip(
+      (await sidebar.getAttribute("data-presentation")) === "path",
+      "Pane navigation uses retained screens instead of a modal Drawer.",
+    );
     const opener = page.locator(".edge-rail #sidebar-toggle");
     for (const close of ["escape", "outside", "opener"]) {
       await opener.click();

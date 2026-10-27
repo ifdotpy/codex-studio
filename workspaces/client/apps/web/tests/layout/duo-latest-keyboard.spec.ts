@@ -1,3 +1,4 @@
+import { duoPhoneUserAgent } from "./duo-fixture.ts";
 import { writeFileSync } from "node:fs";
 import { test, expect, entityPullFixtureForRequest } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
@@ -5,6 +6,7 @@ import { fixtureWorkspaceId } from "../servers/multi-server-fixture.ts";
 import "./keyboardSequences.ts";
 
 test.use({
+  userAgent: duoPhoneUserAgent,
   hasTouch: true,
   serviceWorkers: "block",
   reducedMotion: "no-preference",

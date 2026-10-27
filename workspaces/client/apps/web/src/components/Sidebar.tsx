@@ -29,6 +29,7 @@ import {
   layoutQueries,
   layoutValues,
 } from "../layout/layout-contract.generated";
+import type { LayoutRect } from "../layout/deriveWorkspaceLayout";
 import { SidebarFrame, restoreSidebarFocus } from "./sidebar/SidebarFrame";
 import {
   Users,
@@ -141,6 +142,7 @@ export type SidebarProps = {
   remove: (id: string, room: boolean) => void;
   mobile: boolean;
   collapsed?: boolean;
+  paneRect?: LayoutRect | null | undefined;
   onCompactChange?: (compact: boolean) => void;
   onSearch: () => void;
   close: () => void;
@@ -2020,6 +2022,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       <SidebarFrame
         scope={`${p.services.cache.ownerId}:${p.data.stateDir}`}
         opened={p.mobile}
+        paneRect={p.paneRect}
         collapsed={p.collapsed}
         close={closeSidebar}
         onCompactChange={reportCompact}

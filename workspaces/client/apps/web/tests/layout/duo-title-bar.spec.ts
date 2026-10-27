@@ -1,9 +1,11 @@
+import { duoPhoneUserAgent } from "./duo-fixture.ts";
 import { writeFileSync } from "node:fs";
 import { test, expect, entityPullFixtureForRequest } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
 import { fixtureWorkspaceId } from "../servers/multi-server-fixture.ts";
 
 test.use({
+  userAgent: duoPhoneUserAgent,
   hasTouch: true,
   serviceWorkers: "block",
   reducedMotion: "no-preference",
@@ -101,6 +103,11 @@ for (const size of [
           .poll(async () => (await heading.boundingBox())?.width)
           .toBe(size.width);
         await expect(heading).toHaveCSS("height", "82px");
+        const conversation = await page.locator("#conversation").boundingBox();
+        const title = await heading
+          .locator(".conversation-heading")
+          .boundingBox();
+        expect(title!.x).toBeGreaterThanOrEqual(conversation!.x);
         const textRight = await heading
           .locator(".conversation-heading")
           .evaluate((node) => node.getBoundingClientRect().right);

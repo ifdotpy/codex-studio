@@ -37,6 +37,10 @@ export function BottomInsetBand({ children }: { children: ReactNode }) {
         document.documentElement.hasAttribute("data-touch-input") &&
         !document.documentElement.hasAttribute("data-viewport-keyboard") &&
         Number.parseFloat(getComputedStyle(root).paddingBottom) > 0;
+      host.toggleAttribute(
+        "data-pane-path",
+        !!root.querySelector(".workspace-frame[data-pane-path]"),
+      );
       if (shown && !host.isConnected) document.body.append(host);
       if (!shown) host.remove();
       // Duo keeps the composer last. Passive usage shares the row above it.
@@ -56,7 +60,12 @@ export function BottomInsetBand({ children }: { children: ReactNode }) {
           childList: true,
           subtree: true,
           attributes: true,
-          attributeFilter: ["class", "style", "data-presentation"],
+          attributeFilter: [
+            "class",
+            "style",
+            "data-presentation",
+            "data-pane-path",
+          ],
         });
         watchingContent = true;
       }

@@ -1,6 +1,7 @@
 import { randomUUID } from "../uuid";
 import { useMemo, useRef, useState } from "react";
 import Sidebar from "../components/Sidebar";
+import type { LayoutRect } from "../layout/deriveWorkspaceLayout";
 import { ApiError, errorText, type PostBody } from "../api";
 import type {
   SidebarBackend,
@@ -24,6 +25,7 @@ export default function CombinedServerSidebar({
   applyNavigation,
   mobile,
   hidden,
+  paneRect,
   onCompactChange,
   close,
   settings,
@@ -44,6 +46,7 @@ export default function CombinedServerSidebar({
   applyNavigation: (owner: string, navigation: ServerNavigation) => void;
   mobile: boolean;
   hidden: boolean;
+  paneRect?: LayoutRect | null | undefined;
   onCompactChange?: (compact: boolean) => void;
   close: () => void;
   settings: () => void;
@@ -114,6 +117,7 @@ export default function CombinedServerSidebar({
       creating={!!navigation[current]?.creating}
       mobile={mobile}
       collapsed={hidden}
+      paneRect={paneRect}
       onCompactChange={onCompactChange}
       close={close}
       settings={settings}

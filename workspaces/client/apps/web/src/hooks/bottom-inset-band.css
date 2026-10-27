@@ -43,3 +43,8 @@
 .usage-passive-band .session-cost-compact-label {
   display: none;
 }
+
+/* Pane backgrounds already extend through Home; keep this helper transparent. */
+.viewport-bottom-band[data-pane-path] {
+  background: none;
+}

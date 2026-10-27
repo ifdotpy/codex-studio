@@ -988,6 +988,20 @@ export const layoutTokens = {
     kind: "dimension",
     purpose: "Duo rail title and project bar height over the transcript",
   },
+  "duo.projectCountersStackMax": {
+    value: 288,
+    unit: "px",
+    kind: "condition",
+    purpose:
+      "Maximum Duo chat list width for project counters below the project name",
+  },
+  "duo.titleMinWidth": {
+    value: 140,
+    unit: "px",
+    kind: "condition",
+    purpose:
+      "Minimum available Duo title text width before the title and metadata hide",
+  },
   "duo.titleInset": {
     value: 12,
     unit: "px",
@@ -1011,6 +1025,30 @@ export const layoutTokens = {
     unit: "px",
     kind: "spacing",
     purpose: "Duo transcript bottom fade before the passive usage row",
+  },
+  "panePath.contentMin": {
+    value: 320,
+    unit: "px",
+    kind: "dimension",
+    purpose:
+      "Minimum Duo pane-path conversation or side panel width in a two-pane pair",
+  },
+  "panePath.portraitSidebar": {
+    value: 250,
+    unit: "px",
+    kind: "dimension",
+    purpose: "Preferred Duo portrait sidebar width before the conversation",
+  },
+  "panePath.splitRatio": {
+    value: 0.5,
+    unit: "ratio",
+    purpose:
+      "Equal conversation and side panel fraction when no native hinge divides the row",
+  },
+  "panePath.motionDuration": {
+    value: 250,
+    unit: "ms",
+    purpose: "Horizontal pane path move duration, disabled with reduced motion",
   },
 } as const;
 export const layoutValues = {
@@ -1321,13 +1359,22 @@ export const layoutValues = {
     columnGutter: 20,
     latestGap: 36,
     titleHeight: 64,
+    projectCountersStackMax: 288,
+    titleMinWidth: 140,
     titleInset: 12,
     titleOpacity: 0.82,
     titleBlur: 12,
     transcriptFade: 16,
   },
+  panePath: {
+    contentMin: 320,
+    portraitSidebar: 250,
+    splitRatio: 0.5,
+    motionDuration: 250,
+  },
 } as const;
 export const layoutQueries = {
+  duoProjectCountersStacked: "(width <= 288px)",
   navigationCompact: "(width < 761px)",
   navigationInline: "(width >= 761px)",
   teamCompact: "(width < 960px)",

@@ -16,6 +16,7 @@ import {
 
 /** Root attribute: the native top status strip holds the edge rail, not a page inset. */
 export const viewportTopStripAttribute = "data-viewport-top-strip";
+import { isDuoDevice } from "./duoDevice";
 import { isDuoLayout, isDuoSurface } from "../layout/deriveWorkspaceLayout";
 
 const selectedComposers = new WeakSet<HTMLTextAreaElement>();
@@ -141,7 +142,9 @@ export function useMobileViewport(active: boolean, compact = false) {
       root.removeAttribute("data-viewport-short-landscape");
       root.removeAttribute("data-duo-proportions");
       root.removeAttribute("data-duo-ui");
+      root.removeAttribute("data-duo-device");
       for (const property of [
+        "--viewport-layout-height",
         "--mobile-viewport-height",
         "--mobile-viewport-top",
         "--mobile-safe-area-bottom",
@@ -227,7 +230,19 @@ export function useMobileViewport(active: boolean, compact = false) {
         width > fullHeight &&
         fullHeight < layoutValues.header.shortLandscapeMaxHeight;
       const surfaceHeight = overlay ? fullHeight : height;
+      const duoDevice = isDuoDevice({
+        nativeHinge: root.dataset?.nativeHinge,
+        userAgent: navigator.userAgent || "",
+        platform: navigator.platform || "",
+        maxTouchPoints: navigator.maxTouchPoints || 0,
+        mobile: (
+          navigator as Navigator & { userAgentData?: { mobile: boolean } }
+        ).userAgentData?.mobile,
+      });
+      if (duoDevice) root.setAttribute("data-duo-device", "");
+      else root.removeAttribute("data-duo-device");
       if (
+        duoDevice &&
         isDuoSurface({
           width,
           height: fullHeight,
@@ -237,6 +252,7 @@ export function useMobileViewport(active: boolean, compact = false) {
         root.setAttribute("data-duo-ui", "");
       else root.removeAttribute("data-duo-ui");
       if (
+        duoDevice &&
         isDuoLayout({
           width,
           height: fullHeight,
@@ -255,6 +271,8 @@ export function useMobileViewport(active: boolean, compact = false) {
       )
         root.setAttribute("data-viewport-short-landscape", "");
       else root.removeAttribute("data-viewport-short-landscape");
+      // Physical layout height in CSS pixels, before keyboard occlusion.
+      root.style.setProperty("--viewport-layout-height", `${fullHeight}px`);
       root.style.setProperty("--mobile-viewport-height", `${surfaceHeight}px`);
       root.style.setProperty("--mobile-viewport-top", `${top}px`);
       root.style.setProperty(
