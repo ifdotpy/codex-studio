@@ -36881,6 +36881,35 @@
             ],
             "default": null,
             "title": "Workerenvironmentrevision"
+          },
+          "workspacePolicy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "layr-native"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workspace Policy"
+          },
+          "workspacePolicyRevision": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workspacepolicyrevision"
           }
         },
         "required": [
@@ -38092,6 +38121,35 @@
             ],
             "default": null,
             "title": "Workerenvironmentrevision"
+          },
+          "workspacePolicy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "layr-native"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workspace Policy"
+          },
+          "workspacePolicyRevision": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workspacepolicyrevision"
           }
         },
         "required": [
@@ -38453,7 +38511,8 @@
                   "add_folder",
                   "rename_folder",
                   "remove_folder",
-                  "set_account_groups"
+                  "set_account_groups",
+                  "set_workspace_policy"
                 ],
                 "type": "string"
               },
@@ -38573,6 +38632,21 @@
             ],
             "default": null,
             "title": "Server"
+          },
+          "workspace_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "layr-native"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workspace Policy"
           }
         },
         "required": [

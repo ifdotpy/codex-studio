@@ -167,7 +167,14 @@ function checkEnums(
         ? ts.createSourceFile(file, result.outputText, languageVersion, true)
         : original(file, languageVersion, onError, shouldCreateNewSourceFile);
   }
-  const program = ts.createProgram([...targets, ...owners], options, host);
+  const declarations = config.fileNames.filter((file) =>
+    file.endsWith(".d.ts"),
+  );
+  const program = ts.createProgram(
+    [...targets, ...owners, ...declarations],
+    options,
+    host,
+  );
   const missing = ts
     .getPreEmitDiagnostics(program)
     .filter((diagnostic) =>

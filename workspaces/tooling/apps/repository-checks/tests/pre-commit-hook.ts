@@ -501,6 +501,25 @@ try {
     writeFileSync(path.join(root, target), "const broken = ;\n");
     const accepted = lint();
     assert.equal(accepted.status, 0, accepted.stdout + accepted.stderr);
+    const ambient = "workspaces/client/apps/web/src/assets.d.ts";
+    stage(
+      root,
+      ambient,
+      'declare module "*.css";\ndeclare module "*?url" { const url: string; export default url; }\ndeclare module "*?raw" { const text: string; export default text; }\n',
+    );
+    git(root, "commit", "--quiet", "-m", "prepare ambient module declarations");
+    stage(
+      root,
+      target,
+      'import "./view.css";\nimport workerURL from "./worker.ts?url";\nimport text from "./contract.json?raw";\nimport { Reason } from "./generated/api";\nexport function waiting(reason: Reason) { return reason === Reason.slot && workerURL.length > 0 && text.length > 0; }\n',
+    );
+    writeFileSync(path.join(root, ambient), "export {};\n");
+    const ambientAccepted = lint();
+    assert.equal(
+      ambientAccepted.status,
+      0,
+      ambientAccepted.stdout + ambientAccepted.stderr,
+    );
     const bridgeRoot = "workspaces/providers/apps/fixture-bridge";
     stage(
       root,

@@ -1,5 +1,6 @@
 import {
   CHAT_WORKSPACE_MODES,
+  PROJECT_LAYR_NATIVE_POLICY,
   defaultChatWorkspaceMode,
 } from "../generated/workspaceModes";
 import {
@@ -73,6 +74,21 @@ export function defaultWorkspaceMode(
   nativeLayr?: GetResult<"/api/ui-summary">["nativeLayr"],
 ): NewChatWorkspaceMode {
   return defaultChatWorkspaceMode(system, nativeLayr?.ready === true);
+}
+
+/** A project whose policy is native Layr offers no WT workspace. */
+export function projectAllowsWorktree(
+  project: { workspacePolicy?: string | null | undefined } | undefined,
+): boolean {
+  return project?.workspacePolicy !== PROJECT_LAYR_NATIVE_POLICY;
+}
+
+/** The workspace to preselect: native Layr when the project policy requires it. */
+export function workspaceModeForProject(
+  project: { workspacePolicy?: string | null | undefined } | undefined,
+  mode: NewChatWorkspaceMode,
+): NewChatWorkspaceMode {
+  return projectAllowsWorktree(project) ? mode : "layr-native";
 }
 
 type ChatReadOptions = Pick<GetOptions<"/api/models">, "query" | "signal">;

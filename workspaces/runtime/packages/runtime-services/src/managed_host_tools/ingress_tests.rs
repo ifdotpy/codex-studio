@@ -4041,3 +4041,86 @@ async fn ancestry_reads_only_the_checked_parent_chain() {
     Ok(())
     }).await.unwrap();
 }
+
+#[tokio::test]
+async fn layr_only_project_refuses_worktree_workers_explicit_and_inherited() {
+    const REFUSAL: &str = "This project allows only Layr workspaces. Use Layr instead of WT.";
+    let (root, store, context) = fixture().await;
+    let folder = root.path().to_str().unwrap().to_owned();
+    let project = json!({
+        "id": folder, "path": folder, "name": "Layr only",
+        "workspacePolicy": "layr-native", "workspacePolicyRevision": 1
+    });
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            studio_runtime_store::ProjectsRepository::put_project(tx, &project)
+        })
+        .await
+        .unwrap();
+    let lead_actor = |store: &RuntimeStore| {
+        let read = store.test_reader().unwrap();
+        let lead = AgentRepository::get(&read, &AgentId::from(context.agent.as_str()))
+            .unwrap()
+            .unwrap()
+            .value();
+        Actor::from_record(&lead, &context.agent, context.epoch).unwrap()
+    };
+    let batch = |workspace: Option<&str>| {
+        let mut agent = json!({"name": "Worker", "prompt": "Do the task"});
+        if let Some(workspace) = workspace {
+            agent["workspace"] = json!(workspace);
+        }
+        json!({"agents": [agent]})
+    };
+    let spawn = |store: Arc<RuntimeStore>, actor: Actor, args: Value, request: &'static str| async move {
+        crate::managed_child_create::spawn_agents(
+            &store,
+            &actor,
+            &args,
+            request,
+            20.0,
+            &CreationEnvironment,
+        )
+        .await
+        .err()
+        .map(|error| error.to_string())
+    };
+    let explicit = spawn(
+        Arc::clone(&store),
+        lead_actor(&store),
+        batch(Some("worktree")),
+        "policy-explicit",
+    )
+    .await;
+    assert_eq!(explicit.as_deref(), Some(REFUSAL), "explicit WT worker");
+    assert!(
+        spawn(
+            Arc::clone(&store),
+            lead_actor(&store),
+            batch(Some("shared")),
+            "policy-shared",
+        )
+        .await
+        .is_none(),
+        "shared workers stay allowed in a Layr-only project"
+    );
+    let lead_id = context.agent.clone();
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            let mut lead = AgentRepository::get(tx, &AgentId::from(lead_id.as_str()))?
+                .expect("lead")
+                .value();
+            lead["workspaceMode"] = json!("worktree");
+            AgentRepository::put(tx, &AgentRecord::from_value(lead).unwrap())
+        })
+        .await
+        .unwrap();
+    let inherited = spawn(
+        Arc::clone(&store),
+        lead_actor(&store),
+        batch(None),
+        "policy-inherited",
+    )
+    .await;
+    assert_eq!(inherited.as_deref(), Some(REFUSAL), "inherited WT worker");
+}

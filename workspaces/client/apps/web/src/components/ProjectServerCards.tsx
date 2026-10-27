@@ -11,7 +11,9 @@ import NewChatModelSettings from "./NewChatModelSettings";
 import type { ServerServices } from "../servers/serverServices";
 import {
   defaultWorkspaceMode,
+  projectAllowsWorktree,
   readNewChatResource,
+  workspaceModeForProject,
   type NewChatSettings,
 } from "./newChatSettings";
 
@@ -82,10 +84,13 @@ export default function ProjectServerCards({
   } | null>(null);
   const chosenMode =
     modeChoice?.server === selected ? modeChoice.mode : undefined;
-  const mode =
+  const mode = workspaceModeForProject(
+    project,
     chosenMode && (chosenMode !== "layr-native" || nativeAvailable)
       ? chosenMode
-      : defaultWorkspaceMode(system, nativeLayr);
+      : defaultWorkspaceMode(system, nativeLayr),
+  );
+  const worktreeAllowed = projectAllowsWorktree(project);
   const [models, setModels] = useState<Omit<
     NewChatSettings,
     "workspaceMode"
@@ -200,12 +205,17 @@ export default function ProjectServerCards({
               (fetched?.key === connectionKey && fetched.hasStudioVm))
                 ? [{ value: "layr", label: "Layr VM" }]
                 : []),
-              { value: "worktree", label: "WT" },
+              { value: "worktree", label: "WT", disabled: !worktreeAllowed },
             ]}
           />
           {!nativeAvailable && (
             <Text size="xs" c="dimmed" role="status">
               {nativeReason}
+            </Text>
+          )}
+          {!worktreeAllowed && (
+            <Text size="xs" c="dimmed" role="status">
+              This project allows only Layr workspaces.
             </Text>
           )}
         </div>
@@ -233,6 +243,7 @@ export default function ProjectServerCards({
             !location ||
             !models ||
             !system ||
+            (mode === "layr-native" && !nativeAvailable) ||
             (system === "Linux" &&
               !nativeLayr &&
               fetched?.key !== connectionKey) ||

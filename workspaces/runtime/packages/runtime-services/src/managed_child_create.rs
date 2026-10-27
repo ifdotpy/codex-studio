@@ -664,6 +664,12 @@ pub(crate) async fn spawn_agents(
         if !studio_runtime_schema::workspace_modes::accepts_worker(workspace) {
             return Err(crate::managed_host_tools::Error::Invalid("Unknown workspace mode").into());
         }
+        if crate::projects::refuses_worktree(store, child_directory, workspace).await? {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                crate::projects::WORKTREE_REFUSED_BY_LAYR_POLICY,
+            )
+            .into());
+        }
         let worktree = workspace == "worktree";
         // Python `git_toplevel` decides Git support for an implementer's
         // folder; a reviewer has no repository there (`spawn_agents`).

@@ -1003,6 +1003,12 @@ fn workspace_modes_ts() -> String {
             .collect::<Vec<_>>()
             .join(",\n")
     );
+    writeln!(
+        text,
+        "export const PROJECT_LAYR_NATIVE_POLICY = {} as const;",
+        json_string(modes::PROJECT_LAYR_NATIVE_POLICY)
+    )
+    .expect("write project policy");
     for (name, values) in [
         ("ALWAYS_NATIVE_SYSTEMS", modes::ALWAYS_NATIVE_SYSTEMS),
         (
