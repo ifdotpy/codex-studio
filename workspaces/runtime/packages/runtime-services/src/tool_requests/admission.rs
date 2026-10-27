@@ -7,15 +7,46 @@ use studio_runtime_store::system_reads as records;
 
 pub(crate) fn reserve(
     tx: &Transaction<'_>,
-    candidate: Value,
+    mut candidate: Value,
     call: &str,
     prefix: &str,
     alias: Option<String>,
 ) -> Result<Value, ToolRequestError> {
     let id = candidate["id"]
         .as_str()
-        .ok_or(ToolRequestError::InvalidRequest("Invalid request identity"))?;
-    let existing = records::get(tx, "runtime_tool_requests", id)?;
+        .ok_or(ToolRequestError::InvalidRequest("Invalid request identity"))?
+        .to_owned();
+    let existing = records::get(tx, "runtime_tool_requests", &id)?;
+    let now = candidate["created"]
+        .as_f64()
+        .ok_or(ToolRequestError::InvalidRequest("Invalid request clock"))?;
+    if existing.is_none() {
+        let admission = crate::event_write::admit_request(
+            tx,
+            "managed_tool",
+            &[
+                candidate["agent"].as_str().unwrap_or_default(),
+                candidate["accountKey"].as_str().unwrap_or("default"),
+                candidate["threadId"].as_str().unwrap_or_default(),
+            ],
+            &id,
+            &[],
+            candidate["signature"].as_str().unwrap_or_default(),
+            (now * 1000.0) as i64,
+        )?;
+        match admission {
+            studio_runtime_store::request_results::Admission::Fresh(admitted) => {
+                candidate["admitted"] = serde_json::to_value(admitted)
+                    .map_err(studio_runtime_store::StoreError::from)?;
+            }
+            studio_runtime_store::request_results::Admission::Replay(_) => {
+                return Err(ToolRequestError::InvalidRequest(
+                    "Request already completed; recover its original receipt",
+                ));
+            }
+        }
+        candidate["kind"] = json!(studio_runtime_schema::persistence::ToolRequestKind::ManagedTool);
+    }
     if existing.as_ref().is_some_and(|old| {
         old["agent"] != candidate["agent"]
             || old["epoch"] != candidate["epoch"]
@@ -39,7 +70,7 @@ pub(crate) fn reserve(
         },
         &ReservationInput {
             identity: op.identity.clone(),
-            alias_target: id.into(),
+            alias_target: id.clone().into(),
             content: op.content,
             attempt: op.attempt.clone(),
             call_id: call.into(),
@@ -61,16 +92,18 @@ pub(crate) fn reserve(
         }
     };
     lifecycle::apply(&mut record, &state)?;
-    records::validate("runtime_tool_requests", id, record.clone())?;
-    tx.execute(
-        "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2) ON CONFLICT(id) DO NOTHING",
-        params![id, record.to_string()],
-    )?;
+    let mut aliases = record["aliases"].as_array().cloned().unwrap_or_default();
     for intent in intents {
         if let RequestWriteIntent::InsertAlias(alias) = intent {
-            tx.execute("INSERT OR IGNORE INTO runtime_tool_request_aliases(agent,alias,request) VALUES(?1,?2,?3)",params![alias.agent.as_str(),alias.alias,alias.request.as_str()])?;
+            let alias = json!(alias.alias);
+            if !aliases.contains(&alias) {
+                aliases.push(alias);
+            }
         }
     }
+    record["aliases"] = json!(aliases);
+    records::validate("runtime_tool_requests", &id, record.clone())?;
+    tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record", params![id,record.to_string()])?;
     Ok(record)
 }
 pub(crate) fn claim(record: &mut Value, now: f64) -> Result<bool, ToolRequestError> {
