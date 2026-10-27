@@ -1836,24 +1836,14 @@ mod tests {
                 .expect("first composed history step")
         );
 
-        // The history import writes analytics only; the removed team token
-        // budget kept its own usage rows.
-        let budget_counts = || {
-            store
-                .test_reader()
-                .and_then(|tx| {
-                    Ok((
-                        tx.query_row("SELECT count(*) FROM runtime_budget_usage", [], |row| {
-                            row.get::<_, i64>(0)
-                        })?,
-                        tx.query_row(
-                            "SELECT COALESCE(sum(tokens), 0) FROM runtime_budget_usage",
-                            [],
-                            |row| row.get::<_, i64>(0),
-                        )?,
-                    ))
-                })
-                .expect("read budget usage")
+        let budget_absent = || {
+            let db = store.test_reader().expect("canvas");
+            !db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='runtime_budget_usage')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("catalog")
         };
         let analytics = rusqlite::Connection::open(state.join("analytics.sqlite3"))
             .expect("analytics database");
@@ -1866,7 +1856,7 @@ mod tests {
                 )
                 .expect("read analytics usage")
         };
-        assert_eq!(budget_counts(), (0, 0));
+        assert!(budget_absent());
         assert_eq!(analytics_count(), 1);
 
         trigger
@@ -1876,7 +1866,7 @@ mod tests {
             })
             .await
             .expect("replay composed history step");
-        assert_eq!(budget_counts(), (0, 0));
+        assert!(budget_absent());
         assert_eq!(analytics_count(), 1);
 
         shutdown.send_replace(true);
