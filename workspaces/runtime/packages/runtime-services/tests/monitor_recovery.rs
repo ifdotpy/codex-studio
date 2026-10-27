@@ -27,6 +27,69 @@ fn record(store: &RuntimeStore, id: &str) -> Value {
         .clone()
 }
 
+#[test]
+fn stall_probe_generation_requires_start_but_inactive_residue_is_readable() {
+    let root = fixtures::tempdir();
+    let case = running(&fixtures::corpus(root.path()));
+    let mut record = case["before"].clone();
+    record["stallProbeGeneration"] = json!(0);
+    for started in [None, Some(Value::Null)] {
+        if let Some(started) = started {
+            record["stallProbeStarted"] = started;
+        }
+        assert!(MonitorSnapshot::checked(record.clone(), case["actor"].clone()).is_err());
+    }
+    record["stallProbeStarted"] = json!(2000.0);
+    assert!(MonitorSnapshot::checked(record.clone(), case["actor"].clone()).is_ok());
+    record
+        .as_object_mut()
+        .expect("record")
+        .remove("stallProbeGeneration");
+    assert!(MonitorSnapshot::checked(record, case["actor"].clone()).is_ok());
+}
+
+#[test]
+fn input_attempt_requires_settlement_identity() {
+    let root = fixtures::tempdir();
+    let case = running(&fixtures::corpus(root.path()));
+    let op = operation(&case);
+    let mut record = case["before"].clone();
+    record["interactive"] = json!(true);
+    let snapshot =
+        MonitorSnapshot::checked(record.clone(), case["actor"].clone()).expect("snapshot");
+    let input = Input {
+        text: "hello".into(),
+        rows: None,
+        cols: None,
+        close_stdin: false,
+    };
+    let decision =
+        monitor_policy::begin_input(&snapshot, &op, "ticket", &input, 2000.0).expect("input");
+    let complete = decision.record;
+    assert!(MonitorSnapshot::checked(complete.clone(), case["actor"].clone()).is_ok());
+    for field in [
+        "id",
+        "agent",
+        "epoch",
+        "accountKey",
+        "connectionId",
+        "method",
+    ] {
+        let mut incomplete = complete.clone();
+        incomplete["inputAttempt"]
+            .as_object_mut()
+            .expect("attempt")
+            .remove(field);
+        assert!(
+            MonitorSnapshot::checked(incomplete, case["actor"].clone()).is_err(),
+            "missing {field}"
+        );
+    }
+    record["inputAttempt"] = json!({});
+    assert!(MonitorSnapshot::checked(record.clone(), case["actor"].clone()).is_err());
+    assert_eq!(record["inputAttempt"], json!({}));
+}
+
 #[tokio::test]
 async fn local_cancel_persists_before_fake_provider_termination() {
     use std::sync::{Arc, Mutex};
