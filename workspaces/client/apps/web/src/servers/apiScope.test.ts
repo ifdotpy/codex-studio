@@ -13,6 +13,7 @@ import {
 } from "../generated/apiSchema";
 import { createMutationJournal } from "./mutationIdentity";
 import { scopedStorage } from "./storage";
+import { cacheFixture } from "../../tests/cacheFixture.ts";
 
 function memory(): Storage {
   const values = new Map<string, string>();
@@ -55,6 +56,34 @@ const response = (value: unknown, hash = API_SCHEMA_HASH) =>
   });
 
 describe("concurrent servers in one interface", () => {
+  it("versions disposable caches without changing request identity storage", () => {
+    const disk = memory();
+    const api = scope("a", async () => response({}), disk);
+    disk.setItem("a:codex-confirmed-chats", JSON.stringify({ scope: "old" }));
+    expect(api.saved("codex-confirmed-chats", null)).toBeNull();
+    api.save("codex-confirmed-chats", { scope: "new", agents: [] });
+    expect(api.saved("codex-confirmed-chats", null)).toEqual({
+      scope: "new",
+      agents: [],
+    });
+    const envelope = JSON.parse(disk.getItem("a:codex-confirmed-chats")!);
+    expect(envelope.schemaHash).toBe(API_SCHEMA_HASH);
+    disk.setItem(
+      "a:codex-confirmed-chats",
+      JSON.stringify({ ...envelope, schemaHash: "old" }),
+    );
+    expect(api.saved("codex-confirmed-chats", null)).toBeNull();
+  });
+  it("blocks an invalid saved request identity without replacing it", () => {
+    const disk = memory();
+    const api = scope("a", async () => response({}), disk);
+    disk.setItem(
+      "a:request-id:operation",
+      JSON.stringify({ requestId: "old" }),
+    );
+    expect(() => api.stableRequestId("operation")).toThrow();
+    expect(disk.getItem("a:request-id:operation")).toBe('{"requestId":"old"}');
+  });
   it("retains the exact uncertain mutation after an empty successful response", async () => {
     const disk = memory();
     const requests: Request[] = [];
@@ -98,7 +127,7 @@ describe("concurrent servers in one interface", () => {
     expect(write).toHaveBeenCalledTimes(2);
     a.save("studio-chat-scroll:chat", { ...position, top: 121 });
     expect(write).toHaveBeenCalledTimes(3);
-    disk.setItem("a:studio-chat-scroll:chat", "null");
+    disk.setItem("a:studio-chat-scroll:chat", cacheFixture(null));
     a.save("studio-chat-scroll:chat", { ...position, top: 121 });
     expect(write).toHaveBeenCalledTimes(5);
     expect(b.saved("studio-chat-scroll:chat", null)).toEqual(position);

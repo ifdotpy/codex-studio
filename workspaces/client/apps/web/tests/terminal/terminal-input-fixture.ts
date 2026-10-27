@@ -1,3 +1,4 @@
+import { cacheFixture } from "../cacheFixture.ts";
 import type { Agent, Snapshot } from "../../src/types.ts";
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -6,10 +7,10 @@ import TerminalDock from "../../src/components/TerminalDock.tsx";
 import { setToken } from "../../src/api.ts";
 export function mount(shell: string) {
   window.reactRoot?.unmount();
-  localStorage.setItem("codex.terminal.open", "true");
+  localStorage.setItem("codex.terminal.open", cacheFixture(true));
   localStorage.setItem(
     "codex.terminal.selected",
-    JSON.stringify("shell:" + shell),
+    cacheFixture("shell:" + shell),
   );
   setToken("fixture-token");
   const agent: Agent = {

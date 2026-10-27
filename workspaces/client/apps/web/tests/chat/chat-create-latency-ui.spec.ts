@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { waitForFixturePort } from "../playwright.ts";
+import { readCacheFixture } from "../cacheFixture.ts";
 import type { Route } from "@playwright/test";
 import type { JsonValue, PostBody, PostResult } from "../../src/apiTypes.ts";
 import {
@@ -26,11 +27,10 @@ import { join } from "node:path";
 function hasConfirmedChatCount(expected: number) {
   return (
     (
-      JSON.parse(localStorage.getItem("codex-confirmed-chats")!) as Record<
-        string,
-        JsonValue[]
-      >
-    ).agents?.length === expected
+      JSON.parse(localStorage.getItem("codex-confirmed-chats")!) as {
+        value?: { agents?: JsonValue[] };
+      }
+    ).value?.agents?.length === expected
   );
 }
 
@@ -174,7 +174,7 @@ test("Chat Create Latency Ui @performance", async ({
       ({ chatId, selectionKey }) => {
         const selected: unknown = JSON.parse(
           localStorage.getItem(selectionKey) || "null",
-        );
+        )?.value;
         const selectedRow = document.querySelector(`[data-chat="${chatId}"]`);
         return (
           selected === chatId &&
@@ -187,7 +187,7 @@ test("Chat Create Latency Ui @performance", async ({
       { timeout: 2000 },
     );
     assert.equal(
-      JSON.parse(
+      readCacheFixture(
         await page.evaluate(
           (selectionKey) => localStorage.getItem(selectionKey)!,
           `codex-desktop-opened:${initial.stateDir}`,

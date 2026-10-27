@@ -1,6 +1,20 @@
 import type { ServerAccessRequest } from "./accessContract";
 const prefix = "studio-server-management-v1:";
 const legacyKey = "studio-server-discovery-pending-v1";
+function readLegacy(raw: string): ServerAccessRequest {
+  const value: ServerAccessRequest = JSON.parse(raw);
+  if (
+    !value ||
+    typeof value.requestId !== "string" ||
+    !value.requestId ||
+    ((value.action === "revoke" || value.action === "unrevoke") &&
+      typeof value.clientId !== "string")
+  )
+    throw new Error(
+      "The saved server request is invalid. Resolve it before retrying.",
+    );
+  return value;
+}
 export class ServerManagementRequests {
   private scope: string;
   private storage: Storage;
@@ -30,7 +44,7 @@ export class ServerManagementRequests {
     }
     const legacy = this.storage.getItem(legacyKey);
     if (legacy) {
-      const previous = JSON.parse(legacy) as ServerAccessRequest;
+      const previous = readLegacy(legacy);
       if (!records.some((value) => value.requestId === previous.requestId))
         records.push(previous);
     }
@@ -40,7 +54,7 @@ export class ServerManagementRequests {
     await this.lock("studio-server-management:" + this.scope, async () => {
       const legacy = this.storage.getItem(legacyKey);
       if (legacy) {
-        const previous = JSON.parse(legacy) as ServerAccessRequest;
+        const previous = readLegacy(legacy);
         this.storage.setItem(this.key(previous.requestId), legacy);
         this.storage.removeItem(legacyKey);
       }
