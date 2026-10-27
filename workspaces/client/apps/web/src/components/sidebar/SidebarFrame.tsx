@@ -4,8 +4,10 @@ import {
   layoutQueries,
   layoutValues,
 } from "../../layout/layout-contract.generated";
+import type { LayoutRect } from "../../layout/deriveWorkspaceLayout";
 import { resolveSidebarWidth, storedSidebarWidth } from "./sidebarWidth";
 import { useSidebarResize } from "./useSidebarResize";
+import { useDuoSurface } from "../../layout/useDuoSurface";
 import "./sidebar-frame.css";
 
 const widthContract = {
@@ -44,11 +46,13 @@ export type SidebarFrameProps = {
   close: () => void;
   onCompactChange?: (compact: boolean) => void;
   children: ReactNode;
+  paneRect?: LayoutRect | null | undefined;
   drawerZIndex?: number;
   onEntered?: () => void;
 };
 
 export function SidebarFrame(p: SidebarFrameProps) {
+  const duoSurface = useDuoSurface();
   const aside = useRef<HTMLElement | null>(null);
   const headerMinimum = useRef(0);
   const scrollTop = useRef(0);
@@ -56,24 +60,35 @@ export function SidebarFrame(p: SidebarFrameProps) {
     hostWidth: 0,
     rootFontSize: 0,
     headerMinimum: 0,
+    duo: false,
   }));
   const [preference, setPreference] = useState(() => ({
     scope: p.scope,
     width: readWidth(p.scope),
   }));
+  // A desktop width constrained by the old Duo maximum is not a Duo choice.
+  const scope = geometry.duo ? `${p.scope}:duo` : p.scope;
   const preferred =
-    preference.scope === p.scope ? preference.width : readWidth(p.scope);
+    preference.scope === scope ? preference.width : readWidth(scope);
   const policy = resolveSidebarWidth({
     ...geometry,
     preferred,
-    contract: widthContract,
+    contract: {
+      ...widthContract,
+      conversationMinRem: geometry.duo
+        ? layoutValues.duo.conversationMin
+        : widthContract.conversationMinRem,
+    },
   });
+  const inPath = p.paneRect !== undefined;
   // The static desktop render has no viewport to measure.
-  const compact = typeof window !== "undefined" && policy.mode === "drawer";
+  const compact =
+    !inPath && typeof window !== "undefined" && policy.mode === "drawer";
   // Measure once before paint when the saved desktop preference starts closed.
-  const probing = !compact && p.collapsed && headerMinimum.current === 0;
-  const live = useRef({ scope: p.scope, compact });
-  live.current = { scope: p.scope, compact };
+  const probing =
+    !inPath && !compact && p.collapsed && headerMinimum.current === 0;
+  const live = useRef({ scope, compact });
+  live.current = { scope, compact };
 
   useLayoutEffect(() => {
     const host =
@@ -131,18 +146,25 @@ export function SidebarFrame(p: SidebarFrameProps) {
         hostWidth,
         rootFontSize,
         headerMinimum: headerMinimum.current,
+        duo: document.documentElement.hasAttribute("data-duo-proportions"),
       };
       const nextCompact =
         resolveSidebarWidth({
           ...next,
           preferred: null,
-          contract: widthContract,
+          contract: {
+            ...widthContract,
+            conversationMinRem: next.duo
+              ? layoutValues.duo.conversationMin
+              : widthContract.conversationMinRem,
+          },
         }).mode === "drawer";
       if (nextCompact !== live.current.compact) restoreSidebarFocus();
       setGeometry((old) =>
         old.hostWidth === hostWidth &&
         old.rootFontSize === rootFontSize &&
-        old.headerMinimum === next.headerMinimum
+        old.headerMinimum === next.headerMinimum &&
+        old.duo === next.duo
           ? old
           : next,
       );
@@ -159,7 +181,12 @@ export function SidebarFrame(p: SidebarFrameProps) {
     const attributes = new MutationObserver(measure);
     attributes.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ["style", "class", "data-studio-typography"],
+      attributeFilter: [
+        "style",
+        "class",
+        "data-studio-typography",
+        "data-duo-proportions",
+      ],
     });
     attributes.observe(document.body, {
       attributes: true,
@@ -190,15 +217,15 @@ export function SidebarFrame(p: SidebarFrameProps) {
   }, [compact, p.collapsed, p.opened]);
 
   const save = (width: number | null) => {
-    if (live.current.scope !== p.scope) return;
+    if (live.current.scope !== scope) return;
     if (width !== null && storedSidebarWidth(width) === null) return;
-    setPreference({ scope: p.scope, width });
+    setPreference({ scope, width });
     try {
       if (width === null)
-        localStorage.removeItem(sidebarWidthStorageKey(p.scope));
+        localStorage.removeItem(sidebarWidthStorageKey(scope));
       else
         localStorage.setItem(
-          sidebarWidthStorageKey(p.scope),
+          sidebarWidthStorageKey(scope),
           JSON.stringify(width),
         );
     } catch {
@@ -206,8 +233,8 @@ export function SidebarFrame(p: SidebarFrameProps) {
     }
   };
   const resize = useSidebarResize({
-    scope: p.scope,
-    enabled: !compact && !p.collapsed,
+    scope,
+    enabled: !inPath && !compact && !p.collapsed,
     width: policy.width,
     minimum: policy.minimum,
     maximum: policy.maximum,
@@ -216,7 +243,7 @@ export function SidebarFrame(p: SidebarFrameProps) {
     commit: save,
   });
   useLayoutEffect(() => {
-    if (compact || p.collapsed) return;
+    if (inPath || compact || p.collapsed) return;
     const root = document.documentElement;
     const previous = root.style.getPropertyValue("--studio-sidebar-width");
     root.style.setProperty("--studio-sidebar-width", `${resize.width}px`);
@@ -224,7 +251,7 @@ export function SidebarFrame(p: SidebarFrameProps) {
       if (previous) root.style.setProperty("--studio-sidebar-width", previous);
       else root.style.removeProperty("--studio-sidebar-width");
     };
-  }, [resize.width, compact, p.collapsed]);
+  }, [resize.width, compact, p.collapsed, inPath]);
   const close = () => {
     restoreSidebarFocus();
     p.close();
@@ -234,17 +261,31 @@ export function SidebarFrame(p: SidebarFrameProps) {
       ref={aside}
       id="sidebar"
       className="sidebar-frame"
-      data-presentation={compact ? "drawer" : "inline"}
+      tabIndex={compact && duoSurface ? -1 : undefined}
+      data-autofocus={compact && duoSurface ? true : undefined}
+      data-presentation={inPath ? "path" : compact ? "drawer" : "inline"}
+      hidden={inPath && !p.paneRect}
       data-probe={probing || undefined}
       inert={probing || undefined}
       aria-hidden={probing || undefined}
       aria-label="Conversations"
       style={
-        compact ? undefined : { width: resize.width, flexBasis: resize.width }
+        inPath
+          ? {
+              position: "absolute",
+              left: 0,
+              top: p.paneRect?.y ?? 0,
+              transform: `translateX(${p.paneRect?.x ?? 0}px)`,
+              width: p.paneRect?.width ?? 0,
+              height: p.paneRect?.height ?? 0,
+            }
+          : compact
+            ? undefined
+            : { width: resize.width, flexBasis: resize.width }
       }
     >
       {p.children}
-      {!compact && (
+      {!inPath && !compact && (
         <div
           className="sidebar-resize-rail"
           role="separator"
@@ -262,11 +303,16 @@ export function SidebarFrame(p: SidebarFrameProps) {
       )}
     </aside>
   );
-  if (!compact) return p.collapsed && !probing ? null : content;
+  if (inPath) return content;
+  if (!compact) return !inPath && p.collapsed && !probing ? null : content;
   return (
     <Drawer
       opened={p.opened}
-      {...(p.onEntered ? { onEnterTransitionEnd: p.onEntered } : {})}
+      returnFocus
+      onEnterTransitionEnd={() => {
+        if (duoSurface) aside.current?.focus({ preventScroll: true });
+        else p.onEntered?.();
+      }}
       onClose={close}
       {...(p.drawerZIndex !== undefined ? { zIndex: p.drawerZIndex } : {})}
       size={`min(${layoutValues.sidebar.drawerMax}rem, 100vw)`}

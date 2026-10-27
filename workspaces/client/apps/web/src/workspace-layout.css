@@ -343,6 +343,7 @@
   min-height: 0;
 }
 .workspace-panel-slot {
+  display: flex;
   flex: 0 0 auto;
   min-width: 0;
   min-height: 0;

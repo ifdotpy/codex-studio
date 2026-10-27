@@ -57,3 +57,39 @@ test("keeps the warnings trigger reachable when there are no notices", () => {
   );
   expect(markup).toContain("conversation-warning-trigger");
 });
+
+test.each([true, false])(
+  "the footer settings icon keeps notice severity: info=%s",
+  (info) => {
+    const markup = renderToStaticMarkup(
+      createElement(
+        MantineProvider,
+        null,
+        createElement(
+          StudioErrorsProvider,
+          null,
+          createElement(ConversationWarnings, {
+            scope: "footer",
+            accountKey: "work",
+            utility: true,
+            messages: [],
+            notices: [
+              {
+                id: "fixture",
+                baseline: "1.0.0",
+                version: "1.1.0",
+                accountKey: "work",
+                provider: "codex",
+                message: "Fixture notice",
+                at: 1,
+                ...(info ? { level: "info" as const } : {}),
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+    expect(markup).toContain("sidebar-utility-button");
+    expect(markup.includes("conversation-info-trigger")).toBe(info);
+  },
+);

@@ -1,3 +1,4 @@
+import { TranscriptTitleBar } from "./TranscriptTitleBar";
 import { ProviderKind } from "../generated/providerKind.ts";
 import type { ReactNode } from "react";
 import { IdleCompactionNotice } from "./IdleCompactionNotice";
@@ -168,6 +169,7 @@ function FollowLatest(p: {
   return (
     <div className="jump-slot">
       <Button
+        type="button"
         id="jump-latest"
         className="jump"
         variant="default"
@@ -229,6 +231,8 @@ export default function Conversation(p: {
   headerToolsInMenu?: boolean | undefined;
   onRailToolsChange?: ((tools: ReactNode) => void) | undefined;
   transcriptHeading?: ReactNode;
+  transcriptTitleBar?: ReactNode;
+  duo?: boolean;
   projectName?: string | undefined;
   recentChats?: RecentProjectChat[] | undefined;
   syncWorkspaceId?: string | undefined;
@@ -527,7 +531,11 @@ export default function Conversation(p: {
     remember,
     revealRequest,
     getAnchorId,
-  } = useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
+  } = useConversationScroll(
+    `${p.data.stateDir}:${kind}:${p.id}`,
+    loaded,
+    p.visible ?? true,
+  );
   const loadOlderAtStart = () => {
     if (
       !before ||
@@ -1710,6 +1718,9 @@ export default function Conversation(p: {
           </details>,
           headerTools,
         )}
+      {p.transcriptTitleBar && (
+        <TranscriptTitleBar>{p.transcriptTitleBar}</TranscriptTitleBar>
+      )}
       <div
         id="messages"
         ref={scroll}
@@ -1860,11 +1871,13 @@ export default function Conversation(p: {
           onQuote={quote}
         />
       )}
-      <FollowLatest
-        subscribe={subscribeFollow}
-        getSnapshot={getFollow}
-        onClick={returnToLatest}
-      />
+      {(!p.duo || p.room) && (
+        <FollowLatest
+          subscribe={subscribeFollow}
+          getSnapshot={getFollow}
+          onClick={returnToLatest}
+        />
+      )}
       {p.room ? (
         <p className="room-footer">
           {p.room.kind === "private"
@@ -2014,6 +2027,13 @@ export default function Conversation(p: {
                 );
               return (
                 <>
+                  {p.duo && (
+                    <FollowLatest
+                      subscribe={subscribeFollow}
+                      getSnapshot={getFollow}
+                      onClick={returnToLatest}
+                    />
+                  )}
                   {managed &&
                     p.agent?.isLead &&
                     p.agent.accountTransfer?.scope !== "subagents" && (

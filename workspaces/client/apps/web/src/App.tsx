@@ -9,6 +9,9 @@ import { EdgeRail } from "./components/edge-rail/EdgeRail";
 import { useEdgeRail } from "./components/edge-rail/useEdgeRail";
 import { useWorkspacePanelWidth } from "./components/shell/workspacePanelWidth";
 import { useWorkspaceLayout } from "./layout/useWorkspaceLayout";
+import { useDuoSurface } from "./layout/useDuoSurface";
+import { usePanePathFocus } from "./layout/usePanePathFocus";
+import { usePublishPanePath } from "./layout/PanePathShell";
 import { layoutQueries } from "./layout/layout-contract.generated";
 import { restoreSidebarFocus } from "./components/sidebar/SidebarFrame";
 import {
@@ -98,7 +101,6 @@ import { nativeThreadError } from "./nativeErrors";
 import {
   ActionIcon,
   Button,
-  Drawer,
   Modal,
   Menu,
   NativeSelect,
@@ -249,6 +251,8 @@ import {
 import "./desktop";
 import "./components/team-navigation.css";
 import "./hooks/viewport-surface.css";
+import { panePathStyle } from "./components/shell/PanePathChrome";
+import { WorkspacePanelHost } from "./components/shell/WorkspacePanelHost";
 import TeamPanel from "./components/agents/TeamPanel";
 import FilePreview, { type PreviewTarget } from "./components/FilePreview";
 import { awaitingAnswerIds } from "./components/agents/WorkerOverview";
@@ -544,7 +548,31 @@ export default function App({ active = true }: { active?: boolean }) {
       window.removeEventListener("studio-shell-preferences", preferences);
     };
   }, []);
+  const [panePanel, setPanePanel] = useState<
+    "team" | "workspace" | "terminals" | null
+  >(null);
+  const [paneSidebar, setPaneSidebar] = useState(false);
+  const [paneFullScreen, setPaneFullScreen] = useState(false);
+  const paneActive = useRef(false);
+  const paneNavigation = useRef({
+    panel: panePanel,
+    mode: "single" as "single" | "pair",
+  });
   const toggleSidebar = useCallback(() => {
+    if (paneActive.current) {
+      restoreSidebarFocus();
+      if (paneNavigation.current.panel) {
+        setPaneFullScreen(false);
+        setPaneSidebar((visible) => !visible);
+      } else if (paneNavigation.current.mode === "pair") {
+        setPaneSidebar(false);
+        setPaneFullScreen(true);
+      } else {
+        setPaneFullScreen(false);
+        setPaneSidebar((visible) => !visible);
+      }
+      return;
+    }
     if (isServerView && !isClassicServerView) {
       postToShell(
         {
@@ -643,7 +671,7 @@ export default function App({ active = true }: { active?: boolean }) {
     [teamOpen, setTeamOpen] = useState(false),
     [tasksOpen, setTasksOpen] = useState(false),
     [searchOpen, setSearchOpen] = useState(false),
-    [workspaceOpen, setWorkspaceOpen] = useState(false),
+    [workspaceOpen, storeWorkspaceOpen] = useState(false),
     [tasksRendered, setTasksRendered] = useState(false),
     [workspaceRendered, setWorkspaceRendered] = useState(false),
     [workspaceSection, setWorkspaceSection] = useState("messages"),
@@ -659,6 +687,18 @@ export default function App({ active = true }: { active?: boolean }) {
     [modal, setModal] = useState<{ title: string; body: ReactNode } | null>(
       null,
     );
+  const setWorkspaceOpen = (opened: boolean) => {
+    storeWorkspaceOpen(opened);
+    setPanePanel(null);
+    if (paneActive.current) {
+      if (opened) {
+        setTeamOpen(false);
+        setWideTeamOpen(false);
+      }
+      setPaneSidebar(false);
+      setPaneFullScreen(false);
+    }
+  };
   const {
     preferredWidthRem: preferredPanelWidthRem,
     setPreferredWidthRem: setPreferredPanelWidthRem,
@@ -667,7 +707,58 @@ export default function App({ active = true }: { active?: boolean }) {
     workspaceOpen,
     teamPreferred: wideTeamOpen,
     ...(preferredPanelWidthRem !== undefined ? { preferredPanelWidthRem } : {}),
+    panePath: {
+      panel:
+        schemaMismatch || !data
+          ? null
+          : (panePanel ??
+            (workspaceOpen
+              ? "workspace"
+              : teamOpen || wideTeamOpen
+                ? "team"
+                : null)),
+      sidebarOverride: paneSidebar,
+      fullScreen: paneFullScreen,
+    },
   });
+  const panePath = rowLayout.panePath;
+  usePanePathFocus(panePath);
+  const sidebarExpanded = panePath
+    ? !!panePath.panes.sidebar
+    : sidebarCompact
+      ? sidebar
+      : !sidebarCollapsed;
+  paneActive.current = !!panePath;
+  paneNavigation.current = {
+    panel: panePath?.panelKind ?? null,
+    mode: panePath?.mode ?? "single",
+  };
+  const closePaneSidebar = useCallback(() => {
+    setPaneSidebar(false);
+    setPaneFullScreen(!paneNavigation.current.panel);
+  }, []);
+  usePublishPanePath(
+    serverViewId,
+    active && panePath
+      ? {
+          layout: panePath,
+          toggleSidebar,
+          closeSidebar: closePaneSidebar,
+        }
+      : null,
+  );
+  const closeTeam = () => {
+    setTeamOpen(false);
+    setWideTeamOpen(false);
+    setPanePanel(null);
+    save("codex-team-open", false);
+  };
+  const closePane = () => {
+    closeTeam();
+    storeWorkspaceOpen(false);
+    setPaneSidebar(false);
+    setPaneFullScreen(false);
+  };
   const narrowTeam =
     !(teamHasSidebar ? teamFitsWithSidebar : teamFitsWithoutSidebar) ||
     !rowLayout.teamCanInline;
@@ -931,7 +1022,11 @@ export default function App({ active = true }: { active?: boolean }) {
       : null,
   );
   const room = data?.runtime?.rooms?.find((r) => r.id === opened);
-  const railGeometry = useEdgeRail(undefined, active && !!data && !room?.radio);
+  const railGeometry = useEdgeRail(
+    undefined,
+    active && (!!data || !!panePath) && (schemaMismatch || !room?.radio),
+  );
+  const duoSurface = useDuoSurface();
   const [railTools] = useState(createConversationMenuTools);
   const legacy = data?.chats.find((c) => c.id === opened);
   const roomRoots = room ? roomLeadIds(room, agents) : [];
@@ -1104,6 +1199,7 @@ export default function App({ active = true }: { active?: boolean }) {
     setRoomContext(lead?.id || null);
     setOpened(id);
     setSidebar(false);
+    if (paneActive.current) setPaneSidebar(false);
     setTeamOpen(false);
   });
   useEffect(() => {
@@ -1220,6 +1316,7 @@ export default function App({ active = true }: { active?: boolean }) {
             }
           : undefined,
       );
+      if (!navigationTarget.itemId) closeTeam();
       setWorkspaceOpen(!!navigationTarget.itemId);
     }
     setNavigationTarget(undefined);
@@ -2402,28 +2499,68 @@ export default function App({ active = true }: { active?: boolean }) {
   );
   const studioErrors = useStudioErrorsState(data?.runtime.studioErrors);
   if (!active) return null;
-  // A server contract gate must not cover navigation to other server owners.
-  if (screen && schemaMismatch)
-    return (
-      <main className="startup" aria-label="Server update required">
-        <h2>{serverSettings?.server?.alias || "Server"}: update required</h2>
-        {schemaMismatchContent}
+  const startupScreen = (label: string, content: ReactNode) => {
+    const message = (
+      <main
+        className={panePath ? "startup workspace duo-pane-startup" : "startup"}
+        aria-label={label}
+        hidden={!!panePath && !panePath.panes.conversation}
+        style={
+          panePath ? panePathStyle(panePath.panes.conversation) : undefined
+        }
+      >
+        {panePath ? <div>{content}</div> : content}
       </main>
+    );
+    if (!panePath) return message;
+    return (
+      <>
+        <EdgeRail
+          geometry={railGeometry}
+          sidebar={{
+            id: "sidebar-toggle",
+            label: "Toggle conversations",
+            expanded: sidebarExpanded,
+            onClick: toggleSidebar,
+          }}
+        />
+        <div
+          className="workspace-frame workspace-layout-row"
+          ref={rowLayout.rowRef}
+          data-pane-path={panePath.mode}
+        >
+          {message}
+        </div>
+      </>
+    );
+  };
+  // A server contract gate must not cover navigation to other server owners.
+  if (schemaMismatch && (screen || (!data && panePath)))
+    return startupScreen(
+      screen ? "Server update required" : "Studio update required",
+      <>
+        <h2>
+          {serverSettings?.server?.alias || (screen ? "Server" : "Studio")}:
+          update required
+        </h2>
+        {schemaMismatchContent}
+      </>,
     );
   if (!data)
-    return schemaMismatch ? (
-      schemaMismatchDialog
-    ) : (
-      <main className="startup" aria-label="Studio startup">
-        <p
-          role={error ? "alert" : "status"}
-          className={error ? "studio-recovery-banner" : undefined}
-        >
-          {error || "Connecting to LAYR Studio…"}
-        </p>
-        {error && <a href="/">Reload Studio</a>}
-      </main>
-    );
+    return schemaMismatch
+      ? schemaMismatchDialog
+      : startupScreen(
+          "Studio startup",
+          <>
+            <p
+              role={error ? "alert" : "status"}
+              className={error ? "studio-recovery-banner" : undefined}
+            >
+              {error || "Connecting to LAYR Studio…"}
+            </p>
+            {error && <a href="/">Reload Studio</a>}
+          </>,
+        );
   const title = agent?.name || room?.name || legacy?.name || "New conversation";
   const projectName =
     data.runtime?.projects?.find((item) => item.path === agent?.cwd)?.name ||
@@ -2451,8 +2588,8 @@ export default function App({ active = true }: { active?: boolean }) {
       setWorkerFilter={setWorkerFilter}
       completedOpen={completedOpen}
       setCompletedOpen={setCompletedOpen}
-      setTeamOpen={setTeamOpen}
-      setWideTeamOpen={setWideTeamOpen}
+      setTeamOpen={panePath ? closePane : setTeamOpen}
+      setWideTeamOpen={panePath ? closePane : setWideTeamOpen}
       saveClosed={() => save("codex-team-open", false)}
       open={open}
       previewResult={setFilePreview}
@@ -2460,10 +2597,20 @@ export default function App({ active = true }: { active?: boolean }) {
     />
   );
   const toggleTeam = () => {
-    if (narrowTeam) setTeamOpen(!teamOpen);
+    const opened = panePath
+      ? panePath.panelKind !== "team"
+      : !(narrowTeam ? teamOpen : wideTeamOpen);
+    setPanePanel(null);
+    if (panePath) {
+      storeWorkspaceOpen(false);
+      setTeamOpen(opened);
+      setWideTeamOpen(opened);
+      setPaneSidebar(false);
+      setPaneFullScreen(false);
+    } else if (narrowTeam) setTeamOpen(opened);
     else {
-      setWideTeamOpen(!wideTeamOpen);
-      save("codex-team-open", !wideTeamOpen);
+      setWideTeamOpen(opened);
+      save("codex-team-open", opened);
     }
   };
   const compactHeader =
@@ -2528,6 +2675,16 @@ export default function App({ active = true }: { active?: boolean }) {
     />
   );
   const toggleTerminal = () => {
+    if (panePath) {
+      const opened = panePanel !== "terminals";
+      storeWorkspaceOpen(false);
+      setTeamOpen(false);
+      setWideTeamOpen(false);
+      setPanePanel(opened ? "terminals" : null);
+      setPaneSidebar(false);
+      setPaneFullScreen(false);
+      return;
+    }
     if (screen)
       void screen
         .execute({ action: "terminal", operation: "toggle" })
@@ -2752,6 +2909,7 @@ export default function App({ active = true }: { active?: boolean }) {
           remove={remove}
           mobile={sidebar}
           collapsed={sidebarCollapsed}
+          paneRect={panePath?.panes.sidebar}
           onCompactChange={setSidebarCompact}
           onSearch={() => {
             if (isServerView) {
@@ -2763,6 +2921,11 @@ export default function App({ active = true }: { active?: boolean }) {
           }}
           settings={() => setStudioSettingsOpen(true)}
           close={() => {
+            if (panePath) {
+              setPaneSidebar(false);
+              setPaneFullScreen(!panePath.panelKind);
+              return;
+            }
             if (isServerView)
               delete document.documentElement.dataset.serverProjects;
             if (sidebarCompact) setSidebar(false);
@@ -2778,7 +2941,7 @@ export default function App({ active = true }: { active?: boolean }) {
         sidebar={{
           id: "sidebar-toggle",
           label: sidebarCompact ? "Back to chats" : "Toggle conversations",
-          expanded: sidebarCompact ? sidebar : !sidebarCollapsed,
+          expanded: sidebarExpanded,
           onClick: toggleSidebar,
         }}
         messages={{
@@ -2796,9 +2959,18 @@ export default function App({ active = true }: { active?: boolean }) {
       <div
         className="workspace-frame workspace-layout-row"
         ref={rowLayout.rowRef}
+        data-pane-path={panePath ? panePath.mode : undefined}
       >
         <main
           className="workspace"
+          hidden={!!panePath && !panePath.panes.conversation}
+          style={
+            panePath
+              ? panePathStyle(panePath.panes.conversation, {
+                  viewportFixedChildren: true,
+                })
+              : undefined
+          }
           data-edge-rail={railGeometry ? "true" : undefined}
           data-show-message-avatars={studioPreferences.showMessageAvatars}
         >
@@ -2814,7 +2986,7 @@ export default function App({ active = true }: { active?: boolean }) {
                   variant="subtle"
                   size="compact-xs"
                   aria-label="Back to chats"
-                  aria-expanded={sidebar}
+                  aria-expanded={sidebarExpanded}
                   onClick={toggleSidebar}
                   leftSection={<ArrowLeft size={18} />}
                 >
@@ -2824,7 +2996,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 <ActionIcon
                   id="sidebar-toggle"
                   aria-label="Toggle conversations"
-                  aria-expanded={sidebarCompact ? sidebar : !sidebarCollapsed}
+                  aria-expanded={sidebarExpanded}
                   onClick={toggleSidebar}
                 >
                   <PanelLeft size={18} />
@@ -3090,7 +3262,11 @@ export default function App({ active = true }: { active?: boolean }) {
               </div>
             ) : room?.radio ? (
               <RadioChat
-                visible={!(mobileClient && sidebar)}
+                visible={
+                  panePath
+                    ? !!panePath.panes.conversation
+                    : !(mobileClient && sidebar)
+                }
                 key={room.id}
                 room={room}
                 data={data}
@@ -3102,10 +3278,20 @@ export default function App({ active = true }: { active?: boolean }) {
               />
             ) : (
               <SelectedConversation
+                duo={rowLayout.duo}
                 headerToolsInMenu={menuHeaderTools}
                 onRailToolsChange={railTools.publish}
-                transcriptHeading={railGeometry ? conversationTitle : undefined}
-                visible={!(mobileClient && sidebar)}
+                transcriptHeading={
+                  railGeometry && !duoSurface ? conversationTitle : undefined
+                }
+                transcriptTitleBar={
+                  railGeometry && duoSurface ? conversationTitle : undefined
+                }
+                visible={
+                  panePath
+                    ? !!panePath.panes.conversation
+                    : !(mobileClient && sidebar)
+                }
                 projectName={projectName}
                 recentChats={
                   agent?.empty
@@ -3179,27 +3365,82 @@ export default function App({ active = true }: { active?: boolean }) {
           className="workspace-panel-slot"
           ref={setWorkspacePanelSlot}
         />
-        {hasTeam &&
-          (narrowTeam ? (
-            <Drawer
-              opened={teamOpen}
-              onClose={() => setTeamOpen(false)}
-              position="right"
-              size="var(--studio-team-size)"
-              padding={0}
-              withCloseButton={false}
-              title="Team"
-              classNames={{ header: "sr-only" }}
-            >
-              {teamPanel}
-            </Drawer>
-          ) : wideTeamOpen ? (
-            teamPanel
-          ) : null)}
+        {panePath?.divider && (
+          <div
+            aria-hidden="true"
+            className="duo-hinge-gap"
+            style={panePathStyle(panePath.divider)}
+          />
+        )}
+        {hasTeam && (
+          <WorkspacePanelHost
+            title="Team"
+            ariaLabel="Team panel"
+            bare
+            drawerSize="var(--studio-team-size)"
+            inlineSize="var(--studio-team-size)"
+            inlineTarget={workspacePanelSlot}
+            panelLayout={{
+              ...rowLayout.panelLayout,
+              mode: narrowTeam ? "drawer" : "inline",
+            }}
+            panePath={
+              panePath
+                ? {
+                    rect:
+                      panePath.panelKind === "team"
+                        ? panePath.panes.panel
+                        : null,
+                    fullScreen: paneFullScreen,
+                    canFullScreen: panePath.canFullScreen,
+                    onToggleFullScreen: () =>
+                      setPaneFullScreen((full) => !full),
+                  }
+                : undefined
+            }
+            opened={
+              panePath
+                ? panePath.panelKind === "team" && !!panePath.panes.panel
+                : narrowTeam
+                  ? teamOpen
+                  : wideTeamOpen
+            }
+            onClose={panePath ? closePane : closeTeam}
+          >
+            {panePath || (narrowTeam ? teamOpen : wideTeamOpen)
+              ? teamPanel
+              : null}
+          </WorkspacePanelHost>
+        )}
       </div>
-      {!mobileClient && studioPreferences.showTerminals && (
+      {(!mobileClient || !!panePath) && studioPreferences.showTerminals && (
         <Suspense fallback={null}>
-          <TerminalDock data={data} agent={agent || lead} notify={notify} />
+          <TerminalDock
+            data={data}
+            agent={agent || lead}
+            notify={notify}
+            panePath={
+              panePath
+                ? {
+                    rect:
+                      panePath.panelKind === "terminals"
+                        ? panePath.panes.panel
+                        : null,
+                    opened: panePath.panelKind === "terminals",
+                    onOpen: () => {
+                      setPanePanel("terminals");
+                      setPaneSidebar(false);
+                      setPaneFullScreen(false);
+                    },
+                    onClose: closePane,
+                    fullScreen: paneFullScreen,
+                    canFullScreen: panePath.canFullScreen,
+                    onToggleFullScreen: () =>
+                      setPaneFullScreen((full) => !full),
+                  }
+                : undefined
+            }
+          />
         </Suspense>
       )}
       <SearchOverlay
@@ -3225,7 +3466,21 @@ export default function App({ active = true }: { active?: boolean }) {
             panelLayout={rowLayout.panelLayout}
             onPanelWidthChange={setPreferredPanelWidthRem}
             resizeScope={workspaceId || data?.stateDir || "pending"}
-            opened={workspaceOpen}
+            opened={workspaceOpen && (!panePath || !!panePath.panes.panel)}
+            panePath={
+              panePath
+                ? {
+                    rect:
+                      panePath.panelKind === "workspace"
+                        ? panePath.panes.panel
+                        : null,
+                    fullScreen: paneFullScreen,
+                    canFullScreen: panePath.canFullScreen,
+                    onToggleFullScreen: () =>
+                      setPaneFullScreen((full) => !full),
+                  }
+                : undefined
+            }
             onClose={() => setWorkspaceOpen(false)}
             agent={agent || lead}
             data={chatData!}

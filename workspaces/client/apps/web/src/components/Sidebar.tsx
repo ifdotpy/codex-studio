@@ -29,6 +29,7 @@ import {
   layoutQueries,
   layoutValues,
 } from "../layout/layout-contract.generated";
+import type { LayoutRect } from "../layout/deriveWorkspaceLayout";
 import { SidebarFrame, restoreSidebarFocus } from "./sidebar/SidebarFrame";
 import {
   Users,
@@ -63,6 +64,7 @@ import {
 import SidebarRow from "./SidebarRow";
 import { needsYou, projectStateCounts } from "./sidebar/fleet";
 import ProjectStateCounts from "./sidebar/ProjectStateCounts";
+import { useDuoSurface } from "../layout/useDuoSurface";
 import { SidebarWarningsTarget } from "./SidebarWarnings";
 import {
   activeLayrReadiness,
@@ -140,6 +142,7 @@ export type SidebarProps = {
   remove: (id: string, room: boolean) => void;
   mobile: boolean;
   collapsed?: boolean;
+  paneRect?: LayoutRect | null | undefined;
   onCompactChange?: (compact: boolean) => void;
   onSearch: () => void;
   close: () => void;
@@ -178,6 +181,7 @@ export default function Sidebar(p: SidebarProps) {
 }
 
 function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
+  const duoSurface = useDuoSurface();
   const { canPickDirectory, pickDirectory, revealPath } =
     useServerFileDialogs();
   const services = p.services;
@@ -1328,7 +1332,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             <strong>LAYR</strong> <span>Studio</span>
           </span>
         </a>
-        <SidebarWarningsTarget />
+        {!duoSurface && <SidebarWarningsTarget />}
         <ActionIcon
           className="sidebar-search"
           aria-label="Search chats"
@@ -1338,7 +1342,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         >
           <Search size={18} />
         </ActionIcon>
-        {p.settings && (
+        {!duoSurface && p.settings && (
           <ActionIcon
             variant="subtle"
             aria-label="Studio settings"
@@ -1348,7 +1352,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             <Settings size={18} />
           </ActionIcon>
         )}
-        {compact && (
+        {!duoSurface && compact && (
           <ActionIcon aria-label="Close conversations" onClick={closeSidebar}>
             <X size={20} />
           </ActionIcon>
@@ -1997,6 +2001,11 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           </p>
         )}
       </nav>
+      {duoSurface && (
+        <footer className="sidebar-utility-footer">
+          <SidebarWarningsTarget utility settings={p.settings} />
+        </footer>
+      )}
     </>
   );
   const dialogProject = dialog ? groupMap.get(dialog.path) : undefined;
@@ -2015,6 +2024,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       <SidebarFrame
         scope={`${p.services.cache.ownerId}:${p.data.stateDir}`}
         opened={p.mobile}
+        {...(p.paneRect !== undefined ? { paneRect: p.paneRect } : {})}
         {...(p.collapsed !== undefined ? { collapsed: p.collapsed } : {})}
         close={closeSidebar}
         onCompactChange={reportCompact}

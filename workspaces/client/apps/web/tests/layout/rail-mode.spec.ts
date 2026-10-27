@@ -1,7 +1,12 @@
+import { duoPhoneUserAgent } from "./duo-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
 
-test.use({ hasTouch: true });
+test.use({
+  userAgent: duoPhoneUserAgent,
+  hasTouch: true,
+  reducedMotion: "reduce",
+});
 for (const check of [
   "buttons",
   "header",
@@ -27,7 +32,9 @@ for (const check of [
       await page.setViewportSize({ width: 1200, height: 669 });
       const sidebar = await fixture.open(page);
       await sidebar
-        .getByRole("button", { name: /^Local Saved pin\b/ })
+        .getByRole("button")
+        .filter({ hasText: "Local Saved pin" })
+        .filter({ has: page.locator("strong") })
         .first()
         .click();
       for (const width of [1200, 390]) {
@@ -134,9 +141,7 @@ for (const check of [
       } else if (check === "header") {
         await expect(page.locator(".workspace-header")).toHaveCount(0);
       } else if (check === "title") {
-        const heading = page.locator(
-          "#messages .message-content > .transcript-heading:first-child",
-        );
+        const heading = page.locator("#conversation > .duo-transcript-bar");
         await expect(heading).toBeVisible();
         await expect(heading.locator("#conversation-title")).toHaveText(
           "Local Saved pin",
@@ -153,9 +158,10 @@ for (const check of [
             .click();
           await expect(
             page.locator(
-              ".workspace-drawer .mantine-Drawer-content, .workspace-panel-inline:not([hidden])",
+              ".workspace-drawer .mantine-Drawer-content:visible, .workspace-panel-inline:not([hidden])",
             ),
           ).toBeVisible();
+          await expect(page.getByRole("menu")).toBeHidden();
         }
         const png = (await page.screenshot()).toString("base64");
         const colors = await page.evaluate(async (png) => {
@@ -170,8 +176,8 @@ for (const check of [
           ctx.drawImage(image, 0, 0);
           return (
             [
-              [850, 300],
-              [911, 300],
+              [850, 500],
+              [911, 500],
               [850, 650],
               [911, 650],
             ] satisfies [number, number][]
@@ -280,3 +286,39 @@ for (const check of [
     }
   });
 }
+
+test("A non-Duo rail keeps the inline title and transcript padding", async ({
+  page,
+  context,
+}) => {
+  const fixture = await sidebarParityFixture(context, { paired: false });
+  fixture.local.snapshot.runtime.requests = [];
+  fixture.local.snapshot.runtime.complaints = [];
+  const cdp = await context.newCDPSession(page);
+  try {
+    await page.setViewportSize({ width: 1200, height: 768 });
+    const sidebar = await fixture.open(page);
+    await sidebar
+      .getByRole("button")
+      .filter({ hasText: "Local Saved pin" })
+      .filter({ has: page.locator("strong") })
+      .first()
+      .click();
+    await page.setViewportSize({ width: 1024, height: 768 });
+    const padding = await page
+      .locator("#messages")
+      .evaluate((node) => getComputedStyle(node).paddingTop);
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+      insets: { top: 0, right: 84, bottom: 34, left: 0 },
+    });
+    await expect(page.locator(".edge-rail")).toBeVisible();
+    await expect(page.locator(".duo-transcript-bar")).toHaveCount(0);
+    await expect(page.locator("#messages .transcript-heading")).toContainText(
+      "Local Saved pin",
+    );
+    await expect(page.locator("#messages")).toHaveCSS("padding-top", padding);
+  } finally {
+    await cdp.detach();
+    await fixture.close();
+  }
+});

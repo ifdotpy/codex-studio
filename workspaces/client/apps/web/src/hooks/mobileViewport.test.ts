@@ -113,7 +113,7 @@ beforeEach(() => {
   frames = new Map();
   vi.stubGlobal("window", windowMock);
   vi.stubGlobal("document", documentMock);
-  vi.stubGlobal("navigator", { maxTouchPoints: 0 });
+  vi.stubGlobal("navigator", { maxTouchPoints: 0, userAgent: "iPhone" });
   vi.stubGlobal("HTMLTextAreaElement", Textarea);
   let nextFrame = 0;
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
@@ -145,6 +145,16 @@ function resize(patch: Partial<Viewport>, event = "resize") {
   flush();
 }
 
+it("keeps Duo proportions at full height while the keyboard covers the page", () => {
+  mount();
+  expect(root.hasAttribute("data-duo-proportions")).toBe(true);
+  documentMock.activeElement = new Textarea();
+  windowMock.innerHeight = root.clientHeight = 323;
+  resize({ height: 323, offsetTop: 346 });
+  expect(root.hasAttribute("data-duo-proportions")).toBe(true);
+  cleanup?.();
+  expect(root.hasAttribute("data-duo-proportions")).toBe(false);
+});
 it("tracks a wide touch viewport with the keyboard already open", () => {
   documentMock.activeElement = new Textarea();
   viewport.height = 350;
@@ -245,7 +255,7 @@ it("retains compact support without touch capability", () => {
 });
 it("keeps a fine-primary touch document unpinned", () => {
   queries.matches = primaryQueries.matches = false;
-  vi.stubGlobal("navigator", { maxTouchPoints: 5 });
+  vi.stubGlobal("navigator", { maxTouchPoints: 5, userAgent: "iPhone" });
   mount();
   expect(root.style.size).toBe(0);
   expect(root.hasAttribute("data-touch-input")).toBe(true);
@@ -504,7 +514,7 @@ it("keeps hardware-keyboard caret taps native on a coarse touch device", () => {
 });
 it("keeps a fine-primary touch laptop in its normal layout without touch interception", () => {
   primaryQueries.matches = false;
-  vi.stubGlobal("navigator", { maxTouchPoints: 5 });
+  vi.stubGlobal("navigator", { maxTouchPoints: 5, userAgent: "iPhone" });
   const listeners = vi.spyOn(documentMock, "addEventListener");
   mount();
   expect(listeners.mock.calls.some(([name]) => name === "touchstart")).toBe(
@@ -575,4 +585,18 @@ it("clears an unfinished gesture when primary-touch listeners detach", () => {
   primaryQueries.dispatchEvent(new Event("change"));
   expect(gesture(textarea).defaultPrevented).toBe(false);
   expect(textarea.focus).toHaveBeenCalledTimes(1);
+});
+
+it("publishes the full portrait layout height while the keyboard shrinks the surface", () => {
+  viewport.width = 669;
+  viewport.height = 951;
+  windowMock.innerHeight = root.clientHeight = 951;
+  mount();
+  documentMock.activeElement = new Textarea();
+  resize({ height: 500 });
+  expect(root.style.get("--viewport-layout-height")).toBe("951px");
+  expect(root.style.get("--mobile-viewport-height")).toBe("500px");
+  cleanup?.();
+  cleanup = undefined;
+  expect(root.style.has("--viewport-layout-height")).toBe(false);
 });

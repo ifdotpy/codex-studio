@@ -483,3 +483,18 @@
     pointer-events: auto;
   }
 }
+
+/* The chat-list container belongs to the shared sidebar rule in #528. */
+/* layout-query: duo.projectCountersStackMax <= */
+@container chat-list (width <= 288px) {
+  :root[data-duo-ui] .project-tree-toggle {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: calc(var(--mantine-spacing-xs) / 2);
+  }
+  :root[data-duo-ui] .project-tree-toggle > .project-state-counts {
+    grid-column: 2;
+    justify-self: start;
+    margin-inline-start: 0;
+  }
+}

@@ -1,0 +1,186 @@
+.workspace-frame[data-pane-path] {
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+}
+.workspace-frame[data-pane-path] > .workspace,
+.duo-pane-panel {
+  pointer-events: auto;
+}
+.workspace-frame[data-pane-path] > #workspace-panel-slot {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  pointer-events: none;
+}
+.workspace-frame[data-pane-path] > .workspace,
+.duo-pane-panel,
+#sidebar[data-presentation="path"] {
+  min-width: 0;
+  translate: 0;
+  transition:
+    translate var(--layout-pane-path-motion-duration) ease-out,
+    transform var(--layout-pane-path-motion-duration) ease-out,
+    width var(--layout-pane-path-motion-duration) ease-out;
+}
+.workspace-frame[data-pane-path] > .workspace[hidden],
+.duo-pane-panel[hidden],
+#sidebar[data-presentation="path"][hidden] {
+  display: none;
+}
+.duo-pane-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border-left: var(--studio-border-width) solid var(--line);
+}
+/* The lazy host stylesheet must not replace the pane surface. */
+.workspace-panel-inline.duo-pane-panel {
+  background: var(--surface);
+}
+.duo-pane-header {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-xs);
+}
+.duo-pane-header > button:nth-of-type(2) {
+  margin-left: auto;
+}
+.duo-pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.duo-pane-body #team.team-dispatch {
+  inline-size: 100%;
+  height: 100%;
+  flex-basis: auto;
+  max-width: none;
+  border: 0;
+}
+.duo-pane-body #team .team-heading {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-frame[data-pane-path] > .workspace,
+  .duo-pane-panel,
+  #sidebar[data-presentation="path"] {
+    transition: none;
+  }
+}
+
+.duo-hinge-gap {
+  z-index: var(--layout-layers-app);
+  background: var(--surface);
+  pointer-events: auto;
+}
+
+.team-panel-inline {
+  border: 0;
+  background: transparent;
+}
+.team-panel-inline #team {
+  height: 100%;
+}
+.team-panel-drawer .mantine-Drawer-body {
+  padding: 0;
+  height: 100%;
+}
+
+.terminal-pane-path {
+  inset: auto;
+  box-shadow: none;
+  border-top: 0;
+}
+.terminal-pane-path[hidden],
+.terminal-pane-path .terminal-dock-toggle[hidden] {
+  display: none;
+}
+.terminal-pane-path .terminal-dock-body {
+  flex: 1;
+  min-height: 0;
+}
+
+@starting-style {
+  .duo-pane-panel {
+    translate: 100% 0;
+  }
+  #sidebar[data-presentation="path"] {
+    translate: -100% 0;
+  }
+}
+
+/* Navigation covers the passive conversation band; the rail stays above it. */
+#sidebar[data-presentation="path"],
+.duo-pane-panel,
+.terminal-pane-path {
+  z-index: var(--layout-layers-navigation);
+}
+#sidebar[data-presentation="path"] {
+  padding-bottom: var(--viewport-safe-bottom);
+}
+.duo-pane-body,
+.terminal-pane-path .terminal-dock-body {
+  box-sizing: border-box;
+  padding-bottom: var(--viewport-safe-bottom);
+  scroll-padding-bottom: var(--viewport-safe-bottom);
+}
+
+/* Keep the native title fixed to the viewport while the conversation slides. */
+.workspace-frame[data-pane-path] > .workspace {
+  translate: none;
+  transition:
+    left var(--layout-pane-path-motion-duration) ease-out,
+    width var(--layout-pane-path-motion-duration) ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-frame[data-pane-path] > .workspace {
+    transition: none;
+  }
+}
+
+/* The paired shell consumes the active screen's pane rect instead of a second layout. */
+.multi-server-shell[data-pane-path] {
+  display: block;
+}
+.multi-server-shell[data-pane-path] > .server-views {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+}
+.multi-server-shell[data-pane-path] > .server-mobile-toggle {
+  display: none;
+}
+.multi-server-shell[data-pane-path][data-shell-terminal="closed"] > #sidebar {
+  padding-bottom: calc(
+    var(--viewport-safe-bottom) + var(--shell-terminal-height)
+  );
+}
+.multi-server-shell[data-pane-path] > .shell-terminal-bar {
+  display: flex;
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: var(--shell-sidebar-width);
+  height: var(--shell-terminal-height);
+  z-index: var(--layout-layers-navigation);
+  background: var(--sidebar);
+}
+
+/* Startup and contract errors use the conversation cell beside shell navigation. */
+.workspace-frame[data-pane-path] > .duo-pane-startup {
+  display: grid;
+  place-content: center;
+  box-sizing: border-box;
+  padding: var(--mantine-spacing-md);
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.workspace-frame[data-pane-path] > .duo-pane-startup > div {
+  min-width: 0;
+}

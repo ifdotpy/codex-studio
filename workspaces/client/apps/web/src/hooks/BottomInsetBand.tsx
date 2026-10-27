@@ -37,9 +37,16 @@ export function BottomInsetBand({ children }: { children: ReactNode }) {
         document.documentElement.hasAttribute("data-touch-input") &&
         !document.documentElement.hasAttribute("data-viewport-keyboard") &&
         Number.parseFloat(getComputedStyle(root).paddingBottom) > 0;
+      host.toggleAttribute(
+        "data-pane-path",
+        !!root.querySelector(".workspace-frame[data-pane-path]"),
+      );
       if (shown && !host.isConnected) document.body.append(host);
       if (!shown) host.remove();
-      setVisible(shown);
+      // Duo keeps the composer last. Passive usage shares the row above it.
+      setVisible(
+        shown && !document.documentElement.hasAttribute("data-duo-proportions"),
+      );
       if (!shown) {
         content.disconnect();
         watchingContent = false;
@@ -53,7 +60,12 @@ export function BottomInsetBand({ children }: { children: ReactNode }) {
           childList: true,
           subtree: true,
           attributes: true,
-          attributeFilter: ["class", "style", "data-presentation"],
+          attributeFilter: [
+            "class",
+            "style",
+            "data-presentation",
+            "data-pane-path",
+          ],
         });
         watchingContent = true;
       }
@@ -94,6 +106,7 @@ export function BottomInsetBand({ children }: { children: ReactNode }) {
         "class",
         "data-touch-input",
         "data-viewport-keyboard",
+        "data-duo-proportions",
       ],
     });
     window.addEventListener("resize", schedule);

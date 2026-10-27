@@ -50,7 +50,8 @@
 
 /* Paint the pane under the system strip; root padding still bounds its content. */
 html:has(.workspace[data-edge-rail="true"]) body #root,
-html:has(.workspace[data-edge-rail="true"]) .viewport-bottom-band {
+html:has(.workspace[data-edge-rail="true"])
+  .viewport-bottom-band:not([data-pane-path]) {
   background-color: var(--surface);
 }
 
@@ -75,21 +76,7 @@ html:has(.workspace[data-edge-rail="true"])
   top: 0;
   right: calc(-1 * env(safe-area-inset-right, 0px));
   width: env(safe-area-inset-right, 0px);
-  height: calc(100% + var(--viewport-safe-bottom));
-  background: var(--mantine-color-body);
-  pointer-events: none;
-}
-
-html:has(.workspace[data-edge-rail="true"])
-  .workspace-drawer
-  .mantine-Drawer-inner::before {
-  content: "";
-  position: absolute;
-  top: 100%;
-  right: 0;
-  width: var(--drawer-size);
-  max-width: 100%;
-  height: var(--viewport-safe-bottom);
+  height: 100%;
   background: var(--mantine-color-body);
   pointer-events: none;
 }
