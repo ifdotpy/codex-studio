@@ -28,6 +28,7 @@ pub mod records;
 pub mod shared_values;
 pub mod studio_errors;
 pub mod supervisor_contract;
+pub mod task_command;
 pub mod task_results;
 pub mod usage;
 

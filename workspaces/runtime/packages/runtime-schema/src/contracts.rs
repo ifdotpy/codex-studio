@@ -625,6 +625,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     crate::claude_controls::check_schema_parity(openapi)?;
     crate::records::check_schema_parity(openapi)?;
     crate::task_gate::check_api_contract(openapi)?;
+    crate::task_command::check_api_contract(openapi)?;
     for (suffix, value) in [
         ("minimum", values::IDLE_COMPACTION_MIN_TOKENS),
         ("default", values::IDLE_COMPACTION_DEFAULT_MIN_TOKENS),
@@ -989,6 +990,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     check_provider_sql_parity(root)?;
     let mut openapi = read_json(root, OPENAPI_PATH)?;
     crate::records::refresh_openapi(&mut openapi)?;
+    crate::task_command::apply_api_contract(&mut openapi);
     for (name, schema) in crate::studio_errors::schemas()? {
         openapi["components"]["schemas"][name] = schema;
     }

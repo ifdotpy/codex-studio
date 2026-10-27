@@ -27359,48 +27359,33 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
-    /** WorkBody */
+    /**
+     * TaskCommand
+     * @description One tagged owner consumed by both HTTP and agent mutation adapters.
+     *
+     *     ```compile_fail
+     *     use studio_runtime_schema::task_command::TaskCommand;
+     *     let command = TaskCommand::Cancel { task_id: "task".into(), version: None };
+     *     // A cancellation always carries its reason.
+     *     ```
+     */
     WorkBody: {
-      /**
-       * Action
-       * @enum {string}
-       */
-      action:
+      action?:
         | "list"
         | "create"
         | "update"
+        | "cancel"
+        | "reject"
         | "claim"
         | "submit"
-        | "cancel"
         | "accept"
-        | "reject"
-        | "set_default_gate";
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /**
-       * Checks
-       * @default null
-       */
-      checks?: string | null | undefined;
-      /**
-       * Dependencies
-       * @default null
-       */
-      dependencies?: string[] | null | undefined;
-      /**
-       * Description
-       * @default null
-       */
+        | "set_default_gate"
+        | undefined;
+      agent?: string | null | undefined;
+      checks?: string | undefined;
+      dependencies?: string[] | (string[] | null) | undefined;
       description?: string | null | undefined;
-      /**
-       * Files
-       * @default null
-       */
-      files?: string[] | null | undefined;
-      /** @description Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default. */
+      files?: string[] | undefined;
       gate?:
         | string
         | {
@@ -27410,57 +27395,194 @@ export interface components {
           }
         | null
         | undefined;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /** @description Lead reason to accept despite a failed, missing, or unknown gate. Saved in the decision. */
-      override_reason?: string | undefined;
-      /**
-       * Owner
-       * @default null
-       */
-      owner?: null | string | undefined;
-      /**
-       * Reason
-       * @default null
-       */
-      reason?: string | null | undefined;
-      result?: components["schemas"]["JsonValue"] | undefined;
-      /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
+      id?: string | null | undefined;
+      override_reason?: string | null | undefined;
+      owner?: (string | null) | (string | null) | undefined;
+      reason?: string | undefined;
+      result?: string | unknown | undefined;
       result_schema?:
         | {
             [key: string]: unknown;
           }
         | boolean
         | undefined;
-      /**
-       * Revision
-       * @default null
-       */
-      revision?: string | null | undefined;
-      /**
-       * Status
-       * @default null
-       */
-      status?: ("ready" | "blocked") | null | undefined;
-      /**
-       * Task Id
-       * @default null
-       */
-      task_id?: null | string | undefined;
-      /**
-       * Title
-       * @default null
-       */
-      title?: string | null | undefined;
-      /**
-       * Version
-       * @default null
-       */
+      revision?: string | undefined;
+      status?: "ready" | "blocked" | null | undefined;
+      task_id?: string | undefined;
+      title?: string | (string | null) | undefined;
       version?: number | null | undefined;
-    };
+    } & (
+      | {
+          /** @constant */
+          action: "list";
+          agent?: string | null | undefined;
+          id?: string | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "create";
+          agent?: string | null | undefined;
+          /** @default [] */
+          dependencies?: string[] | undefined;
+          description?: string | null | undefined;
+          /** @description Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default. */
+          gate?:
+            | string
+            | {
+                command: string;
+                /** @default 600000 */
+                timeout_ms?: number | undefined;
+              }
+            | null
+            | undefined;
+          id?: string | null | undefined;
+          owner?: string | null | undefined;
+          /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
+          result_schema?:
+            | {
+                [key: string]: unknown;
+              }
+            | boolean
+            | undefined;
+          /** @enum {string|null} */
+          status?: "ready" | "blocked" | null | undefined;
+          title: string;
+        }
+      | {
+          /** @constant */
+          action: "update";
+          agent?: string | null | undefined;
+          dependencies?: string[] | null | undefined;
+          description?: string | null | undefined;
+          /** @description Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default. */
+          gate?:
+            | string
+            | {
+                command: string;
+                /** @default 600000 */
+                timeout_ms?: number | undefined;
+              }
+            | null
+            | undefined;
+          id?: string | null | undefined;
+          owner?: string | null | undefined;
+          /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
+          result_schema?:
+            | {
+                [key: string]: unknown;
+              }
+            | boolean
+            | undefined;
+          /** @enum {string|null} */
+          status?: "ready" | "blocked" | null | undefined;
+          task_id: string;
+          title?: string | null | undefined;
+          /**
+           * Format: int64
+           * @description JSON Schema integers include integral decimal numbers. Retain that ingress
+           *     compatibility while carrying an actual integer in the service.
+           * @default null
+           */
+          version?: number | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "cancel";
+          agent?: string | null | undefined;
+          id?: string | null | undefined;
+          reason: string;
+          task_id: string;
+          /**
+           * Format: int64
+           * @description JSON Schema integers include integral decimal numbers. Retain that ingress
+           *     compatibility while carrying an actual integer in the service.
+           * @default null
+           */
+          version?: number | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "reject";
+          agent?: string | null | undefined;
+          id?: string | null | undefined;
+          result: string;
+          task_id: string;
+          /**
+           * Format: int64
+           * @description JSON Schema integers include integral decimal numbers. Retain that ingress
+           *     compatibility while carrying an actual integer in the service.
+           * @default null
+           */
+          version?: number | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "claim";
+          agent?: string | null | undefined;
+          id?: string | null | undefined;
+          /** @default null */
+          owner?: string | null | undefined;
+          task_id: string;
+          /**
+           * Format: int64
+           * @description JSON Schema integers include integral decimal numbers. Retain that ingress
+           *     compatibility while carrying an actual integer in the service.
+           * @default null
+           */
+          version?: number | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "submit";
+          agent?: string | null | undefined;
+          checks: string;
+          /** @default [] */
+          files?: string[] | undefined;
+          id?: string | null | undefined;
+          result: components["schemas"]["JsonValue"];
+          revision: string;
+          task_id: string;
+          /**
+           * Format: int64
+           * @description JSON Schema integers include integral decimal numbers. Retain that ingress
+           *     compatibility while carrying an actual integer in the service.
+           * @default null
+           */
+          version?: number | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "accept";
+          agent?: string | null | undefined;
+          id?: string | null | undefined;
+          /** @default null */
+          override_reason?: string | null | undefined;
+          result: string;
+          task_id: string;
+          /**
+           * Format: int64
+           * @description JSON Schema integers include integral decimal numbers. Retain that ingress
+           *     compatibility while carrying an actual integer in the service.
+           * @default null
+           */
+          version?: number | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "set_default_gate";
+          agent?: string | null | undefined;
+          /** @description Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default. */
+          gate:
+            | string
+            | {
+                command: string;
+                /** @default 600000 */
+                timeout_ms?: number | undefined;
+              }
+            | null;
+          id?: string | null | undefined;
+        }
+    );
     /** WorkDecisionDto */
     WorkDecisionDto: {
       /** By */

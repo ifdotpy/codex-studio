@@ -44,6 +44,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             "ProviderModel",
             "studio_runtime_schema::model_catalog::ProviderModel",
         ),
+        (
+            "WorkBody",
+            "studio_runtime_schema::task_command::TaskCommand",
+        ),
         ("WorkStatus", "studio_runtime_schema::records::WorkStatus"),
         (
             "WorkspaceMode",
