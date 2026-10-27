@@ -204,16 +204,25 @@ mod tests {
 
     #[test]
     fn invalid_pair_cannot_prove_terminal_completion() {
-        let record = json!({"id":"request","stage":"queued","outcome":"applied"});
-        assert!(terminal(&record).is_err());
-        assert!(state(&record).is_err());
         let mut connection = rusqlite::Connection::open_in_memory().expect("connection");
         let tx = connection.transaction().expect("transaction");
-        for specific in [false, true] {
-            assert!(
-                super::super::refresh(&tx, &mut record.clone(), &json!({}), 1.0, specific, None)
+        for (stage, outcome) in [("queued", "applied"), ("completed", "unknown")] {
+            let record = json!({"id":"request","stage":stage,"outcome":outcome});
+            assert!(terminal(&record).is_err());
+            assert!(state(&record).is_err());
+            for specific in [false, true] {
+                assert!(
+                    super::super::refresh(
+                        &tx,
+                        &mut record.clone(),
+                        &json!({}),
+                        1.0,
+                        specific,
+                        None
+                    )
                     .is_err()
-            );
+                );
+            }
         }
     }
 

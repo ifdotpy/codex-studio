@@ -24,6 +24,10 @@ impl Fixture {
             include_str!("relocation/canvas.sql"),
             include_str!("relocation/analytics.sql"),
         );
+        // The retired oracle hardcoded completed for unknown tool outcomes.
+        // Frozen inputs use the producer's failed/unknown pair; the historical
+        // completed/applied transport wrapper remains a separate repair case.
+        // An already applied result also keeps its settled completed/applied pair.
         let corpus = if full() {
             include_str!("relocation/oracle-full.json")
         } else {

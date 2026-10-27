@@ -2315,7 +2315,7 @@
         "accountKey": "default",
         "connectionId": "connection-a",
         "tool": "orchestration_servers",
-        "stage": "completed",
+        "stage": "failed",
         "outcome": "unknown",
         "updated": 1,
         "result": {
@@ -2418,7 +2418,7 @@
         "accountKey": "default",
         "connectionId": "connection-a",
         "tool": "orchestration_servers",
-        "stage": "completed",
+        "stage": "failed",
         "outcome": "unknown",
         "updated": 1,
         "result": {
@@ -2624,7 +2624,7 @@
         "accountKey": "default",
         "connectionId": "connection-a",
         "tool": "orchestration_servers",
-        "stage": "completed",
+        "stage": "failed",
         "outcome": "unknown",
         "updated": 1,
         "result": {
@@ -2684,7 +2684,7 @@
           "accountKey": "default",
           "connectionId": "connection-a",
           "tool": "orchestration_servers",
-          "stage": "completed",
+          "stage": "failed",
           "outcome": "unknown",
           "updated": 1,
           "result": {
@@ -2728,7 +2728,7 @@
         "connectionId": "connection-a",
         "tool": "orchestration_servers",
         "stage": "completed",
-        "outcome": "unknown",
+        "outcome": "applied",
         "updated": 1,
         "result": {
           "success": true,
@@ -2779,7 +2779,7 @@
           "connectionId": "connection-a",
           "tool": "orchestration_servers",
           "stage": "completed",
-          "outcome": "unknown",
+          "outcome": "applied",
           "updated": 1,
           "result": {
             "success": true,
