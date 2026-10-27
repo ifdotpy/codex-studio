@@ -1,4 +1,5 @@
 import { createFixtureViteServer as createServer } from "../playwright.ts";
+import type { components } from "../../src/generated/api.ts";
 import { fixtureOrigin } from "../misc-fixture.ts";
 import type {} from "./model-catalog-pending-browser.fixture.tsx";
 // The model picker consumes streamed model entities while idle. Only its explicit
@@ -38,8 +39,8 @@ test("Model Catalog Entity Browser", async ({ page }) => {
         name: string,
         hidden: boolean,
         catalogPosition: number,
-        provider: string,
-      ) => ({
+        provider: components["schemas"]["ProviderKind"],
+      ): components["schemas"]["ModelEntityDto"] => ({
         accountKey,
         model: name,
         hidden,

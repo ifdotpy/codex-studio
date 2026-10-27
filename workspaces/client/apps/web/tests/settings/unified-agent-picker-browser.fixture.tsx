@@ -64,35 +64,41 @@ const accounts: Account[] = Array.from({ length: 7 }, (_, i) => ({
   provider: i < 4 ? "codex" : "claude",
   status: i === 6 ? "signedOut" : "ready",
 }));
-const codex = ["gpt-6-astra", "gpt-6-luna"].map((model, i) => ({
-  model,
-  displayName: i ? "Luna" : "Astra",
-  isDefault: !i,
-  provider: "codex",
-  defaultReasoningEffort: "medium",
-  supportedReasoningEfforts: ["low", "medium", "high"].map(
-    (reasoningEffort) => ({ reasoningEffort }),
-  ),
-  serviceTiers: i ? [] : [{ id: "priority" }],
-  availableAccessPrograms: {
-    cyber: i ? ["standard"] : ["standard", "daybreakBlue"],
-  },
-}));
-const claudeRow = (
+const codex = ["gpt-6-astra", "gpt-6-luna"].map(
+  (model, i) =>
+    ({
+      model,
+      displayName: i ? "Luna" : "Astra",
+      isDefault: !i,
+      provider: "codex",
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: ["low", "medium", "high"].map(
+        (reasoningEffort) => ({ reasoningEffort }),
+      ),
+      serviceTiers: i ? [] : [{ id: "priority" }],
+      availableAccessPrograms: {
+        cyber: i ? ["standard"] : ["standard", "daybreakBlue"],
+      },
+    }) satisfies components["schemas"]["ProviderModel"],
+);
+const claudeRow = <
+  Extra extends Partial<Pick<WorkerModelInfo, "isDefault" | "resolvedModel">>,
+>(
   model: string,
   displayName: string,
-  extra: Partial<Pick<WorkerModelInfo, "isDefault" | "resolvedModel">>,
-): WorkerModelInfo & components["schemas"]["ProviderModel"] => ({
-  model,
-  displayName,
-  provider: "claude",
-  defaultReasoningEffort: "medium",
-  supportedReasoningEfforts: ["low", "medium", "high"].map(
-    (reasoningEffort) => ({ reasoningEffort }),
-  ),
-  serviceTiers: [],
-  ...extra,
-});
+  extra: Extra,
+) =>
+  ({
+    model,
+    displayName,
+    provider: "claude",
+    defaultReasoningEffort: "medium",
+    supportedReasoningEfforts: ["low", "medium", "high"].map(
+      (reasoningEffort) => ({ reasoningEffort }),
+    ),
+    serviceTiers: [],
+    ...extra,
+  }) satisfies WorkerModelInfo & components["schemas"]["ProviderModel"];
 const claude = [
   claudeRow("default", "Claude · Default (recommended)", {
     isDefault: true,

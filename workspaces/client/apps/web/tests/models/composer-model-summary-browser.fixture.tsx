@@ -1,4 +1,5 @@
 import type { Agent } from "../../src/types.ts";
+import type { components } from "../../src/generated/api.ts";
 const rootElement = document.getElementById("root")!;
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -36,7 +37,7 @@ const models = [
     supportedReasoningEfforts: [],
     serviceTiers: [],
   },
-];
+] satisfies components["schemas"]["ProviderModel"][];
 const reader: React.ContextType<typeof ModelCatalogReader> = {
   scope: "composer-model-summary",
   read: async () => ({ data: models }),

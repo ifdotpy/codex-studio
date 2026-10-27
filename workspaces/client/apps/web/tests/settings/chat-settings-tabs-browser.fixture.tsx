@@ -36,22 +36,25 @@ const names = [
   "gpt-5.6-terra",
   "gpt-6-sol",
 ];
-const models = names.map((model, index) => ({
-  model,
-  provider: "codex",
-  isDefault: !index,
-  description: "Coding and reasoning for " + model,
-  supportedReasoningEfforts: [
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-    "ultra",
-  ].map((reasoningEffort) => ({ reasoningEffort })),
-  serviceTiers: [{ id: "priority" }],
-  availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] },
-}));
+const models = names.map(
+  (model, index) =>
+    ({
+      model,
+      provider: "codex",
+      isDefault: !index,
+      description: "Coding and reasoning for " + model,
+      supportedReasoningEfforts: [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+      ].map((reasoningEffort) => ({ reasoningEffort })),
+      serviceTiers: [{ id: "priority" }],
+      availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] },
+    }) satisfies components["schemas"]["ProviderModel"],
+);
 const accounts = Array.from({ length: 5 }, (_, i) =>
   fixtureAccount({
     id: i ? "account-" + i : "default",

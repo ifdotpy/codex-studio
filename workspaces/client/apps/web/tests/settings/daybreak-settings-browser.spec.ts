@@ -99,10 +99,13 @@ test("Daybreak settings", async ({ context }) => {
       timeout: 5_000,
     });
     const reset = async (options?: DaybreakReset) => {
-      await page.evaluate((options) => {
+      // Keep Playwright's handle mapping outside the recursive model JSON types.
+      await page.evaluate((serialized) => {
         localStorage.clear();
+        const options: DaybreakReset | undefined =
+          serialized === undefined ? undefined : JSON.parse(serialized);
         window.reset!(options);
-      }, options);
+      }, JSON.stringify(options));
       await page
         .getByRole("button", {
           name: options?.defaults ? "Subagent defaults" : "Main agent settings",
