@@ -1007,6 +1007,9 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     for (name, schema) in crate::usage::schemas() {
         openapi["components"]["schemas"][name] = schema;
     }
+    for (name, schema) in crate::model_catalog::schemas() {
+        openapi["components"]["schemas"][name] = schema;
+    }
     openapi["components"]["schemas"]["ProviderKind"] = provider_kind_schema();
     for pointer in PROVIDER_OPENAPI_SITES {
         *openapi
@@ -1247,6 +1250,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .with(|settings| settings.definitions_path = "/components/schemas".into())
             .into_generator();
         generator.subschema_for::<crate::provider_input::ToolDefinition>();
+        generator.subschema_for::<crate::model_catalog::ProviderModel>();
         generator.subschema_for::<crate::provider_input::ClaudeBridgeSessionWire>();
         generator.subschema_for::<crate::provider_input::ClaudeBridgeTurnWire>();
         generator.subschema_for::<crate::provider_input::UnsupportedClaudeRateLimit>();

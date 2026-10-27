@@ -209,6 +209,43 @@ export interface components {
     FreshToolStatus: "inProgress" | "completed" | "failed";
     /** JsonValue */
     JsonValue: JsonValue;
+    ModelAccessPrograms: {
+      cyber?: string[] | undefined;
+    } & {
+      [key: string]: unknown;
+    };
+    ModelReasoningEffort: {
+      reasoningEffort: string;
+    } & {
+      [key: string]: unknown;
+    };
+    ModelServiceTier: {
+      description?: string | null | undefined;
+      id: string;
+    } & {
+      [key: string]: unknown;
+    };
+    ProviderModel: {
+      accountKey?: string | undefined;
+      availableAccessPrograms?:
+        | components["schemas"]["ModelAccessPrograms"]
+        | null
+        | undefined;
+      defaultReasoningEffort?: string | null | undefined;
+      description?: string | null | undefined;
+      displayName?: string | null | undefined;
+      hidden?: boolean | undefined;
+      isDefault?: boolean | undefined;
+      model: string;
+      provider?: string | undefined;
+      resolvedModel?: string | null | undefined;
+      serviceTiers?: components["schemas"]["ModelServiceTier"][] | undefined;
+      supportedReasoningEfforts?:
+        | components["schemas"]["ModelReasoningEffort"][]
+        | undefined;
+    } & {
+      [key: string]: unknown;
+    };
     /**
      * RateLimitBucketDto
      * @description Known rate-limit fields plus fields owned by the active provider.
@@ -310,6 +347,11 @@ export type FreshInputDeliveryStatus =
 export type FreshItem = components["schemas"]["FreshItem"];
 export type FreshToolResult = components["schemas"]["FreshToolResult"];
 export type FreshToolStatus = components["schemas"]["FreshToolStatus"];
+export type ModelAccessPrograms = components["schemas"]["ModelAccessPrograms"];
+export type ModelReasoningEffort =
+  components["schemas"]["ModelReasoningEffort"];
+export type ModelServiceTier = components["schemas"]["ModelServiceTier"];
+export type ProviderModel = components["schemas"]["ProviderModel"];
 export type RateLimitBucketDto = components["schemas"]["RateLimitBucketDto"];
 export type RateLimitWindowDto = components["schemas"]["RateLimitWindowDto"];
 export type TerminalTurn = components["schemas"]["TerminalTurn"];

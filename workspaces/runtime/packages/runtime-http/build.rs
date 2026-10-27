@@ -40,6 +40,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut analyzer = SchemaAnalyzer::new(document)?;
     let mut analysis = analyzer.analyze()?;
     for (name, owner) in [
+        (
+            "ProviderModel",
+            "studio_runtime_schema::model_catalog::ProviderModel",
+        ),
         ("WorkStatus", "studio_runtime_schema::records::WorkStatus"),
         (
             "WorkspaceMode",

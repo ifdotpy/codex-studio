@@ -30597,8 +30597,48 @@
         "title": "MissingToolRequestResponse",
         "type": "object"
       },
+      "ModelAccessPrograms": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "cyber": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ModelCatalog": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "description": "One validated provider page, or the combined catalog after pagination.",
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderModel"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "ModelCatalogResponse": {
-        "additionalProperties": false,
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
         "properties": {
           "accountKey": {
             "anyOf": [
@@ -30704,6 +30744,40 @@
         ],
         "description": "A complete provider model row scoped to its account; catalogPosition preserves provider order.",
         "title": "ModelEntityDto"
+      },
+      "ModelReasoningEffort": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "reasoningEffort": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reasoningEffort"
+        ],
+        "type": "object"
+      },
+      "ModelServiceTier": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
       },
       "ModelsResource": {
         "additionalProperties": false,
@@ -39009,17 +39083,72 @@
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
         },
-        "description": "One extensible provider catalog entry; names remain provider-owned strings.",
         "properties": {
-          "model": {
-            "title": "Model",
+          "accountKey": {
             "type": "string"
+          },
+          "availableAccessPrograms": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelAccessPrograms"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "defaultReasoningEffort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hidden": {
+            "type": "boolean"
+          },
+          "isDefault": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "resolvedModel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "serviceTiers": {
+            "items": {
+              "$ref": "#/components/schemas/ModelServiceTier"
+            },
+            "type": "array"
+          },
+          "supportedReasoningEfforts": {
+            "items": {
+              "$ref": "#/components/schemas/ModelReasoningEffort"
+            },
+            "type": "array"
           }
         },
         "required": [
           "model"
         ],
-        "title": "ProviderModel",
         "type": "object"
       },
       "ProviderUpdateNotice": {

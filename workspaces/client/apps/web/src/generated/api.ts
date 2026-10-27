@@ -15053,6 +15053,18 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    ModelAccessPrograms: {
+      cyber?: string[] | undefined;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
+    };
+    /** @description One validated provider page, or the combined catalog after pagination. */
+    ModelCatalog: {
+      data: components["schemas"]["ProviderModel"][];
+      nextCursor?: string | null | undefined;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
+    };
     /** ModelCatalogResponse */
     ModelCatalogResponse: {
       /**
@@ -15087,6 +15099,8 @@ export interface components {
       unavailableAccounts?:
         | components["schemas"]["UnavailableAccount"][]
         | undefined;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * ModelEntityDto
@@ -15097,6 +15111,17 @@ export interface components {
       /** @description Zero-based order within this account's provider model catalog. */
       catalogPosition: number;
       provider: string;
+    };
+    ModelReasoningEffort: {
+      reasoningEffort: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
+    };
+    ModelServiceTier: {
+      description?: string | null | undefined;
+      id: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ModelsResource */
     ModelsResource: {
@@ -18668,13 +18693,24 @@ export interface components {
      * @enum {string}
      */
     ProviderKind: "codex" | "claude";
-    /**
-     * ProviderModel
-     * @description One extensible provider catalog entry; names remain provider-owned strings.
-     */
     ProviderModel: {
-      /** Model */
+      accountKey?: string | undefined;
+      availableAccessPrograms?:
+        | components["schemas"]["ModelAccessPrograms"]
+        | null
+        | undefined;
+      defaultReasoningEffort?: string | null | undefined;
+      description?: string | null | undefined;
+      displayName?: string | null | undefined;
+      hidden?: boolean | undefined;
+      isDefault?: boolean | undefined;
       model: string;
+      provider?: string | undefined;
+      resolvedModel?: string | null | undefined;
+      serviceTiers?: components["schemas"]["ModelServiceTier"][] | undefined;
+      supportedReasoningEfforts?:
+        | components["schemas"]["ModelReasoningEffort"][]
+        | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };

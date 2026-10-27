@@ -136,6 +136,14 @@ reserves serialized-capable methods when their parameter predicate is unreadable
 
 ## Provider contract sources
 
+[`model_catalog.rs`](src/model_catalog.rs) owns the Studio-consumed model row
+fields. Provider ingress validates them before cache or admission; nullable
+upstream fields preserve omission and explicit null, and unknown metadata stays
+opaque. Model names, reasoning effort names and service tier IDs remain open.
+The contract renderer generates OpenAPI model rows and the bridge producer's
+TypeScript projection from this owner. The picker consumes the generated API
+contract instead of reparsing individual capability fields.
+
 The [provider extensibility contract](../../../providers/README.md#provider-extensibility)
 owns provider-specific policy. The owners below describe implemented, selected
 contracts; they do not replace every vendor or historical document with a fully
