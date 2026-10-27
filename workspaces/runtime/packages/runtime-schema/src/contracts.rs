@@ -361,6 +361,7 @@ const PROVIDER_OPENAPI_SITES: &[&str] = &[
     "/components/schemas/AgentRecordResponse/properties/provider",
     "/components/schemas/LazyAccountTransferSourceRecordResponse/properties/provider",
     "/components/schemas/SummaryAccount/properties/provider",
+    "/components/schemas/TransferMemberNotice/properties/provider/anyOf/1",
 ];
 
 const PROVIDER_PERSISTED_RECORDS: &[(&str, &str)] = &[
@@ -1380,6 +1381,22 @@ pub fn repository_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transfer_notices_use_the_provider_identity_contract() {
+        let document = read_json(&repository_root(), OPENAPI_PATH).expect("OpenAPI source");
+        let schema = serde_json::json!({
+            "$ref":"#/components/schemas/TransferMemberNotice",
+            "components":document["components"]
+        });
+        let validator = jsonschema::validator_for(&schema).expect("transfer notice schema");
+        for provider in crate::ProviderKind::ALL {
+            assert!(validator.is_valid(&serde_json::json!({"id":"agent", "provider":provider})));
+        }
+        assert!(validator.is_valid(&serde_json::json!({"id":"agent", "provider":null})));
+        assert!(validator.is_valid(&serde_json::json!({"id":"agent"})));
+        assert!(!validator.is_valid(&serde_json::json!({"id":"agent", "provider":"unknown"})));
+    }
 
     #[test]
     fn persisted_provider_identity_requires_a_known_provider() {

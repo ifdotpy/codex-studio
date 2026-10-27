@@ -56879,7 +56879,7 @@
                 "type": "null"
               },
               {
-                "type": "string"
+                "$ref": "#/components/schemas/ProviderKind"
               }
             ],
             "default": null,

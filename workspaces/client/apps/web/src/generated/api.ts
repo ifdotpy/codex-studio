@@ -25702,7 +25702,7 @@ export interface components {
        * Provider
        * @default null
        */
-      provider?: null | string | undefined;
+      provider?: null | components["schemas"]["ProviderKind"] | undefined;
       /**
        * Reason
        * @default null
