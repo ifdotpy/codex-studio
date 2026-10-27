@@ -8,7 +8,7 @@ import { checkRatchet, fingerprintMatches, readBaseline } from "../ratchet.ts";
 import { run } from "../ast-grep.ts";
 
 const rules = "workspaces/tooling/apps/repository-checks/ast-grep/rules";
-const fixtures = [
+const fixtures: readonly (readonly [string, string, string, string])[] = [
   [
     "rust-json-value-roundtrip",
     "rs",
@@ -46,7 +46,7 @@ const fixtures = [
     "const x = value as Thing;",
   ],
   ["ts-as-any", "ts", "const x = value as any;", "const x = value as unknown;"],
-] as const;
+];
 const cases = fixtures.flatMap((fixture) =>
   fixture[1] === "ts"
     ? [fixture, [`${fixture[0]}-tsx`, "tsx", fixture[2], fixture[3]] as const]
@@ -108,6 +108,7 @@ test("ratchet rejects new and removed matches until baseline shrinks", () => {
     { file: "a.ts", text: "x  as any", message: "fix" },
     { file: "a.ts", text: "x as any", message: "fix" },
   ]);
+  assert.ok(one && two);
   assert.notEqual(one.fingerprint, two.fingerprint);
   assert.equal(checkRatchet("rule", [one, two], { rule: [one] }).length, 1);
   assert.equal(checkRatchet("rule", [], { rule: [one] }).length, 1);
