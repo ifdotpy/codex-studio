@@ -27368,6 +27368,11 @@ export interface components {
      *     let command = TaskCommand::Cancel { task_id: "task".into(), version: None };
      *     // A cancellation always carries its reason.
      *     ```
+     *
+     *     ```compile_fail
+     *     use studio_runtime_schema::task_command::Version;
+     *     let version = Version(-1); // Ingress validation cannot be bypassed.
+     *     ```
      */
     WorkBody: {
       action?:
@@ -27382,10 +27387,11 @@ export interface components {
         | "set_default_gate"
         | undefined;
       agent?: string | null | undefined;
-      checks?: string | undefined;
+      checks?: string | null | undefined;
       dependencies?: string[] | (string[] | null) | undefined;
       description?: string | null | undefined;
-      files?: string[] | undefined;
+      files?: string[] | null | undefined;
+      /** @description Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default. */
       gate?:
         | string
         | {
@@ -27396,20 +27402,29 @@ export interface components {
         | null
         | undefined;
       id?: string | null | undefined;
+      /** @default null */
       override_reason?: string | null | undefined;
       owner?: (string | null) | (string | null) | undefined;
-      reason?: string | undefined;
+      reason?: string | null | undefined;
       result?: string | unknown | undefined;
+      /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
       result_schema?:
         | {
             [key: string]: unknown;
           }
         | boolean
         | undefined;
-      revision?: string | undefined;
+      revision?: string | null | undefined;
+      /** @enum {string|null} */
       status?: "ready" | "blocked" | null | undefined;
-      task_id?: string | undefined;
+      task_id?: string | null | undefined;
       title?: string | (string | null) | undefined;
+      /**
+       * Format: int64
+       * @description JSON Schema integers include integral decimal numbers. Retain that ingress
+       *     compatibility while carrying an actual integer in the service.
+       * @default null
+       */
       version?: number | null | undefined;
     } & (
       | {

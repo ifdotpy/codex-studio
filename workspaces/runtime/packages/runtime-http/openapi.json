@@ -61018,7 +61018,7 @@
       "WorkBody": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "One tagged owner consumed by both HTTP and agent mutation adapters.\n\n```compile_fail\nuse studio_runtime_schema::task_command::TaskCommand;\nlet command = TaskCommand::Cancel { task_id: \"task\".into(), version: None };\n// A cancellation always carries its reason.\n```",
+        "description": "One tagged owner consumed by both HTTP and agent mutation adapters.\n\n```compile_fail\nuse studio_runtime_schema::task_command::TaskCommand;\nlet command = TaskCommand::Cancel { task_id: \"task\".into(), version: None };\n// A cancellation always carries its reason.\n```\n\n```compile_fail\nuse studio_runtime_schema::task_command::Version;\nlet version = Version(-1); // Ingress validation cannot be bypassed.\n```",
         "oneOf": [
           {
             "properties": {
@@ -61622,13 +61622,9 @@
             ]
           },
           "agent": {
-            "anyOf": [
-              {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
+            "type": [
+              "string",
+              "null"
             ]
           },
           "checks": {
@@ -61636,6 +61632,9 @@
               {
                 "maxLength": 12000,
                 "type": "string"
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -61662,14 +61661,10 @@
             ]
           },
           "description": {
-            "anyOf": [
-              {
-                "maxLength": 64000,
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
+            "maxLength": 64000,
+            "type": [
+              "string",
+              "null"
             ]
           },
           "files": {
@@ -61681,67 +61676,57 @@
                 },
                 "maxItems": 50,
                 "type": "array"
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "gate": {
             "anyOf": [
               {
-                "anyOf": [
-                  {
+                "maxLength": 32000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "command": {
                     "maxLength": 32000,
                     "minLength": 1,
                     "type": "string"
                   },
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "command": {
-                        "maxLength": 32000,
-                        "minLength": 1,
-                        "type": "string"
-                      },
-                      "timeout_ms": {
-                        "default": 600000,
-                        "maximum": 3600000,
-                        "minimum": 1,
-                        "type": "integer"
-                      }
-                    },
-                    "required": [
-                      "command"
-                    ],
-                    "type": "object"
-                  },
-                  {
-                    "type": "null"
+                  "timeout_ms": {
+                    "default": 600000,
+                    "maximum": 3600000,
+                    "minimum": 1,
+                    "type": "integer"
                   }
+                },
+                "required": [
+                  "command"
                 ],
-                "description": "Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default."
+                "type": "object"
+              },
+              {
+                "type": "null"
               }
-            ]
+            ],
+            "description": "Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default."
           },
           "id": {
-            "anyOf": [
-              {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
+            "type": [
+              "string",
+              "null"
             ]
           },
           "override_reason": {
-            "anyOf": [
-              {
-                "default": null,
-                "maxLength": 32000,
-                "minLength": 1,
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
+            "default": null,
+            "maxLength": 32000,
+            "type": [
+              "string",
+              "null"
             ]
           },
           "owner": {
@@ -61765,8 +61750,10 @@
             "anyOf": [
               {
                 "maxLength": 12000,
-                "minLength": 1,
                 "type": "string"
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -61774,7 +61761,6 @@
             "anyOf": [
               {
                 "maxLength": 32000,
-                "minLength": 1,
                 "type": "string"
               },
               {
@@ -61783,15 +61769,11 @@
             ]
           },
           "result_schema": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "description": "Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap.",
-                "type": [
-                  "object",
-                  "boolean"
-                ]
-              }
+            "additionalProperties": true,
+            "description": "Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap.",
+            "type": [
+              "object",
+              "boolean"
             ]
           },
           "revision": {
@@ -61799,28 +61781,30 @@
               {
                 "maxLength": 200,
                 "type": "string"
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "status": {
-            "anyOf": [
-              {
-                "enum": [
-                  "ready",
-                  "blocked",
-                  null
-                ],
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
+            "enum": [
+              "ready",
+              "blocked",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
             ]
           },
           "task_id": {
             "anyOf": [
               {
                 "type": "string"
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -61828,12 +61812,10 @@
             "anyOf": [
               {
                 "maxLength": 160,
-                "minLength": 1,
                 "type": "string"
               },
               {
                 "maxLength": 160,
-                "minLength": 1,
                 "type": [
                   "string",
                   "null"
@@ -61842,18 +61824,14 @@
             ]
           },
           "version": {
-            "anyOf": [
-              {
-                "default": null,
-                "description": "JSON Schema integers include integral decimal numbers. Retain that ingress\ncompatibility while carrying an actual integer in the service.",
-                "format": "int64",
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              }
+            "default": null,
+            "description": "JSON Schema integers include integral decimal numbers. Retain that ingress\ncompatibility while carrying an actual integer in the service.",
+            "format": "int64",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
             ]
           }
         },
