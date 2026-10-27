@@ -1,6 +1,12 @@
+import { duoPhoneUserAgent } from "./duo-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
-test.use({ hasTouch: true, reducedMotion: "reduce", serviceWorkers: "block" });
+test.use({
+  userAgent: duoPhoneUserAgent,
+  hasTouch: true,
+  reducedMotion: "reduce",
+  serviceWorkers: "block",
+});
 for (const size of [
   { width: 951, height: 669 },
   { width: 653, height: 951 },

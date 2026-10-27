@@ -1,3 +1,4 @@
+import { duoPhoneUserAgent, openDuoTeam } from "./duo-fixture.ts";
 import type { Page, BrowserContext } from "playwright";
 import "./keyboardSequences.ts";
 import { test, expect, entityPullFixtureForRequest } from "../playwright.ts";
@@ -5,6 +6,7 @@ import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
 import { fixtureWorkspaceId } from "../servers/multi-server-fixture.ts";
 
 test.use({
+  userAgent: duoPhoneUserAgent,
   hasTouch: true,
   serviceWorkers: "block",
   reducedMotion: "no-preference",
@@ -102,10 +104,7 @@ test("Duo pane path keeps Team, conversation and the hinge region in one order",
       .poll(async () => (await bounds("#sidebar"))?.width)
       .toBeCloseTo(455.5, 1);
     expect((await bounds(".workspace"))?.x).toBeCloseTo(495.5, 1);
-    await page
-      .getByRole("button", { name: "Chat actions", exact: true })
-      .click();
-    await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+    await openDuoTeam(page);
     const panel = page.locator(".workspace-panel-inline.duo-pane-panel");
     await expect(panel).toBeVisible();
     await expect(page.locator(".mantine-Drawer-overlay:visible")).toHaveCount(
@@ -217,10 +216,7 @@ test("Team opened on a narrow PWA stays mounted when the window becomes wide", a
       insets: { top: 0, right: 0, bottom: 34, left: 0 },
     });
     await page.setViewportSize({ width: 390, height: 844 });
-    await page
-      .getByRole("button", { name: "Chat actions", exact: true })
-      .click();
-    await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+    await openDuoTeam(page);
     await expect(
       page.getByRole("dialog", { name: "Team", exact: true }),
     ).toBeVisible();
@@ -426,10 +422,7 @@ test("A side panel enters with a horizontal slide", async ({
         subtree: true,
       });
     });
-    await page
-      .getByRole("button", { name: "Chat actions", exact: true })
-      .click();
-    await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+    await openDuoTeam(page);
     await expect(page.locator("html")).toHaveAttribute(
       "data-pane-entry",
       "slide",
@@ -629,10 +622,7 @@ for (const size of [
           .click();
         await expect(sidebar).toBeHidden();
       }
-      await page
-        .getByRole("button", { name: "Chat actions", exact: true })
-        .click();
-      await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+      await openDuoTeam(page);
       const panel = page.locator(
         '.workspace-panel-inline.duo-pane-panel[aria-label="Team panel"]',
       );

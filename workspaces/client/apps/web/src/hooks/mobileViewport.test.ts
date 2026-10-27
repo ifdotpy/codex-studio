@@ -113,7 +113,7 @@ beforeEach(() => {
   frames = new Map();
   vi.stubGlobal("window", windowMock);
   vi.stubGlobal("document", documentMock);
-  vi.stubGlobal("navigator", { maxTouchPoints: 0 });
+  vi.stubGlobal("navigator", { maxTouchPoints: 0, userAgent: "iPhone" });
   vi.stubGlobal("HTMLTextAreaElement", Textarea);
   let nextFrame = 0;
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
@@ -255,7 +255,7 @@ it("retains compact support without touch capability", () => {
 });
 it("keeps a fine-primary touch document unpinned", () => {
   queries.matches = primaryQueries.matches = false;
-  vi.stubGlobal("navigator", { maxTouchPoints: 5 });
+  vi.stubGlobal("navigator", { maxTouchPoints: 5, userAgent: "iPhone" });
   mount();
   expect(root.style.size).toBe(0);
   expect(root.hasAttribute("data-touch-input")).toBe(true);
@@ -514,7 +514,7 @@ it("keeps hardware-keyboard caret taps native on a coarse touch device", () => {
 });
 it("keeps a fine-primary touch laptop in its normal layout without touch interception", () => {
   primaryQueries.matches = false;
-  vi.stubGlobal("navigator", { maxTouchPoints: 5 });
+  vi.stubGlobal("navigator", { maxTouchPoints: 5, userAgent: "iPhone" });
   const listeners = vi.spyOn(documentMock, "addEventListener");
   mount();
   expect(listeners.mock.calls.some(([name]) => name === "touchstart")).toBe(

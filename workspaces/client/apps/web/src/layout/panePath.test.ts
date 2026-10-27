@@ -10,6 +10,7 @@ const base = {
 };
 const state = {
   primaryCoarse: true,
+  duoDevice: true,
   panel: null as "workspace" | "team" | "terminals" | null,
   sidebarOverride: false,
   fullScreen: false,
@@ -17,6 +18,11 @@ const state = {
     status: "open" as "open" | "partial" | "closed" | "unknown",
     left: 455.5,
     width: 40,
+  } as {
+    status: "open" | "partial" | "closed" | "unknown";
+    left?: number;
+    width?: number;
+    height?: number;
   },
 };
 const layout = (patch: Partial<typeof state> = {}) =>
@@ -183,6 +189,26 @@ describe("Duo pane path", () => {
     }).panePath!;
     expect(result.panes.panel?.y).toBe(82);
     expect(result.panes.panel?.height).toBe(869);
+  });
+  it("uses the center fallback when a partial hinge has no position", () => {
+    const result = layout({ panel: "team", hinge: { status: "partial" } });
+    expect(result?.visible).toEqual(["conversation", "panel"]);
+    expect(result?.panes.conversation?.width).toBe(434.5);
+    expect(result?.panes.panel?.x).toBe(434.5);
+  });
+  it("ignores a horizontal band in portrait", () => {
+    const result = deriveWorkspaceLayout({
+      ...base,
+      viewport: { x: 0, y: 0, width: 669, height: 951 },
+      host: { x: 0, y: 0, width: 669, height: 917 },
+      panePath: { ...state, hinge: { status: "partial", left: 0, width: 669 } },
+    }).panePath;
+    expect(result?.visible).toEqual(["sidebar", "conversation"]);
+    expect(result?.panes.sidebar?.width).toBe(250);
+    expect(result?.divider).toBeNull();
+  });
+  it("leaves unknown touch devices outside the pane path", () => {
+    expect(layout({ duoDevice: false })).toBeNull();
   });
   it("leaves desktop and fine primary touch input unchanged", () => {
     expect(layout({ primaryCoarse: false })).toBeNull();

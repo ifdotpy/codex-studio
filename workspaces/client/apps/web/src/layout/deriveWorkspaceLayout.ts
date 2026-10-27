@@ -26,6 +26,7 @@ export interface PanelLayout {
 export type PaneName = "sidebar" | "conversation" | "panel";
 export type PanePathInput = {
   primaryCoarse: boolean;
+  duoDevice: boolean;
   panel: "workspace" | "team" | "terminals" | null;
   sidebarOverride: boolean;
   fullScreen: boolean;
@@ -34,6 +35,7 @@ export type PanePathInput = {
     status: "closed" | "partial" | "open" | "unknown";
     left?: number;
     width?: number;
+    height?: number;
   };
   /** The app content frame before either navigation or side panels take space. */
   available?: LayoutRect;
@@ -120,10 +122,11 @@ function derivePanePath(
     input.viewport.width < layoutValues.duo.widthMax;
   if (
     !state?.primaryCoarse ||
+    !state.duoDevice ||
     (!nativeClosed &&
-      !isDuoLayout({
-        width: Math.max(input.viewport.width, input.viewport.height),
-        height: Math.min(input.viewport.width, input.viewport.height),
+      !isDuoSurface({
+        width: input.viewport.width,
+        height: input.viewport.height,
         primaryCoarse: state.primaryCoarse,
       }))
   )
@@ -155,19 +158,25 @@ function derivePanePath(
       );
   let gap = 0;
   const partial = state.hinge?.status === "partial";
-  if (partial) {
-    const hingeLeft = finiteNonnegative(
-      state.hinge?.left ?? NaN,
-      input.viewport.width * layoutValues.panePath.splitRatio,
-    );
-    const hingeWidth = finiteNonnegative(state.hinge?.width ?? 0);
-    const left = Math.max(frame.x, Math.min(frame.x + frame.width, hingeLeft));
-    const right = Math.max(
-      left,
-      Math.min(frame.x + frame.width, hingeLeft + hingeWidth),
-    );
-    leftWidth = left - frame.x;
-    gap = right - left;
+  const verticalBand =
+    state.hinge?.height !== undefined && state.hinge?.width !== undefined
+      ? state.hinge.height > state.hinge.width
+      : !portrait;
+  const splitAtHinge = partial && verticalBand;
+  if (splitAtHinge) {
+    const position = state.hinge?.left;
+    if (position === undefined || !Number.isFinite(position) || position < 0) {
+      leftWidth = frame.width * layoutValues.panePath.splitRatio;
+    } else {
+      const hingeWidth = finiteNonnegative(state.hinge?.width ?? 0);
+      const left = Math.max(frame.x, Math.min(frame.x + frame.width, position));
+      const right = Math.max(
+        left,
+        Math.min(frame.x + frame.width, position + hingeWidth),
+      );
+      leftWidth = left - frame.x;
+      gap = right - left;
+    }
   }
   const rightWidth = frame.width - leftWidth - gap;
   const fits =
@@ -216,7 +225,9 @@ function derivePanePath(
     visible,
     panes,
     divider:
-      pair && partial ? { ...frame, x: frame.x + leftWidth, width: gap } : null,
+      pair && splitAtHinge && gap > 0
+        ? { ...frame, x: frame.x + leftWidth, width: gap }
+        : null,
     panelKind: state.panel,
     canFullScreen: !partial,
   };

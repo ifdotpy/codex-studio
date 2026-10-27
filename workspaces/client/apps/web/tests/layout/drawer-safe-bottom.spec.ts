@@ -1,3 +1,4 @@
+import { duoPhoneUserAgent } from "./duo-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
 
@@ -8,7 +9,12 @@ const profiles = [
   { name: "duo-portrait", width: 669, height: 951, right: 0, bottom: 34 },
   { name: "duo-open", width: 951, height: 669, right: 84, bottom: 34 },
 ];
-test.use({ hasTouch: true, reducedMotion: "reduce", serviceWorkers: "block" });
+test.use({
+  userAgent: duoPhoneUserAgent,
+  hasTouch: true,
+  reducedMotion: "reduce",
+  serviceWorkers: "block",
+});
 for (const profile of profiles) {
   for (const kind of ["sidebar", "team", "workspace"] as const) {
     test(`${profile.name} ${kind} drawer covers the Home band`, async ({

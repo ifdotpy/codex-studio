@@ -1,8 +1,9 @@
+import { duoPhoneUserAgent } from "./duo-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
 import { detectTextClipping } from "./text-clipping.ts";
 
-test.use({ hasTouch: true });
+test.use({ userAgent: duoPhoneUserAgent, hasTouch: true });
 
 for (const paired of [false, true]) {
   test(`conversation controls fit the measured column and large text (${paired ? "combined" : "direct"})`, async ({
@@ -78,7 +79,9 @@ for (const paired of [false, true]) {
             if (box) expect(box.y + box.height).toBeLessThanOrEqual(635);
           }
           const composer = (await page.locator("#composer").boundingBox())!;
-          const footer = (await page.locator(".conversation-composer-footer").boundingBox())!;
+          const footer = (await page
+            .locator(".conversation-composer-footer")
+            .boundingBox())!;
           expect(footer.y + footer.height).toBeLessThanOrEqual(composer.y);
           expect(composer.y + composer.height).toBeLessThanOrEqual(635);
           await page.screenshot({
