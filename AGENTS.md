@@ -12,6 +12,10 @@ branches or recovery layers beyond it; if a change needs them, ask the owner
 first. Prefer a small documented limitation to complex machinery. Code must be
 describable in a few sentences.
 
+## Workspaces
+
+Do not create Git worktrees for this repository. Use layr lines (see docs/testing.md "Developing in layr lines") and Studio's Layr mode.
+
 ## Fixes and test load
 
 Each bug fix needs a failing test first and a passing `just test-fast` stated in the PR;

@@ -1515,4 +1515,73 @@ mod local_registration_tests {
         assert_eq!(record["locations"][0]["serverId"], "peer");
         assert_eq!(record["locations"][0]["path"], "/remote/project");
     }
+
+    #[tokio::test]
+    async fn workspace_policy_http_sets_replays_and_clears_with_revision() {
+        let root = tempfile::tempdir().expect("state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store"),
+        );
+        let project_path = root.path().join("project");
+        std::fs::create_dir_all(&project_path).expect("project directory");
+        let policy = AccountPolicyState::from_startup(
+            Some(serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string().as_bytes()),
+            [],
+        )
+        .expect("account snapshot");
+        let state = crate::router::HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().to_string_lossy().into_owned(),
+            4621,
+            None,
+            Some(Arc::clone(&store)),
+            Some(Arc::new(policy)),
+        );
+        let app = crate::router::router(state).expect("projects HTTP router");
+        let path = project_path.to_string_lossy();
+        let (status, _) = post_project(
+            &app,
+            &json!({"action":"register","server":"local","path":path,"request_id":"policy-registration"}),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "registration");
+        let set = json!({"action":"set_workspace_policy","path":path,"expected_revision":0,"workspace_policy":"layr-native"});
+        let (status, first) = post_project(&app, &set).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{first}");
+        assert_eq!(first["workspacePolicy"], "layr-native");
+        assert_eq!(first["workspacePolicyRevision"], 1);
+        let (status, replay) = post_project(&app, &set).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{replay}");
+        assert_eq!(
+            replay["workspacePolicyRevision"], 1,
+            "a retry saves nothing new"
+        );
+        let (status, _) = post_project(
+            &app,
+            &json!({"action":"set_workspace_policy","path":path,"expected_revision":0,"workspace_policy":null}),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::CONFLICT, "stale revision");
+        let (status, _) = post_project(
+            &app,
+            &json!({"action":"set_workspace_policy","path":path,"expected_revision":1,"workspace_policy":"worktree"}),
+        )
+        .await;
+        assert_ne!(
+            status,
+            axum::http::StatusCode::OK,
+            "only layr-native is a policy"
+        );
+        let (status, cleared) = post_project(
+            &app,
+            &json!({"action":"set_workspace_policy","path":path,"expected_revision":1,"workspace_policy":null}),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{cleared}");
+        assert!(cleared["workspacePolicy"].is_null());
+        assert_eq!(cleared["workspacePolicyRevision"], 2);
+    }
 }
