@@ -25,6 +25,7 @@ export default {
       "src/precompressedAssets.test.ts",
       "src/platformNeutralCopy.test.ts",
       "src/App.connection.test.ts",
+      "src/sync/connectionState.test.ts",
       "src/scrollbars.test.ts",
       "src/sync/subscriptions/store.test.ts",
       "src/sync/subscriptions/viewData.test.ts",
