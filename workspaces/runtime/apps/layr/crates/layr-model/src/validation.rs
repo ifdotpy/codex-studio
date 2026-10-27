@@ -109,6 +109,9 @@ pub fn is_ref(s: &str) -> bool {
 /// machine can then never name a path outside the project.
 pub fn validate(r: &Record) -> anyhow::Result<()> {
     use anyhow::bail;
+    if r.op == "release.files" {
+        serde_json::from_value::<crate::release::Files>(r.data.clone())?.validate()?;
+    }
     let uuid = |what: &str, v: &str| -> anyhow::Result<()> {
         if !is_uuid(v) {
             bail!("record {}: {what} is not an id: {v:?}", r.seq);
@@ -264,6 +267,127 @@ pub fn validate(r: &Record) -> anyhow::Result<()> {
             uuid("ref target", &value.target)?;
         }
     }
+    if let Some(value) = d.get("comment") {
+        let comment: crate::types::Comment = serde_json::from_value(value.clone())?;
+        uuid("comment", &comment.id)?;
+        uuid("change", &comment.change_id)?;
+        uuid("version", &comment.version)?;
+        if let Some(reply) = &comment.reply_to {
+            uuid("reply", reply)?;
+        }
+        if comment.text.trim().is_empty() || comment.text.len() > 65536 {
+            bail!("comment text must contain 1 to 65536 bytes");
+        }
+        if comment.line == Some(0) || (comment.line.is_some() && comment.path.is_none()) {
+            bail!("comment line needs a path and a positive number");
+        }
+        if let Some(path) = &comment.path {
+            if path.is_empty()
+                || path.starts_with('/')
+                || path.split('/').any(|p| p.is_empty() || p == "." || p == "..")
+                || path.contains('\\')
+            {
+                bail!("comment path must be relative to the version root");
+            }
+        }
+    }
+    if r.op == "request.refused"
+        && (d["reason"].as_str().is_none_or(|s| s.trim().is_empty())
+            || !layr_store::request::request_id(d["request_id"].as_str().unwrap_or("")))
+    {
+        bail!("request refusal needs an id and a plain reason");
+    }
+    let person_attestation = d.get("attestation").is_some_and(|a| a["signer"].as_str().is_some_and(|s| s.starts_with("person:")));
+    if person_attestation && d.get("request").is_none() {
+        bail!("person attestation needs its signed request");
+    }
+    if let Some(proof) = d.get("request") {
+        use layr_store::request::{Action, Signed};
+        use sha2::{Digest, Sha256};
+        let text = proof.as_str().ok_or_else(|| anyhow::anyhow!("request proof must preserve exact envelope bytes"))?;
+        let signed = Signed::parse(text.as_bytes())?;
+        let public = d["person_key"].as_str().ok_or_else(|| anyhow::anyhow!("request proof has no public key"))?;
+        let request = signed.verify(&layr_store::person::verifying_key(public)?)?;
+        let object = if let Some(encrypted) = d.get("encrypted_request") {
+            let text = encrypted
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("encrypted request proof must preserve exact envelope bytes"))?;
+            let sealed = layr_store::request::Sealed::parse(text.as_bytes())?;
+            sealed.verify(&layr_store::person::verifying_key(public)?)?;
+            sealed.matches(&request)?;
+            text
+        } else {
+            text // Previously recorded v1 evidence remains verifiable.
+        };
+        if request.project != r.project
+            || d["request_id"] != request.id
+            || r.actor.name != format!("person:{}", request.person)
+            || r.actor.uid != u32::MAX
+            || d["request_digest"] != hex::encode(Sha256::digest(object.as_bytes()))
+        {
+            bail!("request proof does not match its operation record");
+        }
+        if r.op == "request.refused" {
+            if d["reason"].as_str().is_none_or(|s| s.trim().is_empty()) {
+                bail!("request refusal needs a plain reason");
+            }
+        } else {
+            let matched = match &request.action {
+                Action::Approve { state, .. } | Action::Withdraw { state, .. } | Action::Declassify { state, .. } => {
+                    let expected = if matches!(request.action, Action::Withdraw { .. }) { "revoke" } else { "approval" };
+                    let a = &d["attestation"];
+                    r.op == "attest"
+                        && a["kind"] == expected
+                        && a["subject"]["id"] == *state
+                        && a["signer"] == format!("person:{}", request.person)
+                        && a["payload_digest"] == hex::encode(Sha256::digest(signed.r.get().as_bytes()))
+                        && match &request.action {
+                            Action::Declassify { scope, .. } => scope.rsplit_once('@').is_some_and(|(path, prefix)| {
+                                d["declassify"]["path"] == path
+                                    && d["declassify"]["hmac"].as_str().is_some_and(|hash| {
+                                        hash.len() == 64
+                                            && hash.starts_with(prefix)
+                                            && hash.bytes().all(|b| b.is_ascii_hexdigit())
+                                    })
+                            }),
+                            _ => d.get("declassify").is_none(),
+                        }
+                }
+                Action::Comment { change_id, version, path, line, text, reply_to } => {
+                    let comment: crate::types::Comment = serde_json::from_value(d["comment"].clone())?;
+                    r.op == "comment"
+                        && comment.id == request.id
+                        && comment.change_id == *change_id
+                        && comment.version == *version
+                        && comment.path == *path
+                        && comment.line == *line
+                        && comment.text == *text
+                        && comment.reply_to == *reply_to
+                }
+                Action::QueueAdd { state, into } => {
+                    r.op == "queue.add"
+                        && d["queue_change"]["id"] == request.id
+                        && d["queue_change"]["after"]["state"] == *state
+                        && d["queue_change"]["after"]["into"] == *into
+                }
+                Action::QueueRemove { entry } => {
+                    r.op == "queue.remove" && d["queue_change"]["id"] == *entry && d["queue_change"]["after"].is_null()
+                }
+                Action::RefMove { name, target, expected } => {
+                    r.op == "ref.set"
+                        && d["ref_change"]["name"] == *name
+                        && d["ref_change"]["after"]["target"] == *target
+                        && d["ref_change"]["before"]["target"].as_str() == expected.as_deref()
+                }
+            };
+            if !matched {
+                bail!("request proof does not authorize this operation");
+            }
+            if r.time >= request.expires || r.time < request.created {
+                bail!("request was applied outside its lifetime");
+            }
+        }
+    }
     if let Some(v) = d.get("attestation") {
         let a: Attestation = serde_json::from_value(v.clone())?;
         uuid("attestation", &a.attestation_id)?;
@@ -281,7 +405,7 @@ pub fn validate(r: &Record) -> anyhow::Result<()> {
         if a.format != 1 || !ATTESTATION_KINDS.contains(&a.kind.as_str()) {
             bail!("unsupported attestation format, subject or kind");
         }
-        if a.signer != r.machine || a.time != r.time {
+        if (a.signer != r.machine && !a.signer.starts_with("person:")) || a.time != r.time {
             bail!("attestation signer and time must match its signed record");
         }
         if a.payload_digest.len() != 64 || !a.payload_digest.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {

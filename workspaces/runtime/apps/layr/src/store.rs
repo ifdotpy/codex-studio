@@ -27,7 +27,7 @@ use crate::oplog;
 use anyhow::{anyhow, bail, Context, Result};
 use ed25519_dalek::SigningKey;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub struct Machine {
@@ -39,6 +39,7 @@ pub struct Machine {
 pub struct Store {
     pub root: PathBuf,
     pub machine: Machine,
+    _version_guard: Option<crate::store_version::Guard>,
 }
 
 pub fn default_root() -> PathBuf {
@@ -64,6 +65,29 @@ fn mkdir_mode(p: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
+/// Publish a complete identity file once. A retry keeps the existing identity.
+fn create_machine_file(path: &Path, data: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let parent = path.parent().context("machine file has no parent")?;
+    let temporary = parent.join(format!(".identity-{}", ids::new_id()));
+    let result = (|| -> Result<()> {
+        let mut file =
+            fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&temporary)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        match fs::hard_link(&temporary, path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    })();
+    let cleanup = fs::remove_file(&temporary);
+    result?;
+    cleanup?;
+    fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
 fn hostname() -> String {
     fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()).unwrap_or_else(|_| "machine".into())
 }
@@ -76,28 +100,45 @@ impl Store {
         // Resolve aliases once at the store boundary. Paths inside a line still refuse links.
         let canonical_root = root.canonicalize().context("resolve store root")?;
         let root = canonical_root.as_path();
+        let version_guard = crate::store_version::Guard::open(root)?;
         #[cfg(not(feature = "overlayfs"))]
         if root.join(".layr-overlayfs").exists() {
             bail!("this store requires a layr build with the overlayfs feature");
         }
         #[cfg(feature = "overlayfs")]
         crate::storage::recover(root)?;
+        let machine_lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(root.join(".layr-machine.lock"))?;
+        anyhow::ensure!(machine_lock.metadata()?.is_file(), "the machine initialization lock is not a regular file");
+        rustix::fs::flock(&machine_lock, rustix::fs::FlockOperation::LockExclusive)?;
         let mdir = root.join("machine");
+        // Recheck only under the lease. The ID and key must belong to the same initialization.
         if !mdir.join("key").exists() {
+            if root.join("projects").is_dir() && fs::read_dir(root.join("projects"))?.next().is_some() {
+                bail!("the machine key is missing for an existing project store; restore the machine identity");
+            }
             mkdir_mode(&mdir, 0o700)?;
             let id = ids::new_id();
             let key = SigningKey::generate(&mut rand::rngs::OsRng);
-            crate::fsutil::atomic_write(&mdir.join("id"), id.as_bytes(), 0o600)?;
-            crate::fsutil::atomic_write(&mdir.join("name"), hostname().as_bytes(), 0o600)?;
-            crate::fsutil::atomic_write(&mdir.join("key"), hex::encode(key.to_bytes()).as_bytes(), 0o600)?;
+            create_machine_file(&mdir.join("id"), id.as_bytes())?;
+            create_machine_file(&mdir.join("name"), hostname().as_bytes())?;
+            create_machine_file(&mdir.join("key"), hex::encode(key.to_bytes()).as_bytes())?;
         }
         let id = fs::read_to_string(mdir.join("id"))?.trim().to_string();
         let name = fs::read_to_string(mdir.join("name")).unwrap_or_else(|_| hostname()).trim().to_string();
         let kb = hex::decode(fs::read_to_string(mdir.join("key"))?.trim())?;
         let arr: [u8; 32] = kb.try_into().map_err(|_| anyhow!("bad machine key"))?;
         let key = SigningKey::from_bytes(&arr);
+        drop(machine_lock);
         mkdir_mode(&root.join("projects"), 0o755)?;
-        Ok(Store { root: root.to_path_buf(), machine: Machine { id, name, key } })
+        version_guard.ready(root)?;
+        Ok(Store { root: root.to_path_buf(), machine: Machine { id, name, key }, _version_guard: Some(version_guard) })
     }
 
     pub fn projects_dir(&self) -> PathBuf {
@@ -454,7 +495,9 @@ impl<'a> Project<'a> {
             rec.actor = actor.clone();
             if let Some(a) = rec.data.get_mut("attestation").and_then(|v| v.as_object_mut()) {
                 a.insert("attestation_id".into(), serde_json::json!(rec.id));
-                a.insert("signer".into(), serde_json::json!(m.id));
+                if a.get("signer").and_then(|v| v.as_str()).is_none_or(|s| !s.starts_with("person:")) {
+                    a.insert("signer".into(), serde_json::json!(m.id));
+                }
                 a.insert("time".into(), serde_json::json!(rec.time));
             }
             crate::model::validate(&rec)?;
@@ -694,7 +737,11 @@ mod tests {
     #[test]
     fn an_overlay_lives_in_the_private_folder_of_its_project() {
         let key = SigningKey::from_bytes(&[7u8; 32]);
-        let store = Store { root: PathBuf::from("/s"), machine: Machine { id: String::new(), name: String::new(), key } };
+        let store = Store {
+            root: PathBuf::from("/s"),
+            machine: Machine { id: String::new(), name: String::new(), key },
+            _version_guard: None,
+        };
         assert_eq!(store.project_dir("sap").unwrap(), PathBuf::from("/s/projects/sap"));
         assert_eq!(store.project_dir("sap%keys").unwrap(), PathBuf::from("/s/projects/sap/meta/overlays/keys"));
         for bad in ["sap%", "%keys", "sap%keys%x", "sap%../x", "../sap%keys", "sap/x"] {

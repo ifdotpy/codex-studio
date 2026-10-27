@@ -121,14 +121,14 @@ impl<'a> Reader<'a> {
         Self { backend, identity, keys, trees: BTreeMap::new(), parts: BTreeMap::new(), part_bytes: 0 }
     }
     fn decrypted(&self, key: &str) -> Result<Vec<u8>> {
-        let body = self.backend.get(key)?.with_context(|| format!("missing remote object {key}"))?;
-        keys::decrypt(self.identity, &body).with_context(|| format!("decrypt {key}"))
+        self.backend.decrypted(key, self.identity).with_context(|| format!("decrypt {key}"))
     }
     pub fn tree(&mut self, state: &str, attempt: &str) -> Result<(Header, Vec<u8>, Tree)> {
         let wanted = (state.to_string(), attempt.to_string());
         if let Some(tree) = self.trees.get(&wanted) {
             return Ok(tree.clone());
         }
+        let _decode = crate::trace::span("store decode tree");
         let mut at = wanted.clone();
         let mut pending = Vec::new();
         let mut seen = BTreeSet::new();
@@ -139,6 +139,10 @@ impl<'a> Reader<'a> {
             }
             if seen.len() > format::FULL_TREE_EVERY {
                 bail!("tree chain exceeds 32 states");
+            }
+            if let Some((_, bytes, _)) = self.trees.get(&at) {
+                canonical = bytes.clone();
+                break;
             }
             let object = self.decrypted(&format::tree_name(&at.0, &at.1))?;
             let (header, frame) = format::split_tree(&object)?;
@@ -162,6 +166,10 @@ impl<'a> Reader<'a> {
             let key = self.keys.get(&header.machine).context("tree signer has no verified machine record")?;
             header.verify(&canonical, key)?;
             let tree = Tree::parse(&canonical)?;
+            // At most two complete delta chains, rather than every tree in project history.
+            if self.trees.len() >= format::FULL_TREE_EVERY * 2 {
+                self.trees.clear();
+            }
             self.trees.insert((header.state.clone(), header.attempt.clone()), (header, canonical.clone(), tree));
         }
         self.trees.get(&wanted).cloned().context("tree was not decoded")
@@ -192,11 +200,32 @@ impl<'a> Reader<'a> {
         Ok(data)
     }
     pub fn restore(&mut self, tree: &Tree, root: &std::path::Path) -> Result<usize> {
+        self.restore_over(tree, None, root)
+    }
+    fn restore_over(&mut self, tree: &Tree, base: Option<&Tree>, root: &std::path::Path) -> Result<usize> {
+        let _restore = crate::trace::span("store restore files");
         crate::fsutil::refuse_case_collisions(root, tree.files.keys().map(|k| k.as_str()))?;
         let target = crate::tree::Tree::open(root)?;
+        if let Some(base) = base {
+            for path in base.files.keys() {
+                if !tree.files.contains_key(path) && target.stat(path).is_some() {
+                    target.remove(path)?;
+                }
+            }
+        }
+        let mut written = 0;
         for (path, entry) in &tree.files {
+            if base
+                .and_then(|b| b.files.get(path))
+                .is_some_and(|old| (old.0.as_str(), old.1, old.2.as_str()) == (entry.0.as_str(), entry.1, entry.2.as_str()))
+            {
+                continue;
+            }
             let data = self.read(entry)?;
             target.mkdirs_for(path, None)?;
+            if target.stat(path).is_some() {
+                target.remove(path)?;
+            }
             if entry.0 == "120000" {
                 use std::os::unix::ffi::OsStrExt;
                 std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(&data), crate::fsutil::safe_join(root, path)?)?;
@@ -205,8 +234,9 @@ impl<'a> Reader<'a> {
                 let mut file = target.create(path, if entry.0 == "100755" { 0o755 } else { 0o644 })?;
                 file.write_all(&data)?;
             }
+            written += 1;
         }
-        Ok(tree.files.len())
+        Ok(written)
     }
 }
 
@@ -293,6 +323,7 @@ pub(super) fn wanted(state: &crate::model::StateRec, opts: &Options) -> bool {
 }
 
 pub(super) fn fetch(store: &mut Store, ctx: &Ctx, repo: &mut Repo, opts: &Options) -> Result<Report> {
+    let _fetch = crate::trace::span("store fetch");
     let descriptor = store.descriptor()?;
     let identity = store.identity(&descriptor, opts.paper_key.as_deref())?;
     let local: Vec<String> = repo.p.export_jsonl()?.lines().map(str::to_string).collect();
@@ -328,25 +359,40 @@ pub(super) fn fetch(store: &mut Store, ctx: &Ctx, repo: &mut Repo, opts: &Option
     let required = required_states(repo, &records.lines, opts)?;
     let states = attempts(&store.backend)?;
     let mut reader = Reader::new(&store.backend, &identity, &records.keys);
-    for (id, attempt) in states {
-        let Some(state) = repo.p.db.state(&id)? else {
-            bail!("remote tree {id} has no state record");
-        };
-        if !wanted(&state, opts) && !required.contains(&id) {
+    let mut missing = Vec::new();
+    for id in states.keys() {
+        let state = repo.p.db.state(id)?.with_context(|| format!("remote tree {id} has no state record"))?;
+        if !wanted(&state, opts) && !required.contains(id) {
             continue;
         }
-        if repo.p.has_state(&id) {
-            repo.p.db.set_present(&id, true)?;
-            continue;
+        if repo.p.has_state(id) {
+            repo.p.db.set_present(id, true)?;
+        } else {
+            missing.push(state);
         }
+    }
+    for state in super::writer::parents_first(missing)? {
+        let id = state.id.clone();
+        let attempt = &states[&id];
         let (header, _, tree) = reader.tree(&id, &attempt)?;
         let stage = repo.p.work_dir().join(crate::ids::new_id());
         if header.btrfs.as_ref().is_some_and(|identity| identity.uuid != state.subvol) {
             bail!("tree btrfs identity differs from the signed state");
         }
-        crate::storage::create_subvolume(&stage)?;
+        let mut base = None;
+        for parent in state.parents.iter().chain(state.derived_from.iter()) {
+            if let Some(attempt) = states.get(parent).filter(|_| repo.p.has_state(parent)) {
+                let (_, _, parent_tree) = reader.tree(parent, attempt)?;
+                repo.snapshot_state(parent, &stage, false)?;
+                base = Some(parent_tree);
+                break;
+            }
+        }
+        if base.is_none() {
+            crate::storage::create_subvolume(&stage)?;
+        }
         let result = (|| -> Result<usize> {
-            let n = reader.restore(&tree, &stage)?;
+            let n = reader.restore_over(&tree, base.as_ref(), &stage)?;
             let _lock = repo.p.lock()?;
             let destination = repo.p.state_path(&id);
             if destination.exists() {
@@ -390,10 +436,25 @@ pub(super) fn fetch(store: &mut Store, ctx: &Ctx, repo: &mut Repo, opts: &Option
                 repo.commit_record(ctx, record)?;
             }
         }
-        if store.layer.is_none() {
+        if store.layer.is_none() && !store.is_public_reader() {
             let slot = keys::machine_slot(&identity, &store.key.verifying_key())?;
-            // A read-only credential can still clone. Adding its slot is optional.
-            let _ = store.backend.put_new(&format!("slots/machine-{}.age", store.machine), slot);
+            // Optional enrollment keeps key metadata outside shared history: it supplies
+            // a public key for resealing this existing reader slot, never writer trust.
+            let enroll = || -> Result<()> {
+                if let Some(line) = repo.p.db.record_line(&store.machine, 1)? {
+                    let record = oplog::parse_line(&line, None)?.record;
+                    if record.op != "machine" {
+                        bail!("local machine announcement missing");
+                    }
+                    store.backend.put_new(
+                        &format!("slots/machine-{}.key.age", store.machine),
+                        keys::encrypt(&descriptor.recipient, line.as_bytes())?,
+                    )?;
+                    store.backend.put_new(&format!("slots/machine-{}.age", store.machine), slot)?;
+                }
+                Ok(())
+            };
+            let _ = enroll();
         }
     }
     Ok(report)
@@ -447,6 +508,7 @@ pub(super) fn log(store: &Store) -> Result<Vec<String>> {
 pub(super) fn gc(store: &Store, dry_run: bool) -> Result<Vec<String>> {
     let descriptor = store.descriptor()?;
     let identity = store.identity(&descriptor, None)?;
+    store.require_private_access()?;
     let records = records(&store.backend, &identity, &descriptor.project)?;
     if !records.gaps.is_empty() {
         bail!("remote record gaps prevent collection");
@@ -467,6 +529,25 @@ pub(super) fn gc(store: &Store, dry_run: bool) -> Result<Vec<String>> {
     }
     let cutoff = chrono::Utc::now().timestamp() - 86400;
     let mut deleted = Vec::new();
+    let release_objects = store.backend.list("files/")?;
+    if !release_objects.is_empty() {
+        let model = super::release::model(&descriptor.project, &records, &store.machine)?;
+        let (live, known) = model.release_objects(crate::ids::now_ms())?;
+        for object in release_objects {
+            if !layr_model::release::object(&object.key) {
+                bail!("invalid release object in store");
+            }
+            // A recent unattached upload may still be in progress. Published files become
+            // collectible immediately after their release ref is deleted.
+            if live.contains(&object.key) || (!known.contains(&object.key) && object.modified >= cutoff) {
+                continue;
+            }
+            if !dry_run {
+                store.backend.delete(&object.key)?;
+            }
+            deleted.push(object.key);
+        }
+    }
     for object in objects {
         let Some((state, attempt, _)) = format::parse_data_name(&object.key) else {
             continue;

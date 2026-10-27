@@ -4,9 +4,11 @@
 #[cfg(feature = "native")]
 pub mod aws;
 pub mod canonical;
+pub mod epochs;
 pub mod format;
 #[cfg(feature = "native")]
 pub mod http;
+pub mod index;
 pub mod keys;
 pub mod paths;
 #[cfg(feature = "native")]
@@ -15,6 +17,9 @@ pub mod s3;
 pub mod zst;
 
 pub mod person;
+pub mod public;
+pub mod request;
+pub mod session;
 
 #[cfg(any(feature = "native", feature = "wasm"))]
 pub mod reader;

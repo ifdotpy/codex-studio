@@ -8,9 +8,12 @@ pub(super) fn run(args: &[String]) -> Result<ExitCode> {
     let command = args
         .next()
         .map(String::as_str)
-        .ok_or("Use native-layr <install|migrate|paths>")?;
+        .ok_or("Use native-layr <install|configure|map|upgrade-store|migrate|paths>")?;
     let mut state = None;
     let mut source = None;
+    let mut store_root = None;
+    let mut mapped_project = None;
+    let mut default_store = false;
     let mut dry_run = false;
     let mut projects = Vec::new();
     let mut without_git = std::collections::BTreeSet::new();
@@ -19,6 +22,20 @@ pub(super) fn run(args: &[String]) -> Result<ExitCode> {
     let mut worktrees_explicit = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--store-root" => {
+                store_root = Some(PathBuf::from(
+                    args.next()
+                        .ok_or("--store-root requires an absolute folder")?,
+                ))
+            }
+            "--project" => {
+                mapped_project = Some(
+                    args.next()
+                        .ok_or("--project requires an existing project name")?
+                        .clone(),
+                )
+            }
+            "--default-store" => default_store = true,
             "--state" => {
                 state = Some(PathBuf::from(
                     args.next().ok_or("--state requires a directory")?,
@@ -75,6 +92,14 @@ pub(super) fn run(args: &[String]) -> Result<ExitCode> {
             "--without-git, --skip-worktree and --worktrees are available only for native-layr migrate".into(),
         );
     }
+    if command != "configure" && (store_root.is_some() || default_store) {
+        return Err(
+            "--store-root and --default-store are available only for native-layr configure".into(),
+        );
+    }
+    if command != "map" && mapped_project.is_some() {
+        return Err("--project is available only for native-layr map".into());
+    }
     let state = state.unwrap_or(studio_runtime_store::resolve_state_dir()?.into_path_buf());
     let state = if state.is_absolute() {
         state
@@ -82,6 +107,44 @@ pub(super) fn run(args: &[String]) -> Result<ExitCode> {
         std::env::current_dir()?.join(state)
     };
     match command {
+        "configure" => {
+            if default_store == store_root.is_some() {
+                return Err("Supply either --store-root or --default-store".into());
+            }
+            println!(
+                "{}",
+                studio_runtime_services::layr_native::settings::configure(
+                    &state,
+                    store_root.as_deref()
+                )?
+            );
+        }
+        "map" => {
+            if projects.len() != 1 {
+                return Err("Supply one source folder and --project <existing name>".into());
+            }
+            println!(
+                "{}",
+                studio_runtime_services::layr_native::mapping::bind(
+                    &state,
+                    &projects[0],
+                    mapped_project
+                        .as_deref()
+                        .ok_or("Supply --project <existing name>")?
+                )?
+            );
+        }
+        "upgrade-store" => {
+            studio_runtime_services::layr_native::install::ensure_binary(&state)?;
+            println!(
+                "{}",
+                studio_runtime_services::layr_native::run(
+                    &state,
+                    &state,
+                    &["store-version", "--upgrade"]
+                )?
+            );
+        }
         "install" => {
             if let Some(source) = source {
                 studio_runtime_services::layr_native::install::install(&state, &source)?;
@@ -96,9 +159,9 @@ pub(super) fn run(args: &[String]) -> Result<ExitCode> {
         "paths" => println!(
             "{}",
             serde_json::json!({
-                "store":studio_runtime_services::layr_native::store_path(&state),
+                "store":studio_runtime_services::layr_native::settings::selected_store(&state)?,
                 "binary":studio_runtime_services::layr_native::binary_path(&state),
-                "socket":studio_runtime_services::layr_native::socket_path(&state),
+                "socket":studio_runtime_services::layr_native::selected_socket_path(&state)?,
             })
         ),
         "migrate" => {
@@ -126,7 +189,11 @@ pub(super) fn run(args: &[String]) -> Result<ExitCode> {
                 );
             }
         }
-        _ => return Err("Use native-layr <install|migrate|paths>".into()),
+        _ => {
+            return Err(
+                "Use native-layr <install|configure|map|upgrade-store|migrate|paths>".into(),
+            );
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

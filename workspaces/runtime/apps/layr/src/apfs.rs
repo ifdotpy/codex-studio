@@ -106,17 +106,243 @@ fn scan(root: &Path) -> Result<BTreeMap<String, ScanEntry>> {
 }
 
 pub(crate) fn scan_with_data(root: &Path, data: bool) -> Result<BTreeMap<String, ScanEntry>> {
-    let _t = crate::trace::span("APFS bulk scan");
     let _ = data;
-    let mut out = BTreeMap::new();
-    let m = fs::symlink_metadata(root)?;
-    out.insert(String::new(), entry_of_metadata(&m, root, true)?);
-    if !m.is_dir() {
-        return Ok(out);
+    if let Some(scan) = MEMO.with_borrow(|memo| memo.iter().find(|(r, _)| r == root).map(|(_, s)| s.clone())) {
+        return Ok(scan);
     }
-    let dir = crate::fsutil::open_dir_nofollow(root)?;
-    scan_bulk(&dir, root, "", &mut out, &mut Vec::new())?;
+    let m = fs::symlink_metadata(root)?;
+    let saved = sealed_scan_file(root, &m);
+    if let Some(scan) = saved.as_ref().and_then(|f| decoded(f)) {
+        return Ok((*scan).clone());
+    }
+    let _t = crate::trace::span("APFS bulk scan");
+    let mut out = BTreeMap::new();
+    out.insert(String::new(), entry_of_metadata(&m, root, true)?);
+    if m.is_dir() {
+        let dir = crate::fsutil::open_dir_nofollow(root)?;
+        scan_parallel(dir, root, &mut out)?;
+    }
+    if let Some(f) = saved {
+        // A file that cannot be written only costs the next process a scan; this process keeps
+        // the scan in memory either way.
+        let _ = fs::create_dir_all(f.parent().unwrap())
+            .map_err(anyhow::Error::from)
+            .and_then(|_| crate::fsutil::atomic_write(&f, &encode_scan(&out), 0o600));
+        DECODED.lock().unwrap().push((f, std::sync::Arc::new(out.clone())));
+    }
     Ok(out)
+}
+
+/// A command often reads one sealed tree more than once (a parent and its child share their
+/// base): the decoded scan stays in memory for the process, by the name of its file.
+static DECODED: std::sync::Mutex<Vec<(std::path::PathBuf, std::sync::Arc<BTreeMap<String, ScanEntry>>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn decoded(file: &Path) -> Option<std::sync::Arc<BTreeMap<String, ScanEntry>>> {
+    if let Some((_, scan)) = DECODED.lock().unwrap().iter().find(|(p, _)| p == file) {
+        return Some(scan.clone());
+    }
+    let scan = std::sync::Arc::new(decode_scan(&fs::read(file).ok()?)?);
+    DECODED.lock().unwrap().push((file.to_path_buf(), scan.clone()));
+    Some(scan)
+}
+
+/// The entries of a sealed state or layer, from its saved scan (made now when it is missing).
+/// `None` for a tree that can change. Its paths are the names that the volume stores.
+pub(crate) fn sealed_entries(root: &Path) -> Option<std::sync::Arc<BTreeMap<String, ScanEntry>>> {
+    let m = fs::symlink_metadata(root).ok()?;
+    let file = sealed_scan_file(root, &m)?;
+    if let Some(scan) = decoded(&file) {
+        return Some(scan);
+    }
+    Some(std::sync::Arc::new(scan_with_data(root, true).ok()?))
+}
+
+thread_local! {
+    /// The scans that `stable_read` validates, used by the read instead of new scans.
+    static MEMO: std::cell::RefCell<Vec<(std::path::PathBuf, BTreeMap<String, ScanEntry>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// The paths below those roots whose content the read may use (`note_read`).
+    static TOUCHED: std::cell::RefCell<Vec<(std::path::PathBuf, std::collections::BTreeSet<String>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` with a scan of `root` that the caller already has: scans of `root` inside `f`
+/// (`stable_read` too) use it instead of reading the folder again.
+pub fn with_known_scan<T>(root: &Path, scan: &BTreeMap<String, ScanEntry>, f: impl FnOnce() -> T) -> T {
+    let outer = MEMO.with_borrow_mut(|memo| {
+        let outer = memo.clone();
+        memo.retain(|(r, _)| r != root);
+        memo.push((root.to_path_buf(), scan.clone()));
+        outer
+    });
+    let out = f();
+    MEMO.with_borrow_mut(|memo| *memo = outer);
+    out
+}
+
+/// Note that a read inside `stable_read` uses the content of `paths` below `root`: the
+/// validation checks them. Outside `stable_read`, or for another root, it does nothing.
+pub(crate) fn note_read<S: AsRef<str>>(root: &Path, paths: impl IntoIterator<Item = S>) {
+    TOUCHED.with_borrow_mut(|touched| {
+        if let Some((_, set)) = touched.iter_mut().find(|(r, _)| r == root) {
+            set.extend(paths.into_iter().map(|p| p.as_ref().to_string()));
+        }
+    });
+}
+
+/// The entry at `rel` below `root` as a scan gives it, `None` when it is absent.
+fn entry_at(root: &Path, rel: &str) -> Result<Option<ScanEntry>> {
+    let Ok(path) = crate::fsutil::safe_join(root, rel) else {
+        return Ok(None);
+    };
+    match fs::symlink_metadata(&path) {
+        // On a volume that ignores case, `README` also finds `readme`: another entry.
+        Ok(_) if crate::fsutil::exact_metadata(&path, rel).is_none() => Ok(None),
+        Ok(m) => Ok(Some(entry_of_metadata(&m, &path, true)?)),
+        Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The file that keeps the scan of a sealed state or layer. A sealed tree cannot change: each
+/// entry has the immutable flag, and a change must clear the flag of the root first, which
+/// changes its ctime, a part of the name. `None` for other trees.
+fn sealed_scan_file(root: &Path, m: &fs::Metadata) -> Option<std::path::PathBuf> {
+    use std::os::macos::fs::MetadataExt as MacMetadataExt;
+    if !m.is_dir() || m.st_flags() & libc::UF_IMMUTABLE == 0 {
+        return None;
+    }
+    let parent = root.parent()?;
+    if !matches!(parent.file_name()?.to_str()?, "states" | "deltas") {
+        return None;
+    }
+    let id = root.file_name()?.to_str()?;
+    if !crate::model::is_uuid(id) {
+        return None;
+    }
+    // The device number is part of each entry: a new mount gives a new file.
+    let name = format!("{id}-{}-{}-{}-{}.scan", m.dev(), m.ino(), m.ctime(), m.ctime_nsec());
+    Some(parent.parent()?.join("meta/scans").join(name))
+}
+
+/// Remove saved scans of trees that no longer exist or changed, below the project folder `dir`.
+pub(crate) fn prune_saved_scans(dir: &Path) -> Result<usize> {
+    let Ok(rd) = fs::read_dir(dir.join("meta/scans")) else {
+        return Ok(0);
+    };
+    let mut removed = 0;
+    for e in rd {
+        let e = e?;
+        let name = e.file_name().to_string_lossy().into_owned();
+        let id = name.split('-').take(5).collect::<Vec<_>>().join("-");
+        let current = ["states", "deltas"].iter().any(|kind| {
+            let root = dir.join(kind).join(&id);
+            fs::symlink_metadata(&root)
+                .ok()
+                .and_then(|m| sealed_scan_file(&root, &m))
+                .is_some_and(|f| f.file_name() == Some(e.file_name().as_os_str()))
+        });
+        if !current && fs::remove_file(e.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+const SCAN_MAGIC: &[u8] = b"layr scan 1\n";
+
+fn encode_scan(scan: &BTreeMap<String, ScanEntry>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(scan.len() * 160);
+    out.extend_from_slice(SCAN_MAGIC);
+    out.extend_from_slice(&(scan.len() as u64).to_le_bytes());
+    for (path, e) in scan {
+        out.extend_from_slice(&(path.len() as u32).to_le_bytes());
+        out.extend_from_slice(path.as_bytes());
+        let (dev, ino, mode, size, mt, mtn, ct, ctn) = e.fingerprint;
+        for v in [dev, ino, mode as u64, size, mt as u64, mtn as u64, ct as u64, ctn as u64] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        let ftype = match e.meta.ftype {
+            crate::fsutil::FType::File => 0u8,
+            crate::fsutil::FType::Dir => 1,
+            crate::fsutil::FType::Symlink => 2,
+            crate::fsutil::FType::Special => 3,
+        };
+        out.push(ftype);
+        for v in [e.meta.mode as u64, e.meta.size, e.meta.ino, e.meta.uid as u64, e.meta.gid as u64, e.meta.mtime as u64] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        let (generation, clone_id) = e.data.map(|d| (d.generation, d.clone_id)).unwrap_or((None, None));
+        out.push(e.data.is_some() as u8 | (generation.is_some() as u8) << 1 | (clone_id.is_some() as u8) << 2);
+        out.extend_from_slice(&generation.unwrap_or(0).to_le_bytes());
+        out.extend_from_slice(&clone_id.unwrap_or(0).to_le_bytes());
+        for v in [e.nlink, e.birth.0 as u64, e.birth.1 as u64] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    out
+}
+
+fn decode_scan(raw: &[u8]) -> Option<BTreeMap<String, ScanEntry>> {
+    let mut at = raw.strip_prefix(SCAN_MAGIC)?;
+    let mut take = |n: usize| -> Option<&[u8]> {
+        let (head, rest) = (at.get(..n)?, at.get(n..)?);
+        at = rest;
+        Some(head)
+    };
+    let u64_of = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap());
+    let count = u64_of(take(8)?);
+    let mut out = BTreeMap::new();
+    for _ in 0..count {
+        let len = u32::from_le_bytes(take(4)?.try_into().ok()?) as usize;
+        let path = String::from_utf8(take(len)?.to_vec()).ok()?;
+        let mut n = [0u64; 8];
+        for v in &mut n {
+            *v = u64_of(take(8)?);
+        }
+        let ftype = match take(1)?[0] {
+            0 => crate::fsutil::FType::File,
+            1 => crate::fsutil::FType::Dir,
+            2 => crate::fsutil::FType::Symlink,
+            3 => crate::fsutil::FType::Special,
+            _ => return None,
+        };
+        let mut meta = [0u64; 6];
+        for v in &mut meta {
+            *v = u64_of(take(8)?);
+        }
+        let flags = take(1)?[0];
+        let generation = u32::from_le_bytes(take(4)?.try_into().ok()?);
+        let clone_id = u64_of(take(8)?);
+        let mut rest = [0u64; 3];
+        for v in &mut rest {
+            *v = u64_of(take(8)?);
+        }
+        let data = (flags & 1 != 0).then_some(crate::sys::ApfsDataIdentity {
+            generation: (flags & 2 != 0).then_some(generation),
+            clone_id: (flags & 4 != 0).then_some(clone_id),
+        });
+        out.insert(
+            path,
+            ScanEntry {
+                fingerprint: (n[0], n[1], n[2] as u32, n[3], n[4] as i64, n[5] as i64, n[6] as i64, n[7] as i64),
+                meta: crate::fsutil::Meta {
+                    ftype,
+                    mode: meta[0] as u32,
+                    size: meta[1],
+                    ino: meta[2],
+                    uid: meta[3] as u32,
+                    gid: meta[4] as u32,
+                    mtime: meta[5] as i64,
+                },
+                data,
+                nlink: rest[0],
+                birth: (rest[1] as i64, rest[2] as i64),
+            },
+        );
+    }
+    at.is_empty().then_some(out)
 }
 
 fn entry_of_metadata(m: &fs::Metadata, path: &Path, data: bool) -> Result<ScanEntry> {
@@ -133,13 +359,39 @@ fn entry_of_metadata(m: &fs::Metadata, path: &Path, data: bool) -> Result<ScanEn
 /// Read a folder and its content with `getattrlistbulk`: one call per folder instead of two per
 /// entry. Nested layers (subvolumes) appear as folders without content.
 fn scan_bulk(dir: &File, root: &Path, rel: &str, out: &mut BTreeMap<String, ScanEntry>, buf: &mut Vec<u8>) -> Result<()> {
+    let Some((entries, folders)) = read_folder(dir, root, rel, buf)? else {
+        return Ok(());
+    };
+    out.extend(entries);
+    for (name, next) in folders {
+        match open_child(dir, root, &name, &next)? {
+            Some(fd) => scan_bulk(&fd, root, &next, out, buf)?,
+            None => {
+                out.remove(&next);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The entries of one folder, and its child folders to read (name and path) without nested
+/// layers. `None` when a writer removed the folder while the scan ran.
+#[allow(clippy::type_complexity)]
+fn read_folder(
+    dir: &File,
+    root: &Path,
+    rel: &str,
+    buf: &mut Vec<u8>,
+) -> Result<Option<(Vec<(String, ScanEntry)>, Vec<(String, String)>)>> {
     use std::os::fd::AsFd;
     let entries = match crate::sys::apfs_bulk_read(dir.as_fd(), buf) {
         Ok(v) => v,
         // A folder that a writer removed while the scan ran: its parent shows the change.
-        Err(e) if !rel.is_empty() && matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => return Ok(()),
+        Err(e) if !rel.is_empty() && matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => return Ok(None),
         Err(e) => return Err(anyhow::Error::from(e).context(format!("read folder {}", root.join(rel).display()))),
     };
+    let mut out = Vec::with_capacity(entries.len());
+    let mut folders = Vec::new();
     for e in entries {
         let name = e.name.into_string().map_err(|_| anyhow::anyhow!("non-UTF-8 file name"))?;
         let next = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
@@ -151,8 +403,11 @@ fn scan_bulk(dir: &File, root: &Path, rel: &str, out: &mut BTreeMap<String, Scan
             _ => crate::fsutil::FType::Special,
         };
         let is_file = ftype == crate::fsutil::FType::File;
-        out.insert(
-            next.clone(),
+        if ftype == crate::fsutil::FType::Dir && !is_subvolume(&root.join(&next)) {
+            folders.push((name, next.clone()));
+        }
+        out.push((
+            next,
             ScanEntry {
                 fingerprint: (e.dev, e.ino, e.mode, e.size, e.mtime.0, e.mtime.1, e.ctime.0, e.ctime.1),
                 meta: crate::fsutil::Meta {
@@ -168,31 +423,109 @@ fn scan_bulk(dir: &File, root: &Path, rel: &str, out: &mut BTreeMap<String, Scan
                 nlink: e.nlink,
                 birth: e.birth,
             },
-        );
-        if ftype == crate::fsutil::FType::Dir {
-            let path = root.join(&next);
-            if is_subvolume(&path) {
-                continue;
-            }
-            let fd = match rustix::fs::openat(
-                dir,
-                name.as_str(),
-                rustix::fs::OFlags::RDONLY
-                    | rustix::fs::OFlags::DIRECTORY
-                    | rustix::fs::OFlags::NOFOLLOW
-                    | rustix::fs::OFlags::CLOEXEC,
-                rustix::fs::Mode::empty(),
-            ) {
-                Ok(fd) => fd,
-                // Removed or replaced after the listing: a scan after the copy sees it.
-                Err(e) if matches!(e, rustix::io::Errno::NOENT | rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
-                    out.remove(&next);
-                    continue;
-                }
-                Err(e) => return Err(anyhow::Error::from(e).context(format!("open folder {}", path.display()))),
-            };
-            scan_bulk(&File::from(fd), root, &next, out, buf)?;
-        }
+        ));
+    }
+    Ok(Some((out, folders)))
+}
+
+/// Open the child folder `name` of `dir` without following a link. `None` when it was removed
+/// or replaced after the listing: a scan after the copy sees it.
+fn open_child(dir: &File, root: &Path, name: &str, next: &str) -> Result<Option<File>> {
+    match rustix::fs::openat(
+        dir,
+        name,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(fd) => Ok(Some(File::from(fd))),
+        Err(e) if matches!(e, rustix::io::Errno::NOENT | rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => Ok(None),
+        Err(e) => Err(anyhow::Error::from(e).context(format!("open folder {}", root.join(next).display()))),
+    }
+}
+
+/// `scan_bulk` of a whole tree with several threads. The threads share a queue of folders; a
+/// folder holds its parent open only until it is opened.
+fn scan_parallel(dir: File, root: &Path, out: &mut BTreeMap<String, ScanEntry>) -> Result<()> {
+    use std::sync::{Arc, Condvar, Mutex};
+    struct Job {
+        parent: Option<Arc<File>>,
+        name: String,
+        rel: String,
+    }
+    struct Queue {
+        jobs: Vec<Job>,
+        busy: usize,
+        error: Option<anyhow::Error>,
+    }
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 4);
+    let root_dir = Arc::new(dir);
+    let queue =
+        Mutex::new(Queue { jobs: vec![Job { parent: None, name: String::new(), rel: String::new() }], busy: 0, error: None });
+    let ready = Condvar::new();
+    let results: Vec<(Vec<(String, ScanEntry)>, Vec<String>)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let (mut found, mut gone) = (Vec::new(), Vec::new());
+                    let mut buf = Vec::new();
+                    loop {
+                        let job = {
+                            let mut q = queue.lock().unwrap();
+                            loop {
+                                if q.error.is_some() || (q.jobs.is_empty() && q.busy == 0) {
+                                    ready.notify_all();
+                                    return (found, gone);
+                                }
+                                if let Some(job) = q.jobs.pop() {
+                                    q.busy += 1;
+                                    break job;
+                                }
+                                q = ready.wait(q).unwrap();
+                            }
+                        };
+                        let step = (|| -> Result<Vec<Job>> {
+                            let dir = match &job.parent {
+                                None => root_dir.clone(),
+                                Some(parent) => match open_child(parent, root, &job.name, &job.rel)? {
+                                    Some(fd) => Arc::new(fd),
+                                    None => {
+                                        gone.push(job.rel.clone());
+                                        return Ok(Vec::new());
+                                    }
+                                },
+                            };
+                            drop(job.parent);
+                            let Some((entries, folders)) = read_folder(&dir, root, &job.rel, &mut buf)? else {
+                                return Ok(Vec::new());
+                            };
+                            found.extend(entries);
+                            Ok(folders.into_iter().map(|(name, rel)| Job { parent: Some(dir.clone()), name, rel }).collect())
+                        })();
+                        let mut q = queue.lock().unwrap();
+                        q.busy -= 1;
+                        match step {
+                            Ok(jobs) => q.jobs.extend(jobs),
+                            Err(e) => {
+                                q.error.get_or_insert(e);
+                            }
+                        }
+                        ready.notify_all();
+                    }
+                })
+            })
+            .collect();
+        workers.into_iter().map(|w| w.join().unwrap()).collect()
+    });
+    if let Some(e) = queue.into_inner().unwrap().error {
+        return Err(e);
+    }
+    let mut gone_all = Vec::new();
+    for (found, gone) in results {
+        out.extend(found);
+        gone_all.extend(gone);
+    }
+    for g in gone_all {
+        out.remove(&g);
     }
     Ok(())
 }
@@ -242,13 +575,33 @@ pub fn stable_read<T>(roots: &[&Path], read: impl FnOnce() -> Result<T>) -> Resu
     {
         return Ok(None);
     }
+    // The read uses these scans instead of new ones. Its content comes only from paths that
+    // differ between the compared trees (`candidates`), copied paths (`copy_selected`) and
+    // ignore files; each notes them, and only they are checked again after the read.
+    // An outer `with_known_scan` or `stable_read` keeps its scans and notes for after this one.
+    let outer_memo = MEMO.with_borrow_mut(|memo| {
+        let outer = memo.clone();
+        memo.retain(|(r, _)| !roots.contains(&r.as_path()));
+        memo.extend(roots.iter().map(|r| r.to_path_buf()).zip(before.iter().cloned()));
+        outer
+    });
+    let outer_touched =
+        TOUCHED.with_borrow_mut(|t| std::mem::replace(t, roots.iter().map(|r| (r.to_path_buf(), Default::default())).collect()));
     let result = read();
-    for (root, expected) in roots.iter().zip(before) {
-        // A deleted or replaced path can make either the read or the second scan fail.
-        // Discard the result and use the existing snapshot path in that case.
-        match scan_with_data(root, true) {
-            Ok(after) if after == expected => {}
-            _ => return Ok(None),
+    MEMO.with_borrow_mut(|memo| *memo = outer_memo);
+    let touched = TOUCHED.with_borrow_mut(|t| std::mem::replace(t, outer_touched));
+    // The paths that this read used count for an outer read of the same root too.
+    for (root, paths) in &touched {
+        note_read(root, paths);
+    }
+    for ((root, expected), (_, paths)) in roots.iter().zip(&before).zip(touched) {
+        for p in &paths {
+            // A deleted or replaced path can make either the read or this check fail.
+            // Discard the result and use the existing snapshot path in that case.
+            match entry_at(root, p) {
+                Ok(now) if now.as_ref() == expected.get(p) => {}
+                _ => return Ok(None),
+            }
         }
     }
     result.map(Some)
@@ -258,8 +611,10 @@ pub fn stable_read<T>(roots: &[&Path], read: impl FnOnce() -> Result<T>) -> Resu
 /// before it publishes any of these bytes to an index.
 pub fn copy_selected(src: &Path, dst: &Path, paths: &std::collections::BTreeSet<String>) -> Result<()> {
     let _t = crate::trace::span("APFS copy selected");
+    note_read(src, paths);
     let source = crate::tree::Tree::open(src)?;
     let target = crate::tree::Tree::open(dst)?;
+    let mut entries = Vec::new();
     for rel in paths {
         // Descendants of a directory replaced by a symlink are deletions.
         let path = match crate::fsutil::safe_join(src, rel) {
@@ -275,30 +630,31 @@ pub fn copy_selected(src: &Path, dst: &Path, paths: &std::collections::BTreeSet<
         };
         target.mkdirs_for(rel, None)?;
         match m.ftype {
-            crate::fsutil::FType::File => {
-                let mut input = source.open_read(rel)?;
-                let metadata = input.metadata()?;
-                let output = match target.clone_new_file(&input, rel)? {
-                    Some(file) => file,
-                    None => {
-                        let mut file = target.create(rel, 0o600)?;
-                        io::copy(&mut input, &mut file)?;
-                        keep_birthtime(&metadata, &dst.join(rel))?;
-                        file
-                    }
-                };
-                output.set_permissions(fs::Permissions::from_mode(m.mode & 0o7777))?;
-                crate::fsutil::set_mtime(&output, metadata.mtime(), metadata.mtime_nsec())?;
-            }
-            crate::fsutil::FType::Symlink => {
-                target.symlink(rel, &source.read_link(rel)?)?;
-                keep_birthtime(&fs::symlink_metadata(src.join(rel))?, &dst.join(rel))?;
-            }
+            crate::fsutil::FType::File | crate::fsutil::FType::Symlink => entries.push((rel, m)),
             crate::fsutil::FType::Dir => target.mkdirs(rel, None)?,
             crate::fsutil::FType::Special => bail!("cannot snapshot special file {}", src.join(rel).display()),
         }
     }
-    Ok(())
+    // The folders exist: the files copy with several threads.
+    each_parallel(&entries, |(rel, m)| {
+        if m.ftype == crate::fsutil::FType::Symlink {
+            target.symlink(rel, &source.read_link(rel)?)?;
+            return keep_birthtime(&fs::symlink_metadata(src.join(rel))?, &dst.join(rel));
+        }
+        let mut input = source.open_read(rel)?;
+        let metadata = input.metadata()?;
+        let output = match target.clone_new_file(&input, rel)? {
+            Some(file) => file,
+            None => {
+                let mut file = target.create(rel, 0o600)?;
+                io::copy(&mut input, &mut file)?;
+                keep_birthtime(&metadata, &dst.join(rel))?;
+                file
+            }
+        };
+        output.set_permissions(fs::Permissions::from_mode(m.mode & 0o7777))?;
+        crate::fsutil::set_mtime(&output, metadata.mtime(), metadata.mtime_nsec())
+    })
 }
 /// Identity used to find moves. APFS clones, writes, and renames keep the creation time.
 /// A new inode, such as a safe save, has a new identity, as with btrfs inode numbers.
@@ -373,22 +729,71 @@ fn copy_tree(src: &Path, dst: &Path, root: bool, links: &mut BTreeMap<(u64, u64)
     Ok(())
 }
 pub(crate) fn seal(path: &Path, readonly: bool, for_delete: bool) -> Result<()> {
-    let m = fs::symlink_metadata(path)?;
-    if !readonly {
-        crate::sys::apfs_immutable(path, false)?;
+    // One flag change per entry: several threads share them. A folder is opened before its
+    // content is read, and sealed after its content.
+    let open = |p: &Path| -> Result<bool> {
+        let m = fs::symlink_metadata(p)?;
+        crate::sys::apfs_immutable(p, false)?;
         if for_delete && m.is_dir() && m.mode() & 0o700 != 0o700 {
-            fs::set_permissions(path, fs::Permissions::from_mode((m.mode() & 0o7777) | 0o700))?;
+            fs::set_permissions(p, fs::Permissions::from_mode((m.mode() & 0o7777) | 0o700))?;
         }
-    }
-    if m.is_dir() {
-        for e in fs::read_dir(path)? {
-            seal(&e?.path(), readonly, for_delete)?;
+        Ok(m.is_dir())
+    };
+    let children = |dirs: &[std::path::PathBuf]| -> Result<(Vec<std::path::PathBuf>, Vec<std::path::PathBuf>)> {
+        let (mut sub, mut files) = (Vec::new(), Vec::new());
+        for d in dirs {
+            for e in fs::read_dir(d)? {
+                let e = e?;
+                if e.file_type()?.is_dir() {
+                    sub.push(e.path())
+                } else {
+                    files.push(e.path())
+                }
+            }
         }
+        Ok((sub, files))
+    };
+    if !fs::symlink_metadata(path)?.is_dir() {
+        return if readonly { Ok(crate::sys::apfs_immutable(path, true)?) } else { open(path).map(|_| ()) };
     }
-    if readonly {
-        crate::sys::apfs_immutable(path, true)?;
+    if !readonly {
+        let mut level = vec![path.to_path_buf()];
+        while !level.is_empty() {
+            each_parallel(&level, |d| open(d).map(|_| ()))?;
+            let (sub, files) = children(&level)?;
+            each_parallel(&files, |f| open(f).map(|_| ()))?;
+            level = sub;
+        }
+        return Ok(());
+    }
+    let mut levels = vec![vec![path.to_path_buf()]];
+    let mut files = Vec::new();
+    loop {
+        let (sub, f) = children(levels.last().unwrap())?;
+        files.extend(f);
+        if sub.is_empty() {
+            break;
+        }
+        levels.push(sub);
+    }
+    each_parallel(&files, |f| Ok(crate::sys::apfs_immutable(f, true)?))?;
+    for level in levels.iter().rev() {
+        each_parallel(level, |d| Ok(crate::sys::apfs_immutable(d, true)?))?;
     }
     Ok(())
+}
+
+/// Run `f` for each item with up to four threads; the first error wins.
+fn each_parallel<T: Sync>(items: &[T], f: impl Fn(&T) -> Result<()> + Sync) -> Result<()> {
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 4);
+    if items.len() < 64 || threads == 1 {
+        return items.iter().try_for_each(|p| f(p));
+    }
+    let chunk = items.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = items.chunks(chunk).map(|part| scope.spawn(|| part.iter().try_for_each(|p| f(p)))).collect();
+        workers.into_iter().try_for_each(|w| w.join().unwrap())
+    })
 }
 /// True when a scanned tree needs file-by-file copies: special files, nested layers, or hard
 /// links (a recursive clone copies hard links as separate files).
@@ -415,7 +820,22 @@ pub(crate) fn clone_complete(src: &Path, dst: &Path, entries: &BTreeMap<String, 
     } else {
         seal(dst, false, false)?;
     }
-    Ok(())
+    // A folder clone gives the folders the time of the clone; a btrfs snapshot keeps them.
+    // They get the times of the source, from its scan.
+    let dirs: Vec<(&String, &ScanEntry)> = entries.iter().filter(|(_, e)| e.meta.is_dir()).collect();
+    each_parallel(&dirs, |(rel, e)| {
+        use std::os::macos::fs::MetadataExt as MacMetadataExt;
+        let p = if rel.is_empty() { dst.to_path_buf() } else { dst.join(rel) };
+        let sealed = fs::symlink_metadata(&p)?.st_flags() & libc::UF_IMMUTABLE != 0;
+        if sealed {
+            crate::sys::apfs_immutable(&p, false)?;
+        }
+        crate::sys::apfs_mtime(&p, e.fingerprint.4, e.fingerprint.5)?;
+        if sealed {
+            crate::sys::apfs_immutable(&p, true)?;
+        }
+        Ok(())
+    })
 }
 
 pub fn snapshot(src: &Path, dst: &Path, readonly: bool) -> Result<()> {
@@ -545,9 +965,14 @@ pub fn clone_file(_src: &File, _dst: &File) -> io::Result<()> {
 pub fn clone_range(_src: &File, _off: u64, _len: u64, _dst: &File, _dst_off: u64) -> io::Result<()> {
     Err(io::Error::from_raw_os_error(libc::ENOTSUP))
 }
-pub fn send_command(_parent: Option<&Path>, child: &Path) -> Result<Command> {
+pub fn send_command(parent: Option<&Path>, child: &Path) -> Result<Command> {
     let mut cmd = Command::new(std::env::current_exe()?);
     cmd.arg("__apfs-send").arg(child);
+    // With a parent the stream holds only the differences (`apfs_stream::send`). A parent that
+    // is no sealed tree gives a complete stream.
+    if let Some((p, id)) = parent.and_then(|p| clone_identity(p).ok().map(|(id, _)| (p, id))) {
+        cmd.arg(p).arg(id);
+    }
     Ok(cmd)
 }
 
@@ -631,7 +1056,25 @@ pub(crate) fn candidates_scanned(
     a: BTreeMap<String, ScanEntry>,
     b: BTreeMap<String, ScanEntry>,
 ) -> Result<Vec<crate::changes::Change>> {
-    let names: std::collections::BTreeSet<_> = a.keys().chain(b.keys()).filter(|s| !s.is_empty()).collect();
+    // An entry that both trees have with the same metadata and shared data is no candidate, as
+    // the btrfs stream would not name it: no `Change` for it.
+    let same_meta = |x: &ScanEntry, y: &ScanEntry| {
+        let (m, n) = (&x.meta, &y.meta);
+        m.ftype == n.ftype && m.mode == n.mode && m.uid == n.uid && m.gid == n.gid
+    };
+    let unchanged = |p: &String| match (a.get(p), b.get(p)) {
+        (Some(x), Some(y)) if same_meta(x, y) && x.meta.is_dir() => true,
+        (Some(x), Some(y)) if same_meta(x, y) && x.meta.is_file() => {
+            x.meta.size == y.meta.size
+                && x.meta.mtime == y.meta.mtime
+                && x.fingerprint.0 == y.fingerprint.0
+                && x.data.zip(y.data).is_some_and(|(d, e)| {
+                    d.generation.is_some() && e.generation.is_some() && d.clone_id.is_some() && d.clone_id == e.clone_id
+                })
+        }
+        _ => false,
+    };
+    let names: std::collections::BTreeSet<_> = a.keys().chain(b.keys()).filter(|s| !s.is_empty() && !unchanged(s)).collect();
     let mut changes: BTreeMap<_, _> = names
         .into_iter()
         .map(|p| {
@@ -647,47 +1090,61 @@ pub(crate) fn candidates_scanned(
             )
         })
         .collect();
-    let id_of = |e: &ScanEntry| identity(e.birth, e.fingerprint.0, e.fingerprint.1);
+    // Two passes find moves. A file that moved without a change still shares its clone with
+    // the other tree: an exact match. The creation time matches the others; whole seconds
+    // (tar, npm, zip) give each tree its own identity (`identity`).
+    let by_clone = |e: &ScanEntry| -> Option<(u8, i64, i64)> {
+        let d = e.data.filter(|d| d.generation.is_some())?;
+        Some((2, d.clone_id? as i64, e.meta.size as i64))
+    };
+    let by_birth = |e: &ScanEntry| -> Option<(u8, i64, i64)> {
+        Some(if e.birth.1 == 0 { (1, e.fingerprint.0 as i64, e.fingerprint.1 as i64) } else { (0, e.birth.0, e.birth.1) })
+    };
+    let passes: [&dyn Fn(&ScanEntry) -> Option<(u8, i64, i64)>; 2] = [&by_clone, &by_birth];
     // An identity that more than one entry of either tree has is no evidence of a move: hard
-    // links, copies that keep the creation time, or files with equal times.
-    let mut count: BTreeMap<(bool, Vec<u8>), usize> = BTreeMap::new();
+    // links, copies that keep the clone or the creation time, or equal times. The kinds of the
+    // two keys differ, so one count serves both passes.
+    let mut count: std::collections::HashMap<(bool, (u8, i64, i64)), usize> = Default::default();
     for (side, tree) in [(false, &a), (true, &b)] {
-        for (p, e) in tree.iter() {
-            if !p.is_empty() {
-                *count.entry((side, id_of(e))).or_default() += 1;
+        for e in tree.iter().filter(|(p, _)| !p.is_empty()).map(|(_, e)| e) {
+            for id in passes.iter().filter_map(|id_of| id_of(e)) {
+                *count.entry((side, id)).or_default() += 1;
             }
         }
     }
-    let mut removed: BTreeMap<Vec<u8>, Vec<String>> = BTreeMap::new();
-    let mut added: BTreeMap<Vec<u8>, Vec<String>> = BTreeMap::new();
-    for (p, c) in &changes {
-        if c.new.is_none() {
-            removed.entry(id_of(&a[p])).or_default().push(p.clone());
+    for id_of in passes {
+        let mut removed: BTreeMap<(u8, i64, i64), Vec<String>> = BTreeMap::new();
+        let mut added: BTreeMap<(u8, i64, i64), Vec<String>> = BTreeMap::new();
+        for (p, c) in &changes {
+            if c.new.is_none() {
+                if let Some(id) = id_of(&a[p]) {
+                    removed.entry(id).or_default().push(p.clone());
+                }
+            }
+            if c.old.is_none() {
+                if let Some(id) = id_of(&b[p]) {
+                    added.entry(id).or_default().push(p.clone());
+                }
+            }
         }
-        if c.old.is_none() {
-            added.entry(id_of(&b[p])).or_default().push(p.clone());
+        for (id, srcs) in removed {
+            let Some(dsts) = added.get(&id) else {
+                continue;
+            };
+            if srcs.len() != 1 || dsts.len() != 1 || count.get(&(false, id)) != Some(&1) || count.get(&(true, id)) != Some(&1) {
+                continue;
+            }
+            let (src, dst) = (&srcs[0], &dsts[0]);
+            if changes[src].old.as_ref().map(|m| m.ftype) != changes[dst].new.as_ref().map(|m| m.ftype) {
+                continue;
+            }
+            let old = changes.remove(src).unwrap().old;
+            let c = changes.get_mut(dst).unwrap();
+            c.old = old;
+            c.old_path = Some(src.clone());
         }
     }
-    for (id, srcs) in removed {
-        let Some(dsts) = added.get(&id) else {
-            continue;
-        };
-        // Multiple hard links have the same identity. Do not invent a unique move.
-        if srcs.len() != 1 || dsts.len() != 1 {
-            continue;
-        }
-        if count.get(&(false, id.clone())) != Some(&1) || count.get(&(true, id.clone())) != Some(&1) {
-            continue;
-        }
-        let (src, dst) = (&srcs[0], &dsts[0]);
-        if changes[src].old.as_ref().map(|m| m.ftype) != changes[dst].new.as_ref().map(|m| m.ftype) {
-            continue;
-        }
-        let old = changes.remove(src).unwrap().old;
-        let c = changes.get_mut(dst).unwrap();
-        c.old = old;
-        c.old_path = Some(src.clone());
-    }
+    let mut read: Vec<String> = Vec::new();
     for (p, c) in &mut changes {
         if c.old_path.is_none() && c.old.as_ref().is_some_and(|m| m.is_file()) && c.new.as_ref().is_some_and(|m| m.is_file()) {
             let old = &a[p];
@@ -697,8 +1154,21 @@ pub(crate) fn candidates_scanned(
                 && old.data.zip(new.data).is_some_and(|(a, b)| {
                     a.generation.is_some() && b.generation.is_some() && a.clone_id.is_some() && a.clone_id == b.clone_id
                 });
+            if !shared {
+                read.push(p.clone());
+            }
             c.ranges = Some(if shared { Vec::new() } else { changed_ranges(parent, child, p)? });
         }
+    }
+    // Content comes only from compared files and from paths that appear, go or move.
+    read.extend(
+        changes
+            .values()
+            .filter(|c| c.old.is_none() || c.new.is_none() || c.old_path.is_some())
+            .flat_map(|c| std::iter::once(c.path.clone()).chain(c.old_path.clone())),
+    );
+    for root in [parent.folder(), child.folder()].into_iter().flatten() {
+        note_read(root, &read);
     }
     Ok(changes.into_values().collect())
 }
@@ -1103,6 +1573,28 @@ mod tests {
 
     #[test]
     #[ignore = "requires a case-sensitive APFS test volume"]
+    fn copies_keep_the_times_of_folders() -> Result<()> {
+        let s = Sandbox::new();
+        let src = s.0.join("src");
+        create_subvolume(&src)?;
+        fs::create_dir_all(src.join("a/b"))?;
+        fs::write(src.join("a/b/f"), b"x")?;
+        for (rel, sec) in [("a/b", 1_000_000_000), ("a", 1_100_000_000)] {
+            crate::sys::apfs_mtime(&src.join(rel), sec, 123)?;
+        }
+        let times = |root: &Path| -> Result<Vec<(i64, i64)>> {
+            ["a", "a/b"].iter().map(|r| Ok(fs::symlink_metadata(root.join(r)).map(|m| (m.mtime(), m.mtime_nsec()))?)).collect()
+        };
+        let want = times(&src)?;
+        snapshot(&src, &s.0.join("sealed"), true)?;
+        snapshot(&s.0.join("sealed"), &s.0.join("open"), false)?;
+        assert_eq!(times(&s.0.join("sealed"))?, want);
+        assert_eq!(times(&s.0.join("open"))?, want);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a case-sensitive APFS test volume"]
     fn live_read_rejects_writes_and_deletes() -> Result<()> {
         use std::os::unix::fs::FileExt;
         let s = Sandbox::new();
@@ -1111,8 +1603,10 @@ mod tests {
         assert_eq!(stable_read(&[&s.0], || Ok(7))?, Some(7));
         let m = fs::metadata(&path)?;
         let file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
+        // A read notes the paths whose content it uses (`candidates`, `copy_selected`).
         assert_eq!(
             stable_read(&[&s.0], || {
+                note_read(&s.0, ["file"]);
                 file.write_all_at(b"x", 0)?;
                 crate::fsutil::set_mtime(&file, m.mtime(), m.mtime_nsec())?;
                 Ok(7)
@@ -1121,6 +1615,7 @@ mod tests {
         );
         assert_eq!(
             stable_read(&[&s.0], || {
+                note_read(&s.0, ["file"]);
                 fs::remove_file(&path)?;
                 Ok(7)
             })?,

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -28,10 +29,24 @@ class InstallLayrTests(unittest.TestCase):
             (self.root / folder).mkdir(parents=True, exist_ok=True)
         stubs = {
             "id": "echo 0",
+            "flock": ":",
             "findmnt": "echo btrfs",
             "systemctl": f'echo "$*" >> {self.root}/systemctl.log',
             "timeout": 'shift 2; exec "$@"',
         }
+        # The TypeScript suite runs the real guest helper. These shell-only tests
+        # preserve their fake Cargo output and emulate only helper activation.
+        stubs["python3"] = (
+            'if [ "$1" = -B ] && [ "${2##*/}" = guest_update.py ]; then\n'
+            'shift 2\n'
+            'case "$1" in\n'
+            'layr-stage) if [ "$2" != "$3" ]; then cp "$2" "$3.next"; chmod 755 "$3.next"; '
+            'printf "%s\\n" "$6" > "$5/mock-source"; fi ;;\n'
+            'layr-activate) if [ -f "$4/mock-source" ]; then '
+            'mv "$2.next" "$2"; mv "$4/mock-source" "$4/layr-build"; '
+            'systemctl restart codex-studio-layr.service; fi ;;\n'
+            'esac\n'
+            f'else exec "{sys.executable}" "$@"; fi')
         for name, body in stubs.items():
             self.stub(self.root / "bin" / name, body)
         # The build: cargo writes the release binary into the target folder.
@@ -48,7 +63,7 @@ class InstallLayrTests(unittest.TestCase):
         (source / "Cargo.toml").write_bytes(data)
         files = {"Cargo.toml": hashlib.sha256(data).hexdigest()}
         total = hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        (source / "manifest.json").write_text(json.dumps({"files": files, "sourceSha256": total}))
+        (source / "manifest.json").write_text(json.dumps({"files": files, "sourceSha256": total, "revision": "a" * 40}))
         return total
 
     @staticmethod
@@ -86,7 +101,7 @@ class InstallLayrTests(unittest.TestCase):
     def test_a_rebuilt_layr_restarts_its_daemon_and_an_unchanged_one_does_not(self):
         calls = self.run_script()
         self.assertEqual((self.root / "var/lib/codex-studio/layr-build").read_text().strip(), self.identity)
-        self.assertEqual(calls[-1], "restart codex-studio-layr.service")
+        self.assertIn("restart codex-studio-layr.service", calls)
         self.assertNotIn("restart codex-studio-layr.service", self.run_script())
 
     def test_layr_desk_is_built_once_for_each_source_and_a_bad_manifest_stops_the_install(self):

@@ -8,12 +8,15 @@
 
 pub mod authority;
 pub mod diff;
+pub mod history;
+pub mod index;
 pub mod interdiff;
 pub mod operations;
 pub mod overlays;
 pub mod policy;
 pub mod probes;
 pub mod protection;
+pub mod release;
 pub mod screenshots;
 pub mod types;
 pub mod validation;
@@ -24,6 +27,31 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 pub use types::*;
+
+/// Select the creator's policy perspective from authenticated records for one project.
+/// The caller must verify and authorize the signed records first. Unlike the CLI's
+/// local machine perspective, this gives person and public readers one stable root.
+/// Missing or multiple creation records cannot establish a policy perspective.
+pub fn project_perspective<'a>(project: &str, records: impl IntoIterator<Item = &'a Record>) -> Result<String> {
+    let mut creator: Option<&Record> = None;
+    for record in records {
+        if record.project != project {
+            bail!("policy records belong to another project");
+        }
+        if record.op != "project" { continue; }
+        if record.data["id"].as_str() != Some(project) || record.machine.is_empty() {
+            bail!("invalid project creator record");
+        }
+        if let Some(previous) = creator {
+            if serde_json::to_value(previous)? != serde_json::to_value(record)? {
+                bail!("ambiguous project creator");
+            }
+        } else {
+            creator = Some(record);
+        }
+    }
+    Ok(creator.context("project creator record is missing")?.machine.clone())
+}
 
 /// A collection of projects. Overlay records retain their separate project identity.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -150,6 +178,23 @@ fn order(r: &Record) -> (i64, &str, u64) {
 }
 
 impl Project {
+    /// Access mode and epochs are folded only from authenticated project records.
+    pub fn access_mode(&self) -> layr_store::epochs::Mode {
+        self.records
+            .iter()
+            .rev()
+            .find(|r| r.op == "project.mode")
+            .and_then(|r| serde_json::from_value(r.data["mode"].clone()).ok())
+            .unwrap_or_default()
+    }
+    pub fn key_epochs(&self) -> Vec<Value> {
+        self.records.iter().filter(|r|r.op=="project.key").enumerate().map(|(i,r)| {
+            let mut row=serde_json::json!({"number":i+1,"id":r.data["epoch"],"time":r.time,"machine":r.machine,"mode":r.data["mode"],"readers_hash":r.data["readers_hash"]});
+            if let Some(reason)=self.records.iter().find(|m|m.op=="project.mode" && m.data["epoch"]==r.data["epoch"]).and_then(|m|m.data.get("reason")).filter(|v|!v.is_null()) {row["reason"]=reason.clone();}
+            row
+        }).collect()
+    }
+
     /// Build one project from verified records. `machine` selects the CLI policy perspective.
     /// Empty `machine` selects a store view with no preferred local machine.
     /// Exact duplicate records are accepted. Conflicting identities or sequences fail.
@@ -157,6 +202,7 @@ impl Project {
         let mut unique = BTreeMap::<String, Record>::new();
         let mut sequences = BTreeMap::new();
         for record in records {
+            if record.op == "release.files" { serde_json::from_value::<release::Files>(record.data.clone())?.validate()?; }
             if !record.project.is_empty() && record.project != id {
                 bail!("record belongs to another project");
             }
@@ -290,7 +336,13 @@ impl Project {
             "machine.trust" => {
                 self.trusted.entry(str_at("machine")).or_insert(d.clone());
             }
-            "project" | "config" | "overlay.create" | "overlay.readers" | "overlay.use" | "overlay.show-to-project" => {
+            "project"
+            | "config"
+            | "overlay.create"
+            | "overlay.readers"
+            | "overlay.mode"
+            | "overlay.use"
+            | "overlay.show-to-project" => {
                 if r.op == "project" {
                     self.name = d["name"].as_str().map(String::from);
                 }
@@ -413,6 +465,22 @@ impl Project {
     pub fn changes(&self) -> Vec<String> {
         self.states.values().filter_map(|s| s.state.change_id.clone()).collect::<BTreeSet<_>>().into_iter().collect()
     }
+    /// Latest change versions outside every main line's ancestry. This is the shared
+    /// open-change rule for the index and site; queued execution remains separate metadata.
+    pub fn open_changes(&self) -> Vec<StateRec> {
+        let integrated: BTreeSet<_> =
+            self.line_list().iter().filter(|l| l.name == "main").flat_map(|l| self.ancestors(&l.head)).collect();
+        let mut latest = BTreeMap::<&str, &StateRec>::new();
+        for state in self.states.values().map(|s| &s.state) {
+            if let Some(change) = &state.change_id {
+                let current = latest.entry(change).or_insert(state);
+                if (state.time, &state.id) > (current.time, &current.id) {
+                    *current = state;
+                }
+            }
+        }
+        latest.into_values().filter(|s| !integrated.contains(&s.id)).cloned().collect()
+    }
     pub fn change_versions(&self, id: &str) -> Vec<StateRec> {
         let mut out: Vec<_> =
             self.states.values().filter(|s| s.state.change_id.as_deref() == Some(id)).map(|s| s.state.clone()).collect();
@@ -438,8 +506,8 @@ impl Project {
                 return false;
             }
             let rec = &self.records[*i];
-            rec.machine == owner.machine
-                && rec.actor.uid == owner.actor.uid
+            ((a.signer.starts_with("person:") && r.signer == a.signer && self.person_record_pinned(rec))
+                || (!a.signer.starts_with("person:") && rec.machine == owner.machine && rec.actor.uid == owner.actor.uid))
                 && (rec.data["revokes"].as_array().is_some_and(|v| v.iter().any(|v| v.as_str() == Some(id)))
                     || (rec.op == "approve.withdraw" && a.kind == "approval"))
         })
@@ -485,7 +553,13 @@ impl Project {
             .filter(|r| {
                 matches!(
                     r.op.as_str(),
-                    "project" | "config" | "overlay.create" | "overlay.readers" | "overlay.use" | "overlay.show-to-project"
+                    "project"
+                        | "config"
+                        | "overlay.create"
+                        | "overlay.readers"
+                        | "overlay.mode"
+                        | "overlay.use"
+                        | "overlay.show-to-project"
                 )
             })
             .find_map(|r| r.data["config"].get(key))
@@ -542,6 +616,22 @@ impl Project {
         let common: Vec<_> = self.ancestors(a).into_iter().filter(|id| right.contains(id)).collect();
         common.iter().find(|c| !common.iter().any(|d| d != *c && self.ancestors(d).contains(c))).cloned()
     }
+    /// Signed discussion records, in stable record order, with actor and timestamp.
+    pub fn comments(&self, change: &str) -> Vec<Value> {
+        self.records
+            .iter()
+            .filter_map(|record| {
+                let mut comment = record.data.get("comment")?.clone();
+                if comment["change_id"].as_str() != Some(change) {
+                    return None;
+                }
+                comment["actor"] = serde_json::to_value(&record.actor).ok()?;
+                comment["time"] = serde_json::json!(record.time);
+                Some(comment)
+            })
+            .collect()
+    }
+
     /// CLI `change show --json`, including versions, all evidence, and stored queue behavior.
     /// Other behavior uses the supplied source definitions and probe output bytes.
     pub fn change_show(&self, id: &str, context: &probes::Context) -> Result<Value> {
@@ -554,7 +644,7 @@ impl Project {
             .enumerate()
             .map(|(i, s)| {
                 let mut row =
-                    serde_json::json!({"version":format!("v{}",i+1),"state":s,"attestations":self.attestations(&s.id,None)});
+                    serde_json::json!({"version":format!("v{}",i+1),"state":s,"attestations":self.attestations(&s.id,None),"checks":self.checks(&s.id)});
                 if let Some(version) = self.version_info(&s.id) {
                     row["operation"] = version;
                 }
@@ -566,7 +656,7 @@ impl Project {
             Ok(None) => serde_json::json!({"probes":[]}),
             Err(error) => serde_json::json!({"status":"unavailable","reason":format!("{error:#}")}),
         };
-        Ok(serde_json::json!({"change_id":id,"versions":rows,"behavior":behavior}))
+        Ok(serde_json::json!({"change_id":id,"versions":rows,"behavior":behavior,"comments":self.comments(id)}))
     }
     fn change_behavior(&self, state: &StateRec, context: &probes::Context) -> Result<Value> {
         for entry in self.queue_list(None).iter().rev() {
@@ -631,6 +721,7 @@ impl Project {
                 || a.kind != "approval"
                 || self.is_revoked(&a.attestation_id)
                 || record.data.get("declassify").is_some()
+                || a.signer.starts_with("person:")
                 || record.machine != self.machine
             {
                 continue;
@@ -644,6 +735,51 @@ impl Project {
         out.sort_by_key(|(uid, _)| *uid);
         out
     }
+    /// Imported machine records cannot supply a different key for a local person principal.
+    fn person_record_pinned(&self, record: &Record) -> bool {
+        let Some(login) = record.actor.name.strip_prefix("person:") else {
+            return false;
+        };
+        let Some(public) = self.setting("person.keys").and_then(|keys| keys[login].as_str()) else {
+            return false;
+        };
+        record.data["person_key"].as_str() == Some(public) && validation::validate(record).is_ok()
+    }
+
+    /// Evidence signed by one person, including scoped approvals, that is still active.
+    pub fn person_attestations(&self, subject: &str, login: &str) -> Vec<String> {
+        self.attestations
+            .iter()
+            .filter(|(index, a)| {
+                self.person_record_pinned(&self.records[*index])
+                    && a.subject.id == subject
+                    && a.signer == format!("person:{login}")
+                    && a.kind == "approval"
+                    && !self.is_revoked(&a.attestation_id)
+            })
+            .map(|(_, a)| a.attestation_id.clone())
+            .collect()
+    }
+
+    /// Active exact-state person approvals. They remain attributable across executor machines.
+    pub fn person_approvals(&self, subject: &str) -> Vec<(String, i64)> {
+        let mut people = BTreeMap::<String, i64>::new();
+        for (index, a) in &self.attestations {
+            let Some(login) = a.signer.strip_prefix("person:") else {
+                continue;
+            };
+            if a.subject.id == subject
+                && a.kind == "approval"
+                && !self.is_revoked(&a.attestation_id)
+                && self.person_record_pinned(&self.records[*index])
+                && self.records[*index].data.get("declassify").is_none()
+            {
+                people.entry(login.into()).and_modify(|time| *time = (*time).max(a.time)).or_insert(a.time);
+            }
+        }
+        people.into_iter().collect()
+    }
+
     /// Active check details in record order, including failed checks.
     pub fn checks(&self, subject: &str) -> Vec<Value> {
         self.attestations(subject, Some("check"))

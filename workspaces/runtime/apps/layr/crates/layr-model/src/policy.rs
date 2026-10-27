@@ -212,6 +212,43 @@ impl Policy {
     }
 
     /// The highest role of the user, its groups and everyone. Root is admin.
+    /// Person principals have their own policy identity and never inherit root's role.
+    pub fn person_role(&self, login: &str) -> Role {
+        [format!("person:{login}"), "*".into()]
+            .iter()
+            .flat_map(|k| [self.access.get(k).copied(), self.grants.get(k).map(|g| g.0)])
+            .flatten()
+            .max()
+            .unwrap_or(Role::None)
+    }
+
+    pub fn person_denied(&self, login: &str, action: &str) -> bool {
+        [format!("person:{login}"), "*".into()]
+            .iter()
+            .any(|k| self.deny.get(k).is_some_and(|v| v.iter().any(|a| a == action || a == "*")))
+    }
+
+    pub fn check_person(&self, login: &str, action: &str) -> Result<(), String> {
+        if self.person_denied(login, action) {
+            return Err(format!("a deny rule takes '{action}' away from person {login}"));
+        }
+        let need = action_role(action).unwrap_or(Role::Admin);
+        let have = self.person_role(login);
+        if have < need {
+            return Err(format!("'{action}' needs the role {}; person {login} is {}", need.name(), have.name()));
+        }
+        Ok(())
+    }
+
+    pub fn person_may_approve(&self, rule: &Rule, login: &str) -> bool {
+        !self.person_denied(login, "approve")
+            && if rule.approvers.is_empty() {
+                self.person_role(login) >= Role::Maintainer
+            } else {
+                rule.approvers.iter().all(|p| p == "*" || p == &format!("person:{login}"))
+            }
+    }
+
     pub fn role(&self, who: &Who) -> Role {
         if who.uid == 0 {
             return Role::Admin;

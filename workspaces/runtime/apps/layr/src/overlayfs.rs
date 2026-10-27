@@ -2,7 +2,7 @@
 //! Writable branches share an immutable lower tree. A snapshot of a writable tree
 //! copies its changed upper layer. Saved layers are immutable and shared by branches.
 use crate::sys;
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -479,7 +479,7 @@ fn copy_tree_at(
 // and keep the root private until all children have been copied. A rename or
 // symlink replacement cannot redirect privileged writes outside this directory.
 fn pinned_directory(path: &Path) -> Result<File> {
-    use rustix::fs::{Mode, OFlags, open, openat};
+    use rustix::fs::{open, openat, Mode, OFlags};
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let mut dir = open("/", flags, Mode::empty())?;
     for component in absolute(path)?.components() {
@@ -494,7 +494,7 @@ fn copy_cache(src: &Path, dst: &Path) -> Result<()> {
     copy_cache_at(src, &parent, dst.file_name().context("cache name")?, None)
 }
 fn copy_cache_at(src: &Path, parent: &File, name: &std::ffi::OsStr, marker: Option<&[u8]>) -> Result<()> {
-    use rustix::fs::{Mode, OFlags, mkdirat, openat};
+    use rustix::fs::{mkdirat, openat, Mode, OFlags};
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     mkdirat(parent, name, Mode::from_raw_mode(0o700))?;
     let root = File::from(openat(parent, name, flags, Mode::empty())?);
@@ -797,6 +797,12 @@ pub fn set_writable(path: &Path) -> Result<()> {
     state.mount(&path, &e)
 }
 pub fn rename_tree(from: &Path, to: &Path) -> Result<()> {
+    rename_tree_using(from, to, true, || Ok(fs::rename(from, to)?))
+}
+pub fn rename_plain_tree(from: &Path, to: &Path, rename: impl FnOnce() -> Result<()>) -> Result<()> {
+    rename_tree_using(from, to, false, rename)
+}
+fn rename_tree_using(from: &Path, to: &Path, allow_mount: bool, rename: impl FnOnce() -> Result<()>) -> Result<()> {
     let from = absolute(from)?;
     let to = absolute(to)?;
     valid_path(&to)?;
@@ -805,8 +811,9 @@ pub fn rename_tree(from: &Path, to: &Path) -> Result<()> {
         bail!("rename must stay in one store");
     }
     let managed_root = state.registry.trees.get(&from).is_some_and(|e| !e.plain);
+    anyhow::ensure!(allow_mount || !managed_root, "migrate a mounted cache before replacing its folder");
     if !state.registry.trees.keys().any(|p| p.starts_with(&from)) {
-        return Ok(fs::rename(from, to)?);
+        return rename();
     }
     if to.exists() {
         bail!("destination already exists");
@@ -817,8 +824,8 @@ pub fn rename_tree(from: &Path, to: &Path) -> Result<()> {
     }
     state.registry.pending_move = Some((from.clone(), to.clone()));
     state.save()?;
-    let moved =
-        if managed_root { sys::overlay_mount(Some(&from), &to, None, libc::MS_MOVE, None) } else { fs::rename(&from, &to) };
+    let moved: Result<()> =
+        if managed_root { sys::overlay_mount(Some(&from), &to, None, libc::MS_MOVE, None).map_err(Into::into) } else { rename() };
     if let Err(e) = moved {
         state.registry.pending_move = None;
         state.save()?;
@@ -878,7 +885,7 @@ pub fn clone_file(src: &File, dst: &File) -> io::Result<()> {
         Err(e) => return Err(e.into()),
     }
     // ext4 has no reflinks. Preserve holes instead of allocating their zero bytes.
-    use rustix::fs::{SeekFrom, seek};
+    use rustix::fs::{seek, SeekFrom};
     use std::io::Read;
     let source = src.metadata()?;
     let dest = dst.metadata()?;

@@ -149,6 +149,16 @@ impl Layered {
             if i > 0 && hides(&self.layers[i - 1], rel) {
                 return Ok(None);
             }
+            // A sealed layer answers from its saved scan, with the stored names.
+            if let Some(entries) = apfs::sealed_entries(&l.root) {
+                if ancestors(rel).any(|a| entries.get(a).is_some_and(|e| e.meta.ftype == crate::fsutil::FType::Symlink)) {
+                    return Ok(None);
+                }
+                if entries.contains_key(rel) {
+                    return Ok(Some(if rel.is_empty() { l.root.clone() } else { l.root.join(rel) }));
+                }
+                continue;
+            }
             // A link above `rel` in this layer is the visible entry: the path does not exist.
             let Ok(p) = crate::fsutil::safe_join(&l.root, rel) else {
                 return Ok(None);
@@ -658,8 +668,8 @@ fn containers(stage: &Path, rel: &str, own: Option<(u32, u32)>, dirs: &mut BTree
     Ok(())
 }
 
-/// Stage `paths` of `src` into the writable index layer at the top of `index`: an entry that
-/// `src` has replaces the index entry, an entry that it lacks leaves the index, and folders that
+/// Stage `paths` of `src` (a private copy that this command made; its entries move) into the
+/// writable index layer at the top of `index`: an entry that `src` has replaces the index entry, an entry that it lacks leaves the index, and folders that
 /// become empty leave too (a state holds files, as a git tree does). New folders get owner `own`.
 pub fn stage_entries(index: &Layered, src: &Path, paths: &BTreeSet<String>, own: Option<(u32, u32)>) -> Result<()> {
     let _t = crate::trace::span(format!("thin stage {} paths", paths.len()));
@@ -671,6 +681,8 @@ pub fn stage_entries(index: &Layered, src: &Path, paths: &BTreeSet<String>, own:
     // Removals first: on a volume that ignores case, `dir` must leave before `Dir` comes.
     let present = |p: &String| crate::fsutil::safe_join(src, p).ok().and_then(|f| crate::fsutil::exact_metadata(&f, p)).is_some();
     let (gone_first, written): (Vec<&String>, Vec<&String>) = paths.iter().partition(|p| !present(p));
+    // A sealed snapshot refuses the first move; then each entry is cloned.
+    let mut movable = true;
     for p in gone_first.into_iter().chain(written) {
         if p.is_empty() {
             continue;
@@ -703,8 +715,23 @@ pub fn stage_entries(index: &Layered, src: &Path, paths: &BTreeSet<String>, own:
             fs::create_dir(&at)?;
             dirs.insert(p.clone());
         } else if m.is_file() || m.file_type().is_symlink() {
-            clone_entry(&from, &at, &m)?;
-            crate::sys::apfs_immutable(&at, false)?;
+            // A writable private copy (`add`) gives its entry to the index, which costs less
+            // than a second clone. A sealed snapshot (`mv`, `save -a`) is cloned from.
+            let moved = movable
+                && match fs::rename(&from, &at) {
+                    Ok(()) => true,
+                    Err(e) if matches!(e.raw_os_error(), Some(libc::EXDEV | libc::EPERM | libc::EACCES)) => {
+                        movable = false;
+                        false
+                    }
+                    Err(e) => return Err(e.into()),
+                };
+            if !moved {
+                clone_entry(&from, &at, &m)?;
+            }
+            if !moved || std::os::macos::fs::MetadataExt::st_flags(&m) & libc::UF_IMMUTABLE != 0 {
+                crate::sys::apfs_immutable(&at, false)?;
+            }
         } else {
             bail!("cannot snapshot special file {}", from.display());
         }
@@ -1360,8 +1387,9 @@ mod tests {
         let w = writer(src.clone(), stop.clone());
         let results = (|| -> Result<()> {
             for n in 0..2 {
-                apfs::snapshot(&src, &s.0.join(format!("full{n}")), n % 2 == 0)?;
-                snapshot_over(&Layered::complete(&base), "base", &src, &s.0.join(format!("thin{n}")), false)?;
+                apfs::snapshot(&src, &s.0.join(format!("full{n}")), n % 2 == 0).with_context(|| format!("full copy {n}"))?;
+                snapshot_over(&Layered::complete(&base), "base", &src, &s.0.join(format!("thin{n}")), false)
+                    .with_context(|| format!("thin copy {n}"))?;
             }
             Ok(())
         })();
@@ -1380,7 +1408,9 @@ mod tests {
             let thin = Layered::over(&s.0.join(format!("thin{n}")), Layered::complete(&base))?;
             for i in 0..2000 {
                 let rel = format!("d{}/f{i}", i % 10);
-                for bytes in [fs::read(full.join(&rel))?, fs::read(thin.path(&rel)?)?] {
+                let full_bytes = fs::read(full.join(&rel)).with_context(|| format!("full copy {n}: {rel}"))?;
+                let thin_bytes = fs::read(thin.path(&rel)?).with_context(|| format!("thin copy {n}: {rel}"))?;
+                for bytes in [full_bytes, thin_bytes] {
                     // The writer truncates before it writes: an empty file is one of its versions.
                     assert!(bytes.is_empty() || bytes == b"first" || bytes.starts_with(b"version "), "{rel}: {bytes:?}");
                 }

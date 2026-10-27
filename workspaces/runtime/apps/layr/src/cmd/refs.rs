@@ -162,6 +162,37 @@ pub fn authorize_update(
     if rule.expect && !expect {
         bail!("ref '{name}' is protected: add --expect <state>");
     }
+    authorize_evidence(repo, name, before, after, &policy, &rule)
+}
+
+pub fn authorize_person_update(
+    repo: &crate::repo::Repo,
+    login: &str,
+    name: &str,
+    before: Option<&RefState>,
+    after: Option<&RefState>,
+) -> Result<()> {
+    let policy = repo.policy();
+    let Some(rule) = policy.rule_for(name) else {
+        return policy.check_person(login, "line.manage").map_err(anyhow::Error::msg);
+    };
+    if policy.person_denied(login, "line.manage") {
+        bail!("a deny rule takes ref updates away");
+    }
+    if policy.person_role(login) < rule.update {
+        bail!("ref update needs the role {}", rule.update.name());
+    }
+    authorize_evidence(repo, name, before, after, &policy, &rule)
+}
+
+fn authorize_evidence(
+    repo: &crate::repo::Repo,
+    name: &str,
+    before: Option<&RefState>,
+    after: Option<&RefState>,
+    policy: &crate::access::Policy,
+    rule: &crate::access::Rule,
+) -> Result<()> {
     let target = after.or(before).ok_or_else(|| anyhow::anyhow!("ref '{name}' has no target"))?;
     if rule.approvals > 0 {
         let count = crate::access::approval_count(repo, &policy, &rule, before.map(|r| r.target.as_str()), &target.target)?;

@@ -18,7 +18,11 @@ pub struct Overlap {
     pub changed_at: i64,
 }
 
-fn changed_paths(base: &Path, child: &Path, hidden: &BTreeSet<String>) -> Result<BTreeMap<String, i64>> {
+fn changed_paths(
+    base: &(impl crate::fsutil::Src + ?Sized),
+    child: &(impl crate::fsutil::Src + ?Sized),
+    hidden: &BTreeSet<String>,
+) -> Result<BTreeMap<String, i64>> {
     let mut out = BTreeMap::new();
     for change in changes::candidates(base, child)? {
         if skip_path(&change.path)
@@ -70,7 +74,7 @@ impl Repo<'_> {
                 Some(base) => base,
                 None => continue,
             };
-            let root = match self.state_root(&base) {
+            let root = match self.state_src(&base) {
                 Ok(root) => root,
                 Err(_) => continue,
             };
@@ -82,7 +86,7 @@ impl Repo<'_> {
             // show <state>:<path> and try use project read access for both head and auto states.
             let head = self.state(&other.head)?;
             let state = self.last_auto(&other)?.filter(|s| s.time >= head.time).unwrap_or(head);
-            let theirs = self.state_root(&state.id)?;
+            let theirs = self.state_src(&state.id)?;
             let their_private = self.private_paths(&other)?;
             for (path, time) in changed_paths(&root, &theirs, &their_private)? {
                 if our_paths.contains_key(&path) && !our_hidden.contains(&path) && !hidden.contains(&path) {
@@ -129,11 +133,11 @@ impl Repo<'_> {
                 Some(base) => base,
                 None => continue,
             };
-            let base_root = match repo.state_root(&base) {
+            let base_root = match repo.state_src(&base) {
                 Ok(root) => root,
                 Err(_) => continue,
             };
-            let their_root = match repo.state_root(&theirs.state) {
+            let their_root = match repo.state_src(&theirs.state) {
                 Ok(root) => root,
                 Err(_) => continue,
             };

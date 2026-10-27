@@ -155,6 +155,16 @@ fn index(ctx: &Ctx, repo: &Repo, key: &[u8]) -> Result<Index> {
         if !root.exists() {
             continue;
         }
+        // Without patterns only the overlay paths count: no walk of the whole folder.
+        if patterns.is_empty() {
+            for path in &overlay_paths {
+                let skipped = path.match_indices('/').map(|(i, _)| &path[..i]).chain([path.as_str()]).any(crate::repo::skip_path);
+                if !skipped {
+                    source_file(&root, path, key, &mut hashes)?;
+                }
+            }
+            continue;
+        }
         let mut matcher = ignore::gitignore::GitignoreBuilder::new(&root);
         for pattern in &patterns {
             matcher.add_line(None, pattern)?;
@@ -289,6 +299,17 @@ fn check_tree(ctx: &Ctx, repo: &Repo, old: Option<&Snap>, new: &Snap, rev: &str)
         return Ok(());
     }
     let approvals = allowed(repo)?;
+    check_indexed(old, new, rev, &key, &hashes, &approvals)
+}
+
+fn check_indexed(
+    old: Option<&Snap>,
+    new: &Snap,
+    rev: &str,
+    key: &[u8],
+    hashes: &Index,
+    approvals: &BTreeSet<(String, String)>,
+) -> Result<()> {
     let files = match old {
         Some(old) => crate::diff::file_diffs(old, new, &crate::changes::file_changes(old, new)?)?,
         None => crate::overlay::files_of(new)?
@@ -334,6 +355,28 @@ pub fn check_state(ctx: &Ctx, repo: &Repo, state: &str) -> Result<()> {
         Some(parent) => check_between(ctx, repo, &repo.state_src(parent)?, &root, state),
         None => check_tree(ctx, repo, None, &root, state),
     }
+}
+
+/// One operation uses one current source index, then checks each state's changed files.
+/// This cache never crosses a command boundary or skips a state with inserted secret bytes.
+pub fn check_states<'a>(ctx: &Ctx, repo: &Repo, states: impl IntoIterator<Item = &'a str>) -> Result<()> {
+    let mut states = states.into_iter().peekable();
+    if repo.p.is_overlay() || states.peek().is_none() {
+        return Ok(());
+    }
+    let key = project_key(repo)?;
+    let hashes = index(ctx, repo, &key)?;
+    if hashes.hashes.is_empty() {
+        return Ok(());
+    }
+    let approvals = allowed(repo)?;
+    for state in states {
+        let record = repo.state(state)?;
+        let root = repo.state_src(state)?;
+        let old = record.parents.first().map(|parent| repo.state_src(parent)).transpose()?;
+        check_indexed(old.as_ref(), &root, state, &key, &hashes, &approvals)?;
+    }
+    Ok(())
 }
 
 /// A folder export sends only the selected tree, including unchanged files.

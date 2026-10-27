@@ -19,6 +19,8 @@ pub enum ApprovalMode {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Approval {
     pub approver: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
     pub state: String,
     pub time: i64,
     pub met: Option<bool>,
@@ -59,7 +61,7 @@ pub fn approvals(
     Ok(approved
         .iter()
         .filter(|(uid, _)| !authors.contains(uid) && may_approve(*uid))
-        .map(|(uid, time)| Approval { approver: *uid, state: subject.into(), time: *time, met: Some(true) })
+        .map(|(uid, time)| Approval { approver: *uid, person: None, state: subject.into(), time: *time, met: Some(true) })
         .collect())
 }
 
@@ -153,6 +155,51 @@ pub struct MergeStatus {
 impl Project {
     /// Evaluate evidence from the verified target machine's policy. This never predicts conflicts.
     /// Without a verified actor, role-dependent results stay undecided. No uid or groups are inferred.
+    /// Person approvals use login principals and exclude authors of incoming states.
+    pub fn allowed_person_approvals(
+        &self,
+        subject: &str,
+        base: Option<&str>,
+        mode: ApprovalMode,
+        policy: &crate::policy::Policy,
+        rule: &crate::policy::Rule,
+    ) -> Vec<Approval> {
+        let have: BTreeSet<_> = base.map(|s| self.ancestors(s).into_iter().collect()).unwrap_or_default();
+        let mut pending = vec![subject.to_string()];
+        let mut seen = BTreeSet::new();
+        let mut authors = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            if let Some(state) = self.state(&id) {
+                pending.extend(state.parents.iter().cloned());
+                if matches!(mode, ApprovalMode::Ref) {
+                    pending.extend(state.derived_from.iter().cloned());
+                }
+                if !have.contains(&id) || (matches!(mode, ApprovalMode::Ref) && id == subject) {
+                    authors.insert(state.author.email.clone());
+                    for record in self.records.iter().filter(|r| r.states.iter().any(|s| s.id == id)) {
+                        if let Some(login) = record.actor.name.strip_prefix("person:") {
+                            authors.insert(login.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        self.person_approvals(subject)
+            .into_iter()
+            .filter(|(login, _)| !authors.contains(login) && policy.person_may_approve(rule, login))
+            .map(|(login, time)| Approval {
+                approver: u32::MAX,
+                person: Some(login),
+                state: subject.into(),
+                time,
+                met: Some(true),
+            })
+            .collect()
+    }
+
     pub fn merge_status(&self, state: &str, target: &str, context: &Context) -> Result<MergeStatus> {
         let line = self.line_list().into_iter().find(|l| l.name == target || l.id == target);
         let target_machine = line.map(|l| l.machine).or_else(|| {
@@ -283,6 +330,13 @@ impl Project {
                 path.met = None;
             }
         }
+        status.approvals.extend(self.allowed_person_approvals(
+            state,
+            base.as_deref(),
+            if is_ref { ApprovalMode::Ref } else { ApprovalMode::Merge },
+            &policy,
+            &rule,
+        ));
         let root = context.actor.as_ref().is_some_and(|actor| actor.uid == 0);
         let groups_unknown = status.approvals.iter().any(|a| a.met.is_none());
         if let Some(actor) = &context.actor {

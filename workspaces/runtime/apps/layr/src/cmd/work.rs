@@ -279,7 +279,8 @@ pub fn begin(ctx: &Ctx, repo: &Repo, line: &Line, op: crate::repo::LineOp) -> Re
     Ok((lock, w))
 }
 
-/// Stage paths: copy them from the working snapshot into the staging line. A file that moved
+/// Stage paths: move them from the working snapshot (a private copy of this command) into the
+/// staging line. A file that moved
 /// in the working folder (same inode number) is moved in the staging line too, so states keep
 /// the inode and btrfs reports the move.
 pub fn stage_paths(repo: &Repo, line: &Line, scan: &Path, paths: &BTreeSet<String>) -> Result<()> {
@@ -458,12 +459,15 @@ pub fn add(ctx: &Ctx, args: &[String]) -> Result<i32> {
         }
         return Ok(0);
     }
+    // Staging moves the entries out of the copy: name them first.
+    let verbose: Vec<(&str, &String)> = if a.has("-v") {
+        paths.iter().map(|p| (if fsutil::lmeta(&scan.path, p).is_some() { "add" } else { "remove" }, p)).collect()
+    } else {
+        Vec::new()
+    };
     stage_paths(&h.repo, &line, &scan.path, &paths)?;
-    if a.has("-v") {
-        for p in &paths {
-            let what = if fsutil::lmeta(&scan.path, p).is_some() { "add" } else { "remove" };
-            outln!(ctx, "{what} '{}'", h.rel(p));
-        }
+    for (what, p) in verbose {
+        outln!(ctx, "{what} '{}'", h.rel(p));
     }
     if !ignored_named.is_empty() {
         let mut m = String::from("The following paths are ignored by one of your .gitignore files:\n");
@@ -487,25 +491,40 @@ pub fn rm(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     let (_lock, _w) = begin_change(ctx, &h.repo, &line)?;
     let line = h.repo.line(&line.id)?;
-    let stage = h.repo.ensure_full_stage(&line)?;
     let w = h.repo.working(&line);
-    let mut removed = Vec::new();
+    // A thin index takes the removals as one change of its top layer; no complete index.
+    #[cfg(target_os = "macos")]
+    let thin = {
+        let st = h.repo.ensure_stage(&line)?;
+        if crate::thin::is_thin(&st) {
+            Some(h.repo.index_source(&line)?.0)
+        } else {
+            None
+        }
+    };
+    #[cfg(not(target_os = "macos"))]
+    let thin: Option<Snap> = None;
+    let full = if thin.is_none() { Some(h.repo.ensure_full_stage(&line)?) } else { None };
+    let index: &dyn fsutil::Src = match (&thin, &full) {
+        (Some(t), _) => t,
+        (None, Some(f)) => f,
+        (None, None) => unreachable!("one index exists"),
+    };
+    // Check every path first, then change the index, then the working folder.
+    let mut plan: Vec<(String, Vec<String>)> = Vec::new();
     for s in &specs {
-        let m = fsutil::lmeta(&stage, s);
-        match m {
+        match fsutil::lmeta(index, s) {
             None => return Err(exit(128, format!("fatal: pathspec '{}' did not match any files", h.rel(s)))),
             Some(m) if m.is_dir() && !a.has("-r") => {
                 return Err(exit(128, format!("fatal: not removing '{}' recursively without -r", h.rel(s))))
             }
             _ => {}
         }
-        if a.has("-n") {
-            removed.push(s.clone());
-            continue;
-        }
         let mut files = Vec::new();
-        if fsutil::lmeta(&stage, s).map(|m| m.is_dir()).unwrap_or(false) {
-            fsutil::walk(&stage, s, &mut |rel, m| {
+        if a.has("-n") {
+            files.push(s.clone());
+        } else if fsutil::lmeta(index, s).map(|m| m.is_dir()).unwrap_or(false) {
+            fsutil::walk(index, s, &mut |rel, m| {
                 if !m.is_dir() {
                     files.push(rel.to_string());
                 }
@@ -514,16 +533,38 @@ pub fn rm(ctx: &Ctx, args: &[String]) -> Result<i32> {
         } else {
             files.push(s.clone());
         }
-        fsutil::remove_entry(&stage, s)?;
-        if !a.has("--cached") {
-            for f in &files {
-                fsutil::remove_entry(&w, f)?;
+        plan.push((s.clone(), files));
+    }
+    let mut removed = Vec::new();
+    if a.has("-n") {
+        removed.extend(plan.into_iter().flat_map(|(_, files)| files));
+    } else {
+        match (&thin, &full) {
+            #[cfg(target_os = "macos")]
+            (Some(t), _) => {
+                let none = crate::repo::Temp { path: h.repo.p.scan_dir().join(ids::new_id()) };
+                std::fs::create_dir_all(&none.path)?;
+                let paths: BTreeSet<String> = plan.iter().map(|(s, _)| s.clone()).collect();
+                crate::thin::stage_entries(t, &none.path, &paths, h.repo.own(&line))?;
             }
-            if crate::tree::Tree::open(&w)?.stat(s).map(|m| m.is_dir()).unwrap_or(false) {
-                crate::tree::Tree::open(&w)?.rmdir(s);
+            (_, Some(f)) => {
+                for (s, _) in &plan {
+                    fsutil::remove_entry(f, s)?;
+                }
             }
+            _ => {}
         }
-        removed.extend(files);
+        for (s, files) in plan {
+            if !a.has("--cached") {
+                for f in &files {
+                    fsutil::remove_entry(&w, f)?;
+                }
+                if crate::tree::Tree::open(&w)?.stat(&s).map(|m| m.is_dir()).unwrap_or(false) {
+                    crate::tree::Tree::open(&w)?.rmdir(&s);
+                }
+            }
+            removed.extend(files);
+        }
     }
     if !a.has("-q") {
         for r in removed {
@@ -578,29 +619,39 @@ pub fn mv(ctx: &Ctx, args: &[String]) -> Result<i32> {
         tree.mkdirs_for(t, h.repo.own(&line))?;
         tree.rename(s, t)?;
     }
-    // Stage both sides of each move.
-    let scan = h.repo.scan(&line)?;
+    // Stage both sides of each move. On APFS with a thin index, a private copy of the moved
+    // entries is enough, and the index removes the old folder itself.
+    #[cfg(target_os = "macos")]
+    let thin = crate::thin::is_thin(&h.repo.ensure_stage(&line)?);
+    #[cfg(not(target_os = "macos"))]
+    let thin = false;
     let mut paths = BTreeSet::new();
     for (s, t) in &moves {
-        {
-            let root = &scan.path;
-            let mut push = |p: &str| {
-                paths.insert(p.to_string());
-            };
-            push(s);
-            push(t);
-            if fsutil::lmeta(root, t).map(|m| m.is_dir()).unwrap_or(false) {
-                fsutil::walk(root, t, &mut |rel, _| {
-                    paths.insert(rel.to_string());
-                    Ok(true)
-                })?;
-            }
-        }
-        let stage = h.repo.ensure_full_stage(&line)?;
-        if fsutil::lmeta(&stage, s).map(|m| m.is_dir()).unwrap_or(false) {
-            fsutil::remove_entry(&stage, s)?;
+        paths.insert(s.clone());
+        paths.insert(t.clone());
+        if fsutil::lmeta(&w, t).map(|m| m.is_dir()).unwrap_or(false) {
+            fsutil::walk(&w, t, &mut |rel, _| {
+                paths.insert(rel.to_string());
+                Ok(true)
+            })?;
         }
     }
+    let scan = if thin {
+        let copy = crate::repo::Temp { path: h.repo.p.scan_dir().join(ids::new_id()) };
+        crate::storage::create_subvolume(&copy.path)?;
+        #[cfg(target_os = "macos")]
+        crate::storage::copy_selected(&w, &copy.path, &paths)?;
+        copy
+    } else {
+        let scan = h.repo.scan(&line)?;
+        for (s, _) in &moves {
+            let stage = h.repo.ensure_full_stage(&line)?;
+            if fsutil::lmeta(&stage, s).map(|m| m.is_dir()).unwrap_or(false) {
+                fsutil::remove_entry(&stage, s)?;
+            }
+        }
+        scan
+    };
     stage_paths(&h.repo, &line, &scan.path, &paths)?;
     if a.has("-v") {
         for (s, t) in &moves {
@@ -669,7 +720,7 @@ pub fn apply(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     if a.has("--stat") || a.has("--numstat") {
         let mode = if a.has("--stat") { "--stat" } else { "--numstat" };
-        let out = run_git_apply(Path::new("/"), &patch, &[mode.to_string()], ctx.caller.uid)?;
+        let out = run_git_apply(ctx, Path::new("/"), &patch, &[mode.to_string()], ctx.caller.uid)?;
         ctx.print(&out);
         return Ok(0);
     }
@@ -691,14 +742,14 @@ pub fn apply(ctx: &Ctx, args: &[String]) -> Result<i32> {
     for (t, uid) in &targets {
         let mut f = flags.clone();
         f.push("--check".into());
-        run_git_apply(t, &patch, &f, *uid)?;
+        run_git_apply(ctx, t, &patch, &f, *uid)?;
     }
     if a.has("--check") {
         return Ok(0);
     }
     let touched = patch_paths(&patch);
     for (t, uid) in &targets {
-        run_git_apply(t, &patch, &flags, *uid)?;
+        run_git_apply(ctx, t, &patch, &flags, *uid)?;
         if *uid == 0 {
             if let Some((u, g)) = own {
                 for p in &touched {
@@ -728,14 +779,21 @@ fn patch_paths(patch: &[u8]) -> Vec<String> {
     v
 }
 
-fn run_git_apply(dir: &Path, patch: &[u8], flags: &[String], uid: u32) -> Result<String> {
+fn run_git_apply(ctx: &Ctx, dir: &Path, patch: &[u8], flags: &[String], uid: u32) -> Result<String> {
     use std::io::Write;
     let mut c = std::process::Command::new("git");
     c.arg("apply").args(flags).arg("-").current_dir(dir);
-    let env = vec![
+    // A service may apply the staging tree as root. Never take executable or
+    // config paths from a different caller when doing that privileged work.
+    let mut env = if uid == ctx.caller.uid && uid == rustix::process::geteuid().as_raw() {
+        crate::privs::pick_env(ctx, &["PATH", "GIT_CONFIG_GLOBAL"])
+    } else {
+        Vec::new()
+    };
+    env.extend([
         ("GIT_CEILING_DIRECTORIES".to_string(), dir.parent().unwrap_or(Path::new("/")).to_string_lossy().into_owned()),
         ("GIT_DIR".to_string(), "/nonexistent-layr".to_string()),
-    ];
+    ]);
     crate::privs::command_as(&mut c, uid, &env)?;
     c.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     let mut ch = c.spawn()?;
@@ -789,6 +847,7 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
     h.repo.authorize_line(ctx, &line, op)?;
     let _lock = h.repo.p.lock()?;
     let line = h.repo.line(&line.id)?;
+    crate::repo::recover_cache_replacements(&h.repo.working(&line))?;
     if a.has("-a") && !stacked {
         let (st, scan, _it, _index) = h.repo.status(&line)?;
         let paths: BTreeSet<String> = st.unstaged.iter().map(|c| c.path.clone()).collect();
@@ -878,7 +937,10 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
             cleared.push(c.clone());
         }
     }
-    if let Err(e) = crate::secrets::check_between(ctx, &h.repo, &head_root, &new_root, &line.head) {
+    let secrets = crate::trace::span("secret check");
+    let checked = crate::secrets::check_between(ctx, &h.repo, &head_root, &new_root, &line.head);
+    drop(secrets);
+    if let Err(e) = checked {
         h.repo.discard_states(std::slice::from_ref(&state));
         return Err(e);
     }
@@ -892,13 +954,19 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
             target_head: line.head.clone(),
         })?;
     }
-    let rec = h.repo.move_head(ctx, "commit", &line, &state.id, vec![state.clone()], None, data);
+    let rec = {
+        let _t = crate::trace::span("move head");
+        h.repo.move_head(ctx, "commit", &line, &state.id, vec![state.clone()], None, data)
+    };
     rec?;
     #[cfg(target_os = "macos")]
     if let Some(p) = promotion.take() {
         p.finish()?;
     }
-    h.repo.drop_stage(&line)?;
+    {
+        let _t = crate::trace::span("drop stage");
+        h.repo.drop_stage(&line)?;
+    }
     if !a.has("-q") {
         let root = if parents_empty(&state) { " (root-state)" } else { "" };
         outln!(ctx, "[{}{} {}] {}", line.name, root, ids::short(&state.id), message.lines().next().unwrap_or(""));
@@ -1091,7 +1159,7 @@ pub fn restore_impl(
                 Some(s) => s,
                 None => continue,
             };
-            let root = repo.state_root(&sid)?;
+            let root = repo.state_src(&sid)?;
             if fsutil::lmeta(&root, &c.path).is_some() {
                 fsutil::copy_entry(&root, &c.path, &wdir, &c.path, repo.own(&line))?;
             } else {
@@ -1292,8 +1360,8 @@ pub fn stash(ctx: &Ctx, args: &[String]) -> Result<i32> {
             let rev = a.pos.first().cloned().unwrap_or_else(|| "park@{0}".into());
             let id = revs::resolve(repo, Some(&line), &rev)?;
             let s = repo.state(&id)?;
-            let parent = repo.state_root(&s.parents[0])?;
-            let root = repo.state_root(&id)?;
+            let parent = repo.state_src(&s.parents[0])?;
+            let root = repo.state_src(&id)?;
             let list = changes::file_changes(&parent, &root)?.into_iter().filter(|c| !skip_path(&c.path)).collect::<Vec<_>>();
             let fds = diff::file_diffs(&parent, &root, &list)?;
             if a.has("-p") {

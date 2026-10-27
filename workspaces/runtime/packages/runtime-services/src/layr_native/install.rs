@@ -217,6 +217,7 @@ fn install_unlocked(state_dir: &Path, source: &Path) -> Result<(), NativeLayrErr
     }
     let directory = state_dir.join(NATIVE_LAYR_DIRECTORY);
     fs::create_dir_all(directory.join("bin"))?;
+    let mut source_build_id = None;
     if source.join("manifest.json").exists() {
         let value: serde_json::Value =
             serde_json::from_slice(&fs::read(source.join("manifest.json"))?)
@@ -242,6 +243,7 @@ fn install_unlocked(state_dir: &Path, source: &Path) -> Result<(), NativeLayrErr
                 )));
             }
         }
+        source_build_id = value["revision"].as_str().map(str::to_owned);
     }
     let target = directory.join("build");
     let args = [
@@ -255,11 +257,15 @@ fn install_unlocked(state_dir: &Path, source: &Path) -> Result<(), NativeLayrErr
         "--target-dir",
         target.to_str().unwrap_or_default(),
     ];
+    let mut environment = vec![("CARGO_INCREMENTAL", "0")];
+    if let Some(build_id) = source_build_id.as_deref() {
+        environment.push(("LAYR_BUILD_ID", build_id));
+    }
     crate::bounded_child::run(crate::bounded_child::Request {
         program: std::ffi::OsStr::new("cargo"),
         git_directory: None,
         args: &args,
-        environment: &[("CARGO_INCREMENTAL", "0")],
+        environment: &environment,
         input: None,
         stdout_limit: 16 * 1024,
         stderr_limit: 64 * 1024,

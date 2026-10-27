@@ -37,6 +37,18 @@ fn text<'a>(record: &'a Value, key: &str) -> Result<&'a str> {
 
 /// Run only the Studio-owned binary. Ambient Layr and Git selectors never escape this store.
 pub fn run(state_dir: &Path, cwd: &Path, args: &[&str]) -> Result<String> {
+    let root = settings::root_from_cwd(cwd)
+        .map(Ok)
+        .unwrap_or_else(|| settings::selected_store(state_dir))?;
+    run_in_store(state_dir, &root, cwd, args)
+}
+
+pub(super) fn run_in_store(
+    state_dir: &Path,
+    root: &Path,
+    cwd: &Path,
+    args: &[&str],
+) -> Result<String> {
     // APFS clonefile traversal refuses symlink ancestors, including macOS /var and /tmp.
     let state_dir = CanonicalPath::existing(state_dir).map(CanonicalPath::into_path_buf)?;
     let binary = binary_path(&state_dir);
@@ -51,7 +63,7 @@ pub fn run(state_dir: &Path, cwd: &Path, args: &[&str]) -> Result<String> {
         "LAYR_SESSION",
     ];
     let variables: Vec<String> =
-        super::transport_environment(&state_dir, cfg!(target_os = "linux"))
+        super::transport_environment_in_store(&state_dir, root, cfg!(target_os = "linux"))
             .into_iter()
             .map(|(name, value)| format!("{name}={}", value.as_str().unwrap_or_default()))
             .collect();
@@ -116,6 +128,16 @@ pub fn operation(
     operation_with_preflight(state_dir, id, intent, || Ok(()), effect)
 }
 
+pub(super) fn operation_in_store(
+    state_dir: &Path,
+    root: &Path,
+    id: &str,
+    intent: &Value,
+    effect: impl FnOnce() -> Result<Value>,
+) -> Result<Value> {
+    operation_with_preflight_in_store(state_dir, root, id, intent, || Ok(()), effect)
+}
+
 pub(super) fn operation_with_preflight(
     state_dir: &Path,
     id: &str,
@@ -123,8 +145,20 @@ pub(super) fn operation_with_preflight(
     preflight: impl FnOnce() -> Result<()>,
     effect: impl FnOnce() -> Result<Value>,
 ) -> Result<Value> {
-    let _lock = lock(state_dir, id)?;
-    let folder = state_dir.join(NATIVE_LAYR_DIRECTORY).join("receipts");
+    let root = settings::selected_store(state_dir)?;
+    operation_with_preflight_in_store(state_dir, &root, id, intent, preflight, effect)
+}
+
+pub(super) fn operation_with_preflight_in_store(
+    state_dir: &Path,
+    root: &Path,
+    id: &str,
+    intent: &Value,
+    preflight: impl FnOnce() -> Result<()>,
+    effect: impl FnOnce() -> Result<Value>,
+) -> Result<Value> {
+    let _lock = lock(state_dir, &format!("{}:{id}", root.display()))?;
+    let folder = settings::metadata(state_dir, root).join("receipts");
     fs::create_dir_all(&folder)?;
     let path = folder.join(format!(
         "{}.json",
@@ -181,7 +215,7 @@ pub(super) fn operation_with_preflight(
     }
     let outcome = (|| {
         if let Some(project) = retry_import {
-            super::failed_import::discard(state_dir, project)?;
+            super::failed_import::discard_in_store(state_dir, root, project)?;
         }
         effect()
     })();
@@ -205,7 +239,7 @@ pub(super) fn save_imported_tree(state: &Path, cwd: &Path, message: &str) -> Res
 
 pub fn project_id(record: &Value) -> Result<String> {
     if let Some(id) = record["layrProjectId"].as_str() {
-        if id.len() == PROJECT_ID_HEX_BYTES && id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if super::mapping::valid_name(id) {
             return Ok(id.into());
         }
         return Err(NativeLayrError::Refused(
@@ -219,16 +253,29 @@ pub fn project_id(record: &Value) -> Result<String> {
 }
 
 pub fn main_path(state_dir: &Path, project: &str) -> PathBuf {
-    store_path(state_dir)
-        .join("projects")
-        .join(project)
-        .join("lines/main")
+    main_path_in_store(&store_path(state_dir), project)
+}
+
+pub(super) fn main_path_in_store(root: &Path, project: &str) -> PathBuf {
+    root.join("projects").join(project).join("lines/main")
 }
 
 pub(super) fn admit_git_policy(state_dir: &Path, project: &str, without_git: bool) -> Result<()> {
-    let ready_path = state_dir
-        .join(NATIVE_LAYR_DIRECTORY)
-        .join(format!("{project}.json"));
+    admit_git_policy_in_store(
+        state_dir,
+        &settings::selected_store(state_dir)?,
+        project,
+        without_git,
+    )
+}
+
+fn admit_git_policy_in_store(
+    state_dir: &Path,
+    root: &Path,
+    project: &str,
+    without_git: bool,
+) -> Result<()> {
+    let ready_path = settings::metadata(state_dir, root).join(format!("{project}.json"));
     if without_git && ready_path.exists() {
         let receipt: Value = serde_json::from_slice(&fs::read(&ready_path)?)
             .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
@@ -248,16 +295,31 @@ pub(super) fn prepare_files_with_git_policy(
     record: &Value,
     without_git: bool,
 ) -> Result<Value> {
-    let project = project_id(record)?;
-    let main = main_path(state_dir, &project);
-    let ready_path = state_dir
-        .join(NATIVE_LAYR_DIRECTORY)
-        .join(format!("{project}.json"));
-    admit_git_policy(state_dir, &project, without_git)?;
-    let plan = if !ready_path.exists() {
+    let root = settings::record_store(state_dir, record)?;
+    let project = super::mapping::resolve(state_dir, &root, record)?;
+    let main = main_path_in_store(&root, &project);
+    let metadata = settings::metadata(state_dir, &root);
+    let ready_path = metadata.join(format!("{project}.json"));
+    if record["layrReady"] == true {
+        associated_cwd(state_dir, record)?;
+    }
+    if without_git && root != store_path(state_dir) {
+        return Err(NativeLayrError::Refused(
+            "The --without-git option cannot change a shared project".into(),
+        ));
+    }
+    admit_git_policy_in_store(state_dir, &root, &project, without_git)?;
+    let mapped = !ready_path.exists()
+        && main.is_dir()
+        && project != studio_runtime_store::sha256_hex(text(record, "hostProjectPath")?.as_bytes());
+    if mapped {
+        let source = CanonicalPath::existing(text(record, "hostProjectPath")?)?.into_path_buf();
+        super::mapping::verify(&root, &source, &project)?;
+    }
+    let plan = if !ready_path.exists() && !mapped {
         let source = CanonicalPath::existing(text(record, "hostProjectPath")?)
             .map(CanonicalPath::into_path_buf)?;
-        if state_dir.starts_with(&source) {
+        if state_dir.starts_with(&source) || root.starts_with(&source) {
             return Err(NativeLayrError::Refused(
                 "The Studio state directory must be outside the project".into(),
             ));
@@ -276,8 +338,21 @@ pub(super) fn prepare_files_with_git_policy(
         None
     };
     super::install::ensure_binary(state_dir)?;
-    let _project_lock = lock(state_dir, &format!("project:{project}"))?;
-    admit_git_policy(state_dir, &project, without_git)?;
+    let version_warning = super::versions::verify(state_dir, &root)?;
+    fs::create_dir_all(&metadata)?;
+    let _project_lock = lock(state_dir, &format!("{}:project:{project}", root.display()))?;
+    admit_git_policy_in_store(state_dir, &root, &project, without_git)?;
+    if mapped && !ready_path.exists() {
+        let source = CanonicalPath::existing(text(record, "hostProjectPath")?)?.into_path_buf();
+        let identity = super::mapping::verify(&root, &source, &project)?;
+        let receipt = json!({"projectId":project,"source":source,"mainPath":main,"storeRoot":root,"mapped":true,"withoutGit":false,"identity":identity});
+        crate::atomic_file::replace(
+            &ready_path,
+            receipt.to_string().as_bytes(),
+            Some(0o600),
+            true,
+        )?;
+    }
     if !ready_path.exists() {
         let (source, plan) =
             plan.ok_or_else(|| NativeLayrError::Refused("Native import readiness changed".into()))?;
@@ -285,8 +360,9 @@ pub(super) fn prepare_files_with_git_policy(
         if without_git {
             input["withoutGit"] = json!(true);
         }
-        operation_with_preflight(
+        operation_with_preflight_in_store(
             state_dir,
+            &root,
             &format!("import:{project}"),
             &input,
             || plan.size.preflight(&state_dir.join(NATIVE_LAYR_DIRECTORY)),
@@ -297,8 +373,9 @@ pub(super) fn prepare_files_with_git_policy(
                 if staging.path().join(".git").is_dir() {
                     super::import::validate_private_git(staging.path())?;
                 }
-                run(
+                run_in_store(
                     state_dir,
+                    &root,
                     state_dir,
                     &[
                         "init",
@@ -324,6 +401,13 @@ pub(super) fn prepare_files_with_git_policy(
             },
         )?;
     }
+    let imported: Value = serde_json::from_slice(&fs::read(&ready_path)?)
+        .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
+    let (start, cache_warning) = if imported["mapped"] == true {
+        super::mapping::cached_main_start(state_dir, &main)?
+    } else {
+        ("main".to_owned(), None)
+    };
     let reviewer = record["role"] == "reviewer";
     let lead = record["isLead"] == true;
     let line = if lead || reviewer {
@@ -339,19 +423,28 @@ pub(super) fn prepare_files_with_git_policy(
         .ok_or_else(|| NativeLayrError::Refused("Invalid main path".into()))?
         .join(&line);
     if !lead && !reviewer {
-        operation(
+        operation_in_store(
             state_dir,
+            &root,
             &format!("line:{}", text(record, "id")?),
             &json!({"project":project,"line":line}),
             || {
-                run(state_dir, &main, &["line", "new", &line, "main"])?;
+                run(state_dir, &main, &["line", "new", &line, &start])?;
                 Ok(json!({"path":cwd,"line":line}))
             },
         )?;
     }
     super::git_guard::install_hook(state_dir, &cwd)?;
     let state = run(state_dir, &cwd, &["rev-parse", "head"])?;
-    let mut result = json!({"cwd":cwd,"layrProjectId":project,"layrLine":line,"layrStateId":state,"layrReady":true});
+    let mut result = json!({"cwd":cwd,"layrProjectId":project,"layrLine":line,"layrStateId":state,"layrReady":true,"layrStoreRoot":root});
+    if let Some(warning) = &version_warning {
+        eprintln!("Native Layr warning: {warning}");
+    }
+    result["layrVersionWarning"] = json!(version_warning);
+    if let Some(warning) = &cache_warning {
+        eprintln!("Native Layr warning: {warning}");
+    }
+    result["layrCacheWarning"] = json!(cache_warning);
     if reviewer {
         let scratch = state_dir.join(NATIVE_LAYR_DIRECTORY).join("scratch").join(
             studio_runtime_store::sha256_hex(text(record, "id")?.as_bytes()),
@@ -459,7 +552,8 @@ pub(super) fn associated_cwd(state_dir: &Path, record: &Value) -> Result<PathBuf
             "The native Layr line association changed".into(),
         ));
     }
-    let expected = main_path(state_dir, &project)
+    let root = settings::record_store(state_dir, record)?;
+    let expected = main_path_in_store(&root, &project)
         .parent()
         .ok_or_else(|| NativeLayrError::Refused("Invalid main path".into()))?
         .join(expected_line);
@@ -506,8 +600,9 @@ fn working_state(state_dir: &Path, cwd: &Path) -> Result<String> {
 
 pub fn save(state_dir: &Path, record: &Value, request_id: &str) -> Result<Value> {
     let cwd = associated_cwd(state_dir, record)?;
-    operation(
+    operation_in_store(
         state_dir,
+        &settings::record_store(state_dir, record)?,
         request_id,
         &json!({"agent":record["id"],"cwd":cwd,"kind":"save"}),
         || {
@@ -526,8 +621,10 @@ pub fn save(state_dir: &Path, record: &Value, request_id: &str) -> Result<Value>
 }
 
 pub fn remove(state_dir: &Path, record: &Value, request_id: &str) -> Result<Value> {
-    operation(
+    let root = settings::record_store(state_dir, record)?;
+    operation_in_store(
         state_dir,
+        &root,
         request_id,
         &json!({"agent":record["id"],"line":record["layrLine"],"kind":"remove"}),
         || {
@@ -548,12 +645,12 @@ pub fn remove(state_dir: &Path, record: &Value, request_id: &str) -> Result<Valu
                 );
                 run(
                     state_dir,
-                    &main_path(state_dir, &project),
+                    &main_path_in_store(&root, &project),
                     &["ref", "set", &archive_ref, &state],
                 )?;
                 run(
                     state_dir,
-                    &main_path(state_dir, &project),
+                    &main_path_in_store(&root, &project),
                     &["line", "delete", "-D", line],
                 )?;
                 return Ok(json!({"state":"removed","archiveRef":archive_ref,"stateId":state}));
@@ -584,6 +681,10 @@ pub fn merge(
     if lead["isLead"] != true
         || worker["role"] == "reviewer"
         || lead["layrProjectId"] != worker["layrProjectId"]
+        || !settings::same_root(
+            &settings::record_store(state_dir, lead)?,
+            &settings::record_store(state_dir, worker)?,
+        )
     {
         return Err(NativeLayrError::Refused(
             "Invalid native Layr merge owner".into(),
@@ -591,8 +692,9 @@ pub fn merge(
     }
     let main = associated_cwd(state_dir, lead)?;
     associated_cwd(state_dir, worker)?;
-    operation(
+    operation_in_store(
         state_dir,
+        &settings::record_store(state_dir, lead)?,
         request_id,
         &json!({"lead":lead["id"],"worker":worker["id"],"revision":revision}),
         || {

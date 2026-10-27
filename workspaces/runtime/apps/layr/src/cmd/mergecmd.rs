@@ -255,7 +255,7 @@ fn check_paths(ctx: &Ctx, repo: &Repo, line: &Line, rule: Option<&crate::access:
         _ => return Ok(()),
     };
     let role = repo.policy().role(&Repo::who(ctx));
-    for c in changes::file_changes(&repo.state_root(head)?, &repo.state_root(result)?)? {
+    for c in changes::file_changes(&repo.state_src(head)?, &repo.state_src(result)?)? {
         for p in [Some(c.path.clone()), c.old_path.clone()].into_iter().flatten() {
             let requirement =
                 layr_model::protection::path_requirements([p.as_str()], role, |path| rule.role_for_path(path)).remove(0);
@@ -306,7 +306,16 @@ fn check_approvals(
         },
         |uid| pol.may_approve(rule, &crate::access::Who::of(uid, crate::ctx::Caller::from_uid(uid).gid)),
     )?;
-    if (counted.len() as u32) < rule.approvals {
+    let count = counted.len()
+        + crate::access::person_approval_count(
+            repo,
+            &pol,
+            rule,
+            Some(head),
+            theirs,
+            layr_model::protection::ApprovalMode::Merge,
+        )?;
+    if (count as u32) < rule.approvals {
         let from: Vec<String> = rule.approvers.iter().map(|k| crate::access::show_principal(k)).collect();
         return Err(exit(
             1,
@@ -316,7 +325,7 @@ fn check_approvals(
                 ids::short(theirs),
                 rule.approvals,
                 if from.is_empty() { "maintainers".to_string() } else { from.join(" and ") },
-                counted.len()
+                count
             ),
         ));
     }
@@ -428,8 +437,8 @@ fn local_paths(repo: &Repo, line: &Line, st: &crate::repo::Status) -> Result<std
 }
 
 fn print_stat(ctx: &Ctx, repo: &Repo, from: &str, to: &str) -> Result<()> {
-    let a = repo.state_root(from)?;
-    let b = repo.state_root(to)?;
+    let a = repo.state_src(from)?;
+    let b = repo.state_src(to)?;
     let list: Vec<changes::Change> = changes::file_changes(&a, &b)?.into_iter().filter(|c| !skip_path(&c.path)).collect();
     let fds = diff::file_diffs(&a, &b, &list)?;
     ctx.print(&diff::stat(&fds, 80));
