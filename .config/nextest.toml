@@ -80,7 +80,10 @@ inherits = "ci"
 # Shutdown tail and status witnesses: Keep final frames and exact replies during bounded shutdown. Read only team monitors outside the writer lane.
 # Supervisor health witnesses: Accept the maintained protocol and preserve exact handles; reject foreign identity and blocked recovery.
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
+# Retained watcher registrations and analytics connections avoid repeated tree walks and opens.
 default-filter = '''
+    (package(=studio-runtime-server) & kind(bin) & binary(=studio-runtime-server) & test(history_watch_)) |
+    (package(=studio-runtime-services) & kind(lib) & (test(analytics_requests_reuse_the_store_reader_connection) | test(profile_invalidation_forces_one_full_discovery_scan) | test(usage_reconciliation_prefers_final_recorded_response_to_later_legacy_rows))) |
     (package(=studio-runtime-services) & kind(lib) & (test(complaint_names_preserve_missing_and_null) | test(snapshot_rechecks_unprojected_and_volatile_agent_fields) | test(message_send_agent_rows_are_bounded) | test(message_send_does_not_scan_agent_directory) | test(message_ignores_unrelated_invalid_agent) | test(message_ignores_unrelated_invalid_project) | test(message_ignores_invalid_parent_project_outside_sender_cwd) | test(message_delivers_between_user_grouped_leads) | test(message_refuses_unknown_foreign_and_deleted_targets) | test(same_team_target_is_resolved_before_message_validation_without_project_reads))) |
     (package(=studio-runtime-store) & kind(lib) & test(message_records_use_both_indexes_and_keep_row_order)) |
     (package(=studio-runtime-store) & kind(lib) & test(scoped_fingerprint_ignores_offscreen_rows_and_tracks_moves_and_deletions)) |
@@ -313,6 +316,8 @@ platform = 'cfg(target_os = "linux")'
 # Supervisor health witnesses: Accept the maintained protocol and preserve exact handles; reject foreign identity and blocked recovery.
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 default-filter = '''
+    (package(=studio-runtime-server) & kind(bin) & binary(=studio-runtime-server) & test(history_watch_)) |
+    (package(=studio-runtime-services) & kind(lib) & (test(analytics_requests_reuse_the_store_reader_connection) | test(profile_invalidation_forces_one_full_discovery_scan) | test(usage_reconciliation_prefers_final_recorded_response_to_later_legacy_rows))) |
     (package(=studio-runtime-services) & kind(lib) & (test(complaint_names_preserve_missing_and_null) | test(snapshot_rechecks_unprojected_and_volatile_agent_fields) | test(message_send_agent_rows_are_bounded) | test(message_send_does_not_scan_agent_directory) | test(message_ignores_unrelated_invalid_agent) | test(message_ignores_unrelated_invalid_project) | test(message_ignores_invalid_parent_project_outside_sender_cwd) | test(message_delivers_between_user_grouped_leads) | test(message_refuses_unknown_foreign_and_deleted_targets) | test(same_team_target_is_resolved_before_message_validation_without_project_reads))) |
     (package(=studio-runtime-store) & kind(lib) & test(message_records_use_both_indexes_and_keep_row_order)) |
     (package(=studio-runtime-store) & kind(lib) & test(scoped_fingerprint_ignores_offscreen_rows_and_tracks_moves_and_deletions)) |

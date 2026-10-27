@@ -6,12 +6,22 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
 use studio_runtime_schema::provider_kind::ProviderKind;
-use studio_runtime_store::analytics::{self as repo, AnalyticsRepository};
+use studio_runtime_store::analytics::{self as repo};
 use studio_runtime_store::sha256_hex;
 use studio_runtime_store::{Connection, RuntimeStore};
 
 /// Produce the route's JSON representation using one read-only SQLite snapshot.
 pub fn read(store: &RuntimeStore, options: &AnalyticsOptions) -> Result<Value, AnalyticsError> {
+    let root = store.root().to_owned();
+    let options = options.clone();
+    store.with_cost_reader(move |db| read_on_reader(db, &root, &options))
+}
+
+fn read_on_reader(
+    db: &mut Connection,
+    root: &Path,
+    options: &AnalyticsOptions,
+) -> Result<Value, AnalyticsError> {
     let scope = options.scope.as_deref().unwrap_or("agent");
     if !matches!(scope, "agent" | "team" | "all") {
         return Err(AnalyticsError::InvalidRequest("Unknown analytics scope"));
@@ -23,8 +33,6 @@ pub fn read(store: &RuntimeStore, options: &AnalyticsOptions) -> Result<Value, A
             "Analytics start is after end",
         ));
     }
-    let repo = AnalyticsRepository::new(store.root());
-    let mut db = repo.open_read_only()?;
     let transaction = db.transaction()?;
     let value = match options.view.as_deref() {
         Some("detail") => repo::detail(&transaction, options, scope)?,
@@ -34,7 +42,7 @@ pub fn read(store: &RuntimeStore, options: &AnalyticsOptions) -> Result<Value, A
                 "Select one agent for message metadata",
             ));
         }
-        Some("message-info") => message_info(&transaction, store.root(), options)?,
+        Some("message-info") => message_info(&transaction, root, options)?,
         Some(_) => return Err(AnalyticsError::InvalidRequest("Unknown analytics view")),
         None => {
             let mut report = repo::rollup(&transaction, options, scope)?;
@@ -272,6 +280,26 @@ fn signature(value: impl serde::Serialize) -> Result<String, serde_json::Error> 
 mod provider_identity_tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn analytics_requests_reuse_the_store_reader_connection() {
+        let root = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        repo::take_cost_read_witness();
+        let options = AnalyticsOptions {
+            scope: Some("all".into()),
+            ..Default::default()
+        };
+        let first = read(&store, &options).expect("first analytics request");
+        let second = read(&store, &options).expect("second analytics request");
+        assert_eq!(first["summary"], second["summary"], "unchanged report");
+        let witness = repo::take_cost_read_witness();
+        assert_eq!(
+            (witness.opens, witness.attaches),
+            (0, 0),
+            "opens and attaches after store initialization"
+        );
+    }
 
     #[tokio::test]
     async fn provider_identity_message_info_preserves_typed_facts_and_canonical_account_metadata() {
