@@ -36,6 +36,27 @@ impl From<serde_json::Error> for CallbackError {
         Self::Invalid("Invalid callback object")
     }
 }
+impl From<studio_runtime_store::outbox::OutboxError> for CallbackError {
+    fn from(error: studio_runtime_store::outbox::OutboxError) -> Self {
+        use studio_runtime_store::outbox::OutboxError;
+        match error {
+            OutboxError::Sql(error) => error.into(),
+            OutboxError::Json(_) => Self::Stored("callback outbox payload".into()),
+            OutboxError::Conflict(_) => Self::Conflict,
+        }
+    }
+}
+impl From<studio_runtime_store::request_results::RequestResultError> for CallbackError {
+    fn from(error: studio_runtime_store::request_results::RequestResultError) -> Self {
+        use studio_runtime_store::request_results::RequestResultError;
+        match error {
+            RequestResultError::Sql(error) => error.into(),
+            RequestResultError::Json(_) => Self::Stored("callback result payload".into()),
+            RequestResultError::Conflict { .. } => Self::Conflict,
+            RequestResultError::Identity(_) => Self::Unknown,
+        }
+    }
+}
 
 /// Transport-owned values, never accepted from tool arguments. The account
 /// worker must compare generation/connection to its live session before calling.
@@ -43,6 +64,7 @@ impl From<serde_json::Error> for CallbackError {
 pub struct CallbackContext {
     pub agent: String,
     pub account: String,
+    pub stream_id: String,
     pub connection: String,
     pub generation: u64,
     pub epoch: u64,
@@ -133,6 +155,16 @@ pub struct ReplyIdentity {
     pub attempt: String,
 }
 impl ReplyIdentity {
+    pub(super) fn key_context_matches(&self, context: &CallbackContext) -> bool {
+        let saved = &self.context;
+        saved.account == context.account
+            && saved.stream_id == context.stream_id
+            && saved.generation == context.generation
+            && saved.agent == context.agent
+            && saved.epoch == context.epoch
+            && saved.thread == context.thread
+            && saved.turn == context.turn
+    }
     pub(super) fn new(context: &CallbackContext, rpc_id: &RequestId) -> Self {
         Self {
             context: context.clone(),
@@ -152,7 +184,11 @@ impl ReplyIdentity {
                 json!([
                     self.context.account,
                     self.context.generation,
-                    self.context.connection,
+                    self.context.stream_id,
+                    self.context.agent,
+                    self.context.epoch,
+                    self.context.thread,
+                    self.context.turn,
                     self.rpc_id
                 ])
                 .to_string()
@@ -240,5 +276,33 @@ impl Input {
             return Err(CallbackError::Stale);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+
+    #[test]
+    fn callback_origin_survives_reattach_and_fences_generation_and_agent() {
+        let mut context = CallbackContext {
+            agent: "agent".into(),
+            account: "account".into(),
+            stream_id: "account".into(),
+            connection: "first-attachment".into(),
+            generation: 7,
+            epoch: 2,
+            thread: "thread".into(),
+            turn: "turn".into(),
+        };
+        let rpc = RequestId::String("opaque-rpc".into());
+        let origin = ReplyIdentity::new(&context, &rpc).key();
+        context.connection = "second-attachment".into();
+        assert_eq!(origin, ReplyIdentity::new(&context, &rpc).key());
+        context.generation += 1;
+        assert_ne!(origin, ReplyIdentity::new(&context, &rpc).key());
+        context.generation -= 1;
+        context.agent = "another-agent".into();
+        assert_ne!(origin, ReplyIdentity::new(&context, &rpc).key());
     }
 }
