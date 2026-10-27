@@ -115,6 +115,7 @@ export default {
       "src/uiTeamScaleAudit.test.ts",
       "src/verifyRustChatLifecycle.test.ts",
       "src/components/agents/AgentProgress.test.ts",
+      "src/components/agents/SubagentConcurrencyControl.test.ts",
       "src/components/agents/ExecutionSettings.receipt.test.ts",
       "src/components/agents/ExecutionSettings.test.ts",
       "src/components/agents/WorkerModelPicker.test.ts",
