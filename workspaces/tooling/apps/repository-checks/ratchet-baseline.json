@@ -1,10 +1,6 @@
 {
   "generated-types": [
     {
-      "file": "workspaces/client/apps/web/src/nativeCommands.ts",
-      "fingerprint": "01b572c5d7b7f9a3ea1e8e9e0d13490f8c779d551cfac5e3164ce4c406f0cfb8:0"
-    },
-    {
       "file": "workspaces/client/apps/web/src/sync/uiPreferenceMerge.ts",
       "fingerprint": "ae481c5b2cc4966b1415852f2f6c9a1130650b78a46da47d1471e49bed9485fe:0"
     }
