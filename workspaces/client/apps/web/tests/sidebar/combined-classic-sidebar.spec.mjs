@@ -1,5 +1,308 @@
 import { test, expect } from "../playwright.mjs";
 import { fixture } from "../servers/multi-server-fixture.mjs";
+import { sidebarParityFixture } from "./sidebar-parity-fixture.mjs";
+
+for (const combined of [false, true]) {
+  test(`the sidebar drawer preserves filter, selection, focus, and desktop preference: ${combined ? "combined" : "direct"}`, async ({
+    page,
+    context,
+  }, testInfo) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const f = await sidebarParityFixture(context, { paired: combined });
+    try {
+      const sidebar = await f.open(page, { combined });
+      const rail = sidebar.getByRole("separator", {
+        name: "Conversation sidebar width",
+      });
+      await rail.press("End");
+      await page.evaluate(() => document.fonts.ready);
+      const fitBoundary =
+        Number(await rail.getAttribute("aria-valuemin")) +
+        (await page.evaluate(() => {
+          const style = getComputedStyle(document.documentElement);
+          return (
+            parseFloat(style.getPropertyValue("--layout-conversation-min")) *
+            parseFloat(style.fontSize)
+          );
+        }));
+      const preferred = await sidebar.evaluate(
+        (node) => node.getBoundingClientRect().width,
+      );
+      const toggle = page.getByRole("button", {
+        name: combined ? "Servers and chats" : "Toggle conversations",
+        exact: true,
+      });
+      for (const width of [320, 360, 390, 430]) {
+        await page.setViewportSize({ width, height: 844 });
+        await toggle.click();
+        await expect(sidebar).toHaveAttribute("data-presentation", "drawer");
+        if (width === 320)
+          await page.screenshot({
+            path: testInfo.outputPath("sidebar-320.png"),
+          });
+        await sidebar.getByPlaceholder("Filter sidebar").fill("Root A");
+        await sidebar
+          .getByRole("button", { name: "Close conversations", exact: true })
+          .click();
+        await expect(sidebar).toBeHidden();
+        await expect(toggle).toBeFocused();
+        await toggle.click();
+        await expect(sidebar.getByPlaceholder("Filter sidebar")).toHaveValue(
+          "Root A",
+        );
+        await page.evaluate(() => {
+          window.__sidebarReturnedFocus = false;
+          const listener = (event) => {
+            const trigger = document.querySelector(
+              "#sidebar-toggle, .server-mobile-toggle",
+            );
+            if (
+              trigger?.contains(event.target) &&
+              document.querySelector("#sidebar")?.getBoundingClientRect()
+                .width > 0
+            )
+              window.__sidebarReturnedFocus = true;
+          };
+          document.addEventListener("focusin", listener, { once: false });
+        });
+        await sidebar
+          .getByRole("button", { name: "Local Root A" })
+          .first()
+          .click();
+        await expect(sidebar).toBeHidden();
+        // The combined caller then transfers focus to the selected server's composer.
+        expect(await page.evaluate(() => window.__sidebarReturnedFocus)).toBe(
+          true,
+        );
+        expect(
+          await page.evaluate(
+            () =>
+              document
+                .querySelector("#sidebar")
+                ?.contains(document.activeElement) ?? false,
+          ),
+        ).toBe(false);
+      }
+      await page.setViewportSize({
+        width: Math.ceil(fitBoundary),
+        height: 900,
+      });
+      await expect(rail).toBeVisible();
+      await page.setViewportSize({
+        width: Math.ceil(fitBoundary) - 1,
+        height: 900,
+      });
+      await toggle.click();
+      await expect(sidebar).toHaveAttribute("data-presentation", "drawer");
+      await sidebar
+        .getByRole("button", { name: "Close conversations", exact: true })
+        .click();
+      await expect(toggle).toBeFocused();
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await expect(rail).toBeVisible();
+      await expect
+        .poll(() =>
+          sidebar.evaluate((node) => node.getBoundingClientRect().width),
+        )
+        .toBe(preferred);
+      if (!combined) {
+        await sidebar
+          .getByRole("button", { name: "Close conversations", exact: true })
+          .click();
+        await page.setViewportSize({
+          width: Math.ceil(fitBoundary) - 1,
+          height: 900,
+        });
+        await page.reload();
+        await expect(sidebar).toBeHidden();
+        await toggle.click();
+        await expect(sidebar).toBeVisible();
+        await expect(sidebar).toHaveAttribute("data-presentation", "drawer");
+      }
+    } finally {
+      await f.close();
+    }
+  });
+}
+
+test("the direct sidebar bounds pointer resize, cancels lost capture, and measures large text", async ({
+  page,
+  context,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const f = await sidebarParityFixture(context, { paired: false });
+  try {
+    const sidebar = await f.open(page, { combined: false });
+    const rail = sidebar.getByRole("separator", {
+      name: "Conversation sidebar width",
+    });
+    const drag = async (x) => {
+      const box = await rail.boundingBox();
+      await page.mouse.move(box.x + box.width / 2, box.y + 80);
+      await page.mouse.down();
+      await page.mouse.move(x, box.y + 80);
+      await page.mouse.up();
+    };
+    await drag(0);
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) =>
+          Math.round(node.getBoundingClientRect().width),
+        ),
+      )
+      .toBe(Number(await rail.getAttribute("aria-valuemin")));
+    await drag(1440);
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) =>
+          Math.round(node.getBoundingClientRect().width),
+        ),
+      )
+      .toBe(Number(await rail.getAttribute("aria-valuemax")));
+    const before = await sidebar.evaluate(
+      (node) => node.getBoundingClientRect().width,
+    );
+    const storedKey = await page.evaluate(() =>
+      Object.keys(localStorage).find((key) =>
+        key.startsWith("studio-sidebar-width:"),
+      ),
+    );
+    const box = await rail.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + 80);
+    await page.mouse.down();
+    await page.mouse.move(500, box.y + 80);
+    await rail.evaluate((node) =>
+      node.dispatchEvent(
+        new PointerEvent("lostpointercapture", { bubbles: true, pointerId: 1 }),
+      ),
+    );
+    await page.mouse.up();
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) => node.getBoundingClientRect().width),
+      )
+      .toBe(before);
+    await page.addStyleTag({
+      content:
+        ":root { font-size: 20px !important } #sidebar .brand { font-size: 40px !important }",
+    });
+    await rail.press("Home");
+    await expect.poll(() => rail.getAttribute("aria-valuemin")).not.toBe("208");
+    expect(
+      await sidebar.locator(".sidebar-header").evaluate((header) => {
+        const boxes = [...header.children].map((child) =>
+          child.getBoundingClientRect(),
+        );
+        return boxes.every(
+          (box) =>
+            box.left >= header.getBoundingClientRect().left &&
+            box.right <= header.getBoundingClientRect().right,
+        );
+      }),
+    ).toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath("sidebar-large-text.png"),
+    });
+    await expect
+      .poll(async () => {
+        const side = await sidebar.boundingBox();
+        const bar = await page
+          .locator(".terminal-dock:not(.is-open)")
+          .boundingBox();
+        return Math.round(side.width) - Math.round(bar.width);
+      })
+      .toBe(0);
+    const keys = await page.evaluate(() =>
+      Object.keys(localStorage).filter((key) =>
+        key.startsWith("studio-sidebar-width:"),
+      ),
+    );
+    expect(keys).toHaveLength(0);
+    await page.evaluate(
+      (key) => localStorage.setItem(key, "invalid JSON"),
+      storedKey,
+    );
+    await page.reload();
+    await expect(rail).toBeVisible();
+    const defaultWidth = await page.evaluate(() => {
+      const style = getComputedStyle(document.documentElement);
+      return (
+        parseFloat(style.getPropertyValue("--layout-sidebar-preferred")) *
+        parseFloat(style.fontSize)
+      );
+    });
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) => node.getBoundingClientRect().width),
+      )
+      .toBe(defaultWidth);
+  } finally {
+    await f.close();
+  }
+});
+
+test("the combined sidebar resizes, cancels, resets, and reports its effective width", async ({
+  page,
+  context,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const f = await sidebarParityFixture(context);
+  try {
+    const sidebar = await f.open(page);
+    const rail = sidebar.getByRole("separator", {
+      name: "Conversation sidebar width",
+    });
+    await expect(rail).toBeVisible();
+    const initial = await sidebar.evaluate(
+      (node) => node.getBoundingClientRect().width,
+    );
+    await rail.focus();
+    await rail.press("ArrowRight");
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) => node.getBoundingClientRect().width),
+      )
+      .toBeGreaterThan(initial);
+    const preferred = await sidebar.evaluate(
+      (node) => node.getBoundingClientRect().width,
+    );
+    await page.setViewportSize({ width: 880, height: 900 });
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) => node.getBoundingClientRect().width),
+      )
+      .toBeLessThan(preferred);
+    const bar = page.locator(".shell-terminal-bar");
+    await expect
+      .poll(async () => Math.round((await bar.boundingBox()).width))
+      .toBe(Math.round((await sidebar.boundingBox()).width));
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) => node.getBoundingClientRect().width),
+      )
+      .toBe(preferred);
+    const box = await rail.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + 80);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 150, box.y + 80);
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) => node.getBoundingClientRect().width),
+      )
+      .toBe(preferred);
+    await rail.press("Home");
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) => node.getBoundingClientRect().width),
+      )
+      .toBe(initial);
+  } finally {
+    await f.close();
+  }
+});
 
 for (const [theme, viewport] of [
   ["light", { width: 1440, height: 900 }],

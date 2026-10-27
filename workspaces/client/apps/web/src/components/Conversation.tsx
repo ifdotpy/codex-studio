@@ -1,5 +1,12 @@
 import { randomUUID } from "../uuid";
+import { TranscriptTitleBar } from "./TranscriptTitleBar";
+import type { ReactNode } from "react";
 import { IdleCompactionNotice } from "./IdleCompactionNotice";
+import {
+  isCompactTools,
+  resolveLayoutLength,
+} from "../layout/deriveWorkspaceLayout";
+import { layoutQueries } from "../layout/layout-contract.generated";
 import { MAX_TURN_ATTACHMENTS } from "../generated/sharedValues";
 import { DeliveryMoment } from "../generated/deliveryMoment";
 import { useSendingMessageRemoval } from "./useSendingMessageRemoval";
@@ -157,6 +164,7 @@ function FollowLatest(p: {
   return (
     <div className="jump-slot">
       <Button
+        type="button"
         id="jump-latest"
         className="jump"
         variant="default"
@@ -170,13 +178,6 @@ function FollowLatest(p: {
   );
 }
 
-const compactToolsBreakpoint = "(max-width: 760px)";
-const compactToolsWorkspaceWidthPx = 900;
-const compactToolsFontThresholdPx = 20;
-const compactToolsMenuMaxWidthPx = 360;
-const compactToolsMenuViewportGutterPx = 8;
-const compactToolsMenuGapPx = 4;
-
 function useCompactHeaderTools() {
   const isCompact = () => {
     const fontSize = Number.parseFloat(
@@ -185,19 +186,18 @@ function useCompactHeaderTools() {
       ),
     );
     const workspaceWidth =
-      document.querySelector<HTMLElement>(".workspace")?.clientWidth ??
-      window.innerWidth;
+      document.querySelector<HTMLElement>(".workspace")?.getBoundingClientRect()
+        .width ?? window.innerWidth;
     return (
-      window.matchMedia(compactToolsBreakpoint).matches ||
-      fontSize >= compactToolsFontThresholdPx ||
-      workspaceWidth < compactToolsWorkspaceWidthPx
+      window.matchMedia(layoutQueries.navigationCompact).matches ||
+      isCompactTools(workspaceWidth, fontSize)
     );
   };
   const [compact, setCompact] = useState(() =>
     typeof window === "undefined" ? false : isCompact(),
   );
   useEffect(() => {
-    const viewport = window.matchMedia(compactToolsBreakpoint);
+    const viewport = window.matchMedia(layoutQueries.navigationCompact);
     const workspace = document.querySelector<HTMLElement>(".workspace");
     const update = () => setCompact(isCompact());
     const preferences = new MutationObserver(update);
@@ -224,6 +224,11 @@ export default function Conversation(p: {
   id: string | null;
   visible?: boolean;
   projectName?: string;
+  headerToolsInMenu?: boolean;
+  onRailToolsChange?: (tools: ReactNode) => void;
+  transcriptHeading?: ReactNode;
+  transcriptTitleBar?: ReactNode;
+  duo?: boolean;
   recentChats?: RecentProjectChat[];
   syncWorkspaceId?: string;
   agent?: Agent;
@@ -278,7 +283,9 @@ export default function Conversation(p: {
     : undefined;
   const planType =
     typeof rateLimits?.planType === "string" ? rateLimits.planType : undefined;
-  const mobileClient = useMediaQuery("(max-width: 760px)");
+  const mobileClient = useMediaQuery(layoutQueries.navigationCompact);
+  // Touch keyboards have no Shift + Enter habit: Enter adds a line there.
+  const coarsePointer = useMediaQuery("(pointer: coarse)");
   const kind = p.room ? "room" : p.legacy ? "legacy" : "agent";
   const compactHeaderTools = useCompactHeaderTools();
   const [headerTools, setHeaderTools] = useState<HTMLElement | null>(null);
@@ -289,8 +296,12 @@ export default function Conversation(p: {
     width: number;
   } | null>(null);
   useLayoutEffect(() => {
-    setHeaderTools(document.getElementById("conversation-header-tools"));
-  }, []);
+    setHeaderTools(
+      p.headerToolsInMenu
+        ? null
+        : document.getElementById("conversation-header-tools"),
+    );
+  }, [p.headerToolsInMenu]);
   useEffect(() => {
     if (!compactHeaderTools) setToolsExpanded(false);
   }, [compactHeaderTools]);
@@ -326,6 +337,21 @@ export default function Conversation(p: {
     if (!summary) return;
     const updatePosition = () => {
       const anchor = summary.getBoundingClientRect();
+      const rootFontPx = Number.parseFloat(
+        getComputedStyle(document.documentElement).fontSize,
+      );
+      const compactToolsMenuMaxWidthPx = resolveLayoutLength(
+        "tools.menuMax",
+        rootFontPx,
+      );
+      const compactToolsMenuViewportGutterPx = resolveLayoutLength(
+        "tools.menuGutter",
+        rootFontPx,
+      );
+      const compactToolsMenuGapPx = resolveLayoutLength(
+        "tools.menuGap",
+        rootFontPx,
+      );
       const viewportWidth =
         document.documentElement.clientWidth || window.innerWidth;
       const menuWidth = Math.min(
@@ -502,7 +528,11 @@ export default function Conversation(p: {
     remember,
     revealRequest,
     getAnchorId,
-  } = useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
+  } = useConversationScroll(
+    `${p.data.stateDir}:${kind}:${p.id}`,
+    loaded,
+    p.visible ?? true,
+  );
   const loadOlderAtStart = () => {
     if (
       !before ||
@@ -1462,6 +1492,54 @@ export default function Conversation(p: {
       quote,
     ],
   );
+  const promptNavigation = useMemo(
+    () =>
+      !p.room && p.id ? (
+        <PromptNavigator
+          compact
+          inMenu={p.headerToolsInMenu}
+          key={p.id}
+          messages={items}
+          loadOlder={
+            before
+              ? () => {
+                  setFollow(false);
+                  setPageAnchor(getAnchorId());
+                  void older().catch((e) => p.notify(errorText(e)));
+                }
+              : undefined
+          }
+          loadingOlder={pageLoading}
+          agentId={managed ? p.id || undefined : undefined}
+          container={scroll}
+          storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
+          jump={jumpToPrompt}
+        />
+      ) : null,
+    [
+      p.room,
+      p.id,
+      p.headerToolsInMenu,
+      items,
+      before,
+      pageLoading,
+      managed,
+      scroll,
+      p.data.stateDir,
+      jumpToPrompt,
+      older,
+      setFollow,
+      getAnchorId,
+      p.notify,
+    ],
+  );
+  useLayoutEffect(() => {
+    p.onRailToolsChange?.(p.headerToolsInMenu ? promptNavigation : null);
+  }, [p.headerToolsInMenu, p.onRailToolsChange, promptNavigation]);
+  useLayoutEffect(
+    () => () => p.onRailToolsChange?.(null),
+    [p.onRailToolsChange],
+  );
   return (
     <section
       id="conversation"
@@ -1534,7 +1612,8 @@ export default function Conversation(p: {
           chooseChat={p.onChooseChat}
         />
       )}
-      {headerTools &&
+      {!p.headerToolsInMenu &&
+        headerTools &&
         !p.room &&
         (p.id || managed) &&
         createPortal(
@@ -1571,31 +1650,16 @@ export default function Conversation(p: {
             >
               {!p.room && p.id && (
                 <div className="conversation-prompt-navigation-slot">
-                  <PromptNavigator
-                    compact
-                    key={p.id}
-                    messages={items}
-                    loadOlder={
-                      before
-                        ? () => {
-                            setFollow(false);
-                            setPageAnchor(getAnchorId());
-                            void older().catch((e) => p.notify(errorText(e)));
-                          }
-                        : undefined
-                    }
-                    loadingOlder={pageLoading}
-                    agentId={managed ? p.id || undefined : undefined}
-                    container={scroll}
-                    storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
-                    jump={jumpToPrompt}
-                  />
+                  {promptNavigation}
                 </div>
               )}
             </div>
           </details>,
           headerTools,
         )}
+      {p.transcriptTitleBar && (
+        <TranscriptTitleBar>{p.transcriptTitleBar}</TranscriptTitleBar>
+      )}
       <div
         id="messages"
         ref={scroll}
@@ -1609,6 +1673,9 @@ export default function Conversation(p: {
         }}
       >
         <div ref={content} className="message-content">
+          {p.transcriptHeading && (
+            <div className="transcript-heading">{p.transcriptHeading}</div>
+          )}
           {removed.hasRemoved && (
             <Button size="compact-xs" onClick={() => removed.restore()}>
               Restore removed messages
@@ -1741,11 +1808,13 @@ export default function Conversation(p: {
           onQuote={quote}
         />
       )}
-      <FollowLatest
-        subscribe={subscribeFollow}
-        getSnapshot={getFollow}
-        onClick={returnToLatest}
-      />
+      {(!p.duo || p.room) && (
+        <FollowLatest
+          subscribe={subscribeFollow}
+          getSnapshot={getFollow}
+          onClick={returnToLatest}
+        />
+      )}
       {p.room ? (
         <p className="room-footer">
           {p.room.kind === "private"
@@ -1895,6 +1964,13 @@ export default function Conversation(p: {
                 );
               return (
                 <>
+                  {p.duo && (
+                    <FollowLatest
+                      subscribe={subscribeFollow}
+                      getSnapshot={getFollow}
+                      onClick={returnToLatest}
+                    />
+                  )}
                   {managed &&
                     p.agent?.isLead &&
                     p.agent.accountTransfer?.scope !== "subagents" && (
@@ -1908,7 +1984,7 @@ export default function Conversation(p: {
                     getDraft={p.getDraft}
                     setDraft={p.setDraft}
                     input={input}
-                    mobile={mobileClient}
+                    mobile={mobileClient || coarsePointer}
                     managed={!!managed}
                     canSend={canSend}
                     blocked={!!threadBlock}

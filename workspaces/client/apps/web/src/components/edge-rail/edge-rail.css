@@ -1,0 +1,120 @@
+.edge-rail {
+  position: fixed;
+  z-index: var(--layout-layers-edge-rail);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--layout-edge-rail-button-gap);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  box-sizing: border-box;
+}
+
+.edge-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.edge-rail .edge-rail-button {
+  position: relative;
+  flex: 0 0 var(--edge-rail-target);
+  width: var(--edge-rail-target);
+  height: var(--edge-rail-target);
+  min-width: var(--edge-rail-target);
+  min-height: var(--edge-rail-target);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--raised) 75%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+/* Items sit inside the dropdown padding; their corners stay concentric. */
+.edge-rail-menu .mantine-Menu-item {
+  border-radius: max(
+    0px,
+    calc(
+      var(--popover-radius, var(--mantine-radius-default)) -
+        calc(0.25rem * var(--mantine-scale))
+    )
+  );
+}
+
+.edge-rail .edge-rail-button:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: -2px;
+}
+
+/* Counts sit inside the round button, centered under the icon, so they stay
+   inside the side strip column. */
+.edge-rail-badge {
+  position: absolute;
+  bottom: 5px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 8px);
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--mantine-color-body);
+  color: var(--mantine-color-text);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 12px;
+  padding: 0 3px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.edge-rail .edge-rail-button:has(.edge-rail-badge) svg {
+  transform: translateY(-6px);
+}
+
+/* Paint the pane under the system strip; root padding still bounds its content. */
+html:has(.workspace[data-edge-rail="true"]) body #root,
+html:has(.workspace[data-edge-rail="true"])
+  .viewport-bottom-band:not([data-pane-path]) {
+  background-color: var(--surface);
+}
+
+/* Keep the shared sidebar focus target visible outside the header. */
+.edge-rail #sidebar-toggle {
+  display: inline-flex;
+}
+
+/* A workspace drawer keeps its controls in the safe rectangle. Its passive
+   backdrop continues below Home and behind the side rail. */
+html:has(.workspace[data-edge-rail="true"])
+  .workspace-drawer
+  .mantine-Drawer-content {
+  box-shadow: none;
+}
+
+html:has(.workspace[data-edge-rail="true"])
+  .workspace-drawer
+  .mantine-Drawer-inner::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: calc(-1 * var(--viewport-safe-right));
+  width: var(--viewport-safe-right);
+  height: 100%;
+  background: var(--mantine-color-body);
+  pointer-events: none;
+}
+
+/* On touch, the opened menu focuses its first item and WebKit keeps the last
+   touched row hovered: two rows looked selected. Only a pressed row or a
+   keyboard-focused row is highlighted there. */
+@media (hover: none), (pointer: coarse) {
+  .edge-rail-menu
+    .mantine-Menu-item:is(:hover, :focus, [data-menu-active]):not(
+      :focus-visible,
+      :active
+    ) {
+    background-color: transparent;
+  }
+}
+
+/* Duo portrait: a row of buttons in the top status strip. */
+.edge-rail[data-side="top"] {
+  overflow-x: auto;
+  overflow-y: hidden;
+}

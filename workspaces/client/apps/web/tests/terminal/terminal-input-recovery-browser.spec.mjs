@@ -419,6 +419,28 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     await assertUnpaused();
     await reply("switch-fresh");
 
+    // A direct App uses the same command event as the shell and keeps the session.
+    await page.evaluate(() =>
+      window.dispatchEvent(
+        new CustomEvent("studio-terminal-command", { detail: "toggle" }),
+      ),
+    );
+    await page
+      .getByRole("button", { name: "Show terminals", exact: true })
+      .waitFor();
+    await page
+      .getByRole("button", { name: "Show terminals", exact: true })
+      .click();
+    await page.waitForFunction(
+      () => window.currentTerminal.input && !window.currentTerminal.disposed,
+    );
+    await accepted("after-toggle", true);
+    assert.equal(
+      posts.find((post) => post.text === "after-toggle").id,
+      "shell-b",
+    );
+    await reply("after-toggle");
+
     assert.deepEqual(
       posts.map((post) => post.text),
       expected,

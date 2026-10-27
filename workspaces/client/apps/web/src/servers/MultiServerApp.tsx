@@ -1,4 +1,7 @@
 import { randomUUID } from "../uuid";
+import { restoreSidebarFocus } from "../components/sidebar/SidebarFrame";
+import { readTerminalDockHeight } from "../layout/terminalGeometry";
+import { layoutQueries } from "../layout/layout-contract.generated";
 import { ScreenContext } from "./ScreenContext";
 import {
   createScreenChannel,
@@ -41,6 +44,10 @@ import {
   type CSSProperties,
 } from "react";
 import App from "../App";
+import {
+  PanePathShellContext,
+  type PanePathShellPresentation,
+} from "../layout/PanePathShell";
 import { DEFAULT_LOCAL_SERVER_ALIAS } from "./serverAliases";
 import CombinedServerSidebar from "./CombinedServerSidebar";
 import {
@@ -183,7 +190,37 @@ function MultiServerShell({
   const notificationState = useRef(
     new Map<string, { seen: Set<string>; started: number }>(),
   );
+  const [sidebarCompact, setSidebarCompact] = useState(
+    () => window.matchMedia(layoutQueries.navigationCompact).matches,
+  );
   const [sidebarHidden, setSidebarHidden] = useState(false);
+  const [paneScreens, setPaneScreens] = useState<
+    Record<string, PanePathShellPresentation>
+  >({});
+  const publishPaneScreen = useCallback(
+    (owner: string, presentation: PanePathShellPresentation | null) => {
+      setPaneScreens((old) => {
+        const previous = old[owner];
+        if (!presentation) {
+          if (!previous) return old;
+          const next = { ...old };
+          delete next[owner];
+          return next;
+        }
+        if (
+          previous?.toggleSidebar === presentation.toggleSidebar &&
+          previous.closeSidebar === presentation.closeSidebar &&
+          JSON.stringify(previous.layout) ===
+            JSON.stringify(presentation.layout)
+        )
+          return old;
+        return { ...old, [owner]: presentation };
+      });
+    },
+    [],
+  );
+  const paneScreen = paneScreens[current];
+
   // Each server view reports its terminal panel; the shell draws the closed bar under
   // its sidebar and makes room for the open panel (servers.css "Terminal under the sidebar").
   const [terminals, setTerminals] = useState<
@@ -200,10 +237,14 @@ function MultiServerShell({
   >({});
   const [shellSidebarWidth, setShellSidebarWidth] = useState(0);
   const toggleSidebar = useCallback(() => {
-    if (window.matchMedia("(max-width: 760px)").matches)
-      setMobileOpen((old) => !old);
+    if (paneScreen) {
+      paneScreen.toggleSidebar();
+      return;
+    }
+    restoreSidebarFocus();
+    if (sidebarCompact) setMobileOpen((old) => !old);
     else setSidebarHidden((old) => !old);
-  }, []);
+  }, [sidebarCompact, paneScreen]);
   const { setColorScheme } = useMantineColorScheme();
   const [preferences, setPreferences] = useState(() => {
     try {
@@ -654,9 +695,10 @@ function MultiServerShell({
       } catch {}
     } else if (data.kind === "studio-server-terminal") {
       const value = data;
+      const height = readTerminalDockHeight(value.height);
       if (
         typeof value.opened !== "boolean" ||
-        !Number.isFinite(value.height) ||
+        height === undefined ||
         !Number.isInteger(value.count) ||
         !Number.isInteger(value.active) ||
         typeof value.canCreate !== "boolean"
@@ -666,7 +708,7 @@ function MultiServerShell({
         ...old,
         [id]: {
           opened: value.opened,
-          height: Math.max(0, Math.min(4000, value.height)),
+          height,
           count: value.count,
           active: value.active,
           canCreate: value.canCreate,
@@ -841,7 +883,7 @@ function MultiServerShell({
     </Modal>
   );
   useEffect(() => {
-    const narrow = window.matchMedia("(max-width: 760px)");
+    const narrow = window.matchMedia(layoutQueries.navigationCompact);
     let observed: Element | null = null;
     const measure = () => {
       const sidebar = document.querySelector(".multi-server-shell > #sidebar");
@@ -869,7 +911,12 @@ function MultiServerShell({
       observer.disconnect();
       narrow.removeEventListener("change", measure);
     };
-  }, [sidebarHidden, mergedSidebar?.sources.length, servers.length]);
+  }, [
+    sidebarHidden,
+    sidebarCompact,
+    mergedSidebar?.sources.length,
+    servers.length,
+  ]);
   if (!uiOnly && !paired.length && accountsServers.length === servers.length)
     return (
       <ServerSettingsContext.Provider
@@ -888,20 +935,25 @@ function MultiServerShell({
       </ServerSettingsContext.Provider>
     );
   const terminal = terminals[current];
-  const terminalLayout =
-    terminal && shellSidebarWidth > 0
+  const terminalLayout = paneScreen
+    ? paneScreen.layout.panes.sidebar && terminal
+      ? "closed"
+      : undefined
+    : terminal && shellSidebarWidth > 0
       ? terminal.opened
         ? "open"
         : "closed"
       : undefined;
-  return (
+  const shell = (
     <div
-      className={`multi-server-shell ${sidebarHidden ? "server-sidebar-hidden" : ""}`}
+      className={`multi-server-shell ${sidebarHidden && !paneScreen ? "server-sidebar-hidden" : ""}`}
+      data-pane-path={paneScreen?.layout.mode}
       data-navigation="combined"
+      data-navigation-compact={sidebarCompact}
       data-shell-terminal={terminalLayout}
       style={
         {
-          "--shell-sidebar-width": `${shellSidebarWidth}px`,
+          "--shell-sidebar-width": `${paneScreen?.layout.panes.sidebar?.width ?? shellSidebarWidth}px`,
           "--shell-terminal-height": `${terminal?.height || 0}px`,
         } as CSSProperties
       }
@@ -909,8 +961,10 @@ function MultiServerShell({
       <>
         <Button
           className="server-mobile-toggle"
-          onClick={() => setMobileOpen(!mobileOpen)}
-          aria-expanded={mobileOpen}
+          onClick={toggleSidebar}
+          aria-expanded={
+            paneScreen ? !!paneScreen.layout.panes.sidebar : mobileOpen
+          }
         >
           Servers and chats
         </Button>
@@ -929,10 +983,16 @@ function MultiServerShell({
               applyNavigationRef.current(owner, value)
             }
             mobile={mobileOpen}
-            hidden={sidebarHidden}
+            hidden={paneScreen ? false : sidebarHidden}
+            paneRect={paneScreen?.layout.panes.sidebar}
+            onCompactChange={setSidebarCompact}
             close={() => {
+              if (paneScreen) {
+                paneScreen.closeSidebar();
+                return;
+              }
               setMobileOpen(false);
-              setSidebarHidden(true);
+              if (!sidebarCompact) setSidebarHidden(true);
             }}
             settings={openManager}
             search={() => setSearchOpen(true)}
@@ -1163,5 +1223,10 @@ function MultiServerShell({
           ))}
       </Modal>
     </div>
+  );
+  return (
+    <PanePathShellContext.Provider value={publishPaneScreen}>
+      {shell}
+    </PanePathShellContext.Provider>
   );
 }

@@ -15,7 +15,7 @@
   /* Keep a useful part of the conversation title visible in phone headers. */
   --studio-conversation-title-min: 4rem;
   /* Team dock width when the conversation has room for a second column. */
-  --studio-team-size: 20rem;
+  --studio-team-size: var(--layout-team-preferred);
   /* Readable settings form column. */
   --studio-form-max: 40rem;
   /* Model picker column: 65% of the previous desktop form width, in rem. */

@@ -30,7 +30,11 @@ export function useFollowState(
 
 // One owner for scroll anchoring. Browser anchoring and React effects must not
 // both compensate for the same composer resize or streamed paragraph.
-export function useConversationScroll(id: string, ready: boolean) {
+export function useConversationScroll(
+  id: string,
+  ready: boolean,
+  visible = true,
+) {
   const { saved, save } = useServerApi();
 
   const scroll = useRef<HTMLDivElement>(null);
@@ -52,7 +56,9 @@ export function useConversationScroll(id: string, ready: boolean) {
   const positions = useRef(new Map<string, Position>());
   const current = useRef("");
   const available = useRef(ready);
-  available.current = ready;
+  available.current = ready && visible;
+  const suspended = useRef(false);
+  if (!visible) suspended.current = true;
   const lastTop = useRef(0);
   const lastHeight = useRef(0);
   const bottomDistance = useRef(0);
@@ -83,7 +89,7 @@ export function useConversationScroll(id: string, ready: boolean) {
   };
   const remember = () => {
     const root = scroll.current;
-    if (!root) return;
+    if (!root || root.clientHeight === 0) return;
     lastTop.current = root.scrollTop;
     lastHeight.current = root.scrollHeight;
     bottomDistance.current = Math.max(
@@ -126,7 +132,7 @@ export function useConversationScroll(id: string, ready: boolean) {
   // Update follow state from the reader's current position.
   const track = () => {
     const root = scroll.current;
-    if (!root) return;
+    if (!root || root.clientHeight === 0) return;
     const atBottom =
       root.scrollHeight - root.scrollTop - root.clientHeight <
       FOLLOW_THRESHOLD_PX;
@@ -176,7 +182,7 @@ export function useConversationScroll(id: string, ready: boolean) {
   // An explicit follow request wins over an unseen reader move.
   const restore = (explicit = false) => {
     const root = scroll.current;
-    if (!root || !available.current) return;
+    if (!root || !available.current || root.clientHeight === 0) return;
     const unseen = !explicit && trackUnseenScroll();
     restored.current = true;
     const hadAnchor = !!anchor.current;
@@ -226,6 +232,11 @@ export function useConversationScroll(id: string, ready: boolean) {
       updateFollow(valid ? stored.following : true);
       // The old chat's scrollTop is not a reader move in this chat.
       restored.current = false;
+    }
+    if (visible && suspended.current) {
+      // Hidden panes have no layout anchor. Resume the last recorded position.
+      suspended.current = false;
+      anchor.current = null;
     }
     restore();
   });
@@ -319,7 +330,12 @@ export function useConversationScroll(id: string, ready: boolean) {
 
   const onScroll = () => {
     const root = scroll.current;
-    if (!root || !available.current || root.scrollTop === lastTop.current)
+    if (
+      !root ||
+      !root.clientHeight ||
+      !available.current ||
+      root.scrollTop === lastTop.current
+    )
       return;
     track();
     persist();

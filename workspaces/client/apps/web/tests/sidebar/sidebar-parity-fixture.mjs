@@ -231,6 +231,11 @@ export async function sidebarParityFixture(
         return true;
       };
       const workspaceId = workspaceIds[owner];
+      if (path === "/api/retained-worktrees")
+        return reply({
+          rootId: url.searchParams.get("agent"),
+          retainedWorktrees: [],
+        });
       if (path === "/api/sync/identity")
         return reply(syncIdentityFixture(workspaceId));
       if (path === "/api/sync/preferences") {
@@ -254,29 +259,32 @@ export async function sidebarParityFixture(
         const next = entityPullFixture(snapshot).documents;
         for (const kind of ["user", "server"])
           next.push({
-            id: `entity:uiPreferences:${kind}`,
-            payload: JSON.stringify({
-              collection: "uiPreferences",
-              id: kind,
-              value: { scope: kind, fields: preferences[owner][kind] },
-            }),
-            _deleted: false,
+            op: "upsert",
+            collection: "uiPreferences",
+            id: kind,
+            value: { scope: kind, fields: preferences[owner][kind] },
           });
+        const identity = (value) => `${value.collection}:${value.id}`;
         const saved = documents[owner];
-        const ids = new Set(next.map((value) => value.id));
+        const ids = new Set(next.map(identity));
         for (const [id, value] of saved)
-          if (!ids.has(id) && !value._deleted)
+          if (!ids.has(id) && value.op !== "delete")
             saved.set(id, {
-              ...value,
-              _deleted: true,
+              op: "delete",
+              collection: value.collection,
+              id: value.id,
               seq: ++sequences[owner],
             });
-        for (const value of next)
+        for (const value of next) {
+          const id = identity(value);
           if (
-            saved.get(value.id)?.payload !== value.payload ||
-            saved.get(value.id)?._deleted
+            !saved.has(id) ||
+            JSON.stringify(saved.get(id)?.value) !==
+              JSON.stringify(value.value) ||
+            saved.get(id)?.op === "delete"
           )
-            saved.set(value.id, { ...value, seq: ++sequences[owner] });
+            saved.set(id, { ...value, seq: ++sequences[owner] });
+        }
         const parsed = validateSyncPullRequest(url);
         assert.ok(parsed.ok);
         return reply({

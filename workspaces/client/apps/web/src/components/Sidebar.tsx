@@ -9,6 +9,7 @@ import {
 } from "./sidebar/services";
 import {
   Fragment,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -18,14 +19,18 @@ import {
 } from "react";
 import {
   ActionIcon,
-  Drawer,
   Menu,
   Modal,
   TextInput,
   Tooltip,
   UnstyledButton,
 } from "@mantine/core";
-import { useMediaQuery } from "@mantine/hooks";
+import {
+  layoutQueries,
+  layoutValues,
+} from "../layout/layout-contract.generated";
+import type { LayoutRect } from "../layout/deriveWorkspaceLayout";
+import { SidebarFrame, restoreSidebarFocus } from "./sidebar/SidebarFrame";
 import {
   Users,
   FolderOpen,
@@ -59,6 +64,7 @@ import {
 import SidebarRow from "./SidebarRow";
 import { needsYou, projectStateCounts } from "./sidebar/fleet";
 import ProjectStateCounts from "./sidebar/ProjectStateCounts";
+import { useDuoSurface } from "../layout/useDuoSurface";
 import { SidebarWarningsTarget } from "./SidebarWarnings";
 import {
   activeLayrReadiness,
@@ -134,6 +140,8 @@ export type SidebarProps = {
   remove: (id: string, room: boolean) => void;
   mobile: boolean;
   collapsed?: boolean;
+  paneRect?: LayoutRect | null | undefined;
+  onCompactChange?: (compact: boolean) => void;
   onSearch: () => void;
   close: () => void;
   refresh?: () => Promise<void>;
@@ -171,6 +179,7 @@ export default function Sidebar(p: SidebarProps) {
 }
 
 function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
+  const duoSurface = useDuoSurface();
   const { canPickDirectory, pickDirectory, revealPath } =
     useServerFileDialogs();
   const services = p.services;
@@ -215,7 +224,24 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   reportPromptComposerRender("sidebar");
   const runtime = p.data.runtime;
   const aliases = useServerAliases(readServerAliases);
-  const compact = useMediaQuery("(max-width: 760px)");
+  const [compact, setCompact] = useState(
+    () => window.matchMedia(layoutQueries.navigationCompact).matches,
+  );
+  const reportCompact = useCallback(
+    (value: boolean) => {
+      setCompact(value);
+      p.onCompactChange?.(value);
+    },
+    [p.onCompactChange],
+  );
+  const closeSidebar = () => {
+    restoreSidebarFocus();
+    p.close();
+  };
+  const openChat = (id: string) => {
+    if (compact) closeSidebar();
+    p.open(id);
+  };
   const inline = !compact && !p.collapsed;
   // Page layout rules read this flag. It replaces #root:has(#sidebar), which
   // the browser had to test against the whole tree after each DOM change.
@@ -909,7 +935,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       }}
       actions={{
         prepare: () => p.prepareChat?.(row.id),
-        open: () => p.open(row.id),
+        open: () => openChat(row.id),
         pin: () => {
           void organize(row.id, { pinned: !row.pinned });
         },
@@ -1007,7 +1033,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           }
           roomId={runtime?.rooms?.find((r) => r.radio?.teamId === team.id)?.id}
           scope={p.data.stateDir}
-          openRoom={p.open}
+          openRoom={openChat}
           refresh={p.refresh}
           reorder={teamDrop(
             sorting.bindings(
@@ -1045,7 +1071,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                   key={r.id}
                   className="peer-team-shared-chat"
                   aria-current={r.id === p.opened ? "page" : undefined}
-                  onClick={() => p.open(r.id)}
+                  onClick={() => openChat(r.id)}
                 >
                   Shared chat
                 </UnstyledButton>
@@ -1283,7 +1309,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     );
   };
   const content = (
-    <aside id="sidebar" aria-label="Conversations">
+    <>
       <span className="sr-only" role="status">
         {sorting.announcement}
       </span>
@@ -1296,7 +1322,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             <strong>LAYR</strong> <span>Studio</span>
           </span>
         </a>
-        <SidebarWarningsTarget />
+        {!duoSurface && <SidebarWarningsTarget />}
         <ActionIcon
           className="sidebar-search"
           aria-label="Search chats"
@@ -1306,7 +1332,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         >
           <Search size={18} />
         </ActionIcon>
-        {p.settings && (
+        {!duoSurface && p.settings && (
           <ActionIcon
             variant="subtle"
             aria-label="Studio settings"
@@ -1316,11 +1342,11 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             <Settings size={18} />
           </ActionIcon>
         )}
-        {
-          <ActionIcon aria-label="Close conversations" onClick={p.close}>
+        {!duoSurface && (
+          <ActionIcon aria-label="Close conversations" onClick={closeSidebar}>
             <X size={20} />
           </ActionIcon>
-        }
+        )}
       </div>
       {p.notice && (
         <p role="alert" className="notice">
@@ -1894,7 +1920,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                           aria-current={
                             p.opened === room.id ? "page" : undefined
                           }
-                          onClick={() => p.open(room.id)}
+                          onClick={() => openChat(room.id)}
                         >
                           <span className="row-copy">
                             <strong>{room.name}</strong>
@@ -1965,7 +1991,12 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           </p>
         )}
       </nav>
-    </aside>
+      {duoSurface && (
+        <footer className="sidebar-utility-footer">
+          <SidebarWarningsTarget utility settings={p.settings} />
+        </footer>
+      )}
+    </>
   );
   const dialogProject = dialog ? groupMap.get(dialog.path) : undefined;
   const dialogAgent = dialog?.agentId
@@ -1980,30 +2011,25 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     (!dialog?.folder || dialog.folder === "new" || dialogFolder);
   return (
     <>
-      {compact ? (
-        <Drawer
-          zIndex={p.settings ? 190 : undefined}
-          opened={p.mobile}
-          onEnterTransitionEnd={() => {
-            if (lastOpened.current)
-              document
-                .querySelector<HTMLElement>(
-                  `#sidebar [data-chat="${CSS.escape(lastOpened.current)}"]`,
-                )
-                ?.focus();
-          }}
-          onClose={p.close}
-          size="100%"
-          padding={0}
-          withCloseButton={false}
-          title="Conversations"
-          classNames={{ header: "sr-only" }}
-        >
-          {content}
-        </Drawer>
-      ) : p.collapsed ? null : (
-        content
-      )}
+      <SidebarFrame
+        scope={`${p.services.cache.ownerId}:${p.data.stateDir}`}
+        opened={p.mobile}
+        paneRect={p.paneRect}
+        collapsed={p.collapsed}
+        close={closeSidebar}
+        onCompactChange={reportCompact}
+        drawerZIndex={p.settings ? layoutValues.layers.navigation : undefined}
+        onEntered={() => {
+          if (lastOpened.current)
+            document
+              .querySelector<HTMLElement>(
+                `#sidebar [data-chat="${CSS.escape(lastOpened.current)}"]`,
+              )
+              ?.focus();
+        }}
+      >
+        {content}
+      </SidebarFrame>
       <Modal
         opened={!!conversion}
         onClose={closeConversion}
@@ -2024,7 +2050,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                 scope={p.data.stateDir}
                 saved={async () => {
                   await p.refresh?.();
-                  p.open(conversion.target.id);
+                  openChat(conversion.target.id);
                   setConversion(null);
                 }}
               />

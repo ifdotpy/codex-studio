@@ -1,3 +1,5 @@
+import { LayoutDebug } from "./hooks/LayoutDebug";
+import { BottomInsetBand } from "./hooks/BottomInsetBand";
 import "./browser-reset.css";
 import { NativeServerCredentials } from "./native/serverCredentials";
 import { hasNativeClient } from "./native/client";
@@ -29,6 +31,7 @@ import "./style.css";
 import "./workspace-layout.css";
 import "./appearance.css";
 import "./studio-preferences.css";
+import "./layout/duo-proportions.css";
 import "./visual-activity.css";
 import "./design/state.css";
 import { initializeNativeClose } from "./native/close";
@@ -61,9 +64,12 @@ async function mount() {
     createRoot(container).render(
       <UIErrorBoundary label="Studio" fullPage>
         <MantineProvider theme={theme} defaultColorScheme="auto">
-          <SidebarWarningsProvider>
-            {isServerView ? <App /> : <MultiServerApp />}
-          </SidebarWarningsProvider>
+          <LayoutDebug />
+          <BottomInsetBand>
+            <SidebarWarningsProvider>
+              {isServerView ? <App /> : <MultiServerApp />}
+            </SidebarWarningsProvider>
+          </BottomInsetBand>
         </MantineProvider>
       </UIErrorBoundary>,
     );

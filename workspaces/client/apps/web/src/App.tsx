@@ -2,6 +2,19 @@ import { useSubscription } from "./sync/subscriptions";
 import { submitRename, watchRenameResult } from "./renameRequest";
 import { randomUUID } from "./uuid";
 import {
+  createConversationMenuTools,
+  ConversationMenuTools,
+} from "./components/conversation/ConversationMenuTools";
+import { EdgeRail } from "./components/edge-rail/EdgeRail";
+import { useEdgeRail } from "./components/edge-rail/useEdgeRail";
+import { useWorkspacePanelWidth } from "./components/shell/workspacePanelWidth";
+import { useWorkspaceLayout } from "./layout/useWorkspaceLayout";
+import { useDuoSurface } from "./layout/useDuoSurface";
+import { usePanePathFocus } from "./layout/usePanePathFocus";
+import { usePublishPanePath } from "./layout/PanePathShell";
+import { layoutQueries } from "./layout/layout-contract.generated";
+import { restoreSidebarFocus } from "./components/sidebar/SidebarFrame";
+import {
   StudioErrorsScope,
   useStudioErrorsState,
 } from "./components/StudioErrors";
@@ -85,7 +98,6 @@ import { nativeThreadError } from "./nativeErrors";
 import {
   ActionIcon,
   Button,
-  Drawer,
   Modal,
   Menu,
   NativeSelect,
@@ -98,6 +110,7 @@ import { useMediaQuery } from "@mantine/hooks";
 import {
   Activity,
   ArrowLeft,
+  Terminal,
   BookOpen,
   Clock3,
   FileDiff,
@@ -233,6 +246,9 @@ import {
 } from "./servers/projectLocations";
 import "./desktop";
 import "./components/team-navigation.css";
+import "./hooks/viewport-surface.css";
+import { panePathStyle } from "./components/shell/PanePathChrome";
+import { WorkspacePanelHost } from "./components/shell/WorkspacePanelHost";
 import TeamPanel from "./components/agents/TeamPanel";
 import FilePreview, { type PreviewTarget } from "./components/FilePreview";
 import { awaitingAnswerIds } from "./components/agents/WorkerOverview";
@@ -332,9 +348,13 @@ export default function App({ active = true }: { active?: boolean }) {
     () => mergeOutgoing(outbox.entries, outgoing, observedSends.current),
     [outbox.entries, outgoing],
   );
-  const mobileClient = useMediaQuery("(max-width: 760px)", undefined, {
-    getInitialValueInEffect: false,
-  });
+  const mobileClient = useMediaQuery(
+    layoutQueries.navigationCompact,
+    undefined,
+    {
+      getInitialValueInEffect: false,
+    },
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [localStudioSettingsOpen, setLocalStudioSettingsOpen] = useState(false);
   const [localStudioSettingsTab, setLocalStudioSettingsTab] =
@@ -485,6 +505,7 @@ export default function App({ active = true }: { active?: boolean }) {
     },
     [colorScheme, setColorScheme, studioPreferences],
   );
+  const [sidebarCompact, setSidebarCompact] = useState(mobileClient);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
     saved("codex-sidebar-collapsed", false),
   );
@@ -520,18 +541,43 @@ export default function App({ active = true }: { active?: boolean }) {
       window.removeEventListener("studio-shell-preferences", preferences);
     };
   }, []);
+  const [panePanel, setPanePanel] = useState<
+    "team" | "workspace" | "terminals" | null
+  >(null);
+  const [paneSidebar, setPaneSidebar] = useState(false);
+  const [paneFullScreen, setPaneFullScreen] = useState(false);
+  const paneActive = useRef(false);
+  const paneNavigation = useRef({
+    panel: panePanel,
+    mode: "single" as "single" | "pair",
+  });
   const toggleSidebar = useCallback(() => {
+    if (paneActive.current) {
+      restoreSidebarFocus();
+      if (paneNavigation.current.panel) {
+        setPaneFullScreen(false);
+        setPaneSidebar((visible) => !visible);
+      } else if (paneNavigation.current.mode === "pair") {
+        setPaneSidebar(false);
+        setPaneFullScreen(true);
+      } else {
+        setPaneFullScreen(false);
+        setPaneSidebar((visible) => !visible);
+      }
+      return;
+    }
     if (isServerView && !isClassicServerView) {
       postToShell(
         {
           kind: "studio-server-toggle-sidebar",
-          ...(mobileClient ? { opened: true } : {}),
+          ...(sidebarCompact ? { opened: true } : {}),
         },
         serverParentOrigin,
       );
       return;
     }
-    if (mobileClient) {
+    restoreSidebarFocus();
+    if (sidebarCompact) {
       setSidebar((visible) => !visible);
       return;
     }
@@ -539,7 +585,7 @@ export default function App({ active = true }: { active?: boolean }) {
       save("codex-sidebar-collapsed", !collapsed);
       return !collapsed;
     });
-  }, [mobileClient]);
+  }, [sidebarCompact]);
   useEffect(() => {
     const shortcut = parseSidebarShortcut(studioPreferences.sidebarShortcut);
     if (!shortcut) return;
@@ -590,7 +636,9 @@ export default function App({ active = true }: { active?: boolean }) {
   const selectionScope = useRef("");
   const navigationIntent = useRef(0);
   const createdSelection = useRef<string | null>(null);
-  useMobileViewport(active && mobileClient);
+  useMobileViewport(active, mobileClient);
+  const [workspacePanelSlot, setWorkspacePanelSlot] =
+    useState<HTMLDivElement | null>(null);
   // CSS owns these sums: --studio-form-max + --studio-team-size, with
   // --studio-sidebar-width when the desktop fleet occupies space. The Team
   // layout parity test keeps the media queries aligned with those owners.
@@ -600,9 +648,7 @@ export default function App({ active = true }: { active?: boolean }) {
     (!isServerView || isClassicServerView) &&
     !mobileClient &&
     !sidebarCollapsed;
-  const narrowTeam = !(teamHasSidebar
-    ? teamFitsWithSidebar
-    : teamFitsWithoutSidebar);
+
   const {
       data,
       error,
@@ -618,7 +664,7 @@ export default function App({ active = true }: { active?: boolean }) {
     [teamOpen, setTeamOpen] = useState(false),
     [tasksOpen, setTasksOpen] = useState(false),
     [searchOpen, setSearchOpen] = useState(false),
-    [workspaceOpen, setWorkspaceOpen] = useState(false),
+    [workspaceOpen, storeWorkspaceOpen] = useState(false),
     [tasksRendered, setTasksRendered] = useState(false),
     [workspaceRendered, setWorkspaceRendered] = useState(false),
     [workspaceSection, setWorkspaceSection] = useState("messages"),
@@ -632,6 +678,79 @@ export default function App({ active = true }: { active?: boolean }) {
     [modal, setModal] = useState<{ title: string; body: ReactNode } | null>(
       null,
     );
+  const setWorkspaceOpen = (opened: boolean) => {
+    storeWorkspaceOpen(opened);
+    setPanePanel(null);
+    if (paneActive.current) {
+      if (opened) {
+        setTeamOpen(false);
+        setWideTeamOpen(false);
+      }
+      setPaneSidebar(false);
+      setPaneFullScreen(false);
+    }
+  };
+  const {
+    preferredWidthRem: preferredPanelWidthRem,
+    setPreferredWidthRem: setPreferredPanelWidthRem,
+  } = useWorkspacePanelWidth(workspaceId || data?.stateDir || "pending");
+  const rowLayout = useWorkspaceLayout({
+    workspaceOpen,
+    teamPreferred: wideTeamOpen,
+    preferredPanelWidthRem,
+    panePath: {
+      panel:
+        panePanel ??
+        (workspaceOpen
+          ? "workspace"
+          : teamOpen || wideTeamOpen
+            ? "team"
+            : null),
+      sidebarOverride: paneSidebar,
+      fullScreen: paneFullScreen,
+    },
+  });
+  const panePath = rowLayout.panePath;
+  usePanePathFocus(panePath);
+  const sidebarExpanded = panePath
+    ? !!panePath.panes.sidebar
+    : sidebarCompact
+      ? sidebar
+      : !sidebarCollapsed;
+  paneActive.current = !!panePath;
+  paneNavigation.current = {
+    panel: panePath?.panelKind ?? null,
+    mode: panePath?.mode ?? "single",
+  };
+  const closePaneSidebar = useCallback(() => {
+    setPaneSidebar(false);
+    setPaneFullScreen(!paneNavigation.current.panel);
+  }, []);
+  usePublishPanePath(
+    serverViewId,
+    active && panePath
+      ? {
+          layout: panePath,
+          toggleSidebar,
+          closeSidebar: closePaneSidebar,
+        }
+      : null,
+  );
+  const closeTeam = () => {
+    setTeamOpen(false);
+    setWideTeamOpen(false);
+    setPanePanel(null);
+    save("codex-team-open", false);
+  };
+  const closePane = () => {
+    closeTeam();
+    storeWorkspaceOpen(false);
+    setPaneSidebar(false);
+    setPaneFullScreen(false);
+  };
+  const narrowTeam =
+    !(teamHasSidebar ? teamFitsWithSidebar : teamFitsWithoutSidebar) ||
+    !rowLayout.teamCanInline;
   useEffect(() => {
     if (!workspaceId) return;
     const key = `studio-server-workspace-id:${serverViewId || "local"}`;
@@ -892,6 +1011,9 @@ export default function App({ active = true }: { active?: boolean }) {
       : null,
   );
   const room = data?.runtime?.rooms?.find((r) => r.id === opened);
+  const railGeometry = useEdgeRail(undefined, active && !!data && !room?.radio);
+  const duoSurface = useDuoSurface();
+  const [railTools] = useState(createConversationMenuTools);
   const legacy = data?.chats.find((c) => c.id === opened);
   const roomRoots = room ? roomLeadIds(room, agents) : [];
   const lead = room?.radio
@@ -1067,6 +1189,7 @@ export default function App({ active = true }: { active?: boolean }) {
     setRoomContext(lead?.id || null);
     setOpened(id);
     setSidebar(false);
+    if (paneActive.current) setPaneSidebar(false);
     setTeamOpen(false);
   });
   useEffect(() => {
@@ -1183,6 +1306,7 @@ export default function App({ active = true }: { active?: boolean }) {
             }
           : undefined,
       );
+      if (!navigationTarget.itemId) closeTeam();
       setWorkspaceOpen(!!navigationTarget.itemId);
     }
     setNavigationTarget(undefined);
@@ -2408,8 +2532,8 @@ export default function App({ active = true }: { active?: boolean }) {
       setWorkerFilter={setWorkerFilter}
       completedOpen={completedOpen}
       setCompletedOpen={setCompletedOpen}
-      setTeamOpen={setTeamOpen}
-      setWideTeamOpen={setWideTeamOpen}
+      setTeamOpen={panePath ? closePane : setTeamOpen}
+      setWideTeamOpen={panePath ? closePane : setWideTeamOpen}
       saveClosed={() => save("codex-team-open", false)}
       open={open}
       previewResult={setFilePreview}
@@ -2417,12 +2541,277 @@ export default function App({ active = true }: { active?: boolean }) {
     />
   );
   const toggleTeam = () => {
-    if (narrowTeam) setTeamOpen(!teamOpen);
+    const opened = panePath
+      ? panePath.panelKind !== "team"
+      : !(narrowTeam ? teamOpen : wideTeamOpen);
+    setPanePanel(null);
+    if (panePath) {
+      storeWorkspaceOpen(false);
+      setTeamOpen(opened);
+      setWideTeamOpen(opened);
+      setPaneSidebar(false);
+      setPaneFullScreen(false);
+    } else if (narrowTeam) setTeamOpen(opened);
     else {
-      setWideTeamOpen(!wideTeamOpen);
-      save("codex-team-open", !wideTeamOpen);
+      setWideTeamOpen(opened);
+      save("codex-team-open", opened);
     }
   };
+  const compactHeader =
+    rowLayout.shortTouchLandscape && !railGeometry && !room?.radio;
+  const menuHeaderTools = !!railGeometry || compactHeader;
+  const sessionActivity = agent ? (
+    <SessionActivity
+      key={`${data.stateDir}:${agent.id}`}
+      compact={compactHeader}
+      activities={backgroundActivities(activities.get(agent.id) || [])}
+      onOpen={(activity) => {
+        if (activity.kind === "agent") open(activity.agentId);
+        else if (lead) {
+          setTaskFocus({
+            id: activity.id,
+            leadId: lead.id,
+            requestId: randomUUID(),
+          });
+          setTasksOpen(true);
+        }
+      }}
+    />
+  ) : null;
+  const conversationTitle = (
+    <ConversationTitle
+      passive={menuHeaderTools}
+      projectName={railGeometry ? projectName : undefined}
+      title={title}
+      agent={agent}
+      serverAlias={
+        agent
+          ? sidebarServices.alias?.({ kind: "chat", id: agent.id }) ||
+            serverAliases[
+              (agent as Agent & { serverId?: string }).serverId ||
+                serverViewId ||
+                "local"
+            ] ||
+            serverAliases[sidebarServices.serverForChat(agent.id)] ||
+            DEFAULT_LOCAL_SERVER_ALIAS
+          : undefined
+      }
+      serverOffline={
+        agent
+          ? !(
+              sidebarServices.available?.({
+                kind: "chat",
+                id: agent.id,
+              }) ?? true
+            )
+          : false
+      }
+      onBack={
+        // Only a worker chat links back; the lead and team rooms do not.
+        !menuHeaderTools &&
+        lead &&
+        agent &&
+        !agent.isLead &&
+        agent.id !== lead.id
+          ? () => open(lead.id)
+          : undefined
+      }
+    />
+  );
+  const toggleTerminal = () => {
+    if (panePath) {
+      const opened = panePanel !== "terminals";
+      storeWorkspaceOpen(false);
+      setTeamOpen(false);
+      setWideTeamOpen(false);
+      setPanePanel(opened ? "terminals" : null);
+      setPaneSidebar(false);
+      setPaneFullScreen(false);
+      return;
+    }
+    if (screen)
+      void screen
+        .execute({ action: "terminal", operation: "toggle" })
+        .catch((error) => notify(String(error)));
+    else
+      window.dispatchEvent(
+        new CustomEvent("studio-terminal-command", { detail: "toggle" }),
+      );
+  };
+  const chatActionsMenu = (
+    <>
+      {menuHeaderTools && <ConversationMenuTools source={railTools} />}
+      {menuHeaderTools &&
+        lead &&
+        agent &&
+        !agent.isLead &&
+        agent.id !== lead.id && (
+          <Menu.Item
+            aria-label="Back to main agent"
+            leftSection={<ArrowLeft size={14} />}
+            onClick={() => open(lead.id)}
+          >
+            Back to main agent
+          </Menu.Item>
+        )}
+      <Menu.Label>Views</Menu.Label>
+      {(
+        [
+          ["changes", "Changes", FileDiff],
+          ["plan", "Plan", BookOpen],
+          ["rules", "Wake rules", Clock3],
+          ["search", "Search", Search],
+        ] as const
+      ).map(([section, label, Icon]) => (
+        <Menu.Item
+          key={section}
+          aria-label={section === "rules" ? "Rules" : label}
+          data-workspace-section={section}
+          leftSection={<Icon size={14} />}
+          onClick={() => {
+            if (section === "search") {
+              if (isServerView)
+                postToShell(
+                  { kind: "studio-server-search" },
+                  serverParentOrigin,
+                );
+              else setSearchOpen(true);
+            } else {
+              setWorkspaceSection(section);
+              setWorkspaceOpen(true);
+            }
+          }}
+        >
+          {label}
+        </Menu.Item>
+      ))}
+      <Menu.Item
+        id="tasks-toggle"
+        aria-label={`Current activity${taskCount ? `, ${taskCount} active` : ""}`}
+        leftSection={<Activity size={14} />}
+        onClick={() => {
+          setTaskFocus(undefined);
+          setTasksOpen(true);
+        }}
+      >
+        Background activity {taskCount || ""}
+      </Menu.Item>
+      {menuHeaderTools && !mobileClient && (
+        <Menu.Item
+          aria-label="Terminals"
+          leftSection={<Terminal size={14} />}
+          onClick={toggleTerminal}
+        >
+          Terminals
+        </Menu.Item>
+      )}
+      <Menu.Divider />
+      <Menu.Label>Chat</Menu.Label>
+      <Menu.Item
+        id="chat-actions-settings"
+        aria-label="Chat settings"
+        leftSection={<Settings size={14} />}
+        onClick={() => setSettingsOpen(true)}
+      >
+        Chat settings
+      </Menu.Item>
+      {/* With the rail, Team has its own rail button. */}
+      {hasTeam && !railGeometry && (
+        <Menu.Item
+          id="chat-actions-team"
+          aria-label="Team"
+          leftSection={<Users size={14} />}
+          onClick={toggleTeam}
+        >
+          Team{" "}
+          {workers.filter((worker) => busy.has(worker.status ?? "")).length}/
+          {workers.length}
+        </Menu.Item>
+      )}
+      {agent?.source === "managed" && (
+        <Menu.Item
+          id="mark-unread"
+          aria-label="Mark chat unread"
+          leftSection={<Mail size={14} />}
+          disabled={
+            !agent.readStateSupported ||
+            !hasCompletedResult(agent) ||
+            readState.marking.has(agent.id)
+          }
+          onClick={() => void readState.markUnread(agent)}
+        >
+          Mark as unread
+        </Menu.Item>
+      )}
+      {agent?.source === "managed" && (
+        <>
+          {(!!agent.inFlight ||
+            team.some(
+              (member) =>
+                (member.status != null && busy.has(member.status)) ||
+                member.status === "queued" ||
+                member.inFlight,
+            )) && (
+            <Menu.Item
+              data-action="stop-team"
+              color="red"
+              leftSection={<Square size={14} />}
+              onClick={() => {
+                void run(() =>
+                  post("/api/stop", {
+                    id: agent.rootId ?? agent.id,
+                    descendants: true,
+                  }),
+                );
+              }}
+            >
+              Stop team
+            </Menu.Item>
+          )}
+          <Menu.Divider />
+          <Menu.Label>Model actions</Menu.Label>
+          {(
+            [
+              ["compact", "Compact", Minimize2],
+              ["review", "Review", ShieldCheck],
+            ] as const
+          )
+            .filter(([action]) =>
+              menuActions(agent.provider ?? undefined).includes(action),
+            )
+            .map(([action, label, Icon]) => (
+              <Menu.Item
+                key={action}
+                aria-label={label}
+                data-action={action}
+                leftSection={<Icon size={14} />}
+                disabled={
+                  busy.has(agent.status ?? "") ||
+                  !!agent.inFlight ||
+                  !!nativeThreadError(agent) ||
+                  !agent.threadId
+                }
+                onClick={() => {
+                  void run(() => submitNativeAction(agent, action));
+                }}
+              >
+                {label}
+                {(!agent.threadId ||
+                  agent.inFlight ||
+                  busy.has(agent.status ?? "") ||
+                  !!nativeThreadError(agent)) && (
+                  <small className="menu-action-help">
+                    {!agent.threadId
+                      ? "Available after the chat starts."
+                      : "Wait until the chat is ready."}
+                  </small>
+                )}
+              </Menu.Item>
+            ))}
+        </>
+      )}
+    </>
+  );
   return (
     <StudioErrorsScope value={studioErrors}>
       {active && (
@@ -2465,6 +2854,8 @@ export default function App({ active = true }: { active?: boolean }) {
           remove={remove}
           mobile={sidebar}
           collapsed={sidebarCollapsed}
+          paneRect={panePath?.panes.sidebar}
+          onCompactChange={setSidebarCompact}
           onSearch={() => {
             if (isServerView) {
               postToShell({ kind: "studio-server-search" }, serverParentOrigin);
@@ -2475,9 +2866,14 @@ export default function App({ active = true }: { active?: boolean }) {
           }}
           settings={() => setStudioSettingsOpen(true)}
           close={() => {
+            if (panePath) {
+              setPaneSidebar(false);
+              setPaneFullScreen(!panePath.panelKind);
+              return;
+            }
             if (isServerView)
               delete document.documentElement.dataset.serverProjects;
-            if (mobileClient) setSidebar(false);
+            if (sidebarCompact) setSidebar(false);
             else {
               setSidebarCollapsed(true);
               save("codex-sidebar-collapsed", true);
@@ -2485,291 +2881,166 @@ export default function App({ active = true }: { active?: boolean }) {
           }}
         />
       )}
-      <div className="workspace-frame">
+      <EdgeRail
+        geometry={railGeometry}
+        sidebar={{
+          id: "sidebar-toggle",
+          label: sidebarCompact
+            ? "Back to chats"
+            : sidebarCollapsed
+              ? "Show conversations"
+              : "Hide conversations",
+          expanded: sidebarExpanded,
+          onClick: toggleSidebar,
+        }}
+        messages={{
+          count: attentionCount,
+          disabled: !lead,
+          onClick: () => {
+            setWorkspaceSection("messages");
+            setWorkspaceFocus(undefined);
+            setWorkspaceOpen(true);
+          },
+        }}
+        team={
+          hasTeam
+            ? {
+                active: workers.filter((worker) =>
+                  busy.has(worker.status ?? ""),
+                ).length,
+                total: workers.length,
+                expanded: narrowTeam ? teamOpen : wideTeamOpen,
+                onClick: toggleTeam,
+              }
+            : undefined
+        }
+        menu={chatActionsMenu}
+        menuButtonRef={chatActionsButton}
+      />
+      <div
+        className="workspace-frame workspace-layout-row"
+        ref={rowLayout.rowRef}
+        data-pane-path={panePath ? panePath.mode : undefined}
+      >
         <main
           className="workspace"
+          hidden={!!panePath && !panePath.panes.conversation}
+          style={
+            panePath
+              ? panePathStyle(panePath.panes.conversation, {
+                  viewportFixedChildren: true,
+                })
+              : undefined
+          }
+          data-edge-rail={railGeometry ? "true" : undefined}
           data-show-message-avatars={studioPreferences.showMessageAvatars}
         >
           <SupervisorRecoveryNotice />
-          <header className="workspace-header simple-workspace-header">
-            {mobileClient ? (
-              <Button
-                id="sidebar-toggle"
-                variant="subtle"
-                size="compact-xs"
-                aria-label="Back to chats"
-                aria-expanded={sidebar}
-                onClick={toggleSidebar}
-                leftSection={<ArrowLeft size={18} />}
-              >
-                Chats
-              </Button>
-            ) : (
-              <ActionIcon
-                id="sidebar-toggle"
-                aria-label="Toggle conversations"
-                aria-expanded={!sidebarCollapsed}
-                onClick={toggleSidebar}
-              >
-                <PanelLeft size={18} />
-              </ActionIcon>
-            )}
-            <ConversationTitle
-              title={title}
-              agent={agent}
-              serverAlias={
-                agent
-                  ? sidebarServices.alias?.({ kind: "chat", id: agent.id }) ||
-                    serverAliases[
-                      (agent as Agent & { serverId?: string }).serverId ||
-                        serverViewId ||
-                        "local"
-                    ] ||
-                    serverAliases[sidebarServices.serverForChat(agent.id)] ||
-                    DEFAULT_LOCAL_SERVER_ALIAS
-                  : undefined
-              }
-              serverOffline={
-                agent
-                  ? !(
-                      sidebarServices.available?.({
-                        kind: "chat",
-                        id: agent.id,
-                      }) ?? true
-                    )
-                  : false
-              }
-              onBack={
-                // Only a worker chat links back; the lead and team rooms do not.
-                lead && agent && !agent.isLead && agent.id !== lead.id
-                  ? () => open(lead.id)
-                  : undefined
-              }
-            />
-            <div id="conversation-header-tools" />
-            {!room?.radio && (
-              <ActionIcon
-                id="chat-settings-toggle"
-                aria-label="Chat settings"
-                title="Chat settings"
-                onClick={() => setSettingsOpen(true)}
-              >
-                <Settings2 size={18} />
-              </ActionIcon>
-            )}
-            {hasTeam && (
-              <Button
-                leftSection={<Users size={16} />}
-                id="team-toggle"
-                aria-label="Team"
-                title={`Team: ${workers.filter((worker) => busy.has(worker.status ?? "")).length} working of ${workers.length}`}
-                aria-expanded={narrowTeam ? teamOpen : wideTeamOpen}
-                onClick={toggleTeam}
-              >
-                Team
-                {workers.length > 0 && (
-                  <span className="team-button-count">
-                    {
-                      workers.filter((worker) => busy.has(worker.status ?? ""))
-                        .length
-                    }
-                    /{workers.length}
-                  </span>
-                )}
-              </Button>
-            )}
-            {!room?.radio && (
-              <Button
-                id="messages-toggle"
-                aria-label="Messages"
-                title={
-                  attentionCount > 0
-                    ? `Messages, ${attentionCount} need you`
-                    : "Messages"
-                }
-                leftSection={<MessageSquare size={16} />}
-                disabled={!lead}
-                onClick={() => {
-                  setWorkspaceSection("messages");
-                  setWorkspaceFocus(undefined);
-                  setWorkspaceOpen(true);
-                }}
-              >
-                <span className="messages-toggle-label">Messages</span>{" "}
-                {attentionCount > 0 && (
-                  <span className="attention-count">{attentionCount}</span>
-                )}
-              </Button>
-            )}
-            {!room?.radio && (
-              <Menu position="bottom-end" withinPortal>
-                <Menu.Target>
-                  <ActionIcon
-                    ref={chatActionsButton}
-                    aria-label="Chat actions"
-                    title="Chat actions"
-                  >
-                    <MoreHorizontal size={18} />
-                  </ActionIcon>
-                </Menu.Target>
-                <Menu.Dropdown>
-                  <Menu.Label>Views</Menu.Label>
-                  {(
-                    [
-                      ["changes", "Changes", FileDiff],
-                      ["plan", "Plan", BookOpen],
-                      ["rules", "Wake rules", Clock3],
-                      ["search", "Search", Search],
-                    ] as const
-                  ).map(([section, label, Icon]) => (
-                    <Menu.Item
-                      key={section}
-                      aria-label={section === "rules" ? "Rules" : label}
-                      data-workspace-section={section}
-                      leftSection={<Icon size={14} />}
-                      onClick={() => {
-                        if (section === "search") {
-                          if (isServerView)
-                            postToShell(
-                              { kind: "studio-server-search" },
-                              serverParentOrigin,
-                            );
-                          else setSearchOpen(true);
-                        } else {
-                          setWorkspaceSection(section);
-                          setWorkspaceOpen(true);
-                        }
-                      }}
-                    >
-                      {label}
-                    </Menu.Item>
-                  ))}
-                  <Menu.Item
-                    id="tasks-toggle"
-                    aria-label={`Current activity${taskCount ? `, ${taskCount} active` : ""}`}
-                    leftSection={<Activity size={14} />}
-                    onClick={() => {
-                      setTaskFocus(undefined);
-                      setTasksOpen(true);
-                    }}
-                  >
-                    Background activity {taskCount || ""}
-                  </Menu.Item>
-                  <Menu.Divider />
-                  <Menu.Label>Chat</Menu.Label>
-                  <Menu.Item
-                    id="chat-actions-settings"
-                    aria-label="Chat settings"
-                    leftSection={<Settings size={14} />}
-                    onClick={() => setSettingsOpen(true)}
-                  >
-                    Chat settings
-                  </Menu.Item>
-                  {hasTeam && (
-                    <Menu.Item
-                      id="chat-actions-team"
-                      aria-label="Team"
-                      leftSection={<Users size={14} />}
-                      onClick={toggleTeam}
-                    >
-                      Team{" "}
+          {!railGeometry && (
+            <header
+              className="workspace-header simple-workspace-header"
+              data-compact-landscape={compactHeader || undefined}
+            >
+              {sidebarCompact ? (
+                <Button
+                  id="sidebar-toggle"
+                  variant="subtle"
+                  size="compact-xs"
+                  aria-label="Back to chats"
+                  aria-expanded={sidebarExpanded}
+                  onClick={toggleSidebar}
+                  leftSection={<ArrowLeft size={18} />}
+                >
+                  Chats
+                </Button>
+              ) : (
+                <ActionIcon
+                  id="sidebar-toggle"
+                  aria-label="Toggle conversations"
+                  aria-expanded={sidebarExpanded}
+                  onClick={toggleSidebar}
+                >
+                  <PanelLeft size={18} />
+                </ActionIcon>
+              )}
+              {conversationTitle}
+              {compactHeader && sessionActivity}
+              <div id="conversation-header-tools" />
+              {!compactHeader && !room?.radio && (
+                <ActionIcon
+                  id="chat-settings-toggle"
+                  aria-label="Chat settings"
+                  title="Chat settings"
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  <Settings2 size={18} />
+                </ActionIcon>
+              )}
+              {!compactHeader && hasTeam && (
+                <Button
+                  leftSection={<Users size={16} />}
+                  id="team-toggle"
+                  aria-label="Team"
+                  title={`Team: ${workers.filter((worker) => busy.has(worker.status ?? "")).length} working of ${workers.length}`}
+                  aria-expanded={narrowTeam ? teamOpen : wideTeamOpen}
+                  onClick={toggleTeam}
+                >
+                  Team
+                  {workers.length > 0 && (
+                    <span className="team-button-count">
                       {
                         workers.filter((worker) =>
                           busy.has(worker.status ?? ""),
                         ).length
                       }
                       /{workers.length}
-                    </Menu.Item>
+                    </span>
                   )}
-                  {agent?.source === "managed" && (
-                    <Menu.Item
-                      id="mark-unread"
-                      aria-label="Mark chat unread"
-                      leftSection={<Mail size={14} />}
-                      disabled={
-                        !agent.readStateSupported ||
-                        !hasCompletedResult(agent) ||
-                        readState.marking.has(agent.id)
-                      }
-                      onClick={() => void readState.markUnread(agent)}
+                </Button>
+              )}
+              {!room?.radio && (!compactHeader || attentionCount > 0) && (
+                <Button
+                  id="messages-toggle"
+                  aria-label="Messages"
+                  title={
+                    attentionCount > 0
+                      ? `Messages, ${attentionCount} need you`
+                      : "Messages"
+                  }
+                  leftSection={<MessageSquare size={16} />}
+                  disabled={!lead}
+                  onClick={() => {
+                    setWorkspaceSection("messages");
+                    setWorkspaceFocus(undefined);
+                    setWorkspaceOpen(true);
+                  }}
+                >
+                  <span className="messages-toggle-label">Messages</span>{" "}
+                  {attentionCount > 0 && (
+                    <span className="attention-count">{attentionCount}</span>
+                  )}
+                </Button>
+              )}
+              {!railGeometry && !room?.radio && (
+                <Menu
+                  position="bottom-end"
+                  withinPortal
+                  withInitialFocusPlaceholder={!compactHeader}
+                >
+                  <Menu.Target>
+                    <ActionIcon
+                      ref={chatActionsButton}
+                      aria-label="Chat actions"
+                      title="Chat actions"
                     >
-                      Mark as unread
-                    </Menu.Item>
-                  )}
-                  {agent?.source === "managed" && (
-                    <>
-                      {(!!agent.inFlight ||
-                        team.some(
-                          (member) =>
-                            (member.status != null &&
-                              busy.has(member.status)) ||
-                            member.status === "queued" ||
-                            member.inFlight,
-                        )) && (
-                        <Menu.Item
-                          data-action="stop-team"
-                          color="red"
-                          leftSection={<Square size={14} />}
-                          onClick={() => {
-                            void run(() =>
-                              post("/api/stop", {
-                                id: agent.rootId ?? agent.id,
-                                descendants: true,
-                              }),
-                            );
-                          }}
-                        >
-                          Stop team
-                        </Menu.Item>
-                      )}
-                      <Menu.Divider />
-                      <Menu.Label>Model actions</Menu.Label>
-                      {(
-                        [
-                          ["compact", "Compact", Minimize2],
-                          ["review", "Review", ShieldCheck],
-                        ] as const
-                      )
-                        .filter(([action]) =>
-                          menuActions(agent.provider ?? undefined).includes(
-                            action,
-                          ),
-                        )
-                        .map(([action, label, Icon]) => (
-                          <Menu.Item
-                            key={action}
-                            aria-label={label}
-                            data-action={action}
-                            leftSection={<Icon size={14} />}
-                            disabled={
-                              busy.has(agent.status ?? "") ||
-                              !!agent.inFlight ||
-                              !!nativeThreadError(agent) ||
-                              !agent.threadId
-                            }
-                            onClick={() => {
-                              void run(() => submitNativeAction(agent, action));
-                            }}
-                          >
-                            {label}
-                            {(!agent.threadId ||
-                              agent.inFlight ||
-                              busy.has(agent.status ?? "") ||
-                              !!nativeThreadError(agent)) && (
-                              <small className="menu-action-help">
-                                {!agent.threadId
-                                  ? "Available after the chat starts."
-                                  : "Wait until the chat is ready."}
-                              </small>
-                            )}
-                          </Menu.Item>
-                        ))}
-                    </>
-                  )}
-                </Menu.Dropdown>
-              </Menu>
-            )}
-          </header>
+                      <MoreHorizontal size={18} />
+                    </ActionIcon>
+                  </Menu.Target>
+                  <Menu.Dropdown>{chatActionsMenu}</Menu.Dropdown>
+                </Menu>
+              )}
+            </header>
+          )}
           {agent && nativeActions.pending(agent.id) && (
             <div
               role="status"
@@ -2796,23 +3067,7 @@ export default function App({ active = true }: { active?: boolean }) {
               </Button>
             </div>
           )}
-          {agent && (
-            <SessionActivity
-              key={`${data.stateDir}:${agent.id}`}
-              activities={backgroundActivities(activities.get(agent.id) || [])}
-              onOpen={(activity) => {
-                if (activity.kind === "agent") open(activity.agentId);
-                else if (lead) {
-                  setTaskFocus({
-                    id: activity.id,
-                    leadId: lead.id,
-                    requestId: randomUUID(),
-                  });
-                  setTasksOpen(true);
-                }
-              }}
-            />
-          )}
+          {!compactHeader && sessionActivity}
           {claudeLoginKey &&
             (accounts.data.accounts.some(
               (item) => item.id === claudeLoginKey,
@@ -2965,7 +3220,11 @@ export default function App({ active = true }: { active?: boolean }) {
               </div>
             ) : room?.radio ? (
               <RadioChat
-                visible={!(mobileClient && sidebar)}
+                visible={
+                  panePath
+                    ? !!panePath.panes.conversation
+                    : !(mobileClient && sidebar)
+                }
                 key={room.id}
                 room={room}
                 data={data}
@@ -2977,7 +3236,20 @@ export default function App({ active = true }: { active?: boolean }) {
               />
             ) : (
               <SelectedConversation
-                visible={!(mobileClient && sidebar)}
+                duo={rowLayout.duo}
+                headerToolsInMenu={menuHeaderTools}
+                onRailToolsChange={railTools.publish}
+                transcriptHeading={
+                  railGeometry && !duoSurface ? conversationTitle : undefined
+                }
+                transcriptTitleBar={
+                  railGeometry && duoSurface ? conversationTitle : undefined
+                }
+                visible={
+                  panePath
+                    ? !!panePath.panes.conversation
+                    : !(mobileClient && sidebar)
+                }
                 projectName={projectName}
                 recentChats={
                   agent?.empty
@@ -3046,27 +3318,87 @@ export default function App({ active = true }: { active?: boolean }) {
             )}
           </UIErrorBoundary>
         </main>
-        {hasTeam &&
-          (narrowTeam ? (
-            <Drawer
-              opened={teamOpen}
-              onClose={() => setTeamOpen(false)}
-              position="right"
-              size="var(--studio-team-size)"
-              padding={0}
-              withCloseButton={false}
-              title="Team"
-              classNames={{ header: "sr-only" }}
-            >
-              {teamPanel}
-            </Drawer>
-          ) : wideTeamOpen ? (
-            teamPanel
-          ) : null)}
+        <div
+          id="workspace-panel-slot"
+          className="workspace-panel-slot"
+          ref={setWorkspacePanelSlot}
+        />
+        {panePath?.divider && (
+          <div
+            aria-hidden="true"
+            className="duo-hinge-gap"
+            style={panePathStyle(panePath.divider)}
+          />
+        )}
+        {hasTeam && (
+          <WorkspacePanelHost
+            title="Team"
+            ariaLabel="Team panel"
+            bare
+            drawerSize="var(--studio-team-size)"
+            inlineSize="var(--studio-team-size)"
+            inlineTarget={workspacePanelSlot}
+            panelLayout={{
+              ...rowLayout.panelLayout,
+              mode: narrowTeam ? "drawer" : "inline",
+            }}
+            panePath={
+              panePath
+                ? {
+                    rect:
+                      panePath.panelKind === "team"
+                        ? panePath.panes.panel
+                        : null,
+                    fullScreen: paneFullScreen,
+                    canFullScreen: panePath.canFullScreen,
+                    onToggleFullScreen: () =>
+                      setPaneFullScreen((full) => !full),
+                  }
+                : undefined
+            }
+            opened={
+              panePath
+                ? panePath.panelKind === "team" && !!panePath.panes.panel
+                : narrowTeam
+                  ? teamOpen
+                  : wideTeamOpen
+            }
+            onClose={panePath ? closePane : closeTeam}
+          >
+            {panePath || (narrowTeam ? teamOpen : wideTeamOpen)
+              ? teamPanel
+              : null}
+          </WorkspacePanelHost>
+        )}
       </div>
-      {!mobileClient && (
+      {(!mobileClient || !!panePath) && (
         <Suspense fallback={null}>
-          <TerminalDock data={data} agent={agent || lead} notify={notify} />
+          <TerminalDock
+            data={data}
+            agent={agent || lead}
+            notify={notify}
+            panePath={
+              panePath
+                ? {
+                    rect:
+                      panePath.panelKind === "terminals"
+                        ? panePath.panes.panel
+                        : null,
+                    opened: panePath.panelKind === "terminals",
+                    onOpen: () => {
+                      setPanePanel("terminals");
+                      setPaneSidebar(false);
+                      setPaneFullScreen(false);
+                    },
+                    onClose: closePane,
+                    fullScreen: paneFullScreen,
+                    canFullScreen: panePath.canFullScreen,
+                    onToggleFullScreen: () =>
+                      setPaneFullScreen((full) => !full),
+                  }
+                : undefined
+            }
+          />
         </Suspense>
       )}
       <SearchOverlay
@@ -3088,7 +3420,25 @@ export default function App({ active = true }: { active?: boolean }) {
             key={`workspace:${lead?.id || "none"}`}
             initialSection={workspaceSection}
             initialFocus={workspaceFocus}
-            opened={workspaceOpen}
+            inlineTarget={workspacePanelSlot}
+            panelLayout={rowLayout.panelLayout}
+            onPanelWidthChange={setPreferredPanelWidthRem}
+            resizeScope={workspaceId || data?.stateDir || "pending"}
+            opened={workspaceOpen && (!panePath || !!panePath.panes.panel)}
+            panePath={
+              panePath
+                ? {
+                    rect:
+                      panePath.panelKind === "workspace"
+                        ? panePath.panes.panel
+                        : null,
+                    fullScreen: paneFullScreen,
+                    canFullScreen: panePath.canFullScreen,
+                    onToggleFullScreen: () =>
+                      setPaneFullScreen((full) => !full),
+                  }
+                : undefined
+            }
             onClose={() => setWorkspaceOpen(false)}
             agent={agent || lead}
             data={chatData!}

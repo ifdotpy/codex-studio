@@ -44,7 +44,8 @@
   content: "⌄";
   position: absolute;
   right: 0;
-  top: 0;
+  inset-block: 0;
+  align-content: center;
 }
 .agent-phase-wait-details {
   position: absolute;
