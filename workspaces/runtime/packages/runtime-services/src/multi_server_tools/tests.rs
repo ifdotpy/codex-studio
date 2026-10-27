@@ -201,6 +201,7 @@ fn context(actor: &Value) -> CallbackContext {
         agent: actor["id"].as_str().unwrap().to_owned(),
         account: "default".into(),
         connection: "connection".into(),
+        stream_id: "host".into(),
         generation: 7,
         epoch: actor["epoch"].as_u64().unwrap(),
         thread: actor["threadId"].as_str().unwrap().to_owned(),
