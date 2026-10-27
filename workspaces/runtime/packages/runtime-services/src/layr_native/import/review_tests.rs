@@ -32,6 +32,10 @@ fn review_submodule_config_symlink_never_writes_source() {
     std::os::unix::fs::symlink(source.join("config"), source.join("metadata/config"))
         .expect("fixture operation succeeds");
     let mut plan = Plan::new(&source, false, &destination).expect("fixture operation succeeds");
+    // This witness exercises config isolation, independently of reflink support.
+    for entry in &mut plan.entries {
+        entry.cloneable = false;
+    }
     plan.repositories.push(Repository {
         relative: PathBuf::from("module"),
         kind: "submodule",
@@ -56,6 +60,19 @@ fn review_submodule_config_symlink_never_writes_source() {
             .expect("fixture operation succeeds")
             .file_type()
             .is_symlink()
+    );
+    assert_eq!(
+        git(
+            &destination,
+            &[
+                "config",
+                "--file",
+                "metadata/config",
+                "--get",
+                "core.worktree"
+            ]
+        ),
+        b"../module\n"
     );
 }
 #[test]
@@ -190,8 +207,20 @@ fn review2_stage_rejects_nested_destination_link() {
     fs::write(source.join("dir/new"), "new").expect("fixture operation succeeds");
     std::os::unix::fs::symlink(&original, destination.join("dir"))
         .expect("fixture operation succeeds");
-    let plan = Plan::new(&source, false, &destination).expect("fixture operation succeeds");
-    drop(plan.stage(&destination));
+    let mut plan = Plan::new(&source, false, &destination).expect("fixture operation succeeds");
+    // A link-following regression must reach the write even without reflink support.
+    for entry in &mut plan.entries {
+        entry.cloneable = false;
+    }
+    let error = plan
+        .stage(&destination)
+        .expect_err("Staging must reject the nested destination link");
+    assert!(
+        matches!(&error, NativeLayrError::Io(error)
+            if error.kind() == std::io::ErrorKind::NotADirectory
+                || error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())),
+        "Staging must reject the directory link during traversal: {error}"
+    );
     assert!(
         !original.join("new").exists(),
         "Staging must never follow a replaced destination"
@@ -208,6 +237,10 @@ fn review2_config_swap_never_edits_source() {
     let original = b"[core]\n\tbare = false\n";
     fs::write(source.join("metadata/config"), original).expect("fixture operation succeeds");
     let mut plan = Plan::new(&source, false, &destination).expect("fixture operation succeeds");
+    // Reach the config swap even when the fixture filesystem cannot clone files.
+    for entry in &mut plan.entries {
+        entry.cloneable = false;
+    }
     plan.repositories.push(Repository {
         relative: PathBuf::from("module"),
         kind: "submodule",
@@ -228,10 +261,36 @@ fn review2_config_swap_never_edits_source() {
             std::os::unix::fs::symlink(original_path, copied).expect("fixture operation succeeds");
         }))
     });
-    drop(plan.stage(&destination));
+    plan.stage(&destination)
+        .expect("Staging must complete after the copied config is swapped");
+    REVIEW_CONFIG_SWAP.with(|hook| {
+        assert!(
+            hook.borrow().is_none(),
+            "Staging must reach the config swap"
+        );
+    });
     assert_eq!(
         fs::read(source.join("metadata/config")).expect("fixture operation succeeds"),
         original
+    );
+    assert!(
+        !fs::symlink_metadata(destination.join("metadata/config"))
+            .expect("fixture operation succeeds")
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        git(
+            &destination,
+            &[
+                "config",
+                "--file",
+                "metadata/config",
+                "--get",
+                "core.worktree"
+            ]
+        ),
+        b"../module\n"
     );
 }
 #[test]
@@ -269,7 +328,11 @@ fn review2_stages_linked_repository_root_mode() {
         .expect("fixture operation succeeds");
     fs::set_permissions(&destination, fs::Permissions::from_mode(0o700))
         .expect("fixture operation succeeds");
-    let plan = Plan::new(&source, true, &destination).expect("fixture operation succeeds");
+    let mut plan = Plan::new(&source, true, &destination).expect("fixture operation succeeds");
+    // Root mode restoration applies to copies as well as file clones.
+    for entry in &mut plan.entries {
+        entry.cloneable = false;
+    }
     plan.stage(&destination)
         .expect("fixture operation succeeds");
     assert_eq!(

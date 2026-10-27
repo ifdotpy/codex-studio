@@ -128,6 +128,7 @@ pub struct PreparationFilesystem {
 struct NativeLayrFilesystem {
     identity: crate::layr_native::settings::StoreAssociation,
     prepared_identity: Option<crate::layr_native::settings::StoreAssociation>,
+    is_reviewer: bool,
     root: PathBuf,
     environment: Map<String, Value>,
     state_root: PathBuf,
@@ -294,9 +295,7 @@ impl PreparationResources {
             } else {
                 None
             };
-            let root = prepared_identity
-                .as_ref()
-                .unwrap_or(&identity)
+            let root = identity
                 .resolve(state_root)
                 .map_err(|_| invalid("native-layr/store"))?;
             let environment = crate::layr_native::thread_environment_in_store(state_root, &root);
@@ -313,6 +312,7 @@ impl PreparationResources {
             Arc::make_mut(inputs).native_layr = Some(Ok(NativeLayrFilesystem {
                 identity,
                 prepared_identity,
+                is_reviewer: record["role"] == "reviewer",
                 root,
                 environment,
                 state_root: state_root.to_path_buf(),
@@ -338,6 +338,7 @@ impl PreparationResources {
             .map_err(|_| invalid("native-layr/store"))?;
         if (captured.identity != identity && captured.prepared_identity.as_ref() != Some(&identity))
             || captured.state_root != state_root
+            || captured.is_reviewer != (record["role"] == "reviewer")
         {
             return Err(self.native_layr_changed("native-layr/store-changed"));
         }
@@ -404,14 +405,21 @@ impl PreparationResources {
     ) -> Result<Self, WorkerError> {
         let record = if prepared_cwd.is_some() {
             let agent_id = agent_id.to_owned();
-            store
+            match store
                 .read_async("runtime-services/thread-receipt/cwd", move |tx| {
                     Ok::<_, WorkerError>(
                         AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                             .map(|agent| agent.value()),
                     )
                 })
-                .await?
+                .await
+            {
+                Ok(record) => record,
+                Err(error) if crate::account_worker::agent_fault::data_fault(&error).is_some() => {
+                    None
+                }
+                Err(error) => return Err(error),
+            }
         } else {
             None
         };
@@ -1971,6 +1979,190 @@ mod resource_tests {
             .expect("a review object is read as a review child");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_layr_paused_legacy_thread_uses_the_canonical_cwd_of_its_saved_alias() {
+        let directory = tempfile::tempdir().expect("state");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("store"),
+        );
+        let root = crate::layr_native::store_path(store.root());
+        let cwd = root.join("projects/project/lines/main");
+        std::fs::create_dir_all(&cwd).expect("legacy line");
+        let alias = directory.path().join("alias");
+        std::os::unix::fs::symlink(&root, &alias).expect("store alias");
+        let stored_cwd = alias.join("projects/project/lines/main");
+        let record = json!({"id":"worker", "rootId":"worker", "epoch":1,
+            "status":"paused", "isLead":true, "role":"implementer", "provider":"codex",
+            "model":"fake-model",
+            "accountKey":"default", "cwd":stored_cwd, "workspaceMode":"layr-native",
+            "layrReady":true, "nativeEffort":null, "effort":null, "autoWake":false});
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(record).expect("agent"))
+            })
+            .await
+            .expect("saved legacy worker");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        let prepared = crate::account_worker::preparation::prepare_native_thread(
+            Arc::clone(&store),
+            &resources,
+            "worker",
+            "restore-thread",
+            1,
+        )
+        .await
+        .expect("paused legacy thread preparation preserves an equivalent cwd alias");
+        assert_eq!(prepared.params["cwd"], json!(cwd));
+        assert_eq!(
+            prepared.params["config"]["shell_environment_policy.set.LAYR_ROOT"],
+            json!(alias)
+        );
+        let saved = AgentRepository::get(
+            &store.test_reader().expect("reader"),
+            &AgentId::from("worker"),
+        )
+        .expect("agent")
+        .expect("saved agent")
+        .value();
+        assert_eq!(saved["cwd"], json!(stored_cwd));
+        assert_eq!(saved["status"], "paused");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_layr_snapshot_captures_store_aliases_and_reviewer_confinement_before_sql() {
+        let directory = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let state_root = store.root().to_path_buf();
+        let default_root = crate::layr_native::store_path(&state_root);
+        std::fs::create_dir_all(&default_root).expect("default store");
+        let custom = tempfile::tempdir().expect("custom store");
+        let alias = directory.path().join("alias");
+        std::os::unix::fs::symlink(&default_root, &alias).expect("default alias");
+        crate::layr_native::settings::configure(&state_root, Some(custom.path()))
+            .expect("selection");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        for (root, ready, expected_root) in [
+            (json!(alias), false, alias.clone()),
+            (json!(custom.path()), false, custom.path().to_owned()),
+            (Value::Null, false, custom.path().to_owned()),
+            (Value::Null, true, default_root.clone()),
+        ] {
+            let record = json!({"id":"reviewer", "rootId":"reviewer", "epoch":1,
+                "isLead":true, "role":"reviewer", "provider":"claude", "status":"queued",
+                "cwd":"/scratch", "workspaceMode":"layr-native", "layrReady":ready,
+                "layrReadCwd":default_root.join("projects/project/lines/main"),
+                "layrStoreRoot":root, "layrScratch":"/scratch"});
+            let saved = record.clone();
+            store
+                .transaction_with(move |tx| {
+                    AgentRepository::put(tx, &AgentRecord::from_value(saved).expect("reviewer"))
+                })
+                .await
+                .expect("saved reviewer");
+            let expected_environment =
+                crate::layr_native::thread_environment_for_record(&state_root, &record)
+                    .expect("environment");
+            assert_eq!(expected_environment["LAYR_ROOT"], json!(expected_root));
+            if record["layrStoreRoot"] == json!(alias) && cfg!(target_os = "linux") {
+                assert_eq!(
+                    expected_environment["LAYR_SOCKET"],
+                    json!(crate::layr_native::socket_path(&state_root))
+                );
+            }
+            let captured = resources
+                .for_sql(&state_root, &record, None)
+                .await
+                .expect("capture before SQL");
+            let receipt = resources
+                .for_receipt(&store, "reviewer", Some("/scratch"))
+                .await
+                .expect("receipt capture before SQL");
+            let state_root = state_root.clone();
+            store
+                .transaction_with(move |tx| {
+                    for resources in [captured, receipt] {
+                        let mut current = record.clone();
+                        current["name"] = json!("Renamed after capture");
+                        let snapshot = thread_snapshot(
+                            tx,
+                            &resources,
+                            &current,
+                            "connection",
+                            &state_root,
+                            None,
+                        )?;
+                        for (name, value) in &expected_environment {
+                            assert_eq!(
+                                &snapshot.guidance.thread_config
+                                    [&format!("shell_environment_policy.set.{name}")],
+                                value
+                            );
+                        }
+                        let options = &snapshot.settings.claude_options;
+                        assert_eq!(
+                            options["sandbox"]["filesystem"]["denyWrite"],
+                            json!([expected_root])
+                        );
+                        assert_eq!(
+                            options["sandbox"]["filesystem"]["allowWrite"],
+                            json!(["/scratch"])
+                        );
+                        assert_eq!(options["nativeReviewerEnvironment"]["TMPDIR"], "/scratch");
+                        assert!(
+                            options["nativeReviewerEnvironment"]
+                                .get("LAYR_ROOT")
+                                .is_none()
+                        );
+                        for (key, value) in [
+                            ("layrStoreRoot", json!("/changed-store")),
+                            ("layrScratch", json!("/changed-scratch")),
+                            ("role", json!("implementer")),
+                        ] {
+                            let mut changed = current.clone();
+                            changed[key] = value;
+                            assert!(
+                                thread_snapshot(
+                                    tx,
+                                    &resources,
+                                    &changed,
+                                    "connection",
+                                    &state_root,
+                                    None
+                                )
+                                .is_err(),
+                                "{key}"
+                            );
+                        }
+                        if current["layrStoreRoot"].is_null() {
+                            current["layrReady"] = json!(!ready);
+                            assert!(
+                                thread_snapshot(
+                                    tx,
+                                    &resources,
+                                    &current,
+                                    "connection",
+                                    &state_root,
+                                    None
+                                )
+                                .is_err()
+                            );
+                        }
+                    }
+                    Ok::<_, WorkerError>(())
+                })
+                .await
+                .expect("snapshots do not touch the filesystem inside SQL");
+        }
+    }
+
     /// VM agents use current definitions even when their saved source is legacy.
     /// Host Codex agents keep that saved source. Both catalogs include sign-in.
     /// A fixture description distinguishes their selection without removing tools.
@@ -2529,7 +2721,7 @@ mod workspace_fence_tests {
                 .native_layr(state.path(), &normalized)
                 .expect("normalized association")
                 .environment["LAYR_ROOT"],
-            json!(root)
+            json!(alias)
         );
         let changed = json!({"workspaceMode":"layr-native", "layrReady":true, "cwd":"/other/projects/p/lines/main"});
         assert!(resources.native_layr(state.path(), &changed).is_err());
@@ -2618,14 +2810,14 @@ mod workspace_fence_tests {
             .await
             .expect("store");
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
-            .expect("resources")
-            .capture_filesystem(None)
-            .capture_native_layr(
-                Path::new("/state"),
-                &json!({"workspaceMode":"layr-native", "layrStoreRoot":"/state/layr-native/store", "layrScratch":"/private/reviewer-scratch"}),
+            .expect("resources");
+        let native_resources: Vec<_> = ["implementer", "reviewer"].into_iter().map(|role| {
+            resources.clone().capture_filesystem(None).capture_native_layr(
+                Path::new("/state"), &json!({"workspaceMode":"layr-native", "role":role,
+                    "layrStoreRoot":"/state/layr-native/store", "layrScratch":"/private/reviewer-scratch"}),
                 None,
-            )
-            .expect("native Layr inputs");
+            ).expect("native filesystem inputs")
+        }).collect();
         store
             .transaction_with(move |tx| {
                 let root = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
@@ -2707,7 +2899,11 @@ mod workspace_fence_tests {
                         }
                         let snapshot = thread_snapshot(
                             tx,
-                            &resources,
+                            if mode == "layr-native" {
+                                &native_resources[usize::from(role == "reviewer")]
+                            } else {
+                                &resources
+                            },
                             &record,
                             "connection",
                             Path::new("/state"),
