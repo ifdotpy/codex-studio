@@ -9,6 +9,8 @@ pub(crate) mod m2026_10_26_canvas;
 mod m2026_10_26_provider_identity;
 mod m2026_10_26_registry;
 mod m2026_10_26_terminal_errors;
+pub(crate) mod m2026_10_27_cost_index;
+mod m2026_10_27_scheduler_indexes;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -51,6 +53,11 @@ const OCTOBER_26: MigrationDate = MigrationDate {
     month: 10,
     day: 26,
 };
+const OCTOBER_27: MigrationDate = MigrationDate {
+    year: 2026,
+    month: 10,
+    day: 27,
+};
 const OCTOBER_22: MigrationDate = MigrationDate {
     year: 2026,
     month: 10,
@@ -79,6 +86,7 @@ const RETIRED_WAITS_ID: &str = "2026-10-26-retired-waits";
 const SUPERVISOR_ID: &str = "2026-10-26-supervisor-journal";
 /// Stable migration identifier; includes the introduction date.
 const TERMINAL_ERRORS_ID: &str = "2026-10-26-terminal-errors";
+const SCHEDULER_INDEXES_ID: &str = "2026-10-27-scheduler-indexes";
 const REMOVE_AFTER_SOURCE_RETIRED: &str = "Supported installations and restorable backups no longer admit the source format; pending historical effects are converted or terminal";
 
 #[derive(Clone, Copy)]
@@ -243,6 +251,16 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
+            id: SCHEDULER_INDEXES_ID,
+            introduced: OCTOBER_27,
+            target: MigrationTarget::Canvas,
+            supported_source: "Canvas without scheduler indexes",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_27_scheduler_indexes::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: RETIRED_WAITS_ID,
             introduced: OCTOBER_26,
             target: MigrationTarget::Canvas,
@@ -277,6 +295,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_26_terminal_errors::apply(c.transaction, c.canvas()?),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-27-cost-group-cover",
+            introduced: OCTOBER_27,
+            target: MigrationTarget::Analytics,
+            supported_source: "Cost groups with the non-covering lookup index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_27_cost_index::apply(c.transaction),
     },
     &RegistryMigration,
 ];

@@ -271,6 +271,13 @@
         "type": "index"
       },
       {
+        "create_order": 287,
+        "name": "runtime_accepted_archive_due",
+        "sql": "CREATE INDEX runtime_accepted_archive_due ON runtime_operation_receipts(COALESCE(json_extract(result,'$.nextAttemptAt'),0),id) WHERE signature='accepted-archive-v1' AND json_extract(result,'$.status') IN ('pending','retryable','unknown')",
+        "table": "runtime_operation_receipts",
+        "type": "index"
+      },
+      {
         "create_order": 54,
         "name": "runtime_access_nonce_age",
         "sql": "CREATE INDEX runtime_access_nonce_age ON runtime_access_nonces(created)",
@@ -386,6 +393,13 @@
         "create_order": 82,
         "name": "runtime_agent_root",
         "sql": "CREATE INDEX runtime_agent_root ON runtime_agents(\n                    json_extract(record,'$.rootId'))",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "create_order": 288,
+        "name": "runtime_agent_unsettled_legacy",
+        "sql": "CREATE INDEX runtime_agent_unsettled_legacy ON runtime_agents(id) WHERE (json_extract(record,'$.workspaceMode')='image' OR json_extract(record,'$.imageWorkspace')=1) AND COALESCE(json_extract(record,'$.legacyWorkspaceSettled'),0)=0",
         "table": "runtime_agents",
         "type": "index"
       },
@@ -799,6 +813,27 @@
         "create_order": 4,
         "name": "sync_entities_collection_seq",
         "sql": "CREATE INDEX sync_entities_collection_seq ON sync_entities(collection,seq)",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "create_order": 286,
+        "name": "sync_entities_invalid_payload",
+        "sql": "CREATE INDEX sync_entities_invalid_payload ON sync_entities(collection,id)\n        WHERE deleted=0 AND collection NOT LIKE 'transcript:%' AND NOT json_valid(payload)",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "create_order": 285,
+        "name": "sync_entities_live_agent_scope",
+        "sql": "CREATE INDEX sync_entities_live_agent_scope ON sync_entities(json_extract(payload,'$.value.agent'),collection,seq)\n        WHERE deleted=0 AND collection NOT LIKE 'transcript:%' AND json_valid(payload)",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "create_order": 284,
+        "name": "sync_entities_live_root_scope",
+        "sql": "CREATE INDEX sync_entities_live_root_scope ON sync_entities(json_extract(payload,'$.value.rootId'),collection,seq)\n        WHERE deleted=0 AND collection NOT LIKE 'transcript:%' AND json_valid(payload)",
         "table": "sync_entities",
         "type": "index"
       },

@@ -581,15 +581,15 @@ fn authorization_events(intent: &TurnIntent) -> Vec<crate::submit_gates::StoredE
 /// paths: the recipient, senders, rooms, complaints and the follow-up
 /// metadata the events name, plus the few projects. Whole agent, room,
 /// complaint and event-metadata tables are never read.
-fn authorization_records(
+fn authorization_inputs(
     db: &rusqlite::Connection,
     intent: &TurnIntent,
 ) -> Result<crate::submit_gates::AuthorizationRecords, WorkerError> {
-    event_authorization_records(db, &intent.agent_id, authorization_events(intent))
+    event_authorization_inputs(db, &intent.agent_id, authorization_events(intent))
 }
 
-/// [`authorization_records`] of `events` for their recipient `agent_id`.
-pub(in crate::account_worker) fn event_authorization_records(
+/// [`authorization_inputs`] of `events` for their recipient `agent_id`.
+pub(in crate::account_worker) fn event_authorization_inputs(
     db: &rusqlite::Connection,
     agent_id: &str,
     events: Vec<crate::submit_gates::StoredEvent>,
@@ -604,8 +604,12 @@ pub(in crate::account_worker) fn event_authorization_records(
     scope.add_private_members(&rooms);
     Ok(crate::submit_gates::AuthorizationRecords {
         recipient_id: agent_id.to_owned(),
-        agents: records_by_ids(db, "runtime_agents", &scope.agents)?,
-        projects: records(db, "runtime_projects")?,
+        agents: crate::submit_gates::decode_authority_rows(records_by_ids(
+            db,
+            "runtime_agents",
+            &scope.agents,
+        )?),
+        projects: crate::submit_gates::decode_authority_rows(records(db, "runtime_projects")?),
         resolved_paths: BTreeMap::new(),
         rooms,
         complaints: records_by_ids(db, "runtime_complaints", &scope.complaints)?,
@@ -623,7 +627,7 @@ pub(super) async fn authorization_rows(
     store
         .read_async(
             "runtime-services/account_worker_authorization_rows",
-            move |tx| authorization_records(tx, &intent),
+            move |tx| authorization_inputs(tx, &intent),
         )
         .await
 }
@@ -635,39 +639,30 @@ pub(in crate::account_worker) fn authorization_paths(
     rows: &crate::submit_gates::AuthorizationRecords,
 ) -> Result<BTreeMap<String, String>, WorkerError> {
     let mut resolved_paths = BTreeMap::new();
-    for (rows, key) in [(&rows.agents, "cwd"), (&rows.projects, "path")] {
-        for raw in rows.values() {
-            let record: Value = serde_json::from_str(raw).map_err(|_| invalid(key))?;
-            if key == "cwd" && record.get("executionMode").and_then(Value::as_str) == Some("vm") {
-                // VM cwd is guest-owned. Give authorization a stable,
-                // normalized host-shaped identity without resolving it on
-                // the host or treating it as a filesystem location.
-                if let Some(path) = record
-                    .get(key)
-                    .and_then(Value::as_str)
-                    .filter(|p| !p.is_empty())
-                {
-                    let agent_id = record
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| invalid("vm-agent-id"))?;
-                    let identity = vm_guest_identity(agent_id, path);
-                    resolved_paths.insert(path.to_owned(), identity);
-                }
-                continue;
-            }
-            if let Some(path) = record
-                .get(key)
-                .and_then(Value::as_str)
-                .filter(|p| !p.is_empty())
-            {
-                let resolved =
-                    studio_runtime_store::path_identity::CanonicalPath::ancestor_nonstrict(
-                        Path::new(path),
-                    )
-                    .map_err(|_| invalid(key))?;
-                resolved_paths.insert(path.into(), resolved.to_string_lossy().into_owned());
-            }
+    for row in rows.agents.values() {
+        let row = row.as_ref().map_err(|_| invalid("cwd"))?;
+        if let Some(path) = row.cwd.as_deref().filter(|path| !path.is_empty()) {
+            let resolved = if row.execution_mode.as_deref() == Some("vm") {
+                // Guest paths keep a stable identity without host filesystem resolution.
+                vm_guest_identity(
+                    row.id.as_deref().ok_or_else(|| invalid("vm-agent-id"))?,
+                    path,
+                )
+            } else {
+                CanonicalPath::ancestor_nonstrict(Path::new(path))
+                    .map_err(|_| invalid("cwd"))?
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            resolved_paths.insert(path.to_owned(), resolved);
+        }
+    }
+    for row in rows.projects.values() {
+        let row = row.as_ref().map_err(|_| invalid("path"))?;
+        if let Some(path) = row.path.as_deref().filter(|path| !path.is_empty()) {
+            let resolved =
+                CanonicalPath::ancestor_nonstrict(Path::new(path)).map_err(|_| invalid("path"))?;
+            resolved_paths.insert(path.to_owned(), resolved.to_string_lossy().into_owned());
         }
     }
     Ok(resolved_paths)
@@ -760,7 +755,7 @@ pub(super) fn authorize(
             return Err(refusal("radio/turn-selection-changed".into()));
         }
     }
-    let mut rows = authorization_records(tx, intent)?;
+    let mut rows = authorization_inputs(tx, intent)?;
     rows.resolved_paths = filesystem.resolved_paths.clone();
     let checked = crate::submit_gates::AuthorizationSnapshot::from_records(&rows)
         .map_err(|e| refusal(e.to_string()))?;
@@ -2050,7 +2045,9 @@ mod resource_tests {
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
             .expect("resources");
         // A selected store is canonicalized by settings::configure; a recorded root is kept as given.
-        let canonical_custom = std::fs::canonicalize(custom.path()).expect("canonical custom");
+        let canonical_custom = CanonicalPath::existing(custom.path())
+            .expect("canonical custom")
+            .into_path_buf();
         for (root, ready, expected_root) in [
             (json!(alias), false, alias.clone()),
             (json!(custom.path()), false, custom.path().to_owned()),

@@ -7,6 +7,31 @@ use serde_json::{Value, json};
 use studio_runtime_store::{RuntimeStore, StoreError};
 
 #[tokio::test]
+async fn open_recreates_entity_scope_indexes_on_existing_state() {
+    let directory = temporary_state("entity-scope-index");
+    drop(
+        RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("fresh state"),
+    );
+    let connection = Connection::open(directory.path().join("canvas.sqlite3")).expect("canvas");
+    connection
+        .execute_batch(
+            "DROP INDEX sync_entities_live_agent_scope; DROP INDEX sync_entities_live_root_scope; DROP INDEX sync_entities_invalid_payload;",
+        )
+        .expect("old catalog");
+    drop(connection);
+    drop(
+        RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("upgrade existing state"),
+    );
+    let connection = Connection::open(directory.path().join("canvas.sqlite3")).expect("canvas");
+    let count: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('sync_entities_live_agent_scope','sync_entities_live_root_scope','sync_entities_invalid_payload')", [], |row| row.get(0)).expect("catalog");
+    assert_eq!(count, 3);
+}
+
+#[tokio::test]
 async fn open_recreates_the_task_indexes_rust_readers_rely_on() {
     let state_directory = temporary_state("task-index");
     let state = state_directory.path();
@@ -454,4 +479,93 @@ async fn rust_fresh_state_catalog_is_deterministic_and_survives_reopen() {
         snapshot,
         "reopen preserves the full catalog"
     );
+}
+
+#[tokio::test]
+async fn scheduler_probes_use_bounded_indexes() {
+    let root = temporary_state("scheduler-indexes");
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("fresh store");
+    let db = store.test_reader().expect("reader");
+    for (sql, index) in [
+        (
+            "EXPLAIN QUERY PLAN SELECT json_extract(result,'$.taskId'),result FROM runtime_operation_receipts WHERE signature='accepted-archive-v1' AND json_extract(result,'$.status') IN ('pending','retryable','unknown') AND COALESCE(json_extract(result,'$.nextAttemptAt'),0)<=1 ORDER BY COALESCE(json_extract(result,'$.nextAttemptAt'),0),id LIMIT 20",
+            "runtime_accepted_archive_due",
+        ),
+        (
+            "EXPLAIN QUERY PLAN SELECT CAST(json_extract(result,'$.nextAttemptAt') AS REAL) FROM runtime_operation_receipts WHERE signature='accepted-archive-v1' AND json_extract(result,'$.status') IN ('pending','retryable','unknown') AND COALESCE(json_extract(result,'$.nextAttemptAt'),0)>1 AND json_type(result,'$.nextAttemptAt') IN ('integer','real') AND CAST(json_extract(result,'$.nextAttemptAt') AS REAL)>1 ORDER BY COALESCE(json_extract(result,'$.nextAttemptAt'),0),id LIMIT 1",
+            "runtime_accepted_archive_due",
+        ),
+        (
+            "EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE legacy_unsettled=1)",
+            "runtime_agent_unsettled_legacy",
+        ),
+    ] {
+        let mut statement = db.prepare(sql).expect("plan");
+        let plan: Vec<String> = statement
+            .query_map([], |row| row.get(3))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        assert!(plan.iter().any(|line| line.contains(index)), "{plan:?}");
+        if index == "runtime_accepted_archive_due" {
+            assert!(plan.iter().any(|line| line.contains("SEARCH")), "{plan:?}");
+        }
+        assert!(
+            !plan.iter().any(|line| line.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn scheduler_indexes_upgrade_and_rollback_with_retained_receipts() {
+    let root = temporary_state("scheduler-index-upgrade");
+    drop(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("fresh store"),
+    );
+    let db = Connection::open(root.path().join("canvas.sqlite3")).expect("canvas");
+    let catalog = |db: &Connection| -> Vec<(String, String)> {
+        db.prepare("SELECT name,sql FROM sqlite_master WHERE name IN ('runtime_accepted_archive_due','runtime_agent_unsettled_legacy') ORDER BY name")
+            .expect("catalog").query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("indexes").collect::<Result<_, _>>().expect("rows")
+    };
+    let fresh_indexes = catalog(&db);
+    db.execute_batch("DROP INDEX runtime_accepted_archive_due; DROP INDEX runtime_agent_unsettled_legacy; INSERT INTO runtime_operation_receipts VALUES('old','accepted-archive-v1','invalid');").expect("old state");
+    drop(db);
+    assert!(
+        RuntimeStore::open(Some(root.path())).await.is_err(),
+        "invalid indexed receipt blocks migration"
+    );
+    let db = Connection::open(root.path().join("canvas.sqlite3")).expect("canvas");
+    let count: i64 = db.query_row("SELECT count(*) FROM sqlite_master WHERE name IN ('runtime_accepted_archive_due','runtime_agent_unsettled_legacy')", [], |row| row.get(0)).expect("catalog");
+    assert_eq!(count, 0, "failed migration rolls back indexes");
+    let receipt: String = db
+        .query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE id='old'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("receipt");
+    assert_eq!(receipt, "invalid");
+    db.execute(
+        "UPDATE runtime_operation_receipts SET result=?1 WHERE id='old'",
+        [r#"{"status":"pending","nextAttemptAt":42}"#],
+    )
+    .expect("repair fixture");
+    drop(db);
+    for _ in 0..2 {
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("upgrade and reopen");
+        let db = store.test_reader().expect("reader");
+        let due: f64 = db.query_row("SELECT json_extract(result,'$.nextAttemptAt') FROM runtime_operation_receipts WHERE id='old'", [], |row| row.get(0)).expect("retained receipt");
+        assert_eq!(due, 42.0);
+        let count: i64 = db.query_row("SELECT count(*) FROM sqlite_master WHERE name IN ('runtime_accepted_archive_due','runtime_agent_unsettled_legacy')", [], |row| row.get(0)).expect("catalog");
+        assert_eq!(count, 2);
+        assert_eq!(catalog(&db), fresh_indexes, "fresh and migrated DDL agree");
+    }
 }

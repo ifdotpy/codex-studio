@@ -2,10 +2,36 @@ import { SubscriptionReplyKind } from "./generated/api";
 import { required } from "./components/componentTestFixtures.ts";
 import type { components } from "./generated/api";
 import { afterEach, expect, it, vi } from "vitest";
-import { readEntities } from "../tests/fixtures/rust-ui-fixture.ts";
+import {
+  fixtureProjectDirectory,
+  readEntities,
+} from "../tests/fixtures/rust-ui-fixture.ts";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { readResourceBaselines } from "../tests/fixtures/resource-baselines.ts";
 
 afterEach(() => vi.unstubAllGlobals());
+it("uses a disposable project instead of the enclosing checkout", () => {
+  const root = mkdtempSync(join(tmpdir(), "studio-fixture-project-"));
+  try {
+    const project = fixtureProjectDirectory(root);
+    expect(project).toBe(join(root, "project"));
+    expect(
+      execFileSync("git", ["-C", project, "rev-parse", "--verify", "HEAD"], {
+        encoding: "utf8",
+      }).trim(),
+    ).toMatch(/^[0-9a-f]{40,64}$/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+it("refuses a project inside the enclosing checkout", () => {
+  expect(() => fixtureProjectDirectory(process.cwd())).toThrow(
+    /outside the enclosing checkout/,
+  );
+});
 it("reads scoped fixture baselines from fragmented SSE and closes the stream", async () => {
   const resource = {
     kind: "agentDetail",

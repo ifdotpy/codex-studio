@@ -46,7 +46,10 @@ const validThemes = new Set(["auto", "light", "dark"]);
 const validFonts = new Set<string>(Object.keys(fontFamilies));
 
 export function parseStudioPreferences(value: string): StudioPreferences {
-  const parsed: unknown = JSON.parse(value);
+  return normalizeStudioPreferences(JSON.parse(value));
+}
+
+export function normalizeStudioPreferences(parsed: unknown): StudioPreferences {
   if (!parsed || typeof parsed !== "object")
     throw new Error("Invalid preferences");
   const candidate = parsed as Record<string, unknown>;

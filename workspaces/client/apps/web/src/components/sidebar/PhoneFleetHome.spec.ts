@@ -1,3 +1,4 @@
+import { cacheFixture } from "../../../tests/cacheFixture.ts";
 import { waitForFixturePort } from "../../../tests/fixture-readiness.ts";
 import {
   test,
@@ -55,9 +56,9 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
         await page.addInitScript(
           ({ scheme, lead }) => {
             localStorage.setItem("mantine-color-scheme-value", scheme);
-            localStorage.setItem("codex-mobile-opened", JSON.stringify(lead));
+            localStorage.setItem("codex-mobile-opened", lead);
           },
-          { scheme, lead: lead!.id },
+          { scheme, lead: cacheFixture(lead!.id) },
         );
         await page.goto(origin);
         const board = page.locator("#sidebar");
@@ -260,11 +261,8 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
     });
     await desktop.addInitScript(
       ({ stateDir, id }) =>
-        localStorage.setItem(
-          `codex-desktop-opened:${stateDir}`,
-          JSON.stringify(id),
-        ),
-      { stateDir: snapshot.stateDir, id: lead!.id },
+        localStorage.setItem(`codex-desktop-opened:${stateDir}`, id),
+      { stateDir: snapshot.stateDir, id: cacheFixture(lead!.id) },
     );
     await desktop.goto(origin);
     await expect(desktop.locator("#conversation-title")).toContainText(

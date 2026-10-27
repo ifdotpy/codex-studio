@@ -22,6 +22,7 @@ import {
 } from "../fixtures/setup-controls.ts";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,6 +48,16 @@ test.afterEach(async ({ browser }, testInfo) => {
 
 test("execution settings ui", async ({ browser: _browser }) => {
   test.setTimeout(60_000);
+  const checkout = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+    encoding: "utf8",
+  }).trim();
+  const worktrees = () =>
+    execFileSync("git", ["worktree", "list", "--porcelain"], {
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter((line) => line.startsWith(`worktree ${checkout}/.worktrees/`));
+  const worktreesBefore = worktrees();
   const root = await mkdtemp(join(tmpdir(), "codex-execution-settings-ui-"));
   const models = [
     {
@@ -620,6 +631,12 @@ test("execution settings ui", async ({ browser: _browser }) => {
     assert.equal(overridden.model, "gpt-5.6-sol");
     assert.equal(overridden.effort, "low");
     assert.equal(overridden.fastMode, false);
+    await waitFor(async () => {
+      const agents = await state();
+      return [first.id, overridden.id].every((id) =>
+        agents.find((agent) => agent.id === id)?.cwd?.includes("/.worktrees/"),
+      );
+    });
     await page.setViewportSize({ width: 1440, height: 960 });
     await openSettings("Subagent defaults");
     assert.equal(await modelValue(defaultModel), "gpt-6-luna");
@@ -869,6 +886,11 @@ test("execution settings ui", async ({ browser: _browser }) => {
       running!.effort,
     );
     assert.deepEqual(errors, []);
+    assert.deepEqual(
+      worktrees(),
+      worktreesBefore,
+      "fixture workers must not register worktrees in the checkout",
+    );
     console.log(
       "PASS execution settings UI: short model rows and recommended tags, keyboard list, main agent reasoning/Fast, model choices, saved defaults, child inheritance and overrides, dependent reset notice, immediate save, permission guards, nested Escape, next-turn settings, lost-response replay across reload, active worker unchanged, responsive layout. Evidence " +
         root,

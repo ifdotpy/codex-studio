@@ -9,7 +9,8 @@ use std::{
     os::unix::net::UnixStream,
 };
 use studio_runtime_process::{
-    EventCursor, EventKind, OperationId, OperationStatusRequest, SupervisorHandle, WriteRequest,
+    EventCursor, EventKind, OperationId, OperationStatusRequest, OperationStatusResult,
+    SupervisorHandle, WriteRequest, WriteResult,
 };
 use support::*;
 
@@ -65,7 +66,9 @@ done
             extra: BTreeMap::new(),
         })
         .unwrap();
-    assert!(receipt.accepted);
+    let OperationStatusResult::Accepted { native_id, .. } = receipt else {
+        panic!("expected accepted receipt")
+    };
     let duplicate = client
         .write(WriteRequest {
             handle: handle.clone(),
@@ -75,8 +78,10 @@ done
             extra: BTreeMap::new(),
         })
         .unwrap();
-    assert!(duplicate.duplicate);
-    assert_eq!(duplicate.remote_id, receipt.native_id);
+    let WriteResult::Duplicate { remote_id, .. } = duplicate else {
+        panic!("expected duplicate")
+    };
+    assert_eq!(remote_id, Some(native_id));
     client
         .write(WriteRequest {
             handle: handle.clone(),

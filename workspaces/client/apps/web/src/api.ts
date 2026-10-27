@@ -667,8 +667,7 @@ export function createApiScope(options: ApiScopeOptions) {
         requestOptions.readMetadata.etag =
           response.headers.get("ETag") || undefined;
       if (!response.ok) throw errorPayload(result.error, response.status);
-      if (!("data" in result)) return undefined;
-      if (result.data === null)
+      if (!("data" in result) || result.data == null)
         throw new Error("Successful response did not contain a body.");
       return result.data as GetResult<Path>;
     } catch (error) {
@@ -743,11 +742,7 @@ export function createApiScope(options: ApiScopeOptions) {
         throw new ApiSchemaMismatchError(true);
       if (!result.response.ok)
         throw errorPayload(result.error, result.response.status);
-      if (!("data" in result)) {
-        await mutation?.finish();
-        return undefined as PostResult<Path>;
-      }
-      if (result.data === null)
+      if (!("data" in result) || result.data == null)
         throw new Error("Successful response did not contain a body.");
       const data = result.data as PostResult<Path>;
       await mutation?.finish();
@@ -872,9 +867,31 @@ export function createApiScope(options: ApiScopeOptions) {
     return session;
   }
 
+  const cacheKey = (key: string) =>
+    [
+      "codex-confirmed-chats",
+      "codex-sidebar-collapsed",
+      "codex-team-open",
+      "codex-mobile-opened",
+    ].includes(key) ||
+    [
+      "codex.terminal.",
+      "codex-desktop-opened:",
+      "project-last-server:",
+      "studio-recovered-limit:",
+      "studio-chat-scroll:",
+      "codex-chat-seen:",
+    ].some((prefix) => key.startsWith(prefix)) ||
+    key.endsWith(":window-anchor") ||
+    key.endsWith(":tools-v3");
   function saved<T>(key: string, fallback: T): T {
     try {
-      return JSON.parse(localStorage.getItem(key) || "null") ?? fallback;
+      const value = JSON.parse(localStorage.getItem(key) || "null");
+      if (cacheKey(key))
+        return value?.schemaHash === API_SCHEMA_HASH
+          ? (value.value ?? fallback)
+          : fallback;
+      return value ?? fallback;
     } catch {
       return fallback;
     }
@@ -882,7 +899,9 @@ export function createApiScope(options: ApiScopeOptions) {
 
   function save(key: string, value: unknown) {
     try {
-      const raw = JSON.stringify(value);
+      const raw = JSON.stringify(
+        cacheKey(key) ? { schemaHash: API_SCHEMA_HASH, value } : value,
+      );
       // Keep the storage adapter's pending journal intact when the UI repeats a value.
       if (localStorage.getItem(key) !== raw) localStorage.setItem(key, raw);
     } catch {
@@ -891,8 +910,15 @@ export function createApiScope(options: ApiScopeOptions) {
   }
 
   function stableRequestId(key: string): string {
-    const savedId = saved<string>(`request-id:${key}`, "");
-    if (savedId) return savedId;
+    const raw = localStorage.getItem(`request-id:${key}`);
+    const savedId: unknown = raw === null ? null : JSON.parse(raw);
+    if (savedId !== null) {
+      if (typeof savedId !== "string" || !savedId)
+        throw new Error(
+          "The saved request identity is invalid. Resolve it before retrying.",
+        );
+      return savedId;
+    }
     const requestId = randomUUID();
     save(`request-id:${key}`, requestId);
     return requestId;

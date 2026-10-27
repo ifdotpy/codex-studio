@@ -1,3 +1,4 @@
+import { cacheFixture } from "../cacheFixture.ts";
 import { responseJson } from "./helpers.ts";
 import {
   readTestState,
@@ -244,13 +245,10 @@ test("Messages loading", async ({ browser }) => {
       });
       await next.addInitScript(
         ({ stateDir, id }) => {
-          localStorage.setItem(
-            `codex-desktop-opened:${stateDir}`,
-            JSON.stringify(id),
-          );
-          localStorage.setItem("codex-mobile-opened", JSON.stringify(id));
+          localStorage.setItem(`codex-desktop-opened:${stateDir}`, id);
+          localStorage.setItem("codex-mobile-opened", id);
         },
-        { stateDir: state.stateDir, id: lead.id },
+        { stateDir: state.stateDir, id: cacheFixture(lead.id) },
       );
       await next.goto(origin);
       await next

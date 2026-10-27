@@ -1812,32 +1812,10 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     /// Refresh one account and persist safe auth metadata before returning its
     /// admission status. Duplicate profiles return their stored status.
     pub fn get(&self, account: &str) -> Result<AccountStatus, AccountDriverError> {
-        // The provider read can take seconds, so it runs on a copy outside the lock.
-        let copied = self
-            .state
-            .lock()
-            .map_err(|_| AccountDriverError::Poisoned)?
-            .value
-            .clone();
-        let mut refreshed = copied.clone();
-        let read_status = self.refresh_value(&mut refreshed, account, false)?;
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| AccountDriverError::Poisoned)?;
-        let mut updated = state.value.clone();
-        let row_unchanged =
-            registry_account(&state.value, account)? == registry_account(&copied, account)?;
-        let status = if row_unchanged {
-            // Only this row was read, so its result still applies to the registry.
-            *registry_account_mut(&mut updated, account)? =
-                registry_account(&refreshed, account)?.clone();
-            read_status
-        } else {
-            // The row changed during the read, so its result may describe an old profile.
-            self.refresh_value(&mut updated, account, false)?
-        };
-        if updated != state.value {
+        let (mut state, row, status) = self.refreshed_account(account, false)?;
+        if registry_account(&state.value, account)? != &row {
+            let mut updated = state.value.clone();
+            *registry_account_mut(&mut updated, account)? = row;
             self.persist(&mut state, updated)?;
         }
         Ok(status)
@@ -1845,12 +1823,8 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
 
     /// Inspect auth state without persisting metadata when the caller may refuse the write.
     pub fn inspect(&self, account: &str) -> Result<AccountStatus, AccountDriverError> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| AccountDriverError::Poisoned)?;
-        let mut updated = state.value.clone();
-        self.refresh_value(&mut updated, account, false)
+        let (_state, _, status) = self.refreshed_account(account, false)?;
+        Ok(status)
     }
 
     /// Return the current registry as the same public account projection used
@@ -1965,15 +1939,12 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         &self,
         account: Option<&str>,
     ) -> Result<AccountsSnapshot, AccountDriverError> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| AccountDriverError::Poisoned)?;
         let Some(account) = account else {
-            return state.public_snapshot();
+            return self.snapshot();
         };
+        let (mut state, row, _) = self.refreshed_account(account, true)?;
         let mut updated = state.value.clone();
-        self.refresh_value(&mut updated, account, true)?;
+        *registry_account_mut(&mut updated, account)? = row;
         if !eligible_default(&updated, account) {
             return Err(AccountDriverError::SignInRequired);
         }
@@ -2197,12 +2168,9 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     }
 
     pub fn reconnect(&self, account: &str) -> Result<AccountsSnapshot, AccountDriverError> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| AccountDriverError::Poisoned)?;
+        let (mut state, refreshed, _) = self.refreshed_account(account, true)?;
         let mut updated = state.value.clone();
-        self.refresh_value(&mut updated, account, true)?;
+        *registry_account_mut(&mut updated, account)? = refreshed;
         let row = registry_account_mut(&mut updated, account)?;
         if row.get("status").and_then(Value::as_str) != Some("ready") {
             return Err(AccountDriverError::SignInRequired);
@@ -2356,32 +2324,75 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         }
     }
 
+    fn refreshed_account(
+        &self,
+        account: &str,
+        include_inactive: bool,
+    ) -> Result<
+        (
+            std::sync::MutexGuard<'_, RegistryState>,
+            Value,
+            AccountStatus,
+        ),
+        AccountDriverError,
+    > {
+        for _ in 0..2 {
+            let original = {
+                let state = self
+                    .state
+                    .lock()
+                    .map_err(|_| AccountDriverError::Poisoned)?;
+                registry_account(&state.value, account)?.clone()
+            };
+            let mut refreshed = original.clone();
+            let status = self.refresh_row(&mut refreshed, include_inactive)?;
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| AccountDriverError::Poisoned)?;
+            if registry_account(&state.value, account)? == &original {
+                return Ok((state, refreshed, status));
+            }
+        }
+        // Repeated row changes fall back to a locked refresh for freshness.
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut row = registry_account(&state.value, account)?.clone();
+        let status = self.refresh_row(&mut row, include_inactive)?;
+        Ok((state, row, status))
+    }
+
     fn refresh_value(
         &self,
         value: &mut Value,
         account: &str,
         include_inactive: bool,
     ) -> Result<AccountStatus, AccountDriverError> {
-        let profile = {
-            let row = registry_account(value, account)?;
-            if !include_inactive
-                && (row.get("deleted") == Some(&Value::Bool(true))
-                    || row.get("disconnected") == Some(&Value::Bool(true)))
-            {
-                return Ok(AccountStatus::Unavailable);
-            }
-            if row.get("duplicateOf").is_some_and(truthy_value) {
-                return Ok(status_from_value(row.get("status")));
-            }
-            auth_profile(row)?
-        };
-        // Python reads the status again on every refresh, so a stored error
-        // never outlives a valid login.
+        self.refresh_row(registry_account_mut(value, account)?, include_inactive)
+    }
+
+    fn refresh_row(
+        &self,
+        row: &mut Value,
+        include_inactive: bool,
+    ) -> Result<AccountStatus, AccountDriverError> {
+        if !include_inactive
+            && (row.get("deleted") == Some(&Value::Bool(true))
+                || row.get("disconnected") == Some(&Value::Bool(true)))
+        {
+            return Ok(AccountStatus::Unavailable);
+        }
+        if row.get("duplicateOf").is_some_and(truthy_value) {
+            return Ok(status_from_value(row.get("status")));
+        }
+        let profile = auth_profile(row)?;
         let metadata =
             crate::diagnostics::measure_runtime_stage("account_driver.auth_metadata", || {
                 self.reader.read(&profile)
             });
-        let row = registry_account_mut(value, account)?
+        let row = row
             .as_object_mut()
             .ok_or(AccountDriverError::InvalidRegistry)?;
         apply_metadata(row, &metadata);
@@ -3606,6 +3617,33 @@ exit 0
     }
 
     #[test]
+    fn set_default_probe_does_not_block_snapshot() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("registry.json");
+        fs::write(&path, registry(&fixture.path)).expect("write fixture");
+        let (reader, started, release) = gated_reader();
+        let driver = std::sync::Arc::new(AccountDriver::open_with_reader(&path, reader).unwrap());
+        let setter = driver.clone();
+        let worker = std::thread::spawn(move || setter.set_default(Some("default")));
+        started.recv_timeout(AUTH_READ_GUARD).unwrap();
+        let snapshot_driver = driver.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let snapshot =
+            std::thread::spawn(move || done_tx.send(snapshot_driver.snapshot()).unwrap());
+        let result = done_rx.recv_timeout(Duration::from_millis(500));
+        release
+            .send(metadata(
+                AuthStatus::Ready,
+                Some("fixture"),
+                Some("fixture"),
+            ))
+            .unwrap();
+        worker.join().unwrap().unwrap();
+        snapshot.join().unwrap();
+        assert!(result.is_ok(), "snapshot blocked behind credential probe");
+    }
+
+    #[test]
     fn refresh_reads_codex_placeholder_credentials_and_never_persists_token_values() {
         let fixture = TestDir::new();
         let home = fixture.path.join("codex-home");
@@ -4153,6 +4191,47 @@ exit 0
     }
 
     #[test]
+    fn double_collision_refreshes_current_row_under_lock() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("registry.json");
+        fs::write(&path, registry(&fixture.path)).unwrap();
+        let (reader, started, release) = gated_reader();
+        let driver = AccountDriver::open_with_reader(&path, reader).unwrap();
+        std::thread::scope(|scope| {
+            let getter = scope.spawn(|| driver.get("default"));
+            for home in ["first", "second"] {
+                started.recv_timeout(AUTH_READ_GUARD).unwrap();
+                driver.state.lock().unwrap().value["accounts"]["default"]["home"] =
+                    Value::String(home.into());
+                release
+                    .send(metadata(
+                        AuthStatus::Ready,
+                        Some("stale"),
+                        Some("chatgpt:stale"),
+                    ))
+                    .unwrap();
+            }
+            started.recv_timeout(AUTH_READ_GUARD).unwrap();
+            assert!(matches!(
+                driver.state.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            release
+                .send(metadata(
+                    AuthStatus::Ready,
+                    Some("current"),
+                    Some("chatgpt:current"),
+                ))
+                .unwrap();
+            assert_eq!(getter.join().unwrap(), Ok(AccountStatus::Ready));
+        });
+        assert_eq!(
+            driver.internal_record("default").unwrap()["accountId"],
+            "current"
+        );
+    }
+
+    #[test]
     fn profile_change_during_pending_auth_read_rereads_the_current_profile() {
         let fixture = TestDir::new();
         let path = fixture.path.join("accounts/registry.json");
@@ -4176,7 +4255,7 @@ exit 0
                     Some("chatgpt:stale"),
                 ))
                 .expect("release stale auth read");
-            // The stale read is discarded, so the get repeats the read under the lock.
+            // The stale read is discarded, so the get repeats the read outside the lock.
             release
                 .send(metadata(
                     AuthStatus::Ready,

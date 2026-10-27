@@ -107,6 +107,11 @@ impl GuestError {
 
 /// One fakeable synchronous boundary for JSON-RPC calls to the VM guest.
 pub trait GuestRpc: Send + Sync {
+    #[cfg(test)]
+    fn reattach_gate(&self) -> Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)> {
+        None
+    }
+
     /// Send one request and return its final `result` frame.
     fn call(
         &self,

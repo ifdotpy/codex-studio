@@ -39,6 +39,21 @@ struct FirstPassResult {
 
 pub(super) fn start_first_pass(first_pass: FirstPass) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        #[cfg(test)]
+        if first_pass
+            .bridge
+            .faults
+            .hold_restart_recovery
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            first_pass.bridge.faults.restart_recovery_held.notify_one();
+            first_pass
+                .bridge
+                .faults
+                .release_restart_recovery
+                .notified()
+                .await;
+        }
         let store = first_pass.bridge.store.clone();
         let request_scope = first_pass.scope.clone();
         let result = reconcile_first_pass(

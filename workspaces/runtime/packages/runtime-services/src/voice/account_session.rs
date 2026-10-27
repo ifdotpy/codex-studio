@@ -21,8 +21,8 @@ use crate::{
 };
 
 use super::runtime::{
-    VoiceConnectionScope, VoiceFuture, VoiceReply, VoiceRequestPort, VoiceRequestReceipt,
-    VoiceRpcId, VoiceWriteCertainty,
+    VoiceConnectionScope, VoiceFuture, VoicePrepareFailure, VoiceReply, VoiceRequestPort,
+    VoiceRequestReceipt, VoiceRpcId, VoiceWriteCertainty,
 };
 
 const ACCOUNT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -55,7 +55,7 @@ impl VoiceRequestPort for AccountSessionVoicePort {
         account_key: &'a str,
         thread_id: &'a str,
         epoch: i64,
-    ) -> VoiceFuture<'a, Result<VoiceConnectionScope, VoiceWriteCertainty>> {
+    ) -> VoiceFuture<'a, Result<VoiceConnectionScope, VoicePrepareFailure>> {
         let store = Arc::clone(&self.store);
         let session = Arc::clone(&self.session);
         let agent_id = agent_id.to_owned();
@@ -88,9 +88,9 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                     },
                 )
                 .await
-                .map_err(|_| VoiceWriteCertainty::NotSent)?;
+                .map_err(|_| VoicePrepareFailure::NotSent)?;
             if !current {
-                return Err(VoiceWriteCertainty::NotSent);
+                return Err(VoicePrepareFailure::NotSent);
             }
 
             let operation = format!("voice:prepare:{session_id}");
@@ -114,7 +114,7 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                 None,
             ) {
                 Ok(scope) if scope.account == account_key => scope,
-                Ok(_) => return Err(VoiceWriteCertainty::Unknown),
+                Ok(_) => return Err(VoicePrepareFailure::Unknown),
                 Err(certainty) => return Err(certainty),
             };
             match receipt.response() {
@@ -131,9 +131,9 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                         generation: scope.generation,
                     })
                 }
-                Some(ProviderResponse::Rejected(_)) => Err(VoiceWriteCertainty::Rejected),
-                Some(ProviderResponse::Reply(_)) => Err(VoiceWriteCertainty::Rejected),
-                _ => Err(VoiceWriteCertainty::Unknown),
+                Some(ProviderResponse::Rejected(_)) => Err(VoicePrepareFailure::Rejected),
+                Some(ProviderResponse::Reply(_)) => Err(VoicePrepareFailure::Rejected),
+                _ => Err(VoicePrepareFailure::Unknown),
             }
         })
     }
@@ -177,13 +177,14 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                 Ok(receipt) => receipt,
                 Err(error) => {
                     return VoiceRequestReceipt {
-                        certainty: account_error(error),
+                        certainty: account_error(error).into(),
                     };
                 }
             };
             let certainty =
                 validate_receipt(&receipt, &operation_id, method, Some(&expected_scope))
                     .err()
+                    .map(VoiceWriteCertainty::from)
                     .unwrap_or(match receipt.response() {
                         Some(ProviderResponse::Reply(_)) => VoiceWriteCertainty::Written,
                         Some(ProviderResponse::Rejected(_)) => VoiceWriteCertainty::Rejected,
@@ -317,22 +318,14 @@ async fn callback_request_matches(
         }
 }
 
-fn account_error(error: AccountSessionError) -> VoiceWriteCertainty {
+fn account_error(error: AccountSessionError) -> VoicePrepareFailure {
     match error {
         AccountSessionError::Requires(_) | AccountSessionError::Refused(_) => {
-            VoiceWriteCertainty::NotSent
+            VoicePrepareFailure::NotSent
         }
         AccountSessionError::InvalidResponse(_)
         | AccountSessionError::Persistence
-        | AccountSessionError::Unknown => VoiceWriteCertainty::Unknown,
-    }
-}
-
-fn map_certainty(certainty: RequestCertainty) -> VoiceWriteCertainty {
-    match certainty {
-        RequestCertainty::Written => VoiceWriteCertainty::Written,
-        RequestCertainty::NotSent => VoiceWriteCertainty::NotSent,
-        RequestCertainty::Unknown => VoiceWriteCertainty::Unknown,
+        | AccountSessionError::Unknown => VoicePrepareFailure::Unknown,
     }
 }
 
@@ -341,7 +334,7 @@ fn validate_receipt(
     operation: &str,
     method: super::runtime::Method,
     expected_scope: Option<&ConnectionScope>,
-) -> Result<ConnectionScope, VoiceWriteCertainty> {
+) -> Result<ConnectionScope, VoicePrepareFailure> {
     let mismatch = receipt.operation != operation
         || expected_scope.is_some_and(|expected| receipt.scope != *expected)
         || receipt
@@ -349,14 +342,15 @@ fn validate_receipt(
             .is_some_and(|ticket| !ticket_matches(ticket, method, receipt.scope.generation));
     if mismatch {
         return Err(match receipt.certainty() {
-            RequestCertainty::NotSent => VoiceWriteCertainty::NotSent,
-            RequestCertainty::Written | RequestCertainty::Unknown => VoiceWriteCertainty::Unknown,
+            RequestCertainty::NotSent => VoicePrepareFailure::NotSent,
+            RequestCertainty::Written | RequestCertainty::Unknown => VoicePrepareFailure::Unknown,
         });
     }
-    if receipt.certainty() != RequestCertainty::Written {
-        return Err(map_certainty(receipt.certainty()));
+    match receipt.certainty() {
+        RequestCertainty::Written => Ok(receipt.scope.clone()),
+        RequestCertainty::NotSent => Err(VoicePrepareFailure::NotSent),
+        RequestCertainty::Unknown => Err(VoicePrepareFailure::Unknown),
     }
-    Ok(receipt.scope.clone())
 }
 
 fn ticket_matches(ticket: &RequestTicket, method: super::runtime::Method, generation: u64) -> bool {

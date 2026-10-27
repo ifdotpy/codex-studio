@@ -25,7 +25,7 @@ use super::policy::{
     self, SessionSignal, StartDecision, StartRequest, VoiceSession, VoiceSessionRow,
 };
 use super::runtime::{
-    VoiceConnectionScope as VoiceProviderContext, VoiceReply,
+    VoiceConnectionScope as VoiceProviderContext, VoicePrepareFailure, VoiceReply,
     VoiceRequestPort as VoiceProviderPort, VoiceRequestReceipt, VoiceRpcId, VoiceWriteCertainty,
 };
 
@@ -2330,7 +2330,7 @@ async fn complete_start(
         now,
     } = start;
     let Some(provider) = provider else {
-        set_start_failure(&store, &session_id, VoiceWriteCertainty::NotSent, now).await?;
+        set_start_failure(&store, &session_id, VoicePrepareFailure::NotSent, now).await?;
         return Err(VoiceProviderError::Operation);
     };
     let context = match provider
@@ -2340,11 +2340,11 @@ async fn complete_start(
         Ok(context) => context,
         Err(certainty) => {
             set_start_failure(&store, &session_id, certainty, now).await?;
-            return Err(certainty_error(certainty));
+            return Err(certainty_error(certainty.into()));
         }
     };
     if thread_id.is_empty() {
-        set_start_failure(&store, &session_id, VoiceWriteCertainty::NotSent, now).await?;
+        set_start_failure(&store, &session_id, VoicePrepareFailure::NotSent, now).await?;
         return Err(VoiceProviderError::ContextUnavailable);
     }
     if context.agent_id != agent_id
@@ -2353,23 +2353,25 @@ async fn complete_start(
         || context.epoch != epoch
         || context.connection_id.is_empty()
     {
-        set_start_failure(&store, &session_id, VoiceWriteCertainty::NotSent, now).await?;
+        set_start_failure(&store, &session_id, VoicePrepareFailure::NotSent, now).await?;
         return Err(VoiceProviderError::ContextChanged);
     }
 
     if let Err(error) = attach_start_context(&store, &agent_id, &session_id, &context).await {
-        set_start_failure(&store, &session_id, VoiceWriteCertainty::NotSent, now).await?;
+        set_start_failure(&store, &session_id, VoicePrepareFailure::NotSent, now).await?;
         return Err(error);
     }
 
     let call = start_call(context, &session_id, &offer);
     let receipt = request(provider.as_ref(), call).await;
-    if receipt.certainty != VoiceWriteCertainty::Written {
-        let certainty = receipt.certainty;
-        set_start_failure(&store, &session_id, certainty, now).await?;
-        return Err(certainty_error(receipt.certainty));
-    }
-    Ok(())
+    let failure = match receipt.certainty {
+        VoiceWriteCertainty::Written => return Ok(()),
+        VoiceWriteCertainty::NotSent => VoicePrepareFailure::NotSent,
+        VoiceWriteCertainty::Unknown => VoicePrepareFailure::Unknown,
+        VoiceWriteCertainty::Rejected => VoicePrepareFailure::Rejected,
+    };
+    set_start_failure(&store, &session_id, failure, now).await?;
+    Err(certainty_error(failure.into()))
 }
 
 fn agent_context(
@@ -2545,14 +2547,13 @@ async fn attach_start_context(
 async fn set_start_failure(
     store: &RuntimeStore,
     session_id: &str,
-    certainty: VoiceWriteCertainty,
+    certainty: VoicePrepareFailure,
     now: f64,
 ) -> Result<(), VoiceProviderError> {
     let state = match certainty {
-        VoiceWriteCertainty::NotSent => "failed",
-        VoiceWriteCertainty::Unknown => "unknown",
-        VoiceWriteCertainty::Rejected => "failed",
-        VoiceWriteCertainty::Written => "connecting",
+        VoicePrepareFailure::NotSent => "failed",
+        VoicePrepareFailure::Unknown => "unknown",
+        VoicePrepareFailure::Rejected => "failed",
     };
     let session_id = session_id.to_owned();
     store
@@ -2657,6 +2658,30 @@ mod tests {
     use crate::voice::runtime::VoiceFuture;
     use std::sync::{Arc, Mutex};
 
+    #[tokio::test]
+    async fn start_failure_cannot_leave_a_connecting_ended_session() {
+        let directory = tempfile::tempdir().expect("voice state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO voice_sessions(id,agent,created,state) VALUES('session','agent',1,'connecting')", [])?;
+            Ok(())
+        }).await.expect("session");
+        set_start_failure(&store, "session", VoicePrepareFailure::NotSent, 2.0)
+            .await
+            .expect("failure");
+        let reader = store.test_reader().expect("reader");
+        let (state, ended): (String, Option<f64>) = reader
+            .query_row(
+                "SELECT state,ended FROM voice_sessions WHERE id='session'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("session");
+        assert!(state != "connecting" || ended.is_none());
+    }
+
     struct ScriptedProvider {
         calls: Mutex<Vec<VoiceRpcCall>>,
     }
@@ -2669,7 +2694,7 @@ mod tests {
             account_key: &'a str,
             thread_id: &'a str,
             epoch: i64,
-        ) -> VoiceFuture<'a, Result<VoiceProviderContext, VoiceWriteCertainty>> {
+        ) -> VoiceFuture<'a, Result<VoiceProviderContext, VoicePrepareFailure>> {
             Box::pin(async move {
                 Ok(VoiceProviderContext {
                     agent_id: agent_id.to_owned(),

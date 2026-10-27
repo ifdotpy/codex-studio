@@ -17,6 +17,8 @@ use studio_runtime_providers::supervisor_protocol::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum JournalError {
+    #[error("supervisor journal periodic flush failed to start: {0}")]
+    FlushThread(#[from] std::io::Error),
     #[error("supervisor journal: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
@@ -163,7 +165,6 @@ impl SupervisorJournal {
         let mut db = Connection::open(root.join("supervisor.sqlite3"))?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         crate::sqlite_durability::configure_writer(&db)?;
-        db.execute_batch("PRAGMA wal_autocheckpoint=100;")?;
         let page_size: u64 = db.query_row("PRAGMA page_size", [], |r| {
             r.get::<_, u32>(0).map(u64::from)
         })?;
@@ -179,13 +180,10 @@ impl SupervisorJournal {
             db: Arc::new(Mutex::new(db)),
             buffered_by_handle: Mutex::new(buffered_by_handle),
         };
-        if let Err(error) = crate::sqlite_durability::spawn_periodic_flush(
+        crate::sqlite_durability::spawn_periodic_flush(
             "supervisor-journal",
             Arc::downgrade(&journal.db),
-        ) {
-            // Automatic checkpoints and the close checkpoint still flush the journal.
-            eprintln!("supervisor journal periodic WAL flush did not start: {error}");
-        }
+        )?;
         // Check every existing handle before any process effects.
         journal.handles(false)?;
         journal.validate_rows()?;
@@ -372,7 +370,7 @@ impl SupervisorJournal {
         }
         let db = self.lock()?;
         match receipt(&db, handle, operation)? {
-            Some(receipt) => Ok(receipt.status(&snapshot(&db, handle)?)?),
+            Some(receipt) => Ok(receipt.status(&snapshot(&db, handle)?)),
             None => Ok(json!({"accepted":false,"reason":"operation_missing"})),
         }
     }

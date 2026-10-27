@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -65,6 +66,14 @@ function fixture() {
   chmodSync(path.join(root, ".githooks", "pre-commit"), 0o755);
   copyFileSync(checkSource, checkerPath);
   copyFileSync(
+    path.join(path.dirname(checkSource), "ratchet.ts"),
+    path.join(path.dirname(checkerPath), "ratchet.ts"),
+  );
+  writeFileSync(
+    path.join(path.dirname(checkerPath), "ratchet-baseline.json"),
+    "{}\n",
+  );
+  copyFileSync(
     path.join(path.dirname(checkSource), "enum-literals.ts"),
     path.join(path.dirname(checkerPath), "enum-literals.ts"),
   );
@@ -75,6 +84,29 @@ function fixture() {
   copyFileSync(
     path.join(path.dirname(checkSource), "javascript-exceptions.json"),
     path.join(path.dirname(checkerPath), "javascript-exceptions.json"),
+  );
+  for (const name of ["ast-grep.ts", "ratchet.ts"]) {
+    copyFileSync(
+      path.join(path.dirname(checkSource), name),
+      path.join(path.dirname(checkerPath), name),
+    );
+  }
+  cpSync(
+    path.join(path.dirname(checkSource), "ast-grep"),
+    path.join(path.dirname(checkerPath), "ast-grep"),
+    { recursive: true },
+  );
+  writeFileSync(
+    path.join(path.dirname(checkerPath), "ratchet-baseline.json"),
+    "{}\n",
+  );
+  copyFileSync(
+    path.join(repositoryRoot, "sgconfig.yml"),
+    path.join(root, "sgconfig.yml"),
+  );
+  symlinkSync(
+    path.join(repositoryRoot, "node_modules", ".bin", "ast-grep"),
+    path.join(root, "node_modules", ".bin", "ast-grep"),
   );
   for (const config of [".oxlintrc.json", ".oxfmtrc.json"]) {
     copyFileSync(path.join(repositoryRoot, config), path.join(root, config));
@@ -102,6 +134,7 @@ function fixture() {
     ".oxlintrc.json",
     ".oxfmtrc.json",
     "workspaces/tooling/apps/repository-checks/javascript-exceptions.json",
+    "workspaces/tooling/apps/repository-checks/ratchet-baseline.json",
   );
   git(root, "commit", "--quiet", "-m", "fixture tooling baseline");
   return root;
@@ -469,6 +502,14 @@ try {
         ],
         root,
       );
+    stage(root, target, 'type Reason = "slot" | "budget";\n');
+    writeFileSync(path.join(root, target), 'type Local = "safe";\n');
+    const duplicate = lint();
+    assert.notEqual(duplicate.status, 0, duplicate.stdout + duplicate.stderr);
+    assert.match(
+      duplicate.stdout + duplicate.stderr,
+      /generated-types: new violation/,
+    );
     stage(root, target, 'import { value } from "web-only-package"; value();\n');
     const missing = lint();
     assert.notEqual(missing.status, 0, missing.stdout + missing.stderr);

@@ -1,7 +1,8 @@
 import { ProviderKind, isProviderKind } from "./generated/providerKind.ts";
+import type { NativeAction } from "./generated/api.ts";
+export type { NativeAction } from "./generated/api.ts";
 // Studio handles these chat commands itself. A Claude chat sends /compact and
 // /review to Claude as its own commands; native review runs only on Codex.
-export type NativeAction = "compact" | "review";
 
 const STUDIO_COMMANDS: Record<ProviderKind, RegExp> = {
   [ProviderKind.Codex]: /^\/(rename|compact|review|stop|stop-team)(\s|$)/,

@@ -63,9 +63,32 @@ impl MonitorOutput {
         bytes: &[u8],
         now: f64,
     ) -> Result<(), MonitorError> {
-        if bytes.len() > monitor_policy::CHUNK_BYTES {
-            return Err(MonitorError::InvalidOutputReceipt("chunk exceeds bound"));
+        if bytes.is_empty() {
+            return self
+                .append_chunk(store, id, operation, offset, stream, bytes, now)
+                .await;
         }
+        for (index, chunk) in bytes.chunks(monitor_policy::CHUNK_BYTES).enumerate() {
+            let chunk_offset = offset
+                .checked_add((index * monitor_policy::CHUNK_BYTES) as u64)
+                .ok_or(MonitorError::InvalidOutputReceipt("cursor overflow"))?;
+            self.append_chunk(store, id, operation, chunk_offset, stream, chunk, now)
+                .await?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn append_chunk(
+        &self,
+        store: &RuntimeStore,
+        id: &str,
+        operation: &Operation,
+        offset: u64,
+        stream: &str,
+        bytes: &[u8],
+        now: f64,
+    ) -> Result<(), MonitorError> {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         id.hash(&mut hasher);
         let _guard = self.locks[hasher.finish() as usize % OUTPUT_LOCKS]

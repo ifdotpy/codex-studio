@@ -107,6 +107,10 @@ pub(super) struct Faults {
     pub(super) shutdown_wait: tokio::sync::Notify,
     pub(super) startup_recovery_done: std::sync::atomic::AtomicBool,
     pub(super) startup_recovery: tokio::sync::Notify,
+    pub(super) hold_restart_recovery: std::sync::atomic::AtomicBool,
+    pub(super) restart_recovery_held: tokio::sync::Notify,
+    pub(super) release_restart_recovery: tokio::sync::Notify,
+    pub(super) vm_readiness_waiting: tokio::sync::Notify,
     pub(super) shutdown_callbacks_draining: tokio::sync::Notify,
     pub(super) shutdown_phase: std::sync::Mutex<&'static str>,
     pub(super) shutdown_phase_changed: tokio::sync::Notify,
@@ -378,6 +382,7 @@ struct Wire {
     receipt: oneshot::Sender<CommandReceipt>,
 }
 struct Peer {
+    trace: Arc<std::sync::atomic::AtomicBool>,
     wire: studio_runtime_providers::WireProfile,
     account: String,
     generation: Generation,
@@ -500,6 +505,8 @@ impl Peer {
             initialization: InitializationStatus::AwaitingReply,
         });
         let (ready_tx, ready) = watch::channel(false);
+        let trace = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_trace = Arc::clone(&trace);
         let matrix = MATRIX.try_with(Arc::clone).ok();
         let task = tokio::spawn(async move {
             let _status = status;
@@ -524,6 +531,13 @@ impl Peer {
                                 duplicate: false,
                             },
                             _ => {
+                                if task_trace.load(std::sync::atomic::Ordering::Relaxed) {
+                                    eprintln!(
+                                        "fixture provider pending method={} id={}",
+                                        write.message()["method"],
+                                        write.message()["id"]
+                                    );
+                                }
                                 if let Some(context) = &matrix {
                                     context.writes.lock().unwrap().push(write.message().clone());
                                 }
@@ -570,6 +584,7 @@ impl Peer {
         }
         let factory = Arc::new(Factory(std::sync::Mutex::new(Some(provider))));
         Self {
+            trace,
             wire: studio_runtime_providers::ProviderKind::Codex.wire(),
             account: account.into(),
             generation,
@@ -682,6 +697,7 @@ impl Peer {
         self.cursor
     }
     async fn acknowledged(&mut self, cursor: u64) {
+        self.phase("waiting for journal settlement");
         loop {
             let got = tokio::time::timeout(std::time::Duration::from_secs(120), self.acks.recv())
                 .await
@@ -743,6 +759,12 @@ impl Peer {
         wire.value
     }
     async fn reply(&mut self, request: &Value, result: Value) {
+        if self.trace.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!(
+                "fixture provider reply method={} id={}",
+                request["method"], request["id"]
+            );
+        }
         let cursor = self
             .frame(json!({"id":request["id"],"result":result}))
             .await;
@@ -750,6 +772,11 @@ impl Peer {
     }
     async fn accepted(&mut self, request: &Value) {
         self.reply(request, json!({"turn":{"id":"turn"}})).await;
+    }
+    fn phase(&self, phase: &str) {
+        if self.trace.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("fixture phase={phase}");
+        }
     }
     async fn completed(&mut self) {
         let cursor=self.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"turn","status":"completed"}}})).await;
@@ -1663,7 +1690,7 @@ async fn scenario_restart_after_submitted_before_written_recovers_unknown_withou
                         thread: prepared.thread,
                         compiled: prepared.compiled,
                         intent: prepared.intent,
-                        method: "turn/start".into(),
+                        method: Method::TurnStart,
                         operation
                     },
                     "default",
@@ -1781,7 +1808,7 @@ async fn restart_held_first_input_is_reconciled_by_the_first_worker() {
                             thread: prepared.thread,
                             compiled: prepared.compiled,
                             intent: prepared.intent,
-                            method: "turn/start".into(),
+                            method: Method::TurnStart,
                             operation
                         },
                         "default",
@@ -2630,6 +2657,51 @@ async fn worker_barrier(worker: &AccountHandle) {
         return;
     }
     tokio::select! { () = crashed() => {}, () = barrier => {} }
+}
+
+async fn worker_barrier_with_history(worker: &AccountHandle, peer: &mut Peer) {
+    peer.phase("waiting for restart recovery and worker barrier");
+    let barrier = worker_barrier(worker);
+    tokio::pin!(barrier);
+    loop {
+        tokio::select! {
+            () = &mut barrier => return,
+            wire = peer.writes.recv() => answer_history(peer, wire.expect("worker submits recovery request")).await,
+        }
+    }
+}
+
+async fn answer_history(peer: &mut Peer, wire: Wire) {
+    assert_eq!(wire.value["method"], "thread/read");
+    let thread = wire.value["params"]["threadId"].clone();
+    if peer.trace.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "fixture provider reply method={} id={}",
+            wire.value["method"], wire.value["id"]
+        );
+    }
+    let _ignored = wire.receipt.send(CommandReceipt::Written {
+        remote_id: None,
+        duplicate: false,
+    });
+    peer.phase("replying to restart history read");
+    peer.frame(json!({"id":wire.value["id"],"result":{"thread":{"id":thread,"status":{"type":"active","activeFlags":[]}}}})).await;
+}
+
+async fn acknowledged_with_history(peer: &mut Peer, cursor: u64, first: Option<Wire>) {
+    peer.phase("waiting for settlement while serving restart recovery");
+    if let Some(wire) = first {
+        answer_history(peer, wire).await;
+    }
+    loop {
+        tokio::select! {
+            ack = peer.acks.recv() => {
+                let ack = ack.expect("session acknowledges").0;
+                if ack >= cursor { return; }
+            }
+            wire = peer.writes.recv() => answer_history(peer, wire.expect("worker submits recovery request")).await,
+        }
+    }
 }
 
 /// Bounds how long a finished turn preparation may wait for submission while
@@ -3908,11 +3980,15 @@ async fn shutdown_releases_account_while_store_writer_is_blocked() {
 async fn stream_base_and_metadata_rollback_together() {
     let state = State::new().await;
     let mut peer = Peer::new();
+    peer.trace.store(true, std::sync::atomic::Ordering::Relaxed);
+    peer.phase("starting original worker");
     let mut worker = peer.worker(state.bridge.clone()).await;
+    peer.phase("starting original turn");
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
     let delta=peer.frame(json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-0","turnId":"turn","itemId":"atomic","delta":"x".repeat(store::STREAM_FLUSH_BYTES)}})).await;
     peer.acknowledged(delta).await;
+    peer.phase("forcing stream transaction rollback");
     state.bridge.run(move |store| async move { store.transaction_with(move |tx| {
         tx.execute_batch("CREATE TRIGGER fail_stream_metadata BEFORE UPDATE ON runtime_operation_receipts WHEN NEW.id='account-worker:streams:default:metadata' BEGIN SELECT RAISE(ABORT,'crash after base write before metadata'); END;")?;
         Ok(())
@@ -3933,12 +4009,24 @@ async fn stream_base_and_metadata_rollback_together() {
         Ok(())
     }).await }).await.unwrap();
     let mut peer = Peer::new();
+    peer.trace.store(true, std::sync::atomic::Ordering::Relaxed);
+    peer.phase("restarting worker after rollback");
     peer.cursor = delta;
+    state
+        .bridge
+        .faults
+        .hold_restart_recovery
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let mut worker = peer.worker(state.bridge.clone()).await;
+    worker.faults.restart_recovery_held.notified().await;
+    worker.faults.release_restart_recovery.notify_one();
+    peer.phase("waiting for late recovery read");
+    let late = peer.next_write().await;
     let cursor = peer.frame(frame).await;
-    peer.acknowledged(cursor).await;
+    acknowledged_with_history(&mut peer, cursor, Some(late)).await;
     let cursor=peer.frame(json!({"method":"item/completed","params":{"threadId":"fake-thread-0","turnId":"turn","item":{"id":"atomic","type":"agentMessage","text":""}}})).await;
-    peer.acknowledged(cursor).await;
+    acknowledged_with_history(&mut peer, cursor, None).await;
+    peer.phase("shutting down restarted worker");
     worker.shutdown().await.unwrap();
 }
 
@@ -6334,7 +6422,7 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
                 lightweight: false, deadline_ms: 60_000, unknown: false, remote_id: None,
             };
             let context = Pending { thread: prepared.thread, compiled: prepared.compiled,
-                intent: prepared.intent, method: "turn/start".into(), operation: operation.clone() };
+                intent: prepared.intent, method: Method::TurnStart, operation: operation.clone() };
             assert!(!store::submitted(
                 &store,
                 context,

@@ -100,6 +100,62 @@ fn typed_response_deserialization_preserves_unknown_outcomes_and_remote_errors()
 }
 
 #[test]
+fn malformed_or_conflicting_supervisor_error_is_unknown() {
+    for response in [
+        r#"{"requestId":17,"error":42,"result":{"acknowledged":9}}"#,
+        r#"{"requestId":17,"error":"refused","result":{"acknowledged":9}}"#,
+    ] {
+        assert!(matches!(
+            response_value::<AckResult>(SupervisorAction::Ack, 17, response),
+            Err(SupervisorError::UnknownOutcome { request_id: 17, .. })
+        ));
+    }
+}
+
+#[test]
+fn supervisor_response_preserves_raw_batch_payload() {
+    let frame = r#"{"requestId":17,"result":{"events":[{"sequence":1,"generation":2,"kind":"stdout","payload":{"n":1}}],"returnCode":null,"backpressure":false,"stdoutReaderAlive":true,"stderrReaderAlive":true}}"#;
+    let result = response_value::<NextBatchResult>(SupervisorAction::NextBatch, 17, frame).unwrap();
+    assert_eq!(result.events[0].payload.get(), "{\"n\":1}");
+}
+
+#[test]
+fn contradictory_write_and_status_receipts_are_unknown() {
+    for result in [
+        r#"{"accepted":false,"duplicate":true,"remoteId":7,"durableMs":1}"#,
+        r#"{"accepted":false,"duplicate":false,"remoteId":7,"durableMs":1}"#,
+    ] {
+        let frame = format!(r#"{{"requestId":17,"result":{result}}}"#);
+        assert!(matches!(
+            response_value::<WriteResult>(SupervisorAction::Write, 17, &frame),
+            Err(SupervisorError::UnknownOutcome { .. })
+        ));
+    }
+    for result in [
+        r#"{"accepted":true,"nativeId":null,"response":null}"#,
+        r#"{"accepted":false,"reason":"missing","nativeId":7,"response":{"result":{}}}"#,
+    ] {
+        let frame = format!(r#"{{"requestId":17,"result":{result}}}"#);
+        assert!(matches!(
+            response_value::<OperationStatusResult>(SupervisorAction::OperationStatus, 17, &frame),
+            Err(SupervisorError::UnknownOutcome { .. })
+        ));
+    }
+    for result in [
+        r#"{"accepted":true,"duplicate":false,"remoteId":null,"durableMs":1}"#,
+        r#"{"accepted":true,"duplicate":true,"remoteId":"reply-id","durableMs":1}"#,
+    ] {
+        let frame = format!(r#"{{"requestId":17,"result":{result}}}"#);
+        assert!(response_value::<WriteResult>(SupervisorAction::Write, 17, &frame).is_ok());
+    }
+    let frame = r#"{"requestId":17,"result":{"accepted":true,"nativeId":7,"response":null}}"#;
+    assert!(
+        response_value::<OperationStatusResult>(SupervisorAction::OperationStatus, 17, frame)
+            .is_ok()
+    );
+}
+
+#[test]
 fn event_payload_and_unknown_kind_round_trip() {
     let event: SupervisorEvent = serde_json::from_value(serde_json::json!({
         "sequence": 2, "kind": "future-event", "payload": "{\"x\":1}", "generation": 4, "extension": true

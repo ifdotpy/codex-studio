@@ -248,6 +248,13 @@ impl ProviderTaskFactory for GuestProviderTaskFactory {
         shutdown: Shutdown,
     ) -> OpenFuture<'_> {
         Box::pin(async move {
+            #[cfg(test)]
+            if matches!(&self.source, GuestProviderSource::Existing(_))
+                && let Some((held, release)) = self.guest.reattach_gate()
+            {
+                held.notify_one();
+                release.notified().await;
+            }
             if handle != ProviderHandle::for_account(&self.identity.agent_id)
                 || options.expected_generation != Some(Generation(self.identity.generation))
                 || match &self.source {

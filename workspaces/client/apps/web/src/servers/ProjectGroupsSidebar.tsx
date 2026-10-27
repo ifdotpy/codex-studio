@@ -1,3 +1,4 @@
+import type { ConnectionHealth } from "../sync/connectionState";
 import { useServerApi } from "./ServerServicesContext";
 import { writePreferenceEdit } from "../sync/uiPreferenceStore";
 import { useSyncedVisualState } from "../sync/useSyncedVisualState";
@@ -12,7 +13,6 @@ import { projectServerChoices } from "./projectLocations";
 import type { ServerCommand, ServerNavigation } from "./navigation";
 import type { StudioServer } from "./registry";
 import { DEFAULT_LOCAL_SERVER_ALIAS } from "./serverAliases";
-import type { ResourceConnectionState } from "../sync/subscriptions/events";
 
 export default function ProjectGroupsSidebar({
   navigation,
@@ -27,7 +27,7 @@ export default function ProjectGroupsSidebar({
 }: {
   navigation: Record<string, ServerNavigation>;
   servers: StudioServer[];
-  statuses: Record<string, ResourceConnectionState>;
+  statuses: Record<string, ConnectionHealth>;
   reachability?: Record<string, string | null | undefined>;
   serverAliases?: Record<string, string>;
   current: string;

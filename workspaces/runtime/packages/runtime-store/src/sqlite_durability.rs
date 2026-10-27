@@ -35,6 +35,7 @@ pub fn configure_writer(connection: &Connection) -> rusqlite::Result<()> {
 /// Apply the connection-local pragmas to a writer of a database already in WAL mode.
 pub fn configure_synchronous(connection: &Connection) -> rusqlite::Result<()> {
     connection.pragma_update(None, "synchronous", SYNCHRONOUS_NORMAL)?;
+    connection.pragma_update(None, "wal_autocheckpoint", 0)?;
     connection.pragma_update(
         None,
         "journal_size_limit",
@@ -247,6 +248,10 @@ mod tests {
         let limit: i64 = connection
             .query_row("PRAGMA journal_size_limit", [], |row| row.get(0))
             .expect("size limit");
+        let auto_checkpoint: i64 = connection
+            .query_row("PRAGMA wal_autocheckpoint", [], |row| row.get(0))
+            .expect("auto checkpoint");
+        assert_eq!(auto_checkpoint, 0);
         assert_eq!(
             (journal.as_str(), synchronous, limit),
             (
@@ -325,5 +330,14 @@ mod tests {
             .execute("INSERT INTO t VALUES (2)", [])
             .expect("write");
         assert!(flush_if_changed(&connection, &mut flushed).expect("new change"));
+        let wal = directory.path().join("db.sqlite3-wal");
+        let size = std::fs::metadata(&wal).expect("WAL").len();
+        for value in 3..10 {
+            connection
+                .execute("INSERT INTO t VALUES (?1)", [value])
+                .expect("write");
+            assert!(flush_if_changed(&connection, &mut flushed).expect("periodic flush"));
+        }
+        assert_eq!(std::fs::metadata(wal).expect("WAL").len(), size);
     }
 }

@@ -239,9 +239,10 @@ impl MonitorRuntime {
         for table in MONITOR_WAKE_TABLES {
             let table_wake = Arc::clone(&dispatch_wake);
             store.add_table_change_observer(table, move || table_wake.notify_one());
-            let observers = Arc::clone(&observation_wake);
-            store.add_table_change_observer(table, move || observers.notify_waiters());
         }
+        let observers = Arc::clone(&observation_wake);
+        store
+            .add_table_change_observer(ObservedTable::Monitors, move || observers.notify_waiters());
         let observers = Arc::clone(&observation_wake);
         store.add_table_change_observer(ObservedTable::Agents, move || observers.notify_waiters());
         let agents_wake = Arc::new(Notify::new());
@@ -309,17 +310,22 @@ impl MonitorRuntime {
             let changed = self.observation_wake.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            let (record, current_sequence, terminal) =
-                crate::monitor_observation::read(&self.store, owner, epoch, account, id).await?;
+            let (record, current_sequence, terminal) = crate::monitor_observation::read(
+                &self.store,
+                owner,
+                epoch,
+                account,
+                id,
+                sequence,
+                deadline,
+            )
+            .await?;
             let initial = *sequence.get_or_insert(current_sequence);
             if deadline.is_none() || terminal || current_sequence > initial {
                 return Ok(record);
             }
             let deadline = deadline.expect("wait deadline");
-            if tokio::time::Instant::now() >= deadline {
-                let mut record = record;
-                record["waitExpired"] = serde_json::json!(true);
-                record["outputEvents"] = serde_json::json!([]);
+            if record["waitExpired"] == true {
                 return Ok(record);
             }
             #[cfg(test)]
@@ -433,29 +439,17 @@ impl MonitorRuntime {
         let rows = self
             .store
             .read_async("runtime-services/monitor_runtime_wiring", |connection| {
-                let mut statement =
-                    connection.prepare("SELECT id,record FROM runtime_rules ORDER BY rowid")?;
+                let mut statement = connection.prepare("SELECT json_extract(record,'$.path') FROM runtime_rules WHERE json_extract(record,'$.kind')='file' AND json_extract(record,'$.status')='active' AND json_type(record,'$.path')='text'")?;
                 let rows = statement
-                    .query_map([], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })?
+                    .query_map([], |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok::<_, studio_runtime_store::StoreError>(rows)
             })
             .await?;
         let mut directories = BTreeSet::new();
         let receipt_directory = self.store.root().join("monitor-results");
-        for (id, encoded) in rows {
-            let rule: Value = serde_json::from_str(&encoded).map_err(|_| {
-                MonitorError::Store(studio_runtime_store::StoreError::InvalidStoredRecord {
-                    object: "rules",
-                    id,
-                })
-            })?;
-            if rule["kind"] == "file"
-                && rule["status"] == "active"
-                && let Some(path) = rule["path"].as_str()
-                && let Some(parent) = Path::new(path).parent()
+        for path in rows {
+            if let Some(parent) = Path::new(&path).parent()
                 && let Some(directory) = nearest_existing_directory(parent)?
                 && directory != receipt_directory
             {
@@ -2202,6 +2196,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_observation_does_not_decode_output() {
+        let (_root, store, port) = fixture().await;
+        insert_active_owner(&store).await;
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
+                [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running","outputEventIds":["event"]}).to_string()])?;
+            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('event','owner','message','invalid','pending',0,0)", [])?;
+            Ok::<_,studio_runtime_store::StoreError>(())
+        }).await.unwrap();
+        let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
+        let result = runtime
+            .observe(
+                "owner",
+                0,
+                "default",
+                "watch",
+                Some(tokio::time::Instant::now()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["waitExpired"], true);
+        assert_eq!(result["outputEvents"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
     async fn observation_is_bounded_and_rejects_changed_owners() {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
@@ -2462,6 +2482,11 @@ mod tests {
                     })
                     .to_string()],
                 )?;
+                tx.execute("INSERT INTO runtime_rules(id,record) VALUES ('paused-rule',?1)",
+                    [serde_json::json!({"id":"paused-rule","agent":"owner","epoch":0,"name":"paused",
+                        "kind":"file","status":"paused","intervalSeconds":30,
+                        "nextAt":9_000_000_000_000_000.0,"created":1.0,"command":"true",
+                        "text":"","path":state_directory.join("ignored").to_string_lossy(),"inFlight":false}).to_string()])?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
             .await

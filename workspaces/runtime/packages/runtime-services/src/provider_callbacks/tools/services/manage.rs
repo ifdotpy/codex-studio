@@ -76,10 +76,12 @@ pub(crate) fn resolved_args(
         && !UNRESOLVED_TARGETS.contains(&supplied)
     {
         let root = text(actor, "rootId")?;
-        let ids = team(tx, root, true)?
-            .into_iter()
-            .filter_map(|agent| agent["id"].as_str().map(str::to_owned));
-        args["agent_id"] = json!(messages::resolve_visible_agent_prefix(ids, supplied)?);
+        let ids = messages::agent_rows(studio_runtime_store::AgentIndexedReads::team_records(
+            tx, root,
+        )?)?
+        .into_iter()
+        .filter_map(|agent| agent.id);
+        args["agent_id"] = json!(messages::resolve_prefix(ids, supplied)?);
     }
     Ok(args)
 }

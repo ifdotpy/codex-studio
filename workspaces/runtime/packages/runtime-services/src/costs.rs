@@ -64,8 +64,21 @@ fn session_cost_inner(
     accounts: &BTreeMap<String, Value>,
     has_account_profiles: bool,
 ) -> Result<Value, CostsError> {
-    let repository = AnalyticsRepository::new(store.root());
-    let mut db = repository.open_read_only()?;
+    let root = store.root().to_path_buf();
+    let agent_id = agent_id.to_owned();
+    let accounts = accounts.clone();
+    store.with_cost_reader(move |db| {
+        session_cost_on_reader(db, &root, &agent_id, &accounts, has_account_profiles)
+    })
+}
+
+fn session_cost_on_reader(
+    db: &mut rusqlite::Connection,
+    state_root: &Path,
+    agent_id: &str,
+    accounts: &BTreeMap<String, Value>,
+    has_account_profiles: bool,
+) -> Result<Value, CostsError> {
     let tx = db.transaction()?;
     let root = analytics::cost_root(&tx, agent_id)?;
     let generation = analytics::usage_generation(&tx, &root)?;
@@ -88,7 +101,7 @@ fn session_cost_inner(
     if has_claude_history && !has_account_profiles {
         return Err(CostsError::AccountProfilesRequired);
     }
-    let mut local_claude = read_local_claude_usage(store.root(), &members, accounts)?;
+    let mut local_claude = read_local_claude_usage(state_root, &members, accounts)?;
     let receipts = local_claude
         .iter()
         .map(|row| {
@@ -111,7 +124,7 @@ fn session_cost_inner(
     let groups = cost_groups(&tx, &root, &partition)?;
     tx.commit()?;
 
-    let loaded = crate::pricing::load_pricing(store.root())
+    let loaded = crate::pricing::load_pricing(state_root)
         .ok_or(CostsError::Dependency("costs/pricing-refresh"))?;
     let catalog = loaded.catalog.as_ref().ok_or(CostsError::InvalidPricing)?;
 

@@ -11,7 +11,91 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use super::cost_aggregate::CostMember;
-use crate::CachedSql;
+use crate::{CachedSql, RuntimeStore};
+
+type CostReadJob = Box<dyn FnOnce(&mut Connection) + Send>;
+
+/// One connection owner per store, independent of the blocking pool's thread lifetimes.
+pub(crate) struct CostReader(std::sync::mpsc::Sender<CostReadJob>);
+
+impl CostReader {
+    pub(crate) fn open(root: &Path) -> Result<Self, AnalyticsStoreError> {
+        let connection = AnalyticsRepository::new(root).open_read_only()?;
+        let (sender, receiver) = std::sync::mpsc::channel::<CostReadJob>();
+        let _owner = std::thread::Builder::new()
+            .name("session-cost-reader".into())
+            .spawn(move || {
+                let mut connection = connection;
+                for job in receiver {
+                    job(&mut connection);
+                }
+            })?;
+        Ok(Self(sender))
+    }
+}
+
+impl RuntimeStore {
+    /// Run one synchronous cost computation on the store's retained reader thread.
+    pub fn with_cost_reader<T: Send + 'static, E: From<AnalyticsStoreError> + Send + 'static>(
+        &self,
+        operation: impl FnOnce(&mut Connection) -> Result<T, E> + Send + 'static,
+    ) -> Result<T, E> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        self.cost_reader
+            .0
+            .send(Box::new(move |db| {
+                #[cfg(any(test, feature = "test-support"))]
+                take_cost_read_witness();
+                let result = operation(db);
+                #[cfg(any(test, feature = "test-support"))]
+                let result = (result, take_cost_read_witness());
+                let _undelivered = sender.send(result);
+            }))
+            .map_err(|_| AnalyticsStoreError::CostReaderClosed)?;
+        let result = receiver
+            .recv()
+            .map_err(|_| AnalyticsStoreError::CostReaderClosed)?;
+        #[cfg(any(test, feature = "test-support"))]
+        let result = {
+            let (result, counts) = result;
+            COST_READ_WITNESS.update(|mut total| {
+                total.opens += counts.opens;
+                total.attaches += counts.attaches;
+                total.decoded_rows += counts.decoded_rows;
+                total
+            });
+            result
+        };
+        result
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CostReadWitness {
+    pub opens: usize,
+    pub attaches: usize,
+    /// Stored member/root JSON records decoded for the publication.
+    pub decoded_rows: usize,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static COST_READ_WITNESS: std::cell::Cell<CostReadWitness> = const { std::cell::Cell::new(CostReadWitness { opens: 0, attaches: 0, decoded_rows: 0 }) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn take_cost_read_witness() -> CostReadWitness {
+    COST_READ_WITNESS.take()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn record_cost_decode() {
+    COST_READ_WITNESS.update(|mut counts| {
+        counts.decoded_rows += 1;
+        counts
+    });
+}
 
 const TOKEN_FIELDS: [&str; 6] = [
     "inputTokens",
@@ -24,12 +108,30 @@ const TOKEN_FIELDS: [&str; 6] = [
 
 #[derive(Debug, Error)]
 pub enum AnalyticsStoreError {
+    #[error("session cost reader thread failed to start: {0}")]
+    CostReaderThread(#[from] std::io::Error),
+    #[error("session cost reader closed before returning its result")]
+    CostReaderClosed,
     #[error("analytics state path is not valid UTF-8")]
     InvalidPath,
     #[error("analytics SQLite read failed: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("analytics stored text cannot be read: {0}")]
     StoredText(String),
+}
+
+impl From<AnalyticsStoreError> for crate::StoreError {
+    fn from(error: AnalyticsStoreError) -> Self {
+        match error {
+            AnalyticsStoreError::Sqlite(error) => error.into(),
+            AnalyticsStoreError::CostReaderThread(error) => Self::StateDirectory(error),
+            AnalyticsStoreError::CostReaderClosed => Self::ReadTaskFailed,
+            AnalyticsStoreError::InvalidPath => {
+                Self::RecordContract("analytics state path is not valid UTF-8")
+            }
+            AnalyticsStoreError::StoredText(error) => Self::SchemaMismatch(error),
+        }
+    }
 }
 
 /// Read-only analytics and attached Canvas paths in one application state.
@@ -52,6 +154,11 @@ impl AnalyticsRepository {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
+        #[cfg(any(test, feature = "test-support"))]
+        COST_READ_WITNESS.update(|mut counts| {
+            counts.opens += 1;
+            counts
+        });
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         crate::stored_text_dictionary::install_analytics_sql(&connection)
             .map_err(|error| AnalyticsStoreError::StoredText(error.to_string()))?;
@@ -59,6 +166,11 @@ impl AnalyticsRepository {
         let path = self.state_root.join("canvas.sqlite3");
         let uri = read_only_uri(&path)?;
         connection.execute("ATTACH DATABASE ?1 AS canvas", [uri])?;
+        #[cfg(any(test, feature = "test-support"))]
+        COST_READ_WITNESS.update(|mut counts| {
+            counts.attaches += 1;
+            counts
+        });
         Ok(connection)
     }
 }
@@ -258,24 +370,20 @@ pub fn rollup<'a>(
         },
     )?;
     let tool_filter = usage_filter.clone().and("is_tool=1", []);
-    let tools = item_grouped(
-        &tool_filter,
-        "COALESCE(json_extract(record,'$.name'),'')",
-        "COALESCE(json_extract(record,'$.type'),'')",
-    )?
-    .into_iter()
-    .map(|((name, kind), totals)| Tool {
-        name,
-        model_input_bytes: (kind == "modelToolCall")
-            .then_some(totals.input_bytes)
-            .flatten(),
-        model_output_bytes: (kind == "modelToolCall")
-            .then_some(totals.output_bytes)
-            .flatten(),
-        kind,
-        totals,
-    })
-    .collect::<Vec<_>>();
+    let tools = item_grouped(&tool_filter, "COALESCE(name,'')", "COALESCE(type,'')")?
+        .into_iter()
+        .map(|((name, kind), totals)| Tool {
+            name,
+            model_input_bytes: (kind == "modelToolCall")
+                .then_some(totals.input_bytes)
+                .flatten(),
+            model_output_bytes: (kind == "modelToolCall")
+                .then_some(totals.output_bytes)
+                .flatten(),
+            kind,
+            totals,
+        })
+        .collect::<Vec<_>>();
     let agent_calls: BTreeMap<_, _> = item_grouped(&call_filter, "agent", TOOL_BOUNDARY)?
         .into_iter()
         .collect();
@@ -313,7 +421,7 @@ pub fn rollup<'a>(
     let item_counts = query(
         db,
         &format!(
-            "SELECT COALESCE(json_extract(record,'$.type'),''),COUNT(*),CASE WHEN COUNT(json_extract(record,'$.input.bytes'))+COUNT(json_extract(record,'$.output.bytes'))=0 THEN NULL ELSE COALESCE(SUM(json_extract(record,'$.input.bytes')),0)+COALESCE(SUM(json_extract(record,'$.output.bytes')),0) END,CASE WHEN COUNT(json_extract(record,'$.input.chars'))+COUNT(json_extract(record,'$.output.chars'))=0 THEN NULL ELSE COALESCE(SUM(json_extract(record,'$.input.chars')),0)+COALESCE(SUM(json_extract(record,'$.output.chars')),0) END FROM analytics_items {usage_where} GROUP BY json_extract(record,'$.type') ORDER BY MIN(at),MIN(id)"
+            "SELECT COALESCE(type,''),COUNT(*),CASE WHEN COUNT(json_extract(record,'$.input.bytes'))+COUNT(json_extract(record,'$.output.bytes'))=0 THEN NULL ELSE COALESCE(SUM(json_extract(record,'$.input.bytes')),0)+COALESCE(SUM(json_extract(record,'$.output.bytes')),0) END,CASE WHEN COUNT(json_extract(record,'$.input.chars'))+COUNT(json_extract(record,'$.output.chars'))=0 THEN NULL ELSE COALESCE(SUM(json_extract(record,'$.input.chars')),0)+COALESCE(SUM(json_extract(record,'$.output.chars')),0) END FROM analytics_items {usage_where} GROUP BY type ORDER BY MIN(at),MIN(id)"
         ),
         params_from_iter(&usage_filter.params),
         |r| {
@@ -758,7 +866,7 @@ fn item_breakdown(filter: &ScopeFilter) -> Result<Vec<ItemBreakdown>, AnalyticsE
     query(
         db,
         &format!(
-            "SELECT COALESCE(json_extract(record,'$.type'),''),COALESCE(json_extract(record,'$.payloadBoundary'),'protocol'),json_extract(record,'$.category'),json_extract(record,'$.role'),COUNT(*),SUM(json_extract(record,'$.input.bytes')),SUM(json_extract(record,'$.output.bytes')),COUNT(json_extract(record,'$.input')),COUNT(json_extract(record,'$.output')) FROM analytics_items {} GROUP BY 1,2,3,4 ORDER BY 1,2,3,4",
+            "SELECT COALESCE(type,''),COALESCE(json_extract(record,'$.payloadBoundary'),'protocol'),json_extract(record,'$.category'),json_extract(record,'$.role'),COUNT(*),SUM(json_extract(record,'$.input.bytes')),SUM(json_extract(record,'$.output.bytes')),COUNT(json_extract(record,'$.input')),COUNT(json_extract(record,'$.output')) FROM analytics_items {} GROUP BY 1,2,3,4 ORDER BY 1,2,3,4",
             filter.sql
         ),
         params_from_iter(&filter.params),
@@ -1444,6 +1552,8 @@ pub fn cost_agents(
     root: &str,
 ) -> Result<Vec<(String, CostMember)>, SessionCostError> {
     let decode = |raw: &str, table| {
+        #[cfg(any(test, feature = "test-support"))]
+        record_cost_decode();
         serde_json::from_str::<CostMember>(raw)
             .map_err(|_| SessionCostError::InvalidStoredObject(table))
     };
@@ -1481,16 +1591,13 @@ pub fn usage_generation(db: &Connection, root: &str) -> Result<i64, SessionCostE
     )?)
 }
 pub fn cost_root(db: &Connection, agent: &str) -> Result<String, SessionCostError> {
-    let (table,raw): (String,String) = db.query_row("SELECT 'analytics_agents',record FROM analytics_agents WHERE id=?1 UNION ALL SELECT 'runtime_agents',record FROM canvas.runtime_agents WHERE id=?1 LIMIT 1",[agent],|r|Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or(SessionCostError::InvalidRequest("Unknown chat"))?;
-    let table = if table == "analytics_agents" {
-        "analytics_agents"
-    } else {
-        "runtime_agents"
-    };
-    let record: Value =
-        serde_json::from_str(&raw).map_err(|_| SessionCostError::InvalidStoredObject(table))?;
-    Ok(record["rootId"]
-        .as_str()
+    let root: Option<String> = db.query_row_cached(
+        "SELECT CASE WHEN json_type(record,'$.rootId')='text' THEN json_extract(record,'$.rootId') END FROM analytics_agents WHERE id=?1
+         UNION ALL SELECT CASE WHEN json_type(record,'$.rootId')='text' THEN root_id END FROM canvas.runtime_agents WHERE id=?1 LIMIT 1",
+        [agent], |row| row.get(0),
+    ).optional()?.ok_or(SessionCostError::InvalidRequest("Unknown chat"))?;
+    Ok(root
+        .as_deref()
         .filter(|s| !s.is_empty())
         .unwrap_or(agent)
         .into())
@@ -1542,5 +1649,25 @@ mod capture_error_tests {
         assert!(served["last"]["at"].is_number(), "{served}");
         assert_eq!(served["last"]["at"].as_f64(), Some(1_792_320_464.0));
         assert_eq!(served["last"]["error"], "Publication queue limit reached");
+    }
+}
+
+#[cfg(test)]
+mod item_scalar_tests {
+    use super::*;
+
+    #[test]
+    fn item_breakdown_uses_scalar_type_and_validates_record() {
+        let db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE analytics_items(id TEXT, type TEXT, record TEXT); INSERT INTO analytics_items VALUES ('one','scalar','{\"agentId\":\"agent\",\"type\":\"json\"}');").expect("fixture");
+        let filter = ScopeFilter::new(&db);
+        filter.validate("analytics_items").expect("valid record");
+        assert_eq!(
+            item_breakdown(&filter).expect("breakdown")[0].kind,
+            "scalar"
+        );
+        db.execute("UPDATE analytics_items SET record='{}'", [])
+            .expect("corrupt");
+        assert!(filter.validate("analytics_items").is_err());
     }
 }

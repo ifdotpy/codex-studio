@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use studio_runtime_services::event_write::{self, AnnotationWrite, EventWriteError, PlanWrite};
 use studio_runtime_services::work_policy::{self, WorkPolicyError};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, Connection, StoredRecord, WorkItemsRepository,
+    AgentId, AgentRecord, AgentRepository, Connection, WorkItemsRepository,
 };
 
 use crate::error::ApiError;
@@ -93,7 +93,7 @@ pub(crate) async fn plan(
     query: QueryParams,
 ) -> Result<Json<Value>, ApiError> {
     let agent_id = query_string(&query, "agent")?;
-    read_agent(state, agent_id, |connection, agent, validators| {
+    read_agent(state, agent_id, |connection, agent, _validators| {
         let stored =
             WorkItemsRepository::plan(connection, &agent.id.0).map_err(|error| match error {
                 studio_runtime_store::StoreError::InvalidStoredObject { table, id } => {
@@ -123,12 +123,9 @@ pub(crate) async fn plan(
         let record = match stored {
             None => None,
             Some(row) => {
-                if row.id != agent.id.0 {
-                    return Err(invalid_stored("runtime_plans", &row.id));
-                }
-                let value = record_value("runtime_plans", &row)?;
-                if !validators.valid_table_record("runtime_plans", &row.id, &value) {
-                    return Err(invalid_stored("runtime_plans", &row.id));
+                let value = row.into_value();
+                if value.get("id").and_then(Value::as_str) != Some(agent.id.0.as_str()) {
+                    return Err(invalid_stored("runtime_plans", &agent.id.0));
                 }
                 Some(value)
             }
@@ -162,14 +159,6 @@ where
         .await
 }
 
-fn record_value(object: &'static str, row: &StoredRecord) -> Result<Value, ApiError> {
-    serde_json::from_str(
-        row.record
-            .as_deref()
-            .ok_or_else(|| invalid_stored(object, &row.id))?,
-    )
-    .map_err(|_| invalid_stored(object, &row.id))
-}
 fn query_string(query: &QueryParams, name: &str) -> Result<String, ApiError> {
     query
         .typed_value(name)

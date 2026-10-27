@@ -989,6 +989,15 @@ export function gateSteps(root: string, name: string): GateStep[] {
         commands: [["pnpm", ["--dir", root, "run", "test:provider-contracts"]]],
       },
       {
+        id: "rust-lint-policy",
+        label: "Rust compiler policy witnesses",
+        lane: "rust",
+        requires: "workspace",
+        requiresCargo: true,
+        item: tooling,
+        commands: [["pnpm", ["--dir", root, "run", "test:rust-lint-policy"]]],
+      },
+      {
         ...cargo("rust-tests", "Rust nextest", [
           "nextest",
           "run",
@@ -1031,22 +1040,22 @@ export function gateSteps(root: string, name: string): GateStep[] {
       ...(!fast
         ? [
             {
-              ...cargo(
-                "clippy",
-                "Rust Clippy",
+              id: "clippy",
+              label: "Rust Clippy",
+              lane: "rust",
+              requiresCargo: true,
+              item: { name: "Rust Clippy", ecosystem: "cargo" },
+              commands: [
                 [
-                  "clippy",
-                  "--workspace",
-                  "--all-targets",
-                  "--locked",
-                  "--",
-                  "-D",
-                  "warnings",
+                  "node",
+                  [
+                    "workspaces/tooling/apps/repository-checks/clippy-ratchet.ts",
+                  ],
                 ],
-                { buildOnly: true },
-              ),
+              ],
+              options: { buildOnly: true },
               requires: "renderer",
-            },
+            } satisfies GateStep,
           ]
         : []),
       {
@@ -1161,7 +1170,13 @@ export function gateSteps(root: string, name: string): GateStep[] {
         ],
         options: { allowZeroTests: true },
       },
-      { id: "tooling", label: "tooling tests", lane: "js", item: tooling },
+      {
+        id: "tooling",
+        label: "tooling tests",
+        lane: "js",
+        item: tooling,
+        options: { script: "test:tooling:js" },
+      },
       {
         id: "root-lint",
         label: "repository lint policy",

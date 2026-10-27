@@ -374,7 +374,6 @@ impl Supervisor {
                     return Ok(json!({"closed":true,"handle":handle,"pid":expected_pid}));
                 }
                 let child = active_child.ok_or(Error::Refused("Unknown supervisor handle"))?;
-                let _write = lock(&child.write_lock)?;
                 let actual_start = start_time(expected_pid, false)?;
                 if row.closed_at.is_some()
                     || row.pid != expected_pid
@@ -399,7 +398,6 @@ impl Supervisor {
                 child.stopping.store(true, Ordering::Release);
                 child.reap_leader()?;
                 self.journal.close(&handle, OPERATOR_CLOSED, now()?)?;
-                drop(_write);
                 if let Some(slot) = slot.as_ref() {
                     *lock(&slot.child)? = None;
                     self.active_children.fetch_sub(1, Ordering::AcqRel);
@@ -503,7 +501,6 @@ impl Supervisor {
                 message,
                 ..
             } => {
-                let _write = lock(&child.write_lock)?;
                 let started = Instant::now();
                 free_space(&self.root, 1024 * 1024)?;
                 let decision = self.journal.accept(
@@ -567,7 +564,6 @@ impl Supervisor {
             }
             Command::Detach { .. } => Ok(json!({"detached":true})),
             Command::RetireCommand { generation, .. } => {
-                let _write = lock(&child.write_lock)?;
                 let exit_event_durable = child.committed_exit_sequence()?.is_some();
                 if exit_event_durable {
                     stop_verified(child.pid, child.pid, &child.start)?;

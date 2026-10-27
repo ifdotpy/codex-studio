@@ -467,7 +467,6 @@ async fn advance_transfer(wake: &Wake) -> Result<bool, WorkerError> {
                     };
                     let phase =
                         studio_runtime_store::AccountTransferRepository::get(db, operation)?
-                            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
                             .and_then(|record| {
                                 record["members"][g.as_str()]["phase"]
                                     .as_str()

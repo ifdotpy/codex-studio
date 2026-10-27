@@ -1,3 +1,4 @@
+import { cacheFixture } from "../cacheFixture.ts";
 import { queueUiFixture } from "./queue-ui.fixture.ts";
 import { requestBody } from "../messages/helpers.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
@@ -67,13 +68,10 @@ test("message-queue-ui", async ({ browser }) => {
     });
     await page.addInitScript(
       ({ id, stateDir }) => {
-        localStorage.setItem(
-          `codex-desktop-opened:${stateDir}`,
-          JSON.stringify(id),
-        );
-        localStorage.setItem("codex-mobile-opened", JSON.stringify(id));
+        localStorage.setItem(`codex-desktop-opened:${stateDir}`, id);
+        localStorage.setItem("codex-mobile-opened", id);
       },
-      { id: lead.id, stateDir: initial.stateDir },
+      { id: cacheFixture(lead.id), stateDir: initial.stateDir },
     );
     await page.goto(origin);
     await page.locator(`[data-chat="${lead.id}"]`).click();

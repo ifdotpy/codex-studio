@@ -7,6 +7,51 @@ use studio_runtime_store::{RuntimeStore, StoreError};
 fn corpus() -> Value {
     serde_json::from_str(include_str!("fixtures/process-controls.json")).unwrap()
 }
+#[tokio::test]
+async fn leaf_listing_does_not_decode_unrelated_agents() {
+    let root = tempfile::tempdir().unwrap();
+    let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+    store.transaction_with(|tx| {
+        tx.execute("INSERT INTO runtime_agents(id,record) VALUES('leaf','{\"id\":\"leaf\",\"provider\":\"codex\"}')", [])?;
+        for index in 0..100 {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                rusqlite::params![format!("other-{index}"), format!("{{\"id\":\"other-{index}\",\"provider\":\"codex\",\"unused\":1e999}}")])?;
+            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",
+                rusqlite::params![format!("task-{index}"), format!("{{\"id\":\"task-{index}\",\"agent\":\"other-{index}\",\"status\":\"running\",\"unused\":1e999}}")])?;
+        }
+        Ok::<_, StoreError>(())
+    }).await.unwrap();
+    store
+        .transaction_with(|tx| {
+            let owners = process_controls::owners(tx, "leaf")?;
+            let rows = process_controls::process_rows(tx, &owners)?;
+            let result = process_controls::listing(
+                tx,
+                &owners,
+                &rows,
+                &process_controls::Connections::default(),
+            )?;
+            assert_eq!(result["processes"], json!([]));
+            Ok::<_, process_controls::Error>(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn owners_follow_live_descendants_once_even_in_a_cycle() {
+    let root = tempfile::tempdir().unwrap();
+    let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+    store.transaction_with(|tx| {
+        for (id, parent, deleted) in [("root", "child", false), ("child", "root", false), ("dead", "root", true), ("hidden", "dead", false)] {
+            let record = json!({"id":id,"provider":"codex","parentId":parent,"deletedAt":if deleted { json!(1) } else { Value::Null }});
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", rusqlite::params![id, record.to_string()]).map_err(StoreError::from)?;
+        }
+        let owners = process_controls::owners(tx, "root")?;
+        assert_eq!(owners.iter().map(|owner| owner["id"].as_str().unwrap()).collect::<Vec<_>>(), vec!["root", "child"]);
+        Ok::<_, process_controls::Error>(())
+    }).await.unwrap();
+}
 #[test]
 fn python_process_identities_and_capabilities_match() {
     for case in corpus()["processes"].as_array().unwrap() {

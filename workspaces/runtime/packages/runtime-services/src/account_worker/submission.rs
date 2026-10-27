@@ -19,7 +19,6 @@ pub(super) struct Commit {
     pub control: SessionControl,
     pub id: RequestId,
     pub context: Pending,
-    pub method: Method,
     pub params: Value,
     pub interrupt_turn: Option<(String, i64)>,
     pub submission: Option<crate::notification_dispatch::PreparedSubmission>,
@@ -47,7 +46,6 @@ pub(super) enum Committed {
 pub(super) struct Ready {
     pub id: RequestId,
     pub context: Arc<Pending>,
-    pub method: Method,
     pub prepared: PreparedRequest,
     pub control: SessionControl,
     /// Written to a VM actor's own session.
@@ -69,7 +67,7 @@ impl Commit {
             }
         }
         if matches!(
-            self.method,
+            self.context.method,
             Method::ThreadStart | Method::TurnStart | Method::TurnInterrupt | Method::ThreadResume
         ) {
             let launch =
@@ -94,7 +92,6 @@ impl Commit {
             timeout_ms,
             id,
             context,
-            method,
             params,
             interrupt_turn,
             submission,
@@ -102,6 +99,7 @@ impl Commit {
             effect,
             ..
         } = self;
+        let method = context.method;
         let prepared = match crate::diagnostics::measure_runtime_stage_async(
             "turn_submission.prepare",
             control.prepare(RequestSpec {
@@ -169,7 +167,6 @@ impl Commit {
         Ok(Committed::Ready(Box::new(Ready {
             id,
             context,
-            method,
             prepared,
             control,
             vm,

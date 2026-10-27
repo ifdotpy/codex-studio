@@ -40,13 +40,19 @@ it("routes dictation and voice through the same connection owner and closes only
       .mock.calls.find(([method]) => method === "view.subscribe")![1] as {
       subscription: string;
     };
-    events({ event: subscription.subscription, value: { type: "ready" } });
-    expect(received).toHaveBeenCalledWith({ type: "ready" });
+    events({
+      event: subscription.subscription,
+      value: { type: "state", state: "ready" },
+    });
+    expect(received).toHaveBeenCalledWith({ type: "state", state: "ready" });
     await expect(
       b.nativeVoice("same-session", vi.fn()).answer("answer"),
     ).rejects.toThrow("Unknown voice");
     a.close();
-    events({ event: subscription.subscription, value: { type: "late" } });
+    events({
+      event: subscription.subscription,
+      value: { type: "state", state: "late" },
+    });
     expect(received).toHaveBeenCalledTimes(1);
     expect(nativeRequest).toHaveBeenCalledWith("voice.close", {
       session: subscription.subscription,

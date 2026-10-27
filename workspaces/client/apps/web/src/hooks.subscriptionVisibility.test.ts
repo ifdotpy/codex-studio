@@ -1,19 +1,19 @@
+import type {
+  ConnectionActivity,
+  ConnectionHealth,
+} from "./sync/connectionState";
 import { afterEach, expect, it, vi } from "vitest";
 import type { SubscriptionState } from "./sync/subscriptions/contracts";
 import type { TranscriptPageData } from "./types";
-import type {
-  ResourceConnectionDetail,
-  ResourceConnectionState,
-  ResourceStreamState,
-} from "./sync/resourceConnection";
+import type { ResourceConnectionDetail } from "./sync/resourceConnection";
 const h = vi.hoisted(() => ({
   effects: [] as (() => void | (() => void))[],
   writes: [] as unknown[],
   connection: undefined as
     | undefined
     | ((
-        status: ResourceConnectionState,
-        stream?: ResourceStreamState,
+        status: ConnectionHealth,
+        stream?: ConnectionActivity,
         detail?: ResourceConnectionDetail,
       ) => void),
   get: vi.fn(),

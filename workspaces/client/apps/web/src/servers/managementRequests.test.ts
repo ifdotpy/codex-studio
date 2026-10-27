@@ -117,3 +117,21 @@ it("shows and migrates a legacy uncertain request without changing its identity"
   expect(send).toHaveBeenCalledWith(request);
   expect(f.records.size).toBe(0);
 });
+
+it("blocks a malformed legacy management request without migrating or sending it", async () => {
+  const f = fixture();
+  const raw = JSON.stringify({
+    action: "revoke",
+    requestId: "original",
+    clientId: {},
+  });
+  f.storage.setItem("studio-server-discovery-pending-v1", raw);
+  const send = vi.fn(async () => {});
+  const manager = new ServerManagementRequests("home", f.storage, f.lock, send);
+  expect(() => manager.pending()).toThrow();
+  await expect(
+    manager.run({ action: "revoke", requestId: "new", clientId: "id" }),
+  ).rejects.toThrow();
+  expect(f.storage.getItem("studio-server-discovery-pending-v1")).toBe(raw);
+  expect(send).not.toHaveBeenCalled();
+});

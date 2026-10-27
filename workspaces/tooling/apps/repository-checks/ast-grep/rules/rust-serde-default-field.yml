@@ -1,0 +1,12 @@
+id: rust-serde-default-field
+language: Rust
+message: Require this field in the owning serde contract instead of defaulting it.
+severity: warning
+rule:
+  kind: field_declaration
+  has:
+    field: name
+    regex: "^(id|status|kind|method)$"
+  follows:
+    pattern: "#[serde(default)]"
+    stopBy: neighbor

@@ -4,7 +4,7 @@ import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import RealtimeVoice from "../../src/components/RealtimeVoice.tsx";
 import { watchVoiceTransport } from "../../src/components/voiceTransport.ts";
-import type { ResourceConnectionState } from "../../src/sync/client.ts";
+import type { ConnectionHealth } from "../../src/sync/connectionState.ts";
 import type { components } from "../../src/generated/api.ts";
 import {
   API_SCHEMA_HASH,
@@ -24,7 +24,7 @@ type VoiceHarness = {
   >[];
   pending: boolean;
   voiceError: string;
-  voiceTransport?: ResourceConnectionState;
+  voiceTransport?: ConnectionHealth;
   holdPermission?: boolean;
   releasePermission?: () => void;
   holdStart?: boolean;

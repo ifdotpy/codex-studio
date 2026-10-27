@@ -14,12 +14,9 @@ const OPERATION: &str = "41e0b552-0b0c-4c5c-9c37-2e7483cd05c9";
 
 use crate::account_transfer_driver::{dispatch_from_raw, state as fixture};
 fn operation(store: &RuntimeStore) -> Value {
-    serde_json::from_str(
-        &AccountTransferRepository::get(&store.test_reader().expect("read"), OPERATION)
-            .expect("get")
-            .expect("Python operation"),
-    )
-    .expect("record")
+    AccountTransferRepository::get(&store.test_reader().expect("read"), OPERATION)
+        .expect("get")
+        .expect("Python operation")
 }
 fn ticket() -> Ticket {
     Ticket {

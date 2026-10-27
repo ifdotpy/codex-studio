@@ -1,7 +1,6 @@
+import type { ConnectionActivity, ConnectionHealth } from "../connectionState";
 import type {
-  ResourceConnectionState,
   ResourceConnectionDetail,
-  ResourceStreamState,
   ResourceVersion,
 } from "../resourceEvents";
 import {
@@ -23,8 +22,8 @@ export type SubscriptionTransport = {
   ): () => void;
   watchResourceConnection(
     accept: (
-      status: ResourceConnectionState,
-      stream: ResourceStreamState,
+      status: ConnectionHealth,
+      stream: ConnectionActivity,
       detail: ResourceConnectionDetail,
     ) => void,
   ): () => void;
@@ -47,7 +46,7 @@ type Entry = {
  * A zero-consumer entry stays subscribed through grace, but its cache is stale. */
 export function createSubscriptionStore(transport: SubscriptionTransport) {
   const entries = new Map<string, Entry>();
-  let connection: ResourceConnectionState = "connecting";
+  let connection: ConnectionHealth = "connecting";
   let stopConnection: (() => void) | undefined;
   let disposed = false;
 

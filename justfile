@@ -6,6 +6,8 @@ export CARGO_BUILD_JOBS := `node workspaces/tooling/apps/repository-checks/gate-
 facade := justfile_directory() / "workspaces/tooling/apps/repository-checks/facade.ts"
 rust-target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() / "target")
 rust-http-server := rust-target / "debug/studio-runtime-server"
+# Native tests run on the prepared CI builder; its complement owns the shard archive.
+native-test-filter := "package(=studio-native-client)"
 
 [doc("Build and install the Rust command links, migrating same-checkout Python links. Does not install or restart services.")]
 install *args:
@@ -60,7 +62,7 @@ check package *args:
 
 [doc("Lint every runtime workspace target with warnings treated as errors.")]
 clippy-runtime:
-    cargo clippy --workspace --all-targets --locked -- -D warnings
+    node workspaces/tooling/apps/repository-checks/clippy-ratchet.ts
 
 [doc("Check generated API and persisted-state contracts in read-only drift mode.")]
 contracts-check:
@@ -106,7 +108,11 @@ test-fast-rust-partition partition count archive="":
     fi
     STUDIO_SUPERVISOR_BINARY="$supervisor" CODEX_NODE="$(node -p 'process.execPath')" cargo nextest run "${source[@]}" --profile ci --partition "hash:$1/$2"
 
-[doc("Build the workspace tests of test-fast-rust-partition once into a nextest archive file.")]
+[doc("Run native Rust tests on the CI builder that already has WebView libraries installed.")]
+test-native-ci:
+    cargo nextest run --workspace --locked --profile ci -E '{{native-test-filter}}'
+
+[doc("Build the full workspace and archive non-native tests for test-fast-rust-partition. Run native tests separately with test-native-ci.")]
 build-rust-test-archive file:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -115,7 +121,7 @@ build-rust-test-archive file:
       exit 1
     fi
     cargo build --workspace --tests --bins --examples --locked
-    cargo nextest archive --workspace --locked --archive-file "$1"
+    cargo nextest archive --workspace --locked -E 'not {{native-test-filter}}' --archive-file "$1"
     if ! tar -tf "$1" | grep -x 'target/debug/codex-process-supervisor' >/dev/null; then
       echo "The archive lacks target/debug/codex-process-supervisor, which test-fast-rust-partition selects" >&2
       exit 1

@@ -1,10 +1,10 @@
+import type {
+  ConnectionActivity,
+  ConnectionHealth,
+} from "../sync/connectionState";
 import { afterEach, expect, it, vi } from "vitest";
 import { READ_RECOVERY_MAX_ATTEMPTS } from "../sync/readRetry";
-import type {
-  ResourceConnectionDetail,
-  ResourceConnectionState,
-  ResourceStreamState,
-} from "../sync/resourceConnection";
+import type { ResourceConnectionDetail } from "../sync/resourceConnection";
 import { localTime } from "../local-time";
 const h = vi.hoisted(() => ({
   effects: [] as (() => void | (() => void))[],
@@ -14,8 +14,8 @@ const h = vi.hoisted(() => ({
   connection: undefined as
     | undefined
     | ((
-        state: ResourceConnectionState,
-        activity?: ResourceStreamState,
+        state: ConnectionHealth,
+        activity?: ConnectionActivity,
         detail?: ResourceConnectionDetail,
       ) => void),
 }));

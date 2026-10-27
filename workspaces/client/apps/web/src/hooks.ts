@@ -135,15 +135,10 @@ export function useSnapshot(
   const [workspaceId, setWorkspaceId] = useState("");
   const [created, setCreated] = useState<{ scope: string; agents: Agent[] }>(
     () => {
-      const cached = saved<{ scope: string; agents: Agent[] } | null>(
+      return saved<{ scope: string; agents: Agent[] }>(
         "codex-confirmed-chats",
-        null,
+        { scope: "", agents: [] },
       );
-      return cached &&
-        typeof cached.scope === "string" &&
-        Array.isArray(cached.agents)
-        ? cached
-        : { scope: "", agents: [] };
     },
   );
   // Match the durable creation request's workspace scope.

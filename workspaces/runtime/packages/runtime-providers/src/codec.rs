@@ -66,6 +66,19 @@ macro_rules! define_methods {
     };
 }
 
+impl Serialize for Method {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Method {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::from_wire(&value).ok_or_else(|| serde::de::Error::custom("unknown provider method"))
+    }
+}
+
 define_methods! {
     Initialize => "initialize",
     Initialized => "initialized",

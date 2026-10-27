@@ -1,5 +1,263 @@
 import ts from "typescript";
 
+export type GeneratedTypeDiagnostic = {
+  file: string;
+  text: string;
+  message: string;
+};
+
+export function switchDefaultDiagnostics(
+  program: ts.Program,
+  targets: readonly string[],
+) {
+  const checker = program.getTypeChecker();
+  const findings: { file: string; text: string; message: string }[] = [];
+  for (const file of targets) {
+    const source = program.getSourceFile(file);
+    if (!source) throw new Error(`Missing switch target: ${file}`);
+    const visit = (node: ts.Node) => {
+      if (
+        ts.isSwitchStatement(node) &&
+        ts.isPropertyAccessExpression(node.expression)
+      ) {
+        const type = checker.getTypeAtLocation(node.expression);
+        const clauses = node.caseBlock.clauses;
+        const fallback = clauses.find(ts.isDefaultClause);
+        if (
+          fallback &&
+          type.isUnion() &&
+          type.types.length > 1 &&
+          type.types.every(
+            (part) => part.isStringLiteral() || part.isNumberLiteral(),
+          )
+        ) {
+          let last = fallback.statements.at(-1);
+          while (last && ts.isBlock(last)) last = last.statements.at(-1);
+          let safe =
+            !!last && (ts.isReturnStatement(last) || ts.isThrowStatement(last));
+          const object = node.expression.expression.getText(source);
+          const checkObjectProof = (statement: ts.Statement): boolean => {
+            if (ts.isBlock(statement))
+              return statement.statements.some(checkObjectProof);
+            return (
+              ts.isVariableStatement(statement) &&
+              statement.declarationList.declarations.some(
+                (declaration) =>
+                  !!declaration.type &&
+                  !!declaration.initializer &&
+                  declaration.initializer.getText(source) === object &&
+                  !!(
+                    checker.getTypeFromTypeNode(declaration.type).flags &
+                    ts.TypeFlags.Never
+                  ) &&
+                  !!(
+                    checker.getTypeAtLocation(declaration.initializer).flags &
+                    ts.TypeFlags.Never
+                  ),
+              )
+            );
+          };
+          safe ||= fallback.statements.some(checkObjectProof);
+          if (last && ts.isVariableStatement(last)) {
+            safe ||= last.declarationList.declarations.some(
+              (declaration) =>
+                !!declaration.type &&
+                !!declaration.initializer &&
+                declaration.initializer.getText(source) ===
+                  node.expression.getText(source) &&
+                !!(
+                  checker.getTypeFromTypeNode(declaration.type).flags &
+                  ts.TypeFlags.Never
+                ) &&
+                !!(
+                  checker.getTypeAtLocation(declaration.initializer).flags &
+                  ts.TypeFlags.Never
+                ),
+            );
+          }
+          if (
+            last &&
+            ts.isExpressionStatement(last) &&
+            ts.isCallExpression(last.expression)
+          ) {
+            const call = last.expression;
+            const signature = checker.getResolvedSignature(call);
+            safe ||= !!signature?.parameters.some((parameter, index) => {
+              const argument = call.arguments[index];
+              const declaration = parameter.valueDeclaration;
+              return (
+                !!argument &&
+                argument.getText(source) === node.expression.getText(source) &&
+                !!declaration &&
+                !!(
+                  checker.getTypeOfSymbolAtLocation(parameter, declaration)
+                    .flags & ts.TypeFlags.Never
+                ) &&
+                !!(
+                  checker.getTypeAtLocation(argument).flags & ts.TypeFlags.Never
+                )
+              );
+            });
+          }
+          if (!safe)
+            findings.push({
+              file,
+              text: node.getText(source),
+              message:
+                "Return, throw, or assert the remaining value is never in the default branch",
+            });
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  return findings;
+}
+
+// Compare declarations against the generated source, including OpenAPI schema
+// properties, without treating a type derived from the owner as a copy.
+export function generatedTypeDiagnostics(
+  program: ts.Program,
+  targets: readonly string[],
+  ownerFiles: readonly string[],
+): GeneratedTypeDiagnostic[] {
+  const checker = program.getTypeChecker();
+  const names = new Map<string, { file: string; type: ts.Type }[]>();
+  const unions = new Map<string, string>();
+  const addOwner = (name: string, node: ts.Node, file: string) => {
+    const entries = names.get(name) ?? [];
+    entries.push({ file, type: checker.getTypeAtLocation(node) });
+    names.set(name, entries);
+  };
+  function unionKey(node: ts.Node): string | undefined {
+    if (!ts.isUnionTypeNode(node) || node.types.length < 2) return;
+    const values: string[] = [];
+    for (const part of node.types) {
+      if (!ts.isLiteralTypeNode(part) || !ts.isStringLiteral(part.literal))
+        return;
+      values.push(part.literal.text);
+    }
+    return JSON.stringify([...new Set(values)].sort());
+  }
+  for (const file of ownerFiles) {
+    const source = program.getSourceFile(file);
+    if (!source) throw new Error(`Missing generated type owner: ${file}`);
+    for (const statement of source.statements) {
+      if (
+        (ts.isTypeAliasDeclaration(statement) ||
+          ts.isInterfaceDeclaration(statement) ||
+          ts.isEnumDeclaration(statement)) &&
+        statement.modifiers?.some(
+          (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+        )
+      ) {
+        addOwner(statement.name.text, statement.name, file);
+      }
+    }
+    const visit = (node: ts.Node) => {
+      if (ts.isTypeAliasDeclaration(node)) {
+        const values = literalValues(checker.getTypeFromTypeNode(node.type));
+        if (values && values.length > 1)
+          unions.set(
+            JSON.stringify([...new Set(values)].sort()),
+            `${node.name.text} in ${file}`,
+          );
+      }
+      if (
+        ts.isPropertySignature(node) &&
+        ts.isTypeLiteralNode(node.parent) &&
+        ts.isPropertySignature(node.parent.parent) &&
+        node.parent.parent.name.getText(source) === "schemas" &&
+        node.name
+      ) {
+        const name =
+          ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)
+            ? node.name.text
+            : undefined;
+        if (name) addOwner(name, node, file);
+      }
+      const key = unionKey(node);
+      if (key) {
+        const parent = node.parent;
+        const name =
+          (ts.isTypeAliasDeclaration(parent) ||
+            ts.isPropertySignature(parent)) &&
+          parent.name
+            ? parent.name.getText(source)
+            : "union";
+        unions.set(key, `${name} in ${file}`);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  const findings: GeneratedTypeDiagnostic[] = [];
+  const ownerSet = new Set(ownerFiles);
+  function derivesFromOwner(
+    node: ts.Node,
+    visited = new Set<ts.Node>(),
+  ): boolean {
+    if (visited.has(node)) return false;
+    visited.add(node);
+    if (ownerSet.has(node.getSourceFile().fileName)) return true;
+    if (ts.isIdentifier(node)) {
+      let symbol = checker.getSymbolAtLocation(node);
+      if (symbol?.flags && symbol.flags & ts.SymbolFlags.Alias)
+        symbol = checker.getAliasedSymbol(symbol);
+      for (const declaration of symbol?.declarations ?? []) {
+        if (ownerSet.has(declaration.getSourceFile().fileName)) return true;
+        if (
+          (ts.isTypeAliasDeclaration(declaration) ||
+            ts.isInterfaceDeclaration(declaration)) &&
+          derivesFromOwner(declaration, visited)
+        )
+          return true;
+      }
+    }
+    return (
+      ts.forEachChild(node, (child) => derivesFromOwner(child, visited)) ??
+      false
+    );
+  }
+  for (const file of targets) {
+    if (ownerFiles.includes(file)) continue;
+    const source = program.getSourceFile(file);
+    if (!source) throw new Error(`Missing generated type target: ${file}`);
+    const visit = (node: ts.Node) => {
+      if (
+        ts.isTypeAliasDeclaration(node) ||
+        ts.isInterfaceDeclaration(node) ||
+        ts.isEnumDeclaration(node)
+      ) {
+        const name = node.name.text;
+        const type = checker.getTypeAtLocation(node.name);
+        const owner = names
+          .get(name)
+          ?.find(
+            (candidate) =>
+              checker.isTypeAssignableTo(type, candidate.type) &&
+              checker.isTypeAssignableTo(candidate.type, type),
+          );
+        const union = ts.isTypeAliasDeclaration(node)
+          ? unions.get(unionKey(node.type) ?? "")
+          : undefined;
+        if ((owner || union) && !derivesFromOwner(node))
+          findings.push({
+            file,
+            text: node.getText(source),
+            message: owner
+              ? `Import ${name} from ${owner.file}`
+              : `Derive ${name} from ${union}`,
+          });
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  return findings;
+}
+
 type Owner = {
   name: string;
   component: string;

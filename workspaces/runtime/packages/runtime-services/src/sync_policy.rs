@@ -356,13 +356,20 @@ pub fn maintain_entity_projections_with_server_id(
                 "runtime_projects",
                 "runtime_requests",
                 "runtime_rules",
-                "runtime_work",
                 "runtime_federation_rooms",
             ]
             .into_iter()
             .map(|table| projection_records(transaction, table).map(|records| (table, records)))
             .collect::<StoreResult<HashMap<_, _>>>()
         })?;
+    let mut work_records = Vec::new();
+    let mut work_source = Vec::new();
+    for (id, raw) in stored_record_rows(transaction, "runtime_work")? {
+        if let Some(record) = checked_owned_work(&id, &raw)? {
+            work_records.push(record);
+            work_source.push((id, raw));
+        }
+    }
     crate::diagnostics::measure_runtime_stage("projection.vault_recheck", || {
         vault_snapshot.recheck(transaction)
     })?;
@@ -397,11 +404,7 @@ pub fn maintain_entity_projections_with_server_id(
         publish_agents(
             transaction,
             &agents,
-            source_records
-                .get("runtime_work")
-                .ok_or(StoreError::RecordContract(
-                    "entity projection source snapshot is incomplete",
-                ))?,
+            &work_records,
             project_server_id,
             &validate_projection,
         )
@@ -426,9 +429,13 @@ pub fn maintain_entity_projections_with_server_id(
             ("runtime_rules", "rule"),
             ("runtime_work", "work"),
         ] {
-            let records = source_records.get(table).ok_or(StoreError::RecordContract(
-                "entity projection source snapshot is incomplete",
-            ))?;
+            let records = if table == "runtime_work" {
+                &work_source
+            } else {
+                source_records.get(table).ok_or(StoreError::RecordContract(
+                    "entity projection source snapshot is incomplete",
+                ))?
+            };
             for (id, raw) in records {
                 if matches!(collection, "request" | "rule" | "work") {
                     publish_direct(transaction, collection, id, raw, &validate_projection)?;
@@ -443,7 +450,7 @@ pub fn maintain_entity_projections_with_server_id(
                     "complaint" => complaint_entity_view(
                         &record,
                         &ComplaintViewContext {
-                            agents: rooms.agents().to_vec(),
+                            agents: rooms.agents(),
                         },
                     ),
                     "project" => {
@@ -688,8 +695,8 @@ pub fn publish_entity_changes(
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })? {
                 let (id, raw) = row?;
-                if valid_stored_record("runtime_work", &id, &raw) {
-                    owned_work.push((id, raw));
+                if let Some(record) = checked_owned_work(&id, &raw)? {
+                    owned_work.push(record);
                 }
             }
         }
@@ -989,7 +996,7 @@ fn rows_by_id(
 fn publish_agents(
     transaction: &Transaction<'_>,
     agents: &[(&str, &Value)],
-    work: &[(String, String)],
+    work: &[studio_runtime_store::WorkItemRecord],
     project_server_id: Option<&str>,
     validate: &impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
@@ -1257,6 +1264,15 @@ pub(crate) mod work_publication_probe {
         pub metadata: usize,
         pub history_entries: usize,
         pub history_bytes: usize,
+        pub owned_decodes: usize,
+    }
+    pub(crate) fn owned_decode(id: &str) {
+        counts()
+            .lock()
+            .expect("probe mutex")
+            .entry(id.into())
+            .or_default()
+            .owned_decodes += 1;
     }
     fn counts() -> &'static Mutex<BTreeMap<String, Counts>> {
         static COUNTS: OnceLock<Mutex<BTreeMap<String, Counts>>> = OnceLock::new();
@@ -1418,8 +1434,8 @@ pub(crate) fn monitor_owner_index_exists(connection: &Connection) -> StoreResult
         .query_row([], |row| row.get(0))?)
 }
 
-fn projection_records(
-    transaction: &Transaction<'_>,
+pub(crate) fn projection_records(
+    transaction: &Connection,
     table: &str,
 ) -> StoreResult<Vec<(String, String)>> {
     // Legacy behavior: codex_sync_entities._stored_record skips malformed rows
@@ -1430,18 +1446,22 @@ fn projection_records(
         .collect())
 }
 
-pub(crate) fn projection_values(connection: &Connection, table: &str) -> StoreResult<Vec<Value>> {
-    Ok(stored_record_rows(connection, table)?
-        .into_iter()
-        .filter(|(id, raw)| valid_stored_record(table, id, raw))
-        .map(|(_, raw)| serde_json::from_str(&raw))
-        .collect::<Result<Vec<_>, _>>()?)
-}
-
 /// Stored agent rows without `deletedAt`, in rowid order (the agent columns
 /// refuse malformed JSON at write). The `runtime_agent_live_root_v2` partial
 /// index serves the predicate, so tombstones are not read.
 pub(crate) fn live_agent_records(connection: &Connection) -> StoreResult<Vec<(String, String)>> {
+    agent_volatile::merged_rows(
+        connection,
+        live_agent_record_rows(connection)?
+            .into_iter()
+            .filter(|(id, raw)| valid_stored_record("runtime_agents", id, raw))
+            .collect(),
+    )
+}
+
+pub(crate) fn live_agent_record_rows(
+    connection: &Connection,
+) -> StoreResult<Vec<(String, String)>> {
     if !table_exists(connection, "runtime_agents")? {
         return Ok(Vec::new());
     }
@@ -1449,17 +1469,11 @@ pub(crate) fn live_agent_records(connection: &Connection) -> StoreResult<Vec<(St
         "SELECT id,record FROM runtime_agents INDEXED BY runtime_agent_live_root_v2 \
          WHERE deleted_at IS NULL ORDER BY rowid",
     )?;
-    let rows = statement
+    Ok(statement
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
-        .collect::<Result<Vec<_>, _>>()?;
-    agent_volatile::merged_rows(
-        connection,
-        rows.into_iter()
-            .filter(|(id, raw)| valid_stored_record("runtime_agents", id, raw))
-            .collect(),
-    )
+        .collect::<Result<Vec<_>, _>>()?)
 }
 
 /// Every stored row of `table`, refusing the first invalid one.
@@ -1480,7 +1494,10 @@ pub(crate) fn stored_records(
     Ok(rows)
 }
 
-fn stored_record_rows(connection: &Connection, table: &str) -> StoreResult<Vec<(String, String)>> {
+pub(crate) fn stored_record_rows(
+    connection: &Connection,
+    table: &str,
+) -> StoreResult<Vec<(String, String)>> {
     if !table_exists(connection, table)? {
         return Ok(Vec::new());
     }
@@ -1498,13 +1515,36 @@ fn stored_record_rows(connection: &Connection, table: &str) -> StoreResult<Vec<(
 }
 
 fn valid_stored_record(table: &str, id: &str, raw: &str) -> bool {
-    serde_json::from_str::<Value>(raw).is_ok_and(|record| {
-        record.is_object()
-            && record.get("id").and_then(Value::as_str) == Some(id)
-            && studio_runtime_schema::table_schema(table).is_none_or(|schema| {
-                studio_runtime_schema::validate(schema, &record).unwrap_or(false)
-            })
-    })
+    serde_json::from_str::<Value>(raw).is_ok_and(|record| valid_stored_value(table, id, &record))
+}
+
+fn valid_stored_value(table: &str, id: &str, record: &Value) -> bool {
+    record.is_object()
+        && record.get("id").and_then(Value::as_str) == Some(id)
+        && studio_runtime_schema::table_schema(table)
+            .is_none_or(|schema| studio_runtime_schema::validate(schema, record).unwrap_or(false))
+}
+
+fn checked_owned_work(
+    id: &str,
+    raw: &str,
+) -> StoreResult<Option<studio_runtime_store::WorkItemRecord>> {
+    #[cfg(test)]
+    work_publication_probe::owned_decode(id);
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return Ok(None);
+    };
+    if !valid_stored_value("runtime_work", id, &value) {
+        return Ok(None);
+    }
+    studio_runtime_store::WorkItemRecord::from_value(value)
+        .map(Some)
+        .map_err(|error| StoreError::InvalidSyncObjectField {
+            scope: "runtime_work".into(),
+            id: id.into(),
+            pointer: String::new(),
+            reason: error.to_string(),
+        })
 }
 
 fn retire_if_live(

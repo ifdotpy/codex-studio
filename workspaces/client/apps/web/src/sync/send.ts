@@ -95,18 +95,138 @@ type SendResult =
       error?: string | undefined;
     };
 
-// Outbox payloads are written by this renderer; the local intention owns their shape.
-function readIntention(payload: string): Intention {
-  return JSON.parse(payload);
+type DecodedIntention =
+  | { kind: "valid"; intention: Intention }
+  | { kind: "invalid"; id: string };
+
+const intentionStatuses = {
+  queued: true,
+  paused: true,
+  cancelled: true,
+  accepted: true,
+  uncertain: true,
+  failed: true,
+} satisfies Record<Intention["status"], true>;
+const deliveryMoments = {
+  current_turn: true,
+  next_turn: true,
+  queue: true,
+  steer: true,
+  after_tool: true,
+  after_turn: true,
+} satisfies Record<NonNullable<MessageBody["delivery"]>, true>;
+
+function validStoredReceipt(value: unknown, id: string) {
+  if (!matchesMessageDelivery(value, id) || !value || typeof value !== "object")
+    return false;
+  const receipt = value as Record<string, unknown>;
+  const deliveries = receipt.deliveries;
+  return (
+    (receipt.error == null || typeof receipt.error === "string") &&
+    (receipt.materialized == null ||
+      typeof receipt.materialized === "boolean") &&
+    (deliveries == null ||
+      (typeof deliveries === "object" &&
+        !Array.isArray(deliveries) &&
+        Object.values(deliveries).every((item) => typeof item === "string")))
+  );
 }
 
-const queuedDocuments = (docs: RxDocument<SyncDocument>[]) =>
-  docs
-    .filter((doc) => readIntention(doc.getLatest().payload).status === "queued")
+function decodeIntention(payload: string, id: string): DecodedIntention {
+  const invalid: DecodedIntention = { kind: "invalid", id };
+  let value: unknown;
+  try {
+    value = JSON.parse(payload);
+  } catch {
+    return invalid;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return invalid;
+  const record = value as Record<string, unknown>;
+  const body = record.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return invalid;
+  const message = body as Record<string, unknown>;
+  if (
+    message.id !== id ||
+    typeof message.room !== "string" ||
+    !message.room ||
+    typeof message.text !== "string" ||
+    (message.assets !== undefined &&
+      (!Array.isArray(message.assets) ||
+        !message.assets.every((asset) => typeof asset === "string"))) ||
+    (message.delivery !== undefined &&
+      (typeof message.delivery !== "string" ||
+        !Object.hasOwn(deliveryMoments, message.delivery))) ||
+    typeof record.status !== "string" ||
+    !Object.hasOwn(intentionStatuses, record.status) ||
+    typeof record.created !== "number" ||
+    !Number.isFinite(record.created) ||
+    (record.attempted !== undefined && typeof record.attempted !== "boolean") ||
+    (record.displayPending !== undefined &&
+      typeof record.displayPending !== "boolean") ||
+    (record.displayText !== undefined &&
+      typeof record.displayText !== "string") ||
+    (record.error !== undefined &&
+      record.error !== null &&
+      typeof record.error !== "string") ||
+    (record.receipt !== undefined && !validStoredReceipt(record.receipt, id)) ||
+    (record.status === "accepted" && record.receipt === undefined) ||
+    (record.status === "cancelled" &&
+      record.receipt !== undefined &&
+      (!record.receipt ||
+        typeof record.receipt !== "object" ||
+        !("status" in record.receipt) ||
+        record.receipt.status !== "cancelled")) ||
+    (record.attachments !== undefined &&
+      (!Array.isArray(record.attachments) ||
+        !record.attachments.every(
+          (item) =>
+            item &&
+            typeof item === "object" &&
+            typeof item.id === "string" &&
+            typeof item.name === "string" &&
+            typeof item.mime === "string" &&
+            typeof item.image === "boolean" &&
+            typeof item.size === "number" &&
+            (item.preview === undefined || typeof item.preview === "string"),
+        )))
+  )
+    return invalid;
+  return {
+    kind: "valid",
+    intention: {
+      ...(value as Intention),
+      ...(record.error === null ? { error: undefined } : {}),
+    },
+  };
+}
+
+function readIntention(payload: string, id: string): Intention {
+  const decoded = decodeIntention(payload, id);
+  if (decoded.kind === "invalid")
+    throw new Error(
+      `Saved message ${id} could not be read; its delivery is uncertain.`,
+    );
+  return decoded.intention;
+}
+
+const snapshots = (docs: RxDocument<SyncDocument>[]) =>
+  docs.map((doc) => ({
+    doc,
+    decoded: decodeIntention(doc.getLatest().payload, doc.id),
+  }));
+
+const queuedDocuments = (entries: ReturnType<typeof snapshots>) =>
+  entries
+    .flatMap(({ doc, decoded }) =>
+      decoded.kind === "valid" && decoded.intention.status === "queued"
+        ? [{ doc, intention: decoded.intention }]
+        : [],
+    )
     .sort(
       (a, b) =>
-        readIntention(a.payload).created - readIntention(b.payload).created ||
-        a.id.localeCompare(b.id),
+        a.intention.created - b.intention.created ||
+        a.doc.id.localeCompare(b.doc.id),
     );
 
 const updateIntention = (
@@ -115,7 +235,10 @@ const updateIntention = (
 ) =>
   doc.incrementalModify((record) => ({
     ...record,
-    payload: JSON.stringify({ ...readIntention(record.payload), ...change }),
+    payload: JSON.stringify({
+      ...readIntention(record.payload, doc.id),
+      ...change,
+    }),
   }));
 
 export const intentionResult = (value: Intention): SendResult =>
@@ -185,7 +308,7 @@ export function createOutbox(options: {
       "id" | "getLatest" | "incrementalModify"
     >,
   ): Promise<SendResult> {
-    let value: Intention = readIntention(doc.getLatest().payload);
+    let value: Intention = readIntention(doc.getLatest().payload, doc.id);
     if (value.status !== "queued" || !navigator.onLine)
       return intentionResult(value);
     try {
@@ -202,7 +325,7 @@ export function createOutbox(options: {
       // Claim the current content before HTTP. Cancellation uses the same atomic
       // update and can succeed only before this request starts.
       const claimed = await doc.incrementalModify((record) => {
-        const current: Intention = readIntention(record.payload);
+        const current: Intention = readIntention(record.payload, doc.id);
         if (
           current.status === "queued" &&
           localStorage.getItem(removalFence(workspaceId, doc.id)) === "1"
@@ -226,7 +349,7 @@ export function createOutbox(options: {
             }
           : record;
       });
-      value = readIntention(claimed.payload);
+      value = readIntention(claimed.payload, doc.id);
       if (value.status !== "queued") return intentionResult(value);
       const result = await syncPost("/api/messages", value.body, {
         workspaceId,
@@ -243,7 +366,7 @@ export function createOutbox(options: {
           400,
         );
       const current = await doc.incrementalModify((record) => {
-        const stored: Intention = readIntention(record.payload);
+        const stored: Intention = readIntention(record.payload, doc.id);
         // Preserve confirmed delivery against an older queue receipt. A matching
         // later reply can still resolve queue acceptance or an uncertain outcome.
         const confirmed = (receipt: StoredMessageReceipt | undefined) =>
@@ -267,18 +390,18 @@ export function createOutbox(options: {
           }),
         };
       });
-      return intentionResult(readIntention(current.payload));
+      return intentionResult(readIntention(current.payload, doc.id));
     } catch (error) {
       if (error instanceof ApiSchemaMismatchError) {
         const current = await doc.incrementalModify((record) => {
-          const stored: Intention = readIntention(record.payload);
+          const stored: Intention = readIntention(record.payload, doc.id);
           if (stored.status !== "queued") return record;
           return {
             ...record,
             payload: JSON.stringify(retainQueuedSchemaMismatch(stored, error)),
           };
         });
-        return intentionResult(readIntention(current.payload));
+        return intentionResult(readIntention(current.payload, doc.id));
       }
       // A lost response is retried only at the existing idempotent message endpoint.
       if (
@@ -288,17 +411,17 @@ export function createOutbox(options: {
         error.status === 429
       ) {
         const current = await doc.incrementalModify((record) => {
-          const stored: Intention = readIntention(record.payload);
+          const stored: Intention = readIntention(record.payload, doc.id);
           if (!["queued", "paused"].includes(stored.status)) return record;
           return {
             ...record,
             payload: JSON.stringify({ ...stored, error: errorText(error) }),
           };
         });
-        return intentionResult(readIntention(current.payload));
+        return intentionResult(readIntention(current.payload, doc.id));
       }
       const current = await doc.incrementalModify((record) => {
-        const stored: Intention = readIntention(record.payload);
+        const stored: Intention = readIntention(record.payload, doc.id);
         if (!["queued", "paused"].includes(stored.status)) return record;
         return {
           ...record,
@@ -309,7 +432,7 @@ export function createOutbox(options: {
           }),
         };
       });
-      const stored: Intention = readIntention(current.payload);
+      const stored: Intention = readIntention(current.payload, doc.id);
       if (stored.status !== "failed") return intentionResult(stored);
       throw error;
     }
@@ -320,16 +443,15 @@ export function createOutbox(options: {
     if (!task) {
       task = (async () => {
         const { db, workspaceId } = await syncDatabase();
-        const value: Intention = readIntention(doc.getLatest().payload);
+        const value: Intention = readIntention(doc.getLatest().payload, doc.id);
         if (value.status !== "queued" || !navigator.onLine)
           return intentionResult(value);
         const room = `${workspaceId}:${JSON.stringify(value.body.room)}`;
         if (sendingRooms.has(room)) return intentionResult(value);
-        const first = queuedDocuments(await db.outbox.find().exec()).find(
-          (queued) =>
-            readIntention(queued.payload).body.room === value.body.room,
-        );
-        if (first && first.id !== doc.id) return intentionResult(value);
+        const first = queuedDocuments(
+          snapshots(await db.outbox.find().exec()),
+        ).find(({ intention }) => intention.body.room === value.body.room);
+        if (first && first.doc.id !== doc.id) return intentionResult(value);
         // Serialize each chat on this device, including browsers without Web Locks.
         if (sendingRooms.has(room)) return intentionResult(value);
         sendingRooms.add(room);
@@ -374,7 +496,7 @@ export function createOutbox(options: {
         if (!doc) throw error;
       }
     }
-    const old: Intention = readIntention(doc.payload);
+    const old: Intention = readIntention(doc.payload, doc.id);
     if (JSON.stringify(old.body) !== JSON.stringify(body))
       throw new Error("Message identity already has different content");
     if (old.status === "failed")
@@ -410,7 +532,9 @@ export function createOutbox(options: {
       if (!doc) continue;
       await doc.incrementalModify((record) => {
         if (signal?.aborted) return record;
-        const value = readIntention(record.payload);
+        const decoded = decodeIntention(record.payload, doc.id);
+        if (decoded.kind === "invalid") return record;
+        const value = decoded.intention;
         if (value.body.room !== room) return record;
         const next = receiptOutgoing(value, receipt);
         const payload = JSON.stringify(
@@ -456,7 +580,9 @@ export function createOutbox(options: {
     await verifyWorkspace();
     const rooms = new Map<string, string[]>();
     for (const doc of await db.outbox.find().exec()) {
-      const value: Intention = readIntention(doc.getLatest().payload);
+      const decoded = decodeIntention(doc.getLatest().payload, doc.id);
+      if (decoded.kind === "invalid") continue;
+      const value = decoded.intention;
       if (
         value.displayPending === false ||
         !["accepted", "uncertain"].includes(value.status)
@@ -552,7 +678,7 @@ export function createOutbox(options: {
     const doc = await db.outbox.findOne(id).exec();
     if (!doc) throw new Error("This message is no longer on this device.");
     const updated = await doc.incrementalModify((record) => {
-      const current: Intention = readIntention(record.payload);
+      const current: Intention = readIntention(record.payload, doc.id);
       if (!["queued", "paused"].includes(current.status))
         throw new Error("This message already left the device queue.");
       const next = { ...current };
@@ -583,7 +709,7 @@ export function createOutbox(options: {
     const doc = await db.outbox.findOne(id).exec();
     if (!doc) return false;
     const updated = await doc.incrementalModify((record) => {
-      const current: Intention = readIntention(record.payload);
+      const current: Intention = readIntention(record.payload, doc.id);
       if (!["queued", "paused"].includes(current.status)) return record;
       // A claimed request can still finish. Keep its identity and receipt.
       const cancelled = current.attempted === false;
@@ -596,12 +722,13 @@ export function createOutbox(options: {
         }),
       };
     });
-    return readIntention(updated.payload).status === "cancelled";
+    return readIntention(updated.payload, doc.id).status === "cancelled";
   }
 
   function useOutbox() {
     const [entries, setEntries] = useState<OutboxEntry[]>([]);
     const [error, setError] = useState("");
+    const [invalidError, setInvalidError] = useState("");
     useEffect(() => {
       let stop = false,
         draining = false;
@@ -641,8 +768,8 @@ export function createOutbox(options: {
           const { db } = await syncDatabase();
           const rooms = [
             ...new Set<string>(
-              queuedDocuments(await db.outbox.find().exec()).map(
-                (doc) => readIntention(doc.payload).body.room,
+              queuedDocuments(snapshots(await db.outbox.find().exec())).map(
+                ({ intention }) => intention.body.room,
               ),
             ),
           ];
@@ -653,11 +780,11 @@ export function createOutbox(options: {
               while (!stop && !isApiSchemaMismatch()) {
                 // Re-read after acceptance so a message saved during HTTP does
                 // not wait for the polling timer. Preserve order within each chat.
-                const doc = queuedDocuments(await db.outbox.find().exec()).find(
-                  (queued) => readIntention(queued.payload).body.room === room,
-                );
-                if (!doc) break;
-                const result = await once(doc).catch((e) => {
+                const queued = queuedDocuments(
+                  snapshots(await db.outbox.find().exec()),
+                ).find(({ intention }) => intention.body.room === room);
+                if (!queued) break;
+                const result = await once(queued.doc).catch((e) => {
                   // Per-message rejection is already stored beside that message.
                   if (!(e instanceof ApiError)) throw e;
                 });
@@ -705,8 +832,17 @@ export function createOutbox(options: {
           });
       };
       const handleOutboxDocuments = (docs: RxDocument<SyncDocument>[]) => {
+        const entries = snapshots(docs);
+        const invalid = entries.flatMap(({ decoded }) =>
+          decoded.kind === "invalid" ? [decoded.id] : [],
+        );
+        setInvalidError(
+          invalid.length
+            ? `Saved messages could not be read; delivery is uncertain: ${invalid.join(", ")}.`
+            : "",
+        );
         const nextQueued = JSON.stringify(
-          queuedDocuments(docs).map((doc) => doc.id),
+          queuedDocuments(entries).map(({ doc }) => doc.id),
         );
         const queuedChanged = nextQueued !== queuedIdentity;
         if (queuedChanged) {
@@ -715,11 +851,15 @@ export function createOutbox(options: {
           void drain();
         }
         setEntries(
-          docs
-            .map((doc) => ({ id: doc.id, ...readIntention(doc.payload) }))
+          entries
+            .flatMap(({ doc, decoded }) =>
+              decoded.kind === "valid"
+                ? [{ id: doc.id, ...decoded.intention }]
+                : [],
+            )
             .sort((a, b) => a.created - b.created),
         );
-        return queuedChanged;
+        return entries;
       };
       const subscribe = async () => {
         if (stop || subscribing || subscribed) return;
@@ -791,22 +931,20 @@ export function createOutbox(options: {
           subscribed = true;
           clearRetry();
           subscriptionReady = true;
-          if (bufferedDocs) handleOutboxDocuments(bufferedDocs);
+          const bufferedEntries =
+            bufferedDocs && handleOutboxDocuments(bufferedDocs);
           void drain();
           recoverReceipts();
           // A hidden accepted row still owns delivery state. Read cached receipts
           // once, then apply their persisted stream changes without another GET.
           const outbox = bufferedDocs ?? (await db.outbox.find().exec());
-          const ids = outbox
-            .filter((doc: RxDocument<SyncDocument>) =>
-              ["accepted", "uncertain"].includes(
-                readIntention(doc.getLatest().payload).status,
-              ),
+          const ids = (bufferedEntries || handleOutboxDocuments(outbox))
+            .filter(
+              ({ decoded }) =>
+                decoded.kind === "valid" &&
+                ["accepted", "uncertain"].includes(decoded.intention.status),
             )
-            .map(
-              (doc: RxDocument<SyncDocument>) =>
-                `entity:messageReceipt:${doc.id}`,
-            );
+            .map(({ doc }) => `entity:messageReceipt:${doc.id}`);
           if (ids.length) {
             const receipts =
               await db.projections.storageInstance.findDocumentsById(ids, true);
@@ -842,7 +980,7 @@ export function createOutbox(options: {
         stopForSchemaMismatch();
       };
     }, []);
-    return { entries, error };
+    return { entries, error: invalidError || error };
   }
   return {
     deliver,

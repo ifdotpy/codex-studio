@@ -290,7 +290,7 @@ async fn capacity_retry_restart_unknown_reports_once_without_resending() {
                             thread: prepared.thread,
                             compiled: prepared.compiled,
                             intent: prepared.intent,
-                            method: Method::TurnStart.as_str().into(),
+                            method: Method::TurnStart,
                             operation,
                         },
                         "default",
