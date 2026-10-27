@@ -226,7 +226,17 @@ function main() {
             (selected) => file === selected || file.startsWith(`${selected}/`),
           ),
       );
-    return targets.length ? checkEnums(repositoryRoot, targets, false) : 0;
+    const enumStatus = targets.length
+      ? checkEnums(repositoryRoot, targets, false)
+      : 0;
+    return (
+      enumStatus ||
+      run(
+        process.execPath,
+        [path.join(scriptDirectory, "ast-grep.ts")],
+        repositoryRoot,
+      )
+    );
   }
   if (mode === "enums" && (check === undefined || check === "--json")) {
     return checkEnums(

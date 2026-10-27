@@ -1,0 +1,6 @@
+id: ts-double-cast
+language: TypeScript
+message: Narrow the value through its owning contract instead of casting through unknown.
+severity: warning
+rule:
+  pattern: $X as unknown as $T

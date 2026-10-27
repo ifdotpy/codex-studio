@@ -25,10 +25,34 @@ export function fingerprintMatches(
   });
 }
 
+export function readBaseline(path = RATCHET_BASELINE): Baseline {
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new Error("Malformed ratchet baseline: expected an object");
+  const result: Baseline = {};
+  for (const [rule, entries] of Object.entries(parsed)) {
+    if (!Array.isArray(entries))
+      throw new Error(`Malformed ratchet baseline for ${rule}`);
+    result[rule] = entries.map((entry: unknown) => {
+      if (
+        !entry ||
+        typeof entry !== "object" ||
+        !("file" in entry) ||
+        typeof entry.file !== "string" ||
+        !("fingerprint" in entry) ||
+        typeof entry.fingerprint !== "string"
+      )
+        throw new Error(`Malformed ratchet baseline entry for ${rule}`);
+      return { file: entry.file, fingerprint: entry.fingerprint };
+    });
+  }
+  return result;
+}
+
 export function checkRatchet(
   ruleId: string,
   violations: Violation[],
-  baseline: Baseline = JSON.parse(readFileSync(RATCHET_BASELINE, "utf8")),
+  baseline: Baseline = readBaseline(),
 ): string[] {
   const key = (entry: BaselineEntry) => `${entry.file}\0${entry.fingerprint}`;
   const expected = new Set((baseline[ruleId] ?? []).map(key));

@@ -1,0 +1,13 @@
+id: rust-json-dispatch
+language: Rust
+message: Decode the JSON field through its owning typed contract before dispatch.
+severity: warning
+rule:
+  any:
+    - pattern: $V[$FIELD].as_str() == Some($VALUE)
+    - pattern: matches!($V[$FIELD].as_str(), Some($VALUE))
+constraints:
+  FIELD:
+    regex: '^"(status|kind|phase|provider|role|method)"$'
+  VALUE:
+    kind: string_literal

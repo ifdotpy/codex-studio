@@ -19,3 +19,21 @@ root manifest and Clippy settings into a disposable dependency-free crate; it
 does not build the application or interpret Rust source itself. Run the focused
 witnesses with
 `node --test workspaces/tooling/apps/repository-checks/tests/compiler-policy.test.ts workspaces/tooling/apps/repository-checks/tests/rust-lint-policy.test.ts`.
+
+## Syntax guards and ratchet
+
+The ast-grep rules under `ast-grep/rules` detect direct JSON round trips,
+selected JSON-indexed dispatch and serde defaults, parse casts, casts through
+unknown, and casts to any. Rules contain the corrective message. They operate
+on syntax alone: they do not resolve types, aliases, or prove that other casts,
+JSON access, or switch statements are safe. Type-aware checks own those cases.
+
+`ratchet-baseline.json` records each rule's existing matches by repository path
+and a SHA-256 fingerprint of whitespace-normalized matched text plus its
+occurrence index within that file. `pnpm run check:ast-grep` fails on new matches
+and on stale baseline entries. After fixing violations, run
+`node workspaces/tooling/apps/repository-checks/ast-grep.ts --shrink` to remove
+only stale entries; it cannot add new matches. Review the resulting diff. The
+scan runs in `lint:all` and the short tooling tier. It is not in the staged
+hook: the full baseline must be checked against a consistent repository snapshot,
+while the hook checks index content only.

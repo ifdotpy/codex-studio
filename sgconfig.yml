@@ -1,0 +1,4 @@
+ruleDirs:
+  - workspaces/tooling/apps/repository-checks/ast-grep/rules
+testConfigs:
+  - testDir: workspaces/tooling/apps/repository-checks/ast-grep/tests
