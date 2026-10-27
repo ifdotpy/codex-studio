@@ -18,7 +18,7 @@ const JSON_VALUE_ALIAS =
 
 // Runtime consumers use these closed domains from the same schema as their types.
 function runtimeEnumValues(document: import("openapi-typescript").OpenAPI3) {
-  return ["RequestStatus"]
+  return ["RequestStatus", "TaskStatus"]
     .flatMap((name) => {
       const schema = document.components?.schemas?.[name];
       if (!schema) return [];

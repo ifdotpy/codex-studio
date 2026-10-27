@@ -39770,6 +39770,19 @@ export const RequestStatus = {
   failed: "failed",
   uncertain: "uncertain",
 } as const;
+export const TaskStatus = {
+  running: "running",
+  starting: "starting",
+  approval: "approval",
+  queued: "queued",
+  waiting: "waiting",
+  completed: "completed",
+  failed: "failed",
+  interrupted: "interrupted",
+  cancelled: "cancelled",
+  lost: "lost",
+  unknown: "unknown",
+} as const;
 
 export const SYNC_PROTOCOL_VERSION = 4 as const;
 export const SYNC_IDENTITY_PROTOCOL_VERSION = 2 as const;
