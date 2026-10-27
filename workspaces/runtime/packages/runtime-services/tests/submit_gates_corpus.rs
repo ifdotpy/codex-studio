@@ -178,7 +178,13 @@ fn captured_denial(message: &str) -> &'static str {
         _ => panic!("unmapped captured denial: {message}"),
     }
 }
-fn compare(oracle: &mut CapturedExpectations, name: &str, case: &Value, deviation: Option<&str>) {
+fn compare(
+    oracle: &mut CapturedExpectations,
+    name: &str,
+    case: &Value,
+    deviation: Option<&str>,
+    location: Option<&str>,
+) {
     // Rust checks catalog provenance before the legacy settings-race refusal.
     let deviation = deviation
         .or((name == "changed-during-read-account_key").then_some("catalog-identity-mismatch"));
@@ -215,10 +221,10 @@ fn compare(oracle: &mut CapturedExpectations, name: &str, case: &Value, deviatio
         );
         assert_eq!(actual["denial"], denial, "{name}: wrong named refusal");
     }
-    if let Some(location) = case.get("refusal_location") {
+    if let Some(location) = location {
         assert_eq!(
             actual["location"].as_str(),
-            location.as_str(),
+            Some(location),
             "{name}: stored-input refusal must locate the malformed row field"
         );
     }
@@ -273,7 +279,13 @@ fn submit_gates_python_corpus() {
             &fixtures["seeds"][witness["gate"].as_str().expect("gate")],
             witness,
         );
-        compare(&mut oracle, name, &case, witness["deviation"].as_str());
+        compare(
+            &mut oracle,
+            name,
+            &case,
+            witness["deviation"].as_str(),
+            witness["refusal_location"].as_str(),
+        );
         count += 1;
     }
     if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
@@ -294,7 +306,7 @@ fn submit_gates_python_corpus() {
                             case["records"]["rooms"]["room"] =
                                 json!({"kind":"broadcast","rootId":root});
                         }
-                        compare(&mut oracle, "authorization-matrix", &case, None);
+                        compare(&mut oracle, "authorization-matrix", &case, None, None);
                         count += 1;
                     }
                 }
@@ -320,7 +332,7 @@ fn submit_gates_python_corpus() {
                                         case["current"]["pendingSettingsAccountKey"] =
                                             json!("account");
                                     }
-                                    compare(&mut oracle, "execution-matrix", &case, None);
+                                    compare(&mut oracle, "execution-matrix", &case, None, None);
                                     count += 1;
                                 }
                             }

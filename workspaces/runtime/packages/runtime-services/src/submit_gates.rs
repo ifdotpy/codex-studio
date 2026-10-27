@@ -20,6 +20,44 @@ struct AgentAuthority {
     pub resolved_cwd: Option<LexicalPath>,
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Deletion {
+    Bool(bool),
+    Number(f64),
+}
+impl Deletion {
+    fn is_deleted(&self) -> bool {
+        match self {
+            Self::Bool(value) => *value,
+            Self::Number(value) => *value != 0.0,
+        }
+    }
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentAuthorityRow {
+    id: Option<String>,
+    root_id: Option<String>,
+    parent_id: Option<String>,
+    is_lead: Option<bool>,
+    deleted_at: Option<Deletion>,
+    cwd: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectAuthorityRow {
+    path: Option<String>,
+    #[serde(default)]
+    peer_teams: Vec<PeerTeamRow>,
+}
+#[derive(Deserialize)]
+struct PeerTeamRow {
+    id: String,
+    name: String,
+    members: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum RoomAuthority {
@@ -401,19 +439,6 @@ impl AuthorizationSnapshot {
         if rows.recipient_id.is_empty() {
             return Err(invalid("recipient_id"));
         }
-        let resolve =
-            |value: Option<&Value>, location: &str| -> Result<Option<LexicalPath>, SnapshotError> {
-                let Some(path) = optional_string(value, location)?.filter(|p| !p.trim().is_empty())
-                else {
-                    return Ok(None);
-                };
-                let resolved = rows
-                    .resolved_paths
-                    .get(&path)
-                    .and_then(|path| LexicalPath::exact(std::path::Path::new(path)))
-                    .ok_or_else(|| invalid(location))?;
-                Ok(Some(resolved))
-            };
         let mut snapshot = Self {
             recipient_id: rows.recipient_id.clone(),
             agents: BTreeMap::new(),
@@ -426,22 +451,28 @@ impl AuthorizationSnapshot {
         for (key, raw) in &rows.agents {
             let location = format!("agents/{key}");
             let authority = (|| {
-                let row = object(raw, &location)?;
+                let row: AgentAuthorityRow =
+                    serde_json::from_str(raw).map_err(|_| invalid(&location))?;
                 let id = row
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .filter(|id| !id.is_empty() && *id == key)
+                    .id
+                    .filter(|id| !id.is_empty() && id == key)
                     .ok_or_else(|| invalid(format!("{location}/id")))?;
+                let cwd = row.cwd.filter(|path| !path.trim().is_empty());
+                let resolved_cwd = cwd
+                    .map(|path| {
+                        rows.resolved_paths
+                            .get(&path)
+                            .and_then(|path| LexicalPath::exact(std::path::Path::new(path)))
+                            .ok_or_else(|| invalid(format!("{location}/cwd")))
+                    })
+                    .transpose()?;
                 Ok::<_, SnapshotError>(AgentAuthority {
-                    id: id.into(),
-                    root_id: optional_string(row.get("rootId"), &format!("{location}/rootId"))?,
-                    parent_id: optional_string(
-                        row.get("parentId"),
-                        &format!("{location}/parentId"),
-                    )?,
-                    is_lead: row.get("isLead") == Some(&Value::Bool(true)),
-                    deleted: truthy(row.get("deletedAt")),
-                    resolved_cwd: resolve(row.get("cwd"), &format!("{location}/cwd"))?,
+                    id,
+                    root_id: row.root_id,
+                    parent_id: row.parent_id,
+                    is_lead: row.is_lead == Some(true),
+                    deleted: row.deleted_at.as_ref().is_some_and(Deletion::is_deleted),
+                    resolved_cwd,
                 })
             })();
             match authority {
@@ -484,40 +515,37 @@ impl AuthorizationSnapshot {
         }
         for (key, raw) in &rows.projects {
             let location = format!("projects/{key}");
-            let row = object(raw, &location)?;
-            let path = resolve(row.get("path"), &format!("{location}/path"))?
+            let row: ProjectAuthorityRow =
+                serde_json::from_str(raw).map_err(|_| invalid(&location))?;
+            let original = row
+                .path
+                .filter(|path| !path.trim().is_empty())
                 .ok_or_else(|| invalid(&location))?;
+            let path = rows
+                .resolved_paths
+                .get(&original)
+                .and_then(|path| LexicalPath::exact(std::path::Path::new(path)))
+                .ok_or_else(|| invalid(format!("{location}/path")))?;
             let mut teams = Vec::new();
-            if let Some(value) = row.get("peerTeams") {
-                for (index, team) in value
-                    .as_array()
-                    .ok_or_else(|| invalid(format!("{location}/peerTeams")))?
-                    .iter()
-                    .enumerate()
-                {
-                    let at = format!("{location}/peerTeams/{index}");
-                    for field in ["id", "name"] {
-                        if !team
-                            .get(field)
-                            .and_then(Value::as_str)
-                            .is_some_and(|v| !v.is_empty())
-                        {
-                            return Err(invalid(format!("{at}/{field}")));
-                        }
+            for (index, team) in row.peer_teams.into_iter().enumerate() {
+                let at = format!("{location}/peerTeams/{index}");
+                for (field, value) in [("id", &team.id), ("name", &team.name)] {
+                    if value.is_empty() {
+                        return Err(invalid(format!("{at}/{field}")));
                     }
-                    let members = strings(team.get("members"), &format!("{at}/members"))?;
-                    if members.len() < 2
-                        || members.iter().any(String::is_empty)
-                        || members
-                            .iter()
-                            .collect::<std::collections::BTreeSet<_>>()
-                            .len()
-                            != members.len()
-                    {
-                        return Err(invalid(format!("{at}/members")));
-                    }
-                    teams.push(members);
                 }
+                let members = team.members;
+                if members.len() < 2
+                    || members.iter().any(String::is_empty)
+                    || members
+                        .iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        != members.len()
+                {
+                    return Err(invalid(format!("{at}/members")));
+                }
+                teams.push(members);
             }
             if path.to_str() == Some(key.as_str()) {
                 snapshot.projects.insert(path, teams);
