@@ -48,7 +48,7 @@ pub fn read_context_tool_receipt_rows(
             .ok_or_else(|| CallbackError::Stored("tool request id".into()))?
             .to_owned();
         let cached_raw =
-            records::get(connection, "runtime_tool_results", &id).map_err(CallbackError::from);
+            crate::tool_requests::saved_result(connection, &id).map_err(CallbackError::from);
         rows.push((id, raw, cached_raw));
     }
     Ok(ContextToolReceiptRows(rows))
@@ -142,7 +142,7 @@ pub fn revalidate_unresolved_context_tool_receipts(
         return Err(CallbackError::Stale);
     }
     for (id, previous) in &snapshot.results {
-        if records::get(tx, "runtime_tool_results", id)? != *previous {
+        if crate::tool_requests::saved_result(tx, id)? != *previous {
             return Err(CallbackError::Stale);
         }
     }
@@ -163,7 +163,7 @@ fn settle_abandoned(
         .as_str()
         .ok_or(CallbackError::Stored("tool request id".into()))?
         .to_owned();
-    if let Some(result) = records::get(tx, "runtime_tool_results", &id)? {
+    if let Some(result) = crate::tool_requests::saved_result(tx, &id)? {
         lifecycle::settle(record, &result, false)?;
         record["result"] = result;
     } else {
@@ -195,11 +195,7 @@ fn settle_abandoned(
             })
         };
         let result = super::tool_result(result, false);
-        records::validate("runtime_tool_results", &id, result.clone())?;
-        tx.execute(
-            "INSERT INTO runtime_tool_results(id,result) VALUES(?1,?2)",
-            rusqlite::params![id, result.to_string()],
-        )?;
+        crate::tool_requests::settle_result(tx, &id, &result)?;
         record["result"] = result;
     }
     record["updated"] = json!(now);
@@ -248,36 +244,51 @@ pub async fn recover_connection(
     let account = account.to_owned();
     let connection = connection.to_owned();
     let state_dir = store.state_dir().to_owned();
-    store.transaction_with(move |tx| {
-        let mut count = cards;
-        for id in StartupRecoveryRepository::unsettled_tool_request_ids(tx)? {
-            let mut record = records::get(tx, "runtime_tool_requests", &id)?
-                .ok_or(CallbackError::Stored("tool request id".into()))?;
-            if record["accountKey"].as_str().unwrap_or("default") != account
-                || record["connectionId"] != connection
-            {
-                continue;
+    store
+        .transaction_with(move |tx| {
+            let mut count = cards;
+            for id in StartupRecoveryRepository::unsettled_tool_request_ids(tx)? {
+                let mut record = records::get(tx, "runtime_tool_requests", &id)?
+                    .ok_or(CallbackError::Stored("tool request id".into()))?;
+                if record["accountKey"].as_str().unwrap_or("default") != account
+                    || record["connectionId"] != connection
+                {
+                    continue;
+                }
+                let id = id.as_str();
+                // A dispatch still running in this process settles its own claim
+                // (result, refusal, or the drop guard); settling it here would hide
+                // its real outcome behind a saved unknown result.
+                let Some(_unowned) = tools::unowned_dispatch(&state_dir, id)? else {
+                    continue;
+                };
+                settle_abandoned(tx, &mut record, now)?;
+                count += 1;
             }
-            let id = id.as_str();
-            // A dispatch still running in this process settles its own claim
-            // (result, refusal, or the drop guard); settling it here would hide
-            // its real outcome behind a saved unknown result.
-            let Some(_unowned) = tools::unowned_dispatch(&state_dir, id)? else {
-                continue;
-            };
-            settle_abandoned(tx, &mut record, now)?;
-            count += 1;
-        }
-        let mut statement = tx.prepare_cached("SELECT id FROM runtime_operation_receipts WHERE json_extract(result,'$.identity.context.account')=?1 AND json_extract(result,'$.identity.context.connection')=?2 AND json_extract(result,'$.delivery')='submitted'")?;
-        let ids = statement.query_map([account, connection], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
-        for id in ids {
-            let mut reply = storage::read(tx, &id)?.ok_or(CallbackError::Unknown)?;
-            reply["delivery"] = json!("unknown");
-            storage::update(tx, &id, &reply)?;
-            count += 1;
-        }
-        Ok(count)
-    }).await
+            let rows =
+                studio_runtime_store::outbox::Outbox::for_account::<storage::CallbackResponse>(
+                    tx,
+                    &account,
+                    studio_runtime_schema::persistence::OutboxKind::ProviderCallback,
+                    studio_runtime_schema::persistence::OutboxStatus::Submitted,
+                    u32::MAX,
+                )?;
+            for mut reply in rows {
+                if reply.payload.identity.context.connection != connection {
+                    continue;
+                }
+                reply.status = studio_runtime_schema::persistence::OutboxStatus::Unknown;
+                reply.next_at = None;
+                storage::put_response(tx, &reply)?;
+                let mut owner =
+                    storage::owner(tx, &reply.payload.identity)?.ok_or(CallbackError::Unknown)?;
+                owner.status = studio_runtime_schema::persistence::ToolRequestStatus::Unknown;
+                storage::put_owner(tx, &owner)?;
+                count += 1;
+            }
+            Ok(count)
+        })
+        .await
 }
 
 #[cfg(test)]
@@ -366,107 +377,5 @@ mod context_tool_receipt_snapshot_tests {
             validation,
             Err(crate::provider_callbacks::CallbackError::Stale)
         ));
-    }
-}
-
-#[cfg(test)]
-mod legacy_tool_reply_tests {
-    use super::super::model::{CallbackContext, ReplyIdentity};
-    use serde_json::{Value, json};
-    use studio_runtime_providers::RequestId;
-    use studio_runtime_store::RuntimeStore;
-
-    fn context(agent: &str, turn: &str) -> CallbackContext {
-        CallbackContext {
-            agent: agent.into(),
-            account: "default".into(),
-            connection: "connection".into(),
-            generation: 5,
-            epoch: 2,
-            thread: "thread".into(),
-            turn: turn.into(),
-        }
-    }
-
-    fn reply(context: CallbackContext, rpc: &str, delivery: &str, tool: bool) -> (String, Value) {
-        let identity = ReplyIdentity {
-            context,
-            rpc_id: RequestId::String(rpc.into()),
-            attempt: "attempt".into(),
-        };
-        let mut value = json!({
-            "identity":identity, "signature":"signature",
-            "body":{"result":{"success":true,"contentItems":[]}}, "delivery":delivery,
-        });
-        if tool {
-            value["toolRequest"] = json!(format!("request-{rpc}"));
-        }
-        (identity.key(), value)
-    }
-
-    #[tokio::test]
-    async fn startup_deletes_every_legacy_tool_reply_row_and_link() {
-        let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = RuntimeStore::open(Some(directory.path()))
-            .await
-            .expect("open runtime store");
-        let agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
-            "id":"agent", "rootId":"agent", "epoch":2, "status":"running", "autoWake":true,
-            "accountKey":"default", "threadId":"thread", "turnId":"live-turn",
-            "startAttempt":{"connectionGeneration":5,"connectionId":"connection"},
-        });
-        let settled = reply(context("agent", "old-turn"), "settled", "prepared", true);
-        let missing_agent = reply(context("gone", "turn"), "missing", "prepared", true);
-        let live = reply(context("agent", "live-turn"), "live", "prepared", true);
-        let card = reply(context("agent", "old-turn"), "card", "prepared", false);
-        let unknown = reply(context("agent", "old-turn"), "unknown", "unknown", true);
-        let rows = [&settled, &missing_agent, &live, &card, &unknown]
-            .map(|(key, value)| (key.clone(), value.to_string()));
-        store
-            .transaction_with::<_, crate::provider_callbacks::CallbackError>(move |tx| {
-                tx.execute(
-                    "INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",
-                    [agent.to_string()],
-                )?;
-                for (key, value) in &rows {
-                    tx.execute(
-                        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'provider-callback',?2)",
-                        [key, value],
-                    )?;
-                }
-                tx.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES('account-worker:callback:default:5:7:reply','receipt','\"key\"')",
-                    [],
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("seed leaked replies");
-        drop(store);
-        let store = RuntimeStore::open(Some(directory.path()))
-            .await
-            .expect("dated callback-cache migration");
-
-        for _ in 0..2 {
-            super::recover_tool_requests_on_startup(&store, 10.0)
-                .await
-                .expect("startup recovery");
-            let connection = store.test_reader().expect("read connection");
-            let mut statement = connection
-                .prepare("SELECT id FROM runtime_operation_receipts WHERE signature='provider-callback' OR id LIKE 'account-worker:callback:%'")
-                .expect("reply query");
-            let mut kept = statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .expect("reply rows")
-                .collect::<Result<Vec<_>, _>>()
-                .expect("reply ids");
-            let mut expected = vec![card.0.clone(), unknown.0.clone()];
-            kept.sort();
-            expected.sort();
-            assert_eq!(
-                kept, expected,
-                "prepared tool replies of any turn and their links go; card and unknown replies stay"
-            );
-        }
     }
 }
