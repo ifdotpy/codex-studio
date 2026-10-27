@@ -275,6 +275,7 @@ test("pnpm Node test selection uses the native test-name filter", () => {
           "workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.ts",
           "workspaces/tooling/apps/repository-checks/tests/generate-api-types.test.ts",
           "workspaces/tooling/apps/installed-smoke/tests/smoke.test.ts",
+          "workspaces/tooling/apps/installed-smoke/tests/approvals.test.ts",
         ],
       ],
     ],

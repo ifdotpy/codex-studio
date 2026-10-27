@@ -34,7 +34,7 @@ for (const scenario of [
           agent: scenario === "wrong-owner" ? "other" : "agent",
           method: "monitor/approve",
           status: "pending",
-          params: { command: "echo run", cwd: "/tmp" },
+          params: { command: "echo run", cwd: dir },
         },
       },
       {
@@ -47,7 +47,7 @@ for (const scenario of [
           agent: "agent",
           method: "monitor/approve",
           status: "pending",
-          params: { command: "echo run", cwd: "/tmp" },
+          params: { command: "echo run", cwd: dir },
         },
       },
       {
