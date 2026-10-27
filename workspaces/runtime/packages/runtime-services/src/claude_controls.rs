@@ -309,9 +309,9 @@ impl ControlSnapshot {
             ) => {
                 let expected = serde_json::to_value(settings).map_err(|_| ControlError::Unknown)?;
                 let expected = expected.as_object().ok_or(ControlError::Unknown)?;
-                if expected
+                if studio_runtime_schema::claude_controls::CLAUDE_SETTINGS_WIRE_FIELDS
                     .iter()
-                    .any(|(key, value)| reply.settings.get(key) != Some(value))
+                    .any(|key| expected.get(*key) != reply.settings.get(*key))
                 {
                     return Err(ControlError::Unknown);
                 }

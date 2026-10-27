@@ -173,6 +173,7 @@ impl Native {
 struct MismatchedSettings {
     inner: Native,
     attempts: std::sync::atomic::AtomicUsize,
+    response: Value,
 }
 impl ControlSession for MismatchedSettings {
     fn binding(&self) -> ControlBinding {
@@ -186,11 +187,9 @@ impl ControlSession for MismatchedSettings {
         if matches!(invocation, ControlInvocation::Settings { .. }) {
             self.attempts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let response = self.response.clone();
             return Box::pin(async move {
-                ControlReply::from_wire(
-                    &invocation,
-                    json!({"settings":{"permissionMode":"default"},"extension":1}),
-                )
+                ControlReply::from_wire(&invocation, json!({"settings":response,"extension":1}))
             });
         }
         self.inner.call_scoped(scope, invocation)
@@ -212,6 +211,7 @@ async fn mismatched_settings_reply_is_unknown_and_never_replayed() {
             generation: 1.into(),
         },
         attempts: 0.into(),
+        response: json!({"permissionMode":"default"}),
     });
     let controls = Controls::new(
         Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
@@ -235,6 +235,58 @@ async fn mismatched_settings_reply_is_unknown_and_never_replayed() {
     .expect("present")
     .value();
     assert_eq!(agent["workspaceOperation"], "branch_recovery");
+}
+
+#[tokio::test]
+async fn extra_known_settings_in_reply_remain_unknown_and_are_not_replayed() {
+    for response in [
+        json!({"thinking":false}),
+        json!({"permissionMode":"bypassPermissions"}),
+        json!({"mcpAutoBackground":false}),
+        json!({"autoCompactWindow":null}),
+    ] {
+        let root = tempfile::tempdir().expect("scratch");
+        let cwd = root.path().join("cwd");
+        let state = root.path().join("state");
+        std::fs::create_dir(&cwd).expect("cwd");
+        std::fs::create_dir(&state).expect("state");
+        seed_state(&state, &cwd).await;
+        let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
+        let native = Arc::new(MismatchedSettings {
+            inner: Native {
+                calls: Mutex::new(vec![]),
+                unknown: false,
+                generation: 1.into(),
+            },
+            attempts: 0.into(),
+            response,
+        });
+        let controls = Controls::new(
+            Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
+            native.clone(),
+        );
+        let request: ControlRequest = serde_json::from_value(
+            json!({"action":"settings","id":"agent","request_id":"extra-known","settings":{}}),
+        )
+        .expect("request");
+        assert!(matches!(
+            controls.execute(request.clone()).await,
+            Err(ControlError::Unknown)
+        ));
+        assert!(matches!(
+            controls.execute(request).await,
+            Err(ControlError::Unknown)
+        ));
+        assert_eq!(native.attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let agent = AgentRepository::get(
+            &store.test_reader().expect("reader"),
+            &AgentId("agent".into()),
+        )
+        .expect("agent")
+        .expect("present")
+        .value();
+        assert_eq!(agent["workspaceOperation"], "branch_recovery");
+    }
 }
 
 struct MalformedRollback {
