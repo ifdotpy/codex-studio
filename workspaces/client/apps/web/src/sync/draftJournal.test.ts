@@ -48,3 +48,40 @@ it("validates optional metadata and unsigned timestamps", () => {
   ])
     expect(() => decodeDraftVersion(value)).toThrow();
 });
+
+it("restores valid siblings and reports each unreadable journal entry", () => {
+  const valid = {
+    id: "valid",
+    session: "chat",
+    device: "device",
+    text: "recover me",
+    updated: 1,
+  };
+  const values = new Map([
+    ["scope:pending:bad", JSON.stringify({ ...valid, alternatives: 42 })],
+    ["scope:pending:good", JSON.stringify(valid)],
+  ]);
+  const storage: Storage = {
+    get length() {
+      return values.size;
+    },
+    key: (index) => [...values.keys()][index] ?? null,
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => {
+      values.set(key, value);
+    },
+    removeItem: (key) => {
+      values.delete(key);
+    },
+    clear: () => values.clear(),
+  };
+  const original = storage.getItem("scope:pending:bad");
+  const invalid: string[] = [];
+  const entries = createDraftJournal(storage).readDraftJournal(
+    "scope",
+    (key: string) => invalid.push(key),
+  );
+  expect(entries.map((entry) => entry.version)).toEqual([valid]);
+  expect(invalid).toEqual(["scope:pending:bad"]);
+  expect(storage.getItem("scope:pending:bad")).toBe(original);
+});

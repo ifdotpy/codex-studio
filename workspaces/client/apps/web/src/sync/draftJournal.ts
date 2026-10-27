@@ -9,15 +9,23 @@ export type PendingDraft = { key: string; version: DraftVersion };
 
 export const journalPrefix = (scope: string) => `${scope}:pending:`;
 export function createDraftJournal(localStorage: Storage) {
-  function readDraftJournal(scope: string): PendingDraft[] {
+  function readDraftJournal(
+    scope: string,
+    onInvalid?: (key: string) => void,
+  ): PendingDraft[] {
     const entries: PendingDraft[] = [];
     for (let index = 0; index < localStorage.length; index++) {
       const key = localStorage.key(index)!;
       if (!key.startsWith(journalPrefix(scope))) continue;
-      const version = decodeDraftVersion(
-        JSON.parse(localStorage.getItem(key)!),
-      );
-      entries.push({ key, version });
+      try {
+        const version = decodeDraftVersion(
+          JSON.parse(localStorage.getItem(key)!),
+        );
+        entries.push({ key, version });
+      } catch (error) {
+        if (!onInvalid) throw error;
+        onInvalid(key);
+      }
     }
     return entries.sort(
       (a, b) =>
