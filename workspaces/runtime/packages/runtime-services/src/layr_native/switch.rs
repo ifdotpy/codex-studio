@@ -97,12 +97,8 @@ fn admit(
             "Only a lead or implementer chat in WT mode can switch to Layr".into(),
         ));
     }
-    crate::peer_conversion::idle(tx, std::slice::from_ref(&record)).map_err(|error| {
-        NativeLayrError::Refused(match error {
-            crate::projects::ProjectsError::Invalid(reason) => reason.into(),
-            error => error.to_string(),
-        })
-    })?;
+    crate::peer_conversion::idle(tx, std::slice::from_ref(&record))
+        .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
     if lead {
         return Ok((record, None));
     }

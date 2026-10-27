@@ -132,24 +132,29 @@ async fn a_worker_switches_only_after_its_parent() {
 }
 
 fn git(directory: &Path, args: &[&str]) -> String {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(directory)
-        .args([
-            "-c",
-            "user.name=Fixture",
-            "-c",
-            "user.email=fixture@example.test",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .output()
-        .expect("git runs");
-    assert!(output.status.success(), "git {args:?}: {output:?}");
-    String::from_utf8(output.stdout).expect("UTF-8 Git output")
+    let mut argv = vec![
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "init.defaultBranch=main",
+    ];
+    argv.extend(args);
+    let output = crate::bounded_child::run(crate::bounded_child::Request {
+        program: std::ffi::OsStr::new("git"),
+        git_directory: Some(directory.as_os_str()),
+        args: &argv,
+        environment: &[],
+        input: None,
+        stdout_limit: 64 * 1024,
+        stderr_limit: 64 * 1024,
+        timeout: std::time::Duration::from_secs(60),
+    })
+    .unwrap_or_else(|error| panic!("git {args:?}: {error:?}"));
+    String::from_utf8(output.stdout.bytes).expect("UTF-8 Git output")
 }
 
 /// A project with a bare origin and a pushed worker worktree on `codex-agent/wt-worker`.

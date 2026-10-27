@@ -493,13 +493,13 @@ pub(super) fn import_worktree_line(
     relative: &Path,
     name: &str,
 ) -> Result<String> {
-    run(state_dir, &main, &["line", "new", name, "main"])?;
+    run(state_dir, main, &["line", "new", name, "main"])?;
     let cwd = main
         .parent()
         .ok_or_else(|| NativeLayrError::Refused("Missing lines directory".into()))?
-        .join(&name);
+        .join(name);
     let line_directory = super::private_tree::Directory::open(&cwd)?;
-    let destination = line_directory.child(&relative, true)?;
+    let destination = line_directory.child(relative, true)?;
     let root_mode = destination.mode()?;
     // Move only the entry itself through the pinned destination parent.
     let saved_git = if destination.exists(std::ffi::OsStr::new(".git"))? {
@@ -522,7 +522,7 @@ pub(super) fn import_worktree_line(
             .iter()
             .filter(|cache| {
                 cache
-                    .strip_prefix(&relative)
+                    .strip_prefix(relative)
                     .is_ok_and(|local| plan.has_versioned_files_under(local))
             })
             .cloned()
@@ -533,11 +533,11 @@ pub(super) fn import_worktree_line(
         }
         let cache_roots = cache_roots
             .iter()
-            .filter_map(|cache| cache.strip_prefix(&relative).ok().map(Path::to_owned))
+            .filter_map(|cache| cache.strip_prefix(relative).ok().map(Path::to_owned))
             .collect();
         clear_at(&destination, &cache_roots)?;
         // Reuse the pinned subtree even if its pathname was replaced after opening it.
-        plan.stage_open(&destination, &line_directory, &relative)
+        plan.stage_open(&destination, &line_directory, relative)
     })?;
     // A top-level line is a private container, distinct from a nested repository root.
     if relative.as_os_str().is_empty() {
@@ -545,7 +545,7 @@ pub(super) fn import_worktree_line(
     }
     super::git_guard::install_hook(state_dir, &cwd)?;
     runtime::save_imported_tree(state_dir, &cwd, "Import Git worktree")?;
-    plan.warm_caches(state_dir, &cwd, &relative)?;
+    plan.warm_caches(state_dir, &cwd, relative)?;
     run(state_dir, &cwd, &["rev-parse", "head"])
 }
 

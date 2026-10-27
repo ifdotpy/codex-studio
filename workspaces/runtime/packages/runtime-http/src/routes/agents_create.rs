@@ -1320,7 +1320,12 @@ async fn switch_workspace_mode(
         .await
         .map_err(|error| match error {
             NativeLayrError::Refused(_) => ApiError::new(StatusCode::CONFLICT, error.to_string()),
-            error => ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+            error @ (NativeLayrError::Unknown(_)
+            | NativeLayrError::Io(_)
+            | NativeLayrError::Store(_)
+            | NativeLayrError::Worker) => {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            }
         })?;
     state.event_wake.notify_one();
     super::generated_json(result).map(Json)
