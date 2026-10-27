@@ -51,7 +51,8 @@ const RULE_CHECK_SETTLE_RETRY_SECONDS: u64 = 5;
 const NO_ACTIVE_COMMAND_EXEC: &str = "no active command/exec for process id";
 
 // These are projections of external provider responses, not owned input envelopes.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "CommandExitWire")]
 enum CommandExit {
     Exited { code: i64, error: Option<String> },
     Error(String),
@@ -64,13 +65,13 @@ struct CommandExitWire {
     #[serde(default)]
     error: Option<String>,
 }
-impl<'de> Deserialize<'de> for CommandExit {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = CommandExitWire::deserialize(deserializer)?;
+impl TryFrom<CommandExitWire> for CommandExit {
+    type Error = &'static str;
+    fn try_from(wire: CommandExitWire) -> Result<Self, &'static str> {
         match (wire.exit_code, wire.error) {
             (Some(code), error) => Ok(Self::Exited { code, error }),
             (None, Some(error)) if !error.is_empty() => Ok(Self::Error(error)),
-            (None, _) => Err(serde::de::Error::custom("missing terminal outcome")),
+            (None, _) => Err("missing terminal outcome"),
         }
     }
 }
@@ -1503,7 +1504,7 @@ impl MonitorPort for RetainedMonitorPort {
             if receipt.certainty() != RequestCertainty::Written {
                 return Ok(ReattachOutcome::Pending);
             }
-            let observation: studio_runtime_process::OperationStatusResult =
+            let observation: studio_runtime_process::OperationStatusResult<CommandResponse> =
                 match receipt.into_response() {
                     Some(ProviderResponse::Reply(value)) => match serde_json::from_value(value) {
                         Ok(observation) => observation,
@@ -1530,14 +1531,6 @@ impl MonitorPort for RetainedMonitorPort {
                 } => (native_id, response),
             };
             if let Some(response) = response {
-                let response: CommandResponse = match serde_json::from_value(response) {
-                    Ok(response) => response,
-                    Err(_) => {
-                        return Ok(ReattachOutcome::Gone(
-                            MonitorRecoveryReason::InvalidTerminalReceipt.code().into(),
-                        ));
-                    }
-                };
                 let outcome = match response {
                     CommandResponse::Result { result } | CommandResponse::Direct(result) => result,
                     CommandResponse::Error { error } => CommandExit::Error(error.to_string()),

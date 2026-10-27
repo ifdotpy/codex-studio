@@ -9,7 +9,7 @@ use crate::{
     SupervisorHandle, SupervisorHandshakeV2, SupervisorHandshakeV2Result,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, value::RawValue};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::Path;
@@ -465,11 +465,33 @@ pub(crate) fn request_frame<R: SupervisorRequest>(
 }
 
 #[derive(Deserialize)]
-struct ResponseEnvelope {
+#[serde(try_from = "ResponseWire<O>")]
+struct ResponseEnvelope<O> {
+    request_id: u64,
+    outcome: Result<O, String>,
+}
+
+#[derive(Deserialize)]
+struct ResponseWire<O> {
     #[serde(rename = "requestId")]
-    request_id: Option<u64>,
-    error: Option<Box<RawValue>>,
-    result: Option<Box<RawValue>>,
+    request_id: u64,
+    result: Option<O>,
+    error: Option<String>,
+}
+
+impl<O> TryFrom<ResponseWire<O>> for ResponseEnvelope<O> {
+    type Error = &'static str;
+    fn try_from(wire: ResponseWire<O>) -> Result<Self, Self::Error> {
+        let outcome = match (wire.result, wire.error) {
+            (Some(result), None) => Ok(result),
+            (None, Some(error)) => Err(error),
+            _ => return Err("invalid supervisor response"),
+        };
+        Ok(Self {
+            request_id: wire.request_id,
+            outcome,
+        })
+    }
 }
 
 pub(crate) fn response_value<O: for<'de> Deserialize<'de>>(
@@ -477,26 +499,17 @@ pub(crate) fn response_value<O: for<'de> Deserialize<'de>>(
     request_id: u64,
     response: &str,
 ) -> Result<O, SupervisorError> {
-    let response: ResponseEnvelope = match serde_json::from_str(response) {
+    let response: ResponseEnvelope<O> = match serde_json::from_str(response) {
         Ok(response) => response,
         Err(_) => return Err(SupervisorError::UnknownOutcome { action, request_id }),
     };
-    if response.request_id != Some(request_id) {
+    if response.request_id != request_id {
         return Err(SupervisorError::UnknownOutcome { action, request_id });
     }
-    if let Some(error) = response.error {
-        let message = serde_json::from_str::<String>(error.get())
-            .map_err(|_| SupervisorError::UnknownOutcome { action, request_id })?;
-        if response.result.is_some() {
-            return Err(SupervisorError::UnknownOutcome { action, request_id });
-        }
-        return Err(SupervisorError::Remote { action, message });
-    }
-    match response.result {
-        Some(result) => serde_json::from_str(result.get()),
-        None => serde_json::from_str("{}"),
-    }
-    .map_err(|_| SupervisorError::UnknownOutcome { action, request_id })
+    response.outcome.map_err(|error| SupervisorError::Remote {
+        action,
+        message: error,
+    })
 }
 
 pub(crate) fn serialize_frame(value: &impl Serialize) -> Result<Vec<u8>, SupervisorError> {

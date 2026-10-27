@@ -113,6 +113,13 @@ fn malformed_or_conflicting_supervisor_error_is_unknown() {
 }
 
 #[test]
+fn supervisor_response_preserves_raw_batch_payload() {
+    let frame = r#"{"requestId":17,"result":{"events":[{"sequence":1,"generation":2,"kind":"stdout","payload":{"n":1}}],"returnCode":null,"backpressure":false,"stdoutReaderAlive":true,"stderrReaderAlive":true}}"#;
+    let result = response_value::<NextBatchResult>(SupervisorAction::NextBatch, 17, frame).unwrap();
+    assert_eq!(result.events[0].payload.get(), "{\"n\":1}");
+}
+
+#[test]
 fn contradictory_write_and_status_receipts_are_unknown() {
     for result in [
         r#"{"accepted":false,"duplicate":true,"remoteId":7,"durableMs":1}"#,

@@ -401,7 +401,8 @@ pub struct RetireCommandResult {
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "WriteResultWire")]
 pub enum WriteResult {
     Refused,
     Fresh {
@@ -422,9 +423,9 @@ struct WriteResultWire {
     #[serde(rename = "durableMs")]
     durable_ms: f64,
 }
-impl<'de> Deserialize<'de> for WriteResult {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = WriteResultWire::deserialize(deserializer)?;
+impl TryFrom<WriteResultWire> for WriteResult {
+    type Error = &'static str;
+    fn try_from(wire: WriteResultWire) -> Result<Self, Self::Error> {
         match (wire.accepted, wire.duplicate, wire.remote_id) {
             (false, false, None) => Ok(Self::Refused),
             (true, false, remote_id) => Ok(Self::Fresh {
@@ -435,39 +436,40 @@ impl<'de> Deserialize<'de> for WriteResult {
                 remote_id,
                 durable_ms: wire.durable_ms,
             }),
-            (false, _, _) => Err(serde::de::Error::custom("contradictory write receipt")),
+            (false, _, _) => Err("contradictory write receipt"),
         }
     }
 }
-#[derive(Clone, Debug)]
-pub enum OperationStatusResult {
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "OperationStatusWire<R>")]
+pub enum OperationStatusResult<R = Value> {
     Refused {
         reason: Option<String>,
     },
     Accepted {
         native_id: NativeId,
-        response: Option<Value>,
+        response: Option<R>,
     },
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct OperationStatusWire {
+struct OperationStatusWire<R> {
     accepted: bool,
     reason: Option<String>,
     #[serde(rename = "nativeId")]
     native_id: Option<NativeId>,
-    response: Option<Value>,
+    response: Option<R>,
 }
-impl<'de> Deserialize<'de> for OperationStatusResult {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = OperationStatusWire::deserialize(deserializer)?;
+impl<R> TryFrom<OperationStatusWire<R>> for OperationStatusResult<R> {
+    type Error = &'static str;
+    fn try_from(wire: OperationStatusWire<R>) -> Result<Self, Self::Error> {
         match (wire.accepted, wire.reason, wire.native_id, wire.response) {
             (false, reason, None, None) => Ok(Self::Refused { reason }),
             (true, None, Some(native_id), response) => Ok(Self::Accepted {
                 native_id,
                 response,
             }),
-            _ => Err(serde::de::Error::custom("contradictory operation status")),
+            _ => Err("contradictory operation status"),
         }
     }
 }
