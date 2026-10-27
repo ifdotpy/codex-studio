@@ -319,6 +319,10 @@
     {
       "file": "workspaces/client/apps/web/src/useNativeAction.ts",
       "fingerprint": "d021ca5b33fa89fa9df94622679b4f9494942b4702dbadf5cec5e27a7e2a3b74:0"
+    },
+    {
+      "file": "workspaces/client/apps/desktop/api.ts",
+      "fingerprint": "ad62205a3ed00c99d69a8a6cf8151b027576d3ef7e51599d4e4d19b08beba501:0"
     }
   ],
   "switch-default": [

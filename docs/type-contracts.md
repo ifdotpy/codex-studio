@@ -167,9 +167,9 @@ only for the pure ProviderKind parser; schema trees and opaque adapters remain
 permitted. Schema doctests and the migrated service compile-fail witnesses run
 in the local gates.
 
-The same checker compares handwritten web type declarations with tracked
+The same checker compares handwritten client type declarations with tracked
 generated contract names and explicit string-literal union member sets. It
-also checks defaults on string- or number-literal union property switches in web and
+also checks defaults on string- or number-literal union property switches in client and
 tooling sources. It accepts a terminating return or throw, or a call whose
 argument and corresponding parameter are both `never`, or a `never`-typed
 binding of the narrowed value. It does not check switches without a default,

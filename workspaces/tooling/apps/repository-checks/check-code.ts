@@ -116,6 +116,16 @@ function toolingTarget(file: string) {
     !file.endsWith(".d.ts")
   );
 }
+function otherClientTarget(file: string) {
+  return (
+    (file.startsWith("workspaces/client/apps/desktop/") ||
+      file.startsWith("workspaces/client/apps/native/")) &&
+    /\.[cm]?tsx?$/.test(file) &&
+    !file.endsWith(".d.ts") &&
+    !file.includes("/generated/") &&
+    !file.endsWith(".generated.ts")
+  );
+}
 
 function checkTypeGuards(
   root: string,
@@ -138,12 +148,24 @@ function checkTypeGuards(
   );
   const web = targets.filter(enumTarget);
   const tooling = targets.filter(toolingTarget);
+  const desktop = targets.filter(
+    (file) =>
+      otherClientTarget(file) &&
+      file.startsWith("workspaces/client/apps/desktop/"),
+  );
+  const native = targets.filter(
+    (file) =>
+      otherClientTarget(file) &&
+      file.startsWith("workspaces/client/apps/native/"),
+  );
   const matches: Record<
     "generated-types" | "switch-default",
     { file: string; text: string; message: string }[]
   > = { "generated-types": [], "switch-default": [] };
   for (const [selected, configFile] of [
     [web, "workspaces/client/apps/web/tsconfig.json"],
+    [desktop, "workspaces/client/apps/desktop/tsconfig.json"],
+    [native, "workspaces/client/apps/native/tsconfig.json"],
     [tooling, "workspaces/tooling/tsconfig.json"],
   ] as const) {
     if (!selected.length) continue;
@@ -166,7 +188,7 @@ function checkTypeGuards(
     const program = ts.createProgram(
       [
         ...absoluteTargets,
-        ...(configFile.includes("/web/") ? absoluteOwners : []),
+        ...(configFile.includes("/client/") ? absoluteOwners : []),
       ],
       config.options,
     );
@@ -178,7 +200,7 @@ function checkTypeGuards(
       ...finding,
       file: path.relative(root, finding.file).replaceAll(path.sep, "/"),
     });
-    if (configFile.includes("/web/"))
+    if (configFile.includes("/client/"))
       matches["generated-types"].push(
         ...generatedTypeDiagnostics(
           program,
@@ -345,7 +367,10 @@ function main() {
       );
     const allPaths = [...getIndexPaths()];
     const selected = allPaths
-      .filter((file) => enumTarget(file) || toolingTarget(file))
+      .filter(
+        (file) =>
+          enumTarget(file) || otherClientTarget(file) || toolingTarget(file),
+      )
       .filter(
         (file) =>
           !paths.length ||
@@ -368,7 +393,10 @@ function main() {
     return checkTypeGuards(
       repositoryRoot,
       paths,
-      paths.filter((file) => enumTarget(file) || toolingTarget(file)),
+      paths.filter(
+        (file) =>
+          enumTarget(file) || otherClientTarget(file) || toolingTarget(file),
+      ),
       false,
       true,
     );
@@ -431,7 +459,12 @@ function main() {
     const enumTargets = check !== "format" ? lintPaths.filter(enumTarget) : [];
     const typeTargets =
       check !== "format"
-        ? lintPaths.filter((file) => enumTarget(file) || toolingTarget(file))
+        ? lintPaths.filter(
+            (file) =>
+              enumTarget(file) ||
+              otherClientTarget(file) ||
+              toolingTarget(file),
+          )
         : [];
     const enumSources = typeTargets.length
       ? [...indexPaths].filter((file) => /\.(?:[cm]?[jt]sx?|json)$/.test(file))
