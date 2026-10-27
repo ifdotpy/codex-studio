@@ -1,3 +1,4 @@
+import { StudioErrorLevel } from "../generated/api";
 import {
   AgentSource,
   AgentStatus,
@@ -1721,6 +1722,7 @@ it("projects Studio error entities and removes dismissed rows by tombstone", () 
   const item = {
     id: "agent:worker:turn-1",
     kind: "turn_disconnected",
+    level: StudioErrorLevel.error,
     diagnostics: {
       context: { source: "agent", turnId: "turn-1", epoch: 0 },
       certainty: StudioErrorEffectCertainty.unknown,

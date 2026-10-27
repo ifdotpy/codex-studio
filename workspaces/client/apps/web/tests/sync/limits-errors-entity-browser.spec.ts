@@ -1,3 +1,4 @@
+import { StudioErrorLevel } from "../../src/generated/api.ts";
 import type { FixtureResourceChange } from "./helpers.ts";
 import type {
   AccountRateLimitsDto,
@@ -236,6 +237,7 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
     const item = {
       id: "agent:lead:turn",
       kind: "turn_disconnected",
+      level: StudioErrorLevel.error,
       diagnostics: {
         context: { source: "agent", turnId: null, epoch: 0 },
         certainty: "unknown",

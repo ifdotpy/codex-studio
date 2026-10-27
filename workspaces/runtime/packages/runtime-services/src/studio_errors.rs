@@ -61,7 +61,11 @@ pub async fn record_incident(
         });
     }
     let key = format!("{INCIDENT_PREFIX}{}", incident.id);
-    let encoded = serde_json::to_string(&incident)?;
+    let mut retained = serde_json::to_value(&incident)?;
+    if let Some(object) = retained.as_object_mut() {
+        object.remove("level");
+    }
+    let encoded = serde_json::to_string(&retained)?;
     store
         .transaction(move |tx| {
             match EventWriteRepository::receipt(tx, &key)? {
@@ -288,6 +292,7 @@ fn invalid_source(
     StudioError {
         id,
         kind,
+        level: kind.level(),
         reason: kind.reason().into(),
         target: Target::Details,
         detail: "Invalid retained record".into(),
@@ -468,6 +473,7 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
             row: StudioError {
                 id: String::new(),
                 kind,
+                level: kind.level(),
                 reason: kind.reason().into(),
                 target: kind.target(agent_id.into(), owner_name(&owner)),
                 monitor_id: Some(id),
@@ -588,6 +594,7 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
             StudioError {
                 id: format!("event:{id}"),
                 kind,
+                level: kind.level(),
                 reason: kind.reason().into(),
                 target: kind.target(agent_id, owner_name(&owner)),
                 event_id: Some(id),
@@ -657,6 +664,7 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
             StudioError {
                 id: format!("agent:{id}:{}", turn.as_deref().unwrap_or_default()),
                 kind,
+                level: kind.level(),
                 reason: kind.reason().into(),
                 target: kind.target(id, owner_name(&record)),
                 monitor_id: None,
@@ -686,6 +694,7 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
             StudioError {
                 id: finding.id,
                 kind,
+                level: kind.level(),
                 reason: kind.reason().into(),
                 target: kind.target(finding.agent, finding.agent_name),
                 monitor_id: None,
@@ -733,7 +742,16 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
         };
         let decoded = match encoded {
             rusqlite::types::Value::Text(encoded) => {
-                match serde_json::from_str::<StudioError>(&encoded) {
+                match serde_json::from_str::<Value>(&encoded).and_then(|mut value| {
+                    // Retained incidents written before levels existed are both error kinds.
+                    if let Some(object) = value.as_object_mut() {
+                        object.entry("level").or_insert(json!("error"));
+                    }
+                    serde_json::from_value::<StudioError>(value).map(|mut incident| {
+                        incident.level = incident.kind.level();
+                        incident
+                    })
+                }) {
                     Ok(incident) => Ok(incident),
                     Err(error) => Err(vec![source.clone(), json_cause(&error)]),
                 }

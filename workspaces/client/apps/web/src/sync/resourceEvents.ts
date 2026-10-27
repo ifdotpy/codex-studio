@@ -46,6 +46,7 @@ import { SUBSCRIPTION_ENTITY_SCOPES } from "../generated/subscriptionEntities";
 import { ResourceEntityDelivery } from "./resourceEntityDelivery";
 import { EntityTransferAssembler } from "./entityTransfer";
 import { appendAppLog } from "../appLog";
+import { localTime } from "../local-time";
 import {
   activityOf,
   healthOf,
@@ -410,7 +411,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         at: Date.now(),
         title: "Reconnecting",
         reason: reconnectReasons[next.cause],
-        detail: `Attempt ${next.attempt}${next.retryAt === undefined ? "" : `; retry at ${new Date(next.retryAt).toISOString()}`}`,
+        detail: `Attempt ${next.attempt}${next.retryAt === undefined ? "" : `; retry at ${localTime(new Date(next.retryAt))}`}`,
       });
     if (healthOf(previous) !== healthOf(next)) {
       if (next.phase === "reconnecting" || next.phase === "offline")

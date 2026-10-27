@@ -1,7 +1,39 @@
-/** Integration placeholder until the app error levels log is available. */
-export function appendAppLog(_entry: {
-  at: number;
+import { useSyncExternalStore } from "react";
+import type { components } from "./generated/api";
+
+/** Maximum retained client log entries. Unit: entries. */
+export const APP_LOG_MAX_ENTRIES = 200;
+type Level = components["schemas"]["StudioErrorLevel"];
+export type AppLogEntry = {
+  id: string;
+  level: Extract<Level, "log">;
+  at: number; // Epoch milliseconds.
   title: string;
   reason: string;
   detail?: string;
-}): void {}
+};
+let entries: AppLogEntry[] = [];
+let nextId = 0;
+const listeners = new Set<() => void>();
+const snapshot = () => entries;
+const subscribe = (listener: () => void) => {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+};
+function publish() {
+  listeners.forEach((listener) => listener());
+}
+export function appendAppLog(entry: Omit<AppLogEntry, "id" | "level">) {
+  entries = [
+    ...entries,
+    { ...entry, id: `app-log:${++nextId}`, level: "log" as const },
+  ].slice(-APP_LOG_MAX_ENTRIES);
+  publish();
+}
+export function clearAppLog() {
+  entries = [];
+  publish();
+}
+export function useAppLog() {
+  return useSyncExternalStore(subscribe, snapshot, snapshot);
+}
