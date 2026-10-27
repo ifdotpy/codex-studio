@@ -28,6 +28,7 @@ pub mod receipt_migration_contract;
 pub mod receipt_schema;
 mod records;
 mod repositories;
+pub use repositories::multi_server_delivery;
 pub use repositories::{outbox, request_results};
 mod schema;
 mod sqlite_actor;
