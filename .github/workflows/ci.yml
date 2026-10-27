@@ -32,7 +32,7 @@ jobs:
       - name: Rust formatting
         run: cargo fmt --check
       - name: Rust Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: node workspaces/tooling/apps/repository-checks/clippy-ratchet.ts
       - name: Rust compiler policy witnesses
         run: pnpm run test:rust-lint-policy
       - name: Rust documentation tests
