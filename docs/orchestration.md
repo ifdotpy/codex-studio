@@ -95,8 +95,14 @@ When the user explicitly requests an override, the orchestrator can select any a
 an implementer or reviewer. Explicit models are not limited by the default
 subagent model's price or provider; account selection and model availability
 still apply.
-A worker can use a different provider from its parent. Studio selects an account
-that offers its model, preferring the parent, then the application default.
+A worker can use a different provider from its parent. Automatic selects an
+account that offers the chosen model; it does not choose the model itself.
+Eligible accounts must satisfy the chat and project restrictions. Selection
+prefers estimated free turn capacity, then project account-group order, then
+fewer active agents, with account key as the deterministic tie-breaker.
+The estimate uses active-agent counts, so selection does not guarantee an
+immediate start. Within a batch, each choice contributes to the next choice's
+load estimate. The parent account has no special preference.
 The user can select an account in chat settings. All new workers must use it.
 Existing workers keep their accounts. Automatic permits account selection per worker.
 An explicit `account_key` must respect the user's account choice. The target account catalog defines
@@ -1184,8 +1190,8 @@ behind them belong to the
 [shared values](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs)
 (`ACCOUNT_START_*`, `ACCOUNT_RUNNING_TURNS_*`); the gate is
 [`account_start_gate`](../workspaces/runtime/packages/runtime-services/src/account_start_gate.rs).
-A worker spawned without an account prefers an account below its running-turn
-limit, then the least loaded one.
+A worker spawned without an account uses the Automatic selection policy
+described above; its active-agent estimate is separate from this turn-start gate.
 
 ## Terminal control
 
