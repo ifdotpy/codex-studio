@@ -2,7 +2,8 @@ import { MODEL_WHITELIST_PREFERENCE_KEY } from "../generated/sharedValues.ts";
 import type { components } from "../generated/api.ts";
 export type PreferenceField = components["schemas"]["PreferenceField"];
 export type PreferenceFields = Record<string, PreferenceField>;
-export type PreferenceScope = "user" | "server";
+export type PreferenceScope =
+  components["schemas"]["PreferencePushRequest"]["scope"];
 export const preferenceCacheKey = "studio-ui-preference-fields-v1";
 export const preferenceEvent = "studio-ui-preference-change";
 export function preferenceScope(key: string): PreferenceScope | null {

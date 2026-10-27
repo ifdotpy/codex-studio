@@ -1,9 +1,4 @@
 {
-  "generated-types": [
-    {
-      "file": "workspaces/client/apps/web/src/sync/uiPreferenceMerge.ts",
-      "fingerprint": "ae481c5b2cc4966b1415852f2f6c9a1130650b78a46da47d1471e49bed9485fe:0"
-    }
-  ],
+  "generated-types": [],
   "switch-default": []
 }
