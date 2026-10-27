@@ -157,10 +157,10 @@ pub(crate) async fn perform(
     .map_err(|message| ApiError::new(StatusCode::BAD_REQUEST, message))?;
     if let studio_runtime_schema::task_command::TaskCommand::SetDefaultGate { gate } = command {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let gate = gate
-            .map(|input| input.normalize())
-            .transpose()
-            .map_err(|message| ApiError::new(StatusCode::BAD_REQUEST, message))?;
+        let gate = gate.map_or(
+            Value::Null,
+            studio_runtime_schema::task_gate::GateInput::into_value,
+        );
         return store
             .transaction_with(move |tx| {
                 studio_runtime_services::task_gate::set_default(

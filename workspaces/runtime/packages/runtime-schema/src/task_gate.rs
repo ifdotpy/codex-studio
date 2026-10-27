@@ -9,18 +9,12 @@ pub const MAX_TIMEOUT_MS: u64 = 3_600_000;
 /// Maximum command or override reason length, in Unicode code points.
 pub const MAX_TEXT_CODEPOINTS: usize = 32_000;
 
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub struct Gate {
-    command: String,
-    timeout_ms: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct GateConfig {
-    command: String,
+pub struct Gate {
+    pub command: String,
     #[serde(default = "default_timeout")]
-    timeout_ms: u64,
+    pub timeout_ms: u64,
 }
 
 /// Supported gate input spellings. Null is represented by the caller's nullable field.
@@ -28,29 +22,15 @@ pub struct GateConfig {
 #[serde(untagged)]
 pub enum GateInput {
     Command(String),
-    Config(GateConfig),
+    Config(Gate),
 }
 
 impl GateInput {
-    pub fn normalize(self) -> Result<Gate, &'static str> {
-        let gate = match self {
-            Self::Command(command) => Gate {
-                command,
-                timeout_ms: DEFAULT_TIMEOUT_MS,
-            },
-            Self::Config(config) => Gate {
-                command: config.command,
-                timeout_ms: config.timeout_ms,
-            },
-        };
-        if gate.command.trim().is_empty()
-            || gate.command.chars().count() > MAX_TEXT_CODEPOINTS
-            || gate.timeout_ms == 0
-            || gate.timeout_ms > MAX_TIMEOUT_MS
-        {
-            return Err("Invalid acceptance gate command or timeout_ms");
+    pub fn into_value(self) -> Value {
+        match self {
+            Self::Command(command) => json!(command),
+            Self::Config(config) => json!(config),
         }
-        Ok(gate)
     }
 }
 fn default_timeout() -> u64 {
@@ -63,7 +43,21 @@ pub fn parse(value: &Value) -> Result<Option<Gate>, &'static str> {
     }
     let input: GateInput =
         serde_json::from_value(value.clone()).map_err(|_| "Invalid acceptance gate")?;
-    input.normalize().map(Some)
+    let gate = match input {
+        GateInput::Command(command) => Gate {
+            command,
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+        },
+        GateInput::Config(gate) => gate,
+    };
+    if gate.command.trim().is_empty()
+        || gate.command.chars().count() > MAX_TEXT_CODEPOINTS
+        || gate.timeout_ms == 0
+        || gate.timeout_ms > MAX_TIMEOUT_MS
+    {
+        return Err("Invalid acceptance gate command or timeout_ms");
+    }
+    Ok(Some(gate))
 }
 
 pub fn input_schema() -> Value {
@@ -149,17 +143,6 @@ pub fn check_api_contract(document: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn parsed_gate_input_normalizes_without_json_round_trip() {
-        let gate = GateInput::Command("check".into())
-            .normalize()
-            .expect("gate");
-        assert_eq!(
-            serde_json::to_value(gate).expect("serialize"),
-            json!({"command":"check","timeout_ms":DEFAULT_TIMEOUT_MS})
-        );
-        assert!(GateInput::Command("  ".into()).normalize().is_err());
-    }
     #[test]
     fn acceptance_gate_schema_and_parser_agree() {
         let validator =

@@ -290,18 +290,17 @@ impl EventWriteRepository {
     /// Keep renderer-visible lifecycle fields in step with a scheduler transition.
     pub fn set_agent_sync_lifecycle(
         transaction: &Transaction<'_>,
-        agent: &crate::AgentRecord,
+        agent_id: &str,
         status: &str,
         in_flight: bool,
         turn_id: Option<&str>,
     ) -> StoreResult<()> {
-        Self::project_agent_sync_fields(
+        Self::set_agent_sync_fields(
             transaction,
-            &agent.id.0,
+            agent_id,
             Some(status),
             Some((in_flight, turn_id)),
             None,
-            Some(agent),
         )
     }
 
@@ -319,24 +318,6 @@ impl EventWriteRepository {
         } else {
             None
         };
-        Self::project_agent_sync_fields(
-            transaction,
-            agent_id,
-            status,
-            lifecycle,
-            name,
-            agent.as_ref(),
-        )
-    }
-
-    fn project_agent_sync_fields(
-        transaction: &Transaction<'_>,
-        agent_id: &str,
-        status: Option<&str>,
-        lifecycle: Option<(bool, Option<&str>)>,
-        name: Option<&str>,
-        agent: Option<&crate::AgentRecord>,
-    ) -> StoreResult<()> {
         Self::update_agent_sync(transaction, agent_id, |value| {
             let before = value.clone();
             if let Some(status) = status {
@@ -360,7 +341,7 @@ impl EventWriteRepository {
                 overview.insert("resultTruncated".into(), Value::Bool(false));
                 overview.insert("resultTurnId".into(), Value::Null);
             }
-            if let Some(agent) = agent {
+            if let Some(agent) = &agent {
                 value.insert("epoch".to_owned(), Value::from(agent.epoch));
                 for key in [
                     "turnEpoch",
@@ -564,25 +545,14 @@ mod tests {
             )
             .expect("runtime lifecycle receipt persists");
         let transaction = connection.transaction().expect("transaction begins");
-        let agent = crate::AgentRepository::get(&transaction, &crate::AgentId::from("a"))
-            .expect("checked agent")
-            .expect("agent exists");
-        let _scope = crate::agent_volatile::publication_work::scope();
-        crate::agent_volatile::publication_work::take();
         EventWriteRepository::set_agent_sync_lifecycle(
             &transaction,
-            &agent,
+            "a",
             "running",
             true,
             Some("turn-1"),
         )
         .expect("lifecycle projection updates");
-        assert_eq!(
-            crate::agent_volatile::publication_work::take()
-                .get("a")
-                .map_or(0, |calls| calls.decodes),
-            0
-        );
         transaction.commit().expect("transaction commits");
         let payload: String = connection
             .query_row(

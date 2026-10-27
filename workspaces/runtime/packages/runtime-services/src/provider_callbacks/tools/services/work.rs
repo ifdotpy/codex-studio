@@ -1,5 +1,4 @@
 use super::*;
-use crate::event_write::EventWriteError;
 use crate::work_write::{self, WorkActorWrite, WorkWrite};
 pub(super) fn execute(
     tx: &Transaction<'_>,
@@ -24,11 +23,10 @@ pub(super) fn execute(
         return Ok(crate::task_gate::set_default(
             tx,
             who,
-            &gate
-                .clone()
-                .map(|input| input.normalize())
-                .transpose()
-                .map_err(EventWriteError::InvalidRequest)?,
+            &gate.clone().map_or(
+                Value::Null,
+                studio_runtime_schema::task_gate::GateInput::into_value,
+            ),
             Some(id),
             &crate::event_write::request_signature(args),
         )?);

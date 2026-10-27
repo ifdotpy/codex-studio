@@ -867,7 +867,7 @@ fn accepted_archive_due_records(
 }
 
 pub struct CreateWork {
-    pub gate: Option<Option<studio_runtime_schema::task_gate::Gate>>,
+    pub gate: Option<Value>,
     pub actor_id: String,
     pub title: String,
     pub description: String,
@@ -884,7 +884,7 @@ pub enum WorkActorWrite {
 
 pub enum WorkMutation {
     Update {
-        gate: Option<Option<studio_runtime_schema::task_gate::Gate>>,
+        gate: Option<Value>,
         task_id: String,
         version: Option<i64>,
         title: Option<String>,
@@ -1085,7 +1085,7 @@ pub async fn prepare_vm_submission(
         let owner_id = work.owner().unwrap_or(&agent.id.0);
         let owner = event_write::checked_agent(tx, owner_id)?;
         // Invalid results reach submit's durable refusal before any VM operation.
-        if matches!(result_refusal(tx, work.value(), &owner, &input)?, ResultCheck::Refused { .. }) {
+        if result_refusal(tx, work.value(), &owner, &input)?.is_some() {
             return Ok(VmSubmissionPreparation::NotVm);
         }
         if work.get("resultSchema").is_none() {
@@ -1437,13 +1437,12 @@ pub fn task_command(
         Field::Null => Some(Value::Null),
         Field::Value(value) => Some(value),
     };
-    let provided_gate = |field: Field<studio_runtime_schema::task_gate::GateInput>| match field {
-        Field::Missing => Ok(None),
-        Field::Null => Ok(Some(None)),
-        Field::Value(value) => value
-            .normalize()
-            .map(|gate| Some(Some(gate)))
-            .map_err(Error::InvalidRequest),
+    let provided_gate = |field| match field {
+        Field::Missing => None,
+        Field::Null => Some(Value::Null),
+        Field::Value(value) => Some(studio_runtime_schema::task_gate::GateInput::into_value(
+            value,
+        )),
     };
     Ok(match command {
         TaskCommand::Create {
@@ -1462,7 +1461,7 @@ pub fn task_command(
             status,
             dependencies,
             result_schema: provided(result_schema),
-            gate: provided_gate(gate)?,
+            gate: provided_gate(gate),
         }),
         TaskCommand::Update {
             task_id,
@@ -1487,7 +1486,7 @@ pub fn task_command(
             status,
             dependencies,
             result_schema: provided(result_schema),
-            gate: provided_gate(gate)?,
+            gate: provided_gate(gate),
         }),
         TaskCommand::Cancel {
             task_id,
@@ -2184,7 +2183,6 @@ fn decide_submit(
     snapshot: WorkSnapshot<'_>,
     submitter: &AgentRecord,
     input: &SubmitWork,
-    structured: Option<Value>,
     identity: Option<(String, Option<String>)>,
     now: f64,
     result_id: String,
@@ -2203,6 +2201,13 @@ fn decide_submit(
     let title = record.title().ok_or_else(|| invalid("runtime_work", id))?;
     let submitter_id = submitter.id.0.as_str();
     let path = result_path(&input.state_dir, id, &result_id)?;
+    let structured = record
+        .get("resultSchema")
+        .map(|schema| {
+            studio_runtime_schema::task_results::validate_result(schema, &input.result)
+                .map_err(|_| Error::InvalidRequest("Result does not match result_schema"))
+        })
+        .transpose()?;
     let result_text = if let Some(value) = &structured {
         value.to_string()
     } else {
@@ -2420,16 +2425,14 @@ fn create(
     let id = work_id(event_write::unix_time()?);
     let dependencies = unique(input.dependencies);
     validate_dependencies(tx, &agent.root_id.0, &id, &dependencies)?;
-    let gate = if let Some(gate) = input.gate {
-        json!(gate)
-    } else {
-        crate::task_gate::normalize(
+    let gate = crate::task_gate::normalize(
+        input.gate.as_ref().unwrap_or(
             root_agent(tx, agent)?
                 .extra
                 .get("taskDefaultGate")
                 .unwrap_or(&Value::Null),
-        )?
-    };
+        ),
+    )?;
     let mut work = json!({
         "gate":gate,
         "id": id, "rootId": agent.root_id.0, "title": title, "description": description,
@@ -2526,7 +2529,7 @@ fn mutate(
                 work["resultSchema"] = schema;
             }
             if let Some(gate) = gate {
-                work["gate"] = json!(gate);
+                work["gate"] = crate::task_gate::normalize(&gate)?;
             }
             if let Some(title) = title {
                 work["title"] = json!(text(&title, false)?);
@@ -2735,25 +2738,20 @@ fn submit(
     if !work.blocked_by(&dependency_statuses(tx, &work)?).is_empty() {
         return Err(Error::InvalidRequest("Dependencies have not been accepted").into());
     }
-    let structured = match result_refusal(tx, work.value(), &submitter, &input)? {
-        ResultCheck::Accepted(value) => value,
-        ResultCheck::Refused {
-            counter_id,
+    if let Some((counter_id, failed, errors)) =
+        result_refusal(tx, work.value(), &submitter, &input)?
+    {
+        return refuse_result(
+            tx,
+            work.value(),
+            &submitter,
+            &counter_id,
             failed,
             errors,
-        } => {
-            return refuse_result(
-                tx,
-                work.value(),
-                &submitter,
-                &counter_id,
-                failed,
-                errors,
-                request_id,
-                signature,
-            );
-        }
-    };
+            request_id,
+            signature,
+        );
+    }
     validate_submission_files(&submitter, &input.files, input.prepared_files.as_ref())?;
     if submitter.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
         || submitter.extra.get("workspaceMode").and_then(Value::as_str) == Some("layr-native")
@@ -2795,7 +2793,6 @@ fn submit(
         },
         &submitter,
         &input,
-        structured,
         identity,
         now,
         result_id,
@@ -2923,26 +2920,17 @@ pub fn current_submission_refusal(
 
 /// Counter identity includes the task version, worker epoch and provider attempt.
 /// A lead update or a new provider attempt permits another bounded set of tries.
-enum ResultCheck {
-    Accepted(Option<Value>),
-    Refused {
-        counter_id: String,
-        failed: u64,
-        errors: Vec<Value>,
-    },
-}
-
 fn result_refusal(
     tx: &Transaction<'_>,
     work: &Value,
     owner: &AgentRecord,
     input: &SubmitWork,
-) -> Result<ResultCheck, WorkWriteError> {
+) -> Result<Option<(String, u64, Vec<Value>)>, WorkWriteError> {
     use studio_runtime_schema::task_results::{
         MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT, validate_result,
     };
     let Some(schema) = work.get("resultSchema") else {
-        return Ok(ResultCheck::Accepted(None));
+        return Ok(None);
     };
     let counter_id = submission_counter_id(tx, work, owner)?;
     let failed = EventWriteRepository::receipt(tx, &counter_id)?
@@ -2964,15 +2952,11 @@ fn result_refusal(
         ]
     } else {
         match validate_result(schema, &input.result) {
-            Ok(value) => return Ok(ResultCheck::Accepted(Some(value))),
+            Ok(_) => return Ok(None),
             Err(errors) => errors,
         }
     };
-    Ok(ResultCheck::Refused {
-        counter_id,
-        failed,
-        errors,
-    })
+    Ok(Some((counter_id, failed, errors)))
 }
 
 /// Persist refusal accounting and its receipt, but never mutate the task.

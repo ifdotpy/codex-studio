@@ -154,8 +154,10 @@ fn steer_turn(agent: &AgentRecord) -> Option<(String, String)> {
 
 /// Delivery eligibility is separate from event order: deferred input stays in
 /// the same queue while later current-turn input can join the active turn.
-fn steerable(event: &QueueEvent, metadata: Option<&Value>, moment: DeliveryMoment) -> bool {
-    moment == DeliveryMoment::CurrentTurn
+fn steerable(event: &QueueEvent, metadata: Option<&Value>) -> StoreResult<bool> {
+    let moment = DeliveryMoment::for_event(&event.kind, &event.text, metadata)
+        .map_err(|_| invalid_object("runtime_event_meta", &event.id.0))?;
+    Ok(moment == DeliveryMoment::CurrentTurn
         && shares_turn(&event.kind, true)
         && !native_input_command(event)
         && !event.text.trim().is_empty()
@@ -164,7 +166,7 @@ fn steerable(event: &QueueEvent, metadata: Option<&Value>, moment: DeliveryMomen
                 .and_then(Value::as_array)
                 .is_none_or(Vec::is_empty)
                 && meta.get("radioAnswerTurnId").is_none_or(Value::is_null)
-        })
+        }))
 }
 
 /// Ordered pending input with its stored metadata. Callers select a delivery
@@ -174,11 +176,7 @@ fn pending_steer_events(
     connection: &Connection,
     agent_id: &str,
     epoch: i64,
-) -> StoreResult<(
-    Vec<QueueEvent>,
-    BTreeMap<String, Value>,
-    BTreeMap<String, Value>,
-)> {
+) -> StoreResult<(Vec<QueueEvent>, BTreeMap<String, Value>)> {
     let metadata_column = if table_exists(connection, "runtime_event_meta")? {
         "(SELECT m.record FROM runtime_event_meta m WHERE m.id=e.id)"
     } else {
@@ -197,21 +195,17 @@ fn pending_steer_events(
     })?;
     let mut events = Vec::new();
     let mut metadata = BTreeMap::new();
-    let mut payloads = BTreeMap::new();
     for row in rows {
         let (event, raw) = row?;
-        let (meta, moment, payload) = pending_metadata(&event, raw.as_deref())?;
-        if steerable(&event, meta.as_ref(), moment) {
+        let meta = pending_metadata(&event, raw.as_deref())?;
+        if steerable(&event, meta.as_ref())? {
             if let Some(meta) = meta {
                 metadata.insert(event.id.0.clone(), meta);
-            }
-            if let Some(payload) = payload {
-                payloads.insert(event.id.0.clone(), payload);
             }
             events.push(event);
         }
     }
-    Ok((events, metadata, payloads))
+    Ok((events, metadata))
 }
 
 /// Return unresolved input to the queue in its own epoch; stopped input is cancelled.
@@ -339,11 +333,11 @@ impl SchedulerRepository {
         let Some((turn_id, thread_id)) = steer_target(tx, &agent, epoch)? else {
             return Ok(None);
         };
-        let (events, metadata, payloads) = pending_steer_events(tx, agent_id, epoch)?;
+        let (events, metadata) = pending_steer_events(tx, agent_id, epoch)?;
         let (complaints, _work) = load_policy_records(tx, &agent, &events)?;
         let obsolete_work = obsolete_work_review_ids(tx, &agent, &events)?;
         let prepared =
-            prepare_pending_batch(events, metadata, payloads, &complaints, &obsolete_work)?;
+            prepare_pending_batch(&agent, events, metadata, &complaints, &obsolete_work)?;
         apply_preparation(tx, &prepared)?;
         let mut events = prepared.events;
         let metadata = prepared.metadata;
@@ -426,7 +420,7 @@ impl SchedulerRepository {
         let obsolete_work = obsolete_work_review_ids(tx, &agent, &rows)?;
         // Coalescing already ran at selection. Submission only retires resolved
         // business input; it must preserve the exact remaining metadata.
-        let obsolete = obsolete_events(&rows, &complaints, &obsolete_work);
+        let obsolete = obsolete_events(&agent, &rows, &complaints, &obsolete_work);
         if obsolete.is_empty() {
             return Ok(true);
         }

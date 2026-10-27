@@ -30,46 +30,6 @@ use rusqlite::Connection;
 const AGENT: &str = "agent";
 const TURN: &str = "turn-1";
 
-#[test]
-fn busy_selection_resolves_each_delivery_once() {
-    let connection = database();
-    super::super::selection::DELIVERY_CHECKS.with(|count| count.set(0));
-    let (events, _, _) = pending_steer_events(&connection, AGENT, 4).expect("selection");
-    assert_eq!(events.len(), 3);
-    assert_eq!(
-        super::super::selection::DELIVERY_CHECKS.with(std::cell::Cell::get),
-        4
-    );
-}
-
-#[test]
-fn busy_progress_coalesces_with_one_decode_per_event() {
-    let mut connection = database();
-    for (id, version) in [("p1", 1), ("p2", 2)] {
-        let text = json!({"sender":"child","room":"room","importance":"progress","progress_key":"work","progress_version":version,"text":id}).to_string();
-        connection.execute("INSERT INTO runtime_events VALUES(?1,'agent','agent_message',?2,'pending',2.5,4,NULL,NULL)", params![id, text]).expect("progress event");
-        connection
-            .execute(
-                "INSERT INTO runtime_event_meta VALUES(?1,?2)",
-                params![id, json!({"delivery":"current_turn"}).to_string()],
-            )
-            .expect("delivery");
-    }
-    super::super::selection::PROGRESS_DECODES.with(|count| count.set(0));
-    let claimed = claim(&mut connection, "progress").expect("claim");
-    assert_eq!(
-        super::super::selection::PROGRESS_DECODES.with(std::cell::Cell::get),
-        2
-    );
-    assert!(
-        claimed
-            .events
-            .iter()
-            .any(|event| event.id.0 == "p2" && event.text.contains("earlierProgressUpdates"))
-    );
-    assert_eq!(status(&connection, "p1").0, "stored_only");
-}
-
 fn database() -> Connection {
     let mut connection = Connection::open_in_memory().expect("memory database opens");
     connection

@@ -494,32 +494,23 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
     })
 }
 
-#[cfg(test)]
-thread_local! {
-    static ERROR_MAPPINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-fn error_summary(error: ValidationError<'_>) -> (String, String) {
-    #[cfg(test)]
-    ERROR_MAPPINGS.with(|count| count.set(count.get() + 1));
-    (
-        error.instance_path().to_string(),
-        error.kind().keyword().to_owned(),
-    )
-}
-
 /// Return validation errors as JSON pointers and keywords.
 pub fn validation_errors(schema: &str, value: &Value) -> SchemaResult<Vec<(String, String)>> {
     let validator = compiled_validator(schema)?;
-    Ok(validator.iter_errors(value).map(error_summary).collect())
+    Ok(validator
+        .iter_errors(value)
+        .map(|error| {
+            (
+                error.instance_path().to_string(),
+                error.kind().keyword().to_owned(),
+            )
+        })
+        .collect())
 }
 
 /// Return the first validation error's JSON pointer and keyword, if any.
 pub fn first_error(schema: &str, value: &Value) -> SchemaResult<Option<(String, String)>> {
-    Ok(compiled_validator(schema)?
-        .iter_errors(value)
-        .next()
-        .map(error_summary))
+    Ok(validation_errors(schema, value)?.into_iter().next())
 }
 
 /// Remove only extra fields rejected by the selected authoritative schema branch.
@@ -1055,19 +1046,6 @@ mod tests {
         first_error, initialize, normalize_sync_entity_payload, registry_for_document,
         table_schema, validate,
     };
-
-    #[test]
-    fn first_error_maps_only_one_diagnostic() {
-        let value = json!({});
-        let errors = super::validation_errors("PersistedPlanRecord", &value).expect("schema");
-        assert!(errors.len() > 1);
-        super::ERROR_MAPPINGS.with(|count| count.set(0));
-        assert_eq!(
-            first_error("PersistedPlanRecord", &value).expect("schema"),
-            errors.first().cloned()
-        );
-        assert_eq!(super::ERROR_MAPPINGS.with(std::cell::Cell::get), 1);
-    }
 
     #[test]
     fn entity_v4_collection_wire_contracts_match_payload_owner() {

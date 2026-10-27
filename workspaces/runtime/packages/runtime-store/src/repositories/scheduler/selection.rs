@@ -2,35 +2,6 @@ use super::*;
 use crate::CachedSql;
 use std::sync::LazyLock;
 
-#[cfg(test)]
-thread_local! {
-    pub(super) static COMPLAINT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    pub(super) static DELIVERY_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    pub(super) static PROGRESS_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-pub(super) fn event_delivery(
-    event: &QueueEvent,
-    metadata: Option<&Value>,
-    payload: Option<&Value>,
-) -> Result<
-    studio_runtime_schema::DeliveryMoment,
-    studio_runtime_schema::delivery::InvalidDeliveryMoment,
-> {
-    #[cfg(test)]
-    DELIVERY_CHECKS.with(|count| count.set(count.get() + 1));
-    studio_runtime_schema::DeliveryMoment::for_parsed_event(&event.kind, payload, metadata)
-}
-
-fn event_payload(event: &QueueEvent) -> Option<Value> {
-    if event.kind != "agent_message" {
-        return None;
-    }
-    #[cfg(test)]
-    PROGRESS_DECODES.with(|count| count.set(count.get() + 1));
-    serde_json::from_str(&event.text).ok()
-}
-
 /// `_v5` removes the obsolete capacity-start predicate. The 2026-10-21
 /// migration drops v4 before removing its generated column.
 const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v5";
@@ -995,14 +966,9 @@ impl SchedulerRepository {
         }
         let mut events = Vec::with_capacity(joined.len());
         let mut metadata = BTreeMap::new();
-        let mut payloads = BTreeMap::new();
         for (event, raw) in joined {
-            let (value, _, payload) = pending_metadata(&event, raw.as_deref())?;
-            if let Some(value) = value {
+            if let Some(value) = pending_metadata(&event, raw.as_deref())? {
                 metadata.insert(event.id.0.clone(), value);
-            }
-            if let Some(payload) = payload {
-                payloads.insert(event.id.0.clone(), payload);
             }
             events.push(event);
         }
@@ -1010,7 +976,7 @@ impl SchedulerRepository {
         let (complaints, _work) = load_policy_records(transaction, &agent, &events)?;
         let obsolete_work = obsolete_work_review_ids(transaction, &agent, &events)?;
         let prepared =
-            prepare_pending_batch(events, metadata, payloads, &complaints, &obsolete_work)?;
+            prepare_pending_batch(&agent, events, metadata, &complaints, &obsolete_work)?;
         if single_event.is_none()
             && !preparation
             && let Some((kind, dependency)) = prepared.events.iter().find_map(|event| {
@@ -1071,7 +1037,7 @@ impl SchedulerRepository {
         }
         if events.is_empty() {
             apply_preparation(transaction, &prepared)?;
-            set_waiting(transaction, &mut agent)?;
+            set_waiting(transaction, &mut agent, agent_id)?;
             return Ok(None);
         }
         apply_preparation(transaction, &prepared)?;
@@ -1209,7 +1175,7 @@ impl SchedulerRepository {
         let obsolete_work = obsolete_work_review_ids(transaction, &agent, &rows)?;
         // Submission reconciliation retires resolved business notifications only.
         // Progress coalescing belongs to selection and must not run a second time.
-        let obsolete = obsolete_events(&rows, &complaints, &obsolete_work);
+        let obsolete = obsolete_events(&agent, &rows, &complaints, &obsolete_work);
         let mut changes = BTreeMap::new();
         let mut retired = Vec::new();
         for event in &rows {
@@ -1395,11 +1361,7 @@ pub(super) fn refused(agent: &AgentRecord, reason: String) -> ClaimedEvents {
 pub(super) fn pending_metadata(
     event: &QueueEvent,
     raw: Option<&str>,
-) -> StoreResult<(
-    Option<Value>,
-    studio_runtime_schema::DeliveryMoment,
-    Option<Value>,
-)> {
+) -> StoreResult<Option<Value>> {
     let value = raw
         .map(serde_json::from_str::<Value>)
         .transpose()
@@ -1410,13 +1372,16 @@ pub(super) fn pending_metadata(
             || !value
                 .get("radioAnswerTurnId")
                 .is_none_or(|v| v.is_null() || v.is_string())
-    }) {
+    }) || studio_runtime_schema::DeliveryMoment::for_event(
+        &event.kind,
+        &event.text,
+        value.as_ref(),
+    )
+    .is_err()
+    {
         return Err(invalid_object("runtime_event_meta", &event.id.0));
     }
-    let payload = event_payload(event);
-    let delivery = event_delivery(event, value.as_ref(), payload.as_ref())
-        .map_err(|_| invalid_object("runtime_event_meta", &event.id.0))?;
-    Ok((value, delivery, payload))
+    Ok(value)
 }
 
 impl SchedulerRepository {
@@ -1468,7 +1433,7 @@ impl SchedulerRepository {
             publish_agent(tx, &record)?;
             EventWriteRepository::set_agent_sync_lifecycle(
                 tx,
-                &record,
+                agent,
                 record.status.as_str(),
                 record.extra.get("inFlight") == Some(&json!(true)),
                 record.extra.get("turnId").and_then(Value::as_str),
@@ -1497,21 +1462,17 @@ pub(super) fn load_policy_records(
     transaction: &Transaction<'_>,
     agent: &AgentRecord,
     events: &[QueueEvent],
-) -> StoreResult<(BTreeSet<String>, BTreeMap<String, Value>)> {
+) -> StoreResult<(BTreeMap<String, Value>, BTreeMap<String, Value>)> {
     let mut complaints = BTreeMap::new();
-    let mut resolved = BTreeSet::new();
     let mut work = BTreeMap::new();
     if table_exists(transaction, "runtime_complaints")? {
         for event in events.iter().filter(|event| event.kind == "complaint") {
-            let Some(ids) = complaint_ids(&event.text) else {
-                continue;
-            };
-            for id in &ids {
-                if complaints.contains_key(id) {
+            for id in complaint_ids(&event.text).unwrap_or_default() {
+                if complaints.contains_key(&id) {
                     continue;
                 }
                 if let Some(value) =
-                    get_json_record::<Value>(transaction, "runtime_complaints", id)?
+                    get_json_record::<Value>(transaction, "runtime_complaints", &id)?
                 {
                     let valid = value.get("leadId").and_then(Value::as_str).is_some()
                         && value.get("status").and_then(Value::as_str).is_some()
@@ -1525,16 +1486,13 @@ pub(super) fn load_policy_records(
                                 })
                             });
                     if !valid {
-                        return Err(invalid_object("runtime_complaints", id));
+                        return Err(invalid_object("runtime_complaints", &id));
                     }
                     if value["leadId"] != agent.id.0 {
                         continue;
                     }
-                    complaints.insert(id.clone(), value);
+                    complaints.insert(id, value);
                 }
-            }
-            if complaints_resolved(agent, &ids, &complaints) {
-                resolved.insert(event.id.0.clone());
             }
         }
     }
@@ -1571,12 +1529,10 @@ pub(super) fn load_policy_records(
             }
         }
     }
-    Ok((resolved, work))
+    Ok((complaints, work))
 }
 
 pub(super) fn complaint_ids(text: &str) -> Option<Vec<String>> {
-    #[cfg(test)]
-    COMPLAINT_DECODES.with(|count| count.set(count.get() + 1));
     let value: Value = serde_json::from_str(text).ok()?;
     let entries = value.get("complaints")?.as_array()?;
     if entries.is_empty() {
@@ -1593,9 +1549,12 @@ pub(super) fn complaint_ids(text: &str) -> Option<Vec<String>> {
 
 pub(super) fn complaints_resolved(
     agent: &AgentRecord,
-    ids: &[String],
+    event: &QueueEvent,
     records: &BTreeMap<String, Value>,
 ) -> bool {
+    let Some(ids) = complaint_ids(&event.text) else {
+        return false;
+    };
     ids.iter().all(|id| {
         records.get(id).is_some_and(|record| {
             let status = record["status"].as_str().unwrap_or_default();
@@ -1617,7 +1576,8 @@ pub(super) fn complaints_resolved(
     })
 }
 
-pub(super) fn progress_update(value: &Value) -> Option<((String, String, String), u64)> {
+pub(super) fn progress_update(text: &str) -> Option<((String, String, String), u64)> {
+    let value: Value = serde_json::from_str(text).ok()?;
     if value.get("importance")?.as_str()? != "progress" {
         return None;
     }
@@ -1636,13 +1596,14 @@ pub(super) fn progress_update(value: &Value) -> Option<((String, String, String)
 }
 
 pub(super) fn obsolete_events(
+    agent: &AgentRecord,
     events: &[QueueEvent],
-    complaints: &BTreeSet<String>,
+    complaints: &BTreeMap<String, Value>,
     obsolete_work: &BTreeSet<String>,
 ) -> BTreeMap<String, String> {
     let mut retired = BTreeMap::new();
     for event in events.iter().filter(|event| event.kind == "complaint") {
-        if complaints.contains(&event.id.0) {
+        if complaints_resolved(agent, event, complaints) {
             retired.insert(
                 event.id.0.clone(),
                 "Every referenced complaint already has a response".to_owned(),
@@ -1662,10 +1623,10 @@ pub(super) fn obsolete_events(
 }
 
 pub(super) fn prepare_pending_batch(
+    agent: &AgentRecord,
     events: Vec<QueueEvent>,
     mut metadata: BTreeMap<String, Value>,
-    mut payloads: BTreeMap<String, Value>,
-    complaints: &BTreeSet<String>,
+    complaints: &BTreeMap<String, Value>,
     obsolete_work: &BTreeSet<String>,
 ) -> StoreResult<PreparedBatch> {
     let mut metadata_updates = BTreeMap::new();
@@ -1677,7 +1638,7 @@ pub(super) fn prepare_pending_batch(
             "Scheduled chat reviews have been removed".to_owned(),
         );
     }
-    retired.extend(obsolete_events(&events, complaints, obsolete_work));
+    retired.extend(obsolete_events(agent, &events, complaints, obsolete_work));
     let mut groups: BTreeMap<(String, String, String), Vec<(usize, u64)>> = BTreeMap::new();
     let mut preserved = Vec::with_capacity(events.len());
     for (index, event) in events.iter().enumerate() {
@@ -1687,7 +1648,7 @@ pub(super) fn prepare_pending_batch(
             .is_some_and(truthy);
         preserved.push(saved);
         if event.kind == "agent_message"
-            && let Some((key, version)) = payloads.get(&event.id.0).and_then(progress_update)
+            && let Some((key, version)) = progress_update(&event.text)
         {
             groups.entry(key).or_default().push((index, version));
         }
@@ -1754,14 +1715,7 @@ pub(super) fn prepare_pending_batch(
         if retired.contains_key(&event.id.0) || cancelled.contains_key(&event.id.0) {
             continue;
         }
-        let text = if event.kind == "agent_message" {
-            payloads
-                .remove(&event.id.0)
-                .and_then(|value| model_event_value(value, metadata.get(&event.id.0)))
-        } else {
-            model_event_text(&event.text, metadata.get(&event.id.0))
-        };
-        if let Some(text) = text {
+        if let Some(text) = model_event_text(&event.text, metadata.get(&event.id.0)) {
             event.text = text;
         }
         prepared_events.push(event);
@@ -1784,19 +1738,7 @@ pub(super) fn model_event_text(text: &str, metadata: Option<&Value>) -> Option<S
     let count = metadata?
         .get("earlierProgressUpdates")
         .filter(|count| truthy(count))?;
-    let value = serde_json::from_str(text).ok()?;
-    project_event_value(value, count)
-}
-
-fn model_event_value(value: Value, metadata: Option<&Value>) -> Option<String> {
-    let count = metadata?
-        .get("earlierProgressUpdates")
-        .filter(|count| truthy(count))?;
-    project_event_value(value, count)
-}
-
-fn project_event_value(value: Value, count: &Value) -> Option<String> {
-    let Value::Object(mut value) = value else {
+    let Ok(Value::Object(mut value)) = serde_json::from_str(text) else {
         return None;
     };
     value.insert("earlierProgressUpdates".to_owned(), count.clone());
@@ -1905,10 +1847,11 @@ pub(super) fn event_policy_dependency(kind: &str) -> Option<&'static str> {
 pub(super) fn set_waiting(
     transaction: &Transaction<'_>,
     agent: &mut AgentRecord,
+    agent_id: &str,
 ) -> StoreResult<()> {
     agent.status = AgentStatus::Waiting;
     AgentRepository::put(transaction, agent)?;
-    EventWriteRepository::set_agent_sync_lifecycle(transaction, agent, "waiting", false, None)
+    EventWriteRepository::set_agent_sync_lifecycle(transaction, agent_id, "waiting", false, None)
 }
 
 /// Native slash and skill commands require their existing turn-start handling.
