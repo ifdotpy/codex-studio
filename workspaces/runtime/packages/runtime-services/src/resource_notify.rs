@@ -59,6 +59,19 @@ struct ContentVersion {
     digest: Option<[u8; 32]>,
     checked_revision: i64,
     revision: i64,
+    entity_seq: Option<i64>,
+}
+
+/// A fingerprint and the entity sequence of the snapshot that produced it.
+#[derive(Clone, Copy)]
+pub struct EntityContentFingerprint {
+    pub sequence: i64,
+    pub digest: [u8; 32],
+}
+
+pub enum ContentProjection {
+    Bytes(Vec<u8>),
+    Entity(EntityContentFingerprint),
 }
 
 struct Publications {
@@ -91,7 +104,7 @@ pub struct ResourceChanges {
 pub struct ResourceNotifications {
     changes: Arc<ChangeNotificationHub>,
     publications: Mutex<Publications>,
-    // Serialize subscribed projections so readers share one computation per revision.
+    // Share completed projections without holding the guard during reads.
     content: tokio::sync::Mutex<VecDeque<ContentVersion>>,
 }
 
@@ -276,9 +289,24 @@ impl ResourceNotifications {
         F: FnMut(Value) -> Fut,
         Fut: std::future::Future<Output = Option<Vec<u8>>>,
     {
-        let mut content = self.content.lock().await;
-        // Sample after acquiring the guard: a queued subscriber uses the newest
-        // coalesced revision and any projections the previous reader completed.
+        self.changes_since_with_incremental_content(resources, after, |resource, _| {
+            let future = read(resource);
+            async move { future.await.map(ContentProjection::Bytes) }
+        })
+        .await
+    }
+
+    /// Reuse the previous entity digest when the store sequence is unchanged.
+    pub async fn changes_since_with_incremental_content<F, Fut>(
+        &self,
+        resources: &[Value],
+        after: Option<i64>,
+        mut read: F,
+    ) -> Result<ResourceChanges, ResourceNotifyError>
+    where
+        F: FnMut(Value, Option<EntityContentFingerprint>) -> Fut,
+        Fut: std::future::Future<Output = Option<ContentProjection>>,
+    {
         let mut view = self.changes_since(resources, after)?;
         if view.cursor.closed {
             return Ok(view);
@@ -287,17 +315,45 @@ impl ResourceNotifications {
         let mut versions = Vec::new();
         for (resource, version) in view.resources.iter().zip(&view.versions) {
             let key = resource.to_string();
-            let existing = content.iter().position(|entry| entry.key == key);
-            let cached = existing.filter(|index| content[*index].checked_revision == *version);
-            let revision = if let Some(index) = cached {
-                content[index].revision
+            let (cached, previous) = {
+                let content = self.content.lock().await;
+                let entry = content.iter().find(|entry| entry.key == key);
+                (
+                    entry
+                        .filter(|entry| entry.checked_revision == *version)
+                        .map(|entry| entry.revision),
+                    entry
+                        .and_then(|entry| entry.entity_seq.zip(entry.digest))
+                        .map(|(sequence, digest)| EntityContentFingerprint { sequence, digest }),
+                )
+            };
+            let revision = if let Some(revision) = cached {
+                revision
             } else {
-                let digest = read(resource.clone())
-                    .await
-                    .map(|bytes| Sha256::digest(&bytes).into());
+                let projection = read(resource.clone(), previous).await;
+                let (digest, entity_seq) = match projection {
+                    Some(ContentProjection::Bytes(bytes)) => {
+                        (Some(Sha256::digest(&bytes).into()), None)
+                    }
+                    Some(ContentProjection::Entity(entity)) => {
+                        (Some(entity.digest), Some(entity.sequence))
+                    }
+                    None => (None, None),
+                };
                 if self.changes.snapshot().closed {
                     view.cursor.closed = true;
                     return Ok(view);
+                }
+                let mut content = self.content.lock().await;
+                let existing = content.iter().position(|entry| entry.key == key);
+                // A later sampled publication can finish first. Never overwrite it
+                // with an older read; keep this view's sampled revision conservative.
+                if existing.is_some_and(|index| content[index].checked_revision > *version) {
+                    if after.is_none_or(|after| *version > after) {
+                        selected.push(resource.clone());
+                        versions.push(*version);
+                    }
+                    continue;
                 }
                 let revision = existing
                     .filter(|index| digest.is_some() && content[*index].digest == digest)
@@ -315,6 +371,7 @@ impl ResourceNotifications {
                     // the read is checked again even when this digest is equal.
                     checked_revision: *version,
                     revision,
+                    entity_seq,
                 });
                 revision
             };
@@ -363,6 +420,127 @@ fn validate(value: &Value) -> Result<(), ResourceNotifyError> {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    #[tokio::test]
+    async fn unrelated_content_reads_do_not_wait_for_a_projection() {
+        let notifications = Arc::new(ResourceNotifications::new(Arc::new(
+            ChangeNotificationHub::new(),
+        )));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let first = {
+            let notifications = notifications.clone();
+            tokio::spawn(async move {
+                let mut started_tx = Some(started_tx);
+                let mut release_rx = Some(release_rx);
+                notifications
+                    .changes_since_with_content(&[json!({"kind":"accounts"})], None, |_| {
+                        let started_tx = started_tx.take().expect("one read");
+                        let release_rx = release_rx.take().expect("one read");
+                        async move {
+                            started_tx.send(()).expect("test receiver");
+                            release_rx.await.expect("test release");
+                            Some(vec![1])
+                        }
+                    })
+                    .await
+                    .expect("first projection")
+            })
+        };
+        started_rx.await.expect("first projection started");
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            notifications.changes_since_with_content(&[json!({"kind":"costs"})], None, |_| async {
+                Some(vec![2])
+            }),
+        )
+        .await;
+        release_tx.send(()).expect("release first projection");
+        first.await.expect("first task");
+        assert!(
+            second.is_ok(),
+            "unrelated projection was blocked by the cache guard"
+        );
+    }
+
+    #[tokio::test]
+    async fn older_projection_cannot_overwrite_a_newer_revision() {
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let resources = [json!({"kind":"accounts"})];
+        notifications
+            .changes_since_with_content(&resources, None, |_| async { Some(vec![0]) })
+            .await
+            .expect("initial");
+        hub.notify_one();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let old = {
+            let notifications = notifications.clone();
+            let resources = resources.clone();
+            tokio::spawn(async move {
+                let mut started = Some(started_tx);
+                let mut release = Some(release_rx);
+                notifications
+                    .changes_since_with_content(&resources, Some(0), |_| {
+                        let started = started.take().expect("one read");
+                        let release = release.take().expect("one read");
+                        async move {
+                            started.send(()).expect("start");
+                            release.await.expect("release");
+                            Some(vec![1])
+                        }
+                    })
+                    .await
+                    .expect("older read")
+            })
+        };
+        started_rx.await.expect("older read started");
+        hub.notify_one();
+        let newer = notifications
+            .changes_since_with_content(&resources, Some(0), |_| async { Some(vec![2]) })
+            .await
+            .expect("newer read");
+        assert_eq!(newer.versions, vec![2]);
+        release_tx.send(()).expect("release older read");
+        old.await.expect("older task");
+        let shared = notifications
+            .changes_since_with_content(&resources, Some(0), |_| async {
+                panic!("newer entry must survive")
+            })
+            .await
+            .expect("shared read");
+        assert_eq!(shared.versions, vec![2]);
+    }
+
+    #[tokio::test]
+    async fn incremental_projection_receives_the_previous_entity_snapshot() {
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let notifications = ResourceNotifications::new(hub.clone());
+        let resources = [json!({"kind":"state"})];
+        let initial = EntityContentFingerprint {
+            sequence: 7,
+            digest: [3; 32],
+        };
+        notifications
+            .changes_since_with_incremental_content(&resources, None, |_, previous| async move {
+                assert!(previous.is_none());
+                Some(ContentProjection::Entity(initial))
+            })
+            .await
+            .expect("initial snapshot");
+        hub.notify_one();
+        let unchanged = notifications
+            .changes_since_with_incremental_content(&resources, Some(0), |_, previous| async move {
+                let previous = previous.expect("cached snapshot");
+                assert_eq!(previous.sequence, 7);
+                assert_eq!(previous.digest, [3; 32]);
+                Some(ContentProjection::Entity(previous))
+            })
+            .await
+            .expect("unchanged snapshot");
+        assert!(unchanged.resources.is_empty());
+    }
 
     #[tokio::test]
     async fn subscribed_content_is_computed_once_per_coalesced_revision() {

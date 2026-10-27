@@ -803,6 +803,27 @@
         "type": "index"
       },
       {
+        "create_order": 286,
+        "name": "sync_entities_invalid_payload",
+        "sql": "CREATE INDEX sync_entities_invalid_payload ON sync_entities(collection,id)\n        WHERE deleted=0 AND collection NOT LIKE 'transcript:%' AND NOT json_valid(payload)",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "create_order": 285,
+        "name": "sync_entities_live_agent_scope",
+        "sql": "CREATE INDEX sync_entities_live_agent_scope ON sync_entities(json_extract(payload,'$.value.agent'),collection,seq)\n        WHERE deleted=0 AND collection NOT LIKE 'transcript:%' AND json_valid(payload)",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "create_order": 284,
+        "name": "sync_entities_live_root_scope",
+        "sql": "CREATE INDEX sync_entities_live_root_scope ON sync_entities(json_extract(payload,'$.value.rootId'),collection,seq)\n        WHERE deleted=0 AND collection NOT LIKE 'transcript:%' AND json_valid(payload)",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
         "create_order": 5,
         "name": "sync_entities_non_transcript_seq",
         "sql": "CREATE INDEX sync_entities_non_transcript_seq ON sync_entities(seq)\n        WHERE collection NOT LIKE 'transcript:%'",
