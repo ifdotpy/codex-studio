@@ -151,6 +151,63 @@ test.describe("phone pane review", () => {
       await fixture.close();
     }
   });
+  test("The paired shell keeps loading and error messages beside its sidebar", async ({
+    page,
+    context,
+  }) => {
+    await page.setViewportSize({ width: 1200, height: 900 });
+    const fixture = await sidebarParityFixture(context, { paired: true });
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await context.route(
+      fixture.remote.origin + "/api/sync/identity",
+      async (route) => {
+        await blocked;
+        await route.fulfill({
+          status: 503,
+          json: { error: "Fixture unavailable" },
+        });
+      },
+    );
+    await page.addInitScript(() =>
+      localStorage.setItem("studio-selected-server", "remote"),
+    );
+    const cdp = await context.newCDPSession(page);
+    try {
+      const sidebar = await fixture.open(page);
+      await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+        insets: { top: 0, right: 84, bottom: 34, left: 0 },
+      });
+      await page.setViewportSize({ width: 951, height: 669 });
+      const startup = page.getByRole("main", { name: "Studio startup" });
+      await expect(startup.getByRole("status")).toHaveText(
+        "Connecting to LAYR Studio…",
+      );
+      const rail = page.getByRole("navigation", {
+        name: "Conversation actions",
+      });
+      await expect(rail).toBeVisible();
+      const sidebarBox = (await sidebar.boundingBox())!;
+      expect((await startup.boundingBox())!.x).toBeGreaterThanOrEqual(
+        sidebarBox.x + sidebarBox.width,
+      );
+      release();
+      await expect(startup.getByRole("alert")).toBeVisible();
+      await expect(rail).toBeVisible();
+      await rail.locator("#sidebar-toggle").click();
+      await expect(sidebar).toBeHidden();
+      await expect(startup).toBeVisible();
+      await page.screenshot({
+        path: test.info().outputPath("paired-error-sidebar-closed.png"),
+      });
+    } finally {
+      release();
+      await cdp.detach();
+      await fixture.close();
+    }
+  });
   test("The paired shell retains pane navigation when the selected server requires an update", async ({
     page,
     context,
@@ -185,6 +242,25 @@ test.describe("phone pane review", () => {
         "data-pane-path",
         "pair",
       );
+      await expect(page.locator("#sidebar")).toBeVisible();
+      await page.screenshot({
+        path: test.info().outputPath("paired-update-open.png"),
+      });
+      const update = page.getByRole("main", { name: "Server update required" });
+      const sidebarBox = (await page.locator("#sidebar").boundingBox())!;
+      const updateBox = (await update.boundingBox())!;
+      expect
+        .soft(updateBox.x)
+        .toBeGreaterThanOrEqual(sidebarBox.x + sidebarBox.width);
+      const rail = page.getByRole("navigation", {
+        name: "Conversation actions",
+      });
+      await expect(rail).toBeVisible();
+      const sidebarToggle = rail.locator("#sidebar-toggle");
+      await sidebarToggle.click();
+      await expect(page.locator("#sidebar")).toBeHidden();
+      await expect(update).toBeVisible();
+      await sidebarToggle.click();
       await expect(page.locator("#sidebar")).toBeVisible();
       await page.setViewportSize({ width: 669, height: 951 });
       await expect
