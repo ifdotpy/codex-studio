@@ -120,6 +120,22 @@ impl AgentIndexedReads {
         crate::agent_volatile::merged_rows(connection, rows)
     }
 
+    /// Unmerged records for named agents and, for broadcasts, one team root.
+    pub const MESSAGE_RECORDS_SQL: &'static str = "SELECT id,record FROM runtime_agents WHERE id IN (?1,?2,?3,?4) OR root_id=?5 ORDER BY rowid";
+
+    pub fn message_records(
+        connection: &Connection,
+        ids: [Option<&str>; 4],
+        root: Option<&str>,
+    ) -> StoreResult<Vec<(String, String)>> {
+        let mut statement = connection.prepare_cached(Self::MESSAGE_RECORDS_SQL)?;
+        Ok(statement
+            .query_map(params![ids[0], ids[1], ids[2], ids[3], root], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect::<Result<_, _>>()?)
+    }
+
     /// SQL counting the live (not deleted) team members that are not finished.
     /// A finished member is completed, failed, interrupted, or paused without
     /// auto-wake.
@@ -361,6 +377,37 @@ mod tests {
         // Live paused agents hold slots but are not counted as work; tombstones are not counted.
         assert_eq!(by_account["default"], 3);
         assert_eq!(by_account["b"], 1);
+    }
+
+    #[test]
+    fn message_records_use_both_indexes_and_keep_row_order() {
+        let connection = fixture();
+        let ids =
+            |rows: Vec<(String, String)>| rows.into_iter().map(|row| row.0).collect::<Vec<_>>();
+        assert_eq!(
+            ids(AgentIndexedReads::message_records(
+                &connection,
+                [Some("a"), Some("lead"), None, Some("op")],
+                None
+            )
+            .unwrap()),
+            ["lead", "a", "op"]
+        );
+        let broadcast = ids(AgentIndexedReads::message_records(
+            &connection,
+            [Some("lead"), None, None, Some("op")],
+            Some("lead"),
+        )
+        .unwrap());
+        assert_eq!(broadcast.len(), 11);
+        assert_eq!(broadcast.last().map(String::as_str), Some("op"));
+        let plan = plan(
+            &connection,
+            AgentIndexedReads::MESSAGE_RECORDS_SQL,
+            &["a", "lead", "", "op", "lead"],
+        );
+        assert!(plan.contains("runtime_agent_root_v2"), "{plan}");
+        assert!(!plan.contains("SCAN runtime_agents"), "{plan}");
     }
 
     #[test]
