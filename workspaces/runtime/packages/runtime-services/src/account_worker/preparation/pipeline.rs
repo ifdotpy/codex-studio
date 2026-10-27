@@ -1338,7 +1338,7 @@ pub(crate) async fn prepare_monitor_command(
     let observed = workspace_agent(&store, agent_id).await?.value();
     validate_monitor_actor(&observed, epoch)?;
     let agent_id = agent_id.to_owned();
-    let resources_for_snapshot = resources.for_sql().await?;
+    let resources_for_snapshot = resources.for_sql(&store, &agent_id).await?;
     let state_root = store.root().to_path_buf();
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current = agent(tx, &agent_id)?.value();
@@ -1565,7 +1565,7 @@ async fn prepare_native_snapshot(
     let (identity, _) = catalog(resources, &intent)?;
     let state_root = store.root().to_path_buf();
     let intent = intent.clone();
-    let resources_for_snapshot = resources.for_sql().await?;
+    let resources_for_snapshot = resources.for_sql(&store, &intent.agent_id).await?;
     let generation = generation.to_string();
     let transfer_owner = account_transfer_owner.map(str::to_owned);
     scheduler::lifecycle_transaction_with(&store, move |tx| {
@@ -1633,7 +1633,7 @@ pub(crate) async fn prepare_safety_retry(
         .unwrap_or("safety-retry-preparation")
         .to_owned();
     let snapshot_request = request.clone();
-    let resources_for_snapshot = resources.for_sql().await?;
+    let resources_for_snapshot = resources.for_sql(&store, &request.agent_id).await?;
     let state_root = store.root().to_path_buf();
     let mut snapshot = scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current = agent(tx, &snapshot_request.agent_id)?.value();
@@ -1769,7 +1769,7 @@ pub(crate) async fn prepare_ready(
     let token_for_snapshot = token.clone();
     let generation = generation.to_string();
     let state_root = store.root().to_path_buf();
-    let resources = resources.for_sql().await?;
+    let resources = resources.for_sql(&store, &intent.agent_id).await?;
     let resources_for_snapshot = resources.clone();
     let (
         mut snapshot,
