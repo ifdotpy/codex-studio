@@ -951,8 +951,8 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
     });
     // A deleted earlier member changes a group's count even when its final
     // monitor remains. Deletions carry no source ID to check individually.
-    if (sources.rows_removed || sources.receipts_removed)
-        && (monitor_groups || published_source_missing(tx)?)
+    if (sources.rows_removed && monitor_groups)
+        || ((sources.rows_removed || sources.receipts_removed) && published_source_missing(tx)?)
     {
         return Ok(true);
     }

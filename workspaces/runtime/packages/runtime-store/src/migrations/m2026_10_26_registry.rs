@@ -156,7 +156,10 @@ mod tests {
     fn migration_registry_rename_failure_keeps_source_and_newer_edit_is_refused() {
         let state = tempfile::tempdir().expect("state");
         // The store root is canonical; a macOS temp folder is a symlink.
-        let root = state.path().canonicalize().expect("canonical state");
+        let root = crate::path_identity::CanonicalPath::existing(state.path())
+            .expect("canonical state")
+            .as_path()
+            .to_path_buf();
         let original = source(root.as_path());
         let path = root.as_path().join("accounts/registry.json");
         let prepared = preflight(root.as_path()).expect("preflight");
@@ -189,7 +192,10 @@ mod tests {
     fn migration_registry_directory_sync_unknown_never_restores_over_committed_bytes() {
         let state = tempfile::tempdir().expect("state");
         // The store root is canonical; a macOS temp folder is a symlink.
-        let root = state.path().canonicalize().expect("canonical state");
+        let root = crate::path_identity::CanonicalPath::existing(state.path())
+            .expect("canonical state")
+            .as_path()
+            .to_path_buf();
         let original = source(root.as_path());
         let path = root.as_path().join("accounts/registry.json");
         let prepared = preflight(root.as_path()).expect("preflight");
