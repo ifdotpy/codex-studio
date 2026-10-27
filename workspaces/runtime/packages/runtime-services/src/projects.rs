@@ -1,6 +1,6 @@
 //! Decisions for local project records and sidebar state.
 
-use crate::event_write::{EventWriteError, python_json, python_strip, read_receipt, save_receipt};
+use crate::event_write::{python_json, python_strip};
 use crate::host_project_runtime::PreparedHost;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;

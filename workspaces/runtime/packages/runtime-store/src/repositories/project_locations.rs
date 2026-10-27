@@ -2,7 +2,7 @@
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
@@ -77,19 +77,6 @@ impl ProjectLocationsRepository {
 
     pub fn complete(tx: &Transaction<'_>, id: &str, receipt: &Value, now: f64) -> StoreResult<()> {
         tx.execute("UPDATE runtime_server_outbox SET state='complete',result=?1,error=NULL,completed_at=?2 WHERE id=?3 AND state='queued'",params![receipt.to_string(),now,id])?;
-        Ok(())
-    }
-    pub fn registration_receipt(
-        tx: &Transaction<'_>,
-        project: &str,
-        request: &str,
-        receipt: &Value,
-    ) -> StoreResult<()> {
-        let mut result = receipt.clone();
-        if let Some(object) = result.as_object_mut() {
-            object.insert("projectId".into(), json!(project));
-        }
-        tx.execute("UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2 AND json_extract(result,'$.requestId')=?3",params![result.to_string(),format!("project-registration:{project}"),request])?;
         Ok(())
     }
     pub fn tool(db: &Connection, id: &str) -> StoreResult<Option<Value>> {

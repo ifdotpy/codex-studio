@@ -1,15 +1,24 @@
 //! Persisted project metadata and its renderer sync projection.
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use studio_runtime_schema::persistence::ProjectRemovalReason;
+
+use crate::request_results::AdmittedRequest;
 
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult, SyncDocumentsRepository};
 
-/// Signature of the internal destructive-project lifetime marker.
-const DESTRUCTIVE_REMOVAL_SIGNATURE: &str = "project-destructive-removal";
-fn destructive_removal_key(id: &str) -> String {
-    format!("project-destructive-removal:{id}")
+/// Durable destructive-removal fence. Sequence belongs to the project sync tombstone;
+/// deleted_at is Unix milliseconds, independent of transport reply retention.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRemoval {
+    pub reason: ProjectRemovalReason,
+    pub sequence: i64,
+    pub request_id: String,
+    pub deleted_at: i64,
 }
 
 const PROJECT_TABLE: &[TableRequirement] = &[TableRequirement {
@@ -19,10 +28,6 @@ const PROJECT_TABLE: &[TableRequirement] = &[TableRequirement {
 const SIDEBAR_TABLE: &[TableRequirement] = &[TableRequirement {
     name: "runtime_sidebar_order",
     columns: &["id", "record"],
-}];
-const RECEIPT_TABLE: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_operation_receipts",
-    columns: &["id", "signature", "result"],
 }];
 const AGENT_TABLE: &[TableRequirement] = &[TableRequirement {
     name: "runtime_agents",
@@ -48,7 +53,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[PROJECT_TABLE[0], SIDEBAR_TABLE[0], RECEIPT_TABLE[0]],
+    bootstrap_tables: &[PROJECT_TABLE[0], SIDEBAR_TABLE[0]],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -67,14 +72,25 @@ impl ProjectsRepository {
 
     /// Distinguish a destructive project lifetime fence from sidebar-only removal.
     /// The recorded sequence is the exact project tombstone's durable sequence.
-    pub fn record_destructive_removal(tx: &Transaction<'_>, id: &str) -> StoreResult<()> {
+    pub fn record_destructive_removal(
+        tx: &Transaction<'_>,
+        id: &str,
+        request_id: &str,
+        deleted_at: i64,
+    ) -> StoreResult<()> {
         let seq: i64 = tx.query_row(
             "SELECT seq FROM sync_entities WHERE collection='project' AND id=?1 AND deleted=1",
             [id],
             |row| row.get(0),
         )?;
-        tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET result=excluded.result",
-            params![destructive_removal_key(id),DESTRUCTIVE_REMOVAL_SIGNATURE,serde_json::to_string(&seq)?])?;
+        let removal = ProjectRemoval {
+            reason: ProjectRemovalReason::Delete,
+            sequence: seq,
+            request_id: request_id.to_owned(),
+            deleted_at,
+        };
+        tx.execute("INSERT INTO runtime_projects(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+            params![id, json!({"id":id,"removal":removal}).to_string()])?;
         Ok(())
     }
     pub fn is_destructive_removal(
@@ -82,18 +98,24 @@ impl ProjectsRepository {
         id: &str,
         seq: i64,
     ) -> StoreResult<bool> {
-        Ok(
-            Self::receipt(connection, &destructive_removal_key(id))?.is_some_and(
-                |(signature, result)| {
-                    signature == DESTRUCTIVE_REMOVAL_SIGNATURE && result.as_i64() == Some(seq)
-                },
-            ),
-        )
+        let raw: Option<String> = connection
+            .query_row(
+                "SELECT json_extract(record,'$.removal') FROM runtime_projects WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let removal: Option<ProjectRemoval> =
+            raw.map(|raw| serde_json::from_str(&raw)).transpose()?;
+        Ok(removal.is_some_and(|removal| {
+            removal.reason == ProjectRemovalReason::Delete && removal.sequence == seq
+        }))
     }
 
     pub fn list(connection: &Connection) -> StoreResult<Vec<(String, Value)>> {
         let mut statement = connection.prepare_cached(
-            "SELECT id,record FROM runtime_projects ORDER BY json_extract(record,'$.created'),id",
+            "SELECT id,record FROM runtime_projects WHERE json_extract(record,'$.removal') IS NULL ORDER BY json_extract(record,'$.created'),id",
         )?;
         statement
             .query_map([], |row| {
@@ -114,7 +136,7 @@ impl ProjectsRepository {
     pub fn get(connection: &Connection, id: &str) -> StoreResult<Option<(String, Value)>> {
         let raw = connection
             .query_row(
-                "SELECT record FROM runtime_projects WHERE id=?1",
+                "SELECT record FROM runtime_projects WHERE id=?1 AND json_extract(record,'$.removal') IS NULL",
                 [id],
                 |row| row.get::<_, String>(0),
             )
@@ -131,35 +153,70 @@ impl ProjectsRepository {
         .transpose()
     }
 
-    pub fn receipt(connection: &Connection, id: &str) -> StoreResult<Option<(String, Value)>> {
-        let row = connection
-            .query_row(
-                "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
-                [id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()?;
-        row.map(|(signature, raw)| {
-            Ok((
-                signature,
-                serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredRecord {
-                    object: "runtime_operation_receipts",
-                    id: id.to_owned(),
-                })?,
-            ))
-        })
-        .transpose()
+    pub fn location_request(
+        connection: &Connection,
+        project: &str,
+        operation: &str,
+    ) -> StoreResult<Option<AdmittedRequest>> {
+        Self::get(connection, project)?
+            .and_then(|(_, value)| {
+                value
+                    .get("locationIntents")
+                    .and_then(|intents| intents.get(operation))
+                    .and_then(|intent| intent.get("request"))
+                    .cloned()
+            })
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(Into::into)
     }
 
-    pub fn save_receipt(
-        transaction: &Transaction<'_>,
-        id: &str,
-        signature: &str,
-        result: &Value,
+    pub fn put_location_request(
+        tx: &Transaction<'_>,
+        project: &str,
+        operation: &str,
+        request: &AdmittedRequest,
     ) -> StoreResult<()> {
-        transaction.execute(
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3)",
-            params![id, signature, serde_json::to_string(result)?],
+        let (_, mut value) =
+            Self::get(tx, project)?.ok_or_else(|| StoreError::InvalidStoredRecord {
+                object: "runtime_projects",
+                id: project.to_owned(),
+            })?;
+        if let Some(previous) = Self::location_request(tx, project, operation)?
+            && previous != *request
+        {
+            return Err(StoreError::SchemaMismatch(
+                "location request identity has different content".to_owned(),
+            ));
+        }
+        if value.get("locationIntents").is_none() {
+            value["locationIntents"] = json!({});
+        }
+        value["locationIntents"][operation] = json!({"request":request});
+        tx.execute(
+            "UPDATE runtime_projects SET record=?2 WHERE id=?1",
+            params![project, value.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_location_request(
+        tx: &Transaction<'_>,
+        project: &str,
+        operation: &str,
+    ) -> StoreResult<()> {
+        let Some((_, mut value)) = Self::get(tx, project)? else {
+            return Ok(());
+        };
+        if let Some(intents) = value
+            .get_mut("locationIntents")
+            .and_then(Value::as_object_mut)
+        {
+            intents.remove(operation);
+        }
+        tx.execute(
+            "UPDATE runtime_projects SET record=?2 WHERE id=?1",
+            params![project, value.to_string()],
         )?;
         Ok(())
     }
@@ -391,5 +448,42 @@ inventory::submit! {
     crate::repositories::SchemaRegistration {
         repository: "projects",
         requirements: &REQUIREMENTS,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn destructive_fence_survives_sidebar_removal_on_project_owner() {
+        let mut db = Connection::open_in_memory().expect("database");
+        db.execute_batch(
+            "CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+            CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,deleted INTEGER);
+            CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT);
+            INSERT INTO sync_entities VALUES('project','p',17,1);",
+        )
+        .expect("schema");
+        let tx = db.transaction().expect("transaction");
+        ProjectsRepository::record_destructive_removal(&tx, "p", "request", 1000).expect("fence");
+        assert!(ProjectsRepository::is_destructive_removal(&tx, "p", 17).expect("fence read"));
+        assert!(!ProjectsRepository::remove(&tx, "p").expect("sidebar hide"));
+        let record: String = tx
+            .query_row(
+                "SELECT record FROM runtime_projects WHERE id='p'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("durable project tombstone");
+        let record: Value = serde_json::from_str(&record).expect("project");
+        assert_eq!(record["removal"]["reason"], "delete");
+        assert_eq!(record["removal"]["sequence"], 17);
+        assert!(!ProjectsRepository::is_destructive_removal(&tx, "p", 18).expect("other lifetime"));
+        assert!(
+            ProjectsRepository::list(&tx)
+                .expect("visible projects")
+                .is_empty()
+        );
     }
 }
