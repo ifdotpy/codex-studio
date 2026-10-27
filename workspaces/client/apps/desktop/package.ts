@@ -3,6 +3,7 @@ import { signingIdentity, signApplication, signCode } from "./signing.ts";
 import { setBundleDisplayName } from "./bundle-name.ts";
 import { runtimeBinaries, runtimeBinaryName } from "./runtime-binaries.ts";
 import { pythonResources } from "./python-resources.ts";
+import { bundleLayrBinary } from "./layr-binary.ts";
 import {
   cargoReleaseArguments,
   prebuiltReleaseDirectory,
@@ -101,6 +102,12 @@ try {
   await mkdir(path.join(resources, "web"), { recursive: true });
   if (!uiOnly) {
     await mkdir(path.join(resources, "bin"), { recursive: true });
+    await bundleLayrBinary({
+      repository: repositoryRoot,
+      workspace: resources,
+      targetDirectory: cargoTargetDirectory,
+      sign: (binary) => signCode(binary, identity),
+    });
     // layr-desk for the Desk disk, vault unlock and Pull on this Mac (docs/vault.md), from
     // the vendored source; Studio installs the disk agent with this binary.
     const layrDeskTarget = path.join(cargoTargetDirectory, "layr-desk");

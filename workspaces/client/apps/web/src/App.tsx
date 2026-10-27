@@ -1,6 +1,7 @@
 import { useSubscription } from "./sync/subscriptions";
 import { ProviderKind } from "./generated/providerKind.ts";
 import { submitRename, watchRenameResult } from "./renameRequest";
+import { randomUUID } from "./uuid";
 import {
   createConversationMenuTools,
   ConversationMenuTools,
@@ -995,6 +996,7 @@ export default function App({ active = true }: { active?: boolean }) {
   const publicAccounts = useMemo(
     () =>
       accounts.data.accounts.map((account) => ({
+        accountKey: account.id,
         provider: account.provider,
         email: account.email || null,
         plan: account.plan || null,
@@ -1098,7 +1100,7 @@ export default function App({ active = true }: { active?: boolean }) {
     navigationIntent.current++;
     setJumpTarget(
       messageId
-        ? { chatId: id, messageId, requestId: crypto.randomUUID() }
+        ? { chatId: id, messageId, requestId: randomUUID() }
         : undefined,
     );
     setRoomContext(lead?.id || null);
@@ -1191,7 +1193,7 @@ export default function App({ active = true }: { active?: boolean }) {
       section: "messages";
       itemId?: string;
     }) => {
-      setNavigationTarget({ ...target, requestId: crypto.randomUUID() });
+      setNavigationTarget({ ...target, requestId: randomUUID() });
     };
     if (screen) return;
     const unsubscribe = onDesktopNavigate(navigate);
@@ -1609,7 +1611,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 const registered = await registerProject(
                   path,
                   server,
-                  crypto.randomUUID(),
+                  randomUUID(),
                   projectServices,
                 );
                 setModal(null);
@@ -1633,7 +1635,7 @@ export default function App({ active = true }: { active?: boolean }) {
     const selectedScope = selectionScope.current;
     setCreating(true);
     creation.current ||= {
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       previous: lead?.id || null,
       reuse_empty: false,
       ...(cwd ? { cwd } : {}),
@@ -1749,7 +1751,7 @@ export default function App({ active = true }: { active?: boolean }) {
           if (name && name.length > 80)
             throw new Error("A name must have 1 to 80 characters.");
           if (renameRequests.current[id]?.text !== text) {
-            renameRequests.current[id] = { text, id: crypto.randomUUID() };
+            renameRequests.current[id] = { text, id: randomUUID() };
             persistRenames();
           }
           const request_id = renameRequests.current[id].id;
@@ -1788,7 +1790,7 @@ export default function App({ active = true }: { active?: boolean }) {
             (options?.delivery || DeliveryMoment.CurrentTurn)
         )
           sends.current[id] = {
-            id: crypto.randomUUID(),
+            id: randomUUID(),
             room: id,
             text,
             assets: options?.assets || [],
@@ -1947,7 +1949,7 @@ export default function App({ active = true }: { active?: boolean }) {
   }, []);
   const rename = async (id: string, name: string) => {
     try {
-      await post("/api/rename", { id, name, request_id: crypto.randomUUID() });
+      await post("/api/rename", { id, name, request_id: randomUUID() });
       void refresh().catch((error) => notify(errorText(error)));
     } catch (e) {
       notify(errorText(e));
@@ -2173,12 +2175,7 @@ export default function App({ active = true }: { active?: boolean }) {
       body: (
         <ProjectDirectoryPicker
           onSelect={async (path, server) => {
-            await registerProject(
-              path,
-              server,
-              crypto.randomUUID(),
-              projectServices,
-            );
+            await registerProject(path, server, randomUUID(), projectServices);
             setModal(null);
           }}
         />
@@ -2383,7 +2380,7 @@ export default function App({ active = true }: { active?: boolean }) {
         setNavigationTarget({
           ...command,
           section: "messages",
-          requestId: crypto.randomUUID(),
+          requestId: randomUUID(),
         });
       } else if (command.action === "projects") {
         document.documentElement.dataset.serverProjects = "true";
@@ -2480,7 +2477,7 @@ export default function App({ active = true }: { active?: boolean }) {
           setTaskFocus({
             id: activity.id,
             leadId: lead.id,
-            requestId: crypto.randomUUID(),
+            requestId: randomUUID(),
           });
           setTasksOpen(true);
         }

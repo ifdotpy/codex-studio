@@ -148,6 +148,7 @@ test("method dispatch preserves initialization and explicit unsupported method r
         claudeVersion: 23,
         passiveAccountRead: true,
         activityRead: true,
+        steerCompletionReceipts: true,
       },
     });
     assert.deepEqual(await bridge.call("initialized", {}), {});

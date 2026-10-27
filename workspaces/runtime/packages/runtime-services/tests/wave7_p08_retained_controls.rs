@@ -111,6 +111,7 @@ impl ClaudeSessionPort for AccountPort {
                 | studio_runtime_providers::Method::ClaudeSettings
                 | studio_runtime_providers::Method::ClaudeActivity
                 | studio_runtime_providers::Method::ClaudeStopTask
+                | studio_runtime_providers::Method::ClaudeShellPolicy
                 | studio_runtime_providers::Method::ClaudeDiagnostics
                 | studio_runtime_providers::Method::ClaudeMoveVersions
                 | studio_runtime_providers::Method::McpServerReconnect
@@ -185,6 +186,7 @@ impl ClaudeSessionPort for AccountPort {
                 | studio_runtime_providers::Method::ThreadClosed
                 | studio_runtime_providers::Method::ThreadStatusChanged
                 | studio_runtime_providers::Method::ThreadTokenUsageUpdated
+                | studio_runtime_providers::Method::ThreadShellPolicyUpdated
                 | studio_runtime_providers::Method::ThreadIdleCompactionUpdated
                 | studio_runtime_providers::Method::AccountLoginCompleted
                 | studio_runtime_providers::Method::AccountUpdated

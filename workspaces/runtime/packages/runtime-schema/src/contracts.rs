@@ -71,6 +71,26 @@ fn shared_values_ts() -> String {
     ts_constants(
         &mut text,
         &[
+            (
+                "CLAUDE_MCP_AUTO_BACKGROUND_MS",
+                values::CLAUDE_MCP_AUTO_BACKGROUND_MS.to_string(),
+            ),
+            (
+                "SHELL_QUIET_MIN_MS",
+                crate::shell_policy::QUIET_MIN_MS.to_string(),
+            ),
+            (
+                "SHELL_POLICY_DEFAULTS",
+                format!(
+                    "{{\n  quietThresholdMs: {},\n  pressureCleanup: {},\n}}",
+                    crate::shell_policy::Settings::default().quiet_threshold_ms,
+                    crate::shell_policy::Settings::default().pressure_cleanup
+                ),
+            ),
+            (
+                "SHELL_PRESSURE_IDLE_MINUTES",
+                (crate::shell_policy::PRESSURE_IDLE_MS / 60_000).to_string(),
+            ),
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
                 "MODEL_WHITELIST_PREFERENCE_KEY",
@@ -115,6 +135,10 @@ fn shared_values_ts() -> String {
             (
                 "SYNC_STREAM_EVENT_MAX_BYTES",
                 values::SYNC_STREAM_EVENT_MAX_BYTES.to_string(),
+            ),
+            (
+                "NATIVE_SSE_EVENT_MAX_BYTES",
+                values::NATIVE_SSE_EVENT_MAX_BYTES.to_string(),
             ),
             (
                 "SYNC_ENTITY_STREAM_MAX_DOCUMENTS",
@@ -597,12 +621,39 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         "/components/schemas/TranscriptResource/properties/tail/maximum",
         values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
     )?;
+    crate::workspace_modes::check_openapi(openapi)?;
     expect_number(
         openapi,
         "/components/schemas/ProjectDeleteRequest/properties/expected_project_seq/maximum",
         values::MAX_SAFE_INTEGER,
     )?;
     check_delivery_parity(openapi)?;
+    for (suffix, value) in [
+        ("minimum", 0),
+        ("maximum", values::MAX_SAFE_INTEGER),
+        (
+            "default",
+            crate::shell_policy::Settings::default().quiet_threshold_ms as i64,
+        ),
+    ] {
+        expect_number(
+            openapi,
+            &format!(
+                "/components/schemas/BackgroundShellPolicySettings/properties/quietThresholdMs/{suffix}"
+            ),
+            value,
+        )?;
+    }
+    if openapi.pointer(
+        "/components/schemas/BackgroundShellPolicySettings/properties/pressureCleanup/default",
+    ) != Some(&serde_json::json!(
+        crate::shell_policy::Settings::default().pressure_cleanup
+    )) {
+        return Err(
+            "BackgroundShellPolicySettings defaults must match runtime-schema/src/shell_policy.rs"
+                .into(),
+        );
+    }
     crate::complaints::check_schema_parity(openapi)?;
     let modes = serde_json::json!(crate::claude_permissions::PERMISSION_MODES);
     for path in [
@@ -955,6 +1006,46 @@ fn subscription_scopes_ts(
     text
 }
 
+fn workspace_modes_ts() -> String {
+    use crate::workspace_modes as modes;
+    let mut text = format!(
+        "// {HEADER}\nexport const CHAT_WORKSPACE_MODES = [\n{},\n] as const;\n",
+        modes::CHAT_WORKSPACE_MODES
+            .iter()
+            .map(|mode| format!("  {}", json_string(mode)))
+            .collect::<Vec<_>>()
+            .join(",\n")
+    );
+    for (name, values) in [
+        ("ALWAYS_NATIVE_SYSTEMS", modes::ALWAYS_NATIVE_SYSTEMS),
+        (
+            "CAPABILITY_NATIVE_SYSTEMS",
+            modes::CAPABILITY_NATIVE_SYSTEMS,
+        ),
+    ] {
+        writeln!(
+            text,
+            "export const {name} = {} as const;",
+            serde_json::to_string(values).expect("mode names serialize")
+        )
+        .expect("String write");
+    }
+    for (name, value) in [
+        (
+            "DEFAULT_CHAT_WORKSPACE_MODE",
+            modes::DEFAULT_CHAT_WORKSPACE_MODE,
+        ),
+        (
+            "DEFAULT_AGENT_WORKSPACE_MODE",
+            modes::DEFAULT_AGENT_WORKSPACE_MODE,
+        ),
+    ] {
+        writeln!(text, "export const {name} = {};", json_string(value)).expect("String write");
+    }
+    text.push_str("export function defaultChatWorkspaceMode(system?: string, nativeReady = false) {\n  return ALWAYS_NATIVE_SYSTEMS.some((value) => value === system) ||\n    (nativeReady && CAPABILITY_NATIVE_SYSTEMS.some((value) => value === system))\n    ? DEFAULT_CHAT_WORKSPACE_MODE\n    : DEFAULT_AGENT_WORKSPACE_MODE;\n}\n");
+    text
+}
+
 // Packaging keeps these validators standalone; the generator checks their literal copies.
 const BACKEND_KIND_CONSUMERS: &[(&str, &str, usize)] = &[
     (
@@ -1036,6 +1127,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     check_backend_kind_parity(root)?;
     check_provider_sql_parity(root)?;
     let mut openapi = read_json(root, OPENAPI_PATH)?;
+    crate::workspace_modes::update_openapi(&mut openapi);
     // The checked limits ingress schema also owns HTTP, SSE and bridge leaves.
     let mut limits: Value = serde_json::from_str(
         &include_str!("schemas/workspace-usage-limits.schema.json")
@@ -1111,6 +1203,9 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     identity_version.remove("minimum");
     identity_version.remove("maximum");
     openapi["components"]["schemas"]["UsageReconciliationResponse"]["properties"]["replayConflicts"] = serde_json::json!({"type":"array","items":{"$ref":"#/components/schemas/UsageReplayConflict"}});
+    openapi["components"]["schemas"]["ClaudeFailure"] = crate::claude_failure::schema();
+    openapi["components"]["schemas"]["NativeProviderError"]["properties"]["claudeFailure"] =
+        serde_json::json!({"$ref":"#/components/schemas/ClaudeFailure"});
     check_schema_parity(&openapi, &read_json(root, ACCOUNT_TRANSFER_SCHEMA_PATH)?)?;
     for (name, fields) in [
         (
@@ -1153,6 +1248,24 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     crate::task_command::apply_tool_contract("orchestration_task", &mut task_tool);
     let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
+        Rendered {
+            path: web("workspaceModes.ts"),
+            text: workspace_modes_ts(),
+        },
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/claude-failure.generated.ts".into(),
+            text: format!(
+                "// {HEADER}\nexport const claudeFailureSchema = {} as const;\n",
+                serde_json::to_string(&crate::claude_failure::schema()).expect("failure schema"),
+            ),
+        },
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/session-policy.generated.ts".into(),
+            text: format!(
+                "// {HEADER}\nexport const MCP_AUTO_BACKGROUND_MS = {};\n",
+                values::CLAUDE_MCP_AUTO_BACKGROUND_MS
+            ),
+        },
         Rendered {
             path: "workspaces/providers/apps/claude-bridge/task-command-tool.generated.ts".into(),
             text: task_tool_schema_ts(root, &task_tool)?,
@@ -1201,6 +1314,23 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
                 "// {HEADER}\nexport const HUMAN_INPUT = {};\nexport const STUDIO_EVENT_INPUT = {};\n",
                 json_string(crate::provider_input::ProviderInputOrigin::Human.as_str()),
                 json_string(crate::provider_input::ProviderInputOrigin::StudioEvent.as_str()),
+            ),
+        },
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/lifecycle-capabilities.generated.ts"
+                .into(),
+            text: format!(
+                "// {HEADER}\nexport const CLAUDE_STEER_COMPLETION_RECEIPTS = {};\n",
+                json_string(crate::provider_lifecycle::CLAUDE_STEER_COMPLETION_RECEIPTS),
+            ),
+        },
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/shell-policy.generated.ts".into(),
+            text: format!(
+                "// {HEADER}\nexport const QUIET_MIN_MS = {};\nexport const PRESSURE_IDLE_MS = {};\nexport const PRESSURE_RESTART_GUARD_MS = {};\n",
+                crate::shell_policy::QUIET_MIN_MS,
+                crate::shell_policy::PRESSURE_IDLE_MS,
+                crate::shell_policy::PRESSURE_RESTART_GUARD_MS
             ),
         },
         Rendered {
@@ -1312,10 +1442,6 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             "persisted-budget-usage",
             crate::usage::ledger::budget_usage_schema(),
         ),
-        (
-            "budget-capture",
-            crate::usage::ledger::budget_capture_schema(),
-        ),
     ] {
         rendered.push(Rendered {
             path: format!(
@@ -1356,6 +1482,8 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             "JsonValue",
             "ClaudeSessionSettings",
             "ClaudeCustomModel",
+            "ClaudeFailure",
+            "BackgroundShellPolicySettings",
         ] {
             schemas.insert(name.into(), openapi["components"]["schemas"][name].clone());
         }

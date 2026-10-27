@@ -87,6 +87,13 @@ async fn turn_end_closes_its_open_items(status: &str) {
         .await;
     peer.acknowledged(cursor).await;
     assert_eq!(state.record().await["lastCompletedTurn"], "turn");
+    let idle_at = state.record().await["shellPolicyLastActiveAt"]
+        .as_f64()
+        .expect("the accepted terminal turn resets the shell idle clock");
+    assert!(idle_at > 0.0);
+    let replay = peer.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"turn","status":status}}})).await;
+    peer.acknowledged(replay).await;
+    assert_eq!(state.record().await["shellPolicyLastActiveAt"], idle_at);
     assert_closed(&state, &["cmd", "tool"]).await;
     // The provider can still run it as a background terminal.
     assert_eq!(task(&state, "bg").await["status"], "running");
@@ -120,6 +127,7 @@ async fn a_turn_cut_off_by_a_disconnect_closes_its_items_when_it_settles() {
     let mut next = Peer::new();
     let mut replacement = next.worker(replacement_bridge(&state).await).await;
     // The cut-off turn is live, so the new worker checks no command of it.
+    answer_adopted_turn_check(&mut next).await;
     worker_barrier(&replacement).await;
     assert_eq!(task(&state, "cmd").await["status"], "running");
     next.cursor = peer.cursor;

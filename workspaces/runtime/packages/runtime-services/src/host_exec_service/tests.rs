@@ -1020,12 +1020,16 @@ fn a_service_without_a_build_identity_is_never_stopped() {
 #[tokio::test]
 async fn the_socket_serves_one_request_per_connection() {
     let fixture = Fixture::new();
-    let mut serving = Box::pin(serve(Arc::clone(&fixture.service)));
-    assert!(
-        futures_util::poll!(serving.as_mut()).is_pending(),
-        "socket bound before accept"
-    );
-    let server = tokio::spawn(serving);
+    let listener = bind_listener(&fixture.service).unwrap();
+    let server = tokio::spawn(serve_listener(Arc::clone(&fixture.service), listener));
+    let state = fixture.state.clone();
+    let rejected = studio_runtime_store::blocking_pool::spawn_blocking("test", move || {
+        lifecycle::service_call(&state, "wrong-token", "health", None)
+    })
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(rejected.code, "forbidden");
     let socket = fixture.state.join(SOCKET_FILE);
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let request = json!({"id":"wire-health","method":"health","token":TOKEN,"params":{}});

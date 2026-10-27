@@ -9,8 +9,7 @@ import type { Agent } from "../types";
 
 /**
  * The one line of a usage limit: when it resets, or that Studio resumes the chat by itself,
- * or, after the reset time, that Studio checks the account. The account limits page keeps
- * the model eligibility details.
+ * or, after the reset time, that Studio checks the account.
  */
 export function limitLine(
   resetAt: number | undefined,

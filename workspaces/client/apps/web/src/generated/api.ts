@@ -4069,26 +4069,6 @@ export interface components {
       hostProjectPath?: null | string | undefined;
       /** Id */
       id: string;
-      /** Imageworkspace */
-      imageWorkspace?: boolean | null | undefined;
-      /** Imageworkspacebaseref */
-      imageWorkspaceBaseRef?: null | string | undefined;
-      /** Imageworkspacebaserepo */
-      imageWorkspaceBaseRepo?: null | string | undefined;
-      /** Imageworkspacecreatedat */
-      imageWorkspaceCreatedAt?: null | number | undefined;
-      /** Imageworkspaceerror */
-      imageWorkspaceError?: null | string | undefined;
-      /** Imageworkspacehasgit */
-      imageWorkspaceHasGit?: boolean | null | undefined;
-      /** Imageworkspacephase */
-      imageWorkspacePhase?: null | string | undefined;
-      /** Imageworkspaceready */
-      imageWorkspaceReady?: boolean | null | undefined;
-      /** Imageworkspacerepo */
-      imageWorkspaceRepo?: null | string | undefined;
-      /** Imageworkspacesubpath */
-      imageWorkspaceSubpath?: null | string | undefined;
       /** Lastanswer */
       lastAnswer?: null | string | undefined;
       /** Lastevent */
@@ -4398,26 +4378,6 @@ export interface components {
       hostProjectPath?: null | string | undefined;
       /** Id */
       id: string;
-      /** Imageworkspace */
-      imageWorkspace?: boolean | null | undefined;
-      /** Imageworkspacebaseref */
-      imageWorkspaceBaseRef?: null | string | undefined;
-      /** Imageworkspacebaserepo */
-      imageWorkspaceBaseRepo?: null | string | undefined;
-      /** Imageworkspacecreatedat */
-      imageWorkspaceCreatedAt?: null | number | undefined;
-      /** Imageworkspaceerror */
-      imageWorkspaceError?: null | string | undefined;
-      /** Imageworkspacehasgit */
-      imageWorkspaceHasGit?: boolean | null | undefined;
-      /** Imageworkspacephase */
-      imageWorkspacePhase?: null | string | undefined;
-      /** Imageworkspaceready */
-      imageWorkspaceReady?: boolean | null | undefined;
-      /** Imageworkspacerepo */
-      imageWorkspaceRepo?: null | string | undefined;
-      /** Imageworkspacesubpath */
-      imageWorkspaceSubpath?: null | string | undefined;
       /** Inflight */
       inFlight?: boolean | null | undefined;
       /** Islead */
@@ -4576,8 +4536,6 @@ export interface components {
       taskDefaultGate?: components["schemas"]["TaskAcceptanceGate"] | undefined;
       /** Threadid */
       threadId?: null | string | undefined;
-      /** Tokensused */
-      tokensUsed?: number | null | undefined;
       /** Turnid */
       turnId?: null | string | undefined;
       turnStatus?: components["schemas"]["AgentStatus"] | null | undefined;
@@ -4921,11 +4879,6 @@ export interface components {
       budgetActionWait?:
         | components["schemas"]["BudgetWaitRecordResponse"]
         | undefined;
-      /**
-       * Budgetblocked
-       * @default null
-       */
-      budgetBlocked?: string | undefined;
       /** @default null */
       budgetStartWait?:
         | components["schemas"]["BudgetWaitRecordResponse"]
@@ -4962,10 +4915,6 @@ export interface components {
       /** @default null */
       claudePreInputRetry?:
         | components["schemas"]["ClaudePreInputRetryRecordResponse"]
-        | undefined;
-      /** @default null */
-      cleanedImageWorkspace?:
-        | components["schemas"]["CleanedImageWorkspaceRecordResponse"]
         | undefined;
       /** @default null */
       cleanedWorktree?:
@@ -5149,118 +5098,6 @@ export interface components {
       hostProjectPath?: string | undefined;
       /** Id */
       id: string;
-      /**
-       * Imageworkspace
-       * @default null
-       */
-      imageWorkspace?: boolean | undefined;
-      /**
-       * Imageworkspacebaseerror
-       * @default null
-       */
-      imageWorkspaceBaseError?: string | undefined;
-      /**
-       * Imageworkspacebaseref
-       * @default null
-       */
-      imageWorkspaceBaseRef?: null | string | undefined;
-      /**
-       * Imageworkspacebaserepo
-       * @default null
-       */
-      imageWorkspaceBaseRepo?: null | string | undefined;
-      /** @default null */
-      imageWorkspaceCleanupResult?:
-        | components["schemas"]["ImageWorkspaceCleanupResultRecordResponse"]
-        | undefined;
-      /** @default null */
-      imageWorkspaceCleanupRetry?:
-        | components["schemas"]["ImageWorkspaceCleanupRetryRecordResponse"]
-        | undefined;
-      /** @default null */
-      imageWorkspaceCollect?:
-        | components["schemas"]["ImageWorkspaceCollectResultRecordResponse"]
-        | undefined;
-      /**
-       * Imageworkspacecreatedat
-       * @default null
-       */
-      imageWorkspaceCreatedAt?: null | number | undefined;
-      /**
-       * Imageworkspaceerror
-       * @default null
-       */
-      imageWorkspaceError?: null | string | undefined;
-      /**
-       * Imageworkspacehandofftext
-       * @default null
-       */
-      imageWorkspaceHandoffText?: null | string | undefined;
-      /**
-       * Imageworkspacehasgit
-       * @default null
-       */
-      imageWorkspaceHasGit?: boolean | undefined;
-      /**
-       * Imageworkspacemount
-       * @default null
-       */
-      imageWorkspaceMount?: null | string | undefined;
-      /**
-       * Imageworkspacenoticeerror
-       * @default null
-       */
-      imageWorkspaceNoticeError?: null | string | undefined;
-      /**
-       * Imageworkspacenoticeid
-       * @default null
-       */
-      imageWorkspaceNoticeId?: null | string | undefined;
-      /**
-       * Imageworkspacenoticesent
-       * @default null
-       */
-      imageWorkspaceNoticeSent?: null | string | undefined;
-      /**
-       * Imageworkspacenoticetext
-       * @default null
-       */
-      imageWorkspaceNoticeText?: null | string | undefined;
-      /**
-       * Imageworkspacephase
-       * @default null
-       */
-      imageWorkspacePhase?:
-        | (
-            | "read_only"
-            | "ready"
-            | "fallback"
-            | "archiving"
-            | "archived"
-            | "removed"
-          )
-        | null
-        | undefined;
-      /**
-       * Imageworkspaceready
-       * @default null
-       */
-      imageWorkspaceReady?: boolean | undefined;
-      /**
-       * Imageworkspacerepo
-       * @default null
-       */
-      imageWorkspaceRepo?: null | string | undefined;
-      /**
-       * Imageworkspacesnapshotcommit
-       * @default null
-       */
-      imageWorkspaceSnapshotCommit?: null | string | undefined;
-      /**
-       * Imageworkspacesubpath
-       * @default null
-       */
-      imageWorkspaceSubpath?: null | string | undefined;
       /**
        * Importedfrom
        * @default null
@@ -5864,21 +5701,6 @@ export interface components {
        */
       threadId?: null | string | undefined;
       /**
-       * Tokenbudget
-       * @default null
-       */
-      tokenBudget?: number | null | undefined;
-      /**
-       * Tokensused
-       * @default null
-       */
-      tokensUsed?: number | undefined;
-      /**
-       * Tokenusageaccounting
-       * @default null
-       */
-      tokenUsageAccounting?: string | undefined;
-      /**
        * Turnepoch
        * @default null
        */
@@ -5947,10 +5769,7 @@ export interface components {
        * @default null
        */
       workspaceInGit?: boolean | undefined;
-      /**
-       * Workspacemode
-       * @default null
-       */
+      /** Workspacemode */
       workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /**
        * Workspacemodeexplicit
@@ -6278,56 +6097,6 @@ export interface components {
       /** Id */
       id: string;
       /**
-       * Imageworkspace
-       * @default null
-       */
-      imageWorkspace?: boolean | null | undefined;
-      /**
-       * Imageworkspacebaseref
-       * @default null
-       */
-      imageWorkspaceBaseRef?: null | string | undefined;
-      /**
-       * Imageworkspacebaserepo
-       * @default null
-       */
-      imageWorkspaceBaseRepo?: null | string | undefined;
-      /**
-       * Imageworkspacecreatedat
-       * @default null
-       */
-      imageWorkspaceCreatedAt?: null | number | undefined;
-      /**
-       * Imageworkspaceerror
-       * @default null
-       */
-      imageWorkspaceError?: null | string | undefined;
-      /**
-       * Imageworkspacehasgit
-       * @default null
-       */
-      imageWorkspaceHasGit?: boolean | null | undefined;
-      /**
-       * Imageworkspacephase
-       * @default null
-       */
-      imageWorkspacePhase?: null | string | undefined;
-      /**
-       * Imageworkspaceready
-       * @default null
-       */
-      imageWorkspaceReady?: boolean | null | undefined;
-      /**
-       * Imageworkspacerepo
-       * @default null
-       */
-      imageWorkspaceRepo?: null | string | undefined;
-      /**
-       * Imageworkspacesubpath
-       * @default null
-       */
-      imageWorkspaceSubpath?: null | string | undefined;
-      /**
        * Inflight
        * @default null
        */
@@ -6640,11 +6409,6 @@ export interface components {
        */
       threadId?: null | string | undefined;
       /**
-       * Tokensused
-       * @default null
-       */
-      tokensUsed?: number | null | undefined;
-      /**
        * Turnid
        * @default null
        */
@@ -6678,10 +6442,7 @@ export interface components {
        * @default null
        */
       workspaceBackend?: ("asif" | "vm") | null | undefined;
-      /**
-       * Workspacemode
-       * @default null
-       */
+      /** Workspacemode */
       workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /**
        * Workspaceoperation
@@ -8914,6 +8675,19 @@ export interface components {
       /** Serverid */
       serverId: string;
     };
+    /** BackgroundShellPolicySettings */
+    BackgroundShellPolicySettings: {
+      /**
+       * @description Stop background shells after 30 idle minutes under critical memory pressure, with no active turn or delegates.
+       * @default true
+       */
+      pressureCleanup: boolean;
+      /**
+       * @description Milliseconds without shell output before one check-in. Use 0 to disable, or at least 10000.
+       * @default 0
+       */
+      quietThresholdMs: number;
+    };
     /** BlockingPoolGroupMetrics */
     BlockingPoolGroupMetrics: {
       /** Closureavgms */
@@ -9166,56 +8940,6 @@ export interface components {
       hostProjectPath?: null | string | undefined;
       /** Id */
       id: string;
-      /**
-       * Imageworkspace
-       * @default null
-       */
-      imageWorkspace?: boolean | null | undefined;
-      /**
-       * Imageworkspacebaseref
-       * @default null
-       */
-      imageWorkspaceBaseRef?: null | string | undefined;
-      /**
-       * Imageworkspacebaserepo
-       * @default null
-       */
-      imageWorkspaceBaseRepo?: null | string | undefined;
-      /**
-       * Imageworkspacecreatedat
-       * @default null
-       */
-      imageWorkspaceCreatedAt?: null | number | undefined;
-      /**
-       * Imageworkspaceerror
-       * @default null
-       */
-      imageWorkspaceError?: null | string | undefined;
-      /**
-       * Imageworkspacehasgit
-       * @default null
-       */
-      imageWorkspaceHasGit?: boolean | null | undefined;
-      /**
-       * Imageworkspacephase
-       * @default null
-       */
-      imageWorkspacePhase?: null | string | undefined;
-      /**
-       * Imageworkspaceready
-       * @default null
-       */
-      imageWorkspaceReady?: boolean | null | undefined;
-      /**
-       * Imageworkspacerepo
-       * @default null
-       */
-      imageWorkspaceRepo?: null | string | undefined;
-      /**
-       * Imageworkspacesubpath
-       * @default null
-       */
-      imageWorkspaceSubpath?: null | string | undefined;
       /**
        * Inflight
        * @default null
@@ -9529,11 +9253,6 @@ export interface components {
        */
       threadId?: null | string | undefined;
       /**
-       * Tokensused
-       * @default null
-       */
-      tokensUsed?: number | null | undefined;
-      /**
        * Turnid
        * @default null
        */
@@ -9567,10 +9286,7 @@ export interface components {
        * @default null
        */
       workspaceBackend?: ("asif" | "vm") | null | undefined;
-      /**
-       * Workspacemode
-       * @default null
-       */
+      /** Workspacemode */
       workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /**
        * Workspaceoperation
@@ -10599,6 +10315,93 @@ export interface components {
         | "cancelled"
         | "failed";
     };
+    /**
+     * ClaudeFailure
+     * @description Bounded Claude cause metadata. No message text, headers, credential values, or raw error_details. Token counts use tokens.
+     */
+    ClaudeFailure: {
+      /** @enum {string} */
+      apiError?:
+        | "max_output_tokens"
+        | "dlp_request_denied"
+        | "claude_code_version_too_old"
+        | "safety_monitor_blocked"
+        | "effort_requires_thinking"
+        | "advisor_incompatible"
+        | "tool_history_mismatch"
+        | "autocompact_thrashing"
+        | "pdf_too_large"
+        | "pdf_password_protected"
+        | "media_removed"
+        | "no_response"
+        | "tls_untrusted_ca"
+        | "gateway_content_type"
+        | "provider_credentials"
+        | "gateway_signin_required"
+        | "gateway_session_expired"
+        | "api_key_auth_disabled"
+        | "org_disabled_credential"
+        | "invalid_credential_header"
+        | "model_requires_usage_credits"
+        | "long_context_credits_required"
+        | "consent_unanswered"
+        | "no_allowed_fallback"
+        | "model_substitution_disabled"
+        | "field_not_granted"
+        | "usage_limit_reached"
+        | undefined;
+      apiErrorCode?: string | undefined;
+      /** @enum {string} */
+      apiErrorOrigin?: "first_party" | undefined;
+      apiErrorStatus?: number | undefined;
+      /** @enum {string} */
+      effort?: "low" | "medium" | "high" | "max" | "xhigh" | undefined;
+      /** @enum {string} */
+      error?:
+        | "authentication_failed"
+        | "oauth_org_not_allowed"
+        | "account_on_hold"
+        | "verification_required"
+        | "billing_error"
+        | "rate_limit"
+        | "overloaded"
+        | "invalid_request"
+        | "model_not_found"
+        | "server_error"
+        | "unknown"
+        | "max_output_tokens"
+        | "cloud_credential_error"
+        | undefined;
+      maxContextTokens?: number | undefined;
+      /** @enum {string} */
+      media?: "image" | "document" | undefined;
+      /** @enum {string} */
+      mediaReason?:
+        | "unprocessable"
+        | "unsupported_by_model"
+        | "media_budget"
+        | undefined;
+      promptTokens?: number | undefined;
+      /** @enum {string} */
+      provider?:
+        | "bedrock"
+        | "anthropicAws"
+        | "mantle"
+        | "anthropicGoogleCloud"
+        | "vertex"
+        | "foundry"
+        | "gateway"
+        | undefined;
+      /** @enum {string} */
+      remedy?:
+        | "refresh_command"
+        | "refresh_credentials"
+        | "adc"
+        | "gateway_token"
+        | "host_managed"
+        | "model_access"
+        | undefined;
+    };
     ClaudeFileBackupsRequest: {
       id: string;
       release: boolean;
@@ -10860,6 +10663,8 @@ export interface components {
        * @default null
        */
       launchArgs?: null | string | undefined;
+      /** @description Move eligible MCP calls to the background after 120 seconds. The default is on. */
+      mcpAutoBackground?: boolean | undefined;
       /**
        * Permissionmode
        * @default null
@@ -10942,6 +10747,8 @@ export interface components {
     ClaudeSettings: {
       /** Format: uint64 */
       autoCompactWindow?: number | null | undefined;
+      /** @description Native MCP calls move to the background after the shared wait; absent keeps the default. */
+      mcpAutoBackground?: boolean | undefined;
       /**
        * @description Claude session permission modes accepted by settings and child creation.
        * @enum {string}
@@ -10989,79 +10796,6 @@ export interface components {
         | "uncertain";
       /** Text */
       text: string;
-    };
-    /** CleanedImageWorkspaceRecordResponse */
-    CleanedImageWorkspaceRecordResponse: {
-      /**
-       * Branch
-       * @default null
-       */
-      branch?: string | undefined;
-      /**
-       * Bytes
-       * @default null
-       */
-      bytes?: number | null | undefined;
-      /** @default null */
-      collect?:
-        | components["schemas"]["ImageWorkspaceCollectResultRecordResponse"]
-        | undefined;
-      /**
-       * Createdat
-       * @default null
-       */
-      createdAt?: null | number | undefined;
-      /**
-       * Freedbytes
-       * @default null
-       */
-      freedBytes?: number | undefined;
-      /**
-       * Head
-       * @default null
-       */
-      head?: string | undefined;
-      /**
-       * Mount
-       * @default null
-       */
-      mount?: null | string | undefined;
-      /**
-       * Path
-       * @default null
-       */
-      path?: null | string | undefined;
-      /**
-       * Phase
-       * @default null
-       */
-      phase?: string | undefined;
-      /**
-       * Relative
-       * @default null
-       */
-      relative?: string | undefined;
-      /**
-       * Repo
-       * @default null
-       */
-      repo?: string | undefined;
-      /**
-       * Restoreheads
-       * @default null
-       */
-      restoreHeads?:
-        | {
-            [key: string]: string;
-          }
-        | undefined;
-      /**
-       * Source
-       * @default null
-       */
-      source?: null | string | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * CodexLoginReceipt
@@ -11434,11 +11168,6 @@ export interface components {
        * @default null
        */
       request_id?: string | null | undefined;
-      /**
-       * Tokenbudget
-       * @default null
-       */
-      tokenBudget?: number | null | undefined;
     };
     /** ConfigureResponse */
     ConfigureResponse: {
@@ -11451,11 +11180,6 @@ export interface components {
       id: string;
       /** Maxagents */
       maxAgents: number;
-      /**
-       * Tokenbudget
-       * @default null
-       */
-      tokenBudget?: number | null | undefined;
     };
     /** ConnectionBody */
     ConnectionBody: {
@@ -12211,11 +11935,6 @@ export interface components {
       prompt: string;
       /** @default orchestrator */
       role?: components["schemas"]["AgentRole-Input"] | undefined;
-      /**
-       * Tokenbudget
-       * @default null
-       */
-      tokenBudget?: number | null | undefined;
       /** @default null */
       worker_defaults?:
         | components["schemas"]["WorkerDefaults"]
@@ -12224,8 +11943,14 @@ export interface components {
       /**
        * Workspacemode
        * @default worktree
+       * @enum {string}
        */
-      workspaceMode?: components["schemas"]["WorkspaceMode"] | undefined;
+      workspaceMode?:
+        | "layr-native"
+        | "layr"
+        | "worktree"
+        | "shared"
+        | undefined;
       /**
        * Yolo Mode
        * @default true
@@ -12347,10 +12072,10 @@ export interface components {
         | undefined;
       /**
        * Workspacemode
-       * @default worktree
+       * @description When omitted, the server selects native Layr on macOS, or on Linux when the native capability is ready; otherwise it selects worktree.
        * @enum {string}
        */
-      workspaceMode?: "layr" | "image" | "worktree" | undefined;
+      workspaceMode?: "layr-native" | "layr" | "worktree" | undefined;
       /**
        * Yolo Mode
        * @default true
@@ -12629,11 +12354,6 @@ export interface components {
       executions: components["schemas"]["ExecutionLedger"];
       hostResources: components["schemas"]["HostResources"];
       httpRequestMetrics: components["schemas"]["HttpRequestMetrics"];
-      /** @default null */
-      imageMounts?:
-        | components["schemas"]["ImageMountDiagnostics"]
-        | null
-        | undefined;
       migrations: components["schemas"]["MigrationStatus"];
       /** Nativeaccounts */
       nativeAccounts: {
@@ -14100,168 +13820,6 @@ export interface components {
       /** Id */
       id: string;
     };
-    /**
-     * ImageMountDiagnostics
-     * @description Startup image workspace mount check. Paths and details stay in `mounts check`.
-     */
-    ImageMountDiagnostics: {
-      /** Checkedat */
-      checkedAt: null | number;
-      /** Problems */
-      problems: components["schemas"]["ImageMountProblem"][];
-      /**
-       * State
-       * @enum {string}
-       */
-      state: "pending" | "checked" | "failed" | "unsupported";
-      /** Strayattachments */
-      strayAttachments: number;
-    };
-    /** ImageMountProblem */
-    ImageMountProblem: {
-      /** Agentid */
-      agentId: string;
-      /**
-       * Status
-       * @enum {string}
-       */
-      status:
-        | "plain-folder"
-        | "foreign-volume"
-        | "image-replaced"
-        | "attached-elsewhere"
-        | "image-missing";
-    };
-    /** ImageWorkspaceCleanupResultRecordResponse */
-    ImageWorkspaceCleanupResultRecordResponse: {
-      /**
-       * Bytes
-       * @default null
-       */
-      bytes?: number | undefined;
-      /** @default null */
-      collect?:
-        | components["schemas"]["ImageWorkspaceCollectResultRecordResponse"]
-        | undefined;
-      /**
-       * Freedbytes
-       * @default null
-       */
-      freedBytes?: number | undefined;
-      /**
-       * Reason
-       * @default null
-       */
-      reason?: string | undefined;
-      /**
-       * Restoreheads
-       * @default null
-       */
-      restoreHeads?:
-        | {
-            [key: string]: string;
-          }
-        | undefined;
-      /**
-       * State
-       * @default null
-       */
-      state?: string | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
-    /** ImageWorkspaceCleanupRetryRecordResponse */
-    ImageWorkspaceCleanupRetryRecordResponse: {
-      /** At */
-      at: number;
-      /** Attempts */
-      attempts: number;
-      /** Error */
-      error: string;
-      /** Nextat */
-      nextAt: number;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
-    /** ImageWorkspaceCollectRepositoryRecordResponse */
-    ImageWorkspaceCollectRepositoryRecordResponse: {
-      /**
-       * Branch
-       * @default null
-       */
-      branch?: string | undefined;
-      /**
-       * Commit
-       * @default null
-       */
-      commit?: string | undefined;
-      /**
-       * Head
-       * @default null
-       */
-      head?: string | undefined;
-      /** Path */
-      path: string;
-      /**
-       * Rawref
-       * @default null
-       */
-      rawRef?: string | undefined;
-      /**
-       * State
-       * @default null
-       */
-      state?: string | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
-    /** ImageWorkspaceCollectResultRecordResponse */
-    ImageWorkspaceCollectResultRecordResponse: {
-      /**
-       * Branch
-       * @default null
-       */
-      branch?: string | undefined;
-      /**
-       * Commit
-       * @default null
-       */
-      commit?: string | undefined;
-      /**
-       * Conflict
-       * @default null
-       */
-      conflict?: string | undefined;
-      /**
-       * Conflicts
-       * @default null
-       */
-      conflicts?: components["schemas"]["JsonValue"][] | undefined;
-      /**
-       * Path
-       * @default null
-       */
-      path?: string | undefined;
-      /**
-       * Rawref
-       * @default null
-       */
-      rawRef?: string | undefined;
-      /**
-       * Repositories
-       * @default null
-       */
-      repositories?:
-        | components["schemas"]["ImageWorkspaceCollectRepositoryRecordResponse"][]
-        | undefined;
-      /**
-       * State
-       * @default null
-       */
-      state?: string | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
     /** ImportListResponse */
     ImportListResponse: {
       /**
@@ -15321,6 +14879,18 @@ export interface components {
        */
       text?: string | undefined;
     };
+    /** @enum {string} */
+    MonitorInputKind: "monitor_input";
+    MonitorInputResponse: {
+      kind: components["schemas"]["MonitorInputKind"];
+      monitorId: string;
+      status: components["schemas"]["MonitorInputStatus"];
+    };
+    /**
+     * @description Outcome of stdin sent to a monitor through HTTP; owned by monitor_http_input.rs.
+     * @enum {string}
+     */
+    MonitorInputStatus: "acknowledged" | "rejected" | "pending" | "unknown";
     /** @description Public projection of the native operation identity, without open transport evidence. */
     MonitorOperationIdentity: {
       accountKey: string;
@@ -16049,6 +15619,11 @@ export interface components {
       /** Path */
       path: null | string;
     };
+    /** @description Native Layr readiness for this server state directory. */
+    NativeLayrCapability: {
+      ready: boolean;
+      reason?: string | null | undefined;
+    };
     /** NativeNameFailureRecordResponse */
     NativeNameFailureRecordResponse: {
       /**
@@ -16161,6 +15736,7 @@ export interface components {
         | null
         | string
         | undefined;
+      claudeFailure?: components["schemas"]["ClaudeFailure"] | undefined;
       /**
        * Code
        * @default null
@@ -16751,6 +16327,9 @@ export interface components {
        * @description Minutes a lead's or ordinary chat's idle Codex thread or Claude session stays loaded, and an account's provider process keeps running after its last thread unloaded. A managed worker without a running turn, pending input, or active monitor unloads at once. The next message resumes a thread. 0 never unloads.
        */
       idleSessionUnloadMinutes: number;
+      shellPolicy?:
+        | components["schemas"]["BackgroundShellPolicySettings"]
+        | undefined;
     };
     /** OrchestrationSettingsResponse */
     OrchestrationSettingsResponse: {
@@ -17665,7 +17244,7 @@ export interface components {
       /** @default [] */
       processes?: components["schemas"]["ProcessEntry"][] | undefined;
       requestId: string;
-      response?: components["schemas"]["ResponseEntry"] | null | undefined;
+      response?: components["schemas"]["ProcessResponse"] | null | undefined;
       status: components["schemas"]["ProcessActionStatus"];
     };
     /** @enum {string} */
@@ -17866,6 +17445,10 @@ export interface components {
       /** Rssmib */
       rssMiB: number;
     };
+    /** @description A response stop or background entry, or the receipt of HTTP monitor input. */
+    ProcessResponse:
+      | components["schemas"]["MonitorInputResponse"]
+      | components["schemas"]["ResponseEntry"];
     ProcessResponseTarget: {
       accountKey: string;
       agent: string;
@@ -22772,13 +22355,25 @@ export interface components {
        * @description Unix seconds.
        */
       at: number;
+      /**
+       * Format: uint64
+       * @description Failures in a grouped row. Unit: occurrences.
+       */
+      count?: number | null | undefined;
       detail: string;
       diagnostics: components["schemas"]["StudioErrorDiagnostics"];
       eventId?: string | null | undefined;
+      /**
+       * Format: double
+       * @description Unix seconds of the first failure in a grouped row.
+       */
+      firstAt?: number | null | undefined;
       id: string;
       kind: components["schemas"]["StudioErrorKind"];
       monitorId?: string | null | undefined;
       reason: string;
+      /** @description Rule of a grouped monitor row; its failures share one row. */
+      ruleId?: string | null | undefined;
       subject: string;
     } & (
       | {
@@ -22924,22 +22519,25 @@ export interface components {
     StudioErrorEffectCertainty: "read_only" | "not_applied" | "unknown";
     /** @enum {string} */
     StudioErrorJsonCategory: "io" | "syntax" | "data" | "eof";
-    /**
-     * @description Why work needs attention. The service owns classification and publication.
-     * @enum {string}
-     */
+    /** @description Why work needs attention. The service owns classification and publication. */
     StudioErrorKind:
-      | "monitor_outcome_lost"
-      | "monitor_not_recorded"
-      | "input_unconfirmed"
-      | "input_uncertain"
-      | "input_stuck"
-      | "turn_disconnected"
-      | "workspace_failed"
-      | "http_failure"
-      | "recovery_failed"
-      | "stored_record_invalid"
-      | "unclassified_failure";
+      | (
+          | "monitor_outcome_lost"
+          | "monitor_not_recorded"
+          | "input_unconfirmed"
+          | "input_uncertain"
+          | "input_stuck"
+          | "turn_disconnected"
+          | "workspace_failed"
+          | "http_failure"
+          | "recovery_failed"
+          | "stored_record_invalid"
+          | "unclassified_failure"
+        )
+      | "turn_stalled"
+      | "input_not_started"
+      | "session_not_started"
+      | "schedule_stalled";
     /** StudioErrorsDismissRequest */
     StudioErrorsDismissRequest: {
       /** @description Legacy single error id. Supply either id or ids. */
@@ -23031,6 +22629,8 @@ export interface components {
     };
     /** SummaryAccount */
     SummaryAccount: {
+      /** Account Key */
+      accountKey?: string | undefined;
       /**
        * Email
        * @default null
@@ -26066,6 +25666,12 @@ export interface components {
       busy: boolean;
       /** Chats */
       chats: components["schemas"]["SummaryChat"][];
+      /**
+       * @description The server has a created Studio Linux VM.
+       * @default false
+       */
+      hasStudioVm?: boolean | undefined;
+      nativeLayr?: components["schemas"]["NativeLayrCapability"] | undefined;
       /** Projects */
       projects: components["schemas"]["SummaryProject"][];
       /** Ready */
@@ -28155,7 +27761,7 @@ export interface components {
       tasksHistoryLimit?: number | null | undefined;
     };
     /** @enum {string} */
-    WorkspaceMode: "layr" | "image" | "worktree" | "shared";
+    WorkspaceMode: "layr-native" | "layr" | "image" | "worktree" | "shared";
     /** WorkspaceResource */
     WorkspaceResource: {
       /** Agentid */
@@ -33540,6 +33146,8 @@ export interface operations {
       query?:
         | {
             account_key?: string | undefined;
+            /** @description Require current provider metadata before an account choice. Display reads can return the last known catalog. */
+            fresh?: "1" | undefined;
             retry?: "1" | undefined;
             workers?: "1" | undefined;
           }

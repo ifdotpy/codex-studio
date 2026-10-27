@@ -3,6 +3,8 @@ export interface EdgeRailMetrics {
   minimumInset: number;
   statusReserve: number;
   targetSize: number;
+  /** Outer screen edge to the system status column center; strip center when absent. */
+  statusColumnCenter?: number | undefined;
 }
 
 export interface EdgeRailViewport {
@@ -18,6 +20,8 @@ export interface EdgeRailGeometry {
   bottom: number;
   height: number;
   targetSize: number;
+  /** Outer screen edge to the button column center, inside the strip. */
+  center: number;
 }
 
 export function edgeRailGeometry(
@@ -43,6 +47,11 @@ export function edgeRailGeometry(
   const height = viewportHeight - top - insets.bottom;
   if (targetSize <= 0 || width < metrics.minimumInset || height < targetSize)
     return null;
+  const half = targetSize / 2;
+  const center = Math.min(
+    Math.max(metrics.statusColumnCenter ?? width / 2, half),
+    width - half,
+  );
   return {
     side,
     width,
@@ -50,5 +59,6 @@ export function edgeRailGeometry(
     bottom: insets.bottom,
     height,
     targetSize,
+    center,
   };
 }

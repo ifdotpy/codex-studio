@@ -445,7 +445,7 @@ Source and Save a copy retain the complete file within the file API limit.
 6. The existing transaction saves effects and replay receipts together.
 
 `/compact`, `/review`, `/stop`, and `/stop-team` are local commands.
-Team capacity and token budgets remain available through `codex-control configure`.
+Team capacity is a chat setting in the Studio window (`POST /api/configure`).
 One lead can delegate a batch of work to dozens of agents.
 The browser can close while the canvas server continues the work.
 
@@ -797,75 +797,45 @@ and all-agent scopes, a period filter, call details, and JSON export.
 
 ## Capacity and work ownership
 
-Each team defaults to 32 concurrent agents and a maximum of 64 total agents,
-including its lead. `codex-control configure` supports 1 to 64 concurrent agents and 1 to 256
-agents in the team. `CODEX_CANVAS_CONCURRENCY` sets the server-wide cap, default 32,
-maximum 64. Lead turns have priority when a slot becomes free.
+Each team defaults to `DEFAULT_SUBAGENT_CONCURRENCY` concurrent subagents and
+`DEFAULT_MAX_TEAM_AGENTS` agents in total, including its lead. The chat settings
+(`POST /api/configure`) change them within the bounds of
+[`agent_limits.rs`](../workspaces/runtime/packages/runtime-schema/src/agent_limits.rs).
+`CODEX_CANVAS_CONCURRENCY` sets the server-wide cap (default
+`DEFAULT_GLOBAL_CONCURRENCY`). Lead turns have priority when a slot becomes free.
 Lowering a limit does not interrupt existing turns.
 
-Chat creation selects `workspaceMode`: `layr`, `image`, or `worktree`.
-A new lead chat on a Mac server defaults to `layr`. A top-level task agent from
-`POST /api/agents` defaults to `worktree`. Linux servers support `worktree` only.
+Chat creation selects `workspaceMode`: `layr-native`, `layr`, or `worktree`.
+New lead chats default to native Layr on macOS. Linux selects native Layr only
+when the server reports a ready native capability; otherwise it selects WT.
+`Layr VM` appears only when the server has the Studio Linux VM.
+`WT` selects a Git worktree.
 
-| Chat mode  | Environment                         | Worker workspace         |
-| ---------- | ----------------------------------- | ------------------------ |
-| `layr`     | Studio Linux VM, including the lead | Separate owned layr line |
-| `image`    | Native macOS                        | ASIF image               |
-| `worktree` | Native host                         | Git worktree             |
+Workers inherit the chat mode. Native Layr workers use separate owned lines.
+Worktrees use a committed Git base. Shared workers use the selected folder.
+Reviewers keep read-only access.
+Use `server` and an absolute remote `cwd` for work on a paired machine.
 
-Workers inherit the chat mode. `orchestration_spawn` accepts `cwd` within the
-lead's workspace. Native workers can select `workspace: "image"`, `"worktree"`,
-or deliberate `"shared"` edits. Images require macOS and include uncommitted
-changes. Worktrees use a committed Git base. Linux image requests fall back to
-worktrees with a clear message. Native reviewers use the selected folder with
-read-only access. Layr reviewers use separate read-only lines.
-Use `server` and an absolute remote `cwd` for native work on a paired machine.
+The chat badge shows `Layr`, `Layr VM`, or `WT`.
+Shared workers show `SHARED`. Hover or focus the badge for its path.
+See [VM chats](linux-vm-workspaces.md).
 
-The first layr chat imports the source once. Later chats reuse the VM main line.
-The Mac folder stays separate. Studio saves a state after each agent turn.
-Workers submit an exact layr state ID. Acceptance merges that state with
-`layr merge <line> --expect <state>`. Archive removes the worker line.
-The host keeps credential refresh. Guest profiles receive access credentials only.
-See [layr VM chats](docs/linux-vm-workspaces.md) and
-[macOS images](docs/workspace-images.md) for their lifecycle and checks.
-
-The chat badge shows `LAYR`, `ASIF`, or `WT` for the selected mode.
-Native shared workers show `SHARED`. Hover or focus the badge for its path.
-
-On a real Mac, default-config agent start took 2.610 s at 50,000 files and 10.104 s at
-200,000 files with no staged source change. After source `git add`, it took 3.757 s and
-10.212 s. The first `git status` took 0.983 s and 4.661 s with no staged change, and 0.844 s
-and 4.013 s after `git add`. At 200,000 files, staged start used 5.365 s for source Git status,
-0.618 s for path copy, 0.610 s for index entry reads, and 1.857 s for index changes. It did not
-mirror Git metadata or restat paths. The base build took 361.245 s, including 87.022 s for file
-copy and 223.949 s for index handling. These step times overlap.
-The base-copy worker now splits nested directory trees into balanced tar shards. This fixed the
-earlier 443.842 s 50,000-file build, which had put nearly all payload files in one shard.
-A native agent can set `base_ref` to a branch, tag, or commit. Studio gives the requested ref and
-resolved commit to the worker in its first input. The worker checks it out. Studio does not
-run Git checkpoints or collect worker changes inside image copies. The worker result includes
-the copy path, source path, copy time, and confirmation that uncommitted changes were copied.
-Ask the worker to commit on a named branch. Integrate its changes by reading files from the
-copy or fetching the branch, for example `git fetch <path> <branch>`.
+A Git worktree can select `base_ref` as a branch, tag, or commit.
+Studio gives the resolved commit to the worker before its first turn.
+Ask the worker to commit on a named branch.
+Use a reviewed Layr state for native Layr and VM task acceptance.
 Only the lead creates agents. Unfinished work of a failed or deleted worker returns to ready.
 Native reviewers use the chosen folder. Their sandbox is read-only when YOLO is off.
 VM reviewers always use read-only lines.
-The lead owns review and integration. Acceptance merges a reviewed VM state.
-The runtime does not merge native worker changes.
-Archive retains a macOS image, removes a safe Git worktree, or removes a layr worker line.
+The lead owns review and integration. Acceptance merges a reviewed Layr state.
+Archive removes a safe Git worktree or an owned Layr line.
+Legacy workspaces keep their files and stored records.
 
 Creating ready work with an assigned worker queues one `work_ready` event.
 Changing the owner or releasing blocked work also notifies the assigned worker.
 Changes to the title or description alone do not start another turn.
 The event includes the task ID and scope. Retries retain the same event identity.
 Explicit stops and native failure holds remain in effect.
-
-An optional team token budget sums Codex's reported thread usage. This includes
-input tokens, including cached input. It is not a billing estimate or a strict
-pre-request cap. When a usage notification reaches the limit, the runtime stops
-the team and cancels its queued work and command watches. In-flight requests can
-exceed the limit before their usage notification arrives.
-Increase the budget with `codex-control configure`, then send a new instruction to resume.
 
 ### Full disk
 
@@ -1166,8 +1136,8 @@ or a restart when no active work will be interrupted.
 Existing Single agent chats migrate to zero. Existing Multi agent chats retain
 their numeric concurrency value, now counting only subagents. This can permit
 one more active participant because the lead no longer uses that allowance.
-The setting is independent of token budgets, provider availability, and an
-explicit operator resource ceiling. Those constraints can reduce actual
+The setting is independent of provider availability and an explicit
+operator resource ceiling. Those constraints can reduce actual
 parallelism; the queue reports their blockers.
 
 ### Account turn start limits
@@ -1200,27 +1170,14 @@ described above; its active-agent estimate is separate from this turn-start gate
 
 ## Terminal control
 
-`codex-control` talks to the same canvas server. It does not create a second
-app-server process. Set `CODEX_CANVAS_URL` or pass `--url` for another local port.
-
-```bash
-codex-control models
-codex-control create 'Review the project and delegate independent checks' \
-  --cwd /absolute/project --name Lead --concurrency 32 --max-agents 64
-codex-control list
-codex-control send AGENT_ID 'Inspect the worker results and continue'
-codex-control monitor AGENT_ID 'your-command' --timeout-minutes 60
-codex-control transcript AGENT_ID
-codex-control stop LEAD_ID
-codex-control configure LEAD_ID --concurrency 12
-codex-control configure LEAD_ID --token-budget 2000000
-```
-
-Change concurrency separately from the stored-team and token limits. The command
-reads the current setting revision and prints its request ID and expected
-revision before saving. After an uncertain response, repeat the same target
-value with those exact `--request-id` and `--expected-mode-revision` values;
-do not run a fresh save to discover whether the previous one applied.
+No terminal command controls agents. The Python `codex-control` command was removed
+with the Python backend ([CLI usage](cli.md)). Use the Studio window. A script can use
+the same server's HTTP API, for example `POST /api/agents` to create a chat,
+`POST /api/messages` to send, `POST /api/configure` for team settings, and
+`POST /api/stop` to stop. A changed subagent concurrency carries the current setting
+revision and a request ID; after an uncertain response, repeat the same target value
+with the same request ID and expected revision, and do not save a fresh value to find
+out whether the earlier one applied.
 
 ## Verification
 
@@ -1344,6 +1301,8 @@ account admission, or permission settings change as part of these budgets.
 that lead's team. Actions are `inspect`, `recover`, `reset_tools`, `archive`, `archive_finished`,
 `restore`, `list_archived`, and `maintenance_report`. Inspection returns bounded blocker IDs. Recovery reads the exact
 native turn through the existing reconciler; a failed read leaves its outcome unknown.
+Manual recovery never requeues or replays input, including input absent from native history.
+The worker stays held until a new instruction enables delivery.
 
 Studio releases an idle Codex thread subscription after 15 minutes. It first
 checks Studio input and request receipts, tasks, monitors, the native thread,
@@ -1378,12 +1337,11 @@ Archive requires a reason. It hides a worker through the existing tombstone filt
 and stores an archive receipt with its actor, time, epoch, and unknown tool request IDs.
 Active work blocks archive. A finished worker can keep unknown tool outcomes when
 no operation can still run. A command with a completed turn and a missing process
-is marked lost; its outcome stays unknown. Studio detaches and retains image
-workspaces. A Git
-worktree is removed only when Studio can verify its registration and archive ref.
-Dirty and nested worktrees stay with an exact reason. Restore recreates the saved
-image workspace by reattaching it, or recreates a Git worktree from its saved branch. Deleting
-the worker removes its image. History and native threads remain.
+is marked lost; its outcome stays unknown. Legacy workspaces retain their files.
+A Git worktree is removed only when Studio can verify its registration and archive ref.
+Dirty and nested worktrees stay with an exact reason.
+Restore recreates a Git worktree from its saved branch.
+History and native threads remain.
 Archive children before their parent. A later user deletion or stop invalidates
 the archive receipt. Repeated calls keep the same request result.
 
@@ -1419,7 +1377,7 @@ Archive commit and workspace cleanup follow one flow:
 4. Recover through the saved tool receipt after a lost response. A later archive
    call preserves the original archive identity; uncertain effects stay held.
 
-After an image detach interruption, make a new `archive` call to finish detaching. After partial Git removal, make a new `archive` call to retry cleanup. Studio
+After partial Git removal, make a new `archive` call to retry cleanup. Studio
 preserves the failed cleanup record and Git error. It can repair the exact saved
 Git registration without changing worktree files. Modified or untracked files
 stay. A missing or changed original `.git` file leaves the folder for inspection.
@@ -1431,8 +1389,7 @@ A failed remote check keeps the worker. An exact retry of an old stale-main
 accept receipt repeats only the archive check, not the task decision.
 For `orchestration_task` actions `accept` and `reject`, supply the decision text
 in the `result` field.
-`maintenance_report` lists old image workspaces, bases, and Git worktrees without
-removing them. Disk reports include workspace and base sizes.
+`maintenance_report` lists retained workspaces and Git worktrees without removing them.
 
 Agent tools accept a unique ID prefix of at least eight characters among agents
 visible to the caller. Ambiguous and unknown IDs return candidate full IDs.

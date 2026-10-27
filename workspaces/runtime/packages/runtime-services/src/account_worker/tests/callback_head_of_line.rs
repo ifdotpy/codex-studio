@@ -14,9 +14,6 @@ use std::time::Duration;
 /// Bounds every wait for progress; a stalled session fails an assertion
 /// instead of hanging. Unit: wall time.
 const PROGRESS_DEADLINE: Duration = Duration::from_secs(10);
-/// How long the flood may take before the session counts as having stopped
-/// reading it; only the failing path waits this long. Unit: wall time.
-const STALL_PROBE: Duration = Duration::from_secs(2);
 /// Deadline of a provider request in the fixture (`timeout_ms` of the peer).
 const REQUEST_DEADLINE: Duration = Duration::from_secs(60);
 /// Provider frames for agent B sent behind the held callback: more than the
@@ -26,7 +23,8 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(60);
 const FLOOD_FRAMES: u64 =
     (crate::provider_session_task::MAX_UNSETTLED + 3 * PEER_JOURNAL_CAPACITY) as u64;
 const HELD_CALLBACK: &str = "held-callback";
-const UNKNOWN_HOLD: &str = "Provider thread resume outcome is unknown";
+/// Both thread request hold reasons (resume and start) contain this text.
+const UNKNOWN_HOLD: &str = "outcome is unknown; input remains pending";
 
 /// A clone of the fixture agent on its own thread; no thread means a new one.
 async fn clone_agent(state: &State, id: &str, thread: Option<&str>, input: &str) {
@@ -356,10 +354,31 @@ async fn held_callback_does_not_stop_other_agents_or_a_new_thread() {
     stall.worker.shutdown().await.unwrap();
 }
 
+/// Whether one callback record holds an unknown write outcome.
+fn unknown_callback(state: &State) -> bool {
+    state
+        .bridge
+        .store
+        .test_reader()
+        .expect("reader")
+        .query_row(
+            "SELECT count(*) FROM runtime_operation_receipts \
+             WHERE id LIKE 'account-worker:callback:%:unknown'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("unknown callback count")
+        == 1
+}
+
+/// Stop of agent A while its callback handler is held: the interrupt of A's
+/// turn is written, and the handler's late answer is not, because a stopped
+/// actor has no reply authority (`callback_record::admit_reply`). The record
+/// keeps the unknown outcome.
 #[tokio::test]
-async fn held_callback_is_answered_and_stop_applied_behind_an_active_journal_barrier() {
+async fn stop_of_the_agent_with_a_held_callback_interrupts_its_turn_and_withholds_the_answer() {
     let Stall {
-        state: _state,
+        state,
         mut peer,
         mut worker,
         release,
@@ -367,63 +386,44 @@ async fn held_callback_is_answered_and_stop_applied_behind_an_active_journal_bar
     } = stalled().await;
     let release = release.expect("held handler");
     let frames: Vec<Value> = b_flood().chain(std::iter::once(b_completed())).collect();
-    let sent = Arc::new(AtomicU64::new(0));
-    let sender = send_frames(&mut peer, frames, sent.clone());
+    let sender = send_frames(&mut peer, frames, Arc::new(AtomicU64::new(0)));
     let last_cursor = peer.cursor;
-    // A reading session takes the whole flood; a stalled one leaves frames
-    // queued in its lane, which the barrier then waits for.
-    let still_sending = tokio::time::timeout(STALL_PROBE, sender).await.is_err();
-
-    let barrier = tokio::time::timeout(PROGRESS_DEADLINE, worker.session_journal_barrier());
-    let rest = async {
-        worker
-            .send(AccountCommand::Stop {
-                agent_id: a.clone(),
-            })
-            .await
-            .unwrap();
-        release.send(()).expect("release agent A's handler");
-        // The callback answer and the interrupt both go through the session
-        // command lane, which an active barrier blocks.
-        let mut methods = Vec::new();
-        for _ in 0..2 {
-            let wire = tokio::time::timeout(PROGRESS_DEADLINE, peer.next_write())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!(
-                        "a write is missing behind the journal barrier (flood still sending: {still_sending}, \
-                         {} frames read); got {methods:?}",
-                        sent.load(Ordering::SeqCst)
-                    )
-                });
-            methods.push(if wire.value["id"] == HELD_CALLBACK {
-                "callback answer".to_owned()
-            } else {
-                wire.value["method"].as_str().unwrap_or("?").to_owned()
-            });
-            let _ignored = wire.receipt.send(CommandReceipt::Written {
-                remote_id: None,
-                duplicate: false,
-            });
+    worker
+        .send(AccountCommand::Stop {
+            agent_id: a.clone(),
+        })
+        .await
+        .unwrap();
+    let interrupt = tokio::time::timeout(PROGRESS_DEADLINE, peer.next_write())
+        .await
+        .expect("the stop of agent A writes its turn interrupt");
+    assert_eq!(
+        interrupt.value["method"], "turn/interrupt",
+        "{}",
+        interrupt.value
+    );
+    assert_eq!(interrupt.value["params"]["threadId"], "fake-thread-0");
+    assert_eq!(interrupt.value["params"]["turnId"], "turn");
+    let _ignored = interrupt.receipt.send(CommandReceipt::Written {
+        remote_id: None,
+        duplicate: false,
+    });
+    release.send(()).expect("release agent A's handler");
+    tokio::time::timeout(PROGRESS_DEADLINE, async {
+        while !unknown_callback(&state) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        methods.sort();
-        assert_eq!(
-            methods,
-            ["callback answer", "turn/interrupt"],
-            "the answer of the held callback and the stop of agent A are both written"
-        );
-    };
-    let (barrier, ()) = tokio::join!(barrier, rest);
-    barrier
-        .expect("the journal barrier completes")
-        .expect("the journal barrier is not refused");
+    })
+    .await
+    .expect("the stopped agent's callback record keeps an unknown outcome");
+    sender.await.unwrap();
     tokio::time::timeout(PROGRESS_DEADLINE, peer.acknowledged_at_least(last_cursor))
         .await
         .expect("the journal is acknowledged up to its last frame");
     worker_barrier(&worker).await;
     assert!(
         peer.writes.try_recv().is_err(),
-        "the answer and the interrupt are written exactly once"
+        "only the interrupt is written; the stopped agent's callback is not answered"
     );
     worker.shutdown().await.unwrap();
 }

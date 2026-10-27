@@ -31,8 +31,6 @@ impl SharedJson {
             "turnId",
             "inFlight",
             "events",
-            "tokensUsed",
-            "tokenUsageAccounting",
             "model",
             "effort",
             "fastMode",
@@ -87,8 +85,8 @@ impl<'de> Deserialize<'de> for SharedJson {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum NotificationDependency {
-    #[serde(rename = "budget/capture")]
-    BudgetCapture,
+    /// Older builds recorded this dependency of the removed team token budget;
+    /// stored receipts still decode. No current step needs it.
     #[serde(rename = "agent-move/cache-capture")]
     MoveCache,
     #[serde(rename = "accounts/login-completed")]
@@ -117,7 +115,6 @@ pub enum NotificationDependency {
 impl NotificationDependency {
     pub fn name(self) -> &'static str {
         match self {
-            Self::BudgetCapture => "budget/capture",
             Self::MoveCache => "agent-move/cache-capture",
             Self::AccountLogin => "accounts/login-completed",
             Self::AccountRefresh => "accounts/refresh",
@@ -152,6 +149,8 @@ pub struct NotificationObservation {
 pub enum NotificationPostCommit {
     Analytics {
         observation: NotificationObservation,
+        /// The team token budget total of older builds. Stored batches still
+        /// decode; current builds write `None` and read nothing from it.
         budget_capture_value: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage_conflict: Option<Box<studio_runtime_schema::usage::ledger::UsageReplayConflict>>,
@@ -228,8 +227,8 @@ pub struct NotificationHourMetrics {
 }
 
 /// Transactional effects only: no provider call, blocking IO, or await here.
-/// The worker supplies budget_service::capture(..., CaptureSource::Live) and
-/// agent_move::capture_cache; both must commit with the notification receipt.
+/// The worker supplies agent_move::capture_cache; it must commit with the
+/// notification receipt.
 pub trait NotificationEffects {
     /// Pure staging only. A receipt replay never calls this method.
     fn post_commit(
@@ -263,18 +262,6 @@ pub trait NotificationEffects {
         ))
     }
 
-    fn capture_usage(
-        &self,
-        _tx: &Transaction<'_>,
-        _agent: &mut Value,
-        _params: &Value,
-        _usage: Option<&studio_runtime_schema::usage::UsageObservation>,
-        _at: f64,
-    ) -> Result<crate::budget::UsageAcceptance, NotificationDispatchError> {
-        Err(NotificationDispatchError::Dependency(
-            NotificationDependency::BudgetCapture.name(),
-        ))
-    }
     fn capture_move_cache(
         &self,
         _tx: &Transaction<'_>,

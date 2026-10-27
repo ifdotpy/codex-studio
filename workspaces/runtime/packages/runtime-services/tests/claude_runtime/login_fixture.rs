@@ -33,18 +33,32 @@ impl LoginChats for Chats {
         })
     }
 }
+/// Pauses the next save of a Ready receipt that still awaits chat repair.
+/// The save runs on the blocking pool while the actor holds the job lock.
+pub struct ReadyGate {
+    pub reached: std::sync::mpsc::Sender<()>,
+    pub release: std::sync::mpsc::Receiver<()>,
+}
 pub struct Receipts {
     pub file: FileReceipts,
     pub fail: AtomicBool,
     pub after: AtomicBool,
     pub writes: AtomicUsize,
     pub fail_at: AtomicUsize,
+    pub ready_gate: Mutex<Option<ReadyGate>>,
 }
 impl LoginReceipts for Receipts {
     fn load(&self) -> Result<Vec<LoginSnapshot>, LoginError> {
         self.file.load()
     }
     fn save(&self, s: &LoginSnapshot) -> Result<(), LoginError> {
+        let awaiting_repair = s.record().pointer("/receipt/status") == Some(&json!("ready"))
+            && s.record().pointer("/receipt/chatsRefreshed") == Some(&json!(false));
+        if awaiting_repair && let Some(gate) = self.ready_gate.lock().expect("valid fixture").take()
+        {
+            gate.reached.send(()).expect("valid fixture");
+            gate.release.recv().expect("valid fixture");
+        }
         let ordinal = self.writes.fetch_add(1, Ordering::SeqCst) + 1;
         let fail =
             self.fail.load(Ordering::SeqCst) || ordinal == self.fail_at.load(Ordering::SeqCst);
@@ -157,19 +171,16 @@ pub struct Fixture {
     pub chats: Arc<Chats>,
     pub launcher: Arc<Launches>,
     pub changes: Arc<Notify>,
+    _temporary: tempfile::TempDir,
 }
 impl Fixture {
     #[allow(clippy::disallowed_methods)]
     pub fn new() -> Self {
-        let directory = std::env::temp_dir().join(format!(
-            "claude-fixture-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("valid fixture")
-                .as_nanos()
-        ));
-        std::fs::create_dir(&directory).expect("valid fixture");
+        let temporary = tempfile::Builder::new()
+            .prefix("claude-fixture-")
+            .tempdir()
+            .expect("unique fixture directory");
+        let directory = temporary.path().to_owned();
         let registry = directory.join("registry.json");
         std::fs::write(&registry,serde_json::to_vec(&json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"logins":{},"accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"/fixture/codex","label":"Codex","source":"Local profile","status":"signedOut"}},"defaultAccountKey":"default"})).expect("valid fixture")).expect("valid fixture");
         Self {
@@ -182,11 +193,13 @@ impl Fixture {
                 after: AtomicBool::new(false),
                 writes: AtomicUsize::new(0),
                 fail_at: AtomicUsize::new(0),
+                ready_gate: Mutex::new(None),
             }),
             chats: Arc::new(Chats(AtomicUsize::new(0))),
             launcher: Launches::new(),
             changes: Arc::new(Notify::new()),
             directory,
+            _temporary: temporary,
         }
     }
     pub async fn open(&self) -> Arc<LoginService> {
@@ -218,11 +231,20 @@ impl Fixture {
         .expect("valid fixture")
     }
     pub async fn status(&self, service: &LoginService, id: &str, wanted: &str) -> Value {
+        self.status_where(service, id, |value| value["status"] == wanted)
+            .await
+    }
+    pub async fn status_where(
+        &self,
+        service: &LoginService,
+        id: &str,
+        done: impl Fn(&Value) -> bool,
+    ) -> Value {
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 let notified = self.changes.notified();
                 let value = service.status(id).await.expect("valid fixture");
-                if value["status"] == wanted {
+                if done(&value) {
                     return value;
                 }
                 notified.await;
@@ -230,12 +252,6 @@ impl Fixture {
         })
         .await
         .expect("valid fixture")
-    }
-}
-impl Drop for Fixture {
-    #[allow(clippy::disallowed_methods)]
-    fn drop(&mut self) {
-        drop(std::fs::remove_dir_all(&self.directory));
     }
 }
 pub const ID: &str = "e0166868-592a-4dca-8994-04d34a730af5";
@@ -249,9 +265,14 @@ pub async fn link(f: &Fixture, s: &LoginService, child: &Script) {
     f.status(s, ID, "pending").await;
 }
 pub async fn complete(f: &Fixture, s: &LoginService, child: &Script) -> Value {
+    complete_probe(f, child).await;
+    f.status(s, ID, "ready").await
+}
+/// Ends the login child and answers the status probe, without reading the receipt.
+pub async fn complete_probe(f: &Fixture, child: &Script) {
     child
         .output
-        .send(LoginEvent::Exited(true))
+        .send(LoginEvent::Exited(Some(0)))
         .await
         .expect("valid fixture");
     let probe = f.launcher.next().await;
@@ -264,8 +285,7 @@ pub async fn complete(f: &Fixture, s: &LoginService, child: &Script) -> Value {
     probe.output.send(LoginEvent::Output(br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test","subscriptionType":"max"}"#.to_vec())).await.expect("valid fixture");
     probe
         .output
-        .send(LoginEvent::Exited(true))
+        .send(LoginEvent::Exited(Some(0)))
         .await
         .expect("valid fixture");
-    f.status(s, ID, "ready").await
 }

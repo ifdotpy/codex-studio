@@ -117,6 +117,7 @@ it("routes stream bytes and cancellation to the original server and stream", asy
     action: "cancel",
     serverId: server.id,
     streamId,
+    reason: "frame stopped reading",
     frameOwner: undefined,
   });
   expect(stop).toHaveBeenCalledOnce();

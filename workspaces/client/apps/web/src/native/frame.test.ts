@@ -359,6 +359,25 @@ it("binds a sign-in forward to its remote frame and denies local vault keys", as
     { value, signInOwner: "remote" },
     "same-request",
   );
+  for (const method of ["desktop.prepareSignIn", "desktop.cancelSignIn"]) {
+    invoke.mockClear();
+    const value = {
+      url: "https://example.com",
+      requestId: "card",
+      preparation: "intent",
+    };
+    await send(method, {
+      value,
+      signInOwner: "forged",
+      _nativeWindow: "forged",
+      permit: 42,
+    });
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(
+      method,
+      { value, signInOwner: "remote" },
+      "same-request",
+    );
+  }
   invoke.mockClear();
   await send("browser.profileChunk", { owner: "root", sha256: "a".repeat(64) });
   expect(invoke).toHaveBeenCalledWith(

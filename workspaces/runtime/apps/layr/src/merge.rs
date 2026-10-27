@@ -13,7 +13,7 @@ use crate::model::Conflict;
 use crate::repo::skip_path;
 use anyhow::{bail, Context, Result};
 use ignore::gitignore::GitignoreBuilder;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -43,6 +43,7 @@ pub struct Outcome {
 }
 
 struct AttrRule {
+    pattern: String,
     matcher: ignore::gitignore::Gitignore,
     attrs: Vec<(String, Option<String>)>,
 }
@@ -88,7 +89,7 @@ impl Attrs {
                         }
                     })
                     .collect();
-                rules.push(AttrRule { matcher, attrs });
+                rules.push(AttrRule { pattern: pat.to_string(), matcher, attrs });
             }
         }
         Attrs { rules }
@@ -178,12 +179,12 @@ impl<'a, 'b> Ctx<'a, 'b> {
             "content" => format!("CONFLICT (content): Merge conflict in {path}"),
             "add/add" => format!("CONFLICT (add/add): Merge conflict in {path}"),
             "modify/delete" => {
-                format!("CONFLICT (modify/delete): {path} deleted in {} and modified in HEAD.", self.i.theirs_label)
+                format!("CONFLICT (modify/delete): {path} deleted in {} and modified in head.", self.i.theirs_label)
             }
             "delete/modify" => {
-                format!("CONFLICT (modify/delete): {path} deleted in HEAD and modified in {}.", self.i.theirs_label)
+                format!("CONFLICT (modify/delete): {path} deleted in head and modified in {}.", self.i.theirs_label)
             }
-            "binary" => format!("CONFLICT (binary): {path} changed on both sides; kept HEAD"),
+            "binary" => format!("CONFLICT (binary): {path} changed on both sides; kept head"),
             k => format!("CONFLICT ({k}): {path}"),
         };
         self.out.messages.push(label);
@@ -209,15 +210,33 @@ impl<'a, 'b> Ctx<'a, 'b> {
 }
 
 pub fn merge(i: &Input) -> Result<Outcome> {
-    let (ours, _) = side(i.base, i.ours)?;
+    let attributes = merge_tree(i, true)?;
+    let mut out = merge_tree(i, false)?;
+    out.conflicts.splice(0..0, attributes.conflicts);
+    out.messages.splice(0..0, attributes.messages);
+    out.changed.extend(attributes.changed);
+    Ok(out)
+}
+
+fn merge_tree(i: &Input, attributes_only: bool) -> Result<Outcome> {
+    let (ours, olist) = side(i.base, i.ours)?;
     let (theirs, tlist) = side(i.base, i.theirs)?;
+    let tlist: Vec<Change> = tlist
+        .into_iter()
+        .filter(|c| matches!(c.path.as_str(), ".gitattributes" | ".layrattributes") == attributes_only)
+        .collect();
     let mut c = Ctx { i, attrs: Attrs::load(i.ours), out: Outcome::default(), blocked: BTreeSet::new() };
-    let mut done: BTreeSet<String> = BTreeSet::new();
+    let derives = if attributes_only { BTreeMap::new() } else { derive_rules(i, &Attrs::load(i.result))? };
+    let derived: BTreeSet<String> = derives.values().flat_map(|r| r.outputs.iter().cloned()).collect();
+    let mut done: BTreeSet<String> = derived.clone();
 
     // 1. Moves made by theirs.
     for t in tlist.iter().filter(|t| t.is_rename()) {
         let src = t.old_path.clone().unwrap();
         let dst = t.path.clone();
+        if derived.contains(&src) || derived.contains(&dst) {
+            continue;
+        }
         done.insert(src.clone());
         done.insert(dst.clone());
         match ours.at(&src) {
@@ -363,7 +382,201 @@ pub fn merge(i: &Input) -> Result<Outcome> {
             }
         }
     }
+    if !attributes_only {
+        let (_, full_theirs) = side(i.base, i.theirs)?;
+        run_derives(&mut c, derives, &olist, &full_theirs)?;
+    }
     Ok(c.out)
+}
+
+struct DeriveRule {
+    outputs: BTreeSet<String>,
+    inputs: ignore::gitignore::Gitignore,
+}
+
+fn derive_rules(i: &Input, attrs: &Attrs) -> Result<BTreeMap<String, DeriveRule>> {
+    if !attrs.rules.iter().any(|rule| rule.attrs.iter().any(|(key, _)| key == "derive")) {
+        return Ok(BTreeMap::new());
+    }
+    let mut paths = BTreeSet::new();
+    for root in [i.base, i.ours, i.theirs, i.result] {
+        fsutil::walk(root, "", &mut |p, m| {
+            if skip_path(p) {
+                return Ok(false);
+            }
+            if !m.is_dir() {
+                paths.insert(p.to_string());
+            }
+            Ok(true)
+        })?;
+    }
+    let mut rules: BTreeMap<String, DeriveRule> = BTreeMap::new();
+    // Literal output names can be declared before the file exists on either side.
+    for rule in &attrs.rules {
+        if rule.attrs.iter().any(|(k, _)| k == "derive") && !rule.pattern.contains(['*', '?', '[', '!']) {
+            let p = rule.pattern.trim_start_matches('/');
+            if fsutil::check_rel(p).is_ok() && !p.is_empty() && !skip_path(p) {
+                paths.insert(p.to_string());
+            }
+        }
+    }
+    for p in paths {
+        let name = attrs.get(i.result, &p, "derive");
+        let name = match name {
+            Some(n) if n != "false" => n,
+            _ => continue,
+        };
+        if !rules.contains_key(&name) {
+            let mut b = GitignoreBuilder::new(i.result);
+            if let Some(inputs) = (i.config)(&format!("derive.inputs.{name}")) {
+                for pattern in inputs.split_whitespace() {
+                    b.add_line(None, pattern)?;
+                }
+            }
+            rules.insert(name.clone(), DeriveRule { outputs: BTreeSet::new(), inputs: b.build()? });
+        }
+        rules.get_mut(&name).unwrap().outputs.insert(p);
+    }
+    Ok(rules)
+}
+
+fn derive_matches(rule: &DeriveRule, root: &Path, p: &str) -> bool {
+    rule.inputs.matched_path_or_any_parents(root.join(p), false).is_ignore()
+}
+
+/// Stable topological order. Unresolved nodes contain a cycle or depend on one.
+fn derive_order(rules: &BTreeMap<String, DeriveRule>, root: &Path) -> (Vec<String>, BTreeSet<String>) {
+    let mut pending: BTreeSet<String> = rules.keys().cloned().collect();
+    let mut order = Vec::new();
+    loop {
+        let next = pending
+            .iter()
+            .find(|name| !pending.iter().any(|other| rules[other].outputs.iter().any(|p| derive_matches(&rules[*name], root, p))))
+            .cloned();
+        match next {
+            Some(n) => {
+                pending.remove(&n);
+                order.push(n);
+            }
+            None => break,
+        }
+    }
+    (order, pending)
+}
+
+fn run_derives(c: &mut Ctx, rules: BTreeMap<String, DeriveRule>, ours: &[Change], theirs: &[Change]) -> Result<()> {
+    if rules.is_empty() {
+        return Ok(());
+    }
+    let i = c.i;
+    let mut changed = BTreeSet::new();
+    for (root, list) in [(i.ours, ours), (i.theirs, theirs)] {
+        for change in list {
+            if changes::really_changed(i.base, root, change)? {
+                changed.insert(change.path.clone());
+                if let Some(old) = &change.old_path {
+                    changed.insert(old.clone());
+                }
+            }
+        }
+    }
+    let (order, cyclic) = derive_order(&rules, i.result);
+    // Downstream rules also run when an upstream output needs regeneration.
+    let mut active: BTreeSet<String> = rules
+        .iter()
+        .filter(|(_, rule)| changed.iter().any(|p| rule.outputs.contains(p) || derive_matches(rule, i.result, p)))
+        .map(|(n, _)| n.clone())
+        .collect();
+    loop {
+        let outputs: BTreeSet<String> = active.iter().flat_map(|n| rules[n].outputs.iter().cloned()).collect();
+        let before = active.len();
+        for (name, rule) in &rules {
+            if outputs.iter().any(|p| derive_matches(rule, i.result, p)) {
+                active.insert(name.clone());
+            }
+        }
+        if active.len() == before {
+            break;
+        }
+    }
+    for name in cyclic {
+        for p in &rules[&name].outputs {
+            keep_derive_ours(i, p)?;
+            c.conflict(p, "derive dependency cycle");
+        }
+    }
+    let mut failed = BTreeSet::new();
+    for name in order {
+        if !active.contains(&name) {
+            continue;
+        }
+        let rule = &rules[&name];
+        let dependency_failed = failed.iter().any(|n| rules[n].outputs.iter().any(|p| derive_matches(rule, i.result, p)));
+        let result = match (i.config)(&format!("derive.command.{name}")) {
+            Some(cmd) if !dependency_failed => run_derive(i, &cmd, &rule.outputs),
+            _ => Ok(false),
+        };
+        if !result.unwrap_or(false) {
+            failed.insert(name.clone());
+            for p in &rule.outputs {
+                keep_derive_ours(i, p)?;
+                c.conflict(p, &format!("derive {name} failed"));
+            }
+        } else {
+            c.out.changed.extend(rule.outputs.iter().cloned());
+            c.out.messages.push(format!("Derived {name}"));
+        }
+    }
+    Ok(())
+}
+
+fn keep_derive_ours(i: &Input, p: &str) -> Result<()> {
+    if fsutil::lmeta(i.ours, p).is_some() {
+        fsutil::copy_entry(i.ours, p, i.result, p, None)?;
+    } else if fsutil::lmeta(i.result, p).is_some() {
+        fsutil::remove_entry(i.result, p)?;
+    }
+    Ok(())
+}
+
+fn run_derive(i: &Input, cmd: &str, outputs: &BTreeSet<String>) -> Result<bool> {
+    let dir = private_dir()?;
+    let result = (|| -> Result<bool> {
+        fsutil::walk(i.result, "", &mut |p, _| {
+            if skip_path(p) {
+                return Ok(false);
+            }
+            fsutil::copy_entry(i.result, p, &dir, p, None)?;
+            Ok(true)
+        })?;
+        // The root stays private until all children have their final owner.
+        if let Some((uid, gid)) = i.run_as {
+            fsutil::walk(&dir, "", &mut |p, _| {
+                fsutil::chown_nofollow(&dir.join(p), uid, gid)?;
+                Ok(true)
+            })?;
+        }
+        hand_over(&dir, i.run_as)?;
+        if !shell_at(cmd, i.run_as, i.allow_root, Some(&dir))? {
+            return Ok(false);
+        }
+        // Open every output under the user's permissions before publishing any of them.
+        let opened = as_driver(i.run_as, || {
+            let tree = crate::tree::Tree::open(&dir)?;
+            outputs.iter().map(|p| Ok((p.clone(), tree.open_read(p)?))).collect::<Result<Vec<_>>>()
+        });
+        let files = match opened {
+            Ok(files) => files,
+            Err(_) => return Ok(false),
+        };
+        for (p, mut f) in files {
+            let mode = fsutil::lmeta(i.ours, &p).map(|m| m.mode).unwrap_or(0o644);
+            fsutil::write_file_from(i.result, &p, &mut f, mode, None)?;
+        }
+        Ok(true)
+    })();
+    remove_private(&dir, i.run_as);
+    result
 }
 
 fn parent_of(p: &str) -> String {
@@ -716,12 +929,19 @@ fn sh_quote_str(s: &str) -> String {
 /// Run a configured command as the caller of the merge, with a clean environment. Never as root
 /// unless the caller is root.
 fn shell(cmd: &str, run_as: Option<(u32, u32)>, allow_root: bool) -> Result<bool> {
+    shell_at(cmd, run_as, allow_root, None)
+}
+
+fn shell_at(cmd: &str, run_as: Option<(u32, u32)>, allow_root: bool, dir: Option<&Path>) -> Result<bool> {
     let uid = run_as.map(|r| r.0).unwrap_or(0);
     if uid == 0 && !allow_root && rustix::process::geteuid().is_root() {
         bail!("refusing to run a merge command as root for another user");
     }
     let mut c = Command::new("sh");
     c.arg("-c").arg(cmd);
+    if let Some(dir) = dir {
+        c.current_dir(dir);
+    }
     crate::privs::command_as(&mut c, uid, &[])?;
     Ok(c.status().with_context(|| format!("run {cmd}"))?.success())
 }
@@ -810,4 +1030,87 @@ fn block_merge(
     }
     dst.sync_all()?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod derive_tests {
+    use super::*;
+
+    fn rule(output: &str, inputs: &str) -> DeriveRule {
+        let mut b = GitignoreBuilder::new("/tree");
+        for pattern in inputs.split_whitespace() {
+            b.add_line(None, pattern).unwrap();
+        }
+        DeriveRule { outputs: BTreeSet::from([output.into()]), inputs: b.build().unwrap() }
+    }
+
+    #[test]
+    fn derive_dependencies_override_name_order() {
+        let rules = BTreeMap::from([
+            ("a".into(), rule("final", "middle")),
+            ("z".into(), rule("middle", "src/**")),
+            ("b".into(), rule("independent", "other")),
+        ]);
+        let (order, cycles) = derive_order(&rules, Path::new("/tree"));
+        assert_eq!(order, ["b", "z", "a"]);
+        assert!(cycles.is_empty());
+        assert!(derive_matches(&rules["z"], Path::new("/tree"), "src/deep/input"));
+    }
+
+    #[test]
+    fn derive_cycles_block_dependents() {
+        let rules = BTreeMap::from([
+            ("a".into(), rule("first", "second")),
+            ("b".into(), rule("second", "first")),
+            ("c".into(), rule("last", "second")),
+            ("d".into(), rule("independent", "source")),
+        ]);
+        let (order, cycles) = derive_order(&rules, Path::new("/tree"));
+        assert_eq!(order, ["d"]);
+        assert_eq!(cycles, BTreeSet::from(["a".into(), "b".into(), "c".into()]));
+        let rules = BTreeMap::from([("self".into(), rule("output", "output"))]);
+        assert!(!derive_order(&rules, Path::new("/tree")).1.is_empty());
+    }
+
+    #[test]
+    fn derive_takes_only_declared_outputs_and_rejects_links() -> Result<()> {
+        let root = private_dir()?;
+        let result = (|| -> Result<()> {
+            for sub in ["base", "ours", "theirs", "result"] {
+                std::fs::create_dir(root.join(sub))?;
+            }
+            let result = root.join("result");
+            std::fs::write(result.join("input"), b"source")?;
+            std::fs::write(result.join("output"), b"ours")?;
+            let uid = rustix::process::geteuid().as_raw();
+            let gid = rustix::process::getegid().as_raw();
+            let i = Input {
+                base: &root.join("base"),
+                ours: &root.join("ours"),
+                theirs: &root.join("theirs"),
+                result: &result,
+                base_id: "b",
+                ours_id: "o",
+                theirs_id: "t",
+                ours_label: "ours",
+                theirs_label: "theirs",
+                config: &|_| None,
+                run_as: Some((uid, gid)),
+                allow_root: uid == 0,
+            };
+            let outputs = BTreeSet::from(["output".into()]);
+            assert!(run_derive(&i, "cat input > output; echo changed > input", &outputs)?);
+            assert_eq!(std::fs::read(result.join("output"))?, b"source");
+            assert_eq!(std::fs::read(result.join("input"))?, b"source");
+            assert!(!run_derive(&i, "rm output; ln -s /etc/passwd output", &outputs)?);
+            assert_eq!(std::fs::read(result.join("output"))?, b"source");
+            assert!(!run_derive(&i, "echo bad > output; exit 1", &outputs)?);
+            let nested = BTreeSet::from(["nested/passwd".into()]);
+            assert!(!run_derive(&i, "ln -s /etc nested", &nested)?);
+            assert_eq!(std::fs::read(result.join("output"))?, b"source");
+            Ok(())
+        })();
+        std::fs::remove_dir_all(root)?;
+        result
+    }
 }

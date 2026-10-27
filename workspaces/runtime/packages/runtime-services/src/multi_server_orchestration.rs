@@ -683,7 +683,6 @@ impl RuntimeOrchestrationEffects {
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
                 .ok_or_else(|| refused(400, "invalid_request", "Invalid move-send request"))?;
-            let store = Arc::clone(&self.store);
             let target_id = target_id.to_owned();
             Some(
                 self.store
@@ -691,9 +690,7 @@ impl RuntimeOrchestrationEffects {
                         "runtime-services/multi_server_orchestration",
                         move |connection| {
                             crate::message_admission::MessageIngressAdmission::read(
-                                Arc::clone(&store),
-                                connection,
-                                &target_id,
+                                connection, &target_id,
                             )
                             .map_err(|_| {
                                 refused(503, "send_admission", "The message could not be admitted")
@@ -887,7 +884,6 @@ async fn receive_remote_anchor_input(
         ));
     }
 
-    let store_for_read = Arc::clone(&store);
     let link_id_for_read = link_id.to_owned();
     let principal_for_read = principal.to_owned();
     let parent_epoch_for_read = parent_epoch;
@@ -937,12 +933,11 @@ async fn receive_remote_anchor_input(
                 if parent.epoch != parent_epoch {
                     return Err(refused(409, "parent_changed", "The home agent changed"));
                 }
-                let admission = crate::message_admission::MessageIngressAdmission::read(
-                    Arc::clone(&store_for_read),
-                    connection,
-                    parent_id,
-                )
-                .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
+                let admission =
+                    crate::message_admission::MessageIngressAdmission::read(connection, parent_id)
+                        .map_err(|_| {
+                            refused(400, "input_rejected", "The remote input was not admitted")
+                        })?;
                 Ok::<_, AccessError>((parent_id.to_owned(), admission))
             },
         )
@@ -1124,7 +1119,6 @@ async fn receive_remote_input(
     {
         return Err(refused(400, "invalid_request", "Invalid remote input"));
     }
-    let store_for_read = Arc::clone(&store);
     let link_id_for_read = link_id.to_owned();
     let principal_for_read = principal.to_owned();
     let worker_id_for_read = worker_id.to_owned();
@@ -1206,7 +1200,6 @@ async fn receive_remote_input(
                 let admission = if matches!(kind_for_read.as_str(), "user" | "followup") {
                     Some(
                         crate::message_admission::MessageIngressAdmission::read(
-                            Arc::clone(&store_for_read),
                             connection,
                             worker_id_for_read.as_str(),
                         )

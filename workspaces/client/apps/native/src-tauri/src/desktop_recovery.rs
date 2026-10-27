@@ -127,7 +127,13 @@ pub fn install(
             .insert_items(&[&status, &toggle], 1)
             .map_err(|e| e.to_string())?;
     }
-    let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let resources = app
+        .state::<crate::StartupResources>()
+        .0
+        .as_ref()
+        .map_err(Clone::clone)?
+        .directory
+        .clone();
     app.on_menu_event(move |app, event| {
         if event.id().as_ref() != "background-recovery-toggle" {
             return;

@@ -662,8 +662,9 @@ test("committed entities propagate between renderer tabs @sync", async ({
     const batchState = await readTestState(origin);
     const batchLead = batchState.threads.find((agent) => agent.id === leadId);
     assert.ok(batchLead);
-
-    const batchBeforeTokensUsed = Number(batchLead!.tokensUsed || 0);
+    const batchBeforeTokensUsed = Number(
+      (batchLead as { tokensUsed?: unknown }).tokensUsed || 0,
+    );
     const batch = await command("entity-change-batch-30", {
       operation: "batch",
       agent: leadId,

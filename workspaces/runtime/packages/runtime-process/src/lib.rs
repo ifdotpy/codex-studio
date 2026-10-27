@@ -5,6 +5,8 @@ pub mod child_priority;
 mod client;
 #[cfg(unix)]
 pub mod clock;
+#[cfg(unix)]
+pub mod open_files;
 pub mod operational_log;
 #[cfg(unix)]
 pub mod owned_process_group;
@@ -15,6 +17,7 @@ pub mod provider_direct;
 mod provider_launch;
 pub mod provider_seam;
 mod provider_shared;
+pub use provider_shared::retained_command_accepted;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use provider_shared::retained_environment_accepted;
 #[cfg(unix)]
@@ -37,7 +40,7 @@ mod transport;
 pub use client::SupervisorClient;
 pub use ports::PtyHost;
 pub use protocol::*;
-pub use provider_launch::{ProviderHandle, ProviderLaunchSpec};
+pub use provider_launch::{ProviderHandle, ProviderLaunchSpec, RetainedLaunchValues};
 #[cfg(unix)]
 pub use pty_host::{
     LocalPtyHost, PtyHostError, PtyIdentity, PtySession, cleanup_orphan, terminal_environment,

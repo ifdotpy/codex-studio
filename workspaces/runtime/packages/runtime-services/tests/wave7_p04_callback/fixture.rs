@@ -278,6 +278,8 @@ pub fn logical_changes(before: &Value, after: &Value) -> Value {
 pub fn assert_writes(before: &Value, store: &RuntimeStore, expected: &Value) {
     let mut actual = logical_changes(before, &logical_snapshot(store));
     let mut expected = expected.clone();
+    crate::removed_budget_fields::strip(&mut actual);
+    crate::removed_budget_fields::strip(&mut expected);
     for root in [&mut actual, &mut expected] {
         for (_, change) in root.as_object_mut().unwrap() {
             if change.get("increment").is_some() {

@@ -281,7 +281,35 @@ pub struct ProcessActionResult {
     #[serde(default)]
     pub processes: Vec<ProcessEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub response: Option<ResponseEntry>,
+    pub response: Option<ProcessResponse>,
+}
+/// A response stop or background entry, or the receipt of HTTP monitor input.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ProcessResponse {
+    MonitorInput(MonitorInputResponse),
+    Response(ResponseEntry),
+}
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitorInputKind {
+    MonitorInput,
+}
+/// Outcome of stdin sent to a monitor through HTTP; owned by monitor_http_input.rs.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitorInputStatus {
+    Acknowledged,
+    Rejected,
+    Pending,
+    Unknown,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MonitorInputResponse {
+    pub kind: MonitorInputKind,
+    pub monitor_id: String,
+    pub status: MonitorInputStatus,
 }
 
 impl ProcessActionResult {

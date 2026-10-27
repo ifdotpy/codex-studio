@@ -237,8 +237,7 @@ fn async_question_error(error: QuestionsWriteError) -> ApiError {
             other @ studio_runtime_services::coordination::CoordinationError::InvalidRequest(_)
             | other @ studio_runtime_services::coordination::CoordinationError::Conflict(_)
             | other
-            @ studio_runtime_services::coordination::CoordinationError::AdmissionDenied(_)
-            | other @ studio_runtime_services::coordination::CoordinationError::BudgetRuntime(_) => {
+            @ studio_runtime_services::coordination::CoordinationError::AdmissionDenied(_) => {
                 ApiError::new(StatusCode::BAD_REQUEST, other.to_string())
             }
         },
@@ -303,6 +302,7 @@ fn monitor_approval_error(
         | E::InvalidDeliveryIdentity(_)
         | E::InvalidOutputReceipt(_)
         | E::TaskFailed
+        | E::InputOutcomeUnknown
         | E::ProviderRequest { .. }
         | E::ConfigurationRejected { .. }
         | E::ConfigurationReceipt { .. }

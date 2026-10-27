@@ -112,6 +112,8 @@ for (const width of [1440, 390, 320]) {
         detail: "The command may have run. It will not be repeated.",
         subject: "cargo test",
         at: 1792700000,
+        firstAt: 1792700000,
+        count: 1,
       }));
       const dismissed: string[][] = [];
       const server = await fixture("Local", false, {

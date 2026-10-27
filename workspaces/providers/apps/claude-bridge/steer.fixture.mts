@@ -284,6 +284,7 @@ export function fixtureQuery(
             )
               break;
           }
+          const submitted = nativeQueue.map((message) => message.uuid!);
           mark(cwd + "/.native-queued");
           await stopped;
           yield {
@@ -293,11 +294,62 @@ export function fixtureQuery(
             usage,
             errors: ["interrupted"],
           };
+          if (text === "native-split-all")
+            yield {
+              type: "result",
+              subtype: "success",
+              is_error: false,
+              usage,
+              user_message_uuids: submitted,
+            };
           for (const held of nativeQueue.splice(0)) {
             fs.writeFileSync(cwd + "/.survived", "");
             yield { type: "user", isReplay: true, uuid: held.uuid };
           }
           queueMode = false;
+          continue;
+        }
+        if (text.startsWith("dequeue")) {
+          let next = await read();
+          if (next.done) return;
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            usage,
+            result: "first",
+            user_message_uuid: input.value.uuid!,
+            user_message_uuids: [input.value.uuid!],
+          };
+          while (next.value.shouldQuery === false) {
+            if (text !== "dequeue-split-missing")
+              yield {
+                type: "result",
+                subtype: "success",
+                is_error: false,
+                num_turns: 0,
+                user_message_uuid: next.value.uuid,
+                usage,
+              };
+            next = await read();
+            if (next.done) return;
+          }
+          yield {
+            type: "stream_event",
+            event: { type: "message_start", message: { id: "message-steer" } },
+          };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            usage,
+            result: "second",
+            user_message_uuid: next.value.uuid!,
+            ...(text === "dequeue"
+              ? { user_message_uuids: [next.value.uuid!] }
+              : {}),
+          };
+          mark(cwd + "/.native-queued");
           continue;
         }
         let late = null;

@@ -1,3 +1,4 @@
+import { randomUUID } from "../../uuid";
 import { Button } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -169,8 +170,7 @@ export function McpInventory({
       // Keep an uncertain request across a page reload. Failure to persist must
       // stop the mutation before it reaches the server.
       try {
-        const requestId =
-          sessionStorage.getItem(storageKey) || crypto.randomUUID();
+        const requestId = sessionStorage.getItem(storageKey) || randomUUID();
         body = {
           id: agent,
           name,

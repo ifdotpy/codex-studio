@@ -317,6 +317,7 @@ impl AccountSessionPort for CompletingSession {
                 | method @ Method::ClaudeSettings
                 | method @ Method::ClaudeActivity
                 | method @ Method::ClaudeStopTask
+                | method @ Method::ClaudeShellPolicy
                 | method @ Method::ClaudeDiagnostics
                 | method @ Method::ClaudeMoveVersions
                 | method @ Method::McpServerReconnect
@@ -391,6 +392,7 @@ impl AccountSessionPort for CompletingSession {
                 | method @ Method::ThreadClosed
                 | method @ Method::ThreadStatusChanged
                 | method @ Method::ThreadTokenUsageUpdated
+                | method @ Method::ThreadShellPolicyUpdated
                 | method @ Method::ThreadIdleCompactionUpdated
                 | method @ Method::AccountLoginCompleted
                 | method @ Method::AccountUpdated

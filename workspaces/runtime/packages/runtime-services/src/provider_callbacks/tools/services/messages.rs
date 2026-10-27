@@ -470,7 +470,6 @@ fn send_to_user(
             | crate::notification_dispatch::NotificationDispatchError::StreamCapacity
             | crate::notification_dispatch::NotificationDispatchError::ConflictingDelivery
             | crate::notification_dispatch::NotificationDispatchError::UnauthorizedSubmission
-            | crate::notification_dispatch::NotificationDispatchError::Budget(_)
             | crate::notification_dispatch::NotificationDispatchError::Move(_)
             | crate::notification_dispatch::NotificationDispatchError::Json(_) => {
                 CallbackError::Invalid("A complaint needs an existing lead")

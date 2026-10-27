@@ -202,7 +202,6 @@ pub fn prepare(
             "worktree",
             Some(DEFAULT_SUBAGENT_CONCURRENCY),
             DEFAULT_MAX_TEAM_AGENTS,
-            Value::Null,
             true,
             created,
             None,
@@ -292,7 +291,6 @@ pub fn prepare_work_item(
         "worktree",
         None,
         DEFAULT_MAX_TEAM_AGENTS,
-        Value::Null,
         false,
         created,
         None,
@@ -321,19 +319,11 @@ pub fn prepare_work_item(
         object.remove("concurrency");
         object.remove("maxAgentsExplicit");
     }
-    // The public create request does not carry trusted repository metadata.
-    // Python populates these flags only from its internal `_workspaceInGit`
-    // and `_imageWorkspaceHasGit` inputs, which are absent for HTTP creation.
-    let workspace_in_git = body
-        .get("_workspaceInGit")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let image_workspace_has_git = body
-        .get("_imageWorkspaceHasGit")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    draft["workspaceInGit"] = json!(workspace_in_git);
-    draft["imageWorkspaceHasGit"] = json!(image_workspace_has_git);
+    draft["workspaceInGit"] = json!(
+        body.get("_workspaceInGit")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    );
     draft["worktree"] = json!(worktree);
     if !worktree {
         draft["workspaceMode"] = json!("shared");
@@ -743,7 +733,6 @@ mod tests {
             "worktree",
             Some(DEFAULT_SUBAGENT_CONCURRENCY),
             DEFAULT_MAX_TEAM_AGENTS,
-            Value::Null,
             true,
             1.0,
             None,

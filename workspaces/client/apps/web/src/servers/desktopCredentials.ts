@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import type {
   ServerCredentialAdapter,
   PairAttemptIdentity,
@@ -49,7 +50,7 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
   async fetch(server: StudioServer, request: Request): Promise<Response> {
     const method = request.method;
     if (!isServerMethod(method)) throw new Error("Unsupported server method.");
-    const streamId = crypto.randomUUID();
+    const streamId = randomUUID();
     let receiver: ReadableStreamDefaultController<Uint8Array> | undefined;
     let ready = false;
     const buffered: StreamChunk[] = [];
@@ -70,19 +71,22 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
       if (!ready) buffered.push(value);
       else apply(value);
     });
-    const cancel = () => {
+    const cancel = (reason: string) => {
       stop();
       void this.bridge
         .serverCredentialAction({
           action: "cancel",
           serverId: server.id,
           streamId,
+          reason: reason.slice(0, 300),
           frameOwner: serverViewId || undefined,
         })
         .catch(() => {});
     };
     const abort = () => {
-      cancel();
+      cancel(
+        `frame aborted: ${String(request.signal.reason?.message ?? request.signal.reason)}`,
+      );
       receiver?.error(
         request.signal.reason || new DOMException("Aborted", "AbortError"),
       );
@@ -106,7 +110,7 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
         frameOwner: serverViewId || undefined,
       });
       if (request.signal.aborted) {
-        cancel();
+        cancel("frame aborted before the stream opened");
         throw request.signal.reason;
       }
       if (!result.streamId) {
@@ -127,9 +131,13 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
           ready = true;
           buffered.forEach(apply);
         },
-        cancel() {
+        cancel(reason) {
           request.signal.removeEventListener("abort", abort);
-          cancel();
+          cancel(
+            reason === undefined
+              ? "frame stopped reading"
+              : `frame stopped reading: ${String(reason?.message ?? reason)}`,
+          );
         },
       });
       return new Response(body, {
@@ -138,7 +146,7 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
         headers: result.headers,
       });
     } catch (error) {
-      cancel();
+      cancel(`frame request failed: ${(error as Error)?.message}`);
       request.signal.removeEventListener("abort", abort);
       throw error;
     }

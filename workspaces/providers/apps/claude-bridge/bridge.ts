@@ -90,9 +90,14 @@ export interface ActiveQuery {
   tasks: Map<string, BackgroundTask>;
   tools: Map<string, FreshToolItem>;
   pendingSteers: Set<string | undefined>;
+  // Exact result receipts of this turn's input parts; cleared with the turn.
+  inputResultIds: Set<string>;
   assistantBlocks: Map<string, AssistantBlockState>;
   usage: ResponseUsage;
   idleRequestStartedAt: number;
+  // Last turn end. The shell policy measures quiet and pressure idle time from it.
+  shellLastUseAt: number;
+  shellPolicy?: ReturnType<typeof createShellPolicy> | undefined;
   lastEventAt: number;
   toolClocks: Map<string, ToolClock>;
   stall: QueryStall | null;
@@ -119,6 +124,7 @@ export interface ActiveQuery {
 }
 
 import { ResponseUsage, cumulativeUsage } from "./usage.ts";
+import { claudeFailure, terminalClaudeFailure } from "./failure-causes.ts";
 import { isThreadSerialized } from "./provider-method-policy.generated.ts";
 import {
   cacheReport,
@@ -152,6 +158,7 @@ import {
   sdkInputMessages,
   nativeInputIds,
 } from "./input-messages.ts";
+import { CLAUDE_STEER_COMPLETION_RECEIPTS } from "./lifecycle-capabilities.generated.ts";
 // Claude Agent SDK adapter for Studio's existing local session protocol.
 import { interruptInputQueue } from "./stop-inputs.ts";
 import { browserEnvironment } from "./browser-environment.ts";
@@ -190,6 +197,7 @@ import { stripVTControlCharacters } from "node:util";
 import { createCommandTransport } from "./commands.ts";
 
 import { thinkingFlag } from "./thinking.ts";
+import { mcpBackgroundEnvironment } from "./session-policy.ts";
 import {
   createSessionStore,
   ephemeralSessionOptions,
@@ -198,6 +206,11 @@ import {
 import { claudeImage } from "./images.ts";
 import { listSkills } from "./skills.ts";
 import { reconcileHistoricalBash } from "./historical-bash-receipts.ts";
+import {
+  createShellPolicy,
+  replaceBackgroundTasks,
+  backgroundOutputPath,
+} from "./shell-policy.ts";
 import { createCatalogCache, loadCatalog } from "./catalog-cache.ts";
 import {
   declaredTimeoutMs,
@@ -569,9 +582,31 @@ function diskFullInputError(error: unknown) {
 async function session(id: string): Promise<Session> {
   return sessionStore.get(id);
 }
+function nativeReviewerEnvironment(
+  s: Partial<Session>,
+): Record<string, string | undefined> | undefined {
+  if (!s.claude?.nativeReviewerEnvironment) return undefined;
+  const environment: Record<string, string | undefined> = {
+    ...s.claude.nativeReviewerEnvironment,
+  };
+  // The account driver selects these values. Ambient server credentials stay excluded.
+  for (const name of [
+    "CLAUDE_CONFIG_DIR",
+    "STUDIO_CLAUDE_ACCOUNT",
+    "STUDIO_CLAUDE_CREDENTIAL_IDENTITY",
+    "STUDIO_CLAUDE_BIN",
+  ]) {
+    if (typeof process.env[name] === "string")
+      environment[name] = process.env[name];
+  }
+  // Preserve the provider home for account authentication. Try commands still use scratch HOME.
+  if (process.env.HOME) environment.HOME = process.env.HOME;
+  return environment;
+}
 const settings = (s: Pick<Session, "cwd"> & Partial<Session>): Options =>
   fileCheckpointOptions({
     cwd: s.cwd,
+    ...(s.claude?.sandbox ? { sandbox: s.claude.sandbox } : {}),
     pathToClaudeCodeExecutable: process.env.STUDIO_CLAUDE_BIN || "claude",
     settingSources: s.moveProof ? [] : ["user", "project", "local"],
     ...(s.moveProof
@@ -580,15 +615,37 @@ const settings = (s: Pick<Session, "cwd"> & Partial<Session>): Options =>
     // A managed worker runs without the user's MCP servers (Studio sends userMcp: false).
     ...(s.userMcp === false ? { strictMcpConfig: true } : {}),
     includePartialMessages: true,
-    env: {
+    env: nativeReviewerEnvironment(s) ?? {
       ...process.env,
+      ...mcpBackgroundEnvironment(s),
+      ...(typeof s.claude?.env?.LAYR_ROOT === "string"
+        ? {
+            LAYR_PROJECT: undefined,
+            LAYR_LINE: undefined,
+            LAYR_SESSION: undefined,
+            LAYR_SOCKET: undefined,
+          }
+        : {}),
       // Per-thread host declarations must reach the CLI process, not settings.json.
       ...Object.fromEntries(
-        ["CLAUDE_CODE_HOST_WORKTREE", "CLAUDE_CODE_HOST_WORKTREE_FENCE"]
+        [
+          "CLAUDE_CODE_HOST_WORKTREE",
+          "CLAUDE_CODE_HOST_WORKTREE_FENCE",
+          "PATH",
+          "LAYR_ROOT",
+          "LAYR_DIRECT",
+          "LAYR_SOCKET",
+          "TMPDIR",
+        ]
           .filter((key) => typeof s.claude?.env?.[key] === "string")
           .map((key) => [key, s.claude!.env![key]]),
       ),
-      ...browserEnvironment(root, s.id),
+      ...browserEnvironment(root, s.id, {
+        ...process.env,
+        ...(typeof s.claude?.env?.PATH === "string"
+          ? { PATH: s.claude.env.PATH }
+          : {}),
+      }),
       ...(s.moveProof
         ? {
             ENABLE_CLAUDEAI_MCP_SERVERS: s.moveProof.externalCatalog?.some(
@@ -604,9 +661,6 @@ const settings = (s: Pick<Session, "cwd"> & Partial<Session>): Options =>
             ENABLE_CLAUDEAI_MCP_SERVERS: "false",
             CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
           }
-        : {}),
-      ...(typeof s.studioImageWorkspaceTempDir === "string"
-        ? { TMPDIR: s.studioImageWorkspaceTempDir }
         : {}),
     },
     stderr: (line: string) => process.stderr.write(line),
@@ -1394,12 +1448,15 @@ function finishTurn(
       clearTurnTimers(active);
       active.toolClocks.clear();
       if (active.turn === turn) active.turn = null;
+      active.shellLastUseAt = Date.now();
+      active.shellPolicy?.touch();
       if (state.stall) {
         active.stall = null;
         state.stall.ended();
       }
       catalogCache.activityChanged();
       active.pendingSteers.clear();
+      active.inputResultIds.clear();
       active.assistantBlocks.clear();
       if (state.closed) discardQuery(s.id, active);
       emit("turn/completed", {
@@ -1507,6 +1564,7 @@ async function finalizeTurn(
   const errorInfo =
     turn.apiErrorInfo ||
     legacyClaudeErrorInfo(errorField(error, "error"), errorMessage);
+  const failureCause = terminalClaudeFailure(turn.claudeFailure, error, result);
   if (turn.stallError) turn.error = turn.stallError;
   else if (error || turn.status === "failed")
     turn.error = {
@@ -1544,6 +1602,7 @@ async function finalizeTurn(
           }
         : {}),
       ...turn.limitError,
+      ...(failureCause ? { claudeFailure: failureCause } : {}),
     };
   const answer = turn.items
     .filter(
@@ -2065,7 +2124,7 @@ async function startSession(
         continue;
       }
       if (m.type === "system" && m.subtype === "background_tasks_changed") {
-        active.tasks = new Map(m.tasks.map((t) => [t.task_id, t]));
+        active.tasks = replaceBackgroundTasks(active.tasks, m.tasks);
         catalogCache.activityChanged();
         continue;
       }
@@ -2428,6 +2487,7 @@ async function startSession(
             .map((b) => b.text)
             .join("\n");
           turn.apiErrorInfo = claudeErrorInfo(m.error, errorText);
+          turn.claudeFailure = claudeFailure(m);
           // A turn that Claude starts itself has no Studio turn when its
           // rate_limit_event arrives. The refused request names the limit.
           const params =
@@ -2567,6 +2627,16 @@ async function startSession(
             old.type === "commandExecution" && !b.is_error
               ? backgroundedCommandFields(m.tool_use_result)
               : null;
+          if (background) {
+            const id = background.backgroundTaskId;
+            active.tasks.set(id, {
+              ...active.tasks.get(id),
+              task_id: id,
+              task_type: "local_bash",
+              is_backgrounded: true,
+              output_file: backgroundOutputPath(m.tool_use_result, text ?? ""),
+            });
+          }
           const finished: FreshToolItem = {
             ...old,
             status: b.is_error ? "failed" : "completed",
@@ -2590,17 +2660,47 @@ async function startSession(
       } else if (m.type === "result") {
         // A shouldQuery:false prefix produces its own zero-turn receipt.
         // Its UUID is distinct from the final part that owns this turn.
-        if (
+        const prefix =
           m.num_turns === 0 &&
-          active.input.nonQueryIds.delete(m.user_message_uuid)
-        ) {
-          if (!m.is_error) continue;
+          active.input.nonQueryIds.delete(m.user_message_uuid);
+        if (prefix && m.is_error) {
           // A failed prefix must not leave its remaining parts on this query.
           // Any part already handed to the SDK keeps an uncertain outcome.
           await finishTurn(s, active, m);
           active.input.withdraw();
           break;
         }
+        // A result names the user inputs whose prompt it answered. Claude can
+        // answer a steer as its own prompt after the reply it was sent into,
+        // without a replay echo; this result is then its only delivery proof.
+        // Without it, every later result waited for that echo and the turn
+        // never ended (live, 24 October 2026).
+        // A mixed-origin submission has a separate UUID per part. Its prefix
+        // receipts and final result can each name only their own UUID.
+        for (const uuid of [
+          ...(m.user_message_uuids || []),
+          m.user_message_uuid,
+        ]) {
+          if (typeof uuid === "string" && uuid) active.inputResultIds.add(uuid);
+        }
+        for (const item of (turn?.items || []).filter(
+          (i): i is Extract<FreshItem, { type: "userMessage" }> =>
+            i.type === "userMessage",
+        )) {
+          if (
+            item.delivery !== "steer" ||
+            item.deliveryStatus !== "submitted" ||
+            !(item.nativeIds || [item.nativeId]).every(
+              (uuid) => uuid !== undefined && active.inputResultIds.has(uuid),
+            )
+          )
+            continue;
+          item.deliveryStatus = "delivered";
+          active.pendingSteers.delete(item.id);
+          turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
+          persistLater(s, active);
+        }
+        if (prefix) continue;
         if (
           (active.pendingSteers.size || active.reservingInput) &&
           !m.is_error &&
@@ -2680,9 +2780,12 @@ function newActive(turn: FreshTurn): ActiveQuery {
     tasks: new Map(),
     tools: new Map(),
     pendingSteers: new Set(),
+    // Exact result receipts of this turn's input parts; cleared with the turn.
+    inputResultIds: new Set(),
     assistantBlocks: new Map(),
     usage: new ResponseUsage(),
     idleRequestStartedAt: Date.now(),
+    shellLastUseAt: Date.now(),
     // Stall watchdog state: the newest CLI message time, the running tool
     // calls of the current turn, and the recovery of a stalled turn.
     lastEventAt: Date.now(),
@@ -2796,6 +2899,7 @@ async function handle(
           claudeVersion: 23,
           passiveAccountRead: true,
           activityRead: true,
+          [CLAUDE_STEER_COMPLETION_RECEIPTS]: true,
         },
       } satisfies HandlerResult<typeof method>;
     }
@@ -3871,6 +3975,27 @@ async function handle(
         queries.get(p.threadId),
         p,
       ) satisfies HandlerResult<typeof method>;
+    }
+
+    case "claude/shellPolicy": {
+      const { method, params: p } = request;
+      const active = queries.get(p.threadId);
+      if (!active?.q)
+        return { watched: 0 } satisfies HandlerResult<typeof method>;
+      const query = active.q;
+      active.shellPolicy ??= createShellPolicy({
+        lastUseAt: active.shellLastUseAt,
+        emit: (report) =>
+          emit("thread/shellPolicy/updated", { threadId: p.threadId, report }),
+        stop: (taskId) => query.stopTask(taskId),
+        busy: () =>
+          !!active.turn ||
+          queryHasInput(active) ||
+          !!studioWaits.get(p.threadId),
+      });
+      return active.shellPolicy.tick(active, p) satisfies HandlerResult<
+        typeof method
+      >;
     }
 
     case "claude/stopTask": {

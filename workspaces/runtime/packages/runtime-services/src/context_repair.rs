@@ -993,8 +993,7 @@ pub async fn repair_idle(
     store.transaction_with(move |db| {
         let mut agent = ContextRepairRepository::agent(db, &id)?.ok_or(RepairError::MissingAgent)?;
         assert_available(&agent)?;
-        if agent["environment"] == "linux"
-            && studio_runtime_store::truthy(agent.get("imageWorkspaceReady"))
+        if agent["executionMode"] == "vm"
         {
             const NOTE: &str = "Automatic context repair is skipped for VM workers. The rollout stays in the guest. The next turn can proceed.";
             if agent.get("contextRepairNote").and_then(Value::as_str) != Some(NOTE) {
@@ -1124,8 +1123,7 @@ async fn repair_idle_with_broker_inner(
         && initial["threadId"]
             .as_str()
             .is_some_and(|thread| !thread.is_empty())
-        && !(initial["environment"] == "linux"
-            && studio_runtime_store::truthy(initial.get("imageWorkspaceReady")))
+        && initial["executionMode"] != "vm"
     {
         broker.current_scope(&initial_account)
     } else {
@@ -1135,8 +1133,7 @@ async fn repair_idle_with_broker_inner(
         && initial["threadId"]
             .as_str()
             .is_some_and(|thread| !thread.is_empty())
-        && !(initial["environment"] == "linux"
-            && studio_runtime_store::truthy(initial.get("imageWorkspaceReady")))
+        && initial["executionMode"] != "vm"
     {
         let receipt_id = id.to_owned();
         let rows = store
@@ -1182,8 +1179,7 @@ async fn repair_idle_with_broker_inner(
             return Err(RepairError::ReceiptHold);
         }
         assert_available(&agent)?;
-        if agent["environment"] == "linux"
-            && studio_runtime_store::truthy(agent.get("imageWorkspaceReady"))
+        if agent["executionMode"] == "vm"
         {
             const NOTE: &str = "Automatic context repair is skipped for VM workers. The rollout stays in the guest. The next turn can proceed.";
             agent["contextRepairNote"] = json!(NOTE);
@@ -1770,7 +1766,11 @@ async fn assert_native_queues_empty(
                 operation,
                 suffix,
                 method,
-                params: json!({"threadId":thread}),
+                params: if method == studio_runtime_providers::Method::ThreadBackgroundTerminalsList {
+                    json!({"threadId":thread,"limit":studio_runtime_schema::shared_values::NATIVE_TERMINAL_ITEMS_PER_PAGE})
+                } else {
+                    json!({"threadId":thread})
+                },
                 deadline,
             },
         )
@@ -1853,6 +1853,92 @@ fn item_read_suffix(turn: &str, page_index: usize) -> String {
         "items-{}-{page_index}",
         studio_runtime_store::sha256_hex(turn.as_bytes())
     )
+}
+
+#[cfg(test)]
+mod native_queue_admission_tests {
+    use super::*;
+    use crate::account_session_runtime::{AccountSessionFuture, SessionReceipt};
+    use crate::account_worker::retained::{self, SessionRequest};
+    use std::sync::Mutex;
+    use studio_runtime_providers::{Method, RequestId, RequestTicket};
+
+    struct ValidatedReads(Mutex<Vec<Method>>);
+    impl AccountSessionPort for ValidatedReads {
+        fn provider_request<'a>(
+            &'a self,
+            request: ProviderRequest,
+        ) -> AccountSessionFuture<'a, SessionReceipt> {
+            Box::pin(async move {
+                let scope = request
+                    .expected_scope
+                    .clone()
+                    .expect("exact context repair scope");
+                retained::validate(&SessionRequest {
+                    scope: scope.clone(),
+                    expected_scope: Some(scope.clone()),
+                    operation: request.operation.clone(),
+                    actor: request.actor,
+                    transfer: None,
+                    deleted_actor_session: None,
+                    method: request.method,
+                    params: request.params,
+                    deadline: request.deadline,
+                })
+                .map_err(|_| {
+                    AccountSessionError::Refused(
+                        "The real retained validator refused the context read",
+                    )
+                })?;
+                self.0.lock().expect("validated reads").push(request.method);
+                Ok(SessionReceipt {
+                    scope: scope.clone(),
+                    operation: request.operation,
+                    outcome: crate::account_session_runtime::SessionOutcome::Written {
+                        ticket: RequestTicket {
+                            generation: scope.generation,
+                            id: RequestId::Number(1),
+                            method: request.method,
+                        },
+                        response: ProviderResponse::Reply(json!({"data":[],"nextCursor":null})),
+                    },
+                    replayed: false,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn context_native_queue_reads_pass_the_real_retained_validator_before_effects() {
+        let session = ValidatedReads(Mutex::new(vec![]));
+        let scope = ConnectionScope {
+            account: "account".into(),
+            connection: "connection".into(),
+            generation: 1,
+        };
+        let actor = retained::RequestActor {
+            agent: "agent".into(),
+            epoch: 3,
+        };
+        assert_native_queues_empty(
+            &session,
+            &scope,
+            &actor,
+            "context-read",
+            "thread",
+            "idle",
+            Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect("the native checks must pass actual admission");
+        assert_eq!(
+            *session.0.lock().expect("reads"),
+            vec![
+                Method::ThreadBackgroundTerminalsList,
+                Method::ThreadQueueList
+            ]
+        );
+    }
 }
 
 #[cfg(test)]

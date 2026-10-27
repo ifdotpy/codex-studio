@@ -16,7 +16,6 @@ import { rollbackBoundary, forkAtTurn, rollbackSession } from "./controls.ts";
 import { nativeInputIds } from "./input-messages.ts";
 import { inputHistoryOutcome } from "./history-index.ts";
 import { readNativeHistory } from "./native-history.ts";
-import { waitForFile } from "./testing/file-signals.ts";
 import { startBridge } from "./testing/bridge-harness.ts";
 import { fixtureSessionApi } from "./testing/history-fixture.ts";
 import { createSessionStore } from "./session-store.ts";
@@ -142,13 +141,14 @@ test.each([
   "absent anchor",
   "outside tail",
   "replaced",
+  "symlink transcript",
   "partial composite",
   "reversed composite",
   "foreign steer",
   "valid absent",
   "valid delivered",
 ])("closed steer history: %s", async (kind) => {
-  // Claude records the real project path.
+  // The native reader requires a canonical path, including macOS's temp parent.
   root = await fs.realpath(
     await fs.mkdtemp(path.join(os.tmpdir(), "claude-lifecycle-")),
   );
@@ -205,6 +205,10 @@ test.each([
   );
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, raw);
+  if (kind === "symlink transcript") {
+    await fs.rename(file, file + ".target");
+    await fs.symlink(path.basename(file) + ".target", file);
+  }
   const records = await readNativeHistory(session, {
     configDir,
     ...(kind === "replaced"
@@ -220,6 +224,9 @@ test.each([
         }
       : {}),
   });
+  if (["malformed", "torn", "replaced", "symlink transcript"].includes(kind))
+    expect(records).toBeNull();
+  else expect(records).not.toBeNull();
   expect(
     inputHistoryOutcome(
       records?.map(({ row }) => row),
@@ -278,7 +285,6 @@ test.each([
 test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
   "restart promotes chain-proven receipts: %s",
   async (kind) => {
-    // Claude records the real project path.
     root = await fs.realpath(
       await fs.mkdtemp(path.join(os.tmpdir(), "claude-receipts-")),
     );
@@ -692,6 +698,16 @@ test("Stop finalizes a stuck SDK whose close throws without redelivering unknown
     },
   );
   try {
+    // The fixture reports the held steer over IPC. Listening before the steer
+    // call cannot miss it; a file watch set up after the write can.
+    const steerRead = new Promise<void>((resolve) => {
+      const onSignal = (message: { fixtureSignal?: string } | undefined) => {
+        if (message?.fixtureSignal !== "steer-read") return;
+        bridge.process.off("message", onSignal);
+        resolve();
+      };
+      bridge.process.on("message", onSignal);
+    });
     const started = await bridge.call("turn/start", {
       threadId: bridge.thread,
       clientUserMessageId: "initial",
@@ -703,7 +719,7 @@ test("Stop finalizes a stuck SDK whose close throws without redelivering unknown
       clientUserMessageId: "held",
       input: [{ type: "text", text: "held" }],
     });
-    await waitForFile(path.join(bridge.root, "steer-read"));
+    await steerRead;
     await bridge.call("turn/interrupt", {
       threadId: bridge.thread,
       turnId: started.turn.id,
@@ -976,7 +992,6 @@ test.each(["total_tokens_reminder", "prompt_snapshot"])(
 test.each([false, true])(
   "a complete large native tool result preserves steer evidence: delivered=%s",
   async (delivered) => {
-    // Claude records the real project path.
     root = await fs.realpath(
       await fs.mkdtemp(path.join(os.tmpdir(), "claude-large-history-")),
     );

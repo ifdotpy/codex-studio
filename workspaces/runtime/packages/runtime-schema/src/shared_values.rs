@@ -2,6 +2,8 @@
 //! VM guest copies are rendered from it by `studio-contracts`
 //! (`pnpm run contracts:generate`), and `pnpm run contracts:check` rejects drift.
 
+/// Native MCP foreground wait before automatic background transfer, in milliseconds.
+pub const CLAUDE_MCP_AUTO_BACKGROUND_MS: u64 = 120_000;
 /// Account registry storage format requiring explicit provider identity; version number.
 pub const ACCOUNT_REGISTRY_FORMAT_VERSION: u32 = 2;
 
@@ -37,6 +39,8 @@ pub const NATIVE_TERMINAL_MAX_PAGES: usize = 100;
 
 /// Largest integer a JavaScript number holds exactly (2^53 - 1).
 pub use studio_client_domain::MAX_SAFE_INTEGER;
+/// Largest native SSE event of any type, in UTF-8 bytes; owner in client-domain.
+pub use studio_client_domain::NATIVE_SSE_EVENT_MAX_BYTES;
 /// Largest user attachment, in bytes.
 pub const MAX_USER_ATTACHMENT_BYTES: usize = 20971520;
 /// Maximum attachment items admitted across one provider turn's input batch.
@@ -236,9 +240,18 @@ pub const LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR: &str = "Linux VM provider 
 pub const PROVIDER_START_UNKNOWN_ERROR: &str = "turn/start response timed out; outcome unknown";
 /// Error of input that the provider proved it never received.
 pub const PROVIDER_START_NOT_SENT_ERROR: &str = "Provider did not send turn/start";
-/// Hold reason of input whose thread resume answer was lost.
+/// Hold reason of input whose thread resume answer was lost twice: once, and once more
+/// after its single retry.
 pub const PROVIDER_RESUME_UNKNOWN_ERROR: &str =
     "Provider thread resume outcome is unknown; input remains pending.";
+/// Hold reason of input whose thread start answer was lost. Studio does not retry it,
+/// because a second thread start can create a second thread.
+pub const PROVIDER_THREAD_START_UNKNOWN_ERROR: &str =
+    "Provider thread start outcome is unknown; input remains pending.";
+/// Agent and input error of a thread resume whose saved provider session is gone. The input
+/// was never sent, so it settles as failed and its owner may send it again.
+pub const PROVIDER_SESSION_MISSING_ERROR: &str =
+    "The saved Claude session of this chat is missing. Start a new thread to continue.";
 /// Refusal of a monitor whose owner stopped its turn: the owner ended it, not Studio.
 pub const MONITOR_OWNER_STOPPED_ERROR: &str = "The agent turn was stopped";
 /// Seconds that the host retries one idempotent Linux VM provider journal read (next,
@@ -270,32 +283,6 @@ pub const DISK_FULL_MAX_RESUMES: u64 = 5;
 /// disk is full: POSIX ENOSPC in Node, Python, and Rust messages, and SQLite SQLITE_FULL.
 pub const DISK_FULL_ERROR_PATTERN: &str =
     "ENOSPC|No space left on device|database or disk is full|SQLITE_FULL";
-
-// Image workspace mount identity (docs/workspace-images.md, "Mount identity"). Studio
-// writes the marker file at the root of each agent volume when it attaches the volume. The
-// marker names the agent and the (st_dev, st_ino) of the image file at attach time.
-/// File name of the image workspace marker.
-pub const IMAGE_WORKSPACE_MARKER_NAME: &str = ".studio-workspace.json";
-/// Schema version of the image workspace marker.
-pub const IMAGE_WORKSPACE_MARKER_SCHEMA: u64 = 1;
-/// The closed results of one mount point check.
-pub const IMAGE_MOUNT_STATUSES: &[&str] = &[
-    "mounted",
-    "detached",
-    "plain-folder",
-    "foreign-volume",
-    "image-replaced",
-    "attached-elsewhere",
-    "image-missing",
-];
-/// The mount results that need an operator; they are never repaired automatically.
-pub const IMAGE_MOUNT_PROBLEM_STATUSES: &[&str] = &[
-    "plain-folder",
-    "foreign-volume",
-    "image-replaced",
-    "attached-elsewhere",
-    "image-missing",
-];
 
 // In-place VM guest updates (docs/linux-vm-workspaces.md, "Guest updates"). Provisioning
 // writes the Mac's update key (root only) and the record of the parts that only
@@ -404,14 +391,5 @@ mod tests {
         ] {
             assert_eq!(byte_label(bytes), label);
         }
-    }
-
-    #[test]
-    fn problem_statuses_are_mount_statuses() {
-        assert!(
-            IMAGE_MOUNT_PROBLEM_STATUSES
-                .iter()
-                .all(|status| IMAGE_MOUNT_STATUSES.contains(status))
-        );
     }
 }

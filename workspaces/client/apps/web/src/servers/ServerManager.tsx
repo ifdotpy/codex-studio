@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { ProviderKind } from "../generated/providerKind.ts";
 import { serverRows, relativeSeen } from "./serverRows";
 import { localDateTime } from "../local-time";
@@ -415,7 +416,7 @@ export default function ServerManager({
                       saved?.origin === address &&
                       saved?.inviteId === invitation.inviteId
                         ? saved.id
-                        : crypto.randomUUID();
+                        : randomUUID();
                     request.current = {
                       origin: address,
                       code: code.trim(),

@@ -87,7 +87,7 @@ function ServerAccountsFixture() {
             },
           ]}
           accountsByServer={{ local: accounts satisfies ServerAccount[] }}
-          statuses={{ local: "ready", remote: "offline" }}
+          statuses={{ local: "live", remote: "offline" }}
           startAccount={() => {}}
           accountAction={() => {}}
         />
@@ -162,7 +162,9 @@ export const WarningAndActions: Story = {
       canvasElement.querySelectorAll(".server-account-row"),
     ).toHaveLength(5);
     const account = within(row);
-    await expect(account.getByText("Offline", { exact: true })).toBeVisible();
+    await expect(
+      account.queryByText("Offline", { exact: true }),
+    ).not.toBeInTheDocument();
     await expect(account.getByText("Default", { exact: false })).toBeVisible();
     await expect(
       canvas.getByText("Sign in needed", { exact: true }),
@@ -172,7 +174,13 @@ export const WarningAndActions: Story = {
         account.getByRole("meter", { name: "Remaining limit" }),
       ).toHaveAttribute("aria-valuenow", "76"),
     );
-    await expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(80);
+    const signIn = account.getByRole("button", {
+      name: "Sign in to Release team on Workstation",
+    });
+    await expect(signIn).toBeVisible();
+    await expect(signIn.getBoundingClientRect().height).toBeGreaterThanOrEqual(
+      32,
+    );
     const details = account.getByRole("button", {
       name: "Limit details for release@example.test",
     });

@@ -26,14 +26,17 @@ import type {
   JournalRepairReport,
 } from "./session-state.ts";
 import type { UsageObservation } from "./usage-contract.generated.ts";
+import type { CLAUDE_STEER_COMPLETION_RECEIPTS } from "./lifecycle-capabilities.generated.ts";
 import type {
   CacheReport,
   ToolDefinition,
   RateLimitBucketDto,
   RateLimitWindowDto,
+  BackgroundShellPolicySettings,
   ClaudeBridgeSessionWire,
   ClaudeBridgeTurnWire,
 } from "./runtime-contract.generated.ts";
+import type { ShellPolicyReport } from "./shell-policy.ts";
 import type {
   HUMAN_INPUT,
   STUDIO_EVENT_INPUT,
@@ -119,9 +122,9 @@ export type BridgeTurnResult = {
 // The bridge merges task events and their patches into one mutable task view.
 export type BridgeTask = Partial<
   Omit<SDKTaskStartedMessage, "subtype"> &
-    Omit<SDKTaskUpdatedMessage["patch"], "status"> &
-    Pick<SDKTaskNotificationMessage, "output_file"> &
-    SDKBackgroundTasksChangedMessage["tasks"][number]
+    Omit<SDKTaskUpdatedMessage["patch"], "status"> & {
+      output_file?: string | undefined;
+    } & SDKBackgroundTasksChangedMessage["tasks"][number]
 > & {
   status?:
     | SDKTaskNotificationMessage["status"]
@@ -257,6 +260,7 @@ export interface BridgeMethods {
         claudeVersion: 23;
         passiveAccountRead: true;
         activityRead: true;
+        [CLAUDE_STEER_COMPLETION_RECEIPTS]: true;
       };
     },
   ];
@@ -415,6 +419,14 @@ export interface BridgeMethods {
     { status: "backgrounded" | "not_running" },
   ];
   "claude/stopTask": [BridgeThreadParams & { taskId: string }, BridgeEmpty];
+  "claude/shellPolicy": [
+    BridgeThreadParams & {
+      settings: BackgroundShellPolicySettings;
+      eligible: boolean;
+      critical: boolean;
+    },
+    { watched: number },
+  ];
   "mcpServerStatus/list": [
     BridgeThreadParams & BridgePageParams,
     BridgePage<Omit<McpServerStatus, "config">>,
@@ -496,6 +508,9 @@ export interface BridgeNotifications {
   "thread/idleCompaction/updated": BridgeThreadParams & {
     turnId: string;
     report: CacheReport;
+  };
+  "thread/shellPolicy/updated": BridgeThreadParams & {
+    report: ShellPolicyReport;
   };
   "turn/plan/updated": BridgeThreadParams & {
     turnId: string;

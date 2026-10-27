@@ -125,7 +125,7 @@ impl Admission for MessageNativeAdmission {
         if !blockers.is_empty() {
             return Err(NativeError::Invalid("workspace"));
         }
-        self.0.budget(tx, &actor, &root).map_err(admission_error)
+        Ok(())
     }
 }
 
@@ -213,7 +213,6 @@ fn admission_error(error: crate::coordination::CoordinationError) -> NativeError
         CoordinationError::InvalidRequest(_)
         | CoordinationError::Conflict(_)
         | CoordinationError::InvalidStored { .. }
-        | CoordinationError::BudgetRuntime(_)
         | CoordinationError::Store(_) => NativeError::Invalid("admission"),
     }
 }

@@ -8,9 +8,8 @@
 //! provide the authoritative value once that change is merged.
 mod operations;
 pub(crate) use operations::DEFAULT_LEAD_MODEL;
+pub(crate) use operations::set_vm_workspace_fields;
 pub use operations::*;
-pub(crate) use operations::{image_provision_is_current, persist_image_provision_failure};
-pub(crate) use operations::{set_image_workspace_fields, set_vm_workspace_fields};
 
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
@@ -518,7 +517,6 @@ fn configure_limits(
     transaction: &Transaction<'_>,
     id: &str,
     max_agents: Option<i64>,
-    token_budget: Option<Option<i64>>,
     validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, SettingsError> {
     let mut root_value =
@@ -532,8 +530,6 @@ fn configure_limits(
     mode_fields(&mut root_value);
     let team_max_agents =
         max_agents.or_else(|| root_value.get("maxAgents").and_then(Value::as_i64));
-    let team_token_budget =
-        token_budget.unwrap_or_else(|| root_value.get("tokenBudget").and_then(Value::as_i64));
     let mut statement = transaction
         .prepare("SELECT id,record FROM runtime_agents")
         .map_err(StoreError::from)?;
@@ -565,9 +561,6 @@ fn configure_limits(
                     record["maxAgentsExplicit"] = json!(true);
                 }
             }
-            if let Some(token_budget) = token_budget {
-                record["tokenBudget"] = token_budget.map_or(Value::Null, |value| json!(value));
-            }
         } else {
             record
                 .as_object_mut()
@@ -579,7 +572,6 @@ fn configure_limits(
             if let Some(max_agents) = team_max_agents {
                 record["maxAgents"] = json!(max_agents);
             }
-            record["tokenBudget"] = team_token_budget.map_or(Value::Null, |value| json!(value));
         }
         save_agent(transaction, &record, &validate)?;
         if agent_id == id {
@@ -592,7 +584,6 @@ fn configure_limits(
         "agentMode": if root_value.get("concurrency").and_then(Value::as_i64).unwrap_or(0) == 0 { "single" } else { "multi" },
         "agentModeRevision": root_value.get("agentModeRevision").cloned().unwrap_or(json!(0)),
         "maxAgents": root_value.get("maxAgents").cloned().unwrap_or(Value::Null),
-        "tokenBudget": root_value.get("tokenBudget").cloned().unwrap_or(Value::Null),
     }))
 }
 

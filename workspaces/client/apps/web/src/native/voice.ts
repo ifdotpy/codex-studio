@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import type { NativeEvent } from "./host";
 import { listenNativeEvents, nativeRequest } from "./client";
 import { isNativeFrame } from "./frame";
@@ -13,7 +14,7 @@ export function nativeVoice(
   request: typeof nativeRequest = nativeRequest,
   listen: typeof listenNativeEvents = listenNativeEvents,
 ) {
-  const subscription = crypto.randomUUID();
+  const subscription = randomUUID();
   let closed = false;
   let listening: (() => void) | undefined;
   const unsubscribe = () =>

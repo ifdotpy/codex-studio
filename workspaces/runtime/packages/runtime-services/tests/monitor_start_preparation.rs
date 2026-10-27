@@ -129,7 +129,7 @@ async fn monitor_start_refuses_changed_ownership_permissions_or_monitor() {
         json!({"isLead":true}),
         json!({"executionMode":"vm"}),
         json!({"imageWorkspace":true}),
-        json!({"imageWorkspaceReady":true}),
+        json!({"workspaceMode":"image"}),
         json!({"layrScratch":"/other"}),
         json!({"provider":"claude"}),
         json!({"remoteWorker":true}),

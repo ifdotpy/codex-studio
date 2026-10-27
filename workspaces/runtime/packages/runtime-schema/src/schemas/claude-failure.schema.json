@@ -1,0 +1,117 @@
+{
+  "title": "ClaudeFailure",
+  "description": "Bounded Claude cause metadata. No message text, headers, credential values, or raw error_details. Token counts use tokens.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "type": "string",
+      "enum": [
+        "authentication_failed",
+        "oauth_org_not_allowed",
+        "account_on_hold",
+        "verification_required",
+        "billing_error",
+        "rate_limit",
+        "overloaded",
+        "invalid_request",
+        "model_not_found",
+        "server_error",
+        "unknown",
+        "max_output_tokens",
+        "cloud_credential_error"
+      ]
+    },
+    "apiError": {
+      "type": "string",
+      "enum": [
+        "max_output_tokens",
+        "dlp_request_denied",
+        "claude_code_version_too_old",
+        "safety_monitor_blocked",
+        "effort_requires_thinking",
+        "advisor_incompatible",
+        "tool_history_mismatch",
+        "autocompact_thrashing",
+        "pdf_too_large",
+        "pdf_password_protected",
+        "media_removed",
+        "no_response",
+        "tls_untrusted_ca",
+        "gateway_content_type",
+        "provider_credentials",
+        "gateway_signin_required",
+        "gateway_session_expired",
+        "api_key_auth_disabled",
+        "org_disabled_credential",
+        "invalid_credential_header",
+        "model_requires_usage_credits",
+        "long_context_credits_required",
+        "consent_unanswered",
+        "no_allowed_fallback",
+        "model_substitution_disabled",
+        "field_not_granted",
+        "usage_limit_reached"
+      ]
+    },
+    "apiErrorStatus": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 599
+    },
+    "apiErrorCode": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "apiErrorOrigin": {
+      "type": "string",
+      "enum": ["first_party"]
+    },
+    "provider": {
+      "type": "string",
+      "enum": [
+        "bedrock",
+        "anthropicAws",
+        "mantle",
+        "anthropicGoogleCloud",
+        "vertex",
+        "foundry",
+        "gateway"
+      ]
+    },
+    "remedy": {
+      "type": "string",
+      "enum": [
+        "refresh_command",
+        "refresh_credentials",
+        "adc",
+        "gateway_token",
+        "host_managed",
+        "model_access"
+      ]
+    },
+    "media": {
+      "type": "string",
+      "enum": ["image", "document"]
+    },
+    "mediaReason": {
+      "type": "string",
+      "enum": ["unprocessable", "unsupported_by_model", "media_budget"]
+    },
+    "promptTokens": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "maxContextTokens": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "effort": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "max", "xhigh"]
+    }
+  }
+}

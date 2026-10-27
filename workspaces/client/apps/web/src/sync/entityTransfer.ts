@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { subscriptionKey } from "./subscriptions/contracts";
 import { SYNC_PROTOCOL_VERSION, type components } from "../generated/api";
 import {
@@ -31,7 +32,7 @@ const STAGING_PREFIX = "studio-entity-transfer-";
 /** Each owner has an unguessable database identity. Cancellation deletes only
  * this owner's database, never another tab's active or recovering transfer. */
 export class IndexedTransferStorage implements TransferStorage {
-  private readonly name = `${STAGING_PREFIX}${crypto.randomUUID()}`;
+  private readonly name = `${STAGING_PREFIX}${randomUUID()}`;
   private database: Promise<IDBDatabase> | undefined;
   private stopped = false;
   private releaseLease: (() => void) | undefined;

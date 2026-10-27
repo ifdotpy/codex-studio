@@ -675,6 +675,45 @@ async fn reattach_requires_exact_proof_and_cancels_a_stopped_owner() {
     assert!(monitor_policy::reattach(&snapshot, &wrong).is_err());
 }
 
+#[test]
+fn transferred_monitor_keeps_its_source_for_interactive_input_and_reattach() {
+    let root = fixtures::tempdir();
+    let case = running(&fixtures::corpus(root.path()));
+    let op = operation(&case);
+    let mut actor = case["actor"].clone();
+    actor["accountKey"] = json!("target");
+    let mut watch = case["before"].clone();
+    watch["interactive"] = json!(true);
+    let snapshot = MonitorSnapshot::checked(watch.clone(), actor.clone())
+        .expect("the source monitor and transferred actor form a valid snapshot");
+    let input = Input {
+        text: "hello".into(),
+        rows: None,
+        cols: None,
+        close_stdin: false,
+    };
+    let decision =
+        monitor_policy::begin_input(&snapshot, &op, "input-after-transfer", &input, 2000.0)
+            .expect("the same active actor can use its existing source process");
+    assert_eq!(
+        decision.record["inputAttempt"]["accountKey"],
+        op.account_key
+    );
+    watch["reattachRecovery"] =
+        json!({"status":"running","epoch":op.epoch,"accountKey":op.account_key,"startedAt":2000.0});
+    let snapshot = MonitorSnapshot::checked(watch, actor)
+        .expect("the source monitor remains valid after its actor moves");
+    let proof = monitor_policy::ReattachProof {
+        operation: op,
+        operation_id: format!("monitor:{}", snapshot.id()),
+        native_id: Some(42),
+        current_connection: "reattached-source".into(),
+    };
+    let restored = monitor_policy::reattach(&snapshot, &proof)
+        .expect("reattach uses the command account, not the new model account");
+    assert!(restored.effects.is_empty());
+}
+
 /// 2026-10-20: every command that redirected its output (for example
 /// `gh run watch ... > log 2>&1`) stayed "running" after it exited, because
 /// its exit receipt needed a queue that only an output delta creates.

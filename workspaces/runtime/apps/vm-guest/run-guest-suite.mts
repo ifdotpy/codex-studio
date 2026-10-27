@@ -42,6 +42,11 @@ const POLL_MS = 100;
 const guest = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(guest, "../../../..");
 
+/** Base directory for owned suite folders; Mac socket paths require a short base. */
+export function suiteTemporaryBase() {
+  return process.platform === "darwin" ? "/private/tmp" : os.tmpdir();
+}
+
 function fail(message: string): never {
   console.error(`run-guest-suite: ${message}`);
   process.exit(1);
@@ -66,11 +71,11 @@ function pause(milliseconds: number) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
-/** The working folder of each process of this user, by PID. */
-function workingFolders() {
+/** The working folders of selected PIDs, or all processes of this user. */
+function workingFolders(pids?: number[]) {
   const folders = new Map<number, string>();
   if (existsSync("/proc/self/cwd")) {
-    for (const name of readdirSync("/proc")) {
+    for (const name of pids?.map(String) ?? readdirSync("/proc")) {
       if (!/^\d+$/.test(name)) continue;
       try {
         folders.set(+name, readlinkSync(`/proc/${name}/cwd`));
@@ -82,10 +87,23 @@ function workingFolders() {
   }
   const listed = spawnSync(
     "lsof",
-    ["-a", "-d", "cwd", "-u", String(os.userInfo().uid), "-F", "pn"],
+    [
+      "-a",
+      "-d",
+      "cwd",
+      "-u",
+      String(os.userInfo().uid),
+      ...(pids === undefined ? [] : ["-p", pids.join(",")]),
+      "-F",
+      "pn",
+    ],
     { encoding: "utf8", timeout: PROBE_TIMEOUT_MS },
   );
-  let pid = null;
+  if (listed.error || listed.status !== 0 || listed.signal)
+    throw new Error(
+      `lsof did not list the selected working folders: ${listed.error?.message || listed.stderr || listed.signal || `exit ${listed.status}`}`,
+    );
+  let pid: number | null = null;
   for (const line of (listed.stdout ?? "").split("\n")) {
     if (line.startsWith("p")) pid = +line.slice(1);
     else if (line.startsWith("n") && pid !== null)
@@ -96,25 +114,73 @@ function workingFolders() {
 
 /**
  * The processes that belong to a suite run in `folder`: they name the folder in their
- * arguments, or they work in it.
+ * arguments, or they work in it. Optional PIDs bound both probes to a caller's
+ * known process set. The ordinary suite omits them to inspect this operator's processes.
  */
-export function suiteProcesses(folder: string) {
+export function suiteProcesses(
+  folder: string,
+  { pids }: { pids?: number[] | undefined } = {},
+) {
+  if (pids !== undefined) {
+    if (
+      !Array.isArray(pids) ||
+      [...pids].some((pid) => !Number.isSafeInteger(pid) || pid <= 0)
+    )
+      throw new Error("PID selection must contain only positive integers");
+    pids = [...new Set(pids)];
+    if (pids.length === 0) return [];
+  }
   const folders = [...new Set([folder, realpathSync(folder)])];
-  const listed = spawnSync("ps", ["-A", "-ww", "-o", "pid=", "-o", "args="], {
-    encoding: "utf8",
-    timeout: PROBE_TIMEOUT_MS,
-  });
+  const listed = spawnSync(
+    "ps",
+    [
+      ...(pids === undefined
+        ? ["-u", String(os.userInfo().uid)]
+        : ["-p", pids.join(",")]),
+      "-ww",
+      "-o",
+      "pid=",
+      "-o",
+      "args=",
+    ],
+    {
+      encoding: "utf8",
+      timeout: PROBE_TIMEOUT_MS,
+    },
+  );
+  // ps exits 1 when none of the selected processes still exist. Errors,
+  // timeouts, diagnostics, and partial output must not become an empty result.
+  if (
+    pids !== undefined &&
+    !listed.error &&
+    listed.status === 1 &&
+    !listed.stdout?.trim() &&
+    !listed.stderr?.trim()
+  )
+    return [];
   if (listed.error || listed.status !== 0)
     throw new Error(
       `ps did not list the processes: ${listed.error?.message ?? listed.stderr}`,
     );
-  const cwd = workingFolders();
+  const rows = listed.stdout
+    .split("\n")
+    .map((line) => line.match(/^\s*(\d+)\s+(.*)$/))
+    .filter((row): row is RegExpMatchArray => row !== null);
+  if (
+    pids !== undefined &&
+    (rows.length === 0 || rows.some((row) => !pids!.includes(+row[1]!)))
+  )
+    throw new Error("ps did not list only confirmed selected processes");
+  // lsof reports failure for a requested PID that has ended, even when
+  // another selected PID remains. Probe only the PIDs that ps confirms.
+  const cwd = workingFolders(
+    pids === undefined ? undefined : rows.map((row) => +row[1]!),
+  );
   const found = [];
-  for (const line of listed.stdout.split("\n")) {
-    const [, pidText, command] = line.match(/^\s*(\d+)\s+(.*)$/) ?? [];
-    if (pidText === undefined || command === undefined) continue;
-    const pid = +pidText;
+  for (const match of rows) {
+    const pid = +match[1]!;
     if (pid === process.pid) continue;
+    const command = match[2]!;
     if (
       folders.some((name) => command.includes(name)) ||
       within(cwd.get(pid) ?? "", folders)
@@ -144,9 +210,17 @@ function waitForExit(
  */
 export function stopSuiteProcesses(
   folder: string,
-  { exitGrace = EXIT_GRACE_MS, stopGrace = STOP_GRACE_MS } = {},
+  {
+    exitGrace = EXIT_GRACE_MS,
+    stopGrace = STOP_GRACE_MS,
+    pids,
+  }: {
+    exitGrace?: number;
+    stopGrace?: number;
+    pids?: number[] | undefined;
+  } = {},
 ) {
-  const leaked = waitForExit(suiteProcesses(folder), exitGrace);
+  const leaked = waitForExit(suiteProcesses(folder, { pids }), exitGrace);
   for (const { pid } of leaked) {
     try {
       process.kill(pid, "SIGTERM");
@@ -188,8 +262,7 @@ function main() {
       `${supervisor} is missing; run cargo build -p studio-process-supervisor --locked first`,
     );
 
-  const base = process.platform === "darwin" ? "/private/tmp" : os.tmpdir();
-  const temporary = mkdtempSync(path.join(base, "g"));
+  const temporary = mkdtempSync(path.join(suiteTemporaryBase(), "g"));
   let run;
   let leaked = [];
   try {
@@ -207,11 +280,18 @@ function main() {
       timeout: SUITE_TIMEOUT_MS,
     });
   } finally {
+    process.stderr.write(run?.stderr ?? "");
+    console.error(
+      `run-guest-suite: Python result: ${JSON.stringify({
+        status: run?.status ?? null,
+        signal: run?.signal ?? null,
+        error: run?.error?.message ?? null,
+      })}`,
+    );
     leaked = stopSuiteProcesses(temporary);
     rmSync(temporary, { recursive: true, force: true });
   }
   const output = run.stderr ?? "";
-  process.stderr.write(output);
   for (const { pid, command } of leaked)
     console.error(
       `run-guest-suite: stopped a process that the suite left running: ${pid} ${command}`,

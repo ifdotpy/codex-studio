@@ -77,3 +77,48 @@ SQLite 3.35 or later command-line shell.
 
 To roll back, quit Studio and move `canvas.sqlite3.pre-vacuum` back to
 `canvas.sqlite3`.
+
+## Compressed full text and analytics records
+
+Writers store `runtime_item_fulltext.body` in stored format 1 (see
+[runtime state formats](runtime-state-formats.md#compressed-text-columns)).
+After the full-text pass, the same job handles `analytics_items.record` in
+`analytics.sqlite3`: when the table has `DICTIONARY_MIN_ROWS` (2,048) rows and no
+dictionary, it trains one from `DICTIONARY_SAMPLE_ROWS` (4,096) sampled plain
+records on a read-only connection and stores it, then converts plain records in
+one analytics transaction per batch, with the same checks and its own progress
+row.
+`studio_runtime_services::stored_text_compaction` converts the plain bodies
+that older releases wrote. It starts `COMPACTION_START_DELAY` (one minute)
+after startup and repeats every `COMPACTION_PASS_INTERVAL` (one hour) until the
+column is complete:
+
+- A reader scans `COMPACTION_WINDOW_ROWS` (512) rowids at a time and converts
+  at most `COMPACTION_BATCH_ROWS` (64) values or `COMPACTION_BATCH_BYTES`
+  (8 MiB) of text per batch, outside the writer. Each value must decode to its
+  exact text first.
+- One short writer transaction per batch replaces a value only if the row
+  still holds the scanned text. It reads each replaced value back and commits
+  only if it decodes to the original text. The SHA-256 of the batch texts goes
+  to `runtime_stored_text_batches`.
+- A separate reader checks for plain rows after the last batch.
+  If any remain after concurrent writes, the next pass starts at the first plain row.
+  A short writer transaction saves that result.
+- Progress is the `stored-text-v1:runtime_item_fulltext.body` row of
+  `runtime_payload_migrations`: `running`, `complete`, `waitingForSpace` or
+  `error`. The pass converts no data while the state volume has less than
+  `COMPACTION_MIN_FREE_BYTES` free (the 5 GiB critical warning), or when free
+  space is unknown.
+
+The pass never deletes data and never shrinks the file. Freed pages go to the
+freelist and new rows reuse them. To return the space to the disk, run the
+offline `VACUUM INTO` procedure above after the progress row shows
+`complete=1`, at a restart that the owner approves.
+
+Before installing a release without analytics dictionary support, stop the backend and run
+`studio-runtime-server stored-text inflate --state ~/.local/state/codex-agents`.
+This also applies to a release that reads compressed full-text bodies only.
+It rewrites every compressed full-text body and analytics item record as plain
+TEXT with the same checks, records `:inflate` batches, and forgets the
+compaction progress. The stored dictionaries stay. The command refuses a
+state directory that a running backend owns.

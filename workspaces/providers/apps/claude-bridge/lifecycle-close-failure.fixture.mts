@@ -2,7 +2,6 @@ export { resolveSettings } from "./sdk-fixtures.ts";
 import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 
-import fs from "node:fs/promises";
 export { tool, createSdkMcpServer } from "./sdk-fixtures.ts";
 export const forkSession = async () => {
   throw new Error("No fork expected");
@@ -46,7 +45,7 @@ export function query({ prompt, options }: FixtureQuery) {
         session_id: options.resume || options.sessionId,
       };
       held = (await prompt.next()).value;
-      await fs.writeFile(options.cwd + "/steer-read", "read");
+      process.send!({ fixtureSignal: "steer-read" });
       await new Promise(() => {});
     },
   };

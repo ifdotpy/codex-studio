@@ -19,6 +19,11 @@ const CORE_DATABASES: [&str; 2] = ["canvas.sqlite3", "analytics.sqlite3"];
 /// The process supervisor's journal (`codex_process_supervisor.Journal` and
 /// `supervisor_journal::SupervisorJournal`). The supervisor owns it once it exists.
 const SUPERVISOR_DATABASE: &str = "supervisor.sqlite3";
+/// Files of background recovery in the state folder. Owners: `files.config` and the
+/// launch agent's log in desktop recovery.cjs, and the lock in recover_backend.py `run`.
+const RECOVERY_CONFIGURATION: &str = "background-recovery.json";
+const RECOVERY_LOCK: &str = "background-recovery.lock";
+const RECOVERY_LOG: &str = "background-recovery.log";
 
 /// Validate startup contents without creating the runtime lock or changing files.
 pub(crate) fn validate(root: &Path) -> StoreResult<()> {
@@ -70,6 +75,10 @@ pub(crate) fn validate(root: &Path) -> StoreResult<()> {
             // registry/identity files before it opens the SQLite databases.
             Some("accounts") => accepted_python_directory(&path, "registry.json"),
             Some("multi-server") => accepted_python_directory(&path, "identity.json"),
+            // The host installer and migration command can run before the first backend.
+            Some(crate::NATIVE_LAYR_DIRECTORY) => {
+                fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_dir())
+            }
             // launchd (macOS) and systemd (Linux) can start the process
             // supervisor before the first backend. Python and Rust supervisors
             // create their lease, journal and socket, and the launch agent
@@ -85,6 +94,13 @@ pub(crate) fn validate(root: &Path) -> StoreResult<()> {
                 journal_exists && matches!(entry_kind(&path), EntryKind::File)
             }
             Some("supervisor.sock") => is_socket(&path),
+            // Background recovery can be turned on before the first backend starts: the
+            // recovery helper (desktop recovery.cjs) writes its private configuration, and
+            // the recovery job (recover_backend.py, umask 077) opens its private lock before
+            // it starts the server.
+            Some(RECOVERY_CONFIGURATION | RECOVERY_LOCK) => accepted_private_file(&path),
+            // launchd opens the recovery job's log with its own umask, as for supervisor.log.
+            Some(RECOVERY_LOG) => matches!(entry_kind(&path), EntryKind::File),
             _ => false,
         };
         if !accepted {
@@ -447,5 +463,42 @@ fn publish(staging: &Path, root: &Path) -> StoreResult<()> {
             published.retain(|path| fs::remove_file(path).is_err());
             Err(StoreError::StateDirectory(error))
         }
+    }
+}
+
+#[cfg(test)]
+mod native_layr_tests {
+    use super::*;
+
+    #[test]
+    fn native_layr_install_can_precede_the_first_backend_start() {
+        let root = tempfile::tempdir().expect("fixture operation succeeds");
+        let native = root.path().join(crate::NATIVE_LAYR_DIRECTORY);
+        fs::create_dir_all(native.join("bin")).expect("fixture operation succeeds");
+        fs::write(native.join("bin/layr"), "installed host binary")
+            .expect("fixture operation succeeds");
+        validate(root.path()).expect("fixture operation succeeds");
+        assert!(!root.path().join("canvas.sqlite3").exists());
+    }
+
+    #[test]
+    fn native_layr_installation_directory_cannot_be_a_file() {
+        let root = tempfile::tempdir().expect("fixture operation succeeds");
+        fs::write(root.path().join(crate::NATIVE_LAYR_DIRECTORY), "wrong type")
+            .expect("fixture operation succeeds");
+        assert!(validate(root.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_layr_installation_directory_cannot_be_a_symlink() {
+        let root = tempfile::tempdir().expect("fixture operation succeeds");
+        let outside = tempfile::tempdir().expect("fixture operation succeeds");
+        std::os::unix::fs::symlink(
+            outside.path(),
+            root.path().join(crate::NATIVE_LAYR_DIRECTORY),
+        )
+        .expect("fixture operation succeeds");
+        assert!(validate(root.path()).is_err());
     }
 }

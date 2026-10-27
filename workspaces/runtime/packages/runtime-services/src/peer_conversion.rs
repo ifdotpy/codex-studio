@@ -119,7 +119,7 @@ pub async fn convert(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, Pr
             agent["rootId"]=json!(target); agent["updated"]=json!(now);
             let object=agent.as_object_mut().ok_or(ProjectsError::Invalid("stored agent invalid"))?;
             object.remove("concurrency");
-            for field in ["maxAgents","tokenBudget"] { if let Some(v)=dst.get(field) {object.insert(field.to_owned(),v.clone());} }
+            if let Some(v)=dst.get("maxAgents") {object.insert("maxAgents".to_owned(),v.clone());}
             if original["id"]==source {
                 for field in ["subagentConcurrencyVersion","maxAgentsExplicit","agentMode","agentModeRevision","agentModeSupported","projectFolder","pinned"] {object.remove(field);}
                 agent["isLead"]=json!(false); agent["parentId"]=json!(target); agent["role"]=json!("implementer"); agent["status"]=json!("paused"); agent["autoWake"]=json!(false); agent["worktree"]=json!(false);

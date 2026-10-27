@@ -690,6 +690,16 @@
       "unit": "em",
       "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 20em) {"
     },
+    "edgeRail.statusColumnCenter": {
+      "value": 48,
+      "unit": "px",
+      "purpose": "Distance from the outer screen edge to the center of the system status column (clock, Wi-Fi) in the iPhone Duo side strip; rail buttons center on it (measured on the device, iOS 27.2)"
+    },
+    "edgeRail.menuGap": {
+      "value": 8,
+      "unit": "px",
+      "purpose": "Space between the rail chat actions menu and the inner edge of the side strip"
+    },
     "edgeRail.buttonSize": {
       "value": 48,
       "unit": "px",
@@ -739,6 +749,11 @@
       "value": 0.1,
       "unit": "px",
       "purpose": "Maximum transform matrix serialization error when retaining the current keyboard animation target"
+    },
+    "keyboard.nativeMotionHold": {
+      "value": 64,
+      "unit": "ms",
+      "purpose": "Delay of the native iOS shell closing composer animation after its start frame; longer than the WebKit commit latency, so the first presented frame shows the start position"
     },
     "keyboard.focusSampleWindow": {
       "value": 600,
@@ -1598,7 +1613,7 @@
       "path": "src/components/accounts.css",
       "kind": "query",
       "signature": "@container account-list (max-width: 22rem) {",
-      "count": 2,
+      "count": 3,
       "key": "legacy_main_components_accounts.querya3ae2bbc",
       "plannedOwner": "main visual component",
       "purpose": "Retain the main component's exact query contract during responsive integration"
@@ -2034,6 +2049,24 @@
       "key": "legacy_main_style.tasksDrawerHeaderMin",
       "plannedOwner": "main visual component",
       "purpose": "Existing compact tasks drawer header minimum height"
+    },
+    {
+      "path": "src/components/sidebar-projects.css",
+      "kind": "query",
+      "signature": "@container chat-list (max-width: 280px) {",
+      "count": 1,
+      "key": "legacy_duo_components_sidebar_projects.query280px",
+      "plannedOwner": "main visual component",
+      "purpose": "Duo shell sidebar container query; migrate to a layout owner"
+    },
+    {
+      "path": "src/components/sidebar-projects.css",
+      "kind": "query",
+      "signature": "@container sidebar-header (max-width: 240px) {",
+      "count": 1,
+      "key": "legacy_duo_components_sidebar_projects.query240px",
+      "plannedOwner": "main visual component",
+      "purpose": "Duo shell sidebar container query; migrate to a layout owner"
     }
   ],
   "witnessViewports": [

@@ -1,53 +1,36 @@
 import type { Agent } from "../../types";
 
 export type WorkspaceBadgeInfo = {
-  label: "LAYR" | "IMAGE" | "WT" | "SHARED";
+  label: "Layr" | "Layr VM" | "WT" | "SHARED";
   title: string;
 };
 
-function workspaceModeInfo(
-  mode: NonNullable<Agent["workspaceMode"]>,
-): WorkspaceBadgeInfo {
-  switch (mode) {
-    case "layr":
-      return { label: "LAYR", title: "VM with layr" };
-    case "image":
-      return { label: "IMAGE", title: "Isolated disk image workspace" };
-    case "worktree":
-      return { label: "WT", title: "Git worktree" };
-    case "shared":
-      return { label: "SHARED", title: "Shared folder" };
-  }
-  return mode satisfies never;
-}
-
 export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
   if (!agent) return null;
-  if (agent.isLead) {
-    const mode = agent.workspaceMode;
-    return mode && mode !== "shared" ? workspaceModeInfo(mode) : null;
-  }
   if (agent.remoteWorker && (!agent.cwd || !agent.workspaceMode)) return null;
+  // Legacy rows without a mode keep only the inference their flags prove.
   const mode =
     agent.workspaceMode ??
-    (agent.imageWorkspace
-      ? "image"
+    (agent.isLead
+      ? undefined
       : agent.worktree === true
         ? "worktree"
         : agent.role === "reviewer" || agent.worktree === false
           ? "shared"
           : undefined);
-  if (!mode) return null;
-
-  const info = workspaceModeInfo(mode);
-  const path =
-    agent.imageWorkspace && !agent.imageWorkspaceReady
-      ? agent.imageWorkspaceRepo || agent.cwd
-      : agent.cwd || agent.imageWorkspaceRepo;
-  return {
-    label: info.label,
-    title: `${info.title}${path ? ` · ${path}` : ""}`,
-  };
+  // A chat lead never shows the shared mode of its own folder.
+  if (!mode || mode === "image" || (agent.isLead && mode === "shared"))
+    return null;
+  const info: WorkspaceBadgeInfo =
+    mode === "layr-native"
+      ? { label: "Layr", title: "Native Layr workspace" }
+      : mode === "layr"
+        ? { label: "Layr VM", title: "Virtual machine with Layr" }
+        : mode === "worktree"
+          ? { label: "WT", title: "Git worktree" }
+          : { label: "SHARED", title: "Shared folder" };
+  if (!agent.isLead && agent.cwd) info.title += ` · ${agent.cwd}`;
+  return info;
 }
 
 export default function WorkspaceBadge({

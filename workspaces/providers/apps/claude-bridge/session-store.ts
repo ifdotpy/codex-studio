@@ -56,6 +56,9 @@ function parseJournalRepairReport(text: string): JournalRepairReport {
 }
 
 const FORMAT = "studio-claude-session-v1";
+// Error data flag of a thread whose saved session file is gone. Studio reads this
+// name from this file and settles that thread's pending input as not sent.
+export const SESSION_MISSING = "sessionMissing";
 // Maximum bytes read from a saved repair marker. Never read journal or transcript text here.
 const MAX_REPAIR_REPORT_BYTES = 16 * 1024;
 const DEFAULT_CACHE_BYTES = 64 * 1024 * 1024;
@@ -348,7 +351,16 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
     id: string,
   ): Promise<Pick<SavedSession, "session" | "sequence">> => {
     await ready;
-    const raw = await fs.readFile(fileFor(id), "utf8");
+    let raw;
+    try {
+      raw = await fs.readFile(fileFor(id), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      throw Object.assign(
+        new Error(`The saved Claude session ${id} is missing.`),
+        { code: "ENOENT", data: { [SESSION_MISSING]: true } },
+      );
+    }
     const saved = parseSessionSnapshot(raw);
     if (saved?.format === FORMAT)
       return {

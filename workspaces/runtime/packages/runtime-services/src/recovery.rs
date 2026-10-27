@@ -105,7 +105,6 @@ impl From<crate::notification_dispatch::NotificationDispatchError> for RecoveryE
             | NotificationDispatchError::ConflictingDelivery
             | NotificationDispatchError::ConflictingInput
             | NotificationDispatchError::UnauthorizedSubmission
-            | NotificationDispatchError::Budget(_)
             | NotificationDispatchError::Move(_)
             | NotificationDispatchError::Json(_) => Self::CommitFailed,
         }

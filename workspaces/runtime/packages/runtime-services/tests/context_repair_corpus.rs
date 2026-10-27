@@ -265,7 +265,7 @@ async fn explicit_repair_skips_ready_linux_workspace_and_persists_note() {
             let mut agent =
                 ContextRepairRepository::agent(tx, "agent")?.expect("seeded agent exists");
             agent["environment"] = json!("linux");
-            agent["imageWorkspaceReady"] = json!(true);
+            agent["executionMode"] = json!("vm");
             agent
                 .as_object_mut()
                 .expect("agent object")

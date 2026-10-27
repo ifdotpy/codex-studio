@@ -1,7 +1,9 @@
 import type { CSSProperties, ReactNode, Ref } from "react";
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ActionIcon, Menu, Tooltip } from "@mantine/core";
+import { useMergedRef } from "@mantine/hooks";
+import { layoutValues } from "../../layout/layout-contract.generated";
 import { MessageSquare, MoreHorizontal, PanelLeft } from "lucide-react";
 import type { EdgeRailGeometry } from "./edgeRailPolicy";
 import "./edge-rail.css";
@@ -30,6 +32,9 @@ export function EdgeRail({
   menuButtonRef,
 }: EdgeRailProps) {
   const railRef = useRef<HTMLElement>(null);
+  const menuButton = useRef<HTMLButtonElement>(null);
+  const menuTargetRef = useMergedRef(menuButton, menuButtonRef);
+  const [menuHeight, setMenuHeight] = useState<number>();
   useLayoutEffect(() => {
     const focused = document.activeElement;
     if (focused instanceof HTMLElement && railRef.current?.contains(focused)) {
@@ -38,6 +43,27 @@ export function EdgeRail({
   }, [geometry?.height, geometry?.side, geometry?.top]);
   if (!geometry) return null;
   const position = geometry.side === "right" ? "left" : "right";
+  // The button column centers on the system status column, so it sits
+  // closer to the screen edge than the strip center.
+  const outerPadding = geometry.center - geometry.targetSize / 2;
+  const innerGap = geometry.width - geometry.center - geometry.targetSize / 2;
+  const railBottom = geometry.top + geometry.height;
+  // The menu starts at its button and ends at the rail bottom (above Home);
+  // longer menus scroll inside.
+  const measureMenu = () => {
+    const top = menuButton.current?.getBoundingClientRect().top;
+    const root = document.documentElement;
+    const offsetTop = parseFloat(
+      getComputedStyle(root).getPropertyValue("--mobile-viewport-top"),
+    );
+    if (top != null)
+      setMenuHeight(
+        Math.max(
+          geometry.targetSize,
+          railBottom + (Number.isFinite(offsetTop) ? offsetTop : 0) - top,
+        ),
+      );
+  };
   function button(
     label: string,
     icon: ReactNode,
@@ -79,6 +105,9 @@ export function EdgeRail({
           top: `calc(var(--mobile-viewport-top, 0px) + ${geometry.top}px)`,
           height: geometry.height,
           [geometry.side]: 0,
+          [geometry.side === "right" ? "paddingRight" : "paddingLeft"]:
+            outerPadding,
+          alignItems: geometry.side === "right" ? "flex-end" : "flex-start",
           "--edge-rail-target": `${geometry.targetSize}px`,
         } as CSSProperties
       }
@@ -103,7 +132,8 @@ export function EdgeRail({
           withInitialFocusPlaceholder={false}
           position={`${position}-start`}
           withinPortal
-          offset={(geometry.width - geometry.targetSize) / 2}
+          offset={innerGap + layoutValues.edgeRail.menuGap}
+          onOpen={measureMenu}
           middlewares={{
             flip: false,
             shift: {
@@ -118,7 +148,7 @@ export function EdgeRail({
         >
           <Menu.Target>
             <ActionIcon
-              ref={menuButtonRef}
+              ref={menuTargetRef}
               className="edge-rail-button"
               aria-label="Chat actions"
               title="Chat actions"
@@ -127,7 +157,11 @@ export function EdgeRail({
             </ActionIcon>
           </Menu.Target>
           <Menu.Dropdown
-            style={{ maxHeight: geometry.height, overflowY: "auto" }}
+            className="edge-rail-menu"
+            style={{
+              maxHeight: menuHeight ?? geometry.height,
+              overflowY: "auto",
+            }}
           >
             {menu}
           </Menu.Dropdown>

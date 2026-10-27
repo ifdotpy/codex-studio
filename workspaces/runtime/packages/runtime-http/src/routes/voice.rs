@@ -364,7 +364,6 @@ fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
             "voice provider context is unavailable",
         ),
         E::ContextChanged => ApiError::new(StatusCode::CONFLICT, "voice provider context changed"),
-        E::AdmissionDenied(message) => ApiError::new(StatusCode::CONFLICT, message),
         E::Policy(error) => match error {
             studio_runtime_services::voice::policy::VoiceError::InvalidSessionIdentity
             | studio_runtime_services::voice::policy::VoiceError::InvalidOffer
@@ -401,6 +400,7 @@ fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
             | studio_runtime_services::monitor_policy::MonitorError::InvalidDeliveryIdentity(_)
             | studio_runtime_services::monitor_policy::MonitorError::InvalidOutputReceipt(_)
             | studio_runtime_services::monitor_policy::MonitorError::TaskFailed
+            | studio_runtime_services::monitor_policy::MonitorError::InputOutcomeUnknown
             | studio_runtime_services::monitor_policy::MonitorError::ProviderRequest { .. }
             | studio_runtime_services::monitor_policy::MonitorError::ConfigurationRejected {
                 ..
@@ -452,9 +452,6 @@ fn voice_error(error: VoiceError) -> ApiError {
             } => ApiError::invalid_stored(object, &id),
             studio_runtime_services::coordination::CoordinationError::AdmissionDenied(message) => {
                 ApiError::new(StatusCode::BAD_REQUEST, message)
-            }
-            studio_runtime_services::coordination::CoordinationError::BudgetRuntime(_) => {
-                ApiError::internal()
             }
             studio_runtime_services::coordination::CoordinationError::Store(_) => {
                 ApiError::internal()

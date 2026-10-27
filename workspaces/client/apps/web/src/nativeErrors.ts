@@ -1,3 +1,4 @@
+import { claudeFailureView } from "./claudeFailure.ts";
 import { errorDetails } from "./errorPresentation.ts";
 import {
   DISK_FULL_ERROR_PATTERN,
@@ -193,7 +194,18 @@ export function nativeErrorView(value: unknown, planType?: string) {
       message: VM_PROVIDER_DISCONNECTED_TURN_ERROR,
       details: view.details || view.message,
     };
-  if (!isDiskFullError(value)) return view;
+  if (!isDiskFullError(value)) {
+    const record = objectRecord(parseError(value));
+    const claude = claudeFailureView(record?.claudeFailure);
+    if (!claude) return view;
+    return {
+      ...view,
+      ...claude,
+      message: ["usageLimitExceeded", "rateLimitExceeded"].includes(view.kind)
+        ? view.message
+        : claude.message,
+    };
+  }
   return {
     ...view,
     message: DISK_FULL_MESSAGE,

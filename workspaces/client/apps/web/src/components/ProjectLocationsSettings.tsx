@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import {
   useServerApi,
   useServerStorage,
@@ -89,7 +90,7 @@ export default function ProjectLocationsSettings({
       throw new Error(
         "Retry the pending location request before another change.",
       );
-    request.current ||= { action, server, path, id: crypto.randomUUID() };
+    request.current ||= { action, server, path, id: randomUUID() };
     await saveProjectLocation(
       {
         action,

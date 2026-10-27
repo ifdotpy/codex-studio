@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { serverLocalStorage } from "../servers/storage";
 import type { Account } from "./Accounts";
 import type { ProviderKind } from "../generated/providerKind.ts";
@@ -8,6 +9,7 @@ export type AccountDeleteTarget = Pick<
 >;
 
 export type ExternalAccountIdentity = {
+  accountKey?: string;
   provider: ProviderKind;
   email: string | null;
   label: string;
@@ -60,25 +62,34 @@ function saveDeleteRequest(
   }
 }
 
+export function matchingAccountsForExternalCommand<
+  T extends AccountDeleteTarget,
+>(accounts: T[], identity: ExternalAccountIdentity) {
+  return accounts.filter(
+    (candidate) =>
+      candidate.provider === identity.provider &&
+      (identity.accountKey !== undefined
+        ? candidate.id === identity.accountKey
+        : identity.email
+          ? candidate.email?.toLocaleLowerCase() ===
+            identity.email.toLocaleLowerCase()
+          : candidate.label === identity.label),
+  );
+}
+
 export function accountForExternalCommand<T extends AccountDeleteTarget>(
   accounts: T[],
   identity: ExternalAccountIdentity,
 ) {
-  return accounts.find(
-    (candidate) =>
-      candidate.provider === identity.provider &&
-      (identity.email
-        ? candidate.email?.toLocaleLowerCase() ===
-          identity.email.toLocaleLowerCase()
-        : candidate.label === identity.label),
-  );
+  const matches = matchingAccountsForExternalCommand(accounts, identity);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 export function getOrCreateAccountDeleteRequest(
   scope: string | undefined,
   accountKey: string,
   storage: Storage = serverLocalStorage,
-  createRequestId: () => string = () => crypto.randomUUID(),
+  createRequestId: () => string = () => randomUUID(),
 ) {
   const requestId =
     storedDeleteRequest(scope, accountKey, storage) || createRequestId();

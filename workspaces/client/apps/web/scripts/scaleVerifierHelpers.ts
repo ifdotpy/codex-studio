@@ -1015,8 +1015,12 @@ export async function watchReadinessMarkers(
   directory: string,
   tokens: string[],
   signal: AbortSignal | null = null,
-  watchDirectory: WatchDirectory = watch,
+  watchOptions: WatchDirectory | { watchDirectory?: WatchDirectory } = {},
 ) {
+  const watchDirectory =
+    typeof watchOptions === "function"
+      ? watchOptions
+      : (watchOptions.watchDirectory ?? watch);
   signal?.throwIfAborted();
   const ready: number[] = [];
   const seen = new Set<number>();
@@ -1058,43 +1062,54 @@ export async function watchReadinessMarkers(
     checks.set(index, next);
     return next;
   };
+  const markerIndex = (name: string) => {
+    const match = READINESS_MARKER_PATTERN.exec(name);
+    const index = match ? Number(match[1]) : Number.NaN;
+    if (!Number.isSafeInteger(index) || index >= tokens.length)
+      throw new Error(`Unknown readiness marker name: ${name}`);
+    return index;
+  };
+  let scanning = false;
+  let scanRequested = false;
   const checkAll = () => {
-    for (let index = 0; index < tokens.length; index += 1) check(index);
+    scanRequested = true;
+    if (scanning) return;
+    scanning = true;
+    // Coalesce events during each read, then scan again so none are lost.
+    (async () => {
+      try {
+        while (scanRequested && !closed && !failure) {
+          scanRequested = false;
+          const names = await readdir(directory);
+          if (closed || failure) return;
+          // Validate every final name before accepting any marker in this scan.
+          const indices = names
+            .filter((name) => !name.endsWith(".tmp"))
+            .map(markerIndex);
+          for (const index of indices) check(index);
+        }
+      } finally {
+        scanning = false;
+      }
+    })().catch(fail);
   };
   const ownName = basename(directory);
-  const inspectName = (filename: string | Buffer | null) => {
-    if (closed) return;
-    if (filename == null) {
-      checkAll();
-      return;
-    }
-    const name = String(filename);
-    // macOS FSEvents also reports the watched directory itself under its own
-    // base name (for example its recent creation). Only an entry inside the
-    // directory with that name is an unknown marker.
-    if (name === ownName) {
-      return lstat(join(directory, name)).then(
-        () => fail(new Error(`Unknown readiness marker name: ${name}`)),
-        (error) =>
-          (error as NodeJS.ErrnoException)?.code === "ENOENT"
-            ? checkAll()
-            : fail(error),
-      );
-    }
-    // A rename notification may retain the temporary name. Inspect only the
-    // corresponding final path; temporary contents never prove readiness.
-    const temporary = name.endsWith(".tmp");
-    const match = READINESS_MARKER_PATTERN.exec(
-      temporary ? name.slice(0, -4) : name,
-    );
-    const index = match ? Number(match[1]) : Number.NaN;
-    if (!Number.isSafeInteger(index) || index >= tokens.length) {
-      if (!temporary) fail(new Error(`Unknown readiness marker name: ${name}`));
-    } else return check(index);
-    return undefined;
-  };
   const watcher = watchDirectory(directory, (_eventType, filename) => {
-    inspectName(filename);
+    if (closed) return;
+    if (filename != null) {
+      const name = String(filename);
+      // macOS can report the directory's own name instead of a changed entry.
+      // Temporary entries are ignored, but their event can cover a final rename.
+      if (name !== ownName && !name.endsWith(".tmp")) {
+        try {
+          markerIndex(name);
+        } catch (error) {
+          fail(error);
+          return;
+        }
+      }
+    }
+    checkAll();
   });
   watcher.on("error", fail);
   const onAbort = () =>
@@ -1116,7 +1131,10 @@ export async function watchReadinessMarkers(
           reconciled = true;
           // Native watchers can coalesce away a rename before this wait starts.
           // Inspect current entries once, then wait only for notifications.
-          await Promise.all((await readdir(directory)).map(inspectName));
+          const indices = (await readdir(directory))
+            .filter((name) => !name.endsWith(".tmp"))
+            .map(markerIndex);
+          await Promise.all(indices.map(check));
           await Promise.all(checks.values());
           continue;
         }

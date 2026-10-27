@@ -7,6 +7,19 @@ export type paths = Record<string, never>;
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /** BackgroundShellPolicySettings */
+    BackgroundShellPolicySettings: {
+      /**
+       * @description Stop background shells after 30 idle minutes under critical memory pressure, with no active turn or delegates.
+       * @default true
+       */
+      pressureCleanup: boolean;
+      /**
+       * @description Milliseconds without shell output before one check-in. Use 0 to disable, or at least 10000.
+       * @default 0
+       */
+      quietThresholdMs: number;
+    };
     CacheReport: {
       /** @default true */
       compactionEnabled: boolean;
@@ -44,6 +57,93 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    /**
+     * ClaudeFailure
+     * @description Bounded Claude cause metadata. No message text, headers, credential values, or raw error_details. Token counts use tokens.
+     */
+    ClaudeFailure: {
+      /** @enum {string} */
+      apiError?:
+        | "max_output_tokens"
+        | "dlp_request_denied"
+        | "claude_code_version_too_old"
+        | "safety_monitor_blocked"
+        | "effort_requires_thinking"
+        | "advisor_incompatible"
+        | "tool_history_mismatch"
+        | "autocompact_thrashing"
+        | "pdf_too_large"
+        | "pdf_password_protected"
+        | "media_removed"
+        | "no_response"
+        | "tls_untrusted_ca"
+        | "gateway_content_type"
+        | "provider_credentials"
+        | "gateway_signin_required"
+        | "gateway_session_expired"
+        | "api_key_auth_disabled"
+        | "org_disabled_credential"
+        | "invalid_credential_header"
+        | "model_requires_usage_credits"
+        | "long_context_credits_required"
+        | "consent_unanswered"
+        | "no_allowed_fallback"
+        | "model_substitution_disabled"
+        | "field_not_granted"
+        | "usage_limit_reached"
+        | undefined;
+      apiErrorCode?: string | undefined;
+      /** @enum {string} */
+      apiErrorOrigin?: "first_party" | undefined;
+      apiErrorStatus?: number | undefined;
+      /** @enum {string} */
+      effort?: "low" | "medium" | "high" | "max" | "xhigh" | undefined;
+      /** @enum {string} */
+      error?:
+        | "authentication_failed"
+        | "oauth_org_not_allowed"
+        | "account_on_hold"
+        | "verification_required"
+        | "billing_error"
+        | "rate_limit"
+        | "overloaded"
+        | "invalid_request"
+        | "model_not_found"
+        | "server_error"
+        | "unknown"
+        | "max_output_tokens"
+        | "cloud_credential_error"
+        | undefined;
+      maxContextTokens?: number | undefined;
+      /** @enum {string} */
+      media?: "image" | "document" | undefined;
+      /** @enum {string} */
+      mediaReason?:
+        | "unprocessable"
+        | "unsupported_by_model"
+        | "media_budget"
+        | undefined;
+      promptTokens?: number | undefined;
+      /** @enum {string} */
+      provider?:
+        | "bedrock"
+        | "anthropicAws"
+        | "mantle"
+        | "anthropicGoogleCloud"
+        | "vertex"
+        | "foundry"
+        | "gateway"
+        | undefined;
+      /** @enum {string} */
+      remedy?:
+        | "refresh_command"
+        | "refresh_credentials"
+        | "adc"
+        | "gateway_token"
+        | "host_managed"
+        | "model_access"
+        | undefined;
+    };
     /** ClaudeSessionSettings */
     ClaudeSessionSettings: {
       /**
@@ -74,6 +174,8 @@ export interface components {
        * @default null
        */
       launchArgs?: null | string | undefined;
+      /** @description Move eligible MCP calls to the background after 120 seconds. The default is on. */
+      mcpAutoBackground?: boolean | undefined;
       /**
        * Permissionmode
        * @default null
@@ -340,12 +442,15 @@ export type JsonValue =
   | string
   | JsonValue[]
   | { [key: string]: JsonValue };
+export type BackgroundShellPolicySettings =
+  components["schemas"]["BackgroundShellPolicySettings"];
 export type CacheReport = components["schemas"]["CacheReport"];
 export type ClaudeBridgeSessionWire =
   components["schemas"]["ClaudeBridgeSessionWire"];
 export type ClaudeBridgeTurnWire =
   components["schemas"]["ClaudeBridgeTurnWire"];
 export type ClaudeCustomModel = components["schemas"]["ClaudeCustomModel"];
+export type ClaudeFailure = components["schemas"]["ClaudeFailure"];
 export type ClaudeSessionSettings =
   components["schemas"]["ClaudeSessionSettings"];
 export type FreshAgentPhase = components["schemas"]["FreshAgentPhase"];

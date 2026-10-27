@@ -38,12 +38,6 @@ struct ActorInput {
     #[serde(default)]
     last_completed_turn: Value,
     #[serde(default)]
-    tokens_used: Value,
-    #[serde(default)]
-    token_usage_accounting: Value,
-    #[serde(default)]
-    token_budget: Value,
-    #[serde(default)]
     created: Value,
 }
 impl ActorInput {
@@ -118,12 +112,6 @@ impl PartialEq for ReadyKey {
 }
 impl Eq for ReadyKey {}
 
-#[derive(Clone, Copy)]
-enum BlockReason {
-    ProfileInput,
-    BudgetInput,
-}
-
 #[derive(Default)]
 pub struct HistorySchedule {
     actors: BTreeMap<String, CheckedActor>,
@@ -132,7 +120,6 @@ pub struct HistorySchedule {
     inactive_ready: BTreeSet<ReadyKey>,
     polls: BTreeMap<String, Poll>,
     dirty: BTreeSet<String>,
-    budget_blocked: BTreeSet<String>,
     profile_blocked: BTreeMap<String, String>,
     active_streak: usize,
 }
@@ -176,7 +163,6 @@ impl HistorySchedule {
         if let Some(poll) = self.polls.get_mut(agent) {
             poll.blocked_input = None;
         }
-        self.budget_blocked.remove(agent);
         self.profile_blocked.remove(agent);
         self.dirty.insert(agent.into());
         self.sync_ready(agent);
@@ -317,7 +303,6 @@ impl HistorySchedule {
         }
         self.polls.remove(id);
         self.dirty.remove(id);
-        self.budget_blocked.remove(id);
         self.profile_blocked.remove(id);
     }
 
@@ -376,17 +361,6 @@ impl HistorySchedule {
         Ok(())
     }
     pub fn block_for_input_change(&mut self, agent: &Value, now: f64) -> Result<(), CaptureError> {
-        self.block_for_change(agent, now, BlockReason::ProfileInput)
-    }
-    pub fn block_for_budget_change(&mut self, agent: &Value, now: f64) -> Result<(), CaptureError> {
-        self.block_for_change(agent, now, BlockReason::BudgetInput)
-    }
-    fn block_for_change(
-        &mut self,
-        agent: &Value,
-        now: f64,
-        reason: BlockReason,
-    ) -> Result<(), CaptureError> {
         validate_actor(agent)?;
         let id = actor_id(agent)?;
         let actor = self
@@ -409,24 +383,9 @@ impl HistorySchedule {
             },
         );
         self.dirty.remove(id);
-        if matches!(reason, BlockReason::BudgetInput) {
-            self.budget_blocked.insert(id.into());
-            self.profile_blocked.remove(id);
-        } else {
-            self.budget_blocked.remove(id);
-            self.profile_blocked.insert(id.into(), account);
-        }
+        self.profile_blocked.insert(id.into(), account);
         self.sync_ready(id);
         Ok(())
-    }
-    pub fn budget_changed(&mut self) {
-        for id in std::mem::take(&mut self.budget_blocked) {
-            if let Some(poll) = self.polls.get_mut(&id) {
-                poll.blocked_input = None;
-                self.dirty.insert(id.clone());
-                self.sync_ready(&id);
-            }
-        }
     }
     pub fn discovery_changed(&mut self, account: Option<&str>) {
         let resumed = self
@@ -506,9 +465,6 @@ struct BlockedInput {
     epoch: Option<i64>,
     turn_id: Option<String>,
     last_completed_turn: Value,
-    tokens_used: Value,
-    token_usage_accounting: Value,
-    token_budget: Value,
     created: Value,
     provider: Value,
     deleted_at: Value,
@@ -523,9 +479,6 @@ impl BlockedInput {
             epoch: input.epoch,
             turn_id: input.turn_id.clone(),
             last_completed_turn: input.last_completed_turn.clone(),
-            tokens_used: input.tokens_used.clone(),
-            token_usage_accounting: input.token_usage_accounting.clone(),
-            token_budget: input.token_budget.clone(),
             created: input.created.clone(),
             provider: input.scope.provider.clone(),
             deleted_at: input.scope.deleted_at.clone(),
@@ -539,9 +492,6 @@ impl BlockedInput {
             || self.epoch != input.epoch
             || self.turn_id != input.turn_id
             || self.last_completed_turn != input.last_completed_turn
-            || self.tokens_used != input.tokens_used
-            || self.token_usage_accounting != input.token_usage_accounting
-            || self.token_budget != input.token_budget
             || self.created != input.created
             || self.provider != input.scope.provider
             || self.deleted_at != input.scope.deleted_at
@@ -631,7 +581,6 @@ mod tests {
 
     #[tokio::test]
     async fn collector_drain_reuses_checked_roster() {
-        use crate::analytics_history::StoreHistoryBudgetSink;
         use crate::analytics_history::{HistoryClock, HistoryCollector};
         use std::sync::{Arc, atomic::AtomicBool};
         use studio_runtime_store::RuntimeStore;
@@ -666,7 +615,6 @@ mod tests {
             .refresh(&roster)
             .expect("ingest checked roster");
         SCHEDULE_WORK.with(|work| *work.borrow_mut() = ScheduleWork::default());
-        let budget = StoreHistoryBudgetSink::new(&store);
         for expected in &roster {
             assert_eq!(
                 select(&collector.schedule, &roster, 0.).expect("selection"),
@@ -683,7 +631,6 @@ mod tests {
                             monotonic: 0.
                         },
                         Arc::new(AtomicBool::new(false)),
-                        &budget
                     )
                     .await
                     .expect("settle final checkpoint")
@@ -832,9 +779,20 @@ mod tests {
         schedule.refresh(&status_only).expect("status-only update");
         assert!(!schedule.has_pending(), "status changes do not unblock");
 
-        let mut repaired = status_only;
-        repaired[0]["tokenBudget"] = json!(1000);
-        schedule.refresh(&repaired).expect("relevant budget repair");
+        let mut budget_only = status_only;
+        budget_only[0]["tokenBudget"] = json!(1000);
+        schedule
+            .refresh(&budget_only)
+            .expect("stored budget update");
+        assert!(
+            !schedule.has_pending(),
+            "a team token budget from an older build is not history input"
+        );
+        let mut repaired = budget_only;
+        repaired[0]["lastCompletedTurn"] = json!("turn-0");
+        schedule
+            .refresh(&repaired)
+            .expect("relevant history repair");
         assert!(schedule.has_pending());
         assert_eq!(
             select(&schedule, &repaired, 3.0).expect("repaired actor selection"),
@@ -877,42 +835,6 @@ mod tests {
         assert_eq!(
             select(&schedule, std::slice::from_ref(&actor), 2.0).expect("file event resumes actor"),
             Some(&actor)
-        );
-    }
-
-    #[test]
-    fn budget_commit_unblocks_only_budget_invalid_actors() {
-        let budget_actor = agent("paused");
-        let mut discovery_actor = agent("paused");
-        discovery_actor["id"] = json!("discovery-agent");
-        discovery_actor["threadId"] = json!("discovery-thread");
-        let roster = vec![budget_actor.clone(), discovery_actor.clone()];
-        let mut schedule = HistorySchedule::default();
-        schedule.refresh(&roster).expect("initial roster");
-        schedule
-            .block_for_budget_change(&budget_actor, 1.0)
-            .expect("block budget-invalid actor");
-        schedule
-            .block_for_input_change(&discovery_actor, 1.0)
-            .expect("block discovery-limited actor");
-        assert!(!schedule.has_pending());
-
-        schedule.budget_changed();
-        assert!(schedule.has_pending());
-        assert_eq!(
-            select(&schedule, &roster, 2.0).expect("budget actor resumes"),
-            Some(&budget_actor)
-        );
-        schedule
-            .completed(
-                &budget_actor,
-                &checkpoint_for(&budget_actor, "current"),
-                3.0,
-            )
-            .expect("budget actor completes");
-        assert!(
-            !schedule.has_pending(),
-            "a budget commit does not retry discovery-blocked actors"
         );
     }
 
@@ -963,9 +885,356 @@ mod tests {
             "context": {"threadId": agent["threadId"]}, "status": status
         })
     }
+    // Frozen pre-fix scheduler (dc645945): independent state and original
+    // validate/scan/sort selector. Used only to compare scheduling semantics.
+    mod legacy {
+        use super::super::{ACTIVE_QUOTA, MAX_ACTORS};
+        use crate::analytics_capture::CaptureError;
+        use serde_json::Value;
+        use std::collections::{BTreeMap, BTreeSet};
+        use studio_runtime_store::analytics_capture::CaptureTable;
+        #[derive(Clone)]
+        struct Poll {
+            scope: Value,
+            checked: f64,
+            catching_up: bool,
+            blocked_input: Option<BlockedInput>,
+        }
+        #[derive(Default)]
+        pub struct HistorySchedule {
+            polls: BTreeMap<String, Poll>,
+            dirty: BTreeSet<String>,
+            profile_blocked: BTreeMap<String, String>,
+            active_streak: usize,
+        }
+        impl HistorySchedule {
+            pub fn notify(&mut self, agent: &str) -> Result<(), CaptureError> {
+                if self.dirty.len() >= MAX_ACTORS && !self.dirty.contains(agent) {
+                    return Err(CaptureError::Invalid("/history/dirty"));
+                }
+                if let Some(poll) = self.polls.get_mut(agent) {
+                    poll.blocked_input = None;
+                }
+                self.profile_blocked.remove(agent);
+                self.dirty.insert(agent.into());
+                Ok(())
+            }
+
+            /// Only directory structure changes can alter a cached discovery entry
+            /// bound.
+            pub fn notify_rollout(
+                &mut self,
+                agent: &str,
+                structural: bool,
+            ) -> Result<(), CaptureError> {
+                if !structural && self.profile_blocked.contains_key(agent) {
+                    return Ok(());
+                }
+                self.notify(agent)
+            }
+
+            /// Reconcile the watched roster after a durable store notification.
+            pub fn refresh(&mut self, actors: &[Value]) -> Result<(), CaptureError> {
+                if actors.len() > MAX_ACTORS {
+                    return Err(CaptureError::Invalid("/history/roster"));
+                }
+                let mut ids = BTreeSet::new();
+                for actor in actors {
+                    CaptureTable::Agents.validate(actor)?;
+                    let id = actor["id"]
+                        .as_str()
+                        .ok_or(CaptureError::Invalid("/agent/id"))?;
+                    ids.insert(id.to_owned());
+                }
+                self.polls.retain(|id, _| ids.contains(id));
+                self.dirty.retain(|id| ids.contains(id));
+                self.profile_blocked.retain(|id, _| ids.contains(id));
+                for actor in actors {
+                    let id = actor["id"]
+                        .as_str()
+                        .ok_or(CaptureError::Invalid("/agent/id"))?;
+                    if actor["threadId"].as_str().is_none_or(str::is_empty) {
+                        continue;
+                    }
+                    let poll_changed = poll_changed(self.polls.get(id), actor);
+                    if poll_changed {
+                        self.notify(id)?;
+                    }
+                }
+                Ok(())
+            }
+            /// Select one notified, new, changed, or still-catching-up actor from a
+            /// checked roster. The caller owns notification delivery and retry timing.
+            pub fn next<'a>(
+                &mut self,
+                actors: &'a [Value],
+                now: f64,
+            ) -> Result<Option<&'a Value>, CaptureError> {
+                if !now.is_finite() {
+                    return Err(CaptureError::Invalid("/history/roster"));
+                }
+                let mut ids = BTreeSet::new();
+                let mut due = Vec::new();
+                for (index, actor) in actors.iter().enumerate() {
+                    CaptureTable::Agents.validate(actor)?;
+                    let id = actor["id"]
+                        .as_str()
+                        .ok_or(CaptureError::Invalid("/agent/id"))?;
+                    ids.insert(id.to_owned());
+                    if actor["threadId"].as_str().is_none_or(str::is_empty) {
+                        continue;
+                    }
+                    let poll_changed = poll_changed(self.polls.get(id), actor);
+                    if poll_changed {
+                        self.notify(id)?;
+                    }
+                    let poll = self.polls.get(id);
+                    let notified = self.dirty.contains(id);
+                    let catching_up = poll.is_some_and(|p| p.catching_up);
+                    if !notified && !catching_up {
+                        continue;
+                    }
+                    let active = active(actor);
+                    let priority = if active {
+                        0
+                    } else if notified || catching_up {
+                        1
+                    } else {
+                        2
+                    };
+                    let checked = if active {
+                        poll.map_or(0., |p| p.checked)
+                    } else {
+                        0.
+                    };
+                    due.push((priority, checked, index, active));
+                }
+                self.polls.retain(|id, _| ids.contains(id));
+                self.dirty.retain(|id| ids.contains(id));
+                due.sort_by(|a, b| {
+                    a.0.cmp(&b.0)
+                        .then_with(|| a.1.total_cmp(&b.1))
+                        .then(a.2.cmp(&b.2))
+                });
+                let selected = if self.active_streak >= ACTIVE_QUOTA {
+                    due.iter().find(|v| !v.3).or_else(|| due.first())
+                } else {
+                    due.first()
+                };
+                Ok(selected.map(|v| &actors[v.2]))
+            }
+            /// Call after an actual import attempt. Partial checkpoints remain pending
+            /// immediately; current checkpoints wait for a new file or store event.
+            pub fn completed(
+                &mut self,
+                agent: &Value,
+                checkpoint: &Value,
+                now: f64,
+            ) -> Result<(), CaptureError> {
+                CaptureTable::Agents.validate(agent)?;
+                CaptureTable::History.validate(checkpoint)?;
+                let id = agent["id"]
+                    .as_str()
+                    .ok_or(CaptureError::Invalid("/agent/id"))?;
+                let active = active(agent);
+                if !self.polls.contains_key(id) && self.polls.len() >= MAX_ACTORS {
+                    return Err(CaptureError::Invalid("/history/polls"));
+                }
+                let catching_up = checkpoint["status"] == "catchingUp";
+                self.polls.insert(
+                    id.into(),
+                    Poll {
+                        scope: scope(agent),
+                        checked: now,
+                        catching_up,
+                        blocked_input: None,
+                    },
+                );
+                self.dirty.remove(id);
+                if catching_up {
+                    self.notify(id)?;
+                }
+                self.active_streak = if active {
+                    self.active_streak.saturating_add(1)
+                } else {
+                    0
+                };
+                Ok(())
+            }
+
+            /// Suppress retries for a deterministic input failure until a relevant
+            /// input signature changes or an explicit file/profile notification arrives.
+            pub fn block_for_input_change(
+                &mut self,
+                agent: &Value,
+                now: f64,
+            ) -> Result<(), CaptureError> {
+                CaptureTable::Agents.validate(agent)?;
+                let id = agent["id"]
+                    .as_str()
+                    .ok_or(CaptureError::Invalid("/agent/id"))?;
+                if !self.polls.contains_key(id) && self.polls.len() >= MAX_ACTORS {
+                    return Err(CaptureError::Invalid("/history/polls"));
+                }
+                self.polls.insert(
+                    id.to_owned(),
+                    Poll {
+                        scope: scope(agent),
+                        checked: now,
+                        catching_up: false,
+                        blocked_input: Some(BlockedInput::from_agent(agent)),
+                    },
+                );
+                self.dirty.remove(id);
+                self.profile_blocked.insert(
+                    id.to_owned(),
+                    agent["accountKey"].as_str().unwrap_or("default").to_owned(),
+                );
+                Ok(())
+            }
+
+            /// Resume profile-bound failures after a real profile tree event. The
+            /// blocked set is bounded by the validated roster and needs no roster read.
+            pub fn discovery_changed(&mut self, account: Option<&str>) {
+                let resumed = self
+                    .profile_blocked
+                    .iter()
+                    .filter(|(_, blocked_account)| {
+                        account.is_none_or(|account| blocked_account == &account)
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect::<Vec<_>>();
+                for id in resumed {
+                    self.profile_blocked.remove(&id);
+                    if let Some(poll) = self.polls.get_mut(&id) {
+                        poll.blocked_input = None;
+                        self.dirty.insert(id);
+                    }
+                }
+            }
+
+            /// True when the last import of this agent is final and its inputs have not changed.
+            pub fn settled(&self, agent: &Value) -> bool {
+                let Some(id) = agent["id"].as_str() else {
+                    return false;
+                };
+                self.polls.get(id).is_some_and(|poll| {
+                    !poll.catching_up
+                        && poll.blocked_input.is_none()
+                        && !self.dirty.contains(id)
+                        && !poll_changed(Some(poll), agent)
+                })
+            }
+
+            pub fn has_pending(&self) -> bool {
+                !self.dirty.is_empty() || self.polls.values().any(|poll| poll.catching_up)
+            }
+        }
+
+        fn poll_changed(poll: Option<&Poll>, agent: &Value) -> bool {
+            poll.is_none_or(|poll| {
+                if let Some(blocked) = &poll.blocked_input {
+                    blocked.input_changed(agent)
+                } else {
+                    poll.scope != scope(agent)
+                }
+            })
+        }
+
+        #[derive(Clone)]
+        struct BlockedInput {
+            id: String,
+            root_id: Option<String>,
+            account_key: Option<String>,
+            thread_id: Option<String>,
+            epoch: Option<i64>,
+            turn_id: Option<String>,
+            last_completed_turn: Option<Value>,
+            created: Option<Value>,
+            provider: Option<Value>,
+            deleted_at: Option<Value>,
+        }
+
+        impl BlockedInput {
+            fn from_agent(agent: &Value) -> Self {
+                Self {
+                    id: agent["id"].as_str().unwrap_or_default().to_owned(),
+                    root_id: agent["rootId"].as_str().map(str::to_owned),
+                    account_key: agent["accountKey"].as_str().map(str::to_owned),
+                    thread_id: agent["threadId"].as_str().map(str::to_owned),
+                    epoch: agent["epoch"].as_i64(),
+                    turn_id: agent["turnId"].as_str().map(str::to_owned),
+                    last_completed_turn: present_value(agent, "lastCompletedTurn"),
+                    created: present_value(agent, "created"),
+                    provider: present_value(agent, "provider"),
+                    deleted_at: present_value(agent, "deletedAt"),
+                }
+            }
+
+            fn input_changed(&self, agent: &Value) -> bool {
+                self.id != agent["id"].as_str().unwrap_or_default()
+                    || self.root_id.as_deref() != agent["rootId"].as_str()
+                    || self.account_key.as_deref() != agent["accountKey"].as_str()
+                    || self.thread_id.as_deref() != agent["threadId"].as_str()
+                    || self.epoch != agent["epoch"].as_i64()
+                    || self.turn_id.as_deref() != agent["turnId"].as_str()
+                    || !same_optional_value(
+                        &self.last_completed_turn,
+                        agent.get("lastCompletedTurn"),
+                    )
+                    || !same_optional_value(&self.created, agent.get("created"))
+                    || !same_optional_value(&self.provider, agent.get("provider"))
+                    || !same_optional_value(&self.deleted_at, agent.get("deletedAt"))
+            }
+        }
+
+        fn present_value(agent: &Value, key: &str) -> Option<Value> {
+            agent.get(key).filter(|value| !value.is_null()).cloned()
+        }
+
+        fn same_optional_value(expected: &Option<Value>, actual: Option<&Value>) -> bool {
+            expected.as_ref() == actual.filter(|value| !value.is_null())
+        }
+        fn active(a: &Value) -> bool {
+            studio_runtime_store::truthy(a.get("inFlight"))
+                || matches!(
+                    a["status"].as_str(),
+                    Some("queued" | "starting" | "running" | "approval")
+                )
+        }
+        fn scope(a: &Value) -> Value {
+            Value::Array(
+                [
+                    "accountKey",
+                    "threadId",
+                    "provider",
+                    "deletedAt",
+                    "status",
+                    "inFlight",
+                ]
+                .iter()
+                .map(|k| a[*k].clone())
+                .collect(),
+            )
+        }
+    }
+
+    fn parity_selection(
+        schedule: &HistorySchedule,
+        reference: &mut legacy::HistorySchedule,
+        roster: &[Value],
+        now: f64,
+    ) -> Option<Value> {
+        let expected = reference.next(roster, now).expect("reference selection");
+        let actual = select(schedule, roster, now).expect("retained selection");
+        assert_eq!(actual, expected, "same selected actor at {now}");
+        actual.cloned()
+    }
+
     #[test]
-    fn retained_order_follows_literal_selection_examples() {
-        let roster = ["running", "queued", "paused", "completed"]
+    fn retained_order_matches_original_selector_across_events() {
+        const ROUNDS: usize = ACTIVE_QUOTA * 3;
+        let mut roster = ["running", "queued", "paused", "completed"]
             .into_iter()
             .enumerate()
             .map(|(index, status)| {
@@ -975,54 +1244,86 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let mut schedule = HistorySchedule::default();
-        schedule.refresh(&roster).expect("roster");
-        for expected in ["actor-0", "actor-1", "actor-2", "actor-3"] {
-            let selected = select(&schedule, &roster, 0.)
-                .expect("schedule operation succeeds")
-                .expect("actor")
-                .clone();
-            assert_eq!(selected["id"], expected);
+        let mut reference = legacy::HistorySchedule::default();
+        schedule.refresh(&roster).expect("initial roster");
+        reference.refresh(&roster).expect("reference roster");
+        for round in 0..ROUNDS {
+            let now = (round / ACTIVE_QUOTA) as f64;
+            let selected =
+                parity_selection(&schedule, &mut reference, &roster, now).expect("catch-up actor");
+            let checkpoint = checkpoint_for(&selected, "catchingUp");
             schedule
-                .completed(&selected, &checkpoint_for(&selected, "current"), 0.)
-                .expect("schedule operation succeeds");
+                .completed(&selected, &checkpoint, now)
+                .expect("partial");
+            reference
+                .completed(&selected, &checkpoint, now)
+                .expect("reference partial");
         }
-        assert!(
-            schedule
-                .next(1.)
-                .expect("schedule operation succeeds")
-                .is_none()
-        );
+        let blocked =
+            parity_selection(&schedule, &mut reference, &roster, 4.).expect("profile actor");
         schedule
-            .notify("actor-3")
-            .expect("schedule operation succeeds");
-        let selected = select(&schedule, &roster, 1.)
-            .expect("schedule operation succeeds")
-            .expect("notified actor")
-            .clone();
-        assert_eq!(selected["id"], "actor-3");
+            .block_for_input_change(&blocked, 4.)
+            .expect("block profile");
+        reference
+            .block_for_input_change(&blocked, 4.)
+            .expect("reference block profile");
+        let second =
+            parity_selection(&schedule, &mut reference, &roster, 4.).expect("second actor");
         schedule
-            .block_for_budget_change(&selected, 1.)
-            .expect("schedule operation succeeds");
-        assert!(
+            .block_for_input_change(&second, 4.)
+            .expect("block second profile");
+        reference
+            .block_for_input_change(&second, 4.)
+            .expect("reference block second profile");
+        // Status and activity changes must reorder ready actors but not resume a blocked actor.
+        for actor in &mut roster {
+            actor["status"] = json!("paused");
+            actor["inFlight"] = json!(true);
+        }
+        schedule
+            .update_rows(
+                &roster
+                    .iter()
+                    .enumerate()
+                    .map(|(row, actor)| (row as i64, Some(actor.clone())))
+                    .collect::<Vec<_>>(),
+            )
+            .expect("changed rows");
+        reference.refresh(&roster).expect("reference changed rows");
+        parity_selection(&schedule, &mut reference, &roster, 5.);
+        schedule
+            .notify_rollout(actor_id(&blocked).expect("id"), false)
+            .expect("nonstructural rollout");
+        reference
+            .notify_rollout(actor_id(&blocked).expect("id"), false)
+            .expect("reference rollout");
+        parity_selection(&schedule, &mut reference, &roster, 5.);
+        schedule.discovery_changed(Some("default"));
+        reference.discovery_changed(Some("default"));
+        parity_selection(&schedule, &mut reference, &roster, 5.);
+        // Relevant input changes and deletion preserve the original row-order tie.
+        roster[0]["epoch"] = json!(2);
+        roster[0]["threadId"] = json!("new-thread");
+        schedule
+            .update_rows(&[(0, Some(roster[0].clone())), (1, None)])
+            .expect("input change and deletion");
+        roster.remove(1);
+        reference.refresh(&roster).expect("reference removal");
+        while let Some(selected) = parity_selection(&schedule, &mut reference, &roster, 6.) {
+            let checkpoint = checkpoint_for(&selected, "current");
             schedule
-                .next(1.)
-                .expect("schedule operation succeeds")
-                .is_none()
-        );
-        schedule.budget_changed();
-        assert_eq!(
-            select(&schedule, &roster, 1.)
-                .expect("schedule operation succeeds")
-                .expect("schedule operation succeeds")["id"],
-            "actor-3"
-        );
-        schedule.remove("actor-3");
-        assert!(
-            schedule
-                .next(1.)
-                .expect("schedule operation succeeds")
-                .is_none()
-        );
+                .completed(&selected, &checkpoint, 6.)
+                .expect("current");
+            reference
+                .completed(&selected, &checkpoint, 6.)
+                .expect("reference current");
+            assert_eq!(schedule.settled(&selected), reference.settled(&selected));
+        }
+        assert_eq!(schedule.has_pending(), reference.has_pending());
+        let id = actor_id(&roster[0]).expect("id");
+        schedule.notify(id).expect("explicit notification");
+        reference.notify(id).expect("reference notification");
+        parity_selection(&schedule, &mut reference, &roster, 7.);
     }
 
     #[test]

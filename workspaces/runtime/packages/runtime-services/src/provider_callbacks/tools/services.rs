@@ -121,8 +121,7 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
                 crate::coordination::CoordinationError::InvalidRequest(_)
                 | crate::coordination::CoordinationError::Conflict(_)
                 | crate::coordination::CoordinationError::InvalidStored { .. }
-                | crate::coordination::CoordinationError::AdmissionDenied(_)
-                | crate::coordination::CoordinationError::BudgetRuntime(_) => {
+                | crate::coordination::CoordinationError::AdmissionDenied(_) => {
                     crate::managed_host_tools::Error::Invalid("Agent input was refused")
                 }
             })?;
@@ -399,7 +398,6 @@ impl crate::managed_host_tools::ComplaintPort for ProductionPorts {
             }
             | crate::notification_dispatch::NotificationDispatchError::ConflictingDelivery
             | crate::notification_dispatch::NotificationDispatchError::UnauthorizedSubmission
-            | crate::notification_dispatch::NotificationDispatchError::Budget(_)
             | crate::notification_dispatch::NotificationDispatchError::Move(_)
             | crate::notification_dispatch::NotificationDispatchError::Json(_) => {
                 crate::managed_host_tools::Error::Invalid("Complaint action was refused")
@@ -468,6 +466,7 @@ impl crate::managed_host_tools::WatchMonitorPort for ProductionPorts {
             | crate::monitor_policy::MonitorError::InvalidDeliveryIdentity(_)
             | crate::monitor_policy::MonitorError::InvalidOutputReceipt(_)
             | crate::monitor_policy::MonitorError::TaskFailed
+            | crate::monitor_policy::MonitorError::InputOutcomeUnknown
             | crate::monitor_policy::MonitorError::ProviderRequest { .. }
             | crate::monitor_policy::MonitorError::ConfigurationRejected { .. }
             | crate::monitor_policy::MonitorError::ConfigurationReceipt { .. }
@@ -711,8 +710,7 @@ impl From<crate::coordination::CoordinationError> for CallbackError {
             E::InvalidRequest(message) | E::Conflict(message) => Self::Invalid(message),
             E::RequiresDependency(name) => Self::Dependency(name),
             E::InvalidStored { object, id } => Self::Stored(format!("{object}/{id}")),
-            E::AdmissionDenied(_) => Self::Invalid("Team token budget admission denied"),
-            E::BudgetRuntime(_) => Self::Invalid("Unable to verify team token budget"),
+            E::AdmissionDenied(_) => Self::Invalid("Message admission denied"),
         }
     }
 }
@@ -847,6 +845,7 @@ pub(super) fn execute(
             | crate::monitor_policy::MonitorError::InvalidDeliveryIdentity(_)
             | crate::monitor_policy::MonitorError::InvalidOutputReceipt(_)
             | crate::monitor_policy::MonitorError::TaskFailed
+            | crate::monitor_policy::MonitorError::InputOutcomeUnknown
             | crate::monitor_policy::MonitorError::ProviderRequest { .. }
             | crate::monitor_policy::MonitorError::ConfigurationRejected { .. }
             | crate::monitor_policy::MonitorError::ConfigurationReceipt { .. }
@@ -1061,6 +1060,7 @@ fn monitor_context_error(
         | M::InvalidDeliveryIdentity(_)
         | M::InvalidOutputReceipt(_)
         | M::TaskFailed
+        | M::InputOutcomeUnknown
         | M::Refused(_)
         | M::ProviderRequest { .. }
         | M::ConfigurationRejected { .. }

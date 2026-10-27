@@ -27,6 +27,14 @@ pub enum Kind {
     RecoveryFailed,
     StoredRecordInvalid,
     UnclassifiedFailure,
+    /// A running turn whose provider is silent while no tool runs.
+    TurnStalled,
+    /// An owner message that waits while its chat does not start.
+    InputNotStarted,
+    /// Chats that wait for an account session that does not start.
+    SessionNotStarted,
+    /// A usage resume, capacity retry or account transfer that did not move.
+    ScheduleStalled,
 }
 
 impl Kind {
@@ -57,6 +65,12 @@ impl Kind {
             Self::UnclassifiedFailure => {
                 "This work failed without a recognized classification. Its outcome remains uncertain; inspect the source details."
             }
+            Self::TurnStalled => {
+                "The chat shows a running turn, but its provider sent nothing for 10 minutes."
+            }
+            Self::InputNotStarted => "A message waits, but its chat did not start.",
+            Self::SessionNotStarted => "Chats wait for an account session that did not start.",
+            Self::ScheduleStalled => "A scheduled step did not move after its due time.",
         }
     }
 
@@ -72,7 +86,11 @@ impl Kind {
             | Self::HttpFailure
             | Self::RecoveryFailed
             | Self::StoredRecordInvalid
-            | Self::UnclassifiedFailure => EffectCertainty::Unknown,
+            | Self::UnclassifiedFailure
+            | Self::TurnStalled
+            | Self::InputNotStarted
+            | Self::SessionNotStarted
+            | Self::ScheduleStalled => EffectCertainty::Unknown,
         }
     }
 
@@ -86,7 +104,11 @@ impl Kind {
             | Self::MonitorNotRecorded
             | Self::InputUnconfirmed
             | Self::WorkspaceFailed
-            | Self::UnclassifiedFailure => Target::Check {
+            | Self::UnclassifiedFailure
+            | Self::TurnStalled
+            | Self::InputNotStarted
+            | Self::SessionNotStarted
+            | Self::ScheduleStalled => Target::Check {
                 agent_id,
                 agent_name,
             },
@@ -327,6 +349,17 @@ pub struct StudioError {
     pub monitor_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
+    /// Rule of a grouped monitor row; its failures share one row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
+    /// Failures in a grouped row. Unit: occurrences.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub count: Option<u64>,
+    /// Unix seconds of the first failure in a grouped row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0))]
+    pub first_at: Option<f64>,
     pub diagnostics: Diagnostics,
 }
 
@@ -415,6 +448,9 @@ mod tests {
             at: 1.0,
             monitor_id: Some("watch".into()),
             event_id: None,
+            rule_id: None,
+            count: None,
+            first_at: None,
             diagnostics: Diagnostics {
                 context: Context::Monitor {
                     request_id: Some("original".into()),

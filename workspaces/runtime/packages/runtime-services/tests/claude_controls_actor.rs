@@ -368,11 +368,11 @@ impl ControlSession for RewindNative {
 }
 
 #[tokio::test]
-async fn combined_rewind_for_image_workspace_settles_history_and_replays_once() {
+async fn combined_rewind_for_shared_workspace_settles_history_and_replays_once() {
     let root = tempfile::tempdir().expect("temporary workspace creates");
-    let cwd = root.path().join("image");
+    let cwd = root.path().join("shared");
     let state = root.path().join("state");
-    std::fs::create_dir(&cwd).expect("image directory creates");
+    std::fs::create_dir(&cwd).expect("shared directory creates");
     std::fs::create_dir(&state).expect("state directory creates");
     seed_state(&state, &cwd).await;
     let store = Arc::new(
@@ -381,9 +381,9 @@ async fn combined_rewind_for_image_workspace_settles_history_and_replays_once() 
             .expect("runtime store opens"),
     );
     store.transaction(|tx| {
-        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.imageWorkspace',json('true'),'$.worktreeReady',json('false')) WHERE id='agent'",[])?;
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.workspaceMode','shared','$.worktreeReady',json('false')) WHERE id='agent'",[])?;
         Ok(())
-    }).await.expect("image workspace fixture writes");
+    }).await.expect("shared workspace fixture writes");
     let native = Arc::new(RewindNative(Mutex::new(vec![]), false));
     let controls = Controls::new(
         Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
@@ -984,5 +984,17 @@ async fn live_permissions_claude_control_applies_while_running_and_pending_witho
                 );
             }
         }
+    }
+}
+
+#[test]
+fn mcp_auto_background_accepts_only_booleans() {
+    use studio_runtime_schema::claude_controls::ClaudeSettings;
+    let settings = |value: Value| serde_json::from_value::<ClaudeSettings>(value);
+    for value in [json!(true), json!(false)] {
+        assert!(settings(json!({"mcpAutoBackground":value})).is_ok());
+    }
+    for value in [json!(null), json!(1), json!("true")] {
+        assert!(settings(json!({"mcpAutoBackground":value})).is_err());
     }
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { hasNativeClient } from "../native/client";
 import { saveFile } from "../fileActions";
 import { useServerAudio } from "../servers/ServerServicesContext";
@@ -191,7 +192,7 @@ function NativeDictation({
       if (desktop?.requestMicrophone) await desktop.requestMicrophone();
       if (!mounted.current || scope.current !== owner) return;
       const row: Recording = {
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         chatId: owner,
         created: Date.now(),
         sampleRate: 16000,
@@ -251,7 +252,7 @@ function NativeDictation({
     reservation?: ReturnType<typeof prepare>,
   ) => {
     const owner = chatId,
-      attempt = crypto.randomUUID();
+      attempt = randomUUID();
     setBusy(row.id);
     setError("");
     setProgress("Preparing audio…");

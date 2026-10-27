@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import ClaudeOrganization from "./ClaudeOrganization";
 import Disclosure from "./ui/Disclosure";
 import {
@@ -64,6 +65,7 @@ import AccountManagerHost from "./AccountManagerHost";
 import AccountAddDialog, { type AddAccountIntent } from "./AccountAddDialog";
 import {
   accountForExternalCommand,
+  matchingAccountsForExternalCommand,
   confirmAccountDeleteRequest,
   getOrCreateAccountDeleteRequest,
 } from "./accountDeleteRequests";
@@ -172,7 +174,7 @@ function AccountNameEditor({
       return;
     }
     if (request.current?.label !== label)
-      request.current = { label, request_id: crypto.randomUUID() };
+      request.current = { label, request_id: randomUUID() };
     lock.current = true;
     setBusy(true);
     setError("");
@@ -883,7 +885,11 @@ export default function Accounts({
     setExternalServerLabel(
       command.action === "account-sign-in" ? command.serverLabel : "",
     );
-    if (command.action === "account-sign-in" && command.forceAdd) {
+    if (
+      command.action === "account-sign-in" &&
+      command.forceAdd &&
+      !command.accountKey
+    ) {
       setAddIntent({
         provider: command.provider,
         email: command.email,
@@ -898,15 +904,14 @@ export default function Accounts({
       command.action === "account-action" &&
       command.operation === "configure-profile"
     ) {
-      const account = state.data.accounts.find(
-        (candidate) =>
-          candidate.provider === ProviderKind.Claude &&
-          (command.email
-            ? candidate.email?.toLocaleLowerCase() ===
-              command.email.toLocaleLowerCase()
-            : candidate.label === command.label),
-      );
-      if (account) setClaudeProfileChoice(account);
+      const account = accountForExternalCommand(state.data.accounts, command);
+      if (account?.provider === ProviderKind.Claude)
+        setClaudeProfileChoice(account);
+      else if (
+        matchingAccountsForExternalCommand(state.data.accounts, command)
+          .length > 1
+      )
+        setError("Multiple saved accounts match. Select the exact profile.");
       else setError("This Claude account is no longer saved on this server.");
       onExternalCommandHandled?.();
       return;
@@ -920,8 +925,17 @@ export default function Accounts({
         return;
       }
       const account = accountForExternalCommand(current.accounts, command);
+      if (
+        matchingAccountsForExternalCommand(current.accounts, command).length > 1
+      ) {
+        setError("Multiple saved accounts match. Select the exact profile.");
+        onExternalCommandHandled?.();
+        return;
+      }
       if (command.action === "account-sign-in") {
-        if (account && !command.forceAdd) {
+        if (command.accountKey && !account) {
+          setError("This account is no longer saved on this server.");
+        } else if (account && (!command.forceAdd || command.accountKey)) {
           const signIn: Record<ProviderKind, (account: Account) => void> = {
             [ProviderKind.Codex]: setCodexLogin,
             [ProviderKind.Claude]: setClaudeLogin,
@@ -981,7 +995,7 @@ export default function Accounts({
         target: account,
         sourceProvider: selected?.provider || owner.provider || "",
         agentId: owner.id,
-        requestId: crypto.randomUUID(),
+        requestId: randomUUID(),
         extend: !!extendTransfer,
       });
     } else if (!pinned)
@@ -1514,7 +1528,7 @@ export default function Accounts({
                 await post("/api/accounts/name", {
                   account_key: renameChoice.id,
                   label: renameLabel,
-                  request_id: crypto.randomUUID(),
+                  request_id: randomUUID(),
                 }),
               );
               setRenameChoice(null);

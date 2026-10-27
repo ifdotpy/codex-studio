@@ -45,7 +45,7 @@ pub(crate) async fn boundary(
         })
         .flatten();
     if crate::routes::incoming_multi_server::needed(request.headers(), &path) {
-        return crate::routes::incoming_multi_server::serve(state, request).await;
+        return crate::routes::incoming_multi_server::serve(state, request, next).await;
     }
     let headers = request.headers();
     let mut parsed_body = None;
@@ -592,6 +592,9 @@ pub(crate) fn http_failure(
         at,
         monitor_id: None,
         event_id: None,
+        rule_id: None,
+        count: None,
+        first_at: None,
         diagnostics,
     })
 }

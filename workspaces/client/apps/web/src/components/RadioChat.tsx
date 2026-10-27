@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { providerLabel } from "../generated/providerKind.ts";
 import { Button, Select, Textarea } from "@mantine/core";
@@ -139,7 +140,7 @@ export default function RadioChat({
       action: "radio" as const,
       path,
       team_id: teamId,
-      request_id: crypto.randomUUID(),
+      request_id: randomUUID(),
       expected_revision: radio.revision,
     };
     switch (input.action) {

@@ -54,6 +54,23 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error"]["code"], "outcome_unknown")
         self.broker.dispatch.assert_not_awaited()
 
+    async def test_an_interrupted_mac_sync_apply_runs_again_after_a_broker_restart(self):
+        # The broker saves its receipt after the operation. A broker stop during a Mac sync
+        # round left the row without a result, and every repeat answered outcome_unknown
+        # (igor-mbp, 2026-10-13). sync.mac.apply starts again from main and keeps its own
+        # receipt, so a repeat runs it again; other methods stay unknown.
+        from common import digest, receipt
+        params = {"projectId": "one", "operationId": "mac-1", "since": [], "entries": []}
+        receipt(self.broker.db, "mac-1", digest("sync.mac.apply", params))
+        self.broker.close()
+        self.broker = Broker(self.root / "state", self.root / "store", modules=())
+        self.broker.dispatch = AsyncMock(return_value={"mainStateId": "abcdef0"})
+        request = {"id": "mac-1", "method": "sync.mac.apply", "params": params}
+        first = await self.broker.request(request, None)
+        self.assertEqual(first["result"], {"mainStateId": "abcdef0"})
+        self.assertEqual(await self.broker.request(request, None), first)
+        self.broker.dispatch.assert_awaited_once()
+
     async def test_concurrent_same_identity_joins_one_operation(self):
         applied = []
         gate = asyncio.Event()
@@ -266,7 +283,7 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
             share = AsyncMock()
             share.status = AsyncMock(return_value={"state": "test"})
             projects = Projects(root, root, share, None)
-            projects.layr = AsyncMock(return_value="layr version 0.1.0")
+            projects.layr = AsyncMock(return_value="layr version 0.2.0")
             usage = SimpleNamespace(total=100, used=70, free=30)
             with patch("layr_projects.command", AsyncMock()) as walk, \
                     patch("layr_projects.shutil.disk_usage", return_value=usage):
@@ -284,7 +301,7 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
                 await projects.apply_policy("app")
             self.assertEqual([call.args[0] for call in projects.layr.await_args_list], [
                 ["--project", "app", "protect", "main", "--direct"],
-                ["--project", "app", "access", "deny", "@studio-agents", "access", "sync", "remote", "records", "backup"]])
+                ["--project", "app", "access", "deny", "@studio-agents", "access", "sync", "remote", "records"]])
 
 
 class ProjectExecTests(unittest.IsolatedAsyncioTestCase):
@@ -381,7 +398,7 @@ class SeedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.main / "chromium/src/.git/HEAD").read_text(), "ref: refs/heads/attar/fork\n")
         self.assertEqual((self.main / "chromium/src/BUILD.gn").stat().st_uid, os.getuid())
         owner = pwd.getpwuid(os.getuid()).pw_name
-        self.projects.layr.assert_awaited_once_with(["save", "--caches", "-m", "Seed layer chromium"],
+        self.projects.layr.assert_awaited_once_with(["save", "--caches", "--note", "Seed layer chromium"],
                                                     cwd=self.main, owner=owner)
         self.assertIn(["cp", "-a", "--reflink=always"], self.commands)
         self.assertIn(["btrfs", "subvolume", "create"], self.commands)

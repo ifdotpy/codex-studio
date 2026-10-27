@@ -154,10 +154,15 @@ mod tests {
 
     #[test]
     fn migration_registry_rename_failure_keeps_source_and_newer_edit_is_refused() {
-        let root = tempfile::tempdir().expect("state");
-        let original = source(root.path());
-        let path = root.path().join("accounts/registry.json");
-        let prepared = preflight(root.path()).expect("preflight");
+        let state = tempfile::tempdir().expect("state");
+        // The store root is canonical; a macOS temp folder is a symlink.
+        let root = crate::path_identity::CanonicalPath::existing(state.path())
+            .expect("canonical state")
+            .as_path()
+            .to_path_buf();
+        let original = source(root.as_path());
+        let path = root.as_path().join("accounts/registry.json");
+        let prepared = preflight(root.as_path()).expect("preflight");
         let error = apply_with(prepared.as_ref(), |path, bytes| {
             atomic_replace_with(
                 path,
@@ -185,10 +190,15 @@ mod tests {
 
     #[test]
     fn migration_registry_directory_sync_unknown_never_restores_over_committed_bytes() {
-        let root = tempfile::tempdir().expect("state");
-        let original = source(root.path());
-        let path = root.path().join("accounts/registry.json");
-        let prepared = preflight(root.path()).expect("preflight");
+        let state = tempfile::tempdir().expect("state");
+        // The store root is canonical; a macOS temp folder is a symlink.
+        let root = crate::path_identity::CanonicalPath::existing(state.path())
+            .expect("canonical state")
+            .as_path()
+            .to_path_buf();
+        let original = source(root.as_path());
+        let path = root.as_path().join("accounts/registry.json");
+        let prepared = preflight(root.as_path()).expect("preflight");
         let error = apply_with(prepared.as_ref(), |path, bytes| {
             atomic_replace_with(
                 path,
@@ -210,7 +220,7 @@ mod tests {
         assert_ne!(committed, original);
         let (_, order) = decode_registry(&committed).expect("strict current document");
         assert_eq!(order.accounts, ["z", "default"]);
-        let retry = preflight(root.path()).expect("restart preflight");
+        let retry = preflight(root.as_path()).expect("restart preflight");
         apply_with(retry.as_ref(), |_, _| {
             panic!("already current file must not be replaced")
         })

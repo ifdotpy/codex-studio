@@ -92,6 +92,7 @@ impl ClaudeSessionPort for RetainedOwner {
                 | Method::ClaudeFileBackups
                 | Method::ClaudeActivity
                 | Method::ClaudeStopTask
+                | Method::ClaudeShellPolicy
                 | Method::ClaudeDiagnostics
                 | Method::ClaudeMoveVersions
                 | Method::McpServerReconnect
@@ -166,6 +167,7 @@ impl ClaudeSessionPort for RetainedOwner {
                 | Method::ThreadClosed
                 | Method::ThreadStatusChanged
                 | Method::ThreadTokenUsageUpdated
+                | Method::ThreadShellPolicyUpdated
                 | Method::ThreadIdleCompactionUpdated
                 | Method::AccountLoginCompleted
                 | Method::AccountUpdated

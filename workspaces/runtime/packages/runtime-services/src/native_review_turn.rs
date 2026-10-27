@@ -175,14 +175,12 @@ async fn run_once(
         // A host without a provider session leaves the review queued.
         return Err(NativeError::Unavailable("provider-session/native-request"));
     };
-    let admission_store = Arc::clone(&store);
     let admission_agent = agent_id.to_owned();
     let admission = store
         .read_async(
             "runtime-services/native_review_turn_admission",
             move |connection| {
                 crate::message_admission::MessageIngressAdmission::read(
-                    admission_store,
                     connection,
                     &admission_agent,
                 )
@@ -768,6 +766,7 @@ pub(crate) mod tests {
                     | Method::ClaudeSettings
                     | Method::ClaudeActivity
                     | Method::ClaudeStopTask
+                    | Method::ClaudeShellPolicy
                     | Method::ClaudeDiagnostics
                     | Method::ClaudeMoveVersions
                     | Method::McpServerReconnect
@@ -841,6 +840,7 @@ pub(crate) mod tests {
                     | Method::ThreadClosed
                     | Method::ThreadStatusChanged
                     | Method::ThreadTokenUsageUpdated
+                    | Method::ThreadShellPolicyUpdated
                     | Method::ThreadIdleCompactionUpdated
                     | Method::AccountLoginCompleted
                     | Method::AccountUpdated

@@ -1,4 +1,8 @@
 import {
+  CHAT_WORKSPACE_MODES,
+  defaultChatWorkspaceMode,
+} from "../generated/workspaceModes";
+import {
   get,
   ApiError,
   READ_DEADLINE_MS,
@@ -13,15 +17,7 @@ import {
 import { serverCredentialAdapter } from "../servers/transport";
 import type { StudioServer } from "../servers/registry";
 
-export type NewChatWorkspaceMode = NonNullable<
-  PostBody<"/api/leads">["workspaceMode"]
->;
-
-const newChatWorkspaceModes = {
-  layr: true,
-  image: true,
-  worktree: true,
-} satisfies Record<NewChatWorkspaceMode, true>;
+export type NewChatWorkspaceMode = (typeof CHAT_WORKSPACE_MODES)[number];
 
 export type NewChatSettings = Pick<
   PostBody<"/api/conversation">,
@@ -72,8 +68,11 @@ export function settingsForNewChatAccount(
   };
 }
 
-export function defaultWorkspaceMode(system?: string): NewChatWorkspaceMode {
-  return system === "Darwin" ? "layr" : "worktree";
+export function defaultWorkspaceMode(
+  system?: string,
+  nativeLayr?: GetResult<"/api/ui-summary">["nativeLayr"],
+): NewChatWorkspaceMode {
+  return defaultChatWorkspaceMode(system, nativeLayr?.ready === true);
 }
 
 type ChatReadOptions = Pick<GetOptions<"/api/models">, "query" | "signal">;
@@ -144,7 +143,7 @@ export function isNewChatSettings(value: unknown): value is NewChatSettings {
   if (Object.keys(value).some((key) => !allowed.includes(key))) return false;
   if (
     typeof value.workspaceMode !== "string" ||
-    !Object.hasOwn(newChatWorkspaceModes, value.workspaceMode)
+    !(CHAT_WORKSPACE_MODES as readonly string[]).includes(value.workspaceMode)
   )
     return false;
   if (

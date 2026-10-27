@@ -297,11 +297,17 @@ class InstallUpdate(unittest.TestCase):
 CHECK_OUTPUT = subprocess.check_output
 
 
-def make_packaged_app(app, build, executable='/bin/sleep'):
+def make_packaged_app(app, build, executable='/bin/cat'):
     """A native executable fixture at the packaged Rust server path."""
     make_app(app, build)
     binary = app / 'Contents/Resources/studio-runtime-server'
-    shutil.copy2(executable, binary)
+    # The fixture needs the code bytes and executable mode, not protected system-file flags.
+    shutil.copyfile(executable, binary)
+    shutil.copymode(executable, binary)
+    if sys.platform == 'darwin':
+        # A copied system executable needs a fixture-local signature before native exec.
+        subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(binary)],
+                       check=True, capture_output=True, timeout=15)
     return binary
 
 
@@ -319,13 +325,18 @@ class BackendRestartAfterSwap(unittest.TestCase):
         self.installed = self.applications / "Codex Studio.app"
         binary = make_packaged_app(self.installed, OLD)
         staged = self.state / "updates" / str(NEW["builtAt"]) / "Codex Studio.app"
-        make_packaged_app(staged, NEW, '/bin/cat')
+        make_packaged_app(staged, NEW, '/bin/sleep')
         updates.write_json(self.state / updates.PENDING_FILE,
                            {"id": "update-1", "app": str(staged), "build": NEW, "from": "server"})
-        self.backend = subprocess.Popen([str(binary), '60'])
+        self.backend = subprocess.Popen([str(binary)], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self.addCleanup(self.backend.stdin.close)
+        self.addCleanup(self.backend.stdout.close)
         self.addCleanup(self.backend.wait, 10)
         self.addCleanup(self.backend.kill)
         threading.Thread(target=self.backend.wait, daemon=True).start()
+        self.backend.stdin.write(b'fixture-ready\n')
+        self.backend.stdin.flush()
+        self.assertEqual(self.backend.stdout.readline(), b'fixture-ready\n', 'native exec is ready')
         self.config = {"port": 4620, "resources": str(binary.parent), "supervisorEnabled": True,
                        "backend": "rust", "runtimeServer": str(binary)}
         self.identity = {"pid": self.backend.pid, "backendKind": "rust",

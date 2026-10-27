@@ -171,6 +171,57 @@ pub struct InputRequest<'a> {
     pub input: &'a Input,
 }
 
+pub(crate) async fn input_http(
+    store: &RuntimeStore,
+    port: &(impl MonitorNative + ?Sized),
+    id: &str,
+    request_id: &str,
+    input: &Input,
+    now: f64,
+) -> Result<Option<(Operation, String, Submission)>, MonitorError> {
+    let _sequence = match native_sequence(store, id) {
+        Ok(sequence) => sequence,
+        Err(_) => {
+            let (id, request_id, input) = (id.to_owned(), request_id.to_owned(), input.clone());
+            let outcome = store
+                .transaction_with(move |tx| {
+                    crate::monitor_http_input::refuse_busy(tx, &id, &request_id, &input)
+                })
+                .await?;
+            // The terminal refusal is durable before an HTTP error escapes.
+            outcome.replay()?;
+            return Ok(None);
+        }
+    };
+    let (owned_id, owned_request, owned_input) =
+        (id.to_owned(), request_id.to_owned(), input.clone());
+    let admission = store
+        .transaction_with(move |tx| {
+            crate::monitor_http_input::reserve(tx, &owned_id, &owned_request, &owned_input, now)
+        })
+        .await?;
+    let Some(crate::monitor_http_input::Reservation {
+        operation,
+        ticket,
+        effect,
+    }) = admission
+    else {
+        return Ok(None);
+    };
+    let submitted = port.submit(&operation, &effect).await;
+    let outcome = match &submitted {
+        Submission::Written => None,
+        Submission::NotSent { error, .. } => Some(InputOutcome::Rejected(error.clone())),
+        Submission::Unknown => Some(InputOutcome::Unknown(
+            "Input outcome unknown; do not repeat it".into(),
+        )),
+    };
+    if let Some(outcome) = outcome {
+        monitor_runtime::settle_input(store, id, &operation, &ticket, outcome, now).await?;
+    }
+    Ok(Some((operation, ticket, submitted)))
+}
+
 pub async fn input(
     store: &RuntimeStore,
     port: &(impl MonitorNative + ?Sized),
@@ -238,12 +289,32 @@ pub async fn cancel_checked(
                 let (snapshot, owner) = monitor_runtime::snapshot(tx, &id_for_reservation)?;
                 let owner =
                     serde_json::to_value(owner).map_err(studio_runtime_store::StoreError::from)?;
-                let process = crate::process_controls::project(
-                    "monitor",
+                let source = expected["_sourceGeneration"].as_u64().map(|generation| {
+                    crate::account_session_runtime::ConnectionScope {
+                        account: expected["_sourceAccountKey"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned(),
+                        connection: expected["_sourceConnectionId"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned(),
+                        generation,
+                    }
+                });
+                let process = crate::process_controls::project_monitor(
+                    tx,
                     snapshot.record(),
                     &owner,
                     expected["_sourceConnectionId"].as_str(),
-                );
+                    source.as_ref(),
+                )
+                .map_err(|error| match error {
+                    crate::process_controls::Error::Store(error) => MonitorError::Store(error),
+                    crate::process_controls::Error::Invalid(message) => {
+                        MonitorError::Refused(message)
+                    }
+                })?;
                 if !crate::process_controls::matches(&process, expected)
                     || process["capabilities"]["stop"] != true
                     || snapshot.record()["status"] != expected["_raw"]["status"]
@@ -343,6 +414,20 @@ pub async fn cancel_checked(
                         }
                     }
                     decision.record["cancelDispatch"] = dispatch;
+                    // We still hold this monitor's native sequence. Only a
+                    // proved not-sent stop can withdraw an expired policy intent.
+                    if retry_reason == Some(NotSentReason::Transient)
+                        && current.record()["shellPressureCleanup"].is_object()
+                        && !crate::shell_policy::monitor_cleanup_allowed(tx, &actor.value(), current.record(), crate::idle_compaction::wall_now())?
+                    {
+                        let report = json!({"id":format!("monitor:{}:{}:cleanup_skipped",current.id(),current.record()["shellPressureCleanup"]["generation"]),"kind":"cleanup_skipped","message":format!("Cleanup checks changed before the stop. Studio left monitor {} running.",current.id())});
+                        crate::shell_policy::observe(tx, &actor.value(), &report, now).map_err(|_| MonitorError::Refused("Could not record the shell cleanup outcome"))?;
+                        decision.record["cancelRequested"] = json!(false);
+                        if let Some(record) = decision.record.as_object_mut() {
+                            record.remove("cancelDispatch");
+                            record.remove("shellPressureCleanup");
+                        }
+                    }
                     monitor_runtime::apply(tx, &current, &actor, &decision, now)?;
                     Ok::<_, MonitorError>(response_error)
                 } else {
@@ -421,6 +506,15 @@ pub fn reserve_cancel(
 ) -> Result<(Value, Option<Operation>), MonitorError> {
     let (snapshot, actor) = monitor_runtime::snapshot(tx, id)?;
     let mut decision = monitor_policy::cancel(&snapshot, owner, now)?;
+    // An explicit owner stop is independent of the automatic pressure policy.
+    // Its permission check above must pass before removing the extra guard.
+    if owner.is_some() && decision.record["shellPressureCleanup"].is_object() {
+        decision
+            .record
+            .as_object_mut()
+            .expect("checked monitor object")
+            .remove("shellPressureCleanup");
+    }
     let dispatch_status = snapshot
         .record()
         .pointer("/cancelDispatch/status")

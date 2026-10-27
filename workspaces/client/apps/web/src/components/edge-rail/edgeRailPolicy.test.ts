@@ -17,7 +17,24 @@ describe("edge rail geometry", () => {
       bottom: 34,
       height: 523,
       targetSize: 44,
+      center: 42,
     });
+  });
+
+  test("centers buttons on the system status column, inside the strip", () => {
+    const status = { ...metrics, targetSize: 48, statusColumnCenter: 48 };
+    expect(
+      edgeRailGeometry({ ...duo, insets: { ...duo.insets, right: 82 } }, status)
+        ?.center,
+    ).toBe(48);
+    // A narrow strip keeps the whole button inside it.
+    expect(
+      edgeRailGeometry({ ...duo, insets: { ...duo.insets, right: 64 } }, status)
+        ?.center,
+    ).toBe(40);
+    expect(
+      edgeRailGeometry(duo, { ...status, statusColumnCenter: 10 })?.center,
+    ).toBe(24);
   });
 
   test("supports the physical left strip after rotation", () => {

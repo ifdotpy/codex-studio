@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import type { NativeEvent } from "./host";
 import type { DesktopBridge } from "../desktop";
 import { hasNativeClient, listenNativeEvents, nativeRequest } from "./client";
@@ -81,7 +82,7 @@ export function createNativeDictation(
     onTranscriptionProgress(callback) {
       let disposed = false;
       let stop: (() => void) | undefined;
-      const subscription = crypto.randomUUID();
+      const subscription = randomUUID();
       void (async () => {
         stop = await listen((input) => {
           // The native host owns the progress payload; retain its base checks.
@@ -112,8 +113,8 @@ export function createNativeDictation(
     },
   };
   async function captureNativeAudio(onChunk: (pcm: Int16Array) => void) {
-    const capture = crypto.randomUUID(),
-      subscription = crypto.randomUUID();
+    const capture = randomUUID(),
+      subscription = randomUUID();
     let finish: (() => void) | undefined;
     const flushed = new Promise<void>((resolve) => {
       finish = resolve;

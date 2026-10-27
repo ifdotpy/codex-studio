@@ -214,6 +214,7 @@ impl AccountSessionPort for Session<'_> {
                 | Method::ClaudeSettings
                 | Method::ClaudeActivity
                 | Method::ClaudeStopTask
+                | Method::ClaudeShellPolicy
                 | Method::ClaudeDiagnostics
                 | Method::ClaudeMoveVersions
                 | Method::McpServerReconnect
@@ -288,6 +289,7 @@ impl AccountSessionPort for Session<'_> {
                 | Method::ThreadClosed
                 | Method::ThreadStatusChanged
                 | Method::ThreadTokenUsageUpdated
+                | Method::ThreadShellPolicyUpdated
                 | Method::ThreadIdleCompactionUpdated
                 | Method::AccountLoginCompleted
                 | Method::AccountUpdated
@@ -467,6 +469,7 @@ impl AccountSessionPort for StartBlockingSession {
                 | Method::ClaudeSettings
                 | Method::ClaudeActivity
                 | Method::ClaudeStopTask
+                | Method::ClaudeShellPolicy
                 | Method::ClaudeDiagnostics
                 | Method::ClaudeMoveVersions
                 | Method::McpServerReconnect
@@ -541,6 +544,7 @@ impl AccountSessionPort for StartBlockingSession {
                 | Method::ThreadClosed
                 | Method::ThreadStatusChanged
                 | Method::ThreadTokenUsageUpdated
+                | Method::ThreadShellPolicyUpdated
                 | Method::ThreadIdleCompactionUpdated
                 | Method::AccountLoginCompleted
                 | Method::AccountUpdated

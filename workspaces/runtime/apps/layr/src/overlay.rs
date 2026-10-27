@@ -4,7 +4,7 @@
 //! An overlay is the internal project `<project>%<overlay>` below the project's private `meta`
 //! folder, with its own states, signed records and access policy (its owner is its admin, its
 //! readers have the reader role). History, permissions and fsck work as for any project, and
-//! backups, pushes and replication of the project never see it. Its lines are pointers without
+//! store pushes and peer sync carry it under its own reader rules. Its lines are pointers without
 //! working folders: `user-<uid>` (shared mode: one for all lines of a user) and `line-<line id>`
 //! (follow mode: one per line of the project, branched and merged with it).
 //!
@@ -32,16 +32,10 @@ use crate::storage as btrfs;
 use crate::store::Project;
 use crate::tree::Tree;
 use anyhow::{anyhow, bail, Result};
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// One overlay of a line's stack: its name and the overlay state the line shows.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Layer {
-    pub overlay: String,
-    pub state: String,
-}
+pub use layr_model::validation::{is_view_id, Layer, View};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -70,6 +64,7 @@ impl Mode {
 /// An overlay as the project knows it (setting `overlay.<name>`).
 #[derive(Clone, Debug)]
 pub struct Info {
+    pub hidden: bool,
     pub owner: u32,
     pub mode: Mode,
     /// The empty first state of the overlay.
@@ -87,7 +82,7 @@ pub fn stack_data(line_id: &str, layers: &[Layer]) -> serde_json::Value {
 }
 
 /// The files (not folders) of a tree, without `.git`.
-pub fn files_of(root: &Path) -> Result<Vec<String>> {
+pub fn files_of(root: &(impl fsutil::Src + ?Sized)) -> Result<Vec<String>> {
     let mut v = Vec::new();
     fsutil::walk(root, "", &mut |rel, m| {
         if skip_path(rel) {
@@ -263,17 +258,169 @@ fn base_key(head: &str, layers: &[Layer]) -> String {
 }
 
 impl<'a> Repo<'a> {
+    pub fn view_of(&self, line: &Line) -> Result<View> {
+        let view = View::new(line.head.clone(), self.layers(line)?);
+        view.validate()?;
+        Ok(view)
+    }
+
+    pub fn saved_view(&self, id: &str) -> Result<View> {
+        if !is_view_id(id) {
+            bail!("invalid view id '{id}'");
+        }
+        let mut view = self.p.db.saved_view(id)?;
+        if view.is_none() {
+            let mut components = BTreeMap::new();
+            let mut shared = None;
+            let mut public = Vec::new();
+            for name in self.overlay_names()? {
+                let op = self.overlay_project(&name)?;
+                for line in op.export_jsonl()?.lines() {
+                    let record = crate::oplog::parse_line(line, None)?.record;
+                    if record.op != "view.hidden" || record.data["view_id"] != id {
+                        continue;
+                    }
+                    let layer: Layer = serde_json::from_value(record.data["layer"].clone())?;
+                    if layer.overlay != name {
+                        bail!("hidden view component belongs to another overlay");
+                    }
+                    let position = record.data["position"].as_u64().ok_or_else(|| anyhow!("hidden view has no position"))?;
+                    components.insert(position, layer);
+                    shared = record.data["shared"].as_str().map(str::to_owned);
+                    public = serde_json::from_value(record.data["public"].clone())?;
+                }
+            }
+            if let Some(shared) = shared {
+                for (position, layer) in components {
+                    public.insert((position as usize).min(public.len()), layer);
+                }
+                view = Some(View::new(shared, public));
+            }
+        }
+        let view = view.ok_or_else(|| anyhow!("unknown view '{id}'"))?;
+        view.validate()?;
+        if view.id()? != id {
+            bail!("view descriptor does not match its id");
+        }
+        Ok(view)
+    }
+
+    /// The caller holds the project lock. Saving a descriptor never captures working files.
+    pub fn save_view(&self, ctx: &Ctx, view: &View) -> Result<String> {
+        self.check_view_access(ctx, view)?;
+        let id = view.id()?;
+        let public = self.public_layers(&view.layers)?;
+        if public.len() != view.layers.len() {
+            for (position, layer) in view.layers.iter().enumerate() {
+                if !self.need_overlay(&layer.overlay)?.hidden {
+                    continue;
+                }
+                let orepo = self.overlay_repo(&layer.overlay)?;
+                let _lock = orepo.p.lock()?;
+                if orepo.p.export_jsonl()?.lines().any(|line| {
+                    crate::oplog::parse_line(line, None)
+                        .is_ok_and(|s| s.record.op == "view.hidden" && s.record.data["view_id"] == id)
+                }) {
+                    continue;
+                }
+                let mut record = Record::new("view.hidden");
+                record.data =
+                    serde_json::json!({"view_id":id,"shared":view.shared,"public":public,"position":position,"layer":layer});
+                orepo.commit_record(ctx, record)?;
+            }
+        } else if self.p.db.saved_view(&id)?.is_none() {
+            let mut record = Record::new("view.save");
+            record.data = serde_json::json!({"view_id":id,"view":view});
+            self.commit_record(ctx, record)?;
+        }
+        Ok(id)
+    }
+
+    pub fn check_view_collected(&self, view: &View) -> Result<()> {
+        let id = view.id()?;
+        let collected = |repo: &Repo, state: &str| -> Result<()> {
+            if repo.p.db.state_flags(state)?.is_some_and(|(_, deleted)| deleted) {
+                bail!("view {id} refers to a collected state {state}");
+            }
+            Ok(())
+        };
+        collected(self, &view.shared)?;
+        for layer in &view.layers {
+            if let Ok(repo) = self.overlay_repo(&layer.overlay) {
+                collected(&repo, &layer.state)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn prepare_view_layers(&self, ctx: &Ctx, line: &Line, view: &View) -> Result<()> {
+        self.check_view_read(ctx, view)?;
+        self.check_stack(line, &view.layers)?;
+        for layer in &view.layers {
+            let info = self.need_overlay(&layer.overlay)?;
+            let repo = self.overlay_repo(&layer.overlay)?;
+            let _lock = repo.p.lock()?;
+            repo.ensure_overlay_line(ctx, &Self::overlay_line_name(&info, &line.id, line.owner), &layer.state, line.owner)?;
+        }
+        Ok(())
+    }
+
+    pub fn create_line_view(&self, ctx: &Ctx, name: &str, view: &View, owner: u32) -> Result<Line> {
+        Ok(self.create_named_lines(ctx, vec![name.to_string()], &view.shared, owner, None, Some(view))?.remove(0))
+    }
+
+    pub fn materialize_view(&self, ctx: &Ctx, line: &Line, view: &View, dst: &Path) -> Result<()> {
+        self.check_view_read(ctx, view)?;
+        let assembled = self.assemble(line, &view.shared, &view.layers)?;
+        let work = self.temp_work(&assembled.path)?;
+        self.prepare_at(line, &view.shared, &work.path)?;
+        crate::fsutil::rename_tree(&work.path, dst)
+    }
+
+    /// Descriptor metadata remains usable after its source snapshots are collected.
+    fn check_view_access(&self, ctx: &Ctx, view: &View) -> Result<()> {
+        self.can_read(ctx)?;
+        view.validate()?;
+        for layer in &view.layers {
+            if !self.reads_overlay(&layer.overlay, ctx.caller.uid, ctx.caller.gid).unwrap_or(false) {
+                bail!("permission denied: you do not read overlay '{}'", layer.overlay);
+            }
+        }
+        Ok(())
+    }
+
+    /// Materialization also requires every source snapshot to remain available.
+    pub fn check_view_read(&self, ctx: &Ctx, view: &View) -> Result<()> {
+        self.check_view_access(ctx, view)?;
+        for layer in &view.layers {
+            if self.layer_root(layer).is_none() {
+                bail!("overlay '{}' state {} is not on this machine", layer.overlay, layer.state);
+            }
+        }
+        self.state_root(&view.shared)?;
+        Ok(())
+    }
+
     // ----- overlays of the project -----
 
     pub fn overlay_info(&self, name: &str) -> Result<Option<Info>> {
         if crate::store::check_name("overlay", name).is_err() {
             return Ok(None);
         }
-        let v = match self.p.config_value(&format!("overlay.{name}"))? {
+        let mut value = self.p.db.overlay_config(&format!("overlay.{name}"))?;
+        if value.is_none() {
+            if let Ok(op) = self.overlay_project(name) {
+                if op.db.overlay_config("overlay")?.is_some_and(|v| v["project"] == self.p.id && v["name"] == name) {
+                    value = op.db.overlay_config(&format!("overlay.{name}"))?;
+                }
+            }
+        }
+        let v = match value {
             Some(v) if v.is_object() => v,
             _ => return Ok(None),
         };
         Ok(Some(Info {
+            hidden: v["hidden"].as_bool().unwrap_or(false),
             owner: v["owner"].as_u64().unwrap_or(0) as u32,
             mode: v["mode"].as_str().and_then(Mode::parse).unwrap_or(Mode::Shared),
             root: v["root"].as_str().unwrap_or("").to_string(),
@@ -287,14 +434,67 @@ impl<'a> Repo<'a> {
 
     /// Names of the overlays of this project on this machine.
     pub fn overlay_names(&self) -> Result<Vec<String>> {
-        Ok(self
+        if self.p.is_overlay() {
+            return Ok(Vec::new());
+        }
+        let mut names: BTreeSet<String> = self
             .p
             .db
             .config_all()?
             .into_iter()
-            .filter_map(|(k, _)| k.strip_prefix("overlay.").map(|s| s.to_string()))
-            .filter(|n| !n.contains('@') && crate::store::check_name("overlay", n).is_ok())
+            .filter_map(|(k, _)| k.strip_prefix("overlay.").map(|s| s.split('@').next().unwrap_or("").to_string()))
+            .collect();
+        for entry in std::fs::read_dir(self.p.dir.join("meta/overlays")).into_iter().flatten().flatten() {
+            names.insert(entry.file_name().to_string_lossy().into_owned());
+        }
+        Ok(names.into_iter().filter(|n| self.overlay_info(n).ok().flatten().is_some()).collect())
+    }
+
+    pub fn visible_overlay_names(&self, ctx: &Ctx) -> Result<Vec<String>> {
+        Ok(self
+            .overlay_names()?
+            .into_iter()
+            .filter(|name| {
+                !self.overlay_info(name).ok().flatten().is_some_and(|i| i.hidden)
+                    || self.reads_overlay(name, ctx.caller.uid, ctx.caller.gid).unwrap_or(false)
+            })
             .collect())
+    }
+
+    /// Only public layers may appear in a parent record.
+    pub fn public_layers(&self, layers: &[Layer]) -> Result<Vec<Layer>> {
+        let mut public = Vec::new();
+        for layer in layers {
+            if !self.need_overlay(&layer.overlay)?.hidden {
+                public.push(layer.clone());
+            }
+        }
+        Ok(public)
+    }
+
+    pub fn public_stack_data(&self, line: &str, layers: &[Layer]) -> Result<serde_json::Value> {
+        Ok(stack_data(line, &self.public_layers(layers)?))
+    }
+
+    /// Hidden selection and order travel only with that overlay.
+    pub fn record_hidden_selection(&self, ctx: &Ctx, line: &str, layers: &[Layer]) -> Result<()> {
+        for name in self.overlay_names()? {
+            if !self.need_overlay(&name)?.hidden || !self.reads_overlay(&name, ctx.caller.uid, ctx.caller.gid)? {
+                continue;
+            }
+            let orepo = self.overlay_repo(&name)?;
+            let position = layers.iter().position(|l| l.overlay == name);
+            let value = serde_json::json!({"enabled":position.is_some(),"position":position});
+            let key = format!("hidden.stack.{line}");
+            if orepo.p.db.overlay_config(&key)?.as_ref() == Some(&value) {
+                continue;
+            }
+            let _lock = orepo.p.lock()?;
+            let mut record = Record::new("overlay.use");
+            record.data = serde_json::json!({"config":{key:value}});
+            orepo.commit_record(ctx, record)?;
+        }
+        Ok(())
     }
 
     /// The internal project of an overlay.
@@ -332,10 +532,54 @@ impl<'a> Repo<'a> {
 
     /// The overlays a line shows, bottom first.
     pub fn layers(&self, line: &Line) -> Result<Vec<Layer>> {
-        Ok(match self.p.config_value(&stack_key(&line.id))? {
-            Some(v) => serde_json::from_value(v).unwrap_or_default(),
-            None => Vec::new(),
-        })
+        let key = stack_key(&line.id);
+        let value = if line.machine == self.p.store.machine.id {
+            self.p.config_value(&key)?
+        } else {
+            self.p.config_value(&format!("{key}@{}", line.machine))?
+        };
+        let value = match value {
+            Some(value) => Some(value),
+            None => self.p.db.overlay_config(&key)?,
+        };
+        let mut layers: Vec<Layer> = value.map(serde_json::from_value).transpose()?.unwrap_or_default();
+        if !self.p.is_overlay() {
+            let mut hidden = Vec::new();
+            for name in self.overlay_names()? {
+                let info = self.need_overlay(&name)?;
+                if !info.hidden || !self.owner_reads(&name, line.owner)? {
+                    continue;
+                }
+                let op = self.overlay_project(&name)?;
+                let selection = op.db.overlay_config(&format!("hidden.stack.{}", line.id))?;
+                if selection.as_ref().is_some_and(|s| s["enabled"] == false) {
+                    continue;
+                }
+                if let Some(ol) = op.db.line_by_name(&Self::overlay_line_name(&info, &line.id, line.owner))? {
+                    let position = selection.as_ref().and_then(|s| s["position"].as_u64()).unwrap_or(u64::MAX);
+                    hidden.push((position, Layer { overlay: name, state: ol.head }));
+                }
+            }
+            hidden.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.overlay.cmp(&b.1.overlay)));
+            for (position, layer) in hidden {
+                layers.insert((position as usize).min(layers.len()), layer);
+            }
+        }
+        Ok(layers)
+    }
+
+    pub fn readable_layers(&self, line: &Line) -> Result<Vec<Layer>> {
+        if self.p.is_overlay() {
+            return Ok(Vec::new());
+        }
+        let gid = crate::ctx::Caller::from_uid(line.owner).gid;
+        Ok(self
+            .layers(line)?
+            .into_iter()
+            .filter(|layer| {
+                self.layer_root(layer).is_some() && self.reads_overlay(&layer.overlay, line.owner, gid).unwrap_or(false)
+            })
+            .collect())
     }
 
     pub fn is_stacked(&self, line: &Line) -> Result<bool> {
@@ -375,7 +619,7 @@ impl<'a> Repo<'a> {
             return Ok(());
         }
         for l in self.layers(line)? {
-            if !self.reads_overlay(&l.overlay, ctx.caller.uid, ctx.caller.gid)? {
+            if !self.need_overlay(&l.overlay)?.hidden && !self.reads_overlay(&l.overlay, ctx.caller.uid, ctx.caller.gid)? {
                 return Err(crate::cmd::exit(
                     1,
                     format!("permission denied: line '{}' shows overlays that you do not read", line.name),
@@ -383,6 +627,42 @@ impl<'a> Repo<'a> {
             }
         }
         Ok(())
+    }
+
+    /// A non-reader sees a saved view without any unread hidden layers.
+    /// Visible private overlays keep their existing access refusal.
+    pub fn caller_layers(&self, ctx: &Ctx, line: &Line) -> Result<Vec<Layer>> {
+        self.check_view(ctx, line)?;
+        let mut layers = Vec::new();
+        for layer in self.layers(line)? {
+            if !self.need_overlay(&layer.overlay)?.hidden || self.reads_overlay(&layer.overlay, ctx.caller.uid, ctx.caller.gid)? {
+                layers.push(layer);
+            }
+        }
+        Ok(layers)
+    }
+
+    pub fn filtered_view(&self, ctx: &Ctx, line: &Line) -> Result<Option<Temp>> {
+        self.check_view(ctx, line)?;
+        if ctx.caller.is_root() || ctx.caller.uid == line.owner || self.p.is_overlay() {
+            return Ok(None);
+        }
+        let layers = self.caller_layers(ctx, line)?;
+        if layers.len() == self.layers(line)?.len() {
+            return Ok(None);
+        }
+        Ok(Some(self.assemble(line, &line.head, &layers)?))
+    }
+
+    pub fn snapshot_status(&self, ctx: &Ctx, line: &Line) -> Result<crate::repo::Status> {
+        let mut status = crate::repo::Status::default();
+        status.conflicts = self.state(&line.head)?.conflicts;
+        for layer in self.caller_layers(ctx, line)? {
+            if let Some(state) = self.overlay_project(&layer.overlay)?.db.state(&layer.state)? {
+                status.conflicts.extend(state.conflicts);
+            }
+        }
+        Ok(status)
     }
 
     /// The paths that `layr overlay move` sends to an overlay at the next commit. They stay until
@@ -487,7 +767,7 @@ impl<'a> Repo<'a> {
     pub fn assemble(&self, line: &Line, head: &str, layers: &[Layer]) -> Result<Temp> {
         let _t = crate::trace::span("assemble");
         let t = Temp { path: self.p.work_dir().join(ids::new_id()) };
-        btrfs::snapshot(&self.state_root(head)?, &t.path, false)?;
+        self.snapshot_state(head, &t.path, false)?;
         self.put_layers(&t.path, layers, self.own(line))?;
         btrfs::set_readonly(&t.path)?;
         Ok(t)
@@ -615,6 +895,7 @@ impl<'a> Repo<'a> {
             let ol = orepo.ensure_overlay_line(ctx, &Self::overlay_line_name(&info, line_id, owner), &l.state, owner)?;
             out.push(Layer { overlay: l.overlay.clone(), state: ol.head });
         }
+        self.record_hidden_selection(ctx, line_id, &out)?;
         Ok(out)
     }
 }
@@ -636,7 +917,7 @@ pub fn next_state(
     let _t = crate::trace::span("layer state");
     let id = ids::new_id();
     let dst = repo.p.state_path(&id);
-    btrfs::snapshot(&repo.state_root(prev)?, &dst, false)?;
+    repo.snapshot_state(prev, &dst, false)?;
     let made = ops.apply(&dst, src, own).and_then(|_| btrfs::set_readonly(&dst)).and_then(|_| btrfs::subvol_info(&dst));
     let info = match made {
         Ok(i) => i,
@@ -648,6 +929,9 @@ pub fn next_state(
     Ok(StateRec {
         id,
         kind: StateKind::Commit,
+        change_id: Some(ids::new_id()),
+        derived_from: None,
+        context: None,
         parents,
         line: line.map(|s| s.to_string()),
         subvol: info.uuid,
@@ -659,6 +943,7 @@ pub fn next_state(
         caches: BTreeMap::new(),
         cache_by: None,
         cache_shared: false,
+        cache_platform: None,
     })
 }
 
@@ -751,7 +1036,7 @@ pub fn commit_layers(
             return Err(crate::cmd::exit(
                 1,
                 format!(
-                    "error: overlay '{}' changed in another line since this line took it; run 'layr overlay use {}' to take its newest state, then commit",
+                    "error: overlay '{}' changed in another line since this line took it; run 'layr overlay use {}' to take its newest state, then save",
                     l.overlay,
                     layers.iter().map(|x| x.overlay.as_str()).collect::<Vec<_>>().join(" ")
                 ),
@@ -806,6 +1091,15 @@ pub fn commit_layers(
             }
         }
     };
+    if let Some(state) = &shared {
+        if let Err(e) =
+            crate::secrets::check_between(ctx, repo, &crate::repo::snap(&shared_root), &repo.state_src(&state.id)?, &line.head)
+        {
+            repo.discard_states(std::slice::from_ref(state));
+            discard(&made, &orepos);
+            return Err(e);
+        }
+    }
     // The overlays first: a lost main record leaves an overlay line ahead of the stack, which the
     // next commit reports, never a stack that names a missing state.
     let mut new_layers = layers.to_vec();
@@ -818,13 +1112,20 @@ pub fn commit_layers(
         overlays.push((layers[i].overlay.clone(), st));
     }
     let new_head = shared.as_ref().map(|s| s.id.clone()).unwrap_or(line.head.clone());
-    let data = serde_json::json!({
-        "line": line.id,
-        "stack": stack_data(&line.id, &new_layers),
-        "overlays": overlays.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
-    });
+    let public = repo.public_layers(&new_layers)?;
+    let mut data = serde_json::json!({"line":line.id});
+    if !public.is_empty() {
+        data["stack"] = stack_data(&line.id, &public);
+        data["overlays"] = serde_json::json!(overlays
+            .iter()
+            .filter(|(n, _)| !repo.need_overlay(n).map(|i| i.hidden).unwrap_or(true))
+            .map(|(n, _)| n.clone())
+            .collect::<Vec<_>>());
+    }
     let states: Vec<StateRec> = shared.iter().cloned().collect();
-    repo.move_head(ctx, "commit", line, &new_head, states, None, data)?;
+    if shared.is_some() || overlays.iter().any(|(n, _)| !repo.need_overlay(n).map(|i| i.hidden).unwrap_or(true)) {
+        repo.move_head(ctx, "commit", line, &new_head, states, None, data)?;
+    }
     let fds = if summary { crate::diff::file_diffs(&base, &new_tree.path, &s.list)? } else { Vec::new() };
     repo.install_base(line, new_tree, &new_head, &new_layers)?;
     Ok(Some(Committed { shared, overlays, fds }))
@@ -843,8 +1144,11 @@ pub fn set_layers(ctx: &Ctx, repo: &Repo, line: &Line, layers: &[Layer], force: 
     local.extend(st.ignored.iter().cloned());
     let applied = repo.apply_delta(&old, &view.path, &wdir, repo.own(line), &local, force)?;
     let mut rec = Record::new(op);
-    rec.data = serde_json::json!({"line": line.id, "stack": stack_data(&line.id, layers)});
-    repo.commit_record(ctx, rec)?;
+    rec.data = serde_json::json!({"line": line.id, "stack": repo.public_stack_data(&line.id, layers)?});
+    repo.record_hidden_selection(ctx, &line.id, layers)?;
+    if repo.public_layers(&repo.layers(line)?)? != repo.public_layers(layers)? {
+        repo.commit_record(ctx, rec)?;
+    }
     repo.drop_stage(line)?;
     repo.install_base(line, view, &line.head, layers)?;
     Ok(applied)
@@ -891,5 +1195,46 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dst.join("keep.txt")).unwrap(), "keep");
         assert!(!dst.join("a").exists(), "empty folders go, as in git trees");
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+    const SHARED: &str = "01a12290-0000-7000-8000-000000000003";
+    const OVERLAY: &str = "01a12290-0000-7000-8000-000000000004";
+
+    #[test]
+    fn view_identity_uses_exact_canonical_bytes_and_stack_order() {
+        use sha2::{Digest, Sha256};
+        let view = View::new(SHARED.into(), vec![Layer { overlay: "keys".into(), state: OVERLAY.into() }]);
+        let expected =
+            format!("{{\"format\":1,\"shared\":\"{SHARED}\",\"layers\":[{{\"overlay\":\"keys\",\"state\":\"{OVERLAY}\"}}]}}");
+        assert_eq!(serde_json::to_string(&view).unwrap(), expected);
+        assert_eq!(view.id().unwrap(), hex::encode(Sha256::digest(expected.as_bytes())));
+        assert_eq!(view.id().unwrap().len(), 64);
+        let mut two = view.clone();
+        two.layers.push(Layer { overlay: "config".into(), state: SHARED.into() });
+        let mut reversed = two.clone();
+        reversed.layers.reverse();
+        assert_ne!(two.id().unwrap(), reversed.id().unwrap());
+        assert_ne!(view.id().unwrap(), View::new(SHARED.into(), Vec::new()).id().unwrap());
+    }
+
+    #[test]
+    fn malformed_descriptors_and_ids_fail() {
+        let mut view = View::new(SHARED.into(), Vec::new());
+        assert!(view.validate().is_ok());
+        view.format = 2;
+        assert!(view.validate().is_err());
+        view.format = 1;
+        view.shared = "../escape".into();
+        assert!(view.validate().is_err());
+        view.shared = SHARED.into();
+        view.layers.push(Layer { overlay: "../private".into(), state: OVERLAY.into() });
+        assert!(view.validate().is_err());
+        assert!(!is_view_id(&"A".repeat(64)));
+        assert!(!is_view_id("abc"));
+        assert!(is_view_id(&"a".repeat(64)));
     }
 }

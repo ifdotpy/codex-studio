@@ -38,7 +38,10 @@ async fn import_list(
         .to_owned();
     let cursor = query.nonempty_str("cursor").map(str::to_owned);
     let port = state.account_session.clone().ok_or_else(unavailable)?;
-    let scope = port.current_scope(&account).ok_or_else(unavailable)?;
+    let scope = port
+        .ensure_session(&account)
+        .await
+        .map_err(|_| unavailable())?;
     let result = provider_request(
         port.as_ref(),
         &account,
@@ -89,7 +92,10 @@ async fn import_thread(
     }
     let port = state.account_session.clone().ok_or_else(unavailable)?;
     let operation_id = body.id.clone().flatten().unwrap_or_else(operation_nonce);
-    let scope = port.current_scope(&account).ok_or_else(unavailable)?;
+    let scope = port
+        .ensure_session(&account)
+        .await
+        .map_err(|_| unavailable())?;
     let thread = provider_request(
         port.as_ref(),
         &account,
@@ -269,5 +275,290 @@ inventory::submit! {
         name: "imports",
         routes: Some(routes),
         dependencies: &[],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::FromRequestParts;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    use studio_runtime_services::account_session_runtime::{
+        AccountSessionFuture, ConnectionScope, SessionReceipt,
+    };
+
+    #[derive(Default)]
+    struct DormantPort {
+        live: AtomicBool,
+        requests: Mutex<Vec<ProviderRequest>>,
+    }
+
+    impl AccountSessionPort for DormantPort {
+        fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+            self.live.load(Ordering::SeqCst).then(|| ConnectionScope {
+                account: account.into(),
+                connection: "fixture".into(),
+                generation: 1,
+            })
+        }
+
+        fn ensure_session<'a>(
+            &'a self,
+            account: &'a str,
+        ) -> AccountSessionFuture<'a, ConnectionScope> {
+            Box::pin(async move {
+                self.live.store(true, Ordering::SeqCst);
+                Ok(self.current_scope(account).expect("live scope"))
+            })
+        }
+
+        fn provider_request(
+            &self,
+            request: ProviderRequest,
+        ) -> AccountSessionFuture<'_, SessionReceipt> {
+            let scope = self
+                .current_scope(&request.account)
+                .expect("session must start before the request");
+            assert_eq!(request.expected_scope.as_ref(), Some(&scope));
+            assert_eq!(request.account, "selected");
+            let result = match request.method {
+                Method::ThreadList => json!({"data":[],"nextCursor":null}),
+                Method::ThreadRead => json!({"thread":{"id":"thread","cwd":"/fixture"}}),
+                Method::ThreadTurnsList => json!({"data":[],"nextCursor":null}),
+                other @ Method::Initialize
+                | other @ Method::Initialized
+                | other @ Method::Ack
+                | other @ Method::AccountLoginCancel
+                | other @ Method::AccountLoginStart
+                | other @ Method::AccountRateLimitResetCreditConsume
+                | other @ Method::ThreadLoadedList
+                | other @ Method::ConfigRead
+                | other @ Method::SkillsExtraRootsSet
+                | other @ Method::ModelList
+                | other @ Method::AccountRead
+                | other @ Method::AccountRateLimitsRead
+                | other @ Method::ThreadStart
+                | other @ Method::ThreadRealtimeStart
+                | other @ Method::ThreadRealtimeStop
+                | other @ Method::ThreadRealtimeAppendSpeech
+                | other @ Method::ThreadRealtimeItemStarted
+                | other @ Method::ThreadRealtimeTranscriptDelta
+                | other @ Method::ThreadRealtimeTranscriptDone
+                | other @ Method::ThreadRealtimeSdp
+                | other @ Method::ThreadRealtimeError
+                | other @ Method::ThreadRealtimeClosed
+                | other @ Method::ThreadResume
+                | other @ Method::TurnStart
+                | other @ Method::TurnSteer
+                | other @ Method::TurnInterrupt
+                | other @ Method::ThreadArchive
+                | other @ Method::ThreadFork
+                | other @ Method::ThreadNameSet
+                | other @ Method::ThreadMetadataUpdate
+                | other @ Method::ThreadSettingsUpdate
+                | other @ Method::ThreadCompactStart
+                | other @ Method::ThreadRollback
+                | other @ Method::ThreadItemsList
+                | other @ Method::ThreadGoalSet
+                | other @ Method::ThreadGoalUpdated
+                | other @ Method::ThreadUnarchive
+                | other @ Method::ThreadUnsubscribe
+                | other @ Method::ProcessSpawn
+                | other @ Method::ProcessWriteStdin
+                | other @ Method::ProcessKill
+                | other @ Method::ProcessResizePty
+                | other @ Method::CommandExec
+                | other @ Method::CommandExecWrite
+                | other @ Method::CommandExecResize
+                | other @ Method::CommandExecTerminate
+                | other @ Method::ThreadBackgroundTerminalsList
+                | other @ Method::ThreadBackgroundTerminalsTerminate
+                | other @ Method::ThreadBackgroundTerminalsClean
+                | other @ Method::ThreadCommandExecutionBackground
+                | other @ Method::ThreadQueueList
+                | other @ Method::ClaudeState
+                | other @ Method::ClaudeRepairReport
+                | other @ Method::ClaudeFileBackups
+                | other @ Method::ClaudeSettings
+                | other @ Method::ClaudeActivity
+                | other @ Method::ClaudeStopTask
+                | other @ Method::ClaudeShellPolicy
+                | other @ Method::ClaudeDiagnostics
+                | other @ Method::ClaudeMoveVersions
+                | other @ Method::McpServerReconnect
+                | other @ Method::McpServerStatusList
+                | other @ Method::SkillsList
+                | other @ Method::OperationStatus
+                | other @ Method::ReviewStart
+                | other @ Method::BrowserAnswer
+                | other @ Method::BrowserCallback
+                | other @ Method::BrowserClose
+                | other @ Method::BrowserWait
+                | other @ Method::ClaudeCommands
+                | other @ Method::ClaudeMoveExport
+                | other @ Method::ClaudeMoveIdentity
+                | other @ Method::ClaudeMovePreflight
+                | other @ Method::ClaudeMoveProof
+                | other @ Method::Detach
+                | other @ Method::EventRead
+                | other @ Method::Exec
+                | other @ Method::Generate
+                | other @ Method::Health
+                | other @ Method::Info
+                | other @ Method::LayrHealth
+                | other @ Method::Next
+                | other @ Method::Open
+                | other @ Method::ProjectEnsure
+                | other @ Method::ProjectExec
+                | other @ Method::ProjectImport
+                | other @ Method::ProviderList
+                | other @ Method::Replay
+                | other @ Method::ResponseStatus
+                | other @ Method::RetireCommand
+                | other @ Method::SecretsList
+                | other @ Method::SecretsRemove
+                | other @ Method::SecretsSet
+                | other @ Method::ShareConfigure
+                | other @ Method::ShareName
+                | other @ Method::ShareStatus
+                | other @ Method::Sign
+                | other @ Method::Status
+                | other @ Method::SyncMacApply
+                | other @ Method::SyncMacHandoff
+                | other @ Method::SyncMacHashes
+                | other @ Method::SyncMacHead
+                | other @ Method::SyncMacRead
+                | other @ Method::SyncMacWorktree
+                | other @ Method::VaultConfigure
+                | other @ Method::VaultPush
+                | other @ Method::VaultStatus
+                | other @ Method::UploadBegin
+                | other @ Method::UploadChunk
+                | other @ Method::UploadCommit
+                | other @ Method::Verify
+                | other @ Method::Write
+                | other @ Method::CurrentTimeRead
+                | other @ Method::ItemToolCall
+                | other @ Method::ItemCommandExecutionRequestApproval
+                | other @ Method::ItemFileChangeRequestApproval
+                | other @ Method::ItemPermissionsRequestApproval
+                | other @ Method::McpServerElicitationRequest
+                | other @ Method::ItemToolRequestUserInput
+                | other @ Method::ItemStarted
+                | other @ Method::ItemCompleted
+                | other @ Method::ItemAgentMessageDelta
+                | other @ Method::ItemReasoningTextDelta
+                | other @ Method::ItemCommandExecutionOutputDelta
+                | other @ Method::CommandExecOutputDelta
+                | other @ Method::TurnStarted
+                | other @ Method::TurnCompleted
+                | other @ Method::TurnPlanUpdated
+                | other @ Method::TurnDiffUpdated
+                | other @ Method::ThreadClosed
+                | other @ Method::ThreadStatusChanged
+                | other @ Method::ThreadTokenUsageUpdated
+                | other @ Method::ThreadIdleCompactionUpdated
+                | other @ Method::ThreadShellPolicyUpdated
+                | other @ Method::AccountLoginCompleted
+                | other @ Method::AccountUpdated
+                | other @ Method::AccountRateLimitsUpdated
+                | other @ Method::ModelSafetyBufferingUpdated
+                | other @ Method::ProviderGenerationStarted
+                | other @ Method::ProtocolError => panic!("Unexpected request: {other:?}"),
+            };
+            self.requests
+                .lock()
+                .expect("requests")
+                .push(request.clone());
+            Box::pin(async move {
+                Ok(SessionReceipt {
+                    outcome:
+                        studio_runtime_services::account_session_runtime::SessionOutcome::Written {
+                            ticket: studio_runtime_providers::RequestTicket {
+                                id: studio_runtime_providers::RequestId::String(
+                                    request.operation.clone(),
+                                ),
+                                generation: scope.generation,
+                                method: request.method,
+                            },
+                            response: ProviderResponse::Reply(result),
+                        },
+                    scope,
+                    operation: request.operation,
+                    replayed: false,
+                })
+            })
+        }
+    }
+
+    async fn fixture() -> (tempfile::TempDir, HttpState, Arc<DormantPort>) {
+        let root = tempfile::tempdir().expect("state directory");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("store"),
+        );
+        let mut state = HttpState::new(
+            "token".into(),
+            "fixture".into(),
+            root.path().display().to_string(),
+            4000,
+            None,
+            Some(store),
+            None,
+        );
+        let port = Arc::new(DormantPort::default());
+        state.account_session = Some(port.clone());
+        (root, state, port)
+    }
+
+    #[tokio::test]
+    async fn import_list_starts_the_selected_dormant_account() {
+        let (_root, state, port) = fixture().await;
+        let (mut parts, _) = axum::http::Request::new(()).into_parts();
+        parts
+            .extensions
+            .insert(crate::validation::ValidatedRequest {
+                body: None,
+                query: Arc::new(
+                    serde_json::from_value(json!({"account_key":"selected"})).expect("query"),
+                ),
+                headers: Arc::default(),
+            });
+        let query = QueryParams::from_request_parts(&mut parts, &())
+            .await
+            .expect("query");
+        let result = import_list(State(state), query).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(port.requests.lock().expect("requests").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn import_reads_history_after_starting_the_selected_dormant_account() {
+        let (_root, state, port) = fixture().await;
+        let result = import_thread(
+            State(state),
+            ApiJson(
+                serde_json::from_value(json!({
+                    "id":"import-request", "threadId":"thread", "account_key":"selected"
+                }))
+                .expect("request"),
+            ),
+        )
+        .await;
+        let error = result.expect_err("empty native history refuses creation");
+        let response = axum::response::IntoResponse::into_response(error);
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "native history validation must run"
+        );
+        let requests = port.requests.lock().expect("requests");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].operation, "import:import-request:read");
+        assert_eq!(requests[1].operation, "import:import-request:turns");
     }
 }

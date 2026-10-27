@@ -131,12 +131,13 @@ export class SignedEventSource
       if (!this.stopped) this.onerror?.call(this, new Event("error"));
     });
   }
-  close() {
+  /** The reason reaches the desktop stream log. */
+  close(reason = "closed") {
     this.stopped = true;
     this.releaseHold?.();
     this.releaseHold = undefined;
-    void this.reader?.cancel().catch(() => {});
-    this.controller.abort();
+    void this.reader?.cancel(new Error(reason)).catch(() => {});
+    this.controller.abort(new Error(reason));
   }
 }
 export function openServerEvents(

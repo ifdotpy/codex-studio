@@ -3,12 +3,15 @@ import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 
 import { writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 export {
   tool,
   createSdkMcpServer,
   getSessionMessages,
 } from "./sdk-fixtures.ts";
+// A test selects one extra observation; the default record stays exact.
+const record = process.env.STUDIO_FENCE_FIXTURE_RECORD;
 export const forkSession = async () => ({ sessionId: "fork" });
 export function query({ prompt, options }: FixtureQuery) {
   writeFileSync(
@@ -17,7 +20,23 @@ export function query({ prompt, options }: FixtureQuery) {
       tree: options.env!.CLAUDE_CODE_HOST_WORKTREE,
       fence: options.env!.CLAUDE_CODE_HOST_WORKTREE_FENCE,
       permissionMode: options.permissionMode,
-      account: options.env!.STUDIO_CLAUDE_ACCOUNT,
+      account: options.env?.STUDIO_CLAUDE_ACCOUNT,
+      ...(record === "native"
+        ? {
+            native: {
+              version: spawnSync("layr", ["--version"], {
+                env: options.env,
+                encoding: "utf8",
+              }).stdout,
+              root: options.env?.LAYR_ROOT,
+              direct: options.env?.LAYR_DIRECT,
+              socket: options.env?.LAYR_SOCKET,
+              tmp: options.env?.TMPDIR,
+            },
+          }
+        : {}),
+      ...(record === "sandbox" ? { sandbox: options.sandbox } : {}),
+      ...(record === "environment" ? { environment: options.env } : {}),
     }),
   );
   const abort = new AbortController();

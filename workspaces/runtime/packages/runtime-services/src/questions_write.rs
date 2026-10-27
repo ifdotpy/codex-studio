@@ -87,7 +87,6 @@ pub async fn answer_async_question_in_store(
     let validate: std::sync::Arc<dyn Fn(&Value) -> bool + Send + Sync> =
         std::sync::Arc::new(validate);
     let validate_for_preparation = std::sync::Arc::clone(&validate);
-    let store_for_preparation = std::sync::Arc::clone(&store);
     let id_for_preparation = id.clone();
     let read = store
         .read_async("runtime-services/questions_write", move |transaction| {
@@ -107,11 +106,8 @@ pub async fn answer_async_question_in_store(
                 .get("agent")
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid_stored("runtime_requests", &id_for_preparation))?;
-            let admission = crate::message_admission::MessageIngressAdmission::read(
-                store_for_preparation,
-                transaction,
-                agent_id,
-            )?;
+            let admission =
+                crate::message_admission::MessageIngressAdmission::read(transaction, agent_id)?;
             Ok(Some(admission))
         })
         .await?;

@@ -1,0 +1,517 @@
+"""Stage a verified Mac bundle for the existing recovery owner, then check its result."""
+from __future__ import annotations
+
+import argparse
+from contextlib import nullcontext
+import json
+import os
+from pathlib import Path
+import sqlite3
+import sys
+import tempfile
+import time
+from urllib.parse import urlparse
+import urllib.request
+import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+if sys.version_info < (3, 11):
+    raise SystemExit('Mac delivery needs Python 3.11 or newer, as the recovery helper does')
+import desktop_updates as updates
+import recover_backend as recovery
+import desktop_delivery
+
+# Shared owner of the receipt filename and phases consumed by the Node command router.
+from desktop_delivery import (
+    CONTRACT, DeliveryError, bundle_hash, file_hash, journal_path,
+    read_delivery_record, read_handles, server_path,
+)
+PHASES = CONTRACT['phases']
+# Maximum wait for the existing recovery owner and its replacement backend, in seconds.
+INSTALL_WAIT_SECONDS = 900
+# Delay between observations of the same install request, in seconds.
+POLL_SECONDS = 2
+# Timeout for one loopback backend observation, in seconds.
+HTTP_SECONDS = 10
+# State-owned request journals survive cache loss and installer stage cleanup.
+JOURNAL_DIRECTORY = CONTRACT['journalDirectory']
+
+
+class DeliveryPending(DeliveryError):
+    """The receipt exists, but its replacement backend is not ready yet."""
+
+
+sync_directory = desktop_delivery.sync_directory
+
+
+def write_receipt(path, record):
+    updates.write_json(path, record)
+    sync_directory(path.parent)
+
+
+def save_record(state, record_path, record):
+    journal = journal_path(state, record['id'])
+    journal.parent.mkdir(mode=0o700, exist_ok=True)
+    # Persist the new directory entry before a journal can authorize publication.
+    sync_directory(state)
+    write_receipt(journal, record)
+    record_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    write_receipt(record_path, record)
+
+
+def validate_receipt_directory(receipts, source, installed, state=None):
+    protected = [source.resolve(), installed.resolve(), Path(__file__).resolve().parents[4]]
+    if state is not None:
+        protected.append(state.resolve())
+    if any(receipts == folder or folder in receipts.parents for folder in protected):
+        raise DeliveryError('The receipt directory must be outside bundles, runtime state, and the checkout')
+
+
+def delivery_port(url):
+    parsed = urlparse(url)
+    if (parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost', '::1')
+            or parsed.username or parsed.password or parsed.path not in ('', '/')
+            or parsed.query or parsed.fragment):
+        raise DeliveryError('The delivery URL must be a loopback HTTP origin')
+    return parsed.port or 80
+
+
+def observe_desktop(url):
+    port = delivery_port(url)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), recovery.NoRedirect())
+    with opener.open(url.rstrip('/') + '/api/desktop', timeout=HTTP_SECONDS) as response:
+        data = json.load(response)
+    if not isinstance(data, dict):
+        raise DeliveryError('The desktop response is not an object')
+    data['_deliveryPort'] = port
+    return data
+
+
+def check_backend(identity, installed):
+    installed = Path(installed).resolve()
+    if (not isinstance(identity, dict) or identity.get('backendKind') != 'rust'
+            or identity.get('supervisorMode') is not True
+            or type(identity.get('pid')) is not int or identity['pid'] <= 0
+            or not isinstance(identity.get('stateDir'), str)
+            or not Path(identity['stateDir']).is_absolute()):
+        raise DeliveryError('A verified Rust backend with its existing supervisor is required')
+    try:
+        recovery.validate_identity(identity, Path(identity['stateDir']))
+    except RuntimeError as error:
+        raise DeliveryError(str(error)) from error
+    try:
+        state = Path(identity['stateDir']).resolve(strict=True)
+    except OSError as error:
+        raise DeliveryError('The running state directory cannot be verified') from error
+    try:
+        config = recovery.load_config(state / 'background-recovery.json', state)
+    except (KeyError, RuntimeError) as error:
+        raise DeliveryError('The recovery configuration cannot be verified') from error
+    # The native client passes resource_dir()/workspace to recovery; the
+    # desktop recovery owner also supports the bundle's Resources root.
+    resources = installed / 'Contents/Resources'
+    recovery_resources = (resources, resources / 'workspace')
+    if (not config or not isinstance(config.get('stateDir'), str)
+            or Path(config['stateDir']).resolve() != state or config.get('backend') != 'rust'
+            or config.get('supervisorEnabled') is not True
+            or not isinstance(config.get('runtimeServer'), str)
+            or Path(config['runtimeServer']).resolve() != server_path(installed)
+            or not isinstance(config.get('resources'), str)
+            or Path(config['resources']).resolve() not in recovery_resources):
+        raise DeliveryError('The recovery configuration does not match the running state and installed app')
+    if identity.get('backendBuild') != file_hash(server_path(installed)):
+        raise DeliveryError('The running backend does not match the installed binary')
+    if identity.get('_deliveryPort', config['port']) != config['port']:
+        raise DeliveryError('The observed listener differs from the configured backend port')
+    try:
+        recovery.verify_backend_process(identity, config)
+    except RuntimeError as error:
+        raise DeliveryError(str(error)) from error
+    return state
+
+
+def publish_pending(state, pending):
+    """Publish a complete request without replacing a concurrent or malformed pending file."""
+    descriptor, name = tempfile.mkstemp(dir=state, prefix='.delivery-pending-')
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            json.dump(pending, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, state / updates.PENDING_FILE)
+        sync_directory(state)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def abandoned_startup_intent(state, operation):
+    """The pointer of an earlier startup publication that never got a pending file, else None."""
+    pointer = state / desktop_delivery.STARTUP_INTENT_FILE
+    if not pointer.exists() and not pointer.is_symlink():
+        return None
+    intent = desktop_delivery.read_private_json(pointer)
+    if not isinstance(intent, dict) or not isinstance(intent.get('id'), str) or intent['id'] == operation:
+        return None
+    saved = desktop_delivery.read_delivery_record(desktop_delivery.journal_path(state, intent['id']))
+    receipt = updates.read_json(state / updates.RECEIPT_FILE) or {}
+    installed = receipt.get('id') == intent['id'] and receipt.get('outcome') == 'installed'
+    if saved is None or saved.get('phase') != PHASES['publishing'] or installed or updates.read_pending(state) is not None:
+        return None
+    return intent
+
+
+def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool, dry_run=False,
+          starting_pid=None, recover_installed=None, state=None, port=None):
+    source, installed, receipts = Path(source), Path(installed), Path(receipts)
+    if source.is_symlink() or installed.is_symlink():
+        raise DeliveryError('The source and installed apps must not be symlinks')
+    source, installed, receipts = source.resolve(), installed.resolve(), receipts.resolve()
+    validate_receipt_directory(receipts, source, installed)
+    if source == installed or source.name != updates.APP_NAME:
+        raise DeliveryError('Provide a separate packaged Codex Studio.app')
+    build = updates.read_build(source)
+    if not build or build['commit'] != commit:
+        raise DeliveryError('The package does not match the requested commit')
+    updates.verify_app(source, installed, build, run)
+    startup = None
+    recovered = None
+    if recover_installed is not None:
+        if starting_pid is not None or state is None:
+            raise DeliveryError('Installed-delivery recovery requires a canonical state and no backend PID')
+        desktop_delivery.require_startup_target(source, installed_recovery=True)
+        state = Path(state)
+        config = recovery.startup_delivery_config(state, installed)
+        if port is not None and port != config['port']:
+            raise DeliveryError('The delivery URL differs from the configured recovery port')
+        recovered, prior = recovery.capture_installed_delivery(config, state, installed, recover_installed, run=run)
+        handles = prior['handles']
+        if build['builtAt'] <= recovered['previousBuild']['builtAt']:
+            raise DeliveryError('Installed-delivery recovery requires a newer replacement package')
+    elif starting_pid is not None:
+        desktop_delivery.require_startup_target(source)
+        if type(starting_pid) is not int or starting_pid < 2 or state is None:
+            raise DeliveryError('Startup delivery requires a pinned PID and canonical state')
+        state = Path(state)
+        config = recovery.startup_delivery_config(state, installed)
+        if port is not None and port != config['port']:
+            raise DeliveryError('The delivery URL differs from the configured startup backend port')
+        handles = read_handles(state)
+        startup = recovery.capture_startup_backend(config, state, installed, starting_pid, handles, run=run)
+        if build['builtAt'] <= startup['previousBuild']['builtAt']:
+            raise DeliveryError('Startup delivery requires a newer replacement package')
+        identity = None
+    else:
+        if state is not None:
+            raise DeliveryError('A state argument requires the explicit startup backend PID')
+        identity = observe()
+        state = check_backend(identity, installed)
+    validate_receipt_directory(receipts, source, installed, state)
+    request = {'commit': commit, 'build': build, 'bundleHash': bundle_hash(source),
+               'backendHash': file_hash(server_path(source)), 'stateDir': str(state),
+               'installed': str(installed)}
+    if startup is not None:
+        request['startupBackend'] = startup
+    if recovered is not None:
+        request['installedDelivery'] = recovered
+    predecessor = None
+    if recovered is not None and 'installedDelivery' in prior['request']:
+        predecessor = {'version':desktop_delivery.STARTUP_INTENT_VERSION, 'id':prior['id'],
+                       'requestHash':desktop_delivery.request_hash(prior['request'])}
+    operation = str(uuid.uuid5(uuid.NAMESPACE_URL, 'studio-delivery:' + str(state) + ':' + commit))
+    owner_receipt = updates.read_json(state / updates.RECEIPT_FILE) or {}
+    if owner_receipt.get('id') == operation and owner_receipt.get('outcome') in ('failed', 'obsolete'):
+        raise DeliveryError('The recovery owner reports delivery ' + str(owner_receipt['outcome']))
+    replaced = abandoned_startup_intent(state, operation) if startup is not None else None
+    if replaced is not None:
+        predecessor = replaced
+    record_path = receipts / CONTRACT['receiptFile']
+    cached = read_delivery_record(record_path)
+    durable_path = journal_path(state, operation)
+    durable = read_delivery_record(durable_path)
+    # The abandoned publication is never resumed; the new request overwrites its receipt cache.
+    reusable = None if replaced is not None and cached is not None and cached.get('id') == replaced['id'] else cached
+    for saved in (reusable, durable):
+        if saved is not None and (saved.get('request') != request or saved.get('id') != operation):
+            raise DeliveryError('The saved delivery request names a different package or target')
+    previous = durable or reusable
+    if previous is not None and (previous.get('request') != request or previous.get('id') != operation):
+        raise DeliveryError('The saved delivery request names a different package or target')
+    if previous is not None and superseded_install(previous, installed):
+        previous = None  # A later install replaced this build, so start a new delivery.
+    pending_path = state / updates.PENDING_FILE
+    if previous:
+        pending = updates.read_pending(state)
+        receipt = updates.read_json(state / updates.RECEIPT_FILE) or {}
+        if previous.get('phase') == PHASES['installed'] or (receipt.get('id') == operation
+                                                   and receipt.get('outcome') == 'installed'):
+            return verify_completion(previous, installed, observe)
+        if pending and pending['id'] == operation and pending['build'] == build:
+            return previous
+        if receipt.get('id') == operation and receipt.get('outcome') in ('failed', 'obsolete'):
+            raise DeliveryError('The recovery owner reports delivery ' + str(receipt['outcome']))
+        # A failed startup publication has no pending file; the lease check below still fences a live delivery.
+        resume_publication = (previous.get('phase') == PHASES['publishing'] and previous.get('installerDispatch') is None
+                              and (recovered is not None or (startup is not None and pending is None)))
+        if previous.get('phase') in (PHASES['publishing'], PHASES['submitted']) and not resume_publication:
+            raise DeliveryError('The delivery outcome is unknown; keep this request and inspect the recovery receipt')
+    if pending_path.exists() or pending_path.is_symlink():
+        raise DeliveryError('Another update is pending; inspect its receipt before delivery')
+    if startup is None and recovered is None:
+        handles = read_handles(state)
+    elif read_handles(state) != handles:
+        raise DeliveryError('The startup provider snapshot changed during preflight')
+    proof = startup or recovered
+    if proof is not None:
+        if recovery.startup_supervisor_handles(state, handles) != proof['supervisorHandles']:
+            raise DeliveryError('The startup supervisor changed during delivery preflight')
+        pointer = state / desktop_delivery.STARTUP_INTENT_FILE
+        if pointer.exists() or pointer.is_symlink():
+            intent = desktop_delivery.read_private_json(pointer)
+            if intent not in ({'version': desktop_delivery.STARTUP_INTENT_VERSION, 'id': operation,
+                              'requestHash': desktop_delivery.request_hash(request)}, predecessor):
+                raise DeliveryError('Another startup delivery intent is unresolved')
+    record = previous or {'id': operation, 'request': request,
+                          'beforePid': starting_pid if startup is not None else prior['beforePid'] if recovered is not None else identity['pid'],
+                          'handles': handles, 'phase': 'validated'}
+    if dry_run:
+        return {**record, 'phase': 'dry_run'}
+    if (proof is None and updates.read_build(installed) == build
+            and identity.get('backendBuild') == request['backendHash']
+            and bundle_hash(installed) == request['bundleHash']):
+        return {**record, 'phase': 'already_installed'}
+    receipts.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # This lease serializes local delivery commands. The pending link also protects other writers.
+    with desktop_delivery.delivery_lease(state), \
+            recovery.installed_delivery_admission(state) if recovered is not None else nullcontext():
+        if pending_path.exists() or pending_path.is_symlink():
+            raise DeliveryError('Another update is pending')
+        # Recheck the cache inside the lease. Never replace a receipt saved by another invocation.
+        saved = read_delivery_record(record_path)
+        if saved != cached or read_delivery_record(durable_path) != durable:
+            raise DeliveryError('The saved delivery changed; retry this request after inspection')
+        save_record(state, record_path, record)
+        folder = updates.build_folder(state, build)
+        marker = folder / 'local-delivery.json'
+        if folder.exists():
+            if updates.read_json(marker) != {'id': operation, 'request': request}:
+                raise DeliveryError('The stage folder belongs to another delivery')
+        else:
+            folder.mkdir(parents=True, mode=0o700)
+            updates.write_json(marker, {'id': operation, 'request': request})
+        staged = folder / updates.APP_NAME
+        if not staged.exists():
+            temporary = Path(tempfile.mkdtemp(dir=folder, prefix='.copy-'))
+            copy = temporary / updates.APP_NAME
+            result = run([updates.DITTO, str(source), str(copy)], updates.DITTO_SECONDS)
+            if result.returncode:
+                raise DeliveryError('The package copy failed; its partial stage is kept for inspection')
+            updates.verify_app(copy, installed, build, run)
+            if bundle_hash(copy) != request['bundleHash']:
+                raise DeliveryError('The copied package differs from the verified request')
+            os.rename(copy, staged)
+            temporary.rmdir()
+        updates.verify_app(staged, installed, build, run)
+        if bundle_hash(staged) != request['bundleHash']:
+            raise DeliveryError('The staged package differs from the verified request')
+        record = {**record, 'phase': PHASES['publishing'], 'app': str(staged)}
+        save_record(state, record_path, record)
+        if startup is not None:
+            # The legacy installer ignores this typed intent and keeps its existing swap path.
+            # Only the replacement recovery owner can consume it after an installed receipt.
+            recovery.verify_startup_backend(config, state, installed, startup, handles, swapped=False)
+            desktop_delivery.publish_startup_intent(state, record, predecessor=predecessor)
+        if recovered is not None:
+            recovery.verify_installed_admission(config, state, installed, recovered, handles)
+            desktop_delivery.publish_startup_intent(state, record, predecessor=predecessor if pointer.exists() and desktop_delivery.read_private_json(pointer) == predecessor else None)
+        pending = {'id': operation, 'app': str(staged), 'build': build, 'from': 'local-delivery'}
+        try:
+            publish_pending(state, pending)
+        except FileExistsError as error:
+            raise DeliveryError('Another update became pending; no request was replaced') from error
+        record = {**record, 'phase': PHASES['submitted']}
+        save_record(state, record_path, record)
+        return record
+
+
+def superseded_install(record, installed):
+    """An installed record is history once the installed app carries another build."""
+    return record.get('phase') == PHASES['installed'] and updates.read_build(installed) != record['request']['build']
+
+
+def verify_completion(record, installed, observe):
+    request = record['request']
+    state = Path(request['stateDir'])
+    receipt = updates.read_json(state / updates.RECEIPT_FILE) or {}
+    if receipt.get('id') != record['id'] or receipt.get('outcome') != 'installed':
+        raise DeliveryError('The delivery result is unknown; no matching installed receipt exists')
+    identity = observe()
+    if (updates.read_build(installed) != request['build']
+            or bundle_hash(installed) != request['bundleHash']):
+        raise DeliveryError('The installed bundle does not match the delivery receipt')
+    if (identity.get('backendBuild') != request['backendHash']
+            or ('installedDelivery' not in request and identity.get('pid') == record['beforePid'])):
+        raise DeliveryPending('The running backend does not yet match the installed receipt')
+    if check_backend(identity, installed) != state:
+        raise DeliveryError('The running backend uses another state directory')
+    after = read_handles(state)
+    if any(after.get(key) != value for key, value in record['handles'].items()):
+        raise DeliveryError('A retained provider changed its PID or generation; inspect its state before recovery')
+    if any(key in request for key in ('startupBackend', 'installedDelivery')):
+        durable = read_delivery_record(journal_path(state, record['id']))
+        if (not durable or durable['request'] != request
+                or durable.get('startupRecovery') != {'phase': 'stopped'}):
+            raise DeliveryPending('The startup recovery owner has not confirmed the original backend ended')
+        record = durable
+        if 'installedDelivery' in request:
+            proof = request['installedDelivery']
+            config = recovery.startup_delivery_config(state, installed)
+            recovery.installed_delivery_origin(config, state, installed, proof, record['handles'], swapped=True)
+            recovery.verify_startup_state_files(state, proof, request['backendHash'])
+    return {**record, 'phase': PHASES['installed'], 'afterPid': identity['pid']}
+
+
+def dispatch_recovery_installer(record, installed, *, run=None):
+    """Dispatch the existing installed installer once. Never create another install or backend owner."""
+    import subprocess
+    run = run or subprocess.run
+    request = record['request']
+    proof = request.get('installedDelivery')
+    if proof is None or proof['version'] != CONTRACT['installedRecoveryVersion']:
+        return record
+    state = Path(request['stateDir'])
+    with desktop_delivery.delivery_lease(state):
+        durable = read_delivery_record(journal_path(state, record['id']))
+        if not durable or durable['request'] != request:
+            raise DeliveryError('The installer dispatch differs from its durable delivery')
+        receipt = desktop_delivery.read_private_json(state / updates.RECEIPT_FILE)
+        if receipt.get('id') == record['id'] and receipt.get('outcome') == 'installed':
+            return durable
+        dispatch = durable.get('installerDispatch')
+        if dispatch is not None and (not isinstance(dispatch,dict) or dispatch.get('phase') != 'waiting'):
+            raise DeliveryPending('The existing installer dispatch outcome is unknown; do not repeat it')
+        config = recovery.startup_delivery_config(state, installed)
+        recovery.verify_installed_admission(config, state, installed, proof, durable['handles'])
+        expected = {'version':desktop_delivery.STARTUP_INTENT_VERSION, 'id':record['id'],
+                    'requestHash':desktop_delivery.request_hash(request)}
+        pending = updates.read_pending(state)
+        if (desktop_delivery.read_private_json(state / desktop_delivery.STARTUP_INTENT_FILE) != expected
+                or not pending or pending['id'] != record['id'] or pending['build'] != request['build']
+                or pending['from'] != 'local-delivery' or bundle_hash(Path(pending['app'])) != request['bundleHash']):
+            raise DeliveryError('The installer dispatch has no exact published request')
+        installer = installed / 'Contents/Resources/install_update.py'
+        # The verified installed bundle owns these exact bytes. The child takes its existing
+        # install and maintenance leases after publication released them and the runtime lease.
+        installer_identity = {**recovery.startup_file_identity(installer),'sha256':file_hash(installer)}
+        durable['installerDispatch'] = {'phase':'requested','installer':installer_identity}
+        desktop_delivery.save_journal(state, durable)
+        if {**recovery.startup_file_identity(installer),'sha256':file_hash(installer)} != installer_identity:
+            raise DeliveryError('The installed installer changed before dispatch')
+        result = run([config['python'], '-B', str(installer), '--config', str(state / 'background-recovery.json')],
+                     cwd=Path.home(), env=recovery.launch_environment(config, state), stdin=subprocess.DEVNULL,
+                     timeout=recovery.UPDATE_INSTALL_SECONDS, check=False)
+        durable = read_delivery_record(journal_path(state, record['id']))
+        if not durable or durable['request'] != request:
+            raise DeliveryError('The delivery changed while its existing installer ran')
+        durable['installerDispatch'] = {'phase':{0:'installed',75:'waiting'}.get(result.returncode,'failed'),
+                                       'installer':installer_identity}
+        desktop_delivery.save_journal(state, durable)
+        if result.returncode != 0:
+            raise DeliveryPending('The existing installer is waiting or failed; the exact delivery is retained')
+        return durable
+
+
+def wait_for_completion(record, installed, receipts, observe):
+    deadline = time.monotonic() + INSTALL_WAIT_SECONDS
+    state = Path(record['request']['stateDir'])
+    while time.monotonic() < deadline:
+        receipt = updates.read_json(state / updates.RECEIPT_FILE) or {}
+        if receipt.get('id') == record['id'] and receipt.get('outcome') in ('failed', 'obsolete'):
+            raise DeliveryError('The recovery owner reports delivery ' + str(receipt['outcome']))
+        if receipt.get('id') == record['id'] and receipt.get('outcome') == 'installed':
+            try:
+                result = verify_completion(record, installed, observe)
+            except (OSError, DeliveryPending):
+                pass  # The receipt can precede backend startup; keep observing the same request.
+            else:
+                save_record(state, receipts / CONTRACT['receiptFile'], result)
+                if any(key in result['request'] for key in ('startupBackend', 'installedDelivery')):
+                    desktop_delivery.clear_startup_intent(state, result)
+                return result
+        time.sleep(POLL_SECONDS)
+    raise DeliveryError('The delivery result is unknown after the wait; retry with the same package and receipts')
+
+
+def resume_saved(source, commit, installed, receipts, observe, *, starting_pid=None, recover_installed=None, state=None):
+    """Observe an existing submission without another preflight, copy, or pending write."""
+    validate_receipt_directory(receipts.resolve(), source, installed)
+    saved = read_delivery_record(receipts / CONTRACT['receiptFile'])
+    if not saved or saved.get('phase') not in PHASES.values():
+        return None
+    request = saved.get('request', {})
+    if ((starting_pid is not None and request.get('startupBackend', {}).get('pid') != starting_pid)
+            or (recover_installed is not None and request.get('installedDelivery', {}).get('priorId') != recover_installed)
+            or (state is not None and request.get('stateDir') != str(state))):
+        raise DeliveryError('The saved startup delivery names another PID or state')
+    validate_receipt_directory(receipts.resolve(), source, installed, Path(request['stateDir']))
+    durable = read_delivery_record(journal_path(Path(request['stateDir']), saved['id']))
+    if durable:
+        if durable['request'] != request:
+            raise DeliveryError('The saved delivery differs from its state-owned journal')
+        saved = durable
+    if (request.get('commit') != commit or request.get('installed') != str(installed.resolve())
+            or request.get('build') != updates.read_build(source)
+            or request.get('bundleHash') != bundle_hash(source)):
+        raise DeliveryError('The saved delivery request names a different package or target')
+    if superseded_install(saved, installed.resolve()):
+        return None  # A later install replaced this build, so the caller starts a new delivery.
+    if recover_installed is not None and saved.get('phase') == PHASES['publishing'] and updates.read_pending(Path(request['stateDir'])) is None and saved.get('installerDispatch') is None:
+        receipt = desktop_delivery.read_private_json(Path(request['stateDir']) / updates.RECEIPT_FILE)
+        if desktop_delivery.request_hash(receipt) == request['installedDelivery']['priorReceiptHash']:
+            return None  # Continue only this durable publication, never create another operation.
+    if recover_installed is not None:
+        saved = dispatch_recovery_installer(saved, installed.resolve())
+    return wait_for_completion(saved, installed.resolve(), receipts.resolve(), observe)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--app', type=Path, required=True)
+    parser.add_argument('--commit', required=True)
+    parser.add_argument('--installed', type=Path, default=Path('/Applications') / updates.APP_NAME)
+    parser.add_argument('--receipts', type=Path, required=True)
+    parser.add_argument('--url', required=True)
+    parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--starting-backend-pid', type=int)
+    parser.add_argument('--recover-installed-delivery')
+    parser.add_argument('--state', type=Path)
+    args = parser.parse_args()
+    if args.starting_backend_pid is not None and args.recover_installed_delivery is not None:
+        parser.error('Select one delivery recovery proof kind')
+    if (args.starting_backend_pid is None and args.recover_installed_delivery is None) != (args.state is None):
+        parser.error('Provide one explicit delivery recovery proof and --state together')
+    if args.starting_backend_pid is not None and args.starting_backend_pid < 2:
+        parser.error('--starting-backend-pid must name an existing non-system process')
+    observe = lambda: observe_desktop(args.url)
+    port = delivery_port(args.url)
+    record = None if args.dry_run else resume_saved(
+        args.app, args.commit, args.installed, args.receipts, observe,
+        starting_pid=args.starting_backend_pid, recover_installed=args.recover_installed_delivery, state=args.state)
+    if record is None:
+        record = stage(args.app, args.commit, args.installed, args.receipts,
+                       observe=observe, dry_run=args.dry_run,
+                       starting_pid=args.starting_backend_pid, recover_installed=args.recover_installed_delivery,
+                       state=args.state, port=port)
+    if not args.dry_run and record['phase'] not in (PHASES['installed'], 'already_installed'):
+        if args.recover_installed_delivery is not None:
+            record = dispatch_recovery_installer(record, args.installed.resolve())
+        record = wait_for_completion(record, args.installed.resolve(), args.receipts.resolve(), observe)
+    print(json.dumps({'id': record['id'], 'commit': args.commit, 'phase': record['phase'],
+                      'providers': len(record['handles']), 'receipts': str(args.receipts)}), flush=True)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, sqlite3.Error, updates.UpdateError, RuntimeError) as error:
+        raise SystemExit(str(error)) from None

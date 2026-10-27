@@ -1,3 +1,4 @@
+import { randomUUID } from "../../../uuid";
 import type { paths } from "../../../generated/api";
 
 type ComplaintDetail =
@@ -39,7 +40,7 @@ export function complaintReplyRequest(
 ): UserComplaintResponse {
   return (
     existing ?? {
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       action: "respond",
       complaint_id: detail.id,
       version: detail.version,

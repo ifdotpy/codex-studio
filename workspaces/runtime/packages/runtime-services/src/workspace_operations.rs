@@ -150,7 +150,7 @@ impl CompletionSnapshot {
             )
             && !truthy(a.get("deletedAt"))
             && !truthy(a.get("agentArchive"))
-            && !truthy(a.get("imageWorkspace"))
+            && !crate::legacy_image_workspace::is_legacy(a)
             && truthy(a.get("worktreeReady"))
     }
 }

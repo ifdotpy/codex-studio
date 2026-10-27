@@ -12,11 +12,17 @@ pub struct Spec {
     values: Vec<&'static str>,
     /// Long options with an optional value (`--porcelain`, `--porcelain=v1`).
     optional: Vec<&'static str>,
+    /// Removed options and their replacements.
+    removed: HashMap<&'static str, &'static str>,
     /// Aliases: alias to canonical name.
     alias: HashMap<&'static str, &'static str>,
 }
 
 impl Spec {
+    pub fn removed(mut self, old: &'static str, new: &'static str) -> Spec {
+        self.removed.insert(old, new);
+        self
+    }
     pub fn new() -> Spec {
         Spec::default()
     }
@@ -94,6 +100,9 @@ pub fn parse(spec: &Spec, args: &[String]) -> Result<Parsed> {
                 Some(k) => (&a[..k], Some(a[k + 1..].to_string())),
                 None => (a.as_str(), None),
             };
+            if let Some(new) = spec.removed.get(name) {
+                return Err(crate::cmd::exit(2, format!("{name} was removed. Use {new}.")));
+            }
             if let Some(canon) = spec.alias.get(name) {
                 if spec.flags.contains(&name) {
                     if val.is_some() {

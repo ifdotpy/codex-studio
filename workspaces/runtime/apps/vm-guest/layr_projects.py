@@ -63,7 +63,7 @@ class Projects:
 
     # The layr rules of a Studio project (docs/btrfs-local-vcs.md, decisions 18 and 23). Version
     # 1: the lead (the owner of main) may also commit in main, and the agents' group may not
-    # change roles, replicate, change remotes, import or export records, or make backups.
+    # change roles, replicate, change remotes, or import and export records.
     POLICY_VERSION = 1
 
     async def apply_policy(self, project):
@@ -74,7 +74,7 @@ class Projects:
         ensure_agents_group()
         await self.layr(["--project", project, "protect", "main", "--direct"])
         await self.layr(["--project", project, "access", "deny", "@" + AGENTS_GROUP,
-                         "access", "sync", "remote", "records", "backup"])
+                         "access", "sync", "remote", "records"])
         atomic_json(marker, {"version": self.POLICY_VERSION})
 
     async def ensure(self, project):
@@ -84,7 +84,7 @@ class Projects:
         await self.apply_policy(project)
         # Read identity from the owned main folder, not from caller input.
         user = pwd.getpwuid(cwd.stat().st_uid)
-        state = await self.layr(["rev-parse", "HEAD"], cwd=cwd)
+        state = await self.layr(["rev-parse", "head"], cwd=cwd)
         return {"projectId": project, "mainLine": "main", "cwd": str(cwd),
                 "owner": user.pw_name, "ownerUid": user.pw_uid, "home": user.pw_dir,
                 "stateId": state, "share": await self.share.status()}
@@ -171,7 +171,7 @@ class Projects:
                     raise
             # Also after an earlier attempt that placed the folder but did not save. The layer
             # rules decide: the folder must be ignored and marked regenerable in main.
-            await self.layr(["save", "--caches", "-m", "Seed layer " + path], cwd=main, owner=user.pw_name)
+            await self.layr(["save", "--caches", "--note", "Seed layer " + path], cwd=main, owner=user.pw_name)
             result = {**await self.ensure(project), "path": path, "seeded": seeded}
             atomic_json(marker, result)
         return result
@@ -206,7 +206,7 @@ class Projects:
                 cwd = self.folder(project) / "lines" / line
                 marker = self.state / ("import-" + hashlib.sha256(request_id.encode()).hexdigest() + ".json")
                 expect(not cwd.exists(), "The import line already exists; inspect its saved state", "outcome_unknown")
-                await self.layr(["branch", line, "--owner", owner["owner"]], cwd=previous["cwd"])
+                await self.layr(["line", "new", line, "--owner", owner["owner"]], cwd=previous["cwd"])
                 # rsync works as the line owner and never changes the guest main.
                 # Source is copied to a root-owned private snapshot before root reads it.
                 private_source = await self.freeze_source(source, request_id)
@@ -214,8 +214,8 @@ class Projects:
                     await command(["rsync", "-a", "--delete", "--exclude=.git", private_source.as_posix() + "/", cwd.as_posix() + "/"], timeout=1800)
                     await command(["chown", "-R", owner["owner"] + ":" + owner["owner"], cwd], timeout=1800)
                     await self.layr(["add", "-A"], cwd=cwd, owner=owner["owner"])
-                    await self.layr(["commit", "--allow-empty", "-m", "Explicit Mac re-import"], cwd=cwd, owner=owner["owner"])
-                    state = await self.layr(["rev-parse", "HEAD"], cwd=cwd)
+                    await self.layr(["save", "--allow-empty", "-m", "Explicit Mac re-import"], cwd=cwd, owner=owner["owner"])
+                    state = await self.layr(["rev-parse", "head"], cwd=cwd)
                     atomic_json(marker, {"line": line, "stateId": state})
                     return {**previous, "imported": True, "importLine": line,
                             "importCwd": str(cwd), "importStateId": state}

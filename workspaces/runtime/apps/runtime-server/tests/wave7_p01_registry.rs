@@ -232,6 +232,8 @@ struct Scripted {
     opened_notice: Arc<Notify>,
     ready_notice: Arc<Notify>,
     initialize_holds: InitializeHolds,
+    /// Read-only history of the retained turn in the callback restart witness.
+    retained_history: std::sync::OnceLock<(String, String)>,
 }
 /// Provider handles whose `initialize` reply waits for the paired release.
 type InitializeHolds = Arc<Mutex<BTreeMap<String, Arc<Notify>>>>;
@@ -287,6 +289,7 @@ impl AccountLauncher for Scripted {
                 opened_notice: self.opened_notice.clone(),
                 ready_notice: self.ready_notice.clone(),
                 initialize_holds: self.initialize_holds.clone(),
+                retained_history: self.retained_history.get().cloned(),
             });
             let mut resources =
                 PreparationResources::bundled(String::new(), ModelCatalogService::new()).unwrap();
@@ -331,6 +334,7 @@ struct WireFactory {
     unknown_writes: bool,
     record_resumes: bool,
     initialize_holds: InitializeHolds,
+    retained_history: Option<(String, String)>,
 }
 impl ProviderTaskFactory for WireFactory {
     fn open(&self, handle: ProviderHandle, _: OpenOptions, shutdown: Shutdown) -> OpenFuture<'_> {
@@ -349,6 +353,7 @@ impl ProviderTaskFactory for WireFactory {
             .unwrap()
             .get(handle.as_str())
             .cloned();
+        let retained_history = self.retained_history.clone();
         Box::pin(async move {
             let (commands, mut inbox) = mpsc::channel::<AdapterCommand>(16);
             let (events, journal) = mpsc::channel(16);
@@ -390,10 +395,16 @@ impl ProviderTaskFactory for WireFactory {
                             let mut observed_message = None;
                             let receipt = match write.message()["method"].as_str() {
                                 Some("initialize") => CommandReceipt::CachedInitialize(json!({})),
-                                Some("initialized") => CommandReceipt::Written {
-                                    remote_id: None,
-                                    duplicate: false,
-                                },
+                                Some("initialized") => {
+                                    // The real supervisor publishes readiness before its write receipt.
+                                    status.send_modify(|current| {
+                                        current.initialization = InitializationStatus::Ready;
+                                    });
+                                    CommandReceipt::Written {
+                                        remote_id: None,
+                                        duplicate: false,
+                                    }
+                                }
                                 Some("thread/resume" | "thread/start") => {
                                     if record_resumes {
                                         writes
@@ -474,6 +485,40 @@ impl ProviderTaskFactory for WireFactory {
                                     ready_notice.notify_one();
                                 }
                                 if let Some(message) = observed_message {
+                                    if let Some((thread, turn)) = &retained_history {
+                                        let result = match message["method"].as_str() {
+                                            Some("thread/read") => Some(
+                                                json!({"thread":{"id":thread,"status":{"type":"active"}}}),
+                                            ),
+                                            Some("thread/turns/list") => Some(
+                                                json!({"data":[{"id":turn,"threadId":thread,"status":"inProgress","itemsView":"full","items":[]}],"nextCursor":null}),
+                                            ),
+                                            _ => None,
+                                        };
+                                        if let Some(result) = result {
+                                            assert_eq!(message["params"]["threadId"], *thread);
+                                            sequence += 1;
+                                            events
+                                                .send(JournalEntry {
+                                                    received_at_ms: 0,
+                                                    cursor: EventCursor(sequence),
+                                                    generation: Generation(7),
+                                                    payload: JournalPayload::Frame(
+                                                        Frame::Response {
+                                                            id: serde_json::from_value(
+                                                                message["id"].clone(),
+                                                            )
+                                                            .unwrap(),
+                                                            body: ResponseBody::Result(result),
+                                                            fields: Default::default(),
+                                                        },
+                                                    ),
+                                                })
+                                                .await
+                                                .unwrap();
+                                            continue;
+                                        }
+                                    }
                                     if message["method"] == "turn/start" && !unknown_writes {
                                         sequence += 1;
                                         events
@@ -598,6 +643,7 @@ fn scripted_with_policy(
             opened_notice: Arc::default(),
             ready_notice: Arc::default(),
             initialize_holds: Arc::default(),
+            retained_history: std::sync::OnceLock::new(),
         }),
         rx,
     )
@@ -1110,10 +1156,33 @@ async fn committed_input_reaches_one_retained_session_and_unknown_restart_does_n
     );
 }
 
-/// A host without the image backend refuses image turns before a provider starts.
-#[cfg(not(target_os = "macos"))]
+/// Legacy image rows remain stored and never start a provider after removal.
 #[tokio::test]
-async fn image_workspace_pending_event_is_refused_before_account_provider_launch() {
+async fn review_regression_legacy_pending_recovery_does_not_start_provider() {
+    let fixture = Fixture::new().await;
+    let id = fixture.agents[0]["id"].as_str().unwrap().to_owned();
+    fixture.store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.workspaceMode','image','$.status','interrupted','$.autoWake',json('false'),'$.restartRecovery',json(?2)) WHERE id=?1", rusqlite::params![id,json!({"stage":"pending","turnId":"old-turn"}).to_string()])?;
+        Ok(())
+    }).await.unwrap();
+    let (launcher, _writes) = scripted();
+    let mut registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
+    registry.reconcile(None).await.unwrap();
+    assert!(
+        launcher.opened.lock().unwrap().is_empty(),
+        "Legacy recovery must not start a provider"
+    );
+    registry.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn legacy_image_rows_finish_without_provider_launch_or_row_loss() {
     let fixture = Fixture::new().await;
     let agent_id = fixture.agents[0]["id"].as_str().unwrap().to_owned();
     let transaction_agent_id = agent_id.clone();
@@ -1161,9 +1230,9 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
     assert_eq!(event_status, "pending");
     drop(db);
     let held: Value = serde_json::from_str(&record()).unwrap();
-    assert_eq!(held["status"], "paused");
-    assert_eq!(held["error"], "workspace-state/image-execution");
-    assert_eq!(held["nativeFailureHold"], true);
+    assert_eq!(held["status"], "completed");
+    assert_eq!(held["workspaceMode"], "image");
+    assert_eq!(held["legacyWorkspaceFinished"], true);
     assert_eq!(held["autoWake"], false);
     registry.shutdown().await.unwrap();
 
@@ -1189,112 +1258,6 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
     assert_eq!(event_status, "pending");
     drop(db);
     restarted.shutdown().await.unwrap();
-}
-
-/// Rehearsal 15, agent d0c9c794 (workspaceMode "image"): on macOS the account
-/// worker starts for an image agent's input and its restart check like for any
-/// agent. Workspace preparation mounts the image and runs the turn in
-/// `<mount>/repo`, as Python does; the registry neither refuses nor holds it.
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn image_workspace_pending_event_starts_the_account_provider_on_macos() {
-    let fixture = Fixture::new().await;
-    let agent_id = fixture.agents[0]["id"].as_str().unwrap().to_owned();
-    let transaction_agent_id = agent_id.clone();
-    fixture
-        .store
-        .transaction(move |tx| {
-            tx.execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.workspaceMode','image') WHERE id=?1",
-                [&transaction_agent_id],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    fixture.enqueue(0, "image-workspace-input").await;
-    let (launcher, _writes) = scripted();
-    let mut registry = AccountRegistry::new(
-        fixture.store.clone(),
-        launcher.clone(),
-        test_registry_config(),
-    )
-    .await
-    .unwrap();
-
-    registry.reconcile(None).await.unwrap();
-
-    assert!(
-        !launcher.opened.lock().unwrap().is_empty(),
-        "the account provider starts for the image agent"
-    );
-    let record: Value = {
-        let db = fixture.store.test_reader().expect("reader");
-        serde_json::from_str(
-            &db.query_row(
-                "SELECT record FROM runtime_agents WHERE id=?1",
-                [agent_id.as_str()],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-        )
-        .unwrap()
-    };
-    assert_ne!(
-        record["error"], "workspace-state/image-execution",
-        "{record}"
-    );
-    assert_ne!(record["status"], "paused", "{record}");
-    registry.shutdown().await.unwrap();
-}
-
-/// Rehearsal 15: the restart check of an image agent that ran at the backend
-/// swap waited until another agent of the account started the worker. On macOS
-/// its own recovery row starts the account worker, whose first pass reads it.
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn an_interrupted_image_agent_starts_its_own_restart_check_on_macos() {
-    let fixture = Fixture::new().await;
-    let agent_id = fixture.agents[0]["id"].as_str().unwrap().to_owned();
-    let transaction_agent_id = agent_id.clone();
-    fixture
-        .store
-        .transaction(move |tx| {
-            tx.execute(
-                "UPDATE runtime_agents SET record=json_set(record,
-                   '$.workspaceMode','image','$.status','interrupted','$.autoWake',json('false'),
-                   '$.inFlight',json('false'),'$.turnId','turn-at-swap',
-                   '$.error','Server restarted during a turn. Review history, then send a new instruction.',
-                   '$.restartRecovery',json_object('stage','pending','autoWake',json('true'),
-                      'turnId','turn-at-swap','epoch',json_extract(record,'$.epoch'),
-                      'accountKey',json_extract(record,'$.accountKey'),
-                      'threadId',json_extract(record,'$.threadId'),'at',1.0,'source','restart'),
-                   '$.disconnectRecovery',json_object('source','restart','autoWake',json('true'),
-                      'turnId','turn-at-swap','epoch',json_extract(record,'$.epoch'),
-                      'accountKey',json_extract(record,'$.accountKey'),
-                      'threadId',json_extract(record,'$.threadId'),'at',1.0)) WHERE id=?1",
-                [&transaction_agent_id],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    let (launcher, _writes) = scripted();
-    let mut registry = AccountRegistry::new(
-        fixture.store.clone(),
-        launcher.clone(),
-        test_registry_config(),
-    )
-    .await
-    .unwrap();
-
-    registry.reconcile(None).await.unwrap();
-
-    assert!(
-        !launcher.opened.lock().unwrap().is_empty(),
-        "the image agent's recovery starts the account worker"
-    );
-    registry.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1560,6 +1523,161 @@ mod runtime_shutdown;
 struct SupervisorDetachLauncher {
     scripted: Arc<Scripted>,
     root: PathBuf,
+}
+
+struct CallbackRecoveryLauncher(Arc<Scripted>);
+struct CallbackRecoveryFactory(Arc<dyn ProviderTaskFactory>);
+
+impl ProviderTaskFactory for CallbackRecoveryFactory {
+    fn open(
+        &self,
+        handle: ProviderHandle,
+        options: OpenOptions,
+        shutdown: Shutdown,
+    ) -> OpenFuture<'_> {
+        Box::pin(async move {
+            self.0
+                .open(handle, options, shutdown)
+                .await
+                .map(ProviderAttachment::with_supervisor_write_deduplication)
+        })
+    }
+}
+
+impl AccountLauncher for CallbackRecoveryLauncher {
+    fn launch(&self, account: String) -> LaunchFuture<'_> {
+        Box::pin(async move {
+            let mut launch = self.0.launch(account).await?;
+            launch.factory = Arc::new(CallbackRecoveryFactory(launch.factory));
+            Ok(launch)
+        })
+    }
+}
+
+#[tokio::test]
+async fn callback_only_saved_reply_starts_its_account_without_any_pending_input() {
+    let root = tempfile::tempdir().unwrap();
+    let (store, mut changes) = store_with_change_signal(root.path()).await;
+    let response =
+        json!({"id":"saved-tool-reply","result":{"existingChild":"created-once","success":true}});
+    let encoded = format!("{response}\n");
+    let saved = json!({"version":1,"handle":"account:default","generation":7,"pid":1,
+        "frame":encoded,"sha256":studio_runtime_store::sha256_hex(encoded.as_bytes()),
+        "authority":{"context":{"agent":"managed-actor","account":"default","connection":"original-connection",
+            "generation":7,"epoch":0,"thread":"retained-thread","turn":"retained-turn"},"root":"managed-actor","provider":"claude",
+            "parent":null,"role":"implementer","isLead":true,"executionMode":null,"moving":false}});
+    store.transaction(move |tx| {
+        let actor = json!({"id":"managed-actor","rootId":"managed-actor","epoch":0,"status":"running","autoWake":true,"inFlight":true,
+            "provider":"claude","accountKey":"default","threadId":"retained-thread","turnId":"retained-turn","parentId":null,"role":"implementer","isLead":true,
+            "turnEpoch":0,"startAttempt":{"id":"retained-attempt","epoch":0,"accountKey":"default",
+                "threadId":"retained-thread","turnId":"retained-turn","submitted":true,"created":1.0,
+                "events":["delivered-input"],"activeAtReservation":false,"settingsFixed":true,
+                "requestTicket":"retained-start","connectionGeneration":7,"connectionId":"reattached-connection"}});
+        tx.execute("INSERT INTO runtime_agents(id,record) VALUES ('managed-actor',?1)", [actor.to_string()])?;
+        tx.execute("INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created,turn_id) VALUES ('delivered-input','managed-actor',0,'user','original input','delivered',1.0,'retained-turn')", [])?;
+        let accepted = json!({"account":"default","journalScope":"default","generation":7,"cursor":1,
+            "requestId":"saved-tool-reply","method":"item/tool/call",
+            "frame":"{\"id\":\"saved-tool-reply\",\"method\":\"item/tool/call\",\"params\":{\"threadId\":\"retained-thread\",\"turnId\":\"retained-turn\",\"callId\":\"saved-spawn\",\"tool\":\"orchestration_spawn\",\"arguments\":{}}}\n",
+            "actor":null,"epoch":null});
+        for (phase, value) in [("accepted",accepted),("submitted",saved),("recoverable",json!(true))] {
+            studio_runtime_store::EventWriteRepository::put_receipt(tx,
+                &format!("account-worker:callback:default:7:1:{phase}"), phase, &value.to_string())?;
+        }
+        Ok(())
+    }).await.unwrap();
+    let db = store.test_reader().unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM runtime_events WHERE status='pending'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        account_registry::target_page(&db, "", &BTreeMap::new())
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["default"],
+        "the callback itself supplies durable account demand"
+    );
+    drop(db);
+    let (scripted, mut writes) = scripted_with_unknown_writes(false);
+    scripted
+        .retained_history
+        .set(("retained-thread".into(), "retained-turn".into()))
+        .unwrap();
+    let mut registry = AccountRegistry::new(
+        store.clone(),
+        Arc::new(CallbackRecoveryLauncher(scripted)),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
+    registry.reconcile(None).await.unwrap();
+    let progress = async {
+        loop {
+            let reader = store.test_reader().unwrap();
+            let refused: bool = reader.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id='account-worker:callback:default:7:1:unknown')", [], |row| row.get(0)).unwrap();
+            assert!(
+                !refused,
+                "the saved callback must retain valid actor authority through startup recovery"
+            );
+            drop(reader);
+            tokio::select! {
+                write = writes.recv() => break write,
+                changed = changes.changed() => changed.unwrap(),
+            }
+        }
+    };
+    let (handle, delivered) = tokio::time::timeout(TEST_HANG_GUARD, progress)
+        .await
+        .unwrap_or_else(|_| {
+            let db = store.test_reader().unwrap();
+            let phases: Vec<(String, String)> = db
+                .prepare("SELECT signature,result FROM runtime_operation_receipts WHERE id LIKE 'account-worker:callback:default:7:1:%' ORDER BY id")
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let actor: String = db.query_row("SELECT record FROM runtime_agents WHERE id='managed-actor'", [], |row| row.get(0)).unwrap();
+            panic!("the saved callback reply is missing; phases={phases:?}, actor={actor}")
+        })
+        .unwrap();
+    assert_eq!(handle, "account:default");
+    assert_eq!(
+        delivered, response,
+        "send only the existing result, never the spawn request"
+    );
+    tokio::time::timeout(TEST_HANG_GUARD, async {
+        loop {
+            let remaining = store.test_reader().unwrap().query_row(
+                "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:callback:default:7:1:%'", [], |row| row.get::<_, i64>(0)).unwrap();
+            if remaining == 0 { break; }
+            changes.changed().await.unwrap();
+        }
+    }).await.unwrap();
+    let actor: String = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id='managed-actor'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let actor: Value = serde_json::from_str(&actor).unwrap();
+    assert_eq!(actor["startAttempt"]["id"], "retained-attempt");
+    assert_eq!(actor["status"], "running");
+    assert_eq!(actor["autoWake"], true);
+    assert_eq!(actor["inFlight"], true);
+    registry.shutdown().await.unwrap();
+    assert!(writes.try_recv().is_err());
 }
 
 impl AccountLauncher for SupervisorDetachLauncher {

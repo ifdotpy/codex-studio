@@ -60,7 +60,15 @@ type CredentialActions = {
     result: CredentialResponse;
   };
   summary: { payload: ServerRequest; result: BufferedCredentialResponse };
-  cancel: { payload: { serverId: string; streamId: string }; result: void };
+  cancel: {
+    payload: {
+      serverId: string;
+      streamId: string;
+      /** Why the frame cancels a stream; shown in the stream log. */
+      reason?: string | undefined;
+    };
+    result: void;
+  };
   forget: { payload: { serverId: string }; result: void };
   pairAttempt: {
     payload: {

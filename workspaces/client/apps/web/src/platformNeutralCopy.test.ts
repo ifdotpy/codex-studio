@@ -45,7 +45,10 @@ test("disk recovery, folder sync, workspaces and sign-in use platform-neutral pr
       isLead: true,
       workspaceMode: "image",
     } as Agent),
-  ).toEqual({ label: "IMAGE", title: "Isolated disk image workspace" });
+  ).toBeNull();
+  expect(
+    workspaceBadgeInfo({ isLead: true, workspaceMode: "layr" } as Agent),
+  ).toEqual({ label: "Layr VM", title: "Virtual machine with Layr" });
   expect(
     resultTarget(
       {

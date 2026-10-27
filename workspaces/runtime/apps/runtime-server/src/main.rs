@@ -110,6 +110,10 @@ fn async_executor_worker_threads(
 }
 
 fn main() -> std::process::ExitCode {
+    // launchd gives a soft open-file limit of 256; the providers and commands that this
+    // process starts inherit the raised limit (`open_files`).
+    #[cfg(unix)]
+    studio_runtime_process::open_files::raise_open_file_limit();
     // The launcher of agent sign-in links runs this binary (`browser_host::write_launcher`).
     #[cfg(unix)]
     if let Some(code) = studio_runtime_services::browser_host::shim_main(env::args_os()) {
@@ -368,12 +372,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
-    if args.first().map(String::as_str) == Some("mounts") {
-        // Read-only `check`, or `repair` that only attaches at empty mount points.
-        let (report, ok) = studio_runtime_services::image_workspace::mounts_command(&args[1..])?;
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        std::process::exit(if ok { 0 } else { 1 });
-    }
     let port = parse_port(args.into_iter())?;
     studio_runtime_schema::initialize()?;
     startup_trace("backend-identity-started");
@@ -443,11 +441,8 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Ok(closed) => eprintln!("closed {closed} tasks of settled turns"),
         Err(error) => eprintln!("tasks of settled turns remain running: {error}"),
     }
+    studio_runtime_services::legacy_image_workspace::finish_stored_workspaces(&store).await?;
     startup_trace("store-recovery-completed");
-    // Report stranded or mismatched image workspace mounts; never repair them here.
-    std::thread::Builder::new()
-        .name("image-mount-check".to_owned())
-        .spawn(studio_runtime_services::image_workspace::run_startup_mount_check)?;
     let (workspace_id, limits_read) = store
         .read_async("runtime-server/startup", |db| {
             Ok::<_, studio_runtime_store::StoreError>((
@@ -755,15 +750,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     .await?;
     startup_trace("provider-and-io-setup-completed");
     let registry_wake = state.event_wake_handle();
-    studio_runtime_services::image_workspace_agents::install_wake(Arc::clone(&registry_wake));
-    // Python `resume_read_only_image_bases`: an image agent still in its
-    // read-only phase gets its base build and copy again after a restart.
-    #[cfg(target_os = "macos")]
-    match studio_runtime_services::image_workspace_agents::resume_read_only(&store).await {
-        Ok(0) => {}
-        Ok(count) => eprintln!("resumed the image workspace of {count} read-only agent(s)"),
-        Err(error) => eprintln!("image workspace resume failed: {error}"),
-    }
     let orchestration_wake = Arc::new(Notify::new());
     let federation_wake = Arc::new(Notify::new());
     observe_table_wakes(
@@ -1015,6 +1001,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Arc::clone(&store),
         monitor_shutdown.subscribe(),
     ));
+    let stored_text_task = tokio::spawn(studio_runtime_services::stored_text_compaction::run(
+        Arc::clone(&store),
+        monitor_shutdown.subscribe(),
+    ));
     let analytics_projection_task =
         tokio::spawn(studio_runtime_services::analytics_projection::run(
             Arc::clone(&store),
@@ -1040,6 +1030,12 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             monitor_shutdown.subscribe(),
         ))
     });
+    let shell_policy_task = tokio::spawn(studio_runtime_services::shell_policy::run(
+        Arc::clone(&store),
+        Arc::clone(&account_session),
+        Arc::new(studio_runtime_services::shell_pressure::HostPressure::default()),
+        monitor_shutdown.subscribe(),
+    ));
     let continuation_task = tokio::spawn(continuation_scheduler(
         Arc::clone(&store),
         continuation_scheduler_wake,
@@ -1323,6 +1319,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         history_cleanup.map_err(std::io::Error::other)??;
         shutdown_join("federation delivery task", federation_task).await??;
         shutdown_join("continuation scheduler task", continuation_task).await??;
+        shutdown_join("background shell policy task", shell_policy_task).await??;
         #[cfg(unix)]
         if let Some(task) = idle_compaction_task {
             shutdown_join("idle compaction scheduler task", task).await??;
@@ -1340,6 +1337,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         }
         shutdown_join("Studio error publication task", studio_errors_task).await??;
         shutdown_join("storage retention task", retention_task).await??;
+        shutdown_join("stored text compaction task", stored_text_task).await??;
         shutdown_join("analytics projection task", analytics_projection_task).await??;
         if let Some(task) = orchestration_task {
             shutdown_join("orchestration driver task", task).await??;

@@ -22,6 +22,7 @@ use super::*;
 use crate::provider_session_task::SessionStatus;
 use serde::{Deserialize, Serialize, de::IgnoredAny, de::IntoDeserializer};
 use std::time::Duration;
+use studio_runtime_schema::shared_values::NATIVE_TERMINAL_ITEMS_PER_PAGE as TERMINAL_PAGE_LIMIT;
 use studio_runtime_store::OrchestrationSettingsRepository;
 use tokio::time::Instant;
 
@@ -56,9 +57,6 @@ const IDLE_RETRY_BACKOFF: Duration = Duration::from_secs(30);
 const LOADED_PAGE_LIMIT: u64 = 100;
 /// Pages read before a sweep gives up; a longer list is left for later.
 const MAX_LOADED_PAGES: usize = 16;
-/// Background terminals requested per `thread/backgroundTerminals/list` page.
-const TERMINAL_PAGE_LIMIT: u64 = 100;
-
 /// The five sweep requests; thread ownership comes from their typed input,
 /// never by reading serialized provider parameters back out of JSON.
 #[derive(Serialize)]
@@ -967,7 +965,7 @@ impl Worker {
         for request in [
             IdleRequest::BackgroundTerminalsList {
                 thread_id: thread,
-                limit: TERMINAL_PAGE_LIMIT,
+                limit: u64::try_from(TERMINAL_PAGE_LIMIT).unwrap_or(u64::MAX),
             },
             IdleRequest::QueueList { thread_id: thread },
         ] {
@@ -1156,8 +1154,10 @@ mod tests {
         let generation = Generation(7);
         let handle = ProviderHandle::for_account("default");
         let mut status = SessionStatus {
+            supervisor_write_deduplication: false,
             generation,
             initialization: InitializationStatus::Ready,
+            initialize_result: None,
             attachment: AttachmentStatus {
                 handle: handle.clone(),
                 open_attempted: true,

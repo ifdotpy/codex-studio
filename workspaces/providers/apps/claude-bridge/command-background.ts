@@ -73,12 +73,11 @@ export function foregroundCommandUpdate(
 
 // Fields for a Bash result whose command keeps running as a background task.
 // A backgrounded command has no exit code yet, so none is reported.
-export function backgroundedCommandFields(
-  toolUseResult: unknown,
-): Pick<
-  FreshCommandItem,
-  "canMoveToBackground" | "backgroundTaskId" | "backgroundedByUser"
-> | null {
+export function backgroundedCommandFields(toolUseResult: unknown):
+  | (Pick<FreshCommandItem, "canMoveToBackground" | "backgroundedByUser"> & {
+      backgroundTaskId: string;
+    })
+  | null {
   if (
     !toolUseResult ||
     typeof toolUseResult !== "object" ||

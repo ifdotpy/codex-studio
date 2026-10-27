@@ -28,6 +28,8 @@ pub enum AnalyticsStoreError {
     InvalidPath,
     #[error("analytics SQLite read failed: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("analytics stored text cannot be read: {0}")]
+    StoredText(String),
 }
 
 /// Read-only analytics and attached Canvas paths in one application state.
@@ -51,6 +53,8 @@ impl AnalyticsRepository {
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
+        crate::stored_text_dictionary::install_analytics_sql(&connection)
+            .map_err(|error| AnalyticsStoreError::StoredText(error.to_string()))?;
         connection.pragma_update(None, "query_only", "ON")?;
         let path = self.state_root.join("canvas.sqlite3");
         let uri = read_only_uri(&path)?;

@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { execFileSync, spawnSync } from "node:child_process";
+import { verifyBundledLayr } from "./layr-binary.ts";
 const root = path.dirname(fileURLToPath(import.meta.url));
 const port = await new Promise<number>((resolve) => {
   const server = createServer();
@@ -23,6 +24,9 @@ const executable =
     "dist/Codex Studio-darwin-arm64/Codex Studio.app/Contents/MacOS/Codex Studio",
   );
 const origin = `http://127.0.0.1:${port}`;
+await verifyBundledLayr(
+  path.join(path.dirname(executable), "../Resources/workspace"),
+);
 // Rust owns this route; the generated contract is checked against the server.
 async function desktopIdentity(): Promise<GetResult<"/api/desktop">> {
   return (await fetch(`${origin}/api/desktop`)).json();

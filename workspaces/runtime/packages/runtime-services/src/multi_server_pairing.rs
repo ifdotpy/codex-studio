@@ -50,6 +50,16 @@ pub struct PreparedAccessRequest {
     now: f64,
 }
 
+/// The authenticated caller of a signed ordinary API request.
+#[derive(Clone, Debug)]
+pub struct DispatchPrincipal {
+    pub client_id: String,
+    /// `ui` for a paired Studio window, `server` for a paired server.
+    pub kind: String,
+    /// The answering server, for the `X-Studio-Server` response header.
+    pub local_server: String,
+}
+
 /// Read-only signed-server verification and owner observation completed before admission.
 pub struct PreparedServerRequest {
     request: SignedRequest,
@@ -330,6 +340,117 @@ impl MultiServerBoundary {
                         "The server pairing attempt limit is reached",
                     )),
                 }
+            })
+            .await
+    }
+    /// Authenticate a signed request for the ordinary API, as a paired Studio window or
+    /// server sends it: verify the credential and signature before the owner lookup, then
+    /// in one transaction check the current client row, consume the nonce and record the
+    /// access. Pairing and server management keep their own routes.
+    pub async fn authorize_dispatch_incoming(
+        &self,
+        store: Arc<RuntimeStore>,
+        request: &SignedRequest,
+        address: &str,
+        logins: &[String],
+        now: f64,
+    ) -> Result<DispatchPrincipal, AccessError> {
+        if request.is_status()
+            || request.is_pairing()
+            || request.is_auto_pairing()
+            || request.is_name()
+            || request.is_management_invite()
+            || request.is_orchestration()
+        {
+            return Err(refused(
+                400,
+                "invalid_request",
+                "Invalid signed API request",
+            ));
+        }
+        let client_id = request.client_id().to_owned();
+        let saved_client = store
+            .read_async("runtime-services/multi_server_pairing", move |tx| {
+                Ok::<_, StoreError>(
+                    tx.query_row(
+                        "SELECT record FROM runtime_access_clients WHERE id=?1",
+                        [&client_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?,
+                )
+            })
+            .await?;
+        let observed_snapshot = AccessSnapshot::from_records(
+            request.client_id(),
+            saved_client.as_deref(),
+            "",
+            None,
+            false,
+        )?;
+        auth::verify_before_observe(&observed_snapshot, request, &self.local_server, now)?;
+        let (owner, _) = self.observe(request, address, logins).await?;
+        let identity = (self.identity)(&store).await?;
+        let request = request.clone();
+        store
+            .transaction_with(move |tx| {
+                let client = read_record(tx, "runtime_access_clients", request.client_id())?;
+                let snapshot = AccessSnapshot::from_records(
+                    request.client_id(),
+                    client.as_deref(),
+                    "",
+                    None,
+                    false,
+                )?;
+                let decision = auth::authorize_at(
+                    &snapshot,
+                    &request,
+                    text(&identity, "serverId"),
+                    &owner,
+                    None,
+                    now,
+                )?;
+                if decision.principal.pairing() || decision.principal.auto_pairing() {
+                    return Err(refused(
+                        403,
+                        "pairing_required",
+                        "A paired client is required",
+                    ));
+                }
+                match RemoteTransportRepository::consume_access_nonce_outcome(
+                    tx,
+                    request.client_id(),
+                    request.nonce(),
+                    now as i64,
+                    false,
+                )? {
+                    AccessNonceOutcome::Accepted => {}
+                    AccessNonceOutcome::Replay => {
+                        return Err(refused(
+                            401,
+                            "nonce_replay",
+                            "The request nonce was already used",
+                        ));
+                    }
+                    AccessNonceOutcome::ClientLimit | AccessNonceOutcome::PairingLimit => {
+                        return Err(refused(
+                            429,
+                            "nonce_limit",
+                            "The client request limit is reached",
+                        ));
+                    }
+                }
+                if let Some(client) = &decision.client_write {
+                    tx.execute(
+                        "UPDATE runtime_access_clients SET record=?1 WHERE id=?2",
+                        params![client.to_string(), request.client_id()],
+                    )?;
+                }
+                Ok(DispatchPrincipal {
+                    client_id: decision.principal.client_id().to_owned(),
+                    kind: decision.principal.kind().to_owned(),
+                    local_server: text(&identity, "serverId").to_owned(),
+                })
             })
             .await
     }

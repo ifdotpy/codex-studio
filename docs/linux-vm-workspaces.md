@@ -1,14 +1,11 @@
 # Layr VM chats
 
-Chat creation accepts `workspaceMode`: `layr`, `image`, or `worktree`.
-A new lead chat on a Mac server defaults to `layr`. A top-level task agent from
-`POST /api/agents` defaults to `worktree`. Linux servers support `worktree` only.
-
-| Mode       | Lead         | Workers        | Reviewers                 |
-| ---------- | ------------ | -------------- | ------------------------- |
-| `layr`     | VM main line | Owned VM lines | Read-only VM lines        |
-| `image`    | Native macOS | ASIF images    | Read-only selected folder |
-| `worktree` | Native host  | Git worktrees  | Read-only selected folder |
+Chat creation accepts `workspaceMode`: `layr-native`, `layr`, or `worktree`.
+New lead chats on macOS default to native Layr (`layr-native`).
+Linux uses native Layr only when its btrfs store and root daemon are ready.
+Otherwise, Linux defaults to WT (`worktree`).
+Select Layr VM (`layr`) only on a server with the Studio Linux VM.
+Select WT (`worktree`) for Git worktrees.
 
 A chat stores `workspaceMode` and derives `executionMode` (`vm` or `native`).
 Workers inherit the chat mode. Native workers can select another native workspace per spawn.

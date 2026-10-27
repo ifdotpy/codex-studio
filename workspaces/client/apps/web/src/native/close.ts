@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { nativeHost } from "./client";
 import { isNativeFrame } from "./frame";
 import { guardNativeClose, prepareNativeClose } from "./closeState";
@@ -31,7 +32,7 @@ export function bindNativeCloseFrames(frames: Map<string, HTMLIFrameElement>) {
             }
             const url = new URL(frame.src);
             const origin = `${url.protocol}//${url.host}`;
-            const id = crypto.randomUUID();
+            const id = randomUUID();
             const source = frame.contentWindow;
             const release = () => {
               source.postMessage({ kind: RESUME, id }, origin);

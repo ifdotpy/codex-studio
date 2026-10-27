@@ -41,6 +41,11 @@ pub const HELPER_SUBCOMMAND: &str = "linux-vm-helper";
 /// The VM files of the state folder. The native helper writes `console.log`,
 /// `host.lock`, `control.sock` and `guest.sock`, and reads `share-bridge.json`.
 const CONFIG_FILE: &str = "config.json";
+
+/// A created Studio Linux VM has a persisted helper configuration.
+pub fn studio_vm_is_created(state_dir: &Path) -> bool {
+    state_dir.join(CONFIG_FILE).is_file()
+}
 const INTENT_FILE: &str = "intent.json";
 const HEALTH_FILE: &str = "guest-health.json";
 const RESTARTS_FILE: &str = "watchdog.json";

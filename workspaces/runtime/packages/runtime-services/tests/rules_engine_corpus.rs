@@ -31,6 +31,7 @@ fn python_written_records_and_real_rules_functions_match() {
                     TickObservation {
                         fingerprint,
                         active_workers: Some(activity),
+                        held_input: false,
                     },
                 )
             }

@@ -128,6 +128,137 @@ fn fake_result(request: &Value) -> Value {
         _ => json!({}),
     }
 }
+
+async fn replacement_worker(peer: &Peer, bridge: StoreBridge) -> AccountHandle {
+    assert!(
+        !bridge
+            .accounts
+            .lock()
+            .expect("account owners")
+            .contains(&peer.account),
+        "the previous account owner must exit before replacement"
+    );
+    // The matrix reuses Faults across workers. Its completion flag must name
+    // this first pass, not a previous worker's completed startup.
+    bridge
+        .faults
+        .startup_recovery_done
+        .store(false, Ordering::SeqCst);
+    peer.worker(bridge).await
+}
+
+async fn finish_replacement_recovery(peer: &mut Peer, worker: &AccountHandle, label: &str) {
+    let barrier = worker_barrier(worker);
+    tokio::pin!(barrier);
+    loop {
+        tokio::select! {
+            () = &mut barrier => break,
+            wire = peer.next_write() => {
+                assert!(matches!(wire.value["method"].as_str(), Some("thread/read" | "thread/turns/list")),
+                    "{label}: replacement recovery resent an unresolved operation: {}", wire.value);
+                assert_eq!(wire.value["params"]["threadId"], "fake-thread-0", "{label}: recovery reads only its original thread");
+                wire.receipt.send(CommandReceipt::Written { remote_id: None, duplicate: false }).ok().expect("recovery read receipt");
+                peer.frame(json!({"id":wire.value["id"],"result":fake_result(&wire.value)})).await;
+            }
+        }
+    }
+}
+
+fn reconnect_peer(previous: &Peer) -> Peer {
+    let mut peer = Peer::identity(&previous.account, previous.generation.0, None);
+    // The provider journal continues across worker attachments in one generation.
+    peer.cursor = previous.cursor;
+    peer
+}
+
+#[tokio::test]
+async fn verification_reconnect_keeps_the_journal_tail_before_a_health_turn() {
+    let context = Arc::new(Context::default());
+    MATRIX
+        .scope(context.clone(), async {
+            let state = State::new().await;
+            let mut peer = Peer::new();
+            let mut worker = peer.worker(state.bridge.clone()).await;
+            worker_barrier(&worker).await;
+            let marker = peer
+                .frame(json!({"method":"test/barrier","params":{}}))
+                .await;
+            peer.acknowledged(marker).await;
+            // Recovery can append replies after the restart's initial marker.
+            for _ in 0..4 {
+                let cursor = peer
+                    .frame(json!({"method":"test/barrier","params":{}}))
+                    .await;
+                peer.acknowledged(cursor).await;
+            }
+            let tail = peer.cursor;
+            assert!(tail > marker);
+            worker.shutdown().await.expect("original worker shutdown");
+
+            let mut peer = reconnect_peer(&peer);
+            assert_eq!(peer.cursor, tail, "reconnect preserves the entire journal");
+            let mut worker = replacement_worker(&peer, state.bridge.clone()).await;
+            prove_ready_for_new_turn(&context, &state, &mut peer, &worker).await;
+            assert!(
+                peer.cursor > tail,
+                "fresh health frames follow the old tail"
+            );
+            worker
+                .shutdown()
+                .await
+                .expect("verification worker shutdown");
+            std::fs::remove_dir_all(&state.root).expect("owned fixture cleanup");
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn a_replacement_waits_for_its_own_recovery_before_the_health_turn() {
+    let context = Arc::new(Context::default());
+    MATRIX.scope(context.clone(), async {
+        let state = State::new().await;
+        let peer = Peer::new();
+        let mut worker = peer.worker(state.bridge.clone()).await;
+        worker_barrier(&worker).await;
+        assert!(context.faults.startup_recovery_done.load(Ordering::SeqCst));
+        worker.shutdown().await.expect("original worker shutdown");
+        let agent = state.agent.clone();
+        let epoch = state.epoch;
+        state.bridge.store.transaction(move |tx| {
+            let mut owner = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.expect("original actor");
+            owner.status = studio_runtime_store::AgentStatus::Queued;
+            owner.extra.insert("inFlight".into(), json!(false));
+            owner.extra.insert("autoWake".into(), json!(true));
+            owner.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":{
+                "id":"matrix-held-start","epoch":epoch,"accountKey":"default","threadId":"fake-thread-0",
+                "events":["annotation:input"],"submitted":true,"executionOutcome":"unknown",
+                "requestTicket":"matrix-held-ticket","connectionGeneration":1,"connectionId":"original"}}));
+            owner.extra.insert("contextRepairWait".into(), json!({"scope":"native","events":["annotation:input"],
+                "source":{"id":agent,"epoch":epoch,"accountKey":"default","threadId":"fake-thread-0","attemptId":null},
+                "error":"Context repair waits for a confirmed input receipt: annotation:input","nextCheckAt":0}));
+            owner.extra.remove("startAttempt");
+            AgentRepository::put(tx, &owner)?;
+            tx.execute("UPDATE runtime_events SET status='uncertain',error='Unknown native input outcome' WHERE id='annotation:input'", [])?;
+            Ok(())
+        }).await.expect("held original input");
+        let mut peer = Peer::new();
+        let mut worker = replacement_worker(&peer, state.bridge.clone()).await;
+        assert!(!context.faults.startup_recovery_done.load(Ordering::SeqCst),
+            "the previous worker's startup result cannot complete its replacement");
+        finish_replacement_recovery(&mut peer, &worker, "held input replacement").await;
+        assert_eq!(state.event_status("input").await, "uncertain");
+        assert_eq!(state.record().await["restartRecovery"]["stage"], "held");
+        prove_ready_for_new_turn(&context, &state, &mut peer, &worker).await;
+        let starts: Vec<_> = context.writes.lock().expect("writes").iter()
+            .filter(|wire| wire["method"] == "turn/start").cloned().collect();
+        assert_eq!(starts.len(), 1, "only the separate health input starts");
+        assert!(starts[0]["params"]["input"][0]["text"].as_str().expect("health input").contains("health-input"));
+        assert_eq!(state.event_status("input").await, "uncertain");
+        worker.shutdown().await.expect("replacement shutdown");
+        std::fs::remove_dir_all(&state.root).expect("owned fixture cleanup");
+    }).await;
+}
+
 async fn restart(context: &Context, label: &str) {
     let (bridge, agent, epoch, root) = context.state.lock().unwrap().take().unwrap();
     bridge
@@ -157,7 +288,7 @@ async fn restart(context: &Context, label: &str) {
     .expect("old account owner exits");
     let generation = context.generation.load(Ordering::SeqCst).max(1);
     let mut peer = Peer::identity("default", generation, None);
-    let mut worker = peer.worker(bridge.clone()).await;
+    let mut worker = replacement_worker(&peer, bridge.clone()).await;
     let frames = context.frames.lock().unwrap().clone();
     for ((frame_generation, cursor), frame) in frames {
         if frame_generation != generation {
@@ -175,10 +306,18 @@ async fn restart(context: &Context, label: &str) {
     let (barrier_send, mut barrier_done) = oneshot::channel();
     let mut barrier_send = Some(barrier_send);
     let mut marker_seen = false;
+    let mut barrier_seen = false;
     // Startup can owe interrupts, but must never resend an unknown input.
     loop {
+        if barrier_seen && bridge.faults.startup_recovery_done.load(Ordering::SeqCst) {
+            break;
+        }
         tokio::select! {
-            done = &mut barrier_done, if marker_seen => { done.expect("replacement reaches command barrier after all owed effects"); break; },
+            done = &mut barrier_done, if marker_seen && !barrier_seen => {
+                done.expect("replacement reaches command barrier after all owed effects");
+                barrier_seen = true;
+            },
+            () = bridge.faults.startup_recovery.notified(), if barrier_seen => {},
             ack = peer.acks.recv() => {
                 if let Some(ack) = &ack {
                     let mut acknowledged = context.acknowledged.lock().unwrap();
@@ -317,23 +456,20 @@ async fn restart(context: &Context, label: &str) {
             break;
         }
     }
-    // Faults is shared by successive workers; the previous worker's startup
-    // completion cannot serve as this replacement's recovery barrier.
-    bridge
-        .faults
-        .startup_recovery_done
-        .store(false, Ordering::SeqCst);
     let (mut verification_peer, mut verification) =
         if let Some((callback_cursor, callback_frame)) = unresolved_callback {
-            let mut peer = Peer::identity("default", generation, None);
-            let worker = peer.worker(bridge.clone()).await;
+            let mut peer = reconnect_peer(&peer);
+            let worker = replacement_worker(&peer, bridge.clone()).await;
+            let tail = peer.cursor;
             peer.cursor = callback_cursor - 1;
             let redelivered_cursor = peer.frame(callback_frame).await;
             assert_eq!(
                 redelivered_cursor, callback_cursor,
                 "replay uses the exact callback cursor"
             );
-            finish_verification_recovery(&mut peer, &worker, label).await;
+            // Only this replay uses its old cursor. New replies follow the tail.
+            peer.cursor = tail.max(redelivered_cursor);
+            finish_replacement_recovery(&mut peer, &worker, label).await;
             assert!(
                 peer.writes.try_recv().is_err(),
                 "{label}: unresolved callback was redelivered"
@@ -345,10 +481,9 @@ async fn restart(context: &Context, label: &str) {
             );
             (peer, worker)
         } else {
-            let mut peer = Peer::identity("default", generation, None);
-            peer.cursor = marker;
-            let worker = peer.worker(bridge.clone()).await;
-            finish_verification_recovery(&mut peer, &worker, label).await;
+            let mut peer = reconnect_peer(&peer);
+            let worker = replacement_worker(&peer, bridge.clone()).await;
+            finish_replacement_recovery(&mut peer, &worker, label).await;
             (peer, worker)
         };
     let expected_inputs = context.inputs.lock().unwrap().clone();
@@ -438,33 +573,13 @@ async fn restart(context: &Context, label: &str) {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-async fn finish_verification_recovery(peer: &mut Peer, worker: &AccountHandle, label: &str) {
-    let recovered = worker_barrier(worker);
-    tokio::pin!(recovered);
-    loop {
-        tokio::select! {
-            () = &mut recovered => break,
-            wire = peer.next_write() => {
-                // Recovery reads can be issued after earlier replies settle;
-                // an empty write channel is not evidence that recovery ended.
-                assert!(
-                    matches!(wire.value["method"].as_str(), Some("thread/read" | "thread/turns/list")),
-                    "{label}: second recovery resent an unresolved operation: {}", wire.value
-                );
-                wire.receipt.send(CommandReceipt::Written { remote_id: None, duplicate: false }).ok().unwrap();
-                peer.frame(json!({"id":wire.value["id"],"result":fake_result(&wire.value)})).await;
-            }
-        }
-    }
-}
-
 async fn prove_ready_for_new_turn(
     context: &Context,
     state: &State,
     peer: &mut Peer,
     worker: &AccountHandle,
 ) {
-    finish_verification_recovery(peer, worker, "replacement health").await;
+    finish_replacement_recovery(peer, worker, "replacement health").await;
     let mut seed = context
         .agent_seed
         .lock()

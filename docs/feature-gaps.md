@@ -9,7 +9,7 @@ This document describes the baseline before implementation. See [workspace deliv
 ## Baseline app
 
 The runtime retains native Codex tools and adds 11 managed orchestration tools.
-It already supports worker completion wakes, command monitors, agent rooms, complaints, worktrees, token budgets, and tool history.
+It already supports worker completion wakes, command monitors, agent rooms, complaints, worktrees, and tool history.
 
 Local evidence:
 

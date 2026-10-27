@@ -178,6 +178,8 @@ pub(crate) fn start_time(pid: u32, allow_zombie: bool) -> Result<Option<String>>
     Ok(Some(stat.start_identity(&boot_id()?)))
 }
 
+// Only the Linux /proc readers and their tests observe vanished processes.
+#[cfg(any(target_os = "linux", test))]
 pub(super) fn process_gone_error(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::NotFound
         || error.raw_os_error().is_some_and(|code| {

@@ -221,6 +221,7 @@ pub async fn model_directory(
 
 /// A status response together with the revision record it must retain.
 struct StatusSnapshot {
+    root_id: String,
     result: Value,
     revision: String,
     records: String,
@@ -236,7 +237,10 @@ fn record_status_revision(
     snapshot: &StatusSnapshot,
     now: f64,
 ) -> Result<(), StatusError> {
-    checked_actor(tx, actor_id, actor_epoch)?;
+    let actor = checked_actor(tx, actor_id, actor_epoch)?;
+    if actor.root_id.0 != snapshot.root_id {
+        return Err(StatusError::Stale);
+    }
     tx.execute(
         "INSERT OR REPLACE INTO runtime_model_status(agent,revision,at,record) VALUES(?1,?2,?3,?4)",
         params![actor_id, snapshot.revision, now, snapshot.records],
@@ -437,6 +441,7 @@ fn status_snapshot(
         });
     }
     Ok(StatusSnapshot {
+        root_id: root_id.to_owned(),
         result,
         revision,
         records,
@@ -1728,6 +1733,64 @@ mod tests {
             .expect("status object")
             .remove("storage");
         assert_eq!(after, before);
+    }
+
+    #[tokio::test]
+    async fn status_membership_change_after_snapshot_refuses_the_revision_write() {
+        let (_directory, store) = fixture().await;
+        let inputs = store
+            .read_async("status-race-inputs", |connection| {
+                super::status_path_inputs(connection, "lead")
+            })
+            .await
+            .expect("original team paths");
+        let paths = super::StatusPathSnapshot {
+            resolved: inputs
+                .iter()
+                .map(|input| (input.agent_id.clone(), input.cwd.clone()))
+                .collect(),
+            inputs,
+            storage: crate::disk_space::storage_report(store.root(), &[]),
+        };
+        let snapshot = store
+            .read_async("status-race-snapshot", move |connection| {
+                super::status_snapshot(connection, "queued", 4, "lead", &paths, &json!({}))
+            })
+            .await
+            .expect("snapshot authorized for the original team");
+        store
+            .transaction_with(|tx| {
+                let mut destination = AgentRepository::get(tx, &"lead".into())?.expect("lead");
+                destination.id = "other-team".into();
+                destination.root_id = "other-team".into();
+                AgentRepository::put(tx, &destination)?;
+                let mut actor = AgentRepository::get(tx, &"queued".into())?.expect("actor");
+                assert_eq!(actor.epoch, 4);
+                actor.root_id = "other-team".into();
+                AgentRepository::put(tx, &actor)?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("move the descendant without changing its epoch");
+        let result = store
+            .transaction_with(move |tx| {
+                super::record_status_revision(tx, "queued", 4, &snapshot, 100.0)
+            })
+            .await;
+        let revisions: i64 = store
+            .test_reader()
+            .expect("read revision proof")
+            .query_row(
+                "SELECT count(*) FROM runtime_model_status WHERE agent='queued'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count retained revisions");
+        assert!(
+            matches!(result, Err(StatusError::Stale)),
+            "a snapshot cannot cross team membership"
+        );
+        assert_eq!(revisions, 0, "a stale snapshot cannot retain a revision");
     }
 
     /// Checks that a status call rejected by its arguments never takes the

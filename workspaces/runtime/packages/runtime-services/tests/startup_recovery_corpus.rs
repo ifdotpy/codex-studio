@@ -238,5 +238,32 @@ async fn python_constructor_and_rust_startup_match_requests_monitors_events_and_
     );
     redact_registered_agent_differences(&mut rust, &deviations, &held_agent_ids);
     redact_registered_agent_differences(&mut python, &deviations, &held_agent_ids);
+    // bb5f67c67 retired the published token count, not the stored agent field.
+    // Adapt only the frozen Python agent view and require Rust to omit it.
+    for projection in python["sync_entities"]
+        .as_array_mut()
+        .expect("Python sync entities")
+        .iter_mut()
+        .filter(|projection| projection["collection"] == "agent")
+    {
+        let actual = rust["sync_entities"]
+            .as_array()
+            .expect("Rust sync entities")
+            .iter()
+            .find(|actual| actual["collection"] == "agent" && actual["id"] == projection["id"])
+            .expect("matching Rust agent projection");
+        assert!(
+            actual["payload"]["value"].get("tokensUsed").is_none(),
+            "Rust must not publish the retired tokensUsed field"
+        );
+        assert_eq!(
+            projection["payload"]["value"]
+                .as_object_mut()
+                .expect("Python agent projection")
+                .remove("tokensUsed"),
+            Some(json!(0)),
+            "the frozen Python agent view contains its retired token count"
+        );
+    }
     assert_eq!(rust, python, "complete startup rows and projections differ");
 }

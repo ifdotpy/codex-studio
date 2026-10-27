@@ -494,15 +494,6 @@
   }
 }
 
-.model-limit-eligibility {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.model-limit-eligibility p {
-  margin: var(--studio-rail-size) 0;
-}
-
 /* Footer layout is shared with execution controls through conversation-composer-footer. */
 .usage-footer {
   display: flex;

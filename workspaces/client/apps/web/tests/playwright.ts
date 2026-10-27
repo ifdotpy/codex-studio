@@ -1181,6 +1181,10 @@ export type TestRuntimeView = {
     import("../src/generated/api.ts").components["schemas"]["QueueView"]
   >;
   rateLimitsByAccount: Record<string, AccountRateLimitsDto>;
+  modelsByAccount?: Record<
+    string,
+    import("../src/generated/api.ts").components["schemas"]["ModelEntityDto"][]
+  >;
   stateDir?: WorkspaceEntityDto["stateDir"];
 };
 export type TestStateView = {
@@ -1475,7 +1479,6 @@ const snapshotOnlyAgentKeys: Set<string> = new Set([
   "preparedContext",
   "profileId",
   "profileInstructions",
-  "tokenBudget",
   "turnEpoch",
   "usageResumeEnabled",
   "wave",
@@ -1820,6 +1823,17 @@ function entityValuesFromSnapshot(
     for (const [id, value] of Object.entries(runtime.sessionCostsByAgent))
       if (isJsonObject(value))
         values.push({ collection: "sessionCost", id, value });
+  for (const [account, models] of Object.entries(
+    runtime.modelsByAccount ?? {},
+  )) {
+    for (const model of models) {
+      values.push({
+        collection: "model",
+        id: JSON.stringify([account, model.model]),
+        value: model,
+      });
+    }
+  }
   append(runtime.terminals, (row) => ({
     collection: "terminal",
     id: row.id,

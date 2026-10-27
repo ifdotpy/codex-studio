@@ -8,7 +8,7 @@ import {
 } from "./newChatSettings";
 import { isServerCommand } from "../servers/navigation";
 
-test.each(["layr", "image", "worktree"] satisfies NewChatWorkspaceMode[])(
+test.each(["layr-native", "layr", "worktree"] satisfies NewChatWorkspaceMode[])(
   "accepts the generated new-chat workspace mode %s",
   (workspaceMode) => expect(isNewChatSettings({ workspaceMode })).toBe(true),
 );
@@ -49,7 +49,7 @@ test("new chat accepts explicit reviewer Fast mode and rejects malformed review 
 });
 
 test.each([
-  ["Darwin", "layr"],
+  ["Darwin", "layr-native"],
   ["Linux", "worktree"],
   ["Windows", "worktree"],
   [undefined, "worktree"],
@@ -209,4 +209,20 @@ test("a Claude lead request leaves worker defaults to the server unless explicit
       "claude-opus-5-5",
     ).worker_defaults,
   ).toEqual(worker_defaults);
+});
+
+test("Linux without a native capability uses worktree", () => {
+  expect(defaultWorkspaceMode("Linux")).toBe("worktree");
+});
+
+test("Linux uses native Layr only when the server capability is ready", () => {
+  expect(defaultWorkspaceMode("Linux", { ready: true, reason: null })).toBe(
+    "layr-native",
+  );
+  expect(
+    defaultWorkspaceMode("Linux", {
+      ready: false,
+      reason: "A btrfs store is required.",
+    }),
+  ).toBe("worktree");
 });

@@ -321,35 +321,20 @@ function subscribeModelCatalog(
   };
 }
 
-/** One read of an account's subagent models, parsed like useWorkerModels. */
+/** Fresh metadata for an account choice, not the display's stale fallback. */
 export async function readWorkerModels(
   reader: ContextType<typeof ModelCatalogReader>,
   accountKey: string,
   workers = false,
 ): Promise<WorkerModelInfo[]> {
-  return new Promise((resolve, reject) => {
-    let stop: (() => void) | undefined;
-    let settled = false;
-    const unsubscribe = reader.subscribeState(
-      (snapshot) => {
-        if (settled || !snapshot.entitiesComplete) return;
-        settled = true;
-        const models = projectedModelRows(snapshot, accountKey, workers).map(
-          modelInfo,
-        );
-        resolve(models);
-        stop?.();
-      },
-      (error) => {
-        if (settled || error === null) return;
-        settled = true;
-        reject(error);
-        stop?.();
-      },
-    );
-    if (settled) unsubscribe();
-    else stop = unsubscribe;
+  const data = await reader.read({
+    query: {
+      account_key: accountKey,
+      workers: workers ? "1" : undefined,
+      fresh: "1",
+    },
   });
+  return modelRows(data);
 }
 
 export function useWorkerModels(

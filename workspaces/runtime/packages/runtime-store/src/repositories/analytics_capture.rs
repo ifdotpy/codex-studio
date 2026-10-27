@@ -9,7 +9,7 @@ use serde_json::Value;
 use studio_runtime_schema::provider_kind::ProviderKind;
 
 /// Indexed capture record lookup template; the table name comes only from CaptureTable.
-pub const CAPTURE_RECORD_BY_ID_SQL: &str = "SELECT record FROM {table} WHERE id=?";
+pub const CAPTURE_RECORD_BY_ID_SQL: &str = "SELECT record FROM main.{table} WHERE id=?";
 /// Indexed pre-contract response lookup within its original agent/thread scope.
 pub const USAGE_RESPONSE_SQL: &str = "SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND json_extract(record,'$.responseId')=? LIMIT 1";
 
@@ -198,9 +198,14 @@ impl AnalyticsCaptureRepository {
         Ok(())
     }
     pub fn read(db: &Connection, table: CaptureTable, id: &str) -> StoreResult<Option<Value>> {
+        // `main.` and StoredText: the stored form decodes on any connection,
+        // with or without the analytics_items decoding view.
         let raw: Option<String> = db
             .prepare_cached(&CAPTURE_RECORD_BY_ID_SQL.replace("{table}", table.name()))?
-            .query_row([id], |r| r.get(0))
+            .query_row([id], |r| {
+                r.get::<_, crate::stored_text::StoredText>(0)
+                    .map(crate::stored_text::StoredText::into_string)
+            })
             .optional()?;
         raw.map(|raw| {
             let value = serde_json::from_str(&raw)?;
@@ -348,7 +353,14 @@ impl AnalyticsCaptureRepository {
                 db.execute_cached("INSERT INTO analytics_turns VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![id,agent,root,at,raw])?;
             }
             CaptureTable::Items => {
-                db.execute_cached("INSERT INTO analytics_items VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record,at=excluded.at,type=excluded.type,name=excluded.name,is_tool=excluded.is_tool",params![id,agent,root,value["threadId"].as_str(),value["turnId"].as_str(),at,value["type"].as_str(),value["name"].as_str(),value["isTool"].as_bool(),raw])?;
+                let record = crate::stored_text_dictionary::value_for_write(
+                    db,
+                    crate::stored_text_dictionary::ANALYTICS_ITEMS_RECORD,
+                    &raw,
+                )?;
+                // `main.`: Studio connections read the decoding view
+                // `temp.analytics_items`, which shadows the table.
+                db.execute_cached("INSERT INTO main.analytics_items VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record,at=excluded.at,type=excluded.type,name=excluded.name,is_tool=excluded.is_tool",params![id,agent,root,value["threadId"].as_str(),value["turnId"].as_str(),at,value["type"].as_str(),value["name"].as_str(),value["isTool"].as_bool(),record])?;
             }
             CaptureTable::Usage => {
                 db.execute_cached("INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET root=excluded.root,turn=excluded.turn,at=excluded.at,record=excluded.record",params![id,agent,root,value["threadId"].as_str(),value["turnId"].as_str(),at,raw])?;
@@ -523,9 +535,8 @@ impl RuntimeStore {
     }
 
     /// Keep the Canvas actor callback occupied for stable main-store reads through commit:
-    /// analytics_capture::{capture,capture_batch}, analytics_history::HistoryBatch::commit,
-    /// and analytics_history_repair::migrate_budget rely on it. Terminal repair instead
-    /// runs in the pre-start migration transaction.
+    /// analytics_capture::{capture,capture_batch} and analytics_history::HistoryBatch::commit
+    /// rely on it. Terminal repair instead runs in the pre-start migration transaction.
     /// Serialize analytics with canvas writes. The callback must do SQLite and
     /// bounded pure decisions only. Analytics commit is the durable receipt;
     /// a lost commit response is Unknown and must be reconciled by the caller.
@@ -649,6 +660,7 @@ pub fn check_state_readonly(root: &std::path::Path) -> StoreResult<Vec<crate::St
         root.join("analytics.sqlite3"),
         OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
+    crate::stored_text_dictionary::load(&db)?;
     db.pragma_update(None, "query_only", true)?;
     let mut result = Vec::new();
     for table in [
@@ -692,7 +704,13 @@ fn check_analytics_table(
     let mut failures = std::collections::BTreeMap::<(String, String), u64>::new();
     while let Some(row) = rows.next()? {
         report.row_count += 1;
-        let (id, raw): (String, String) = (row.get(0)?, row.get(1)?);
+        let id: String = row.get(0)?;
+        let raw: String = if table == CaptureTable::Items {
+            row.get::<_, crate::stored_text::StoredText>(1)?
+                .into_string()
+        } else {
+            row.get(1)?
+        };
         let error = match serde_json::from_str::<Value>(&raw) {
             Ok(v) => {
                 let schema = studio_runtime_schema::first_error(table.schema(), &v)
@@ -865,11 +883,21 @@ mod cost_hint_tests {
         store.add_analytics_root_change_observer(move |scope| {
             recorded.lock().expect("events").push(scope);
         });
-        store.analytics_transaction(|tx, _| {
-            AnalyticsCaptureRepository::set_projection_cursor(tx, 1)?;
-            tx.execute("INSERT INTO analytics_items VALUES ('item','agent','root',NULL,NULL,1,'text',NULL,0,'{}')", [])?;
-            Ok::<_, StoreError>(())
-        }).await.expect("metadata commit");
+        store
+            .analytics_transaction(|tx, _| {
+                AnalyticsCaptureRepository::set_projection_cursor(tx, 1)?;
+                AnalyticsCaptureRepository::write(
+                    tx,
+                    CaptureTable::Items,
+                    &serde_json::json!({
+                        "id":"item","agentId":"agent","rootId":"root","at":1,
+                        "type":"text","name":"metadata","isTool":false
+                    }),
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("metadata commit");
         store
             .analytics_projection_transaction(|tx| {
                 AnalyticsCaptureRepository::set_projection_cursor(tx, 2)

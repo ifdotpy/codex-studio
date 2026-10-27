@@ -1,8 +1,17 @@
-import { copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdtemp,
+  readFile,
+  rm,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, test } from "vitest";
+import { supportedPython } from "./recovery.ts";
 import {
   missingPythonModules,
   pythonEntryPoints,
@@ -28,7 +37,21 @@ test("the packaged Python files supply every module that the entry points import
   for (const file of pythonResources)
     await copyFile(path.join(source, file), path.join(resources, file));
   expect(pythonResources).toEqual(expect.arrayContaining(pythonEntryPoints));
+  const contract = JSON.parse(
+    await readFile(path.join(source, "delivery-contract.json"), "utf8"),
+  );
+  expect(pythonResources).toEqual(
+    expect.arrayContaining(contract.startupResources),
+  );
   expect(missingPythonModules(resources)).toEqual([]);
+  const script = path.join(resources, "recover_backend.py");
+  const python = await supportedPython({ env: process.env, saved: {}, script });
+  await unlink(path.join(resources, "delivery-contract.json"));
+  expect(() =>
+    execFileSync(python, ["-B", script, "--check-interpreter"], {
+      stdio: "pipe",
+    }),
+  ).toThrow();
 });
 
 test("a local module import that the directory does not supply is reported", async () => {

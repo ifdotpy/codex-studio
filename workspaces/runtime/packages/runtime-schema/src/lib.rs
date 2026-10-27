@@ -5,6 +5,7 @@ pub mod agent_limits;
 pub mod agent_progress;
 pub mod api_schema;
 pub mod claude_controls;
+pub mod claude_failure;
 mod codex_generated;
 pub mod complaints;
 pub mod contracts;
@@ -28,6 +29,7 @@ pub mod question_answers;
 pub mod queue_command;
 pub mod records;
 pub mod shared_values;
+pub mod shell_policy;
 pub mod studio_errors;
 pub mod supervisor_contract;
 pub mod task_command;
@@ -235,18 +237,8 @@ const CLAUDE_CONTROL_URI: &str =
 const CLAUDE_LOGIN_URI: &str = "https://codex-studio.invalid/persisted-claude-login.schema.json";
 
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
-    (
-        "https://codex-studio.invalid/budget-capture.schema.json",
-        include_bytes!("schemas/budget-capture.schema.json"),
-    ),
-    (
-        "https://codex-studio.invalid/budget-history.schema.json",
-        include_bytes!("schemas/budget-history.schema.json"),
-    ),
-    (
-        "https://codex-studio.invalid/persisted-budget-agent.schema.json",
-        include_bytes!("schemas/persisted-budget-agent.schema.json"),
-    ),
+    // The stored rows of the removed team token budget. Current builds neither
+    // read nor write these tables; the schemas describe what older builds wrote.
     (
         "https://codex-studio.invalid/persisted-budget-state.schema.json",
         include_bytes!("schemas/persisted-budget-state.schema.json"),
@@ -763,6 +755,8 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         "ComplaintEntityDto",
         "ConfigureResponse",
         "DiagnosticsResponse",
+        "DesktopResponse",
+        "NativeRuntimeStatus",
         "EdgeEntityDto",
         "ErrorResponse",
         "EventEntityDto",
@@ -859,14 +853,6 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
     }
     for (name, uri) in [
         (
-            "BudgetCapture",
-            "https://codex-studio.invalid/budget-capture.schema.json",
-        ),
-        (
-            "BudgetHistory",
-            "https://codex-studio.invalid/budget-history.schema.json",
-        ),
-        (
             "AnalyticsAgent",
             "https://codex-studio.invalid/analytics-agent.schema.json",
         ),
@@ -907,10 +893,6 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedAccountTransferRecord", ACCOUNT_TRANSFER_URI),
         ("PersistedAgentRecord", AGENT_RECORD_URI),
         ("PersistedAnnotationRecord", ANNOTATION_RECORD_URI),
-        (
-            "PersistedBudgetAgent",
-            "https://codex-studio.invalid/persisted-budget-agent.schema.json",
-        ),
         (
             "PersistedBudgetState",
             "https://codex-studio.invalid/persisted-budget-state.schema.json",
@@ -1580,3 +1562,5 @@ mod tests {
 pub mod task_gate;
 
 pub mod claude_permissions;
+
+pub mod workspace_modes;

@@ -42,65 +42,8 @@ pub(crate) fn log_effect(
     canvas: &Connection,
     mut effect: NotificationPostCommit,
 ) -> Result<Option<NotificationPostCommit>, StoreError> {
-    if let NotificationPostCommit::Analytics {
-        observation,
-        ledger_since,
-        ..
-    } = &mut effect
-    {
-        *ledger_since = if observation.method == "thread/tokenUsage/updated" {
-            observation
-                .agent
-                .as_ref()
-                .map(|agent| {
-                    studio_runtime_store::budget::BudgetRepository::ledger_since(
-                        canvas,
-                        agent["id"].as_str().unwrap_or_default(),
-                    )
-                })
-                .transpose()?
-                .unwrap_or_default()
-        } else {
-            studio_runtime_schema::usage::ledger::LedgerEpoch::Current
-        };
-    }
-    if let NotificationPostCommit::Analytics {
-        observation,
-        usage_unknown,
-        ..
-    } = &mut effect
-    {
-        *usage_unknown = if observation.method == "thread/tokenUsage/updated" {
-            observation
-                .agent
-                .as_ref()
-                .map(|agent| {
-                    use studio_runtime_schema::usage::{parse_legacy_totals, parse_token_usage};
-                    let Ok(provider) =
-                        studio_runtime_schema::provider_kind::ProviderKind::of_record(agent)
-                    else {
-                        // Keep the invalid event in the projection log for capture diagnostics.
-                        return Ok(true);
-                    };
-                    let usage = parse_token_usage(provider, &observation.params).ok();
-                    let legacy = if usage.is_none() {
-                        parse_legacy_totals(provider, &observation.params).ok()
-                    } else {
-                        None
-                    };
-                    crate::analytics_capture::unknown_usage_receipt(
-                        canvas,
-                        agent,
-                        &observation.params,
-                        usage.as_ref(),
-                        legacy.as_ref(),
-                    )
-                })
-                .transpose()?
-                .unwrap_or(false)
-        } else {
-            false
-        };
+    if let NotificationPostCommit::Analytics { ledger_since, .. } = &mut effect {
+        *ledger_since = studio_runtime_schema::usage::ledger::LedgerEpoch::Current;
     }
     let observation = match &effect {
         NotificationPostCommit::Analytics { observation, .. }
@@ -594,7 +537,7 @@ mod tests {
                             [CURSOR_KEY],
                         )?;
                     } else {
-                        tx.execute(&format!("DELETE FROM {table}"), [])?;
+                        tx.execute(&format!("DELETE FROM main.{table}"), [])?;
                     }
                 }
                 Ok::<_, StoreError>(())

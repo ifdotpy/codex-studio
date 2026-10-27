@@ -10,6 +10,8 @@
   },
   "include": [
     "src-tauri/src/native-check.js",
-    "src-tauri/src/native-check-types.ts"
+    "src-tauri/src/native-check-types.ts",
+    "src-tauri/src/ios_diag.js",
+    "src-tauri/src/ios_viewport.js"
   ]
 }

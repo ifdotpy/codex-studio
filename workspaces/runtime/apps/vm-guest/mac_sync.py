@@ -16,6 +16,7 @@ import base64
 import hashlib
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import shutil
@@ -28,14 +29,17 @@ from common import GuestError, atomic_json, require
 from host_exec_protocol import inside, relative
 from layr_share import command, project_id
 
-METHODS = {"sync.mac.apply", "sync.mac.read", "sync.mac.hashes", "sync.mac.head", "sync.mac.handoff",
+METHODS = {"sync.mac.apply", "sync.mac.read", "sync.mac.hashes", "sync.mac.preview", "sync.mac.head", "sync.mac.handoff",
            "sync.mac.worktree"}
-READ_METHODS = {"sync.mac.read", "sync.mac.hashes", "sync.mac.head"}
+READ_METHODS = {"sync.mac.read", "sync.mac.hashes", "sync.mac.preview", "sync.mac.head"}
 KEPT_RECEIPTS = 200
 LINE, VIEW = "mac", "mac-view"
 CHUNK = 512 * 1024
 MAX_ENTRIES = 20_000
-STATE_ID = re.compile(r"[0-9a-f]{7,64}")
+# Mac sync state syntax, shared by every request and layr response in this module.
+# Current layr uses canonical UUIDs (layr model::is_uuid); legacy IDs use hex.
+# Syntax is not authorization. layr resolves the state as the project owner.
+STATE_ID = re.compile(r"(?:[0-9a-f]{7,64}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})")
 OPERATION = re.compile(r"[A-Za-z0-9_-]{1,100}")
 UPLOADS = Path("/var/lib/codex-studio/projects")
 SKIPPED = {".git"}
@@ -133,14 +137,18 @@ class MacSync:
             raise GuestError("not_found", "The layr project does not exist")
         for line, path in ((LINE, mac), (VIEW, view)):
             if not path.is_dir():
-                await self.layr(["branch", line, "main", "--owner", owner], cwd=main, owner=owner)
+                await self.layr(["line", "new", line, "main", "--owner", owner], cwd=main, owner=owner)
         return owner, main, mac, view
 
     async def head(self, cwd: Path, owner: str) -> str:
-        return _state(await self.layr(["rev-parse", "HEAD"], cwd=cwd, owner=owner))
+        return _state(await self.layr(["rev-parse", "head"], cwd=cwd, owner=owner))
+
+    async def dirty(self, cwd: Path, owner: str) -> bool:
+        status = json.loads(await self.layr(["status", "--json"], cwd=cwd, owner=owner))
+        return any(status[field] for field in ("staged", "unstaged", "untracked", "conflicts"))
 
     async def clean(self, cwd: Path, owner: str, name: str) -> None:
-        if await self.layr(["status", "--porcelain"], cwd=cwd, owner=owner):
+        if await self.dirty(cwd, owner):
             raise GuestError("operation_failed", "The " + name + " line has uncommitted changes")
 
     async def checkout(self, view: Path, owner: str, state: str) -> None:
@@ -258,7 +266,7 @@ class MacSync:
             owner, main, mac, view = await self.lines(project)
             await self.deny_push(project, receipts)
             main_head, mac_head = await self.head(main, owner), await self.head(mac, owner)
-            if await self.layr(["status", "--porcelain"], cwd=mac, owner=owner):
+            if await self.dirty(mac, owner):
                 # Only sync writes the mac line: a failed round left these changes.
                 await self.layr(["reset", "-q", "--hard", mac_head], cwd=mac, owner=owner)
             # The line follows main between rounds; unmerged Mac work stays where it is.
@@ -284,8 +292,8 @@ class MacSync:
                     present = [rel for rel in applied if os.path.lexists(mac / rel)]
                     for start in range(0, len(present), 500):
                         await self.layr(["add", "-f", "--", *present[start:start + 500]], cwd=mac, owner=owner)
-                    if await self.layr(["status", "--porcelain"], cwd=mac, owner=owner):
-                        await self.layr(["commit", "-q", "-m", "Mac sync"], cwd=mac, owner=owner)
+                    if await self.dirty(mac, owner):
+                        await self.layr(["save", "-q", "-m", "Mac sync"], cwd=mac, owner=owner)
                 except BaseException:
                     # The next round starts again from main; nothing of this round stays.
                     await self.layr(["reset", "-q", "--hard", main_head], cwd=mac, owner=owner)
@@ -352,7 +360,7 @@ class MacSync:
             owner, main, _mac, _view = await self.lines(project)
             line = main.parent / "mac-conflict"
             if not line.is_dir():
-                await self.layr(["branch", "mac-conflict", "main", "--owner", owner], cwd=main, owner=owner)
+                await self.layr(["line", "new", "mac-conflict", "main", "--owner", owner], cwd=main, owner=owner)
             await self.clean(line, owner, "mac-conflict")
             main_state, line_state = await self.head(main, owner), await self.head(line, owner)
             # Earlier handoffs the lead has not merged stay in the line; merged ones leave it.
@@ -372,7 +380,7 @@ class MacSync:
             await self.layr(["add", "-A"], cwd=line, owner=owner)
             if entry is not None:
                 await self.layr(["add", "-f", "--", rel], cwd=line, owner=owner)
-            await self.layr(["commit", "-q", "--allow-empty", "-m", "Mac version of " + rel], cwd=line, owner=owner)
+            await self.layr(["save", "-q", "--allow-empty", "-m", "Mac version of " + rel], cwd=line, owner=owner)
             result = {"projectId": project, "line": "mac-conflict", "path": rel, "mainStateId": main_state,
                       "stateId": await self.head(line, owner)}
             receipts.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -409,7 +417,7 @@ class MacSync:
             line = main.parent / name
             require(not line.exists(), "The line exists already: " + name)
             user = self.projects.owner(project)
-            await self.layr(["branch", name, "main", "--owner", owner], cwd=main, owner=owner)
+            await self.layr(["line", "new", name, "main", "--owner", owner], cwd=main, owner=owner)
             identity = "mac-worktree:" + project + ":" + operation
             stale = self.state / "imports" / hashlib.sha256(identity.encode()).hexdigest()
             if stale.exists():
@@ -449,10 +457,10 @@ class MacSync:
                 names = [prefix + rel for rel in sorted(wanted)]
                 for start in range(0, len(names), 500):
                     await self.layr(["add", "-f", "--", *names[start:start + 500]], cwd=line, owner=owner)
-                if await self.layr(["status", "--porcelain"], cwd=line, owner=owner):
-                    await self.layr(["commit", "-q", "-m", message], cwd=line, owner=owner)
+                if await self.dirty(line, owner):
+                    await self.layr(["save", "-q", "-m", message], cwd=line, owner=owner)
             except BaseException:
-                await self.run(["branch", "-D", name], cwd=main, owner=owner)
+                await self.run(["line", "delete", "-D", name], cwd=main, owner=owner)
                 raise
             finally:
                 await command(["btrfs", "subvolume", "delete", frozen])
@@ -465,10 +473,10 @@ class MacSync:
 
     async def main_head(self, request_id: str, params: dict[str, Any]) -> dict[str, Any]:
         project = project_id(params.get("projectId"))
-        owner = self.projects.owner(project)["owner"]
         main = self.projects.folder(project) / "lines/main"
         if not main.is_dir():
             raise GuestError("not_found", "The layr project does not exist")
+        owner = pwd.getpwuid(main.stat().st_uid).pw_name
         return {"projectId": project, "mainStateId": await self.head(main, owner)}
 
     async def read(self, request_id: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -505,11 +513,29 @@ class MacSync:
         state = _state(params.get("stateId"))
         after = params.get("after", "")
         require(isinstance(after, str), "Invalid page start")
-        owner, _main, _mac, view = await self.lines(project)
+        read_only = params.get("readOnly", False)
+        require(type(read_only) is bool, "Invalid read-only flag")
+        if read_only:
+            # Linux layr states are immutable, complete btrfs snapshots. Resolve the
+            # state as the existing project owner before accessing its snapshot.
+            folder = self.projects.folder(project)
+            main = folder / "lines/main"
+            if not main.is_dir():
+                raise GuestError("not_found", "The layr project does not exist")
+            owner = pwd.getpwuid(main.stat().st_uid).pw_name
+            resolved = _state(await self.layr(["rev-parse", state], cwd=main, owner=owner))
+            view = folder / "states" / resolved
+            if not view.is_dir() or view.is_symlink():
+                raise GuestError("not_found", "The immutable layr state is unavailable")
+        else:
+            owner, _main, _mac, view = await self.lines(project)
         async with self.locks.setdefault(project, asyncio.Lock()):
-            await self.checkout(view, owner, state)
+            if not read_only:
+                await self.checkout(view, owner, state)
             found = []
-            for directory, folders, files in os.walk(view, followlinks=False):
+            def fail(error):
+                raise error
+            for directory, folders, files in os.walk(view, followlinks=False, onerror=fail):
                 folders[:] = [name for name in folders if name not in SKIPPED]
                 for name in files + [name for name in folders if (Path(directory) / name).is_symlink()]:
                     rel = (Path(directory) / name).relative_to(view).as_posix()
@@ -518,9 +544,15 @@ class MacSync:
             found.sort()
             page = found[:5000]
             items = {rel: _describe(_entry(view / rel)) for rel in page}
-        return {"stateId": state, "items": items, "next": page[-1] if len(found) > len(page) else None}
+        result = {"stateId": state, "items": items, "next": page[-1] if len(found) > len(page) else None}
+        if read_only:
+            # The host requires this acknowledgement before accepting a preview.
+            result["readOnly"] = True
+        return result
 
     async def dispatch(self, request_id: str, method: str, params: dict[str, Any], emit: Any) -> dict[str, Any]:
+        if method == "sync.mac.preview":
+            return await self.hashes(request_id, {**params, "readOnly": True})
         if method == "sync.mac.apply":
             return await self.apply(request_id, params)
         if method == "sync.mac.read":

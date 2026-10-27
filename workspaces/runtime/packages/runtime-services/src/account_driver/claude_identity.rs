@@ -50,6 +50,30 @@ pub(crate) fn accepts(expected: &str, observed: &str) -> bool {
     })
 }
 
+/// The pins that `current` can have grown from: the legacy form and the
+/// tuples with fewer learned fields. A bridge launched with one of them holds
+/// the same credential, and `accepts` decides each candidate.
+pub(crate) fn earlier_forms(current: &str) -> Vec<String> {
+    let Some((email, organization, account)) = tuple(current) else {
+        return Vec::new();
+    };
+    let organizations = [None, organization.as_deref()];
+    let accounts = [None, account.as_deref()];
+    let mut forms = vec![format!("claude:{email}")];
+    for organization in organizations {
+        for account in accounts {
+            forms.push(format!(
+                "{PREFIX}{}",
+                serde_json::json!([email, organization, account])
+            ));
+        }
+    }
+    forms.sort();
+    forms.dedup();
+    forms.retain(|form| form != current && accepts(form, current));
+    forms
+}
+
 pub(crate) fn belongs_to(identity: &str, email: &str) -> bool {
     identity == format!("claude:{email}")
         || tuple(identity).is_some_and(|(stored, _, _)| stored == email)

@@ -35,7 +35,7 @@ fn render_offline(engine: &Retained<AVAudioEngine>, frames: usize) -> Vec<f32> {
     let mut error = 0i32;
     let status = block.call((
         frames as u32,
-        NonNull::new(&mut list as *mut _).unwrap(),
+        NonNull::new(&mut list as *mut _).expect("audio buffer list pointer"),
         &mut error as *mut _,
     ));
     assert_eq!(

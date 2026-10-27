@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { ProviderKind } from "../generated/providerKind.ts";
 import type { ReactNode } from "react";
 import { IdleCompactionNotice } from "./IdleCompactionNotice";
@@ -1007,7 +1008,7 @@ export default function Conversation(p: {
         ? message.id
         : message.sourceId || message.id;
       const key = `${agentId}:${sourceId}:${draft?.before ? "before" : "after"}`;
-      branchRequests.current[key] ||= crypto.randomUUID();
+      branchRequests.current[key] ||= randomUUID();
       setBranching(true);
       try {
         const response = await post("/api/branch", {

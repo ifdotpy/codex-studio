@@ -166,6 +166,42 @@ fn restart_and_reconnect(connection: &mut Connection, generation: u64) {
     });
 }
 
+#[test]
+fn manual_delivery_hold_tracks_started_without_interrupting_the_observed_turn() {
+    let mut connection = database();
+    let mut agent = agent_from(
+        json!({"status":"running","autoWake":true,"inFlight":true,"turnEpoch":0,"turnId":"turn","startAttempt":{"id":"manual-attempt","epoch":0,"accountKey":ACCOUNT,"threadId":"thread","turnId":"turn","requestTicket":"ticket","connectionGeneration":1,"submitted":true,"events":["original-input"]}}),
+    );
+    SchedulerRepository::hold_recovered_delivery(&mut agent).expect("manual hold");
+    AgentRepository::put(&connection, &agent).expect("held worker");
+    connection.execute("INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created,turn_id) VALUES('original-input',?1,0,'user','input','delivered',1,'turn')", [AGENT]).expect("delivered exact input");
+    let identity = TurnAttemptIdentity {
+        agent_id: AGENT.into(),
+        epoch: 0,
+        attempt_id: "manual-attempt".into(),
+    };
+    let interrupt = with(&mut connection, |tx| {
+        SchedulerRepository::observe_started(tx, &identity, "turn").expect("exact started notice")
+    });
+    assert_eq!(
+        interrupt,
+        Some(false),
+        "a delivery hold must not stop the existing native turn"
+    );
+    assert_eq!(stored(&connection)["autoWake"], false);
+    with(&mut connection, |tx| {
+        let mut stopped = AgentRepository::get(tx, &AgentId::from(AGENT))
+            .expect("read")
+            .expect("worker");
+        stopped.epoch += 1;
+        AgentRepository::put(tx, &stopped).expect("real Stop changes epoch");
+        assert_eq!(
+            SchedulerRepository::observe_started(tx, &identity, "turn").expect("stopped notice"),
+            Some(true)
+        );
+    });
+}
+
 /// A waiting agent that finished a later turn. Its restart marker and
 /// disconnect receipt describe a turn from an earlier restart (agents 50f9a796
 /// and fbcb2568; agent 841ebc0e after startup cleanup removed its completed
@@ -897,4 +933,51 @@ fn a_restart_of_an_attempt_without_a_supervisor_identity_records_no_supervisor()
             "{key}: {agent}"
         );
     }
+}
+
+#[test]
+fn terminal_claude_error_keeps_only_bounded_failure_metadata() {
+    let mut connection = database();
+    put(
+        &connection,
+        json!({"status":"running","provider":"claude","autoWake":true,"inFlight":true,"turnId":"turn","turnEpoch":0,"startAttempt":{"id":"attempt","epoch":0,"submitted":true,"turnId":"turn","threadId":"thread","accountKey":ACCOUNT,"events":["message"],"connectionGeneration":1,"requestTicket":"ticket"}}),
+    );
+    connection.execute_batch("INSERT INTO runtime_events VALUES('message','agent','user','message','dispatching',2,0,NULL,NULL);").expect("event writes");
+    let metadata = json!({"apiError":"provider_credentials","apiErrorStatus":401,"apiErrorCode":"cloud_access_denied","provider":"bedrock","remedy":"refresh_credentials"});
+    let mut unsafe_metadata = metadata.clone();
+    unsafe_metadata["error_details"] = json!("secret request text");
+    unsafe_metadata["credentials"] = json!("Bearer secret");
+    let error = json!({"codexErrorInfo":"unauthorized","claudeFailure":unsafe_metadata});
+    assert!(with(&mut connection, |tx| {
+        SchedulerRepository::settle_terminal(
+            tx,
+            AGENT,
+            0,
+            "attempt",
+            "turn",
+            AgentStatus::Failed,
+            Some(error.clone()),
+            "failed",
+            Some(&error),
+            &[],
+        )
+        .expect("terminal outcome settles")
+    }));
+    let saved = stored(&connection);
+    assert_eq!(saved["lastCompletedTurnError"]["claudeFailure"], metadata);
+    assert_eq!(saved["error"]["codexErrorInfo"], "unauthorized");
+    let receipts: String = connection
+        .query_row(
+            "SELECT record FROM runtime_execution_attempts WHERE id='attempt'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("execution attempt reads");
+    let receipt: Value = serde_json::from_str(&receipts).expect("execution receipt");
+    assert_eq!(
+        receipt["receipts"]["terminal"]["input"]["nativeError"]["claudeFailure"],
+        metadata
+    );
+    assert!(!receipts.contains("secret"));
+    assert!(!saved.to_string().contains("secret"));
 }

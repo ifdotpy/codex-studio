@@ -6,6 +6,7 @@ import {
   monitorTask,
   responseOwnerIdentityKey,
   responseStopIdentity,
+  responseStopDisabled,
 } from "./BackgroundTasks";
 
 describe("background process groups", () => {
@@ -47,6 +48,11 @@ describe("response stop identity", () => {
       turnId: "turn-current",
     } satisfies NonNullable<Parameters<typeof responseStopIdentity>[0]>;
     expect(responseStopIdentity(target)).toEqual({ responseTarget: target });
+    // A held response can have an exact server target without an in-flight actor.
+    expect(responseStopDisabled(target, false)).toBe(false);
+    expect(responseStopDisabled(target, true)).toBe(true);
+    expect(responseStopDisabled(null, false)).toBe(true);
+    expect(responseStopDisabled(undefined, false)).toBe(true);
   });
 });
 

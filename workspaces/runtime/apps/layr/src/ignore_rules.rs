@@ -14,6 +14,9 @@ pub struct Rules {
     /// For `.layrattributes`: the attribute whose patterns this matcher holds.
     attribute: Option<&'static str>,
     cache: RefCell<HashMap<String, Option<Gitignore>>>,
+    /// The layers of a thin state: rule files are read from the layer that holds them.
+    #[cfg(target_os = "macos")]
+    layers: Option<crate::thin::Layered>,
 }
 
 impl Rules {
@@ -23,7 +26,39 @@ impl Rules {
             files: &[".gitignore", ".layrignore"],
             attribute: None,
             cache: RefCell::new(HashMap::new()),
+            #[cfg(target_os = "macos")]
+            layers: None,
         }
+    }
+
+    /// The rules of a tree that hot paths read (`repo::Snap`).
+    #[cfg(target_os = "macos")]
+    pub fn of(tree: &crate::thin::Layered) -> Rules {
+        let mut r = Rules::new(tree.top());
+        if !tree.is_complete() {
+            r.layers = Some(tree.clone());
+        }
+        r
+    }
+    #[cfg(not(target_os = "macos"))]
+    pub fn of(tree: &Path) -> Rules {
+        Rules::new(tree)
+    }
+
+    fn file(&self, rel: &str) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        if let Some(l) = &self.layers {
+            return l.path(rel).unwrap_or_else(|_| self.root.join(rel));
+        }
+        self.root.join(rel)
+    }
+
+    fn is_file(&self, rel: &str) -> bool {
+        #[cfg(target_os = "macos")]
+        if let Some(l) = &self.layers {
+            return crate::fsutil::lmeta(l, rel).map(|m| m.is_file()).unwrap_or(false);
+        }
+        crate::fsutil::lmeta(&self.root, rel).map(|m| m.is_file()).unwrap_or(false)
     }
 
     /// The paths that `.layrattributes` files give the attribute `name`: `ignored` is true for them.
@@ -33,6 +68,8 @@ impl Rules {
             files: &[".layrattributes"],
             attribute: Some(name),
             cache: RefCell::new(HashMap::new()),
+            #[cfg(target_os = "macos")]
+            layers: None,
         }
     }
 
@@ -45,14 +82,14 @@ impl Rules {
         let mut any = false;
         for name in self.files {
             let rel = if dir.is_empty() { name.to_string() } else { format!("{dir}/{name}") };
-            if crate::fsutil::lmeta(&self.root, &rel).map(|m| m.is_file()).unwrap_or(false) {
+            if self.is_file(&rel) {
                 match self.attribute {
                     None => {
-                        b.add(base.join(name));
+                        b.add(self.file(&rel));
                     }
                     Some(attribute) => {
                         let unset = format!("-{attribute}");
-                        for line in std::fs::read_to_string(base.join(name)).unwrap_or_default().lines() {
+                        for line in std::fs::read_to_string(self.file(&rel)).unwrap_or_default().lines() {
                             let mut words = line.split_whitespace();
                             let pattern = match words.next() {
                                 Some(p) if !p.starts_with('#') => p,

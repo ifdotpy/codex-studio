@@ -145,15 +145,6 @@ pub fn budget_state_write_schema() -> Value {
     schema
 }
 
-/// Generated ingress schema keeps native identity size with its owner.
-pub fn budget_capture_schema() -> Value {
-    let mut schema: Value =
-        serde_json::from_str(include_str!("../schemas/budget-capture.schema.json"))
-            .expect("capture schema");
-    schema["properties"]["threadId"]["maxLength"] = json!(MAX_NATIVE_THREAD_ID_CHARS);
-    schema
-}
-
 /// Unknown rows are zero-token replay receipts, never accounting evidence.
 pub fn budget_usage_schema() -> Value {
     let mut schema: Value = serde_json::from_str(include_str!(

@@ -15,18 +15,27 @@ A line is a folder: `<root>/projects/<project>/lines/<line>`. Run Layr inside it
 Use `layr` for local version control. Revision names use lowercase `head`.
 `head~2`, a line name, a tag, a state ID prefix, and `head@{n}` are revisions.
 A line name selects its last named state, excluding unsaved files.
+In Studio, use the assigned store and line. Do not import the project again.
+Run write commands in your own line. Enter another line with `cd` only when you own it.
+In native mode, a reviewer's `cwd` is its private `layrScratch` folder.
+Its `layrReadCwd` points to main for trusted `layr_read` calls. Main stays read-only.
+Claude's reviewer sandbox denies store writes and Unix sockets.
+The old Git verbs are removed. Git commands inside the Git bridge retain Git names.
 
 ## Save and inspect work
 
-| Task                             | Command                                               |
-| -------------------------------- | ----------------------------------------------------- |
-| See changes                      | `layr status`, `layr diff`                            |
-| Save a named state               | `layr add -A && layr save -m "<message>"`             |
-| Save an automatic state          | `layr save`                                           |
-| Get the current state ID         | `layr rev-parse head`                                 |
-| Read a file from a state or line | `layr show <rev>:<path>`                              |
-| Compare with another line        | `layr diff <other>...head`                            |
-| Search old content               | `layr grep <pattern> <rev>`, `layr log --grep <text>` |
+| Task                               | Command                                               |
+| ---------------------------------- | ----------------------------------------------------- |
+| See changes                        | `layr status`, `layr diff`                            |
+| Save a named state                 | `layr add -A && layr save -m "<message>"`             |
+| Save an automatic state            | `layr save`                                           |
+| Get the current state ID           | `layr rev-parse head`                                 |
+| Read a file from a state or line   | `layr show <rev>:<path>`                              |
+| Compare with another line          | `layr diff <other>...head`                            |
+| Search old content                 | `layr grep <pattern> <rev>`, `layr log --grep <text>` |
+| Read status as JSON                | `layr status --json`                                  |
+| Save tracked files without staging | `layr save -a -m "<message>"`                         |
+| Read named history as JSON         | `layr log --json`                                     |
 
 Each named save starts a change. `layr save --amend -m "<message>"` makes a
 new version of the current change, preserving its ChangeId. A separate named
@@ -37,23 +46,41 @@ save starts a separate change. Stage new files with `layr add` first.
 Layr saves the working folder before changing operations and on `layr save`.
 Automatic states retain uncommitted work.
 
-| Task                         | Command                                                |
-| ---------------------------- | ------------------------------------------------------ |
-| Undo the last Layr operation | `layr undo` (`layr undo -n` previews it)               |
-| Undo an older operation      | `layr op log`, then `layr undo <operation>`            |
-| List automatic states        | `layr log --auto --format='%h %ar %s' -n 20`           |
-| Inspect a state              | `layr show --stat <state>`, `layr show <state>:<path>` |
-| Restore a file               | `layr restore --source <state> -- <path>`              |
-| Start a line from old work   | `layr line new <name> <state>`                         |
+| Task                           | Command                                                |
+| ------------------------------ | ------------------------------------------------------ |
+| Undo the last Layr operation   | `layr undo` (`layr undo -n` previews it)               |
+| Undo an older operation        | `layr op log`, then `layr undo <operation>`            |
+| List automatic states          | `layr log --auto --format='%h %ar %s' -n 20`           |
+| Inspect a state                | `layr show --stat <state>`, `layr show <state>:<path>` |
+| Restore a file                 | `layr restore --source <state> -- <path>`              |
+| Start a line from old work     | `layr line new <name> <state>`                         |
+| Keep unfinished work for later | `layr park`                                            |
+| Inspect parked work            | `layr park list`, `layr park show`                     |
+| Restore and retain parked work | `layr park apply`                                      |
+| Restore and remove parked work | `layr park pop`                                        |
 
 Use the listed state ID. Each changing operation can change what `head@{n}`
 selects. `layr undo` can also undo an undo.
+Checkpoint numbers change after new saves. Inspect the operation before you select it.
+Park and amend refuse in a line with overlays. Save overlay changes as named states.
 
 ## Check an exact state
 
 `layr try <rev> -- <command>` runs in a temporary copy and records a check for
 that state. It leaves your line unchanged. `layr try <rev> --check <name>` uses
 `check.<name>` from project configuration. A failed command returns nonzero.
+
+Use the configured check when a protected line requires it. A different command does not satisfy that check.
+Attest stores the payload digest. It does not store the file contents or run a check.
+An approval applies to one exact state. Review a changed state again.
+
+| Task                                 | Command                                       |
+| ------------------------------------ | --------------------------------------------- |
+| Define a named check                 | `layr config check.unit '<command>'`          |
+| Run the configured check for a state | `layr try <state> --check unit`               |
+| Attach evidence from a file          | `layr attest origin <state> --payload <file>` |
+| Inspect all evidence for the state   | `layr attestations <state> --json`            |
+| Withdraw your approval               | `layr approve --withdraw <state>`             |
 
 ## Work in parallel
 
@@ -64,11 +91,26 @@ that state. It leaves your line unchanged. `layr try <rev> --check <name>` uses
 | Merge a reviewed state                    | `layr merge <line> --expect <state>`                   |
 | Take one state                            | `layr pick <rev>`                                      |
 | Delete your unused line from another line | `layr line delete <name>` (`-D` permits unmerged work) |
+| Apply your states on a new base           | `layr replay main`                                     |
+| Reverse one state's change                | `layr invert <state>`                                  |
 
 A merge writes conflicts into its result. `layr status` shows `UU` paths.
 Resolve them, then `layr add <paths> && layr save -m "<message>"`.
 Only a line's owner changes it. A protected target requires its policy and
 `--expect`; use the Cloud queue when the project requires queued review.
+Batch creation makes `agent-1` through `agent-4`. Read the JSON paths before you assign work.
+Pick, replay, and invert apply the shared files. They do not apply private overlay changes.
+Inspect status before you report success.
+Expect pins the source state. A moved source line refuses the merge.
+
+Native Studio archive pins the saved state at `pins/studio/archive/<sha256(agent ID)>` before line deletion.
+The pin has no expiry. The receipt records `archiveRef` and `stateId`.
+Studio does not remove these pins automatically.
+After review or explicit discard, an operator can run `layr ref delete <archiveRef>` to permit normal garbage collection.
+
+APFS clones folders and verifies copies. It does not make atomic APFS volume snapshots.
+Pause file changes while you save an exact input tree.
+Use the saved state for checks while other work continues.
 
 ## Layr Cloud: choose the remote
 
@@ -241,6 +283,12 @@ If the task uses Studio's local acceptance merge, inspect and accept the exact
 submitted state through Studio too. A Cloud queue result does not complete a
 Studio task automatically. Do not merge twice to recover an uncertain response.
 
+Configure checks before you process the queue. The queue checks the exact merge result.
+A queued entry keeps its source state if the worker line moves.
+Conflicts or failed required checks leave main unchanged. Inspect each entry's result.
+Require the named check on main with `layr protect main --check unit`.
+Ordinary merges do not run probes. The queue runs probes only when `queue.probes` is true.
+
 ## Attach release files
 
 Release publication needs explicit task authority. The release ref must already
@@ -258,6 +306,26 @@ layr release files "$LAYR_RELEASE" --remote "$LAYR_REMOTE" --json
 `--expect` binds the attachment to the reviewed release state. Output includes
 file names, byte sizes, and SHA-256 values. The remote receives encrypted files.
 
+## Find faults and review revisions
+
+| Task                                            | Command                                                         |
+| ----------------------------------------------- | --------------------------------------------------------------- |
+| Find the first bad state, including checkpoints | `layr bisect run --auto --good <good> --bad <bad> -- <command>` |
+| Inspect completed searches                      | `layr bisect list --json`                                       |
+| Compare two versions of the change              | `layr change diff <change> --from v1 --to v2 --json`            |
+| Run a configured behavior probe                 | `layr probe run <state> --probe <probe> --json`                 |
+| Compare stored probe results                    | `layr probe diff <base> <state> --json`                         |
+
+Bisect needs a command that passes at good and fails at bad. The fault must remain present after its first occurrence.
+It uses temporary copies and can reuse exact-state results for the same command.
+
+Change diff compares each version against its own parent. Base changes stay outside that comparison.
+A change keeps its ID through amend, pick, and replay.
+
+Define probes in the revision's `layr.toml` with `run`, `outputs`, and `kind`.
+Run the probe for both states before you compare them.
+Probe diff and change show read stored results. They do not run probe commands.
+
 ## Keep build output fast
 
 Ignore regenerable folders in `.gitignore` or `.layrignore`. Add
@@ -265,6 +333,39 @@ Ignore regenerable folders in `.gitignore` or `.layrignore`. Add
 `layr cache add <folder>` with `config` permission. `layr cache list` identifies
 cache folders. `layr cache repair` repairs a plain replacement folder.
 `layr save --caches` gives new lines a warm cache copy.
+Caches stay outside source history and diffs. Keep dependency lockfiles in source history.
+Save warm caches before parallel line creation. Repair them after tools replace their folders.
+
+## Keep .env private with overlays
+
+| Task                                                          | Command                                     |
+| ------------------------------------------------------------- | ------------------------------------------- |
+| Create a private overlay for its owner                        | `layr overlay create secrets --mode follow` |
+| Move .env out of shared files and remove affected checkpoints | `layr overlay move --purge secrets .env`    |
+| Save the private files                                        | `layr save -m "Save private settings"`      |
+| Inspect overlays and their readers                            | `layr overlay list --json`                  |
+| Add an existing readable overlay to your line                 | `layr overlay use --add secrets`            |
+| Read the overlay's named history                              | `layr overlay log secrets`                  |
+| Save the exact shared state and overlay stack                 | `layr view save --json`                     |
+| Check a saved stack                                           | `layr try views/<view> -- <command>`        |
+
+New files go to the shared set unless you move them explicitly.
+Earlier shared named states retain a moved secret. Purge removes only affected automatic states of the current line.
+The Git bridge exports shared files only. A private overlay has its own readers and history.
+
+Automatic saves omit overlay files. Save private edits with a named save before the turn ends.
+
+Expect pins the shared source state. It does not pin the overlay stack.
+Use a saved view for a check of an exact stack. Its check applies to that view.
+Use `view_id` from the saved view JSON with the `views/` prefix.
+Routing patterns, ephemeral overlays, and folder overlays are unavailable in the older bundled CLI.
+
+## Studio development in lines
+
+For Studio work in layr lines (warm `target/`, gate result reuse, disk cleanup),
+read the "Developing in layr lines" section of `docs/testing.md` first.
+Studio lines need layr 0.4.0 or later. Use the state ID from
+`layr log --auto -n 1` to start a line with warm caches, not the line name.
 
 ## Diagnose a refusal and use a Git mirror
 
@@ -272,9 +373,22 @@ cache folders. `layr cache repair` repairs a plain replacement folder.
 line and preserve protected-line policy. A pin or credential error requires the
 owner to fix provisioning; do not bypass it with another transport.
 
+| Task                                      | Action                                             |
+| ----------------------------------------- | -------------------------------------------------- |
+| Another user owns the line                | Use your assigned line.                            |
+| Main requires review                      | Review the exact state and use merge with expect.  |
+| A merge has conflicts                     | Resolve them in an owned line before acceptance.   |
+| The store cannot represent two path names | Use distinct names or a case-sensitive APFS store. |
+
 In 0.3.0 the `.git` view follows the named line head for tools that read Git.
 `layr git sync` explicitly refreshes that view without pushing.
 `layr rev-parse '<rev>^{tree}'` names content across Layr and Git.
 State IDs travel through Layr remotes; use full IDs for review.
 When a Git mirror push is authorized, use `layr git push <remote> <branch>`
 (or `layr git push --squash -m "<message>" <remote> <branch>`).
+Read configured Git remotes with `layr git remote -v`.
+In a Studio VM project with host sync, use the host bridge policy in the workspace reference.
+A Git folder made by the line owner stays under that owner's control.
+Git sync requires the line's Git mirror. A line made before Git setup can have no mirror.
+Use layr for source changes. Tools can read the Git mirror.
+The top-level push command sends to layr remotes. Use the Git bridge for a Git remote.

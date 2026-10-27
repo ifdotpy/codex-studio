@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "tauri": "tauri",
     "icons": "node generate-icons.ts",
     "dev": "tauri dev",
     "build": "tauri build",

@@ -62,8 +62,8 @@ async fn changes(
             if deleted(&actor) {
                 return Err(invalid_request());
             }
-            if actor.get("imageWorkspace").and_then(Value::as_bool) == Some(true) && !chat {
-                let reason = "Studio Git tools are unavailable for image workspaces";
+            if studio_runtime_services::legacy_image_workspace::is_legacy(&actor) && !chat {
+                let reason = "This legacy workspace is finished";
                 return Ok(Ok(
                     json!({"files":[],"patch":"","git":false,"error":reason}),
                 ));

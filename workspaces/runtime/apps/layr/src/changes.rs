@@ -3,7 +3,7 @@
 //! A change list is a candidate list: an entry that kept its inode and path has the changed byte
 //! ranges, so a content check reads only those ranges. Other entries are checked in full.
 
-use crate::fsutil::{self, Meta};
+use crate::fsutil::{self, Meta, Src};
 #[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
 use crate::storage as btrfs;
 use crate::stream;
@@ -11,7 +11,7 @@ use anyhow::Result;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Change {
     /// Path in the child (or in the parent for a delete).
     pub path: String,
@@ -34,7 +34,8 @@ impl Change {
 
 /// Raw candidate list from the stream, without content checks.
 #[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
-pub fn candidates(parent: &Path, child: &Path) -> Result<Vec<Change>> {
+pub fn candidates(parent: &(impl Src + ?Sized), child: &(impl Src + ?Sized)) -> Result<Vec<Change>> {
+    let (parent, child) = (folder(parent)?, folder(child)?);
     let data = btrfs::send_no_data(parent, child)?;
     let cmds = stream::parse(&data)?;
     let entries = stream::entries(&cmds);
@@ -136,7 +137,7 @@ fn build(parent: &Path, child: &Path, entries: Vec<stream::Entry>) -> Result<Vec
 
 /// True when the entry changed in a way git would see: type, content, link target or the
 /// executable bit of a file.
-pub fn really_changed(parent: &Path, child: &Path, c: &Change) -> Result<bool> {
+pub fn really_changed(parent: &(impl Src + ?Sized), child: &(impl Src + ?Sized), c: &Change) -> Result<bool> {
     let (o, n) = match (&c.old, &c.new) {
         (Some(o), Some(n)) => (o, n),
         _ => return Ok(true),
@@ -153,8 +154,8 @@ pub fn really_changed(parent: &Path, child: &Path, c: &Change) -> Result<bool> {
     if o.is_dir() {
         return Ok(false);
     }
-    // APFS already compared every byte while it built these ranges. Both trees
-    // are read-only, so an empty result does not need another open and stat.
+    // The backend already proved equal data while it built these ranges.
+    // APFS also uses kernel clone IDs; live status reads validate generations.
     #[cfg(any(target_os = "macos", feature = "overlayfs"))]
     if o.is_file() && o.size == n.size && c.ranges.as_ref().is_some_and(|ranges| ranges.is_empty()) {
         return Ok(false);
@@ -163,9 +164,14 @@ pub fn really_changed(parent: &Path, child: &Path, c: &Change) -> Result<bool> {
 }
 
 /// File level changes (folders dropped), confirmed by content. A move keeps `old_path`.
-pub fn file_changes(parent: &Path, child: &Path) -> Result<Vec<Change>> {
+pub fn file_changes(parent: &(impl Src + ?Sized), child: &(impl Src + ?Sized)) -> Result<Vec<Change>> {
+    file_changes_of(parent, child, candidates(parent, child)?)
+}
+
+/// File level changes of a candidate list (`file_changes`).
+pub fn file_changes_of(parent: &(impl Src + ?Sized), child: &(impl Src + ?Sized), list: Vec<Change>) -> Result<Vec<Change>> {
     let mut out = Vec::new();
-    for c in candidates(parent, child)? {
+    for c in list {
         let is_dir_only =
             c.old.as_ref().map(|m| m.is_dir()).unwrap_or(true) && c.new.as_ref().map(|m| m.is_dir()).unwrap_or(true);
         if is_dir_only {
@@ -210,7 +216,7 @@ pub fn without_moves(v: Vec<Change>) -> Vec<Change> {
 
 /// Pair deleted and added files as moves when the content is equal, then (for small lists)
 /// when at least half of the lines are equal, as git's rename detection does.
-pub fn with_renames(parent: &Path, child: &Path, v: Vec<Change>) -> Vec<Change> {
+pub fn with_renames(parent: &(impl Src + ?Sized), child: &(impl Src + ?Sized), v: Vec<Change>) -> Vec<Change> {
     // Files larger than MAX_TEXT are not compared by content.
     let is_file = |m: &Option<Meta>| {
         m.as_ref().map(|x| x.ftype == crate::fsutil::FType::File && x.size <= crate::fsutil::MAX_TEXT).unwrap_or(false)
@@ -225,7 +231,8 @@ pub fn with_renames(parent: &Path, child: &Path, v: Vec<Change>) -> Vec<Change> 
     if dels.is_empty() || adds.is_empty() {
         return v;
     }
-    let read = |r: &Path, p: &str| crate::fsutil::read_file(r, p).ok();
+    let read_parent = |p: &str| crate::fsutil::read_file(parent, p).ok();
+    let read_child = |p: &str| crate::fsutil::read_file(child, p).ok();
     let mut pairs: Vec<(usize, usize)> = Vec::new();
     let mut used_d: HashSet<usize> = HashSet::new();
     let mut used_a: HashSet<usize> = HashSet::new();
@@ -237,12 +244,12 @@ pub fn with_renames(parent: &Path, child: &Path, v: Vec<Change>) -> Vec<Change> 
     for &a in &adds {
         let size = v[a].new.as_ref().unwrap().size;
         if let Some(ds) = by_size.get(&size) {
-            let ad = match read(child, &v[a].path) {
+            let ad = match read_child(&v[a].path) {
                 Some(x) => x,
                 None => continue,
             };
             for &d in ds {
-                if !used_d.contains(&d) && read(parent, &v[d].path).as_ref() == Some(&ad) {
+                if !used_d.contains(&d) && read_parent(&v[d].path).as_ref() == Some(&ad) {
                     pairs.push((d, a));
                     used_d.insert(d);
                     used_a.insert(a);
@@ -257,12 +264,12 @@ pub fn with_renames(parent: &Path, child: &Path, v: Vec<Change>) -> Vec<Change> 
     if !rd.is_empty() && !ra.is_empty() && rd.len() * ra.len() <= 400 {
         let mut scored: Vec<(f32, usize, usize)> = Vec::new();
         for &d in &rd {
-            let dd = match read(parent, &v[d].path) {
+            let dd = match read_parent(&v[d].path) {
                 Some(x) if !crate::fsutil::is_binary(&x) => x,
                 _ => continue,
             };
             for &a in &ra {
-                let ad = match read(child, &v[a].path) {
+                let ad = match read_child(&v[a].path) {
                     Some(x) if !crate::fsutil::is_binary(&x) => x,
                     _ => continue,
                 };
@@ -304,7 +311,18 @@ fn split(d: &[u8]) -> Vec<&[u8]> {
     d.split_inclusive(|b| *b == b'\n').collect()
 }
 
-#[cfg(any(target_os = "macos", feature = "overlayfs"))]
-pub fn candidates(parent: &Path, child: &Path) -> Result<Vec<Change>> {
+#[cfg(target_os = "macos")]
+pub fn candidates(parent: &(impl Src + ?Sized), child: &(impl Src + ?Sized)) -> Result<Vec<Change>> {
     crate::storage::candidates(parent, child)
+}
+
+#[cfg(feature = "overlayfs")]
+pub fn candidates(parent: &(impl Src + ?Sized), child: &(impl Src + ?Sized)) -> Result<Vec<Change>> {
+    crate::storage::candidates(folder(parent)?, folder(child)?)
+}
+
+/// Linux backends compare complete folders only.
+#[cfg(not(target_os = "macos"))]
+fn folder(s: &(impl Src + ?Sized)) -> Result<&Path> {
+    s.folder().ok_or_else(|| anyhow::anyhow!("a layered tree exists only on APFS"))
 }

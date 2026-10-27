@@ -88,6 +88,8 @@ pub struct Actor {
     pub native_role_guidance: Option<String>,
     pub native_tool_source: Option<CatalogSource>,
     pub native_tool_update: Option<Value>,
+    /// Plain error text for exact native catalog notice matching. Structured
+    /// provider errors stay in the stored record, outside this projection.
     pub error: Option<String>,
     /// Includes failed unsubmitted inspections, retired by successful resume.
     pub native_release: Option<Map<String, Value>>,
@@ -1318,7 +1320,7 @@ mod vm_catalog_tests {
         let fields = &host.input_schema["properties"]["agents"]["items"]["properties"];
         assert_eq!(
             fields["workspace"]["enum"],
-            json!(["image", "worktree", "shared"])
+            json!(["layr-native", "layr", "worktree", "shared"])
         );
         assert!(fields.get("server").is_some());
     }

@@ -42,6 +42,100 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+test("provider shutdown tails and status reader boundaries stay in both fast filters", () => {
+  const profiles = readFileSync(".config/nextest.toml", "utf8");
+  for (const name of [
+    "shutdown_delivers_frames_written_on_stdin_eof_before_the_kill",
+    "shutdown_keeps_the_stdout_tail_beyond_full_lanes_in_order",
+    "shutdown_tail_reply_resolves_its_request_instead_of_unknown",
+    "status_reads_only_team_monitors_and_keeps_its_response",
+    "rejected_status_arguments_never_enter_the_writer_lane",
+    "status_membership_change_after_snapshot_refuses_the_revision_write",
+  ]) {
+    assert.equal(profiles.split(name).length - 1, 2, name);
+  }
+});
+
+test("host_exec process scenarios have a named manual owner and fast boundary coverage", () => {
+  const profiles = readFileSync(".config/nextest.toml", "utf8");
+  assert.doesNotMatch(profiles, /test\(\/\^host_exec_service::\//);
+  assert.equal(profiles.split("host_exec(_service)?|layr_read").length - 1, 2);
+  const recipe = readFileSync("justfile", "utf8");
+  assert.match(
+    recipe,
+    /test-host-exec-processes:\n[^\n]*--run-ignored only[^\n]*--test-threads 1[^\n]*host_exec_service::/,
+  );
+  const processes = readFileSync(
+    "workspaces/runtime/apps/runtime-server/tests/host_exec_service.rs",
+    "utf8",
+  );
+  assert.equal(
+    (
+      processes.match(
+        /#\[ignore = "manual process tier: just test-host-exec-processes"\]/g,
+      ) ?? []
+    ).length,
+    5,
+  );
+  const lifecycle = readFileSync(
+    "workspaces/runtime/packages/runtime-services/src/host_exec_service/lifecycle.rs",
+    "utf8",
+  );
+  for (const name of [
+    "a_fresh_token_is_private_durable_and_never_overwrites_an_existing_token",
+    "startup_wait_requires_ready_proof_and_preserves_the_poll_order",
+    "startup_wait_retains_unknown_deadline_and_process_probe_errors",
+  ]) {
+    assert.match(lifecycle, new RegExp(`fn ${name}\\(`));
+  }
+});
+
+// Suppress facade text, but preserve Node's binary test result frames.
+function silenceFacadeOutput() {
+  const originalWrite = process.stdout.write;
+  process.stdout.write = function (
+    this: NodeJS.WriteStream,
+    chunk: unknown,
+    ...args: unknown[]
+  ) {
+    if (typeof chunk === "string") return true;
+    return (originalWrite as (...values: unknown[]) => boolean).call(
+      this,
+      chunk,
+      ...args,
+    );
+  } as typeof process.stdout.write;
+  return () => {
+    process.stdout.write = originalWrite;
+  };
+}
+
+test("facade output capture preserves every selected Node test result", () => {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const selected = [
+    "Cargo facade failures retain selection, test failure, install guidance and logs",
+    "browser wrapper trusts JSON stats, not human summary text",
+    "browser wrapper rejects a missing JSON report even after process success",
+  ];
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--test",
+      "--test-reporter=tap",
+      `--test-name-pattern=^(?:${selected.join("|")})$`,
+      fileURLToPath(import.meta.url),
+    ],
+    { env, encoding: "utf8", timeout: 10000 },
+  );
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /# tests 3\b/);
+  for (const name of selected) {
+    assert.ok(result.stdout.includes(name), name);
+  }
+});
 
 const JAVASCRIPT_EXCEPTIONS = readJavaScriptExceptions();
 
@@ -150,7 +244,7 @@ test("unsafe Rust is limited to the purpose-listed modules", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-unsafe-rust-policy-"));
   const exception = path.join(
     root,
-    "workspaces/runtime/packages/runtime-services/src/image_workspace_macos/fsevents_ffi.rs",
+    "workspaces/runtime/packages/runtime-services/src/host_exec_service/clone_ffi.rs",
   );
   const violation = path.join(root, "workspaces/runtime/src/unsafe_probe.rs");
   const quotedViolation = path.join(
@@ -247,40 +341,37 @@ test("pnpm Vitest positional selection is a file path substring; --name is a nat
 });
 
 test("pnpm Node test selection uses the native test-name filter", () => {
-  const item = {
-    name: "codex-studio-tooling",
-    ecosystem: "pnpm",
-    manifest: new URL("../../../../../package.json", import.meta.url),
-  };
-  assert.deepEqual(
-    commandFor(process.cwd(), item, "test", "Cargo zero-match summaries"),
-    [
+  const fixture = workspaceFixture();
+  try {
+    fixture.add("node-test-fixture", "workspaces/demo/apps/tooling", {
+      scripts: { test: "node --test first.test.mjs second.test.mjs" },
+      codexStudioChecks: { test: "test" },
+    });
+    const item = fixture.packages[0];
+    assert.ok(item);
+    assert.deepEqual(
+      commandFor(fixture.root, item, "test", "Cargo zero-match summaries"),
       [
-        "pnpm",
         [
-          "--filter",
-          item.name,
-          "exec",
-          "node",
-          "--test",
-          "--test-reporter=tap",
-          "--test-name-pattern",
-          "Cargo zero-match summaries",
-          "workspaces/tooling/apps/repository-checks/tests/compiler-policy.test.ts",
-          "workspaces/tooling/apps/repository-checks/tests/rust-lint-policy.test.ts",
-          "workspaces/tooling/apps/repository-checks/tests/session-receipt-contract.test.ts",
-          "workspaces/tooling/apps/repository-checks/tests/gates.test.ts",
-          "workspaces/tooling/apps/repository-checks/tests/facade.test.ts",
-          "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.ts",
-          "workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.ts",
-          "workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.ts",
-          "workspaces/tooling/apps/repository-checks/tests/generate-api-types.test.ts",
-          "workspaces/tooling/apps/installed-smoke/tests/smoke.test.ts",
-          "workspaces/tooling/apps/installed-smoke/tests/approvals.test.ts",
+          "pnpm",
+          [
+            "--filter",
+            item.name,
+            "exec",
+            "node",
+            "--test",
+            "--test-reporter=tap",
+            "--test-name-pattern",
+            "Cargo zero-match summaries",
+            "first.test.mjs",
+            "second.test.mjs",
+          ],
         ],
       ],
-    ],
-  );
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
 });
 
 test("Cargo uses nextest filters and keeps package and test selectors narrow", () => {
@@ -419,6 +510,7 @@ esac
   process.env.CODEX_STUDIO_CHECKS_CACHE = path.join(root, "logs");
   const nodeCapture = path.join(root, "codex-node.txt");
   process.env.FIXTURE_NODE_CAPTURE = nodeCapture;
+  const restoreOutput = silenceFacadeOutput();
   const item = { name: "fixture", ecosystem: "cargo" };
   try {
     process.env.FIXTURE_CARGO_MODE = "empty";
@@ -452,6 +544,7 @@ esac
     );
     assert.ok(absent.logPath);
   } finally {
+    restoreOutput();
     if (original.PATH === undefined) delete process.env.PATH;
     else process.env.PATH = original.PATH;
     if (original.CARGO_TARGET_DIR === undefined)
@@ -745,6 +838,7 @@ test("Playwright JSON reports enforce process and test outcome status", () => {
 test("browser wrapper trusts JSON stats, not human summary text", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-browser-report-"));
   const originalCache = process.env.CODEX_STUDIO_CHECKS_CACHE;
+  const restoreOutput = silenceFacadeOutput();
   process.env.CODEX_STUDIO_CHECKS_CACHE = path.join(root, "cache");
   const report = {
     stats: { expected: 322, unexpected: 1, flaky: 0, skipped: 11 },
@@ -774,6 +868,7 @@ process.exit(1);`;
     );
     assert.match(result.errors!.join(" "), /Playwright exited with code 1/);
   } finally {
+    restoreOutput();
     if (originalCache === undefined)
       delete process.env.CODEX_STUDIO_CHECKS_CACHE;
     else process.env.CODEX_STUDIO_CHECKS_CACHE = originalCache;
@@ -784,6 +879,7 @@ process.exit(1);`;
 test("browser wrapper rejects a missing JSON report even after process success", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-browser-no-report-"));
   const originalCache = process.env.CODEX_STUDIO_CHECKS_CACHE;
+  const restoreOutput = silenceFacadeOutput();
   process.env.CODEX_STUDIO_CHECKS_CACHE = path.join(root, "cache");
   try {
     const result = await execute(
@@ -799,6 +895,7 @@ test("browser wrapper rejects a missing JSON report even after process success",
     assert.equal(result.exitCode, 1);
     assert.ok(result.errors!.includes("Playwright JSON report is missing"));
   } finally {
+    restoreOutput();
     if (originalCache === undefined)
       delete process.env.CODEX_STUDIO_CHECKS_CACHE;
     else process.env.CODEX_STUDIO_CHECKS_CACHE = originalCache;

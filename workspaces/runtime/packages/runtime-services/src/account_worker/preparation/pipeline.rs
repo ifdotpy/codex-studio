@@ -117,6 +117,37 @@ async fn compile_with_artifacts(
     Ok((turn_snapshot, events, compiled))
 }
 
+/// Copy authorized host attachments before freezing the provider projection.
+/// Both a new turn and a steer use this boundary; commit rechecks its evidence.
+async fn vm_attachment_paths(
+    store: &Arc<RuntimeStore>,
+    resources: &PreparationResources,
+    intent: &TurnIntent,
+    snapshot: &mut turn::PreparationSnapshot,
+) -> Result<(), WorkerError> {
+    if snapshot.assets.is_empty() {
+        return Ok(());
+    }
+    let record = stored_agent_value(store, &intent.agent_id).await?;
+    if record["executionMode"] != "vm" {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    let guest: Arc<dyn crate::linux_vm_guest::GuestRpc> =
+        resources.guest_rpc.clone().unwrap_or_else(|| {
+            Arc::new(crate::linux_vm_guest::UnixGuestRpc::for_runtime_state(
+                store.state_dir(),
+            ))
+        });
+    #[cfg(not(unix))]
+    let guest = resources
+        .guest_rpc
+        .clone()
+        .ok_or_else(|| refusal("VM attachment guest unavailable".into()))?;
+    snapshot.asset_paths = crate::vm_attachments::prepare(store, guest, intent, snapshot).await?;
+    Ok(())
+}
+
 /// Canonical transcript projection shared by turn starts and acknowledged steers.
 pub(crate) fn compiled_submission(
     intent: &TurnIntent,
@@ -178,6 +209,7 @@ pub(crate) async fn prepare_steer(
     })
     .await?;
     snapshot.operation_id = super::super::steer::operation(&intent.account_key, &intent.attempt_id);
+    vm_attachment_paths(&store, resources, intent, &mut snapshot).await?;
     let (snapshot, _, compiled) = compile_with_artifacts(&store, snapshot, events).await?;
     let transport_intent = intent.clone();
     let expected_turn = expected_turn.to_owned();
@@ -219,7 +251,6 @@ fn steer_preconditions(
     {
         return Err(refusal("steer-preparation/ownership-changed".into()));
     }
-    gates::budget_admission(record.get("tokenBudget")).map_err(|e| refusal(e.to_string()))?;
     authorize(tx, intent, filesystem, None)?;
     selected_inputs_current(tx, intent)?;
     Ok(record)
@@ -235,6 +266,7 @@ pub(crate) fn commit_steer(
     snapshot.operation_id = prepared.snapshot.operation_id.clone();
     snapshot.prepared_at = prepared.snapshot.prepared_at;
     snapshot.artifact_paths = prepared.snapshot.artifact_paths.clone();
+    snapshot.asset_paths = prepared.snapshot.asset_paths.clone();
     let current = turn::compile(&snapshot, &events).map_err(|e| refusal(e.to_string()))?;
     if serde_json::to_value(current).map_err(|_| invalid("steer compilation"))?
         != serde_json::to_value(&prepared.compiled).map_err(|_| invalid("steer compilation"))?
@@ -283,7 +315,6 @@ fn rejected_notifications(
             .and_then(Value::as_str)
             .unwrap_or("default")
             != intent.account_key
-        || gates::budget_admission(record.get("tokenBudget")).is_err()
         || intent.radio_authorized
         || record
             .get("rootId")
@@ -511,7 +542,6 @@ fn preconditions_for_purpose(
             "preparation/claude-frozen-input-recovery-required".into(),
         ));
     }
-    gates::budget_admission(record.get("tokenBudget")).map_err(|e| refusal(e.to_string()))?;
     authorize(tx, intent, filesystem, prepared_host)?;
     selected_inputs_current(tx, intent)?;
     Ok(record)
@@ -742,6 +772,17 @@ fn native_turn_params(
     let mut params = params.map_err(|reason| refusal(format!("thread-preparation/{reason:?}")))?;
     if let Some(program) = program {
         params.insert("cyberAccessProgram".into(), json!(program));
+    }
+    if snapshot.settings.role == thread::Role::Reviewer
+        && snapshot
+            .guidance
+            .thread_config
+            .contains_key("shell_environment_policy.set.LAYR_ROOT")
+    {
+        let permissions = vm_reviewer_permissions(
+            &json!({"workspaceMode":"layr-native","role":"reviewer","layrScratch":snapshot.actor.cwd}),
+        );
+        apply_vm_reviewer_permissions(&mut params, permissions.as_ref());
     }
     Ok(params)
 }
@@ -1296,23 +1337,6 @@ pub(crate) async fn prepare_monitor_command(
     }
     let observed = workspace_agent(&store, agent_id).await?.value();
     validate_monitor_actor(&observed, epoch)?;
-    let image_temp = if observed["imageWorkspace"] == true
-        && observed["imageWorkspaceReady"] != true
-        && writable_sandbox_roots(&observed)
-    {
-        let store = Arc::clone(&store);
-        let agent_id = agent_id.to_owned();
-        Some(
-            studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-services/account_worker_monitor_image_temp",
-                move || ensure_image_workspace_temp(&store, &agent_id),
-            )
-            .await
-            .map_err(|_| WorkerError::TaskFailed)??,
-        )
-    } else {
-        None
-    };
     let agent_id = agent_id.to_owned();
     let resources_for_snapshot = resources.for_sql().await?;
     let state_root = store.root().to_path_buf();
@@ -1343,7 +1367,6 @@ pub(crate) async fn prepare_monitor_command(
             &snapshot.actor.cwd,
             snapshot.settings.role,
             snapshot.settings.yolo_mode,
-            image_temp.as_deref(),
         )?;
         Ok(super::PreparedMonitorCommand {
             thread_id,
@@ -1354,6 +1377,9 @@ pub(crate) async fn prepare_monitor_command(
 }
 
 fn validate_monitor_actor(record: &Value, epoch: u64) -> Result<(), WorkerError> {
+    if crate::legacy_image_workspace::is_legacy(record) {
+        return Err(refusal("This legacy workspace is finished".into()));
+    }
     if record["epoch"] != json!(epoch)
         || record
             .get("deletedAt")
@@ -1366,6 +1392,9 @@ fn validate_monitor_actor(record: &Value, epoch: u64) -> Result<(), WorkerError>
 }
 
 fn execution_cwd(record: &Value, validated_workspace_cwd: &Path) -> Option<String> {
+    if crate::layr_native::is_native(record) && record["role"] == "reviewer" {
+        return record["layrScratch"].as_str().map(str::to_owned);
+    }
     if record.get("executionMode").and_then(Value::as_str) == Some("vm") {
         record.get("cwd").and_then(Value::as_str).map(str::to_owned)
     } else {
@@ -1379,7 +1408,9 @@ fn execution_cwd(record: &Value, validated_workspace_cwd: &Path) -> Option<Strin
 /// `layr_read` tool). Without a scratch folder (an older guest) it stays read-only. Python keeps
 /// the same rule (codex_vm_agents.reviewer_permissions).
 fn vm_reviewer_permissions(record: &Value) -> Option<Value> {
-    if record["executionMode"] != "vm" || record["role"] != "reviewer" {
+    if (record["executionMode"] != "vm" && !crate::layr_native::is_native(record))
+        || record["role"] != "reviewer"
+    {
         return None;
     }
     let scratch = record["layrScratch"]
@@ -1405,31 +1436,13 @@ fn apply_vm_reviewer_permissions(
     }
 }
 
-/// The agent's provider can give an unready image workspace a writable temp root.
-fn writable_sandbox_roots(record: &Value) -> bool {
-    studio_runtime_providers::ProviderKind::of_record(record).is_ok_and(|kind| {
-        crate::provider_adapter::adapter(kind)
-            .capabilities()
-            .writable_sandbox_roots
-    })
-}
-
 fn monitor_command_settings(
     record: &Value,
     cwd: &str,
     role: thread::Role,
     yolo_mode: Option<bool>,
-    image_temp: Option<&str>,
 ) -> Result<Value, WorkerError> {
-    let permissions = if record["imageWorkspace"] == true && record["imageWorkspaceReady"] != true {
-        if !writable_sandbox_roots(record) {
-            json!({"approvalPolicy":"never","sandboxPolicy":{"type":"readOnly"}})
-        } else {
-            let temp = image_temp
-                .ok_or_else(|| refusal("monitor-preparation/image-temp-required".into()))?;
-            json!({"approvalPolicy":"never","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[temp],"networkAccess":false}})
-        }
-    } else if let Some(permissions) =
+    let permissions = if let Some(permissions) =
         vm_reviewer_permissions(record).filter(|_| role == thread::Role::Reviewer)
     {
         permissions
@@ -1474,65 +1487,6 @@ fn json_truthy(value: &Value) -> bool {
         Value::Array(value) => !value.is_empty(),
         Value::Object(value) => !value.is_empty(),
     }
-}
-
-fn ensure_image_workspace_temp(
-    store: &RuntimeStore,
-    agent_id: &str,
-) -> Result<String, WorkerError> {
-    let root = CanonicalPath::existing(store.root())
-        .map_err(|_| refusal("monitor-preparation/image-temp-root".into()))?;
-    let temp_root = root.join("image-workspace-temp");
-    ensure_private_directory(&temp_root)?;
-    if CanonicalPath::existing(&temp_root)
-        .ok()
-        .and_then(|path| path.parent().map(PathBuf::from))
-        .as_deref()
-        != Some(root.as_path())
-    {
-        return Err(refusal("monitor-preparation/image-temp-escape".into()));
-    }
-    let name = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, agent_id.as_bytes()).to_string();
-    let temp = temp_root.join(name);
-    ensure_private_directory(&temp)?;
-    let resolved_root = CanonicalPath::existing(&temp_root)
-        .map_err(|_| refusal("monitor-preparation/image-temp-root".into()))?;
-    let resolved = CanonicalPath::existing(&temp)
-        .map_err(|_| refusal("monitor-preparation/image-temp-directory".into()))?;
-    if resolved.parent() != Some(resolved_root.as_path()) {
-        return Err(refusal("monitor-preparation/image-temp-escape".into()));
-    }
-    Ok(resolved.to_string_lossy().into_owned())
-}
-
-fn ensure_private_directory(path: &std::path::Path) -> Result<(), WorkerError> {
-    use std::fs;
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-            return Err(refusal("monitor-preparation/image-temp-unsafe".into()));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if let Err(error) = fs::create_dir(path)
-                && error.kind() != std::io::ErrorKind::AlreadyExists
-            {
-                return Err(refusal("monitor-preparation/image-temp-create".into()));
-            }
-        }
-        Err(_) => return Err(refusal("monitor-preparation/image-temp-create".into())),
-    }
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|_| refusal("monitor-preparation/image-temp-create".into()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(refusal("monitor-preparation/image-temp-unsafe".into()));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .map_err(|_| refusal("monitor-preparation/image-temp-permissions".into()))?;
-    }
-    Ok(())
 }
 
 async fn prepare_native_snapshot(
@@ -1937,6 +1891,7 @@ pub(crate) async fn prepare_ready(
         intent.attempt_id,
         method.as_str()
     );
+    vm_attachment_paths(&store, &resources, intent, &mut turn_snapshot).await?;
     let (turn_snapshot, events, compiled) =
         compile_with_artifacts(&store, turn_snapshot, events).await?;
     guard.compiler_snapshot = Some(turn_snapshot.clone());
@@ -2056,6 +2011,7 @@ pub(crate) fn commit(
         current_submission.prepared_at = baseline.prepared_at;
         current_submission.operation_id = baseline.operation_id.clone();
         current_submission.artifact_paths = baseline.artifact_paths.clone();
+        current_submission.asset_paths = baseline.asset_paths.clone();
         let recompiled = stage("turn_submission.commit.compile", || {
             turn::compile(&current_submission, &current_events)
         })
@@ -2362,6 +2318,26 @@ mod daybreak_tests {
     }
 
     #[test]
+    fn native_reviewer_retry_turn_params_override_inherited_yolo() {
+        let mut snapshot = action_snapshot(false);
+        snapshot.settings.role = thread::Role::Reviewer;
+        snapshot.actor.cwd = "/private/review-scratch".into();
+        snapshot.guidance.thread_config.insert(
+            "shell_environment_policy.set.LAYR_ROOT".into(),
+            json!("/studio/store"),
+        );
+        let params = native_turn_params(&mut snapshot, &thread::TurnInput::default(), None)
+            .expect("fixture operation succeeds");
+        assert_eq!(
+            params["sandboxPolicy"],
+            json!({"type":"workspaceWrite","writableRoots":["/private/review-scratch"],"networkAccess":false})
+        );
+        assert_eq!(params["approvalPolicy"], "never");
+        let monitor=monitor_command_settings(&json!({"workspaceMode":"layr-native","role":"reviewer","layrScratch":snapshot.actor.cwd}),&snapshot.actor.cwd,thread::Role::Reviewer,Some(true)).expect("fixture operation succeeds");
+        assert_eq!(monitor["sandboxPolicy"], params["sandboxPolicy"]);
+    }
+
+    #[test]
     fn disabled_daybreak_uses_standard_for_fallback_model_without_catalog() {
         assert_eq!(
             resolve_daybreak_program(
@@ -2434,7 +2410,6 @@ mod daybreak_tests {
             "/workspace",
             thread::Role::Implementer,
             Some(true),
-            None,
         );
         assert_eq!(
             yolo.ok(),
@@ -2448,7 +2423,6 @@ mod daybreak_tests {
             "/workspace",
             thread::Role::Implementer,
             None,
-            None,
         );
         assert_eq!(profile.ok(), Some(json!({"permissionProfile":"strict"})));
 
@@ -2457,7 +2431,6 @@ mod daybreak_tests {
             "/workspace",
             thread::Role::Reviewer,
             Some(false),
-            None,
         );
         assert_eq!(
             reviewer.ok(),
@@ -2471,7 +2444,6 @@ mod daybreak_tests {
             "/workspace",
             thread::Role::Reviewer,
             Some(true),
-            None,
         );
         assert_eq!(
             vm_reviewer.ok(),
@@ -2502,6 +2474,17 @@ mod daybreak_tests {
             vm_reviewer_permissions(&json!({"executionMode":"vm","role":"implementer"})),
             None
         );
+    }
+
+    #[test]
+    fn native_layr_reviewer_model_cwd_is_scratch_for_codex_and_claude() {
+        for provider in ["codex", "claude"] {
+            let record = json!({"workspaceMode":"layr-native","executionMode":"native", "role":"reviewer", "provider":provider,"cwd":"/store/main","layrScratch":"/private/review-scratch"});
+            assert_eq!(
+                execution_cwd(&record, Path::new("/store/main")),
+                Some("/private/review-scratch".into())
+            );
+        }
     }
 
     #[test]

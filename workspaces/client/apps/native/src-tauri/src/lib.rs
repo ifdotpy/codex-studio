@@ -4,6 +4,10 @@ mod desktop_menu;
 #[cfg(desktop)]
 mod desktop_recovery;
 mod frame_assets;
+mod ios_insets;
+mod ios_server;
+#[cfg(target_os = "ios")]
+mod ios_shell;
 mod local_backend;
 #[cfg(feature = "native-check")]
 mod native_check;
@@ -27,6 +31,39 @@ struct Clients {
     remote: Mutex<Option<Arc<studio_client_core::server_transport::RemoteClient>>>,
     backend_verified: Mutex<bool>,
     workspace: Mutex<Option<String>>,
+}
+
+struct Resources {
+    directory: std::path::PathBuf,
+    workspace: std::path::PathBuf,
+}
+
+// Resolve paths before creating the window, and retain failures for every caller.
+struct StartupResources(Result<Resources, String>);
+
+fn startup_resources(app: &tauri::App) -> Result<Resources, String> {
+    #[cfg(target_os = "macos")]
+    let directory = {
+        // Tauri caches a rejected symlink path before main. Resolve the actual
+        // executable instead of consulting that cached resource lookup.
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("Cannot locate the application executable: {error}"))?;
+        let _ = app;
+        local_backend::bundle_resource_dir(&executable)?
+    };
+    #[cfg(not(target_os = "macos"))]
+    let directory = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("Cannot locate the application resources: {error}"))?;
+    #[cfg(all(not(target_os = "macos"), desktop))]
+    let directory = std::fs::canonicalize(directory)
+        .map_err(|error| format!("Cannot resolve the application resources: {error}"))?;
+    let workspace = local_backend::workspace_resources(&directory)?;
+    Ok(Resources {
+        directory,
+        workspace,
+    })
 }
 
 // Held for the entire host lifetime, including before local client creation.
@@ -73,9 +110,85 @@ fn trusted(window: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+/// Discard renderer provenance before deciding which native authority is required.
+fn native_action_needs_gesture(request: &mut Request, window: &str) -> Result<bool, String> {
+    if !request.method.starts_with("desktop.") {
+        return Ok(false);
+    }
+    let params = request
+        .params
+        .as_object_mut()
+        .ok_or("Invalid native action parameters.")?;
+    params.remove("permit");
+    params.remove("_nativeWindow");
+    if matches!(
+        request.method.as_str(),
+        studio_client_core::desktop::SIGN_IN_PREPARE_METHOD
+            | studio_client_core::desktop::SIGN_IN_OPEN_METHOD
+            | studio_client_core::desktop::SIGN_IN_CANCEL_METHOD
+    ) {
+        params.insert("_nativeWindow".into(), window.into());
+    }
+    let prepared_sign_in = request.method == studio_client_core::desktop::SIGN_IN_OPEN_METHOD
+        && params
+            .get("value")
+            .is_some_and(|value| value.get("preparation").is_some());
+    Ok(!prepared_sign_in
+        && matches!(
+            request.method.as_str(),
+            "desktop.fileAction"
+                | "desktop.revealPath"
+                | "desktop.showVaultKeys"
+                | "desktop.requestMicrophone"
+                | "desktop.prepareTranscription"
+                | "desktop.cancelTranscription"
+                | "desktop.saveBegin"
+                | "desktop.pickDirectory"
+                | "desktop.pickAttachments"
+                | "desktop.openExternal"
+                | studio_client_core::desktop::SIGN_IN_OPEN_METHOD
+                | studio_client_core::desktop::SIGN_IN_PREPARE_METHOD
+        ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::packaged_shell;
+    #[test]
+    fn sign_in_host_replaces_renderer_authority_and_keeps_preparation_private() {
+        use studio_client_core::protocol::Request;
+        let mut request = Request {
+            id: "native-sign-in".into(),
+            method: studio_client_core::desktop::SIGN_IN_PREPARE_METHOD.into(),
+            params: serde_json::json!({"permit":42,"_nativeWindow":"forged","value":{"url":"https://example.com", "requestId":"card"}}),
+        };
+        assert!(super::native_action_needs_gesture(&mut request, "main").unwrap());
+        assert!(request.params.get("permit").is_none());
+        assert_eq!(request.params["_nativeWindow"], "main");
+        request.method = studio_client_core::desktop::SIGN_IN_OPEN_METHOD.into();
+        assert!(super::native_action_needs_gesture(&mut request, "main").unwrap());
+        request.params["permit"] = 77.into();
+        request.params["value"]["preparation"] = "forged".into();
+        assert!(!super::native_action_needs_gesture(&mut request, "main").unwrap());
+        assert!(request.params.get("permit").is_none());
+        request.params["value"]["preparation"] = serde_json::Value::Null;
+        assert!(!super::native_action_needs_gesture(&mut request, "main").unwrap());
+        request.method = studio_client_core::desktop::SIGN_IN_CANCEL_METHOD.into();
+        assert!(!super::native_action_needs_gesture(&mut request, "main").unwrap());
+        request.method = "desktop.openExternal".into();
+        assert!(super::native_action_needs_gesture(&mut request, "main").unwrap());
+        assert!(request.params.get("_nativeWindow").is_none());
+    }
+    #[test]
+    fn native_sse_flow_control_reaches_the_existing_client_service() {
+        for method in ["view.subscribe", "view.next", "view.unsubscribe"] {
+            assert!(super::connected_view_method(method), "{method}");
+        }
+        for method in ["view.reset", "view.next.other", "views.next", "api.delete"] {
+            assert!(!super::connected_view_method(method), "{method}");
+        }
+    }
+
     #[test]
     fn drafts_require_a_verified_matching_workspace() {
         let params = serde_json::json!({"workspace":"workspace"});
@@ -170,6 +283,10 @@ fn approved_peer(
     Ok(peer.clone())
 }
 
+fn connected_view_method(method: &str) -> bool {
+    matches!(method, "view.subscribe" | "view.next" | "view.unsubscribe")
+}
+
 #[tauri::command]
 async fn client_request(
     window: WebviewWindow,
@@ -179,6 +296,8 @@ async fn client_request(
     #[cfg(feature = "native-check")]
     eprintln!("Hidden native command: {}", request.method);
     trusted(&window)?;
+    let resources = window.app_handle().state::<StartupResources>();
+    let resources = resources.0.as_ref().map_err(Clone::clone)?;
     if request.method.starts_with("servers.") {
         #[cfg(not(target_os = "macos"))]
         return Err("The native server key store is unavailable on this platform.".into());
@@ -265,7 +384,9 @@ async fn client_request(
                         .map_err(|e| e.to_string())?
                         .to_string_lossy()
                         .into_owned();
-                    let vault = studio_client_core::server_keys::KeychainVault { account };
+                    let vault = studio_client_core::server_keys::FileVault::new(&directory);
+                    #[cfg(target_os = "macos")]
+                    studio_client_core::server_keys::move_keychain_keys(&vault, &account)?;
                     *remote = Some(Arc::new(
                         studio_client_core::server_transport::RemoteClient::new(Arc::new(vault))?,
                     ));
@@ -328,7 +449,9 @@ async fn client_request(
             | "drafts.dismiss"
             | "drafts.refresh"
             | "desktop.openExternal"
-            | "desktop.openSignIn"
+            | studio_client_core::desktop::SIGN_IN_OPEN_METHOD
+            | studio_client_core::desktop::SIGN_IN_PREPARE_METHOD
+            | studio_client_core::desktop::SIGN_IN_CANCEL_METHOD
             | "desktop.pickDirectory"
             | "desktop.pickAttachments"
             | "desktop.fileAction"
@@ -353,9 +476,8 @@ async fn client_request(
             | "desktop.saveFinish"
             | "desktop.saveCancel"
             | "api.request"
-            | "view.subscribe"
-            | "view.unsubscribe"
-    ) {
+    ) && !connected_view_method(&request.method)
+    {
         return Err("This client service is not connected yet.".into());
     }
     if request.method == "view.subscribe"
@@ -366,26 +488,44 @@ async fn client_request(
     {
         return Err("This native subscription topic is unavailable.".into());
     }
-    if matches!(
-        request.method.as_str(),
-        "desktop.fileAction"
-            | "desktop.revealPath"
-            | "desktop.showVaultKeys"
-            | "desktop.requestMicrophone"
-            | "desktop.prepareTranscription"
-            | "desktop.cancelTranscription"
-            | "desktop.saveBegin"
-            | "desktop.pickDirectory"
-            | "desktop.pickAttachments"
-            | "desktop.openExternal"
-            | "desktop.openSignIn"
-    ) {
-        // Renderer-supplied permits never cross the privilege boundary.
+    let needs_gesture = native_action_needs_gesture(&mut request, window.label())?;
+    if request.method == studio_client_core::desktop::SIGN_IN_PREPARE_METHOD {
+        let mut params = request.params.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let requesting_window = window.clone();
+        window
+            .run_on_main_thread(move || {
+                let permit = if requesting_window.is_focused().unwrap_or(false) {
+                    studio_client_core::desktop::gesture_for_method(
+                        studio_client_core::desktop::SIGN_IN_PREPARE_METHOD,
+                    )
+                } else {
+                    0
+                };
+                params["permit"] = permit.into();
+                let result = studio_client_core::desktop::prepare_sign_in_intent(&params);
+                // The caller may have stopped waiting; its result then has no reader.
+                send.send(result).ok();
+            })
+            .map_err(|error| error.to_string())?;
+        return Ok(
+            match receive
+                .await
+                .map_err(|_| "The native action was cancelled.")?
+            {
+                Ok(preparation) => Response::success(request.id, preparation),
+                Err(error) => Response::failure(request.id, "desktop_action", error),
+            },
+        );
+    }
+    if request.method == studio_client_core::desktop::SIGN_IN_CANCEL_METHOD {
+        return Ok(studio_client_core::desktop::dispatch(request, None, None, None).await);
+    }
+    if needs_gesture {
         let params = request
             .params
             .as_object_mut()
             .ok_or("Invalid native action parameters.")?;
-        params.remove("permit");
         let (send, receive) = tokio::sync::oneshot::channel();
         let method = request.method.clone();
         window
@@ -407,7 +547,7 @@ async fn client_request(
     if matches!(
         request.method.as_str(),
         "api.request" | "sync.open" | "drafts.refresh" | "desktop.fileAction"
-    ) || (request.method == "desktop.openSignIn"
+    ) || (request.method == studio_client_core::desktop::SIGN_IN_OPEN_METHOD
         && request.params["value"].get("forward").is_some())
         || (request.method == "view.subscribe" && request.params["topic"] == "sse")
     {
@@ -419,26 +559,10 @@ async fn client_request(
         }
         let mut verified = state.backend_verified.lock().await;
         if !*verified {
-            let resources = window
-                .app_handle()
-                .path()
-                .resource_dir()
-                .map_err(|error| error.to_string())?
-                .join("workspace");
-            #[cfg(debug_assertions)]
-            let resources = if resources.join("bin/studio-runtime-server").is_file() {
-                resources
-            } else {
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .ancestors()
-                    .nth(5)
-                    .ok_or("Cannot locate development resources.")?
-                    .to_path_buf()
-            };
             let allow_start = true;
             #[cfg(feature = "native-check")]
             let allow_start = allow_start && native_check::directory().is_none();
-            local_backend::verify(&origin, &resources, allow_start).await?;
+            local_backend::verify(&origin, &resources.workspace, allow_start).await?;
             *verified = true;
         }
     }
@@ -510,7 +634,15 @@ fn context() -> tauri::Context<tauri::Wry> {
 pub fn run() {
     #[cfg(feature = "native-check")]
     eprintln!("Hidden native check: starting host");
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "ios")]
+    let builder = {
+        let token = ios_shell::start_token();
+        builder.register_uri_scheme_protocol(ios_shell::START_SCHEME, move |ctx, request| {
+            ios_shell::start_page(ctx, request, &token)
+        })
+    };
+    builder
         .register_uri_scheme_protocol("studio-view", frame_assets::respond)
         .manage(Clients::default())
         .manage(close::CloseState::default())
@@ -528,6 +660,10 @@ pub fn run() {
                 }
         })
         .on_page_load(|window, payload| {
+            #[cfg(target_os = "ios")]
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                ios_shell::page_loaded(window, payload.url());
+            }
             #[cfg(feature = "native-check")]
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
                 native_check::loaded(window);
@@ -536,6 +672,12 @@ pub fn run() {
             let _ = (window, payload);
         })
         .setup(|app| {
+            let resources = startup_resources(app);
+            let startup_error = resources.as_ref().err().cloned();
+            if let Some(error) = &startup_error {
+                eprintln!("The application could not start: {error}");
+            }
+            app.manage(StartupResources(resources));
             let hidden = std::env::args().any(|argument| argument == "--hidden");
             #[cfg(feature = "native-check")]
             let hidden = native_check::setup(app)? || hidden;
@@ -545,6 +687,7 @@ pub fn run() {
             #[cfg(feature = "native-check")]
             let directory = native_check::directory().unwrap_or(directory);
             app.manage(lock_profile(&directory)?);
+            studio_client_core::stream_log::start(&directory);
             #[cfg(desktop)]
             desktop_menu::install(app)?;
             #[cfg(all(desktop, unix))]
@@ -570,18 +713,51 @@ pub fn run() {
                     }
                 }
             });
-            let window = tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::App("index.html".into()),
-            )
+            // iOS loads the web client from the user's server, or the
+            // first-launch page that saves that server.
+            #[cfg(target_os = "ios")]
+            let server = ios_shell::server_url(app);
+            #[cfg(target_os = "ios")]
+            let url = match server.clone() {
+                Some(url) => tauri::WebviewUrl::External(url),
+                None => tauri::WebviewUrl::CustomProtocol(
+                    format!("{}://localhost/", ios_shell::START_SCHEME).parse()?,
+                ),
+            };
+            #[cfg(not(target_os = "ios"))]
+            let url = tauri::WebviewUrl::App("index.html".into());
+            let window = tauri::WebviewWindowBuilder::new(app, "main", url)
             .title("LAYR Studio")
             // The renderer owns sidebar/queue reordering and file attachments.
             // Tauri's native handler consumes drops before HTML5 can receive them.
             .disable_drag_drop_handler()
-            .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
-            .inner_size(1200.0, 800.0)
+            .on_new_window(|_url, _| {
+                #[cfg(target_os = "ios")]
+                ios_shell::open_external(&_url);
+                tauri::webview::NewWindowResponse::Deny
+            })
             .visible(!hidden);
+            let window = if let Some(error) = startup_error {
+                let message = serde_json::to_string(&format!(
+                    "The application could not start. {error}"
+                ))?;
+                window.initialization_script(format!(
+                    r#"addEventListener('DOMContentLoaded', () => {{
+                        const message = document.createElement('div');
+                        message.role = 'alert';
+                        message.style.cssText = 'position:fixed;inset:0;z-index:2147483647;padding:24px;background:#7f1d1d;color:white;white-space:pre-wrap';
+                        message.textContent = {message};
+                        document.body.append(message);
+                    }}, {{ once: true }});"#
+                ))
+            } else {
+                window
+            };
+            // iOS sizes the web view to its window; see ios_shell::configure.
+            #[cfg(desktop)]
+            let window = window.inner_size(1200.0, 800.0);
+            #[cfg(target_os = "ios")]
+            let window = window.initialization_script(include_str!("ios_viewport.js"));
             // Explicit test profiles never reuse the installed WebKit data store.
             let ephemeral = std::env::var("CODEX_DESKTOP_EPHEMERAL_PROFILE").as_deref() == Ok("1");
             if ephemeral && std::env::var_os("CODEX_DESKTOP_PROFILE").is_none() {
@@ -636,6 +812,13 @@ pub fn run() {
             #[cfg(desktop)]
             let window = window.focused(!hidden);
             let window = window.build()?;
+            #[cfg(target_os = "ios")]
+            {
+                ios_shell::configure(&window);
+                if server.is_some() {
+                    ios_shell::watch_first_load(&window);
+                }
+            }
             #[cfg(desktop)]
             window_state::install(&window, &directory, hidden)?;
             Ok(())
@@ -686,9 +869,9 @@ pub fn import_server_credentials() -> Result<(), String> {
         }
         let source =
             serde_json::from_slice(&bytes).map_err(|_| "Invalid server credential archive.")?;
-        let vault = studio_client_core::server_keys::KeychainVault {
-            account: directory.to_string_lossy().into_owned(),
-        };
+        let vault = studio_client_core::server_keys::FileVault::new(&directory);
+        #[cfg(target_os = "macos")]
+        studio_client_core::server_keys::move_keychain_keys(&vault, &directory.to_string_lossy())?;
         studio_client_core::server_keys::import(&vault, &source)?;
         println!("Server credentials imported.");
         Ok(())

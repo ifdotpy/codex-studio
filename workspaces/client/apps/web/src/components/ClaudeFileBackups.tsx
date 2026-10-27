@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { Button } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { errorText, type PostResult } from "../api";
@@ -21,7 +22,7 @@ export default function ClaudeFileBackups({
     post("/api/claude/file-backups", {
       id: agentId,
       release: false,
-      request_id: crypto.randomUUID(),
+      request_id: randomUUID(),
     })
       .then((value) => {
         if (current) setUsage(value);
@@ -49,7 +50,7 @@ export default function ClaudeFileBackups({
         disabled={busy || !usage}
         onClick={async () => {
           setBusy(true);
-          requestId.current ||= crypto.randomUUID();
+          requestId.current ||= randomUUID();
           try {
             const value = await post("/api/claude/file-backups", {
               id: agentId,

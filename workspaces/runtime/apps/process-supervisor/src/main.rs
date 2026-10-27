@@ -17,6 +17,9 @@ fn main() -> std::process::ExitCode {
         eprintln!("--state is required");
         return std::process::ExitCode::FAILURE;
     };
+    // The supervisor owns the native provider processes; they inherit this limit.
+    #[cfg(unix)]
+    studio_runtime_process::open_files::raise_open_file_limit();
     #[cfg(unix)]
     match studio_runtime_process::supervisor_daemon::serve(&state, wait) {
         Ok(()) => std::process::ExitCode::SUCCESS,

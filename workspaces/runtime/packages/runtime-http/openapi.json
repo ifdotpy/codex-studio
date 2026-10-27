@@ -3922,116 +3922,6 @@
             "title": "Id",
             "type": "string"
           },
-          "imageWorkspace": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Imageworkspace"
-          },
-          "imageWorkspaceBaseRef": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacebaseref"
-          },
-          "imageWorkspaceBaseRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacebaserepo"
-          },
-          "imageWorkspaceCreatedAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Imageworkspacecreatedat"
-          },
-          "imageWorkspaceError": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspaceerror"
-          },
-          "imageWorkspaceHasGit": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Imageworkspacehasgit"
-          },
-          "imageWorkspacePhase": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacephase"
-          },
-          "imageWorkspaceReady": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Imageworkspaceready"
-          },
-          "imageWorkspaceRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacerepo"
-          },
-          "imageWorkspaceSubpath": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacesubpath"
-          },
           "lastAnswer": {
             "anyOf": [
               {
@@ -5201,116 +5091,6 @@
             "title": "Id",
             "type": "string"
           },
-          "imageWorkspace": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Imageworkspace"
-          },
-          "imageWorkspaceBaseRef": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacebaseref"
-          },
-          "imageWorkspaceBaseRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacebaserepo"
-          },
-          "imageWorkspaceCreatedAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Imageworkspacecreatedat"
-          },
-          "imageWorkspaceError": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspaceerror"
-          },
-          "imageWorkspaceHasGit": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Imageworkspacehasgit"
-          },
-          "imageWorkspacePhase": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacephase"
-          },
-          "imageWorkspaceReady": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Imageworkspaceready"
-          },
-          "imageWorkspaceRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacerepo"
-          },
-          "imageWorkspaceSubpath": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacesubpath"
-          },
           "inFlight": {
             "anyOf": [
               {
@@ -6033,19 +5813,6 @@
               }
             ],
             "title": "Threadid"
-          },
-          "tokensUsed": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tokensused"
           },
           "turnId": {
             "anyOf": [
@@ -6782,11 +6549,6 @@
             "$ref": "#/components/schemas/BudgetWaitRecordResponse",
             "default": null
           },
-          "budgetBlocked": {
-            "default": null,
-            "title": "Budgetblocked",
-            "type": "string"
-          },
           "budgetStartWait": {
             "$ref": "#/components/schemas/BudgetWaitRecordResponse",
             "default": null
@@ -6833,10 +6595,6 @@
           },
           "claudePreInputRetry": {
             "$ref": "#/components/schemas/ClaudePreInputRetryRecordResponse",
-            "default": null
-          },
-          "cleanedImageWorkspace": {
-            "$ref": "#/components/schemas/CleanedImageWorkspaceRecordResponse",
             "default": null
           },
           "cleanedWorktree": {
@@ -7105,214 +6863,6 @@
           "id": {
             "title": "Id",
             "type": "string"
-          },
-          "imageWorkspace": {
-            "default": null,
-            "title": "Imageworkspace",
-            "type": "boolean"
-          },
-          "imageWorkspaceBaseError": {
-            "default": null,
-            "title": "Imageworkspacebaseerror",
-            "type": "string"
-          },
-          "imageWorkspaceBaseRef": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacebaseref"
-          },
-          "imageWorkspaceBaseRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacebaserepo"
-          },
-          "imageWorkspaceCleanupResult": {
-            "$ref": "#/components/schemas/ImageWorkspaceCleanupResultRecordResponse",
-            "default": null
-          },
-          "imageWorkspaceCleanupRetry": {
-            "$ref": "#/components/schemas/ImageWorkspaceCleanupRetryRecordResponse",
-            "default": null
-          },
-          "imageWorkspaceCollect": {
-            "$ref": "#/components/schemas/ImageWorkspaceCollectResultRecordResponse",
-            "default": null
-          },
-          "imageWorkspaceCreatedAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacecreatedat"
-          },
-          "imageWorkspaceError": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspaceerror"
-          },
-          "imageWorkspaceHandoffText": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacehandofftext"
-          },
-          "imageWorkspaceHasGit": {
-            "default": null,
-            "title": "Imageworkspacehasgit",
-            "type": "boolean"
-          },
-          "imageWorkspaceMount": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacemount"
-          },
-          "imageWorkspaceNoticeError": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacenoticeerror"
-          },
-          "imageWorkspaceNoticeId": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacenoticeid"
-          },
-          "imageWorkspaceNoticeSent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacenoticesent"
-          },
-          "imageWorkspaceNoticeText": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacenoticetext"
-          },
-          "imageWorkspacePhase": {
-            "anyOf": [
-              {
-                "enum": [
-                  "read_only",
-                  "ready",
-                  "fallback",
-                  "archiving",
-                  "archived",
-                  "removed"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacephase"
-          },
-          "imageWorkspaceReady": {
-            "default": null,
-            "title": "Imageworkspaceready",
-            "type": "boolean"
-          },
-          "imageWorkspaceRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacerepo"
-          },
-          "imageWorkspaceSnapshotCommit": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacesnapshotcommit"
-          },
-          "imageWorkspaceSubpath": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacesubpath"
           },
           "importedFrom": {
             "default": null,
@@ -8087,32 +7637,6 @@
             "default": null,
             "title": "Threadid"
           },
-          "tokenBudget": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tokenbudget"
-          },
-          "tokenUsageAccounting": {
-            "default": null,
-            "title": "Tokenusageaccounting",
-            "type": "string"
-          },
-          "tokensUsed": {
-            "default": null,
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Tokensused",
-            "type": "integer"
-          },
           "turnEpoch": {
             "default": null,
             "maximum": 9007199254740991,
@@ -8243,7 +7767,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Workspacemode"
           },
           "workspaceModeExplicit": {
@@ -8972,126 +8495,6 @@
           "id": {
             "title": "Id",
             "type": "string"
-          },
-          "imageWorkspace": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspace"
-          },
-          "imageWorkspaceBaseRef": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacebaseref"
-          },
-          "imageWorkspaceBaseRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacebaserepo"
-          },
-          "imageWorkspaceCreatedAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacecreatedat"
-          },
-          "imageWorkspaceError": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspaceerror"
-          },
-          "imageWorkspaceHasGit": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacehasgit"
-          },
-          "imageWorkspacePhase": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacephase"
-          },
-          "imageWorkspaceReady": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspaceready"
-          },
-          "imageWorkspaceRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacerepo"
-          },
-          "imageWorkspaceSubpath": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacesubpath"
           },
           "inFlight": {
             "anyOf": [
@@ -9879,20 +9282,6 @@
             "default": null,
             "title": "Threadid"
           },
-          "tokensUsed": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tokensused"
-          },
           "turnId": {
             "anyOf": [
               {
@@ -10000,7 +9389,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Workspacemode"
           },
           "workspaceOperation": {
@@ -16383,6 +15771,29 @@
         "title": "AutoPairRequest",
         "type": "object"
       },
+      "BackgroundShellPolicySettings": {
+        "additionalProperties": false,
+        "properties": {
+          "pressureCleanup": {
+            "default": true,
+            "description": "Stop background shells after 30 idle minutes under critical memory pressure, with no active turn or delegates.",
+            "type": "boolean"
+          },
+          "quietThresholdMs": {
+            "default": 0,
+            "description": "Milliseconds without shell output before one check-in. Use 0 to disable, or at least 10000.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "quietThresholdMs",
+          "pressureCleanup"
+        ],
+        "title": "BackgroundShellPolicySettings",
+        "type": "object"
+      },
       "BlockingPoolGroupMetrics": {
         "additionalProperties": false,
         "properties": {
@@ -17010,126 +16421,6 @@
           "id": {
             "title": "Id",
             "type": "string"
-          },
-          "imageWorkspace": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspace"
-          },
-          "imageWorkspaceBaseRef": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacebaseref"
-          },
-          "imageWorkspaceBaseRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacebaserepo"
-          },
-          "imageWorkspaceCreatedAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacecreatedat"
-          },
-          "imageWorkspaceError": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspaceerror"
-          },
-          "imageWorkspaceHasGit": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacehasgit"
-          },
-          "imageWorkspacePhase": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacephase"
-          },
-          "imageWorkspaceReady": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspaceready"
-          },
-          "imageWorkspaceRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacerepo"
-          },
-          "imageWorkspaceSubpath": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacesubpath"
           },
           "inFlight": {
             "anyOf": [
@@ -17917,20 +17208,6 @@
             "default": null,
             "title": "Threadid"
           },
-          "tokensUsed": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tokensused"
-          },
           "turnId": {
             "anyOf": [
               {
@@ -18038,7 +17315,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Workspacemode"
           },
           "workspaceOperation": {
@@ -20274,6 +19550,138 @@
         "title": "ClaudeDeliveryResponse",
         "type": "object"
       },
+      "ClaudeFailure": {
+        "additionalProperties": false,
+        "description": "Bounded Claude cause metadata. No message text, headers, credential values, or raw error_details. Token counts use tokens.",
+        "properties": {
+          "apiError": {
+            "enum": [
+              "max_output_tokens",
+              "dlp_request_denied",
+              "claude_code_version_too_old",
+              "safety_monitor_blocked",
+              "effort_requires_thinking",
+              "advisor_incompatible",
+              "tool_history_mismatch",
+              "autocompact_thrashing",
+              "pdf_too_large",
+              "pdf_password_protected",
+              "media_removed",
+              "no_response",
+              "tls_untrusted_ca",
+              "gateway_content_type",
+              "provider_credentials",
+              "gateway_signin_required",
+              "gateway_session_expired",
+              "api_key_auth_disabled",
+              "org_disabled_credential",
+              "invalid_credential_header",
+              "model_requires_usage_credits",
+              "long_context_credits_required",
+              "consent_unanswered",
+              "no_allowed_fallback",
+              "model_substitution_disabled",
+              "field_not_granted",
+              "usage_limit_reached"
+            ],
+            "type": "string"
+          },
+          "apiErrorCode": {
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "type": "string"
+          },
+          "apiErrorOrigin": {
+            "enum": [
+              "first_party"
+            ],
+            "type": "string"
+          },
+          "apiErrorStatus": {
+            "maximum": 599,
+            "minimum": 100,
+            "type": "integer"
+          },
+          "effort": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "max",
+              "xhigh"
+            ],
+            "type": "string"
+          },
+          "error": {
+            "enum": [
+              "authentication_failed",
+              "oauth_org_not_allowed",
+              "account_on_hold",
+              "verification_required",
+              "billing_error",
+              "rate_limit",
+              "overloaded",
+              "invalid_request",
+              "model_not_found",
+              "server_error",
+              "unknown",
+              "max_output_tokens",
+              "cloud_credential_error"
+            ],
+            "type": "string"
+          },
+          "maxContextTokens": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "media": {
+            "enum": [
+              "image",
+              "document"
+            ],
+            "type": "string"
+          },
+          "mediaReason": {
+            "enum": [
+              "unprocessable",
+              "unsupported_by_model",
+              "media_budget"
+            ],
+            "type": "string"
+          },
+          "promptTokens": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "provider": {
+            "enum": [
+              "bedrock",
+              "anthropicAws",
+              "mantle",
+              "anthropicGoogleCloud",
+              "vertex",
+              "foundry",
+              "gateway"
+            ],
+            "type": "string"
+          },
+          "remedy": {
+            "enum": [
+              "refresh_command",
+              "refresh_credentials",
+              "adc",
+              "gateway_token",
+              "host_managed",
+              "model_access"
+            ],
+            "type": "string"
+          }
+        },
+        "title": "ClaudeFailure",
+        "type": "object"
+      },
       "ClaudeFileBackupsRequest": {
         "additionalProperties": false,
         "properties": {
@@ -20886,6 +20294,10 @@
             "default": null,
             "title": "Launchargs"
           },
+          "mcpAutoBackground": {
+            "description": "Move eligible MCP calls to the background after 120 seconds. The default is on.",
+            "type": "boolean"
+          },
           "permissionMode": {
             "anyOf": [
               {
@@ -21101,6 +20513,10 @@
               "null"
             ]
           },
+          "mcpAutoBackground": {
+            "description": "Native MCP calls move to the background after the shared wait; absent keeps the default.",
+            "type": "boolean"
+          },
           "permissionMode": {
             "description": "Claude session permission modes accepted by settings and child creation.",
             "enum": [
@@ -21202,121 +20618,6 @@
           "text"
         ],
         "title": "ClaudeTurn",
-        "type": "object"
-      },
-      "CleanedImageWorkspaceRecordResponse": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "properties": {
-          "branch": {
-            "default": null,
-            "title": "Branch",
-            "type": "string"
-          },
-          "bytes": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Bytes"
-          },
-          "collect": {
-            "$ref": "#/components/schemas/ImageWorkspaceCollectResultRecordResponse",
-            "default": null
-          },
-          "createdAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "default": null,
-            "title": "Createdat"
-          },
-          "freedBytes": {
-            "default": null,
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Freedbytes",
-            "type": "integer"
-          },
-          "head": {
-            "default": null,
-            "title": "Head",
-            "type": "string"
-          },
-          "mount": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Mount"
-          },
-          "path": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Path"
-          },
-          "phase": {
-            "default": null,
-            "title": "Phase",
-            "type": "string"
-          },
-          "relative": {
-            "default": null,
-            "title": "Relative",
-            "type": "string"
-          },
-          "repo": {
-            "default": null,
-            "title": "Repo",
-            "type": "string"
-          },
-          "restoreHeads": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "default": null,
-            "title": "Restoreheads",
-            "type": "object"
-          },
-          "source": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Source"
-          }
-        },
-        "title": "CleanedImageWorkspaceRecordResponse",
         "type": "object"
       },
       "CodexLoginReceipt": {
@@ -22233,21 +21534,6 @@
             ],
             "default": null,
             "title": "Request Id"
-          },
-          "tokenBudget": {
-            "anyOf": [
-              {
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tokenbudget"
           }
         },
         "required": [
@@ -22283,20 +21569,6 @@
             "minimum": 0,
             "title": "Maxagents",
             "type": "integer"
-          },
-          "tokenBudget": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tokenbudget"
           }
         },
         "required": [
@@ -23624,21 +22896,6 @@
             "$ref": "#/components/schemas/AgentRole-Input",
             "default": "orchestrator"
           },
-          "tokenBudget": {
-            "anyOf": [
-              {
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tokenbudget"
-          },
           "worker_defaults": {
             "anyOf": [
               {
@@ -23651,9 +22908,15 @@
             "default": null
           },
           "workspaceMode": {
-            "$ref": "#/components/schemas/WorkspaceMode",
             "default": "worktree",
-            "title": "Workspacemode"
+            "enum": [
+              "layr-native",
+              "layr",
+              "worktree",
+              "shared"
+            ],
+            "title": "Workspacemode",
+            "type": "string"
           },
           "yolo_mode": {
             "default": true,
@@ -23932,10 +23195,10 @@
             "default": null
           },
           "workspaceMode": {
-            "default": "worktree",
+            "description": "When omitted, the server selects native Layr on macOS, or on Linux when the native capability is ready; otherwise it selects worktree.",
             "enum": [
+              "layr-native",
               "layr",
-              "image",
               "worktree"
             ],
             "title": "Workspacemode",
@@ -24735,17 +23998,6 @@
           },
           "httpRequestMetrics": {
             "$ref": "#/components/schemas/HttpRequestMetrics"
-          },
-          "imageMounts": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ImageMountDiagnostics"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
           },
           "migrations": {
             "$ref": "#/components/schemas/MigrationStatus"
@@ -28376,254 +27628,6 @@
         ],
         "type": "object"
       },
-      "ImageMountDiagnostics": {
-        "additionalProperties": false,
-        "description": "Startup image workspace mount check. Paths and details stay in `mounts check`.",
-        "properties": {
-          "checkedAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Checkedat"
-          },
-          "problems": {
-            "items": {
-              "$ref": "#/components/schemas/ImageMountProblem"
-            },
-            "title": "Problems",
-            "type": "array"
-          },
-          "state": {
-            "enum": [
-              "pending",
-              "checked",
-              "failed",
-              "unsupported"
-            ],
-            "title": "State",
-            "type": "string"
-          },
-          "strayAttachments": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Strayattachments",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "state",
-          "checkedAt",
-          "problems",
-          "strayAttachments"
-        ],
-        "title": "ImageMountDiagnostics",
-        "type": "object"
-      },
-      "ImageMountProblem": {
-        "additionalProperties": false,
-        "properties": {
-          "agentId": {
-            "title": "Agentid",
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "plain-folder",
-              "foreign-volume",
-              "image-replaced",
-              "attached-elsewhere",
-              "image-missing"
-            ],
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "agentId",
-          "status"
-        ],
-        "title": "ImageMountProblem",
-        "type": "object"
-      },
-      "ImageWorkspaceCleanupResultRecordResponse": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "properties": {
-          "bytes": {
-            "default": null,
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Bytes",
-            "type": "integer"
-          },
-          "collect": {
-            "$ref": "#/components/schemas/ImageWorkspaceCollectResultRecordResponse",
-            "default": null
-          },
-          "freedBytes": {
-            "default": null,
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Freedbytes",
-            "type": "integer"
-          },
-          "reason": {
-            "default": null,
-            "title": "Reason",
-            "type": "string"
-          },
-          "restoreHeads": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "default": null,
-            "title": "Restoreheads",
-            "type": "object"
-          },
-          "state": {
-            "default": null,
-            "title": "State",
-            "type": "string"
-          }
-        },
-        "title": "ImageWorkspaceCleanupResultRecordResponse",
-        "type": "object"
-      },
-      "ImageWorkspaceCleanupRetryRecordResponse": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "properties": {
-          "at": {
-            "title": "At",
-            "type": "number"
-          },
-          "attempts": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Attempts",
-            "type": "integer"
-          },
-          "error": {
-            "title": "Error",
-            "type": "string"
-          },
-          "nextAt": {
-            "title": "Nextat",
-            "type": "number"
-          }
-        },
-        "required": [
-          "attempts",
-          "at",
-          "nextAt",
-          "error"
-        ],
-        "title": "ImageWorkspaceCleanupRetryRecordResponse",
-        "type": "object"
-      },
-      "ImageWorkspaceCollectRepositoryRecordResponse": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "properties": {
-          "branch": {
-            "default": null,
-            "title": "Branch",
-            "type": "string"
-          },
-          "commit": {
-            "default": null,
-            "title": "Commit",
-            "type": "string"
-          },
-          "head": {
-            "default": null,
-            "title": "Head",
-            "type": "string"
-          },
-          "path": {
-            "title": "Path",
-            "type": "string"
-          },
-          "rawRef": {
-            "default": null,
-            "title": "Rawref",
-            "type": "string"
-          },
-          "state": {
-            "default": null,
-            "title": "State",
-            "type": "string"
-          }
-        },
-        "required": [
-          "path"
-        ],
-        "title": "ImageWorkspaceCollectRepositoryRecordResponse",
-        "type": "object"
-      },
-      "ImageWorkspaceCollectResultRecordResponse": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "properties": {
-          "branch": {
-            "default": null,
-            "title": "Branch",
-            "type": "string"
-          },
-          "commit": {
-            "default": null,
-            "title": "Commit",
-            "type": "string"
-          },
-          "conflict": {
-            "default": null,
-            "title": "Conflict",
-            "type": "string"
-          },
-          "conflicts": {
-            "default": null,
-            "items": {
-              "$ref": "#/components/schemas/JsonValue"
-            },
-            "title": "Conflicts",
-            "type": "array"
-          },
-          "path": {
-            "default": null,
-            "title": "Path",
-            "type": "string"
-          },
-          "rawRef": {
-            "default": null,
-            "title": "Rawref",
-            "type": "string"
-          },
-          "repositories": {
-            "default": null,
-            "items": {
-              "$ref": "#/components/schemas/ImageWorkspaceCollectRepositoryRecordResponse"
-            },
-            "title": "Repositories",
-            "type": "array"
-          },
-          "state": {
-            "default": null,
-            "title": "State",
-            "type": "string"
-          }
-        },
-        "title": "ImageWorkspaceCollectResultRecordResponse",
-        "type": "object"
-      },
       "ImportListResponse": {
         "additionalProperties": false,
         "properties": {
@@ -31265,6 +30269,42 @@
         "title": "MonitorInput",
         "type": "object"
       },
+      "MonitorInputKind": {
+        "enum": [
+          "monitor_input"
+        ],
+        "type": "string"
+      },
+      "MonitorInputResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/MonitorInputKind"
+          },
+          "monitorId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MonitorInputStatus"
+          }
+        },
+        "required": [
+          "kind",
+          "monitorId",
+          "status"
+        ],
+        "type": "object"
+      },
+      "MonitorInputStatus": {
+        "description": "Outcome of stdin sent to a monitor through HTTP; owned by monitor_http_input.rs.",
+        "enum": [
+          "acknowledged",
+          "rejected",
+          "pending",
+          "unknown"
+        ],
+        "type": "string"
+      },
       "MonitorOperationIdentity": {
         "additionalProperties": false,
         "description": "Public projection of the native operation identity, without open transport evidence.",
@@ -32868,6 +31908,29 @@
         "title": "NativeFinderViewResponse",
         "type": "object"
       },
+      "NativeLayrCapability": {
+        "additionalProperties": false,
+        "description": "Native Layr readiness for this server state directory.",
+        "properties": {
+          "ready": {
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ready"
+        ],
+        "type": "object"
+      },
       "NativeNameFailureRecordResponse": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -33067,6 +32130,9 @@
             ],
             "default": null,
             "title": "Additionaldetails"
+          },
+          "claudeFailure": {
+            "$ref": "#/components/schemas/ClaudeFailure"
           },
           "code": {
             "anyOf": [
@@ -34106,6 +33172,9 @@
             "minimum": 0,
             "title": "Idlesessionunloadminutes",
             "type": "integer"
+          },
+          "shellPolicy": {
+            "$ref": "#/components/schemas/BackgroundShellPolicySettings"
           }
         },
         "required": [
@@ -36378,7 +35447,7 @@
           "response": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ResponseEntry"
+                "$ref": "#/components/schemas/ProcessResponse"
               },
               {
                 "type": "null"
@@ -36956,6 +36025,17 @@
         ],
         "title": "ProcessRecord",
         "type": "object"
+      },
+      "ProcessResponse": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/MonitorInputResponse"
+          },
+          {
+            "$ref": "#/components/schemas/ResponseEntry"
+          }
+        ],
+        "description": "A response stop or background entry, or the receipt of HTTP monitor input."
       },
       "ProcessResponseTarget": {
         "additionalProperties": false,
@@ -49767,6 +48847,15 @@
             "minimum": 0,
             "type": "number"
           },
+          "count": {
+            "description": "Failures in a grouped row. Unit: occurrences.",
+            "format": "uint64",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "detail": {
             "type": "string"
           },
@@ -49776,6 +48865,15 @@
           "eventId": {
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "firstAt": {
+            "description": "Unix seconds of the first failure in a grouped row.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
               "null"
             ]
           },
@@ -49793,6 +48891,13 @@
           },
           "reason": {
             "type": "string"
+          },
+          "ruleId": {
+            "description": "Rule of a grouped monitor row; its failures share one row.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "subject": {
             "type": "string"
@@ -50276,20 +49381,44 @@
       },
       "StudioErrorKind": {
         "description": "Why work needs attention. The service owns classification and publication.",
-        "enum": [
-          "monitor_outcome_lost",
-          "monitor_not_recorded",
-          "input_unconfirmed",
-          "input_uncertain",
-          "input_stuck",
-          "turn_disconnected",
-          "workspace_failed",
-          "http_failure",
-          "recovery_failed",
-          "stored_record_invalid",
-          "unclassified_failure"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "monitor_outcome_lost",
+              "monitor_not_recorded",
+              "input_unconfirmed",
+              "input_uncertain",
+              "input_stuck",
+              "turn_disconnected",
+              "workspace_failed",
+              "http_failure",
+              "recovery_failed",
+              "stored_record_invalid",
+              "unclassified_failure"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "turn_stalled",
+            "description": "A running turn whose provider is silent while no tool runs.",
+            "type": "string"
+          },
+          {
+            "const": "input_not_started",
+            "description": "An owner message that waits while its chat does not start.",
+            "type": "string"
+          },
+          {
+            "const": "session_not_started",
+            "description": "Chats that wait for an account session that does not start.",
+            "type": "string"
+          },
+          {
+            "const": "schedule_stalled",
+            "description": "A usage resume, capacity retry or account transfer that did not move.",
+            "type": "string"
+          }
+        ]
       },
       "StudioErrorsDismissRequest": {
         "additionalProperties": false,
@@ -50637,6 +49766,11 @@
       "SummaryAccount": {
         "additionalProperties": false,
         "properties": {
+          "accountKey": {
+            "minLength": 1,
+            "title": "Account Key",
+            "type": "string"
+          },
           "email": {
             "anyOf": [
               {
@@ -58008,6 +57142,14 @@
             "title": "Chats",
             "type": "array"
           },
+          "hasStudioVm": {
+            "default": false,
+            "description": "The server has a created Studio Linux VM.",
+            "type": "boolean"
+          },
+          "nativeLayr": {
+            "$ref": "#/components/schemas/NativeLayrCapability"
+          },
           "projects": {
             "items": {
               "$ref": "#/components/schemas/SummaryProject"
@@ -63874,6 +63016,7 @@
       },
       "WorkspaceMode": {
         "enum": [
+          "layr-native",
           "layr",
           "image",
           "worktree",
@@ -73876,6 +73019,16 @@
       "get": {
         "operationId": "models_api_models_get",
         "parameters": [
+          {
+            "description": "Require current provider metadata before an account choice. Display reads can return the last known catalog.",
+            "in": "query",
+            "name": "fresh",
+            "required": false,
+            "schema": {
+              "const": "1",
+              "type": "string"
+            }
+          },
           {
             "in": "query",
             "name": "account_key",

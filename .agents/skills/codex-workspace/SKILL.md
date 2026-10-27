@@ -24,12 +24,14 @@ The older bundled Layr CLI does not implement these 0.3.0 recipes; check the sel
 
 In a managed session, use the advertised `orchestration_*` tools. The application
 owns their queue, permissions, state, and worker lifecycle.
-From a terminal, use this project's `codex-control --help` to find commands
-for the existing server. Do not start another server to control the same state.
+From a terminal, `studio-runtime-server --help` lists the server, user service and
+Linux VM commands, and `codex-diagnostics` reads a diagnostics snapshot. No terminal
+command controls agents: `codex-control` and the other Python commands were removed.
+Do not start another server to control the same state.
 
 Read [managed orchestration](../../../docs/orchestration.md) for tool contracts,
-permissions, and recovery. Read [CLI usage](../../../docs/cli.md) only for standalone
-worker waves, daemon operations, or legacy chat commands. Read the
+permissions, and recovery. Read [CLI usage](../../../docs/cli.md) for the installed
+commands and the user service. Read the
 [project README](../../../docs/product-guide.md) for setup. Paths are relative to this skill.
 
 If neither the managed tools nor an available application server support the
@@ -39,29 +41,29 @@ application's managed capabilities are available.
 ## Managed delegation and completion
 
 Use `orchestration_spawn` for independent worker tasks. Give each batch a stable
-`request_id`. Set an agent's optional `base_ref` to a branch, tag, or commit when
-it needs a specific starting point. Otherwise Studio uses the closest project's
+`request_id`. In worktree mode, set an agent's optional `base_ref` to the required branch, tag, or commit. Otherwise Studio uses the closest project's
 worker base setting, then repository HEAD. Studio resolves and saves the commit
 before it creates workers. Check the spawn result for the commit and any warning
 that it is behind main. A retry with the same request_id keeps the same commit.
 Supply bounded ownership, a completion check, and explicit commit authority.
-Chat creation selects `workspaceMode`: `layr`, `image`, or `worktree`.
-A new lead chat on a Mac server defaults to `layr`. A top-level task agent from
-`POST /api/agents` defaults to `worktree`. Linux servers support `worktree` only.
+Chat creation selects `workspaceMode`.
+New lead chats on macOS default to Layr (`layr-native`).
+Linux defaults to WT (`worktree`) until the native capability probe reports ready.
+When ready, Linux defaults to Layr. An explicit native choice requires a ready probe.
 
-| Chat mode  | Environment                         | Worker workspace |
-| ---------- | ----------------------------------- | ---------------- |
-| `layr`     | Studio Linux VM, including the lead | Owned layr line  |
-| `image`    | Native macOS                        | ASIF image       |
-| `worktree` | Native host                         | Git worktree     |
+| Mode          | UI label | Agent environment                | Worker workspace         |
+| ------------- | -------- | -------------------------------- | ------------------------ |
+| `layr-native` | Layr     | Native macOS APFS or Linux btrfs | Separate owned host line |
+| `layr`        | Layr VM  | Studio Linux VM                  | Separate owned VM line   |
+| `worktree`    | WT       | Native host                      | Git worktree             |
 
-Workers inherit the chat mode. Native workers can select `workspace: "image"`,
-`"worktree"`, or deliberate `"shared"` edits. Images require macOS and include
-uncommitted changes. Worktrees require Git and use a committed base.
-Native reviewers use the selected folder with read-only access.
-Layr reviewers use read-only VM lines. All agents in a layr chat stay in the VM.
+Workers inherit the chat mode. Use deliberate `shared` edits only within an assigned file boundary.
+Worktrees require Git and use a committed base. Submit their results on a named Git branch.
+Both layr modes use exact state IDs for submission and review.
+
+Read [native Layr](references/layr-native.md) or [Layr VM](references/layr.md) for readiness, tools, and acceptance.
+Use only workspace choices that the current tool schema exposes.
 Use `server` with an absolute remote `cwd` for native work on a paired machine.
-Commit native results on a named Git branch. Submit VM results as exact layr state IDs.
 After a lost reply, use `orchestration_request` to recover the saved result.
 `applied` confirms the operation receipt, not worker completion. Check current
 registry states before counting workers. Use a new spawn ID only after
@@ -115,6 +117,7 @@ turn. Findings arrive as a child result; the reviewer chat retains the complete
 output. Use `orchestration_request` to recover the receipt after a lost reply.
 Use `orchestration_interrupt` with the returned reviewer ID to stop the review.
 Claude agents do not expose this native Codex tool.
+Give layr reviewers the full state ID and the relevant diff. Use try for checks of that state.
 
 Use `orchestration_send` for a new or revised assignment, or an explicit resumption.
 Choose `delivery=current_turn` for input the recipient should act on during its active turn,
@@ -160,8 +163,10 @@ Use `orchestration_monitor` for long commands. The server waits without model
 calls and delivers an event for every command exit, including success, failure,
 signal, or a lost process. Backend restart keeps the command active while
 reattach is unresolved; its real exit or a decided loss queues the same single
-terminal event. Turn completion with unfinished owned monitors leaves the agent
-in `waiting_on_monitor`. Every monitor exit can resume its owner through the
+terminal event. A command without an answer by its timeout and a short grace
+ends `lost` with an unknown outcome and is not run again. A real answer that
+arrives later can still report its result once in a second event. Turn
+completion with unfinished owned monitors leaves the agent in `waiting_on_monitor`. Every monitor exit can resume its owner through the
 ordinary event queue. Explicit stops, deletion, and epoch changes still apply.
 `wake_on` cannot suppress an exit event. Read the exit
 code, status, and output before claiming success. Inspect an uncertain command
@@ -368,15 +373,18 @@ The Mac command gets `BROWSER`, so the person sees the card in your chat.
 The session stays in the store of the Mac, which all agents of the person share.
 Do not sign in again inside the VM.
 
-## Layr VM chats
+## Layr chats
 
-Read [the layr reference](references/layr.md) when the chat uses `layr`.
-The first chat imports the project once. Later chats reuse the VM main line.
-The Mac source folder stays separate. Export only on the user's request.
-Each worker has its own line and Linux user. A reviewer has a read-only line.
-Studio saves a state after each turn and checks the exact revision before acceptance.
-Acceptance merges the reviewed state into main. Archive removes the worker line.
-The host keeps account sign-in and credential refresh. Guest profiles receive access credentials only.
+| Mode                 | Reference                                | Source of truth             |
+| -------------------- | ---------------------------------------- | --------------------------- |
+| `layr-native` (Layr) | [Native Layr](references/layr-native.md) | Main in the host layr store |
+| `layr` (Layr VM)     | [Layr VM](references/layr.md)            | Main in the Studio VM       |
+
+Use [the layr task recipes](../layr/SKILL.md) in both modes.
+The lead owns main. Each implementer changes only its assigned line.
+Review exact states before acceptance. Acceptance uses merge with expect.
+Implementers save a named task result before submission.
+Studio saves an automatic state after each lead or implementer turn.
 Preserve exact request IDs after a disconnect. A disconnect does not prove failure.
 
 Existing sessions keep the frozen role and tool references loaded by the runtime.

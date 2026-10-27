@@ -89,11 +89,14 @@ provider-compatible defaults.
 
 Chat creation selects `workspaceMode`.
 
-| Mode       | Platform        | Agent workspace                                     |
-| ---------- | --------------- | --------------------------------------------------- |
-| `layr`     | macOS, default  | Lead and agents in the Linux VM on owned layr lines |
-| `image`    | macOS           | Native agents in ASIF images                        |
-| `worktree` | macOS and Linux | Native agents in Git worktrees                      |
+| Mode                 | Platform                         | Agent workspace       |
+| -------------------- | -------------------------------- | --------------------- |
+| `layr-native` (Layr) | macOS and Linux                  | Native Layr lines     |
+| `layr` (Layr VM)     | Servers with the Studio Linux VM | Owned lines in the VM |
+| `worktree` (WT)      | macOS and Linux                  | Git worktrees         |
+
+Layr is the default on macOS. Linux uses Layr only when its native capability is ready.
+Otherwise, Linux defaults to WT. The selector shows the reason when Layr is unavailable.
 
 A `worktree` worker gets its Git worktree at `<root>/codex-agents/<agent id>`.
 By default `<root>` is `.worktrees` in the worker's repository. To place the
@@ -106,7 +109,7 @@ restart. Archive and cleanup still manage worktrees under the previous root.
 
 The first layr chat imports the project once. Later chats reuse the VM main line.
 The host project folder stays separate. Export a copy only on request.
-See [VM chats](linux-vm-workspaces.md) and [ASIF images](workspace-images.md).
+See [VM chats](linux-vm-workspaces.md).
 
 ## Setup
 
@@ -151,6 +154,11 @@ Claude chats support live Steer, an explicit message queue, native tools,
 background tasks, questions, action approvals, and Studio agent tools. Limits shows
 five-hour, weekly, and model-specific subscription windows. The account menu shows
 the remaining weekly allowance.
+
+Claude chat settings include **Move slow MCP calls to the background**. The setting
+is on by default. Eligible Model Context Protocol (MCP) calls move to the
+background after 120 seconds. Their tasks remain in Studio until completion.
+Completion can start a new turn. The native tool rules can exclude a call.
 
 Chat settings includes Claude permission modes, extended thinking, automatic
 compaction, native commands and skills, and context rollback. Model, effort, and

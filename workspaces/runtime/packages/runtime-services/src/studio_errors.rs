@@ -6,6 +6,11 @@
 //! and never sends uncertain input again. `check` opens the agent, because
 //! only the owner can decide. Studio never runs a command or sends input from
 //! this list. A dismissed row stays hidden.
+//!
+//! A rule or a command can fail the same way many times, for example a rule
+//! that checks every few minutes while its owner cannot run. Its failures of
+//! one kind are one row with their count and time range. A failure that a
+//! later run of the same rule followed with a success is not on the list.
 mod causes;
 pub use causes::{json_cause, store_causes, store_error_kind};
 use serde_json::{Value, json};
@@ -13,7 +18,7 @@ use std::collections::BTreeSet;
 use studio_runtime_schema::shared_values::{
     BACKEND_RESTARTED_TURN_ERROR, LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
     MONITOR_OWNER_STOPPED_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR, PROVIDER_RESUME_UNKNOWN_ERROR,
-    VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+    PROVIDER_THREAD_START_UNKNOWN_ERROR, VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 };
 pub use studio_runtime_schema::studio_errors::Kind;
 use studio_runtime_schema::studio_errors::{
@@ -31,6 +36,11 @@ pub const STUCK_INPUT_SECONDS: f64 = 10.0 * 60.0;
 pub const MAX_ROWS: usize = 200;
 /// Receipt-id prefix of a dismissed row.
 const DISMISSED_PREFIX: &str = "studio-errors:dismissed:";
+/// Row-id prefix of the failures of one rule or command and kind. Dismissing
+/// such a row hides its failures up to that time; a later one returns.
+const MONITOR_GROUP_PREFIX: &str = "monitors:";
+/// Row-id prefix of one monitor, as stored by dismissals before grouping.
+const MONITOR_ROW_PREFIX: &str = "monitor:";
 const DISMISSED_SIGNATURE: &str = "studio-error-dismissal";
 
 /// Diagnostic receipts are separate from operation receipts and dismissal keys.
@@ -77,6 +87,7 @@ fn agent_kind(status: &str, error: &str) -> Option<Kind> {
         VM_PROVIDER_DISCONNECTED_TURN_ERROR,
         LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
         PROVIDER_RESUME_UNKNOWN_ERROR,
+        PROVIDER_THREAD_START_UNKNOWN_ERROR,
     ];
     if matches!(status, "failed" | "interrupted") && disconnected.contains(&error) {
         return Some(Kind::TurnDisconnected);
@@ -90,6 +101,16 @@ fn agent_kind(status: &str, error: &str) -> Option<Kind> {
         return Some(Kind::WorkspaceFailed);
     }
     matches!(status, "failed" | "interrupted").then_some(Kind::UnclassifiedFailure)
+}
+
+/// The row kind of a liveness finding.
+fn liveness_kind(code: crate::liveness::Code) -> Kind {
+    match code {
+        crate::liveness::Code::TurnStalled => Kind::TurnStalled,
+        crate::liveness::Code::InputNotStarted => Kind::InputNotStarted,
+        crate::liveness::Code::SessionNotStarted => Kind::SessionNotStarted,
+        crate::liveness::Code::ScheduleStalled => Kind::ScheduleStalled,
+    }
 }
 
 /// The kind of a monitor's end, when Studio caused it. A command with an exit
@@ -274,6 +295,9 @@ fn invalid_source(
         at: observed_at,
         monitor_id: None,
         event_id: None,
+        rule_id: None,
+        count: None,
+        first_at: None,
         diagnostics: Diagnostics {
             context: Context::Stored {
                 object: object.into(),
@@ -305,6 +329,8 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
 struct Baseline {
     hidden_owners: BTreeSet<String>,
     dismissed: usize,
+    /// Published grouped monitor rows, bounded by MAX_ROWS.
+    monitor_groups: bool,
 }
 
 /// The list and its baseline.
@@ -324,13 +350,14 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
     };
     let mut rows = std::collections::BTreeMap::<String, StudioError>::new();
     let push = |rows: &mut std::collections::BTreeMap<String, StudioError>, row: StudioError| {
-        if !dismissed.contains(&row.id) {
+        if !dismissed.contains_key(&row.id) {
             rows.insert(row.id.clone(), row);
         }
     };
 
     // The store read selects only rows that `monitor_kind` may accept.
     let found = studio_runtime_store::MonitorsRepository::studio_error_candidates(tx, since)?;
+    let mut groups = std::collections::BTreeMap::<(String, String), MonitorGroup>::new();
     for (id, raw) in found {
         let record: Value = match serde_json::from_str(&raw) {
             Ok(record) => record,
@@ -418,16 +445,36 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
                 continue;
             }
         };
-        push(
-            &mut rows,
-            StudioError {
-                id: format!("monitor:{id}"),
+        if dismissed.contains_key(&format!("{MONITOR_ROW_PREFIX}{id}")) {
+            continue;
+        }
+        let rule = record["ruleId"]
+            .as_str()
+            .filter(|rule| !rule.is_empty())
+            .map(str::to_owned);
+        let key = match &rule {
+            Some(rule) => format!("rule:{rule}"),
+            None => format!(
+                "command:{agent_id}:{}",
+                &studio_runtime_store::sha256_hex(
+                    record["command"].as_str().unwrap_or_default().as_bytes()
+                )[..16]
+            ),
+        };
+        let failure = MonitorFailure {
+            created: record["created"].as_f64().unwrap_or(0.0),
+            at,
+            // Commands and arbitrary source errors may contain credentials. Diagnostic facts replace them.
+            row: StudioError {
+                id: String::new(),
                 kind,
                 reason: kind.reason().into(),
                 target: kind.target(agent_id.into(), owner_name(&owner)),
                 monitor_id: Some(id),
                 event_id: None,
-                // Commands and arbitrary source errors may contain credentials. Diagnostic facts replace them.
+                rule_id: rule.clone(),
+                count: None,
+                first_at: None,
                 detail: kind.reason().into(),
                 subject: String::new(),
                 at,
@@ -446,7 +493,50 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
                         .collect(),
                 },
             },
-        );
+        };
+        groups
+            .entry((key, kind_code(kind)?))
+            .or_insert_with(|| MonitorGroup {
+                rule,
+                failures: Vec::new(),
+            })
+            .failures
+            .push(failure);
+    }
+    for ((key, code), mut group) in groups {
+        let row_id = format!("{MONITOR_GROUP_PREFIX}{key}:{code}");
+        let dismissed_at = dismissed.get(&row_id).copied();
+        let succeeded_at = match &group.rule {
+            Some(rule) => {
+                let earliest = group
+                    .failures
+                    .iter()
+                    .map(|failure| failure.created)
+                    .fold(f64::INFINITY, f64::min);
+                last_rule_success(tx, rule, earliest)?
+            }
+            None => None,
+        };
+        group.failures.retain(|failure| {
+            succeeded_at.is_none_or(|success| failure.created >= success)
+                && dismissed_at.is_none_or(|dismissed| failure.at > dismissed)
+        });
+        group.failures.sort_by(|a, b| {
+            a.at.total_cmp(&b.at)
+                .then_with(|| a.row.monitor_id.cmp(&b.row.monitor_id))
+        });
+        let count = u64::try_from(group.failures.len()).unwrap_or(u64::MAX);
+        let Some(first_at) = group.failures.first().map(|failure| failure.at) else {
+            continue;
+        };
+        let Some(last) = group.failures.pop() else {
+            continue;
+        };
+        let mut row = last.row;
+        row.id = row_id;
+        row.count = Some(count);
+        row.first_at = Some(first_at);
+        rows.insert(row.id.clone(), row);
     }
 
     let mut events = tx.prepare_cached(
@@ -505,6 +595,9 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
                 detail: kind.reason().into(),
                 subject: String::new(),
                 at: created,
+                rule_id: None,
+                count: None,
+                first_at: None,
                 diagnostics: Diagnostics {
                     context: Context::Input { turn_id, epoch },
                     certainty: kind.certainty(),
@@ -571,6 +664,9 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
                 detail: kind.reason().into(),
                 subject: String::new(),
                 at,
+                rule_id: None,
+                count: None,
+                first_at: None,
                 diagnostics: Diagnostics {
                     context: Context::Agent {
                         turn_id: turn,
@@ -578,6 +674,35 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
                     },
                     certainty: kind.certainty(),
                     causes: retained_causes(kind, &error),
+                },
+            },
+        );
+    }
+
+    for finding in crate::liveness::findings(tx, now)? {
+        let kind = liveness_kind(finding.code);
+        push(
+            &mut rows,
+            StudioError {
+                id: finding.id,
+                kind,
+                reason: kind.reason().into(),
+                target: kind.target(finding.agent, finding.agent_name),
+                monitor_id: None,
+                event_id: finding.event,
+                rule_id: None,
+                count: None,
+                first_at: Some(finding.first_at),
+                detail: finding.detail,
+                subject: finding.subject,
+                at: finding.at,
+                diagnostics: Diagnostics {
+                    context: Context::Agent {
+                        turn_id: None,
+                        epoch: None,
+                    },
+                    certainty: kind.certainty(),
+                    causes: Vec::new(),
                 },
             },
         );
@@ -674,6 +799,9 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
     let baseline = Baseline {
         hidden_owners,
         dismissed: dismissed.len(),
+        monitor_groups: rows
+            .iter()
+            .any(|row| row.id.starts_with(MONITOR_GROUP_PREFIX)),
     };
     Ok((rows, baseline))
 }
@@ -815,10 +943,25 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
     {
         return Ok(true);
     }
-    if (sources.rows_removed || sources.receipts_removed) && published_source_missing(tx)? {
+    let monitor_groups = BASELINE.with(|baseline| {
+        baseline
+            .borrow()
+            .as_ref()
+            .is_some_and(|baseline| baseline.monitor_groups)
+    });
+    // A deleted earlier member changes a group's count even when its final
+    // monitor remains. Deletions carry no source ID to check individually.
+    if (sources.rows_removed && monitor_groups)
+        || ((sources.rows_removed || sources.receipts_removed) && published_source_missing(tx)?)
+    {
         return Ok(true);
     }
     for id in &sources.monitors {
+        if monitor_groups && tx.prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM sync_entities e WHERE e.collection='studioError' AND e.deleted=0 AND (             json_extract(e.payload,'$.value.monitorId')=?1 OR              json_extract(e.payload,'$.value.ruleId')=(SELECT json_extract(m.record,'$.ruleId') FROM runtime_monitors m                  WHERE m.id=?1 AND json_extract(m.record,'$.status')='completed')))"
+        )?.query_row([id], |row| row.get::<_, bool>(0))? {
+            return Ok(true);
+        }
         if is_published(tx, &format!("monitor:{id}"))? {
             return Ok(true);
         }
@@ -949,9 +1092,49 @@ fn published_source_missing(tx: &Transaction<'_>) -> Result<bool, StoreError> {
         .query_row([], |row| row.get(0))?)
 }
 
-fn dismissed(tx: &Transaction<'_>) -> Result<std::collections::BTreeSet<String>, StoreError> {
+/// One failed or lost run of a rule or command, with its row.
+struct MonitorFailure {
+    /// Unix seconds of its start.
+    created: f64,
+    /// Unix seconds of its end, or of its start when it has none.
+    at: f64,
+    row: StudioError,
+}
+
+/// The failures of one rule or command and kind.
+struct MonitorGroup {
+    rule: Option<String>,
+    failures: Vec<MonitorFailure>,
+}
+
+/// The serialized code of `kind`, owned by the schema enum.
+fn kind_code(kind: Kind) -> Result<String, StoreError> {
+    match serde_json::to_value(kind)? {
+        Value::String(code) => Ok(code),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
+            Err(StoreError::SchemaMismatch("studio error kind".into()))
+        }
+    }
+}
+
+/// Unix seconds of the start of the latest successful run of `rule` that
+/// started at or after `since`.
+fn last_rule_success(
+    tx: &Transaction<'_>,
+    rule: &str,
+    since: f64,
+) -> Result<Option<f64>, StoreError> {
+    Ok(tx.query_row(
+        "SELECT MAX(json_extract(record,'$.created')) FROM runtime_monitors WHERE json_extract(record,'$.status')='completed' AND json_extract(record,'$.created')>=?1 AND json_extract(record,'$.ruleId')=?2",
+        rusqlite::params![since, rule],
+        |row| row.get::<_, Option<f64>>(0),
+    )?)
+}
+
+/// Dismissed row ids, each with the Unix seconds of its latest dismissal.
+fn dismissed(tx: &Transaction<'_>) -> Result<std::collections::BTreeMap<String, f64>, StoreError> {
     let mut statement = tx.prepare_cached(
-        "SELECT substr(id,?3) FROM runtime_operation_receipts WHERE id>=?1 AND id<?2",
+        "SELECT substr(id,?3),COALESCE(json_extract(result,'$.at'),0) FROM runtime_operation_receipts WHERE id>=?1 AND id<?2",
     )?;
     let ids = statement
         .query_map(
@@ -960,22 +1143,21 @@ fn dismissed(tx: &Transaction<'_>) -> Result<std::collections::BTreeSet<String>,
                 format!("{DISMISSED_PREFIX}~"),
                 i64::try_from(DISMISSED_PREFIX.len() + 1).unwrap_or(i64::MAX)
             ],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)),
         )?
         .collect::<Result<_, _>>()?;
     Ok(ids)
 }
 
-/// Hide row `id` from the list. Dismissing it again changes nothing.
+/// Hide row `id` from the list. Dismissing it again changes nothing, except
+/// for the row of a rule or command: that hides its failures up to `now`.
 pub fn dismiss(tx: &Transaction<'_>, id: &str, now: f64) -> Result<(), StoreError> {
     let key = format!("{DISMISSED_PREFIX}{id}");
-    if EventWriteRepository::receipt(tx, &key)?.is_none() {
-        EventWriteRepository::put_receipt(
-            tx,
-            &key,
-            DISMISSED_SIGNATURE,
-            &json!({"at":now}).to_string(),
-        )?;
+    let value = json!({"at":now}).to_string();
+    if id.starts_with(MONITOR_GROUP_PREFIX) {
+        EventWriteRepository::replace_receipt(tx, &key, DISMISSED_SIGNATURE, &value)?;
+    } else if EventWriteRepository::receipt(tx, &key)?.is_none() {
+        EventWriteRepository::put_receipt(tx, &key, DISMISSED_SIGNATURE, &value)?;
     }
     Ok(())
 }
@@ -1013,6 +1195,45 @@ pub fn dismiss_many(tx: &Transaction<'_>, ids: &[String], now: f64) -> Result<Va
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_success_retires_the_published_failure_group_without_a_timer() {
+        use studio_runtime_store::{
+            AgentRecord, AgentRepository, MonitorRecord, RuntimeStore, Table,
+        };
+        let root = tempfile::tempdir().expect("valid group publication fixture");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("valid group publication fixture");
+        crate::entity_publication::install(&store)
+            .await
+            .expect("valid group publication fixture");
+        let now = crate::event_write::unix_time().expect("valid group publication fixture");
+        store.transaction(move |tx| {
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":0,"status":"idle","provider":"codex"}))?)?;
+            Table::new(tx).put(&MonitorRecord::from_value(json!({"id":"failed","agent":"owner","ruleId":"rule","command":"check","created":now - 10.,"finished":now - 9.,"status":"failed","error":"No live provider session","exitCode":null}))?)?;
+            Ok::<_, StoreError>(())
+        }).await.expect("valid group publication fixture");
+        store.transaction(move |tx| {
+            let count: i64 = tx.query_row("SELECT count(*) FROM sync_entities WHERE collection='studioError' AND deleted=0", [], |r| r.get(0))?;
+            assert_eq!(count, 1, "the failure is published");
+            Table::new(tx).put(&MonitorRecord::from_value(json!({"id":"success","agent":"owner","ruleId":"rule","command":"check","created":now,"finished":now,"status":"completed","exitCode":0}))?)?;
+            Ok::<_, StoreError>(())
+        }).await.expect("valid group publication fixture");
+        store.test_read_transaction(|tx| {
+            let count: i64 = tx.query_row("SELECT count(*) FROM sync_entities WHERE collection='studioError' AND deleted=0", [], |r| r.get(0))?;
+            assert_eq!(count, 0, "the success retires the group before the periodic refresh");
+            Ok::<_, StoreError>(())
+        }).expect("valid group publication fixture");
+    }
+
+    #[test]
+    fn a_thread_start_unknown_turn_is_a_disconnected_turn() {
+        assert_eq!(
+            agent_kind("failed", PROVIDER_THREAD_START_UNKNOWN_ERROR),
+            Some(Kind::TurnDisconnected)
+        );
+    }
 
     #[test]
     fn monitor_evidence_keeps_identity_and_correlates_private_unclassified_proof() {
@@ -1256,7 +1477,9 @@ mod tests {
                     .iter()
                     .filter(|row| row["monitorId"].is_string() && row["kind"]!="stored_record_invalid")
                     .map(|row| {
-                        let id = row["id"].as_str().expect("id").to_owned();
+                        assert!(row["id"].as_str().expect("id").starts_with(MONITOR_GROUP_PREFIX));
+                        let monitor = row["monitorId"].as_str().expect("monitor id");
+                        let id = format!("monitor:{monitor}");
                         assert_eq!(row["subject"], "", "command bodies stay out of diagnostic exports");
                         assert_eq!(row["at"], now - 1.0);
                         (id, (row["kind"].as_str().expect("kind"), row["agentName"].as_str().expect("name")))

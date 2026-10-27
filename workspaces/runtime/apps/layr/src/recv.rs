@@ -1,4 +1,4 @@
-//! Receiving btrfs streams from outside this machine (peers, backups) with checks.
+//! Receiving btrfs streams from outside this machine (peers, remote copies) with checks.
 //!
 //! `btrfs receive` trusts its stream: a snapshot or clone command finds its source subvolume by
 //! UUID anywhere on the file system, and a clone source path is not limited to that subvolume.

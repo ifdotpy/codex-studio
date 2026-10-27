@@ -51,7 +51,7 @@ The launcher starts the vendor binary, but Studio checks the launcher as a nativ
 A fake model catalog permits the spawn without this discovery step.
 
 With the source fix, the same envelope succeeds through `receive()` in isolated remote state.
-It commits one worker with status `queued` and an image workspace.
+It commits one worker with status `queued` and an isolated workspace.
 The same-ID retry returns the same `applied` receipt.
 The scheduler is disabled, so this check does not send a model turn.
 

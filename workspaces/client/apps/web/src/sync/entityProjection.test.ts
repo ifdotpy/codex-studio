@@ -1728,6 +1728,8 @@ it("projects Studio error entities and removes dismissed rows by tombstone", () 
     detail: "disconnected",
     subject: "",
     at: 100,
+    firstAt: 100,
+    count: 1,
   } satisfies Extract<
     SyncEntityPayload,
     { collection: "studioError" }

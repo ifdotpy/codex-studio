@@ -66,14 +66,8 @@ fn read_in(
             "The monitor belongs to another account",
         ));
     }
-    if record["operation"].is_object()
-        && record["operation"]["accountKey"]
-            .as_str()
-            .unwrap_or("default")
-            != account
-    {
-        return Err(MonitorError::Refused("The monitor account changed"));
-    }
+    // The authenticated actor uses its current model account. Its existing
+    // monitor output remains owned by that actor and epoch after a transfer.
     let sequence = record["outputEventSequence"].as_u64().unwrap_or(0);
     let terminal = !matches!(
         record["status"].as_str(),
@@ -102,4 +96,31 @@ fn read_in(
     record["outputEvents"] = json!(events);
     record["waitExpired"] = json!(false);
     Ok((record, sequence, terminal))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn transferred_monitor_output_belongs_to_its_current_actor_not_its_old_model_account() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_events(id TEXT,agent TEXT,status TEXT,text TEXT);").expect("schema");
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('owner',?1)",
+            [json!({"id":"owner","epoch":1,"autoWake":true,"accountKey":"target"}).to_string()],
+        )
+        .expect("transferred owner");
+        db.execute("INSERT INTO runtime_monitors VALUES('watch',?1)",[json!({"id":"watch","agent":"owner","epoch":1,"status":"running","tail":"kept output","operation":{"agent":"owner","epoch":1,"accountKey":"source","connectionId":"original"}}).to_string()]).expect("original source monitor");
+        let (record, _, terminal) = read_in(&db, "owner", 1, "target", "watch")
+            .expect("read the existing process after transfer");
+        assert_eq!(record["tail"], "kept output");
+        assert!(!terminal);
+        for (owner, epoch, account) in [
+            ("other", 1, "target"),
+            ("owner", 2, "target"),
+            ("owner", 1, "source"),
+        ] {
+            assert!(read_in(&db, owner, epoch, account, "watch").is_err());
+        }
+    }
 }

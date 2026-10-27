@@ -3,8 +3,13 @@ import type { ModelInfo, Settings } from "@anthropic-ai/claude-agent-sdk";
 export type ClaudeSettings = Pick<Settings, "env"> &
   Pick<
     import("./runtime-contract.generated.ts").ClaudeSessionSettings,
-    "permissionMode" | "thinking" | "autoCompactWindow"
-  >;
+    "permissionMode" | "thinking" | "autoCompactWindow" | "mcpAutoBackground"
+  > & {
+    // A native reviewer's SDK sandbox, sent by Studio for review sessions.
+    sandbox?: import("@anthropic-ai/claude-agent-sdk").Options["sandbox"];
+    // The complete environment of a native reviewer; ambient server values stay out.
+    nativeReviewerEnvironment?: Record<string, string | undefined>;
+  };
 
 export type ThinkingModel = Partial<Pick<ModelInfo, "value">> &
   Partial<

@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import type { DraftJournal } from "./draftJournal";
 
 import type { DraftView } from "./host";
@@ -80,7 +81,7 @@ export class NativeDraftState {
     // coalesce the unsent tail to bound typing backlog while IPC is delayed.
     const [, pending] = this.queue;
     const edit =
-      pending && !this.journal ? pending : { id: crypto.randomUUID(), changes };
+      pending && !this.journal ? pending : { id: randomUUID(), changes };
     if (edit === pending) Object.assign(edit.changes, changes);
     else this.queue.push(edit);
     try {

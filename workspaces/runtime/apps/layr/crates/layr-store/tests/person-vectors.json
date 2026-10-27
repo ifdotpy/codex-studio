@@ -1,0 +1,21 @@
+{
+  "identity": "AGE-SECRET-KEY-1KY0H4VLCG28N9PXFN8W6PVZZ9UHXRGJC9A6FZWAQDL67RTU9AVCQFH98N6",
+  "jsIndex": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSA4U3VVbEZyZzM4VHRBWXl2bE9FczZ2VHZ0V3FsU0l6SFQ2ZmJYUXVGUlFjCnNLK2FWdFJHckF2WGh3bit1OUpON080VkhiVzR3Qm5oQXNrd2pwSk9Ra1UKLS0tIE81NzZWdHFZYU1tYVE5K3FvVkcwdDR0aGRKY0c1UlRIdHl0Y3MySjUxZDgKl4tyUVEOu2XnyunU6iAprrN1oa7kvbju18YFIrhEspwcj60fe8F0YbdkKdplvXcKwCtlhSDbsBVbdkJrwolyNyTO4Jio+jy4JZOZ30x0ITxwaqf76JhTwX6qpNYlDF1pqsh2euSGvEX7/kGqr8ZNDD7BdVEGrhUkwc2EsI3X9b8L72jCy5E0p15GjCcVinn4QCEmQrHRC8cUlRUirwsYeEEFc1NCC2mBwPjzelqw6Ah4tDoIADqkVQPGJMGBvnvMT3Aqn4IHdyUKHVKV790pMmxU4WJs5FLkmwqr1/jIhHOnxCHx1bpxelYFpU7xEk9NcPjQVngZD2Ab38/Z06iK7BlGpMwNaLsT9U+RBJN0/5reDFKNG4nllCy4u21IzbV3iivnnjC04skDAT8U0Oh2cYd5U7CI3Qm3BhoJeIB3Hd6Nf695g3E/HR26mIBgwBDk9wXQYgry4etn2PvQUdq1QPbbwooeTdH9Xd039H8Bh1QRAL1HJCGQs/cUjtHtQeQ31sYCjIbZeOsL7qA9BYfkOxP4KovK9PjOcS6MPoK2oV5GwiUV4p2gy8/IDkrx0J0=",
+  "note": "Test keys only. jsIndex comes from sealIndex (JavaScript); rustIndex and rustInvite from seal_index and seal_invite (Rust). crates/desk-core/tests/person.rs and js/vault/test/person.test.mjs read this.",
+  "pins": [
+    {
+      "project": "other",
+      "recipient": "age12k08c7puc2r40razdcagvlk5fq77273fgxxe27rr33ee433wmyjs25rmtj",
+      "signedFrom": null,
+      "writer": null
+    },
+    {
+      "project": "proj",
+      "recipient": "age1dudxmf3xsr7uquqglllsrsykv4e2j34jz9k3zwyhr6wvmps2yu2sd26fs6",
+      "signedFrom": 2,
+      "writer": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+    }
+  ],
+  "rustIndex": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBZVWI0dHhVSU5ZUkU2OE00dkg1WitnQ1VSd2EwYncyVEdGbG0yMlJWaFNZCkRBRDY4M0FiREFSK2lvanhmV3kvTFlGSHcvNUdLbVlXVTAwdDFiTzhmYlkKLT4gJX13SlldLWdyZWFzZSBgVyZxJ2FTCmpwMXJnKytQTW1Fa2ZyTXpCcUlBRTBTY0FBTUU1WFQ0RzRJMFpwNU9Yek1pTFRWcStYVWFjSUh0d1I1NTRnCi0tLSByaktuaW96b28zUXZkVzNmQkd0Z1FxNGxjM2JvYTlIc1JRcVNZNzNCSEdNCiJ95xI80kPH9KqO1l03tFS5bT3rb6482jPp468ETzIqH9CiTTY3V/FzNnj4bpol6d3SsMltsS+Ognbc1rgCdz65qy+BJKSF4whGorySTLuaa3qPC+sg8p7gTDhrCVjqbAqyqZ9/w7e8hhzBqsbmQW/EMrXIp1EFzySBA/5TVLInnzTthvdY36FKcph1RVgPqXKam/5Pm1JmcryPphxG/0/J8mb7NiFJqenEPXvt6vE6CBpXdyhO0+aXxaGdZxHhDmR3LkQuKph+e8TOUjYTb/y1TTilfB93MaMhfSNWhhUgmL9/hQnySFmLMFmXq0D3gRlzfvapJok55rFP57gOwVej2xfiUYiPLulzBrnVaspQ8pNoeMmABZBcWHaI1gNoGh+ak1piMOKgZS+P7Anc5wFOFIZrX3PIvPuKsx7r2NtHmUa3hODHbwl3BtA03cPfOcTafnFUpp/fgTtI2bL4lLUAe3XbHVFdUGbfpev2UdmoIV7z+lCwFeD18cKVLVufKorRDO9zNU/oo3a9VEXgFM1X7/On/UpHCy91ZvWfJkZsZ6gmWiNvkDkStDYpt2fs",
+  "rustInvite": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSAra0NqOGcwZmtnV2xzb3lLNWNwcmtSc3ljYmZEYjcycUF3NVZTM2M4NjBVCjh3NTN2bEcyd1hLQ2s1VmFVY3FGa2VIa2NGYXNXTW1SWUNNSU8xT2FKa1EKLT4gWWopLWdyZWFzZSB3agpMOXhwamlPMlg1c3g5dDFsYjZaZjhBCi0tLSAxZzNUYllYbjMrNWg3VjRFOFM3eHllRG83TWZ1T0pLN1JwMDNkVmIzdTJJCn79b/KsdsScD0bDOBVqk2Fy+7I8TXSTeEaeQveFM+femyoi9mkfhFmYT2TmpIJ8k8TPRZErZhvfWTqUu0yXcopL+4qdRBuH9HWGO92shLSzRaYQ1xmwWJVys4mIcBgFXRKNiacPtx55O5G9ShuyNOYppOMJwzRJUDwNhDwCwDVkWYtq0/fqlomgn/OBFneoal8q/bvEPAN5lfvl13R0jbmEPTEzVckOZpvlDQ=="
+}

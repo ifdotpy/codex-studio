@@ -44,6 +44,10 @@ impl From<crate::linux_vm_guest::GuestError> for VmProjectUploadError {
 }
 
 pub fn vm_project_archive(source: &Path) -> std::io::Result<VmProjectArchive> {
+    code_archive(source, false)
+}
+
+fn code_archive(source: &Path, worktree: bool) -> std::io::Result<VmProjectArchive> {
     let source = CanonicalPath::existing(source)?;
     if !source.is_dir() {
         return Err(std::io::Error::new(
@@ -51,7 +55,10 @@ pub fn vm_project_archive(source: &Path) -> std::io::Result<VmProjectArchive> {
             "VM project source is not a directory",
         ));
     }
-    let exclusions = vm_archive_exclusions(&source)?;
+    let mut exclusions = archive_exclusions(&source, worktree)?;
+    if worktree {
+        exclusions.ignored.insert(".git".into());
+    }
     let identities = std::cell::RefCell::new(HashMap::new());
     let mut archive = tempfile::NamedTempFile::new()?;
     {
@@ -134,7 +141,7 @@ fn add_vm_tar_directory<W: Write>(
 
 type VmArchiveIdentity = (u64, u64, u64, i128, i128);
 
-fn vm_archive_identity(metadata: &fs::Metadata) -> VmArchiveIdentity {
+pub(crate) fn vm_archive_identity(metadata: &fs::Metadata) -> VmArchiveIdentity {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -161,21 +168,23 @@ struct VmArchiveExclusions {
     clippy::disallowed_methods,
     reason = "archive creation runs on the labeled vm-project-archive blocking worker"
 )]
+#[cfg(test)]
 fn vm_archive_exclusions(root: &Path) -> std::io::Result<VmArchiveExclusions> {
+    archive_exclusions(root, false)
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "archive creation runs on the labeled vm-project-archive blocking worker"
+)]
+fn archive_exclusions(root: &Path, root_worktree: bool) -> std::io::Result<VmArchiveExclusions> {
     let mut repositories = HashSet::new();
     let mut worktrees = HashSet::new();
     let mut ignored = HashSet::new();
     let root_modules = root.join(".git/modules");
     validate_vm_git_modules(&root_modules)?;
     let mut module_roots = vec![root_modules];
-    let configured_store = std::env::var_os("CODEX_WORKSPACE_STORE")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_default()
-                .join(".local/state/codex-agents/workspaces")
-        });
+    let configured_store = crate::legacy_image_workspace::store_dir();
     if let Ok(relative) = configured_store.strip_prefix(root) {
         ignored.insert(relative.to_string_lossy().replace('\\', "/"));
     }
@@ -289,6 +298,9 @@ fn vm_archive_exclusions(root: &Path) -> std::io::Result<VmArchiveExclusions> {
                     .to_string_lossy()
                     .replace('\\', "/"),
             );
+        } else if marker.is_file() && directory == root && root_worktree {
+            repositories.insert(".".into());
+            collect_vm_ignored_directories(root, &directory, ".", &mut ignored)?;
         } else if marker.is_file() {
             if directory == root {
                 return Err(std::io::Error::new(
@@ -402,7 +414,9 @@ fn vm_archive_exclusions(root: &Path) -> std::io::Result<VmArchiveExclusions> {
             }
             continue;
         }
-        validate_vm_repository_objects(root, &directory)?;
+        if !(root_worktree && directory == root) {
+            validate_vm_repository_objects(root, &directory)?;
+        }
     }
     Ok(exclusions)
 }
@@ -470,7 +484,10 @@ fn vm_archive_excluded_by_ancestor(
     false
 }
 
-fn read_gitdir_pointer(directory: &Path, marker: &Path) -> std::io::Result<CanonicalPath> {
+pub(crate) fn read_gitdir_pointer(
+    directory: &Path,
+    marker: &Path,
+) -> std::io::Result<CanonicalPath> {
     let contents = fs::read_to_string(marker)?;
     let line = contents
         .strip_suffix("\r\n")
@@ -495,7 +512,7 @@ fn read_gitdir_pointer(directory: &Path, marker: &Path) -> std::io::Result<Canon
     CanonicalPath::existing(directory.join(target))
 }
 
-fn validate_vm_repository_objects(root: &Path, directory: &Path) -> std::io::Result<()> {
+pub(crate) fn validate_vm_repository_objects(root: &Path, directory: &Path) -> std::io::Result<()> {
     let marker = directory.join(".git");
     let marker_metadata = fs::symlink_metadata(&marker)?;
     let git_dir = if marker_metadata.is_dir() && !marker_metadata.file_type().is_symlink() {
@@ -573,7 +590,7 @@ fn validate_vm_git_object_store(git_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn validate_vm_git_modules(modules: &Path) -> std::io::Result<()> {
+pub(crate) fn validate_vm_git_modules(modules: &Path) -> std::io::Result<()> {
     if !modules.is_dir() {
         return Ok(());
     }
@@ -629,6 +646,11 @@ fn vm_archive_skip(
     if parts.contains(&".git".into()) {
         return false;
     }
+    regenerable_path(path)
+}
+
+/// Build-output names shared by VM exclusion and native cache admission.
+pub(crate) fn regenerable_path(path: &Path) -> bool {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     if matches!(
         name.as_ref(),

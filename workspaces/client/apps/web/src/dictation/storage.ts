@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { serverStorageName } from "../servers/environment";
 export type Recording = {
   id: string;
@@ -80,7 +81,7 @@ export function createRecordingStorage(databaseName: string) {
       id: row.id,
       chatId: row.chatId,
       deletedAt: Date.now(),
-      transcriptionAttempt: crypto.randomUUID(),
+      transcriptionAttempt: randomUUID(),
     });
   }
   async function restoreRecording(row: Recording) {

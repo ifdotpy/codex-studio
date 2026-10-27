@@ -248,6 +248,8 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
       detail: "",
       subject: "",
       at: 100,
+      firstAt: 100,
+      count: 1,
     } satisfies components["schemas"]["StudioError"];
     publish([
       {

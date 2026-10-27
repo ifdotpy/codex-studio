@@ -221,10 +221,14 @@ pub fn recover(root: &Path) -> Result<()> {
             "OverlayFS store requires a private mount; bind-mount the store onto itself and run mount --make-private on that mount"
         );
     }
+    // OverlayFS does not accept layers in folders that ignore case.
+    if crate::sys::casefold(&root) {
+        bail!("{} ignores case (ext4 casefold); OverlayFS cannot use it. Use a folder without `chattr +F`", root.display());
+    }
     fs::create_dir_all(&root)?;
     let home = root.join(".layr-overlayfs");
     if !home.exists() && root.join("machine/key").exists() {
-        bail!("this store uses another backend; restore a backup into a new OverlayFS store");
+        bail!("this store uses another backend; use peer sync to transfer into a new OverlayFS store");
     }
     private_dir(&home)?;
     private_dir(&home.join("objects"))?;

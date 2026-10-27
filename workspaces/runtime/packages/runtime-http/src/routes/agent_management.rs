@@ -347,7 +347,6 @@ async fn run_native_action(
     let account_driver = state.account_driver.clone();
     let guest = state.browser_answer_guest.clone();
     let admission_override = state.message_admission.clone();
-    let read_store = Arc::clone(&store);
     let read_agent = request.agent.clone();
     let use_prepared = admission_override.is_some();
     let (agent, prepared) = store
@@ -366,7 +365,6 @@ async fn run_native_action(
                 } else {
                     studio_runtime_services::message_admission::AdmissionSnapshot::Ingress(
                         studio_runtime_services::message_admission::MessageIngressAdmission::read(
-                            read_store,
                             tx,
                             &read_agent,
                         )

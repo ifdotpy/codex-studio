@@ -27,7 +27,7 @@ METHODS = READ_METHODS | {"line.bind", "line.branch", "line.save", "line.merge",
 
 
 # Every agent user is in this group: the project's layr deny rules for it keep agents away
-# from roles, replication, remotes, records and backups whatever role an agent gets.
+# from roles, replication, remotes, and record exchange whatever role an agent gets.
 AGENTS_GROUP = "studio-agents"
 # Every reviewer user is also in this group. A reviewer's layr commands run as its own user: a
 # Codex reviewer's through Studio's layr_read tool (its sandbox has no network, so no socket), a
@@ -209,7 +209,17 @@ class AgentHandlers:
         return await self.command(context["path"], ["layr", *args], user=None if root else context)
 
     async def head(self, context):
-        return await self.layr(context, "rev-parse", "HEAD", root=True)
+        return await self.layr(context, "rev-parse", "head", root=True)
+
+    async def state_id(self, context, state):
+        """Resolve an immutable UUID or display ID to layr's display form."""
+        try:
+            parsed = uuid.UUID(state) if isinstance(state, str) else None
+        except ValueError:
+            parsed = None
+        require(parsed is not None and state.lower() in {parsed.hex, str(parsed)},
+                "Supply an exact layr state ID")
+        return await self.layr(context, "rev-parse", "--verify", state.lower(), root=True)
 
     async def branch_line(self, params, project, record):
         parent = self.context(params["parentAgentId"])
@@ -239,7 +249,7 @@ class AgentHandlers:
         require(isinstance(source, str) and source and not source.startswith("-"), "The state ID is invalid")
         created = False
         try:
-            await self.layr(parent, "branch", name, source, "--owner", "0" if readonly else user["owner"], root=True)
+            await self.layr(parent, "line", "new", name, source, "--owner", "0" if readonly else user["owner"], root=True)
             created = True
             extra = {}
             if readonly:
@@ -262,7 +272,7 @@ class AgentHandlers:
                 record.unlink(missing_ok=True)
                 if created or target.exists():
                     # layr deletes read-only subvolumes without changing their flag.
-                    await self.layr(parent, "branch", "-D", name, root=True)
+                    await self.layr(parent, "line", "delete", "-D", name, root=True)
                 require(not target.exists(), "The failed line still exists after rollback")
             except BaseException as rollback_error:
                 raise GuestError("outcome_unknown",
@@ -366,24 +376,26 @@ class AgentHandlers:
         if method == "line.status":
             return {**context, "stateId": await self.head(context)}
         if method == "line.evidence":
-            state = await self.head(context)
-            require(state == params.get("stateId"), "The submitted state is not the line head")
+            state = params.get("stateId")
+            require(await self.state_id(context, state) == await self.head(context),
+                    "The submitted state is not the line head")
             return {"projectId": context["projectId"], "line": context["line"], "stateId": state}
         if method == "line.save":
             turn = identifier(params.get("turnId"))
             # The end of a turn is a quiet point: cache folders that a build tool made again
             # become caches, then the line's content is saved.
             await self.layr(context, "cache", "repair", root=context["readOnly"])
-            await self.layr(context, "save", "--force", "-m", "Studio turn " + turn, root=context["readOnly"])
-            state = await self.layr(context, "rev-parse", "HEAD@{0}", root=True)
+            await self.layr(context, "save", "--force", "--note", "Studio turn " + turn, root=context["readOnly"])
+            state = await self.layr(context, "rev-parse", "head@{0}", root=True)
             return {"stateId": state, "turnId": turn}
         if method == "line.merge":
             require(context["line"] == "main" and not context["readOnly"], "Only the lead can merge results")
             source = self.context(params["sourceAgentId"])
             require(source["projectId"] == context["projectId"] and not source["readOnly"], "The source line is invalid")
             expected = params.get("expectedStateId")
-            require(isinstance(expected, str) and expected == await self.head(source), "The reviewed state changed")
-            output = await self.layr(context, "merge", source["line"], "--expect", expected)
+            canonical = await self.state_id(source, expected)
+            require(canonical == await self.head(source), "The reviewed state changed")
+            output = await self.layr(context, "merge", source["line"], "--expect", canonical)
             return {"stateId": await self.head(context), "reviewedStateId": expected, "output": output}
         if method == "handoff.ensure":
             return await self.handoff(context, params)
@@ -400,7 +412,7 @@ class AgentHandlers:
             main = {**context, "path": str(self.project(context["projectId"]) / "lines" / "main")}
             if context["readOnly"]:
                 await self.command(main["path"], ["btrfs", "property", "set", "-ts", context["path"], "ro", "false"])
-            await self.layr(main, "branch", "-D", context["line"], root=True)
+            await self.layr(main, "line", "delete", "-D", context["line"], root=True)
             self.record_path(context["agentId"]).unlink()
             return {"state": "removed", "freedBytes": 0}
         if method in {"layr.provider.start", "layr.credentials.sync"}:

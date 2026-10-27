@@ -12,8 +12,7 @@ const agent = (values: Partial<Agent>): Agent => ({
 });
 
 test.each([
-  ["layr", "LAYR", "VM with layr"],
-  ["image", "IMAGE", "Isolated disk image workspace"],
+  ["layr-native", "Layr", "Native Layr workspace"],
   ["worktree", "WT", "Git worktree"],
   ["shared", "SHARED", "Shared folder"],
 ] as const)("shows %s workspace as %s", (workspaceMode, label, name) => {
@@ -37,7 +36,7 @@ test("hides the badge for leads and unknown remote workspaces", () => {
 });
 
 test.each([
-  ["image", "IMAGE", "Isolated disk image workspace"],
+  ["layr-native", "Layr", "Native Layr workspace"],
   ["worktree", "WT", "Git worktree"],
 ] as const)(
   "shows remote %s mode even when local workspace flags are false",
@@ -48,7 +47,6 @@ test.each([
           cwd: "/remote/repo",
           remoteWorker: { server: "remote", link: "link" },
           workspaceMode,
-          imageWorkspace: false,
           worktree: false,
         }),
       ),
@@ -57,8 +55,8 @@ test.each([
 );
 
 test.each([
-  ["layr", "LAYR"],
-  ["image", "IMAGE"],
+  ["layr", "Layr VM"],
+  ["layr-native", "Layr"],
   ["worktree", "WT"],
 ] as const)("shows the chat workspace %s as %s", (workspaceMode, label) => {
   const current = agent({ isLead: true, workspaceMode });
@@ -75,8 +73,8 @@ test.each([false, true])("shows the layr worker badge, remote=%s", (remote) => {
     workspaceMode: "layr",
   });
   expect(workspaceBadgeInfo(current)).toEqual({
-    label: "LAYR",
-    title: "VM with layr · /projects/example",
+    label: "Layr VM",
+    title: "Virtual machine with Layr · /projects/example",
   });
 });
 
@@ -94,7 +92,6 @@ test("missing modes retain lead and remote badge visibility", () => {
         agent({
           workspaceMode,
           remoteWorker: { server: "remote", link: "link" },
-          imageWorkspace: true,
         }),
       ),
     ).toBeNull();
@@ -114,7 +111,6 @@ test("missing modes retain lead and remote badge visibility", () => {
 });
 
 test.each([
-  [{ imageWorkspace: true, worktree: true }, "IMAGE"],
   [{ worktree: true, role: "reviewer" }, "WT"],
   [{ role: "reviewer" }, "SHARED"],
   [{ worktree: false }, "SHARED"],
@@ -124,32 +120,3 @@ test.each([
   (values, label) =>
     expect(workspaceBadgeInfo(agent(values))?.label).toBe(label),
 );
-
-test("explicit modes and image preparation preserve workspace paths", () => {
-  expect(
-    workspaceBadgeInfo(
-      agent({
-        workspaceMode: "shared",
-        imageWorkspace: true,
-        imageWorkspaceRepo: "/image/source",
-        imageWorkspaceReady: false,
-      }),
-    ),
-  ).toEqual({ label: "SHARED", title: "Shared folder · /image/source" });
-  expect(
-    workspaceBadgeInfo(
-      agent({
-        workspaceMode: "image",
-        imageWorkspace: true,
-        imageWorkspaceRepo: "/image/source",
-        imageWorkspaceReady: true,
-      }),
-    ),
-  ).toEqual({
-    label: "IMAGE",
-    title: "Isolated disk image workspace · /projects/example",
-  });
-  expect(
-    workspaceBadgeInfo(agent({ workspaceMode: "worktree", cwd: null })),
-  ).toEqual({ label: "WT", title: "Git worktree" });
-});

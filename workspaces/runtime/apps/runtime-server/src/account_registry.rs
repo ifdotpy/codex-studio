@@ -27,8 +27,8 @@ use studio_runtime_services::{
     },
 };
 use studio_runtime_store::{
-    AgentId, AgentRepository, AgentStatus, QueueEvent, QueueEventId, QueueEventRepository,
-    RuntimeStore, SchedulerRepository, WakeCandidate, WorkspaceMode,
+    AgentId, AgentRepository, QueueEvent, QueueEventId, QueueEventRepository, RuntimeStore,
+    SchedulerRepository, WakeCandidate, WorkspaceMode,
 };
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -115,8 +115,6 @@ mod registry_hints {
                             | ObservedTable::FederationOutbox
                             | ObservedTable::NativeActionReceipts
                             | ObservedTable::AccessReceipts
-                            | ObservedTable::Budget
-                            | ObservedTable::BudgetUsage
                             | ObservedTable::AccountTransfers
                             | ObservedTable::OrchestrationSettings
                             | ObservedTable::RuntimeRequests
@@ -157,7 +155,6 @@ const WAKE_PAGE: usize = 32;
 const RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const ACCOUNT_WORKER_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
-const IMAGE_EXECUTION_DEPENDENCY: &str = "workspace-state/image-execution";
 
 fn next_retry_delay(current: Duration) -> Duration {
     current.saturating_mul(2).min(MAX_RETRY_DELAY)
@@ -660,11 +657,12 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
             {
                 return Ok(not_sent(ReceiptOutcome::ExpectedScopeMismatch));
             }
-            let allowed_params = request.params.as_object().is_some_and(|params| {
-                params.len() == 1
-                    && params.get("threadId").and_then(serde_json::Value::as_str)
-                        == Some(request.thread_id.as_str())
-            });
+            let allowed_params =
+                studio_runtime_services::account_transfer::valid_source_preflight_params(
+                    request.method.as_str(),
+                    &request.thread_id,
+                    &request.params,
+                );
             if !allowed_params
                 || !matches!(
                     request.method.as_str(),
@@ -784,6 +782,28 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                     studio_runtime_services::account_session_runtime::AccountSessionError::Refused("Provider session scope changed")
                 }
                 studio_runtime_services::account_worker::retained::PortError::ScopeMismatch | studio_runtime_services::account_worker::retained::PortError::Invalid | studio_runtime_services::account_worker::retained::PortError::NotSent | studio_runtime_services::account_worker::retained::PortError::Deadline | studio_runtime_services::account_worker::retained::PortError::Capacity => studio_runtime_services::account_session_runtime::AccountSessionError::Refused("Connection recovery could not be started"),
+            })
+        })
+    }
+
+    fn recover_managed_agent(
+        &self,
+        account: String,
+        request: studio_runtime_services::agent_management_recovery::AuthorizedRecoveryRequest,
+    ) -> studio_runtime_services::account_session_runtime::RecoveryFuture {
+        let session = self
+            .sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(&account).cloned());
+        Box::pin(async move {
+            let Some(session) = session.filter(|session| session.is_live()) else {
+                return Err(
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Unknown,
+                );
+            };
+            session.recover_managed_agent(request).await.map_err(|_| {
+                studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
             })
         })
     }
@@ -997,6 +1017,7 @@ impl AccountRegistry {
         }));
         self.worker_retry_at.remove(account);
         self.worker_retry_delay.remove(account);
+        session_started(Arc::clone(&self.store), account.to_owned()).await;
         Ok(())
     }
 
@@ -1036,28 +1057,34 @@ impl AccountRegistry {
         pending_agents: Vec<WakeCandidate>,
         shutdown: Option<&Shutdown>,
     ) -> Result<AccountPageDispatch, WorkerError> {
-        if !allow_dormant_reconcile(&mut self.idle_dormant, account, !pending_agents.is_empty()) {
+        let callback_demand = if pending_agents.is_empty() && self.idle_dormant.contains(account) {
+            let account = account.to_owned();
+            self.store
+                .read_async("runtime-server/account_registry", move |db| {
+                    studio_runtime_services::account_worker::has_callback_reply_demand(db, &account)
+                })
+                .await?
+        } else {
+            false
+        };
+        if !allow_dormant_reconcile(
+            &mut self.idle_dormant,
+            account,
+            !pending_agents.is_empty() || callback_demand,
+        ) {
             self.after_agent.remove(account);
             return Ok(AccountPageDispatch::Exhausted);
         }
         let page_was_full = pending_agents.len() == WAKE_PAGE;
-        let (held_agents, agents, image_recovery) =
+        let (held_agents, agents, account_has_work) =
             classify_pending_agents(self.store.clone(), account.to_owned(), pending_agents).await?;
         for agent_id in &held_agents {
             self.after_agent
                 .insert(account.to_owned(), agent_id.clone());
         }
-        // An image-only pending page must not start an account provider
-        // outside the workspace image's shared mount namespace.
-        if agents.is_empty()
-            && (!held_agents.is_empty() || image_recovery)
-            && !self.workers.contains_key(account)
-        {
-            if image_recovery {
-                studio_runtime_services::diagnostics::log_stderr(format_args!(
-                    "account registry refused recovery for account {account}: workspace-state/image-execution"
-                ));
-            }
+        // Legacy-only recovery can select an account before compatibility settlement.
+        // Recheck durable demand after settlement before starting a provider.
+        if agents.is_empty() && !account_has_work && !self.workers.contains_key(account) {
             return Ok(if page_was_full {
                 AccountPageDispatch::Continue
             } else {
@@ -1079,6 +1106,12 @@ impl AccountRegistry {
             studio_runtime_services::account_start_gate::show_blocked(&self.store, waits).await?;
         }
         if let Err(error) = self.start(account).await {
+            session_start_failed(
+                Arc::clone(&self.store),
+                account.to_owned(),
+                error.to_string(),
+            )
+            .await;
             // A launch that only a sign-in can fix holds these starts with
             // their reason and action, instead of a silent provider wait.
             if let Some(reason) =
@@ -1256,13 +1289,21 @@ impl AccountRegistry {
                 "runtime-server/account_registry",
                 move |db| -> Result<AccountTargetPage, WorkerError> {
                     let accounts = changed_accounts(db, &changes)?;
-                    SchedulerRepository::account_wake_for_accounts(
+                    let mut targets = SchedulerRepository::account_wake_for_accounts(
                         db,
                         accounts.iter().map(String::as_str),
                         WAKE_PAGE,
                         event_time(),
                     )
-                    .map_err(Into::into)
+                    .map_err(WorkerError::from)?;
+                    for account in accounts {
+                        if studio_runtime_services::account_worker::has_callback_reply_demand(
+                            db, &account,
+                        )? {
+                            targets.entry(account).or_default();
+                        }
+                    }
+                    Ok(targets)
                 },
             )
             .await?;
@@ -1469,6 +1510,12 @@ impl AccountRegistry {
                         studio_runtime_services::diagnostics::log_stderr(format_args!(
                             "account worker ended: {error}"
                         ));
+                        session_start_failed(
+                            Arc::clone(&self.store),
+                            account.clone(),
+                            format!("the account worker ended: {error}"),
+                        )
+                        .await;
                     }
                     if planned_idle_exit && clean_exit {
                         self.idle_dormant.insert(account.clone());
@@ -1532,7 +1579,13 @@ impl AccountRegistry {
                                     studio_runtime_services::diagnostics::log_stderr(format_args!(
                                         "account session for {} did not start: {error}",
                                         request.account
-                                    ))
+                                    ));
+                                    session_start_failed(
+                                        Arc::clone(&self.store),
+                                        request.account.clone(),
+                                        error.to_string(),
+                                    )
+                                    .await;
                                 }
                                 Ok(_) => {
                                     studio_runtime_services::diagnostics::log_stderr(format_args!(
@@ -1722,6 +1775,8 @@ async fn classify_pending_agents(
     account: String,
     pending_agents: Vec<WakeCandidate>,
 ) -> Result<(std::collections::BTreeSet<String>, Vec<(String, i64)>, bool), WorkerError> {
+    // Legacy workspaces remain visible but cannot execute after removal.
+    studio_runtime_services::legacy_image_workspace::finish_stored_workspaces(&store).await?;
     let mut held_agents = BTreeSet::new();
     let mut checked = Vec::new();
     for candidate in pending_agents {
@@ -1751,37 +1806,39 @@ async fn classify_pending_agents(
             }
         }
     }
-    // A host that runs image turns starts the account worker for them like for
-    // any agent: workspace preparation mounts the image and runs the turn in
-    // `<mount>/repo`, and the worker's first pass makes their restart check.
-    if studio_runtime_services::image_workspace::IMAGE_EXECUTION_SUPPORTED {
-        let agents = checked
-            .into_iter()
-            .map(|(id, epoch, _)| (id, epoch))
-            .collect();
-        return Ok((held_agents, agents, false));
-    }
-    let image_agents = checked
-        .iter()
-        .filter(|(_, _, mode)| *mode == Some(WorkspaceMode::Image))
-        .map(|(id, _, _)| id.clone())
-        .collect::<std::collections::BTreeSet<_>>();
-    hold_image_workspace_agents(&store, &image_agents).await?;
-    held_agents.extend(image_agents);
-    let agents = checked
-        .into_iter()
-        .filter_map(|(id, epoch, mode)| (mode != Some(WorkspaceMode::Image)).then_some((id, epoch)))
-        .collect::<Vec<_>>();
-    let image_recovery = if agents.is_empty() {
-        store
-            .read_async("runtime-server/account_registry", move |db| {
-                has_image_workspace_recovery(db, &account)
-            })
-            .await
-    } else {
-        Ok(false)
-    }?;
-    Ok((held_agents, agents, image_recovery))
+    store
+        .read_async::<_, studio_runtime_store::StoreError>(
+            "account-registry/legacy-settlement",
+            move |db| {
+                let mut agents = Vec::new();
+                for (id, epoch, mode) in checked {
+                    let legacy = mode == Some(WorkspaceMode::Image)
+                        || AgentRepository::get(db, &AgentId::from(id.as_str()))?.is_some_and(
+                            |agent| {
+                                studio_runtime_services::legacy_image_workspace::is_legacy(
+                                    &agent.value(),
+                                )
+                            },
+                        );
+                    if legacy {
+                        held_agents.insert(id);
+                    } else {
+                        agents.push((id, epoch));
+                    }
+                }
+                let account_has_work =
+                    studio_runtime_store::SchedulerRepository::account_wake_for_accounts(
+                        db,
+                        [account.as_str()],
+                        1,
+                        event_time(),
+                    )?
+                    .contains_key(&account);
+                Ok((held_agents, agents, account_has_work))
+            },
+        )
+        .await
+        .map_err(Into::into)
 }
 
 /// Accounts whose pending or recovery work can have changed with these rows. A row that no
@@ -1876,7 +1933,7 @@ pub fn target_page(
     after_account: &str,
     after_agent: &BTreeMap<String, String>,
 ) -> Result<AccountTargetPage, WorkerError> {
-    SchedulerRepository::account_wake_page(
+    let targets = SchedulerRepository::account_wake_page(
         db,
         after_account,
         after_agent,
@@ -1884,7 +1941,26 @@ pub fn target_page(
         WAKE_PAGE,
         event_time(),
     )
-    .map_err(Into::into)
+    .map_err(WorkerError::from)?;
+    with_callback_reply_targets(db, targets, after_account)
+}
+
+fn with_callback_reply_targets(
+    db: &rusqlite::Connection,
+    mut targets: AccountTargetPage,
+    after_account: &str,
+) -> Result<AccountTargetPage, WorkerError> {
+    for account in studio_runtime_services::account_worker::callback_reply_accounts(
+        db,
+        after_account,
+        MAX_ACCOUNTS,
+    )? {
+        targets.entry(account).or_default();
+    }
+    while targets.len() > MAX_ACCOUNTS {
+        targets.pop_last();
+    }
+    Ok(targets)
 }
 
 fn target_page_after(
@@ -1892,7 +1968,7 @@ fn target_page_after(
     after_account: &str,
     after_agent: &BTreeMap<String, String>,
 ) -> Result<AccountTargetPage, WorkerError> {
-    SchedulerRepository::account_wake_page_after(
+    let targets = SchedulerRepository::account_wake_page_after(
         db,
         after_account,
         after_agent,
@@ -1900,7 +1976,8 @@ fn target_page_after(
         WAKE_PAGE,
         event_time(),
     )
-    .map_err(Into::into)
+    .map_err(WorkerError::from)?;
+    with_callback_reply_targets(db, targets, after_account)
 }
 
 struct RuntimeRadioIngress;
@@ -1966,94 +2043,6 @@ fn event_time() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
-}
-
-/// Keep the durable event pending while exposing the unavailable workspace executor on its agent.
-async fn hold_image_workspace_agents(
-    store: &RuntimeStore,
-    agents: &std::collections::BTreeSet<String>,
-) -> Result<(), WorkerError> {
-    if agents.is_empty() {
-        return Ok(());
-    }
-    let agents = agents.clone();
-    store
-        .transaction_with(move |tx| {
-            for id in agents {
-                let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
-                    continue;
-                };
-                if agent
-                    .extra
-                    .get("workspaceMode")
-                    .and_then(|mode| mode.as_str())
-                    != Some("image")
-                {
-                    continue;
-                }
-                if agent.status == AgentStatus::Paused
-                    && agent.extra.get("error").and_then(|value| value.as_str())
-                        == Some(IMAGE_EXECUTION_DEPENDENCY)
-                    && agent
-                        .extra
-                        .get("nativeFailureHold")
-                        .and_then(|value| value.as_bool())
-                        == Some(true)
-                {
-                    continue;
-                }
-                agent.status = AgentStatus::Paused;
-                agent
-                    .extra
-                    .insert("autoWake".into(), serde_json::json!(false));
-                agent
-                    .extra
-                    .insert("inFlight".into(), serde_json::json!(false));
-                agent
-                    .extra
-                    .insert("nativeFailureHold".into(), serde_json::json!(true));
-                agent.extra.insert(
-                    "error".into(),
-                    serde_json::json!(IMAGE_EXECUTION_DEPENDENCY),
-                );
-                agent.extra.insert(
-                    "startOutcomeHold".into(),
-                    serde_json::json!({"stage":"held","reason":IMAGE_EXECUTION_DEPENDENCY}),
-                );
-                AgentRepository::put(tx, &agent)?;
-            }
-            Ok::<_, WorkerError>(())
-        })
-        .await
-}
-
-fn has_image_workspace_recovery(
-    db: &rusqlite::Connection,
-    account: &str,
-) -> Result<bool, WorkerError> {
-    Ok(db.query_row(
-        "SELECT EXISTS(
-          SELECT 1 FROM runtime_agents a
-          WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1
-            AND json_extract(a.record,'$.workspaceMode')='image'
-            AND json_extract(a.record,'$.deletedAt') IS NULL
-            AND COALESCE(json_extract(a.record,'$.remoteWorker'),0)=0
-            AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0
-            AND ((json_extract(a.record,'$.provider')='codex'
-                  AND json_extract(a.record,'$.startAttempt.submitted')=1
-                  AND json_extract(a.record,'$.startAttempt.connectionGeneration') IS NOT NULL
-                  AND json_extract(a.record,'$.status') IN ('starting','running','waiting','paused','interrupted'))
-              OR (json_type(a.record,'$.disconnectRecovery')='object' AND (
-                  COALESCE(json_extract(a.record,'$.status'),'') NOT IN ('completed','waiting','paused','parked')
-                  OR json_extract(a.record,'$.disconnectRecovery.stage') IS NOT NULL))
-              OR (json_type(a.record,'$.restartRecovery')='object' AND (
-                  COALESCE(json_extract(a.record,'$.status'),'') NOT IN ('completed','waiting','paused','parked')
-                  OR COALESCE(json_extract(a.record,'$.restartRecovery.stage'),'')
-                     NOT IN ('finished','continued','reattached','input_restored'))))
-        )",
-        [account],
-        |row| row.get(0),
-    )?)
 }
 
 /// Load the host project snapshot and recheck its paths for one radio write.
@@ -2486,6 +2475,33 @@ mod tests {
         (directory, store, hints)
     }
 
+    #[tokio::test]
+    async fn current_workspace_account_classification_does_not_admit_a_legacy_writer() {
+        let (_directory, store, _hints) =
+            registry_fixture(&[("agent", "codex", "account", None)]).await;
+        queue_user_event(&store, "input", "agent").await;
+        let before = store.writer_admissions();
+        let (legacy, agents, has_work) = super::classify_pending_agents(
+            store.clone(),
+            "account".into(),
+            vec![studio_runtime_store::WakeCandidate::ready(
+                "agent".into(),
+                0,
+                None,
+            )],
+        )
+        .await
+        .expect("current workspace remains dispatchable");
+        assert!(legacy.is_empty());
+        assert_eq!(agents, [("agent".to_owned(), 0)]);
+        assert!(has_work);
+        assert_eq!(
+            store.writer_admissions(),
+            before,
+            "Read-only account paging must not enqueue a legacy cleanup transaction"
+        );
+    }
+
     async fn queue_user_event(store: &RuntimeStore, id: &'static str, agent: &'static str) {
         store
             .transaction(move |tx| {
@@ -2726,5 +2742,37 @@ mod tests {
         assert!(receipt.ticket().is_none());
         assert!(receipt.response().is_none());
         assert!(!changes.has_changed().expect("change watcher remains open"));
+    }
+}
+
+/// Keep the reason the session of `account` did not start, for the liveness
+/// row of the chats that wait for it.
+async fn session_start_failed(store: Arc<RuntimeStore>, account: String, reason: String) {
+    let now = studio_runtime_services::event_write::unix_time().unwrap_or_default();
+    if let Err(error) = store
+        .transaction(move |tx| {
+            studio_runtime_services::liveness::record_session_start_failure(
+                tx, &account, &reason, now,
+            )
+        })
+        .await
+    {
+        studio_runtime_services::diagnostics::log_stderr(format_args!(
+            "account session start error was not recorded: {error}"
+        ));
+    }
+}
+
+/// Forget the start error of `account` once its session runs.
+async fn session_started(store: Arc<RuntimeStore>, account: String) {
+    if let Err(error) = store
+        .transaction(move |tx| {
+            studio_runtime_services::liveness::clear_session_start_failure(tx, &account)
+        })
+        .await
+    {
+        studio_runtime_services::diagnostics::log_stderr(format_args!(
+            "account session start error was not cleared: {error}"
+        ));
     }
 }

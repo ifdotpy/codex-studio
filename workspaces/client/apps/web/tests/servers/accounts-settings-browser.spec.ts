@@ -16,7 +16,7 @@ import type { Page } from "playwright";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.ts";
+import { test, expect, apiSchemaHeaders } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
 
 function waitForPost<Path extends ApiPostPath>(
@@ -34,6 +34,223 @@ function waitForPost<Path extends ApiPostPath>(
     return matches(fixturePostBody<Path>(request.postDataJSON()));
   });
 }
+
+test("collapsed account sign-in keeps exact ownership at phone and desktop widths", async ({
+  page,
+}, testInfo) => {
+  const local = await fixture("Local", false, [
+    {
+      id: "decoy-claude-profile",
+      provider: "claude",
+      label: "Personal",
+      email: "work@example.test",
+      plan: "Max",
+      status: "signedOut",
+      isDefault: false,
+    },
+    {
+      id: "exact-claude-profile",
+      provider: "claude",
+      label: "Team",
+      email: "work@example.test",
+      plan: "Team",
+      status: "signedOut",
+      isDefault: true,
+    },
+  ]);
+  const remote = await fixture("Remote", true, []);
+  local.discoverPeer(remote, "unreachable", "unreachable");
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let received!: () => void;
+  const requestReceived = new Promise<void>((resolve) => {
+    received = resolve;
+  });
+  const posts: { account_key?: string; login_id?: string }[] = [];
+  const profilePosts: { account_key?: string }[] = [];
+  await page.route("**/api/claude/profiles", async (route) => {
+    const body = route.request().postDataJSON();
+    profilePosts.push(body);
+    await route.fulfill({
+      headers: apiSchemaHeaders(),
+      json: {
+        accounts: local.accounts(),
+        archivedAccounts: [],
+        defaultAccountKey: "exact-claude-profile",
+        logins: [],
+      },
+    });
+  });
+  await page.route("**/api/accounts/claude/login", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const body = route.request().postDataJSON();
+    posts.push(body);
+    received();
+    await held;
+    await route.fulfill({
+      headers: apiSchemaHeaders(),
+      json: {
+        requestId: body.login_id,
+        accountKey: body.account_key,
+        status: "cancelled",
+      },
+    });
+  });
+  try {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(local.origin + "/?studio-navigation=combined");
+    await page.locator("#message").waitFor();
+    await page
+      .getByRole("button", { name: "Studio settings", exact: true })
+      .click();
+    const settings = page.getByRole("dialog", { name: "Studio settings" });
+    await settings.getByRole("tab", { name: "Accounts", exact: true }).click();
+    const row = settings.locator(
+      '[data-account-identity*="exact-claude-profile"]',
+    );
+    const personal = settings.locator(
+      '[data-account-identity*="decoy-claude-profile"]',
+    );
+    const details = row.getByRole("button", { name: /^Limit details for/ });
+    const login = row.getByRole("button", {
+      name: "Sign in to Team on Local",
+      exact: true,
+    });
+    for (const width of [1440, 320]) {
+      await page.setViewportSize({ width, height: 1000 });
+      await expect(details).toHaveAttribute("aria-expanded", "false");
+      await expect(login).toBeVisible();
+      await expect(login).toBeEnabled();
+      await expect(row.locator(".account-identity strong")).toHaveText("Team");
+      await expect(personal.locator(".account-identity strong")).toHaveText(
+        "Personal",
+      );
+      await expect(
+        personal.getByRole("button", {
+          name: "Sign in to Personal on Local",
+          exact: true,
+        }),
+      ).toBeVisible();
+      expect(
+        await row
+          .locator(".account-identity strong")
+          .evaluate((name) => name.scrollWidth <= name.clientWidth),
+      ).toBe(true);
+      await expect(row).toContainText("Local: Sign in needed");
+      await expect(row).not.toContainText("Remote: Offline");
+      await login.scrollIntoViewIfNeeded();
+      const box = (await login.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(width);
+      expect(box.height).toBeGreaterThanOrEqual(32);
+      await settings.screenshot({
+        path: testInfo.outputPath(`account-login-${width}.png`),
+      });
+    }
+    await details.click();
+    await expect(
+      row
+        .locator(".account-facts dt")
+        .filter({ hasText: /^Servers$/ })
+        .evaluate((term) => term.nextElementSibling!.textContent),
+    ).resolves.toBe("Local");
+    await details.click();
+    const actions = row.getByRole("button", {
+      name: "Actions for work@example.test",
+      exact: true,
+    });
+    await actions.click();
+    await page
+      .getByRole("menuitem", { name: "Configure", exact: true })
+      .click();
+    const profile = page.getByRole("dialog", {
+      name: "Configure Claude",
+      exact: true,
+    });
+    await expect(profile).toBeVisible();
+    await profile
+      .getByRole("button", { name: "Save Claude profile", exact: true })
+      .click();
+    await expect(profile).toContainText("Claude profile saved.");
+    expect(profilePosts).toHaveLength(1);
+    expect(required(profilePosts[0]).account_key).toBe("exact-claude-profile");
+    await page.evaluate(() => {
+      const fixture = window as unknown as { __accountReturnFocus: unknown[] };
+      fixture.__accountReturnFocus = [];
+      document.addEventListener("focusin", (event) => {
+        const node = event.target as HTMLElement;
+        fixture.__accountReturnFocus.push({
+          tag: node.tagName,
+          label: node.getAttribute("aria-label"),
+          text: node.textContent?.slice(0, 80),
+          row: node.closest<HTMLElement>("[data-account-identity]")?.dataset
+            .accountIdentity,
+          dialog: node.closest('[role="dialog"]')?.id,
+        });
+      });
+    });
+    await profile.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(settings).toBeVisible();
+    try {
+      await expect(actions).toBeFocused();
+    } catch (failure) {
+      console.log(
+        "Account return focus",
+        await page.evaluate(() => ({
+          events: (window as unknown as { __accountReturnFocus: unknown[] })
+            .__accountReturnFocus,
+          active: {
+            tag: document.activeElement?.tagName,
+            label: document.activeElement?.getAttribute("aria-label"),
+            text: document.activeElement?.textContent?.slice(0, 80),
+            dialog: document.activeElement?.closest('[role="dialog"]')?.id,
+          },
+          dialogs: [...document.querySelectorAll('[role="dialog"]')].map(
+            (node) => ({
+              id: node.id,
+              label: node.getAttribute("aria-labelledby"),
+              visible: !!node.getClientRects().length,
+              rows: [
+                ...node.querySelectorAll<HTMLElement>(
+                  "[data-account-identity]",
+                ),
+              ].map((row) => row.dataset.accountIdentity),
+            }),
+          ),
+        })),
+      );
+      throw failure;
+    }
+    expect(posts).toHaveLength(0);
+    await login.click();
+    const dialog = page.getByRole("dialog", { name: /Sign in to Claude/ });
+    await expect(dialog).toBeVisible();
+    expect(posts).toHaveLength(0);
+    await dialog
+      .getByRole("button", { name: "Start sign-in", exact: true })
+      .evaluate((button) => {
+        (button as HTMLElement).click();
+        (button as HTMLElement).click();
+      });
+    await requestReceived;
+    await expect(
+      dialog.getByRole("button", { name: "Retry sign-in", exact: true }),
+    ).toBeDisabled();
+    expect(posts).toHaveLength(1);
+    expect(required(posts[0]).account_key).toBe("exact-claude-profile");
+    expect(new URL(page.url()).origin).toBe(local.origin);
+    release();
+    await expect(dialog).toContainText("Sign-in cancelled.");
+    expect(posts).toHaveLength(1);
+  } finally {
+    release();
+    await page.close();
+    await local.close();
+    await remote.close();
+  }
+});
 
 test("accounts settings show per-server state and provider choices", async ({
   page,
@@ -250,7 +467,10 @@ test("accounts settings show per-server state and provider choices", async ({
   await work.getByRole("button", { name: /^Limit details for/ }).click();
   await expect(work.getByRole("button", { name: "✓ Local" })).toBeVisible();
   await expect(
-    work.getByRole("button", { name: /sign in again/ }),
+    work.getByRole("button", {
+      name: "Sign in to Work on Remote",
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(work.getByRole("button", { name: "+ Empty" })).toBeVisible();
   await expect(accounts.getByText("Claude personal")).toBeVisible();
@@ -372,6 +592,7 @@ test("accounts settings show per-server state and provider choices", async ({
     path: resolve(screenshots, "accounts-mobile.png"),
   });
 
+  await settings.getByRole("button", { name: "Back", exact: true }).click();
   await settings.getByRole("tab", { name: "Servers", exact: true }).click();
   const servers = settings.getByRole("region", {
     name: "Servers",
@@ -775,7 +996,9 @@ test("accounts settings show per-server state and provider choices", async ({
     .click();
   await expect(settings).toBeVisible();
   await work.getByRole("button", { name: /^Limit details for/ }).click();
-  await work.getByRole("button", { name: /Remote · sign in again/ }).click();
+  await work
+    .getByRole("button", { name: "Sign in to Work on Remote", exact: true })
+    .click();
   const reconnect = remoteFrame.getByRole("dialog", {
     name: /Sign in to Codex · person@example.test · Remote/,
   });

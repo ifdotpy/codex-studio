@@ -180,25 +180,6 @@ impl PreparedCapture {
             usage_unknown: false,
         })
     }
-    pub(crate) fn apply_budget_conflicts(
-        &mut self,
-        conflicts: &[studio_runtime_schema::usage::ledger::UsageReplayConflict],
-    ) {
-        if let Some(observation @ UsageObservation::Response { tokens, .. }) = &self.usage {
-            let identity = UsageIdentity::new(
-                text(&self.agent["id"]),
-                self.params["threadId"].as_str(),
-                observation,
-            );
-            self.rejected_usage = conflicts
-                .iter()
-                .find(|conflict| {
-                    conflict.identity == identity
-                        && conflict.incoming_tokens.as_ref() == Some(tokens)
-                })
-                .cloned();
-        }
-    }
     pub fn model_payload(
         agent: &Value,
         params: &Value,
@@ -266,12 +247,12 @@ impl PreparedCapture {
     }
     pub(crate) fn bind_budget(
         &mut self,
-        canvas: &Connection,
+        analytics: &Connection,
         epoch: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<(), CaptureError> {
         self.ledger_since = epoch;
         self.usage_unknown = unknown_usage_receipt(
-            canvas,
+            analytics,
             &self.agent,
             &self.params,
             self.usage.as_ref(),
@@ -610,7 +591,7 @@ impl CaptureDecision {
 }
 /// Primary-key-only lookup of durable zero-debit replay protection.
 pub(crate) fn unknown_usage_receipt(
-    canvas: &Connection,
+    analytics: &Connection,
     agent: &Value,
     params: &Value,
     usage: Option<&UsageObservation>,
@@ -640,14 +621,15 @@ pub(crate) fn unknown_usage_receipt(
             }),
     };
     key.map(|key| {
-        studio_runtime_store::budget::BudgetRepository::usage(canvas, &key).map(|row| {
-            row.is_some_and(|row| {
-                row.kind == studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_KIND
-            })
-        })
+        analytics.query_row(
+            "SELECT EXISTS(SELECT 1 FROM analytics_meta WHERE key=?1)",
+            [format!("unknownUsageReceipt:{key}")],
+            |row| row.get::<_, bool>(0),
+        )
     })
     .transpose()
     .map(|found| found.unwrap_or(false))
+    .map_err(StoreError::from)
 }
 
 pub async fn capture(
@@ -657,12 +639,8 @@ pub async fn capture(
     store
         .analytics_transaction(move |tx, canvas| {
             check_identity(canvas, prepared.agent())?;
-            prepared.ledger_since = studio_runtime_store::budget::BudgetRepository::ledger_since(
-                canvas,
-                text(&prepared.agent["id"]),
-            )?;
-            let epoch = prepared.ledger_since;
-            prepared.bind_budget(canvas, epoch)?;
+            let epoch = studio_runtime_schema::usage::ledger::LedgerEpoch::Current;
+            prepared.bind_budget(tx, epoch)?;
             let decision = decide(
                 CaptureSnapshot::load(tx, std::sync::Arc::new(prepared))?,
                 epoch,
@@ -723,15 +701,16 @@ pub(crate) fn capture_logged_effect(
     {
         prepared.rejected_usage = Some((**conflict).clone());
     }
-    if let Effect::Analytics {
-        ledger_since,
-        usage_unknown,
-        ..
-    } = effect
-    {
+    if let Effect::Analytics { ledger_since, .. } = effect {
         prepared.ledger_since = *ledger_since;
-        prepared.usage_unknown = *usage_unknown;
     }
+    prepared.usage_unknown = unknown_usage_receipt(
+        tx,
+        &prepared.agent,
+        &prepared.params,
+        prepared.usage.as_ref(),
+        prepared.legacy_usage.as_ref(),
+    )?;
     let prepared = std::sync::Arc::new(prepared);
     let mut decision = decide(
         CaptureSnapshot::load(tx, std::sync::Arc::clone(&prepared))?,
@@ -1054,6 +1033,7 @@ pub fn decide(
                     } else {
                         Value::Null
                     };
+                    studio_runtime_schema::claude_failure::sanitize_error(&mut row["error"]);
                     row["terminalSource"] = json!(q.source.name());
                 }
                 for (source, target) in [
@@ -1730,13 +1710,8 @@ pub async fn capture_batch(
             let mut effects = Vec::new();
             for mut prepared in prepared {
                 check_identity(canvas, prepared.agent())?;
-                prepared.ledger_since =
-                    studio_runtime_store::budget::BudgetRepository::ledger_since(
-                        canvas,
-                        text(&prepared.agent["id"]),
-                    )?;
-                let epoch = prepared.ledger_since;
-                prepared.bind_budget(canvas, epoch)?;
+                let epoch = studio_runtime_schema::usage::ledger::LedgerEpoch::Current;
+                prepared.bind_budget(tx, epoch)?;
                 let decision = decide(
                     CaptureSnapshot::load(tx, std::sync::Arc::new(prepared))?,
                     epoch,

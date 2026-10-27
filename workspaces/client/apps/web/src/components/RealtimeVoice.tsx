@@ -2,6 +2,7 @@ import {
   useServerApi,
   useServerResources,
 } from "../servers/ServerServicesContext";
+import { randomUUID } from "../uuid";
 import { hasNativeClient } from "../native/client";
 import { useServerAudio } from "../servers/ServerServicesContext";
 import type { nativeVoice } from "../native/voice";
@@ -329,7 +330,7 @@ function NativeVoice({
       await post("/api/voice/status", { agent: agentId }, { timeoutMs: 15000 });
       if (ticket !== generation.current) return;
       p = {
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         remoteSet: false,
         ready: false,
         closed: false,

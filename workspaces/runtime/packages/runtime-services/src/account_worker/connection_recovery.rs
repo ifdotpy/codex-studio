@@ -23,6 +23,7 @@ pub(super) struct Command {
     pub scope: ConnectionScope,
     pub session: RetainedSessionPort,
     pub agent_id: String,
+    pub authorization: Option<crate::agent_management_recovery::AuthorizedRecoveryRequest>,
 }
 
 pub(super) struct Completed {
@@ -31,6 +32,26 @@ pub(super) struct Completed {
 }
 
 pub(super) async fn run(command: Command) -> Result<Completed, RecoveryError> {
+    let authorization = command.authorization.clone();
+    let store = Arc::clone(&command.bridge.store);
+    let completed = run_inner(command).await?;
+    if let Some(authorization) = authorization {
+        let receipt = crate::agent_management_recovery::finish_recovery(
+            &store,
+            &authorization,
+            completed.receipt,
+        )
+        .await
+        .map_err(|_| RecoveryError::CommitFailed)?;
+        return Ok(Completed {
+            receipt,
+            streams: completed.streams,
+        });
+    }
+    Ok(completed)
+}
+
+pub(super) async fn run_inner(command: Command) -> Result<Completed, RecoveryError> {
     let store = Arc::clone(&command.bridge.store);
     let agent_id = AgentId::from(command.agent_id.as_str());
     let before = store
@@ -51,7 +72,37 @@ pub(super) async fn run(command: Command) -> Result<Completed, RecoveryError> {
     {
         return Err(RecoveryError::CommitFailed);
     }
-    if before["connectionRecovery"]["requestState"] == "result"
+    if let Some(authorization) = command.authorization.as_ref() {
+        let auth = authorization.clone();
+        let allowed = store
+            .transaction_with(move |tx| auth.current(tx))
+            .await
+            .map_err(|_| RecoveryError::CommitFailed)?;
+        if !allowed {
+            return Ok(Completed {
+                receipt: json!({"status":"superseded"}),
+                streams: None,
+            });
+        }
+        let thread = before["threadId"].as_str().unwrap_or("");
+        if before["accountHistory"]
+            .as_array()
+            .is_some_and(|history| !history.is_empty())
+            && before["error"].as_str().is_some_and(|error| {
+                error.contains(&format!("no rollout found for thread id {thread}"))
+                    || error.contains(&format!(
+                        "invalid paginated history lineage for {thread}: missing source rollout"
+                    ))
+            })
+        {
+            return Ok(Completed {
+                receipt: json!({"status":"history_missing","replayed":false,"next":"The transferred thread has no confirmed source history. Keep its saved inputs unchanged."}),
+                streams: None,
+            });
+        }
+    }
+    if command.authorization.is_none()
+        && before["connectionRecovery"]["requestState"] == "result"
         && saved_receipt_matches_current(&before)
     {
         return Ok(Completed {
@@ -66,6 +117,27 @@ pub(super) async fn run(command: Command) -> Result<Completed, RecoveryError> {
     let snapshot =
         RecoverySnapshot::from_record(pending).map_err(|_| RecoveryError::CommitFailed)?;
     let eligibility = snapshot.eligibility();
+    if command.authorization.is_some()
+        && !eligibility.connection
+        && !eligibility.unconfirmed_start
+        && !eligibility.orphan_busy
+        && snapshot.record()["turnId"].as_str().is_none()
+    {
+        let target = command.agent_id.clone();
+        let uncertain = store.read_async("manual-recovery-inputs", move |db| {
+            db.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND status IN ('reserved','dispatching','uncertain'))", [target], |row| row.get::<_,bool>(0)).map_err(studio_runtime_store::StoreError::from)
+        }).await?;
+        let receipt = if uncertain {
+            json!({"status":"unconfirmed","inputRecovery":{"status":"waiting"},"next":"Exact native input evidence is not available. Keep the original input unchanged."})
+        } else {
+            json!({"status":"skipped","next":"The worker has no unsettled turn to recover."})
+        };
+        finish_request(&store, &command.agent_id, &recovery_id, &receipt).await?;
+        return Ok(Completed {
+            receipt,
+            streams: None,
+        });
+    }
     let thread = snapshot.record()["threadId"]
         .as_str()
         .filter(|value| !value.is_empty())
@@ -101,13 +173,31 @@ pub(super) async fn run(command: Command) -> Result<Completed, RecoveryError> {
                 .as_i64()
                 .ok_or(RecoveryError::CommitFailed)?,
         },
-        recovery_id.clone(),
+        command.authorization.as_ref().map_or_else(
+            || recovery_id.clone(),
+            |authorization| {
+                crate::event_write::request_signature(&json!([
+                    recovery_id,
+                    authorization.request_id
+                ]))
+            },
+        ),
     );
     let mut reader =
         RetainedRecoveryReader::new(command.scope.clone(), thread, &mut history, source.as_ref())
             .map_err(|_| RecoveryError::CommitFailed)?;
-    let completion =
-        lifecycle_completion(&store, &command.account, recovery_id.clone(), at).await?;
+    let completion = if command.authorization.is_some()
+        && eligibility.unconfirmed_start
+        && snapshot.record()["restartRecovery"]["stage"] == "held"
+        && snapshot.record()["startAttempt"].is_null()
+    {
+        Arc::new(std::sync::Mutex::new(Box::new(
+            super::restart_recovery::RestartInputCompletion::default(),
+        )
+            as Box<dyn crate::recovery_store::CompletionWriter>))
+    } else {
+        lifecycle_completion(&store, &command.account, recovery_id.clone(), at).await?
+    };
     let task_completion: Arc<dyn TaskCompletionWriter> = Arc::new(NoTaskCompletion);
     let mut runtime = RecoveryRuntime {
         store: Arc::clone(&store),
@@ -119,7 +209,38 @@ pub(super) async fn run(command: Command) -> Result<Completed, RecoveryError> {
         snapshot: snapshot.clone(),
         automatic: false,
     };
-    let result = match runtime.reconcile(&job, command.scope, &mut reader).await {
+    let outcome = if let Some(authorization) = command.authorization {
+        let mut effects = crate::agent_management_recovery::AuthorizedRecoveryEffects {
+            store: crate::recovery_store::RecoveryStore {
+                store: Arc::clone(&store),
+                connection_current: {
+                    let source = Arc::clone(&source);
+                    Arc::new(move |scope| {
+                        source(scope).is_some_and(|observation| observation.valid(scope))
+                    })
+                },
+                completion: Arc::clone(&runtime.completion),
+                at,
+                observation_current: Arc::clone(&source),
+            },
+            authorization,
+        };
+        if eligibility.connection && !eligibility.unconfirmed_start {
+            crate::recovery::recover_connection(
+                &snapshot,
+                command.scope,
+                &mut reader,
+                &mut effects,
+                false,
+            )
+            .await
+        } else {
+            crate::recovery::recover_turn(&snapshot, command.scope, &mut reader, &mut effects).await
+        }
+    } else {
+        runtime.reconcile(&job, command.scope, &mut reader).await
+    };
+    let result = match outcome {
         Ok(outcome) => outcome,
         Err(RecoveryError::History(error)) => {
             let receipt = json!({"status":"unconfirmed","error":error.to_string()});

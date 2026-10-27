@@ -903,5 +903,22 @@
       "required": [],
       "additionalProperties": false
     }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_sign_in",
+    "description": "Show the person a sign-in card for a link that they must open to sign in or approve access: an OAuth, OpenID Connect, SSO or SAML sign-in page, a device code page, or the loopback sign-in page of a command. After the person approves the card, the link opens in the person's own browser on their Mac or phone, and the sign-in result returns to the command. Use this tool for every such link that a command prints or that you must give to the person. Do not open the link in another way, and do not give it in a message as the only way to open it. Keep the sign-in command running while the person signs in. A repeated call with the same link returns the same card.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        }
+      },
+      "required": ["url"],
+      "additionalProperties": false
+    }
   }
 ]

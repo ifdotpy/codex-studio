@@ -15,6 +15,67 @@ pub trait Vault: Send + Sync {
     fn write(&self, state: &Value) -> Result<(), String>;
 }
 
+/// File name of the desktop pairing key store inside the client data folder.
+pub const SERVER_KEYS_FILE: &str = "server-keys.json";
+
+/// Keeps pairing keys in a file that only the user can read. A keychain item
+/// is bound to the exact build of an app without a team identity, so each
+/// update asked for the login password again.
+pub struct FileVault {
+    path: std::path::PathBuf,
+}
+impl FileVault {
+    pub fn new(directory: &std::path::Path) -> Self {
+        Self {
+            path: directory.join(SERVER_KEYS_FILE),
+        }
+    }
+}
+impl Vault for FileVault {
+    fn read(&self) -> Result<Value, String> {
+        match std::fs::read(&self.path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| "The server key store is invalid.".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(json!({"drafts":{},"servers":{}}))
+            }
+            Err(_) => Err("The server key store could not be opened.".into()),
+        }
+    }
+    fn write(&self, state: &Value) -> Result<(), String> {
+        use std::io::Write;
+        let bytes =
+            serde_json::to_vec(state).map_err(|_| "The server key store could not be encoded.")?;
+        let directory = self
+            .path
+            .parent()
+            .ok_or("The server key store has no folder.")?;
+        // tempfile creates the file with mode 0600; the rename keeps it.
+        let mut file = tempfile::NamedTempFile::new_in(directory)
+            .map_err(|_| "The server key store could not be saved.")?;
+        file.write_all(&bytes)
+            .and_then(|()| file.as_file().sync_all())
+            .map_err(|_| "The server key store could not be saved.")?;
+        file.persist(&self.path)
+            .map_err(|_| "The server key store could not be saved.")?;
+        Ok(())
+    }
+}
+
+/// Copies keys from the keychain item of earlier builds into the file store
+/// once, when the file does not exist yet.
+#[cfg(target_os = "macos")]
+pub fn move_keychain_keys(file: &FileVault, account: &str) -> Result<(), String> {
+    if file.path.exists() {
+        return Ok(());
+    }
+    let state = KeychainVault {
+        account: account.to_owned(),
+    }
+    .read()?;
+    file.write(&state)
+}
+
 #[cfg(target_os = "macos")]
 pub struct KeychainVault {
     pub account: String,
@@ -221,6 +282,25 @@ mod tests {
             Ok(())
         }
     }
+    #[test]
+    fn file_vault_keeps_keys_in_a_private_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let vault = FileVault::new(directory.path());
+        assert_eq!(vault.read().unwrap(), json!({"drafts":{},"servers":{}}));
+        let state = json!({"drafts":{},"servers":{"a":{"origin":"https://a.ts.net"}}});
+        vault.write(&state).unwrap();
+        assert_eq!(FileVault::new(directory.path()).read().unwrap(), state);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(directory.path().join(SERVER_KEYS_FILE))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
     #[test]
     fn keys_sign_exact_bytes_and_import_refuses_partial_or_conflicting_state() {
         let invitation = json!({"protocol":1,"origin":"https://fixture.tailnet.ts.net","serverId":"server","inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"});

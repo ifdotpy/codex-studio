@@ -3,7 +3,7 @@
 use rusqlite::{Connection, params};
 use serde_json::Value;
 
-use crate::{RuleRecord, StoreError, StoreResult};
+use crate::{CachedSql, RuleRecord, StoreError, StoreResult};
 
 pub const RULE_BATCH: usize = 128;
 const MAX_RECORD_BYTES: usize = 1_048_576;
@@ -63,6 +63,18 @@ impl RulesTickRepository {
             "monitors",
         )?;
         Ok(RuleActivity { agents, monitors })
+    }
+
+    /// Whether agent `agent` has input that a failed start kept pending at
+    /// `epoch`: a pending event of that epoch with a stored start error.
+    pub fn held_input(connection: &Connection, agent: &str, epoch: u64) -> StoreResult<bool> {
+        let epoch = i64::try_from(epoch)
+            .map_err(|_| StoreError::SchemaMismatch("invalid agent epoch".to_owned()))?;
+        Ok(connection.query_row_cached(
+            "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE status='pending' AND agent=?1 AND epoch=?2 AND COALESCE(error,'')<>'')",
+            params![agent, epoch],
+            |row| row.get::<_, bool>(0),
+        )?)
     }
 }
 

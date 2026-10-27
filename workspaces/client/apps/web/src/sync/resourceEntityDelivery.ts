@@ -4,7 +4,9 @@ import { subscriptionKey } from "./subscriptions/contracts";
 // Frames waiting for persistence. Accommodates four full 256-resource subscription
 // bursts; the write deadline catches stuck storage before ordinary traffic fills it.
 export const MAX_PENDING_RESOURCE_FRAMES = 1024;
-const PERSIST_DEADLINE_MS = 1000;
+// Time one frame may take to reach storage, in milliseconds. WebKit storage
+// took over a second for startup snapshots in the desktop app (2026-10-26).
+export const PERSIST_DEADLINE_MS = 10_000;
 
 type QueuedFrame = {
   event: ResourceChangeEvent;

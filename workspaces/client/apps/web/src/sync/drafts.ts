@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import type { RxDocument } from "rxdb";
 import type { SyncDocument } from "./client";
 import { isRemoteServerView } from "../servers/environment";
@@ -65,7 +66,7 @@ export function createBrowserDrafts(options: {
   } = options.storage;
   let device = saved<string>("codex-draft-device", "");
   if (!device) {
-    device = crypto.randomUUID();
+    device = randomUUID();
     save("codex-draft-device", device);
   }
   function useBrowserDrafts() {
@@ -79,7 +80,7 @@ export function createBrowserDrafts(options: {
       });
       return { drafts, error };
     })[0];
-    const [writer] = useState(() => crypto.randomUUID());
+    const [writer] = useState(() => randomUUID());
     const [recovery] = useState(() => {
       try {
         return { entries: readDraftJournal(storageKey.current), error: "" };

@@ -1,3 +1,4 @@
+import { randomUUID } from "../../uuid";
 import {
   Alert,
   Button,
@@ -138,7 +139,7 @@ export default function VaultSetup({
     try {
       const done = await loginVault(
         backend,
-        { profile, requestId: crypto.randomUUID() },
+        { profile, requestId: randomUUID() },
         {
           resources,
           signal: controller.current.signal,
@@ -162,7 +163,7 @@ export default function VaultSetup({
     try {
       const done = await setupVault(
         backend,
-        { projectId, requestId: crypto.randomUUID(), prefix, profile, region },
+        { projectId, requestId: randomUUID(), prefix, profile, region },
         {
           resources,
           signal: controller.current.signal,

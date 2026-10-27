@@ -22,6 +22,12 @@ import { CARGO_BUILD_JOBS, scrubAgentEnvironment } from "./gate-config.ts";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  crateKeys,
+  recordPass,
+  reusedResult,
+  stepKey,
+} from "./test-result-cache.ts";
 
 import type ts from "typescript";
 import type { JSONReport } from "@playwright/test/reporter";
@@ -63,6 +69,7 @@ export interface StepResult {
   durationSeconds: number;
   errors?: string[];
   logPath?: string;
+  reused?: boolean;
 }
 export interface GateStep {
   id?: string;
@@ -74,6 +81,10 @@ export interface GateStep {
   item: WorkspacePackage;
   commands?: Command[];
   options?: RunOptions;
+  // Repository paths whose content keys a reusable passing result.
+  inputs?: string[];
+  // Run only the workspace crates without a passing result for their inputs.
+  crateReuse?: boolean;
 }
 interface RecipeOptions {
   write?: (text: string) => void;
@@ -136,12 +147,20 @@ const UNSAFE_RUST_ALLOWLIST: [string, string][] = [
     "Read-only macOS libproc and sysctl process identity queries.",
   ],
   [
-    "workspaces/runtime/packages/runtime-services/src/image_workspace_macos/fsevents_ffi.rs",
-    "FSEvents (lead's W9 decision).",
-  ],
-  [
     "workspaces/runtime/packages/runtime-services/src/host_exec_service/clone_ffi.rs",
     "APFS clonefile(2) for host_exec slot clones.",
+  ],
+  [
+    "workspaces/runtime/packages/runtime-services/src/shell_pressure/macos.rs",
+    "Apple dispatch memory-pressure source FFI and its raw callback context.",
+  ],
+  [
+    "workspaces/runtime/packages/runtime-services/src/layr_native/import/filesystem_ffi.rs",
+    "APFS descriptor clones and read-only filesystem case policy for native import.",
+  ],
+  [
+    "workspaces/runtime/packages/runtime-services/src/layr_native/failed_import/flags_ffi.rs",
+    "Descriptor-bound deletion flag cleanup for a failed private import.",
   ],
   [
     "workspaces/runtime/packages/runtime-services/src/diagnostics/allocator.rs",
@@ -150,6 +169,10 @@ const UNSAFE_RUST_ALLOWLIST: [string, string][] = [
   [
     "workspaces/client/apps/native/src-tauri/src/lib.rs",
     "Single-instance flock on the native shell lock file.",
+  ],
+  [
+    "workspaces/client/apps/native/src-tauri/src/ios_shell.rs",
+    "Objective-C, UIKit, and WKWebView FFI through objc2 for the iOS shell.",
   ],
   [
     "workspaces/client/packages/client-core/examples/voice_playback_check/check.rs",
@@ -974,6 +997,7 @@ export function gateSteps(root: string, name: string): GateStep[] {
           fast ? "fast" : "ci",
         ]),
         requires: "workspace",
+        crateReuse: true,
       },
       ...(!fast
         ? [
@@ -1020,8 +1044,12 @@ export function gateSteps(root: string, name: string): GateStep[] {
           web,
           fast ? "test:unit:fast" : "test:unit:prepared",
         ),
+        // The real HTTP draft fixture runs after Rust witnesses in this lane.
+        // Keep its startup deadline without competing with our nextest workers.
+        lane: "rust",
         requires: "workspace",
-        lane: "web",
+        // The web app, its WASM client crates, generated contracts and the Rust draft server.
+        inputs: ["workspaces/client", "workspaces/runtime"],
       },
       ...["studio-claude-bridge", "codex-agents-desktop"].map(
         (packageName) => ({
@@ -1034,6 +1062,16 @@ export function gateSteps(root: string, name: string): GateStep[] {
           ),
           requires: null,
           lane: "js",
+          // Whole areas, because these tests also read fixtures and contracts there.
+          inputs:
+            packageName === "studio-claude-bridge"
+              ? [
+                  "workspaces/providers",
+                  "workspaces/client/contracts",
+                  "workspaces/runtime",
+                  "workspaces/tooling",
+                ]
+              : ["workspaces/client", "workspaces/runtime"],
         }),
       ),
       nodeTest("layout-contract", "layout contract witnesses", [
@@ -1105,6 +1143,8 @@ export function gateSteps(root: string, name: string): GateStep[] {
         id: "guest",
         label: "VM guest Python suite",
         lane: "guest",
+        // The guest suite and the Rust supervisor binary it starts.
+        inputs: ["workspaces/runtime"],
         requires: "workspace",
         item: tooling,
         commands: [
@@ -1274,7 +1314,10 @@ export async function executeRecipe(
         (readiness.has(step.requires)
           ? await readiness.get(step.requires)!.promise
           : external[step.requires]);
-      let result: StepResult;
+      let result: StepResult | undefined;
+      let cacheKey: string | undefined;
+      let crates: Map<string, string | undefined> | false | undefined;
+      let stale: [string, string | undefined][] = [];
       if (controller.signal.aborted || !ready) {
         result = {
           status: controller.signal.aborted ? "cancelled" : "skipped",
@@ -1286,38 +1329,90 @@ export async function executeRecipe(
               : `missing prerequisite: ${step.requires}; prepare the gate artifacts first`,
           ],
         };
+      } else if (
+        // A test executor stands in for real runs; it never reuses or records results.
+        !options.execute &&
+        (cacheKey = stepKey(root, step)) &&
+        (result = reusedResult(root, step, cacheKey))
+      ) {
+        // Same inputs as an earlier passing run: reuse it like a build artifact.
       } else {
-        try {
-          result = await (options.execute ?? execute)(
+        // A Cargo workspace test step runs only the crates without a passing result.
+        let commands = step.commands;
+        // Only real runs consult Cargo; a test executor must not wait for the Cargo lock.
+        crates =
+          step.crateReuse &&
+          !options.execute &&
+          crateKeys(
             root,
-            step.item,
-            "",
-            false,
-            {
-              ...step.options,
-              ...(step.commands ? { commands: step.commands } : {}),
-              label: step.label,
-              env,
-              signal: controller.signal,
-              logDirectory: path.join(
-                logDir,
-                `${String(index + 1).padStart(2, "0")}-${step.id ?? "step"}`.replaceAll(
-                  /[^a-zA-Z0-9._-]/g,
-                  "-",
-                ),
+            JSON.parse(
+              runSync(
+                "cargo",
+                ["metadata", "--format-version", "1", "--locked", "--offline"],
+                root,
+                "cargo metadata",
               ),
-              write: () => {},
-            },
+            ),
+            step,
           );
-        } catch (error) {
+        stale = crates
+          ? [...crates].filter(
+              ([name, key]) =>
+                !key || !reusedResult(root, { id: `${step.id}-${name}` }, key),
+            )
+          : [];
+        if (crates && !stale.length)
           result = {
-            status: "failed",
-            exitCode: 1,
+            status: "passed",
+            exitCode: 0,
             durationSeconds: 0,
-            errors: [String((error as Error).stack ?? error)],
+            reused: true,
           };
-        }
+        else if (crates)
+          commands = step.commands!.map(([command, args]): Command => [
+            command,
+            args.flatMap((arg) =>
+              arg === "--workspace"
+                ? stale.flatMap(([name]) => ["-p", name])
+                : [arg],
+            ),
+          ]);
+        if (!result)
+          try {
+            result = await (options.execute ?? execute)(
+              root,
+              step.item,
+              "",
+              false,
+              {
+                ...step.options,
+                ...(commands ? { commands } : {}),
+                label: step.label,
+                env,
+                signal: controller.signal,
+                logDirectory: path.join(
+                  logDir,
+                  `${String(index + 1).padStart(2, "0")}-${step.id ?? "step"}`.replaceAll(
+                    /[^a-zA-Z0-9._-]/g,
+                    "-",
+                  ),
+                ),
+                write: () => {},
+              },
+            );
+          } catch (error) {
+            result = {
+              status: "failed",
+              exitCode: 1,
+              durationSeconds: 0,
+              errors: [String((error as Error).stack ?? error)],
+            };
+          }
       }
+      if (cacheKey && !result.reused) recordPass(root, step, cacheKey, result);
+      if (crates && !result.reused)
+        for (const [name, key] of stale)
+          if (key) recordPass(root, { id: `${step.id}-${name}` }, key, result);
       results[index] = { ...result, id: step.id, lane, label: step.label };
       if (step.provides)
         readiness.get(step.provides)!.resolve(result.exitCode === 0);

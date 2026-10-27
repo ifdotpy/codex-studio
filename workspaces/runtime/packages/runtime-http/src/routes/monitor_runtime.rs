@@ -5,7 +5,11 @@ use super::{
     manifest::{OperationStatus, RouteGroup, post},
 };
 use crate::{error::ApiError, router::HttpState};
-use axum::{Extension, Json, extract::State, http::StatusCode};
+use axum::{
+    Extension, Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 use serde_json::Value;
 use std::sync::Arc;
 use studio_runtime_services::monitor_runtime_wiring::MonitorRuntime;
@@ -126,13 +130,24 @@ struct MonitorInputRequest {
 async fn input(
     State(state): State<HttpState>,
     runtime: Option<Extension<Arc<MonitorRuntime>>>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<MonitorInputRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    let request_id = headers
+        .get("x-studio-request-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|id| crate::middleware::safe_request_id(id))
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "Monitor input request identity is required",
+            )
+        })?;
     let MonitorInputRequest { id, input } = body;
     if let Some(Extension(runtime)) = runtime {
         let now = event_write::unix_time().map_err(|_| ApiError::internal())?;
         return runtime
-            .input_http(&id, &input, now)
+            .input_http(&id, request_id, &input, now)
             .await
             .map(Json)
             .map_err(error);
@@ -147,6 +162,10 @@ async fn input(
 
 fn error(error: MonitorError) -> ApiError {
     match error {
+        MonitorError::InputOutcomeUnknown => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Monitor input outcome unknown; do not repeat it",
+        ),
         MonitorError::Refused(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         MonitorError::Unavailable(name) => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
@@ -189,6 +208,7 @@ mod tests {
         type InputHandler<F> = fn(
             State<HttpState>,
             Option<Extension<Arc<MonitorRuntime>>>,
+            HeaderMap,
             ApiJson<MonitorInputRequest>,
         ) -> F;
         fn typed_input<F: Future<Output = Result<Json<Value>, ApiError>>>(_: InputHandler<F>) {}

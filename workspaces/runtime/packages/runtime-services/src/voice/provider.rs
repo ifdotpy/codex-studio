@@ -1076,8 +1076,6 @@ pub enum VoiceProviderError {
     Unknown,
     #[error("voice provider rejected the request")]
     Rejected,
-    #[error("voice start admission denied: {0}")]
-    AdmissionDenied(String),
     #[error("voice provider adapter is unavailable")]
     AdapterUnavailable,
     #[error("Not implemented: requires {0}")]
@@ -2255,7 +2253,7 @@ pub async fn start_admitted(
     )?;
     let agent_for_read = agent_id.clone();
     let session_for_read = session_id.clone();
-    let (existing, (account_key, thread_id, epoch, root_id)) = store
+    let (existing, (account_key, thread_id, epoch)) = store
         .read_async("runtime-services/voice/provider", move |connection| {
             let existing = read_start_rows(
                 connection,
@@ -2270,9 +2268,6 @@ pub async fn start_admitted(
         return Ok(session_value(&session));
     }
 
-    let histories = crate::budget_runtime::read_histories(&store, &root_id)
-        .await
-        .map_err(|_| VoiceProviderError::Operation)?;
     let saved = create_session(
         std::sync::Arc::clone(&store),
         agent_id.clone(),
@@ -2284,7 +2279,6 @@ pub async fn start_admitted(
             epoch,
             now,
         },
-        histories,
     )
     .await?;
     if let StartDecision::Replay(session) = saved {
@@ -2381,7 +2375,7 @@ async fn complete_start(
 fn agent_context(
     connection: &Connection,
     agent_id: &str,
-) -> Result<(String, String, i64, String), VoiceProviderError> {
+) -> Result<(String, String, i64), VoiceProviderError> {
     let agent = super::checked_agent(connection, agent_id)
         .map_err(|_| VoiceProviderError::ContextUnavailable)?;
     let thread_id = agent
@@ -2396,12 +2390,7 @@ fn agent_context(
         .and_then(Value::as_str)
         .filter(|account| !account.is_empty())
         .unwrap_or("default");
-    Ok((
-        account_key.to_owned(),
-        thread_id.to_owned(),
-        agent.epoch,
-        agent.root_id.0,
-    ))
+    Ok((account_key.to_owned(), thread_id.to_owned(), agent.epoch))
 }
 
 fn read_start_rows(
@@ -2443,7 +2432,6 @@ async fn create_session(
     session_id: String,
     offer: String,
     start: VoiceStartContext,
-    histories: std::collections::BTreeMap<String, crate::budget::HistoryObservation>,
 ) -> Result<StartDecision, VoiceProviderError> {
     let VoiceStartContext {
         account_key,
@@ -2456,7 +2444,6 @@ async fn create_session(
         session_id.clone(),
         offer.clone(),
     )?;
-    let store_for_admission = std::sync::Arc::clone(&store);
     store.transaction_with_error(move |transaction| -> Result<_, VoiceProviderError> {
         let agent = super::checked_agent(transaction, &agent_id)
             .map_err(|_| VoiceProviderError::ContextUnavailable)?;
@@ -2480,20 +2467,6 @@ async fn create_session(
         match policy::decide_start(Some(now), request, old.as_ref(), active.as_ref())? {
             decision @ StartDecision::Replay(_) => Ok(decision),
             StartDecision::Create { created, .. } => {
-                let root = AgentRepository::get(transaction, &agent.root_id)?
-                    .ok_or(VoiceProviderError::ContextUnavailable)?;
-                let admission = crate::budget_runtime::admission(
-                    &store_for_admission,
-                    transaction,
-                    &agent.value(),
-                    &root.value(),
-                    &histories,
-                    now,
-                )
-                .map_err(|_| VoiceProviderError::Operation)?;
-                if let Some(denial) = admission.denial {
-                    return Err(VoiceProviderError::AdmissionDenied(denial.message));
-                }
                 let mut agent = agent;
                 agent.extra.insert("autoWake".into(), Value::Bool(true));
                 agent

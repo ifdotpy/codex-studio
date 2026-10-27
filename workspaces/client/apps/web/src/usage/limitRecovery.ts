@@ -1,8 +1,12 @@
+import type { GetResult } from "../api";
 import { ProviderKind } from "../generated/providerKind.ts";
-import type { UsageEligibility } from "../components/ModelLimitEligibility";
 import type { Agent } from "../types";
 import type { AccountLimitsSnapshot } from "./accountUsage";
 import { knownNativeErrorKind } from "../nativeErrors";
+
+export type UsageEligibility = NonNullable<
+  GetResult<"/api/limits">["eligibility"]
+>;
 
 export type LimitRecovery = {
   title: string;

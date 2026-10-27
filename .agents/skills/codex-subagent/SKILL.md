@@ -58,11 +58,16 @@ Recover the saved receipt before deciding whether an uncertain operation needs a
 - Before you ask the orchestrator, read the latest messages in the room. Do not
   ask again about a point that already has an answer.
 - Work in the workspace the lead selected for this worker.
-- For `image` and `worktree`, edit only that isolated workspace.
-- For `layr`, edit only your owned VM line. Submit its exact layr state ID.
+- For `worktree`, edit only that isolated workspace. Commit on a named Git branch.
+- For `layr-native` (Layr), edit only your owned host line.
+- For `layr` (Layr VM), edit only your owned VM line.
+- In both layr modes, implementers save a named state and submit its full ID from `layr rev-parse head`.
+  Use [the layr task recipes](../layr/SKILL.md). Studio saves an automatic state after each lead or implementer turn.
+  Read the workspace reference for [native Layr](../codex-workspace/references/layr-native.md)
+  or [Layr VM](../codex-workspace/references/layr.md).
 - For `shared`, the lead assigned work in the selected source folder. Edit the
   files in that assignment there.
-- Reviewers use shared access as read-only.
+- Reviewers read exact submitted states. Do not change a source line.
 - Do not switch branches in a shared folder.
 - Change declared state through its source of truth, for example Git. Use a
   direct change, for example `kubectl`, only as a documented break-glass step,

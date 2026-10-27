@@ -73,6 +73,14 @@ pub struct ClaudeSettings {
     )]
     #[schemars(with = "bool")]
     pub thinking: Option<bool>,
+    /// Native MCP calls move to the background after the shared wait; absent keeps the default.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "bool")]
+    pub mcp_auto_background: Option<bool>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<CompactWindow>")]
     pub auto_compact_window: Field<CompactWindow>,

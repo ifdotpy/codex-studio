@@ -6,8 +6,8 @@ use crate::event_write;
 use serde_json::{Value, json};
 use studio_runtime_schema::queue_command::QueueCommand;
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, Connection, EventWriteRepository, QueueWriteRepository,
-    StoreError, Transaction, WorkItemsRepository,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, EventWriteRepository,
+    QueueWriteRepository, SchedulerRepository, StoreError, Transaction, WorkItemsRepository,
 };
 use thiserror::Error;
 
@@ -97,6 +97,8 @@ pub fn action(
         ));
     }
     let rows = &current.items;
+    let recover_failed =
+        matches!(body, QueueCommand::SendNow(_)) && agent.status == AgentStatus::Failed;
     match body {
         QueueCommand::Reorder(reorder_body) => {
             reorder(transaction, &agent, &reorder_body.ordered_ids, rows)?
@@ -127,6 +129,22 @@ pub fn action(
         }
         QueueCommand::First(_) | QueueCommand::SendNow(_) => {
             let (target_id, row) = target_row(body, rows)?;
+            if recover_failed
+                && (agent
+                    .extra
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .is_some_and(crate::account_auth_gate::is_hold_reason)
+                    || !SchedulerRepository::proven_unsent_pending_batch(
+                        transaction,
+                        &agent,
+                        target_id,
+                    )?)
+            {
+                return Err(QueueWriteError::Conflict(
+                    "This failed agent has no current unsent batch that can be retried",
+                ));
+            }
             if matches!(body, QueueCommand::SendNow(_))
                 && row.get("kind").and_then(Value::as_str) != Some("user")
             {
@@ -168,7 +186,11 @@ pub fn action(
 
     let updated = snapshot(transaction, &agent)?;
     let mut agent = agent;
-    if updated.items != current.items {
+    if recover_failed {
+        agent.status = AgentStatus::Queued;
+        agent.extra.insert("error".into(), Value::Null);
+    }
+    if updated.items != current.items || recover_failed {
         let revision = match agent.extra.get("queueMutationRevision") {
             None => 0,
             Some(value) => value
@@ -181,7 +203,10 @@ pub fn action(
             .insert("queueMutationRevision".to_owned(), json!(revision + 1));
         AgentRepository::put(transaction, &agent)?;
     }
-    let final_snapshot = if updated.items != current.items {
+    if recover_failed {
+        crate::agents_create::publish_agent(transaction, &agent.value())?;
+    }
+    let final_snapshot = if updated.items != current.items || recover_failed {
         snapshot(transaction, &agent)?
     } else {
         updated

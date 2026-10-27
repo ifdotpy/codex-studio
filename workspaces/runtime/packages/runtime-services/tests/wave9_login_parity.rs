@@ -107,6 +107,7 @@ impl RetainedAccountSession for CodexSession {
             | other @ Method::ClaudeSettings
             | other @ Method::ClaudeActivity
             | other @ Method::ClaudeStopTask
+            | other @ Method::ClaudeShellPolicy
             | other @ Method::ClaudeDiagnostics
             | other @ Method::ClaudeMoveVersions
             | other @ Method::McpServerReconnect
@@ -181,6 +182,7 @@ impl RetainedAccountSession for CodexSession {
             | other @ Method::ThreadClosed
             | other @ Method::ThreadStatusChanged
             | other @ Method::ThreadTokenUsageUpdated
+            | other @ Method::ThreadShellPolicyUpdated
             | other @ Method::ThreadIdleCompactionUpdated
             | other @ Method::AccountLoginCompleted
             | other @ Method::AccountUpdated

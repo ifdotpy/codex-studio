@@ -14,6 +14,36 @@ const storage = {
 
 beforeEach(() => values.clear());
 
+it("resolves an exact account key without selecting a duplicate or a missing replacement", () => {
+  const accounts: AccountDeleteTarget[] = ["first", "second"].map((id) => ({
+    id,
+    provider: "claude",
+    email: "same@example.test",
+    label: "Work",
+  }));
+  const identity = {
+    provider: "claude" as const,
+    email: "same@example.test",
+    label: "Work",
+    accountKey: "second",
+  };
+  expect(accountForExternalCommand(accounts, identity)?.id).toBe("second");
+  expect(
+    accountForExternalCommand(accounts, { ...identity, accountKey: "removed" }),
+  ).toBeUndefined();
+  expect(
+    accountForExternalCommand(accounts, { ...identity, provider: "codex" }),
+  ).toBeUndefined();
+  const { accountKey: _key, ...legacy } = identity;
+  expect(accountForExternalCommand(accounts, legacy)).toBeUndefined();
+  expect(
+    accountForExternalCommand(
+      accounts.map((row) => ({ ...row, email: null })),
+      { ...legacy, email: null },
+    ),
+  ).toBeUndefined();
+});
+
 it("does not match an unknown provider to a known account identity", () => {
   const account: AccountDeleteTarget = {
     id: "unknown-provider",

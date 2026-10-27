@@ -445,7 +445,7 @@ describe("resource read callers", () => {
     expect(syncPost).not.toHaveBeenCalled();
   });
 
-  it("projects account and worker model lists from streamed model entities without GETs", async () => {
+  it("uses streamed model lists for display and fresh metadata for account selection", async () => {
     const row = (
       accountKey: string,
       model: string,
@@ -528,14 +528,20 @@ describe("resource read callers", () => {
       { model: "updated-model" },
       { model: "other-model" },
     ]);
+    expect(get).not.toHaveBeenCalled();
+    get.mockResolvedValueOnce({
+      data: [row("default", "fresh-model", false, 0)],
+    });
     await expect(
       readWorkerModels(reader, "default", true),
-    ).resolves.toMatchObject([
-      { model: "updated-model" },
-      { model: "other-model" },
-    ]);
-    expect(states[0]!.value).toMatchObject({ pending: false });
-    expect(get).not.toHaveBeenCalled();
+    ).resolves.toMatchObject([{ model: "fresh-model" }]);
+    expect(get).toHaveBeenCalledExactlyOnceWith({
+      query: { account_key: "default", workers: "1", fresh: "1" },
+    });
+    expect(states[0]!.value).toMatchObject({
+      models: [{ model: "updated-model" }, { model: "other-model" }],
+      pending: false,
+    });
   });
 
   it("keeps the model picker loading until the streamed entity baseline completes", () => {

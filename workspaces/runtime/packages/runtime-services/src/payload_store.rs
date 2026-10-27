@@ -258,7 +258,7 @@ fn validate_encoded_length(encoded: &str) -> Result<(), PayloadStoreError> {
     Ok(())
 }
 
-fn valid_asset_record(record: &Value, row_id: &str, root: &Path) -> bool {
+pub(crate) fn valid_asset_record(record: &Value, row_id: &str, root: &Path) -> bool {
     let Some(object) = record.as_object() else {
         return false;
     };

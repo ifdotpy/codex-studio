@@ -5084,10 +5084,7 @@
             "isLead": false,
             "autoWake": true,
             "inFlight": false,
-            "created": 1.0,
-            "imageWorkspace": true,
-            "imageWorkspaceReady": true,
-            "imageWorkspacePhase": "removed"
+            "created": 1.0
           }
         ],
         "runtime_work": [],
@@ -5143,9 +5140,6 @@
               "autoWake": false,
               "inFlight": false,
               "created": 1.0,
-              "imageWorkspace": true,
-              "imageWorkspaceReady": true,
-              "imageWorkspacePhase": "removed",
               "deletedAt": 1234567.5,
               "error": "Conversation deleted"
             }
@@ -5197,9 +5191,6 @@
         "autoWake": false,
         "inFlight": false,
         "created": 1.0,
-        "imageWorkspace": true,
-        "imageWorkspaceReady": true,
-        "imageWorkspacePhase": "removed",
         "deletedAt": 1234567.5,
         "error": "Conversation deleted"
       }

@@ -1,7 +1,7 @@
 //! Bounded rollout tails and atomic analytics/checkpoint commits.
 //!
 //! The caller supplies an account-resolved profile and persisted agent. File
-//! reads and budget receipts precede the analytics writer lock. A checkpoint
+//! reads precede the analytics writer lock. A checkpoint
 //! compare-and-swap prevents two readers from acknowledging the same batch.
 use crate::analytics_capture::{
     CaptureError, CaptureSnapshot, CaptureSource, PreparedCapture, ResponseRateAssociation,
@@ -17,10 +17,8 @@ use read_proof::ReadProof;
 mod discovery;
 pub use discovery::DiscoveryRound;
 use std::fs::{self, File};
-use std::future::Future;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
@@ -45,8 +43,6 @@ pub enum HistoryError {
     Capture(#[from] CaptureError),
     #[error(transparent)]
     Store(#[from] studio_runtime_store::StoreError),
-    #[error(transparent)]
-    Budget(#[from] crate::budget::BudgetError),
     #[error("analytics history read failed: {0}")]
     Read(ReadFailure),
     /// The account is unknown, not active, or its profile directory is absent.
@@ -58,8 +54,6 @@ pub enum HistoryError {
     ChangedDuringRead,
     #[error("analytics history collection cancelled")]
     Cancelled,
-    #[error("Not implemented: requires analytics-history/budget-capture")]
-    BudgetUnavailable,
     #[error("analytics history discovery exceeded its bounded entry budget")]
     DiscoveryLimit,
     #[error("analytics history discovery reached the current fairness-round budget")]
@@ -151,26 +145,20 @@ pub enum HistoryRetryPolicy {
     Backoff,
     ContinueAfterRoundBudget,
     WaitForProfileInput,
-    WaitForBudgetChange,
 }
 
 impl HistoryError {
     pub fn retry_policy(&self) -> HistoryRetryPolicy {
         match self {
-            Self::Budget(crate::budget::BudgetError::Invalid(_)) => {
-                HistoryRetryPolicy::WaitForBudgetChange
-            }
             Self::DiscoveryLimit => HistoryRetryPolicy::WaitForProfileInput,
             Self::DiscoveryRoundLimit => HistoryRetryPolicy::ContinueAfterRoundBudget,
             Self::Capture(_)
             | Self::Store(_)
-            | Self::Budget(_)
             | Self::Read(_)
             | Self::ProfileUnavailable
             | Self::StaleCheckpoint
             | Self::ChangedDuringRead
             | Self::Cancelled
-            | Self::BudgetUnavailable
             | Self::Watcher(_)
             | Self::AccountDriver(_) => HistoryRetryPolicy::Backoff,
         }
@@ -183,13 +171,6 @@ mod retry_policy_tests {
 
     #[test]
     fn permanent_input_failures_wait_for_input_but_transient_reads_back_off() {
-        assert_eq!(
-            HistoryError::Budget(crate::budget::BudgetError::Invalid(
-                "runtime_budget/tokenBudget".to_owned(),
-            ))
-            .retry_policy(),
-            HistoryRetryPolicy::WaitForBudgetChange
-        );
         assert_eq!(
             HistoryError::DiscoveryLimit.retry_policy(),
             HistoryRetryPolicy::WaitForProfileInput
@@ -251,142 +232,6 @@ impl Default for BatchLimits {
         }
     }
 }
-/// Budget receipts must be idempotent by provider response/counter identity.
-/// The sink applies every capture for this bounded page in one writer
-/// transaction. A failure aborts the page before its analytics cursor is
-/// acknowledged. Historical response/turn IDs remain in params; collection
-/// time supplies `now`. Analytics and budget databases commit separately.
-pub trait HistoryBudgetSink: Send + Sync {
-    fn capture_page<'a>(
-        &'a self,
-        captures: Vec<(Arc<Value>, Value, f64)>,
-        now: f64,
-    ) -> Pin<Box<dyn Future<Output = Result<(), HistoryError>> + Send + 'a>>;
-    fn capture_page_with_conflicts<'a>(
-        &'a self,
-        captures: Vec<(Arc<Value>, Value, f64)>,
-        now: f64,
-    ) -> Pin<
-        Box<
-            dyn Future<
-                    Output = Result<
-                        Vec<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
-                        HistoryError,
-                    >,
-                > + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            self.capture_page(captures, now).await?;
-            Ok(Vec::new())
-        })
-    }
-}
-
-/// The production page sink. Identity and budget state are re-read through
-/// `budget_service::capture` while holding one admitted canvas writer.
-pub struct StoreHistoryBudgetSink<'a> {
-    store: &'a RuntimeStore,
-}
-
-impl<'a> StoreHistoryBudgetSink<'a> {
-    pub fn new(store: &'a RuntimeStore) -> Self {
-        Self { store }
-    }
-}
-
-impl HistoryBudgetSink for StoreHistoryBudgetSink<'_> {
-    fn capture_page<'a>(
-        &'a self,
-        captures: Vec<(Arc<Value>, Value, f64)>,
-        now: f64,
-    ) -> Pin<Box<dyn Future<Output = Result<(), HistoryError>> + Send + 'a>> {
-        Box::pin(async move {
-            self.capture_page_with_conflicts(captures, now).await?;
-            Ok(())
-        })
-    }
-    fn capture_page_with_conflicts<'a>(
-        &'a self,
-        captures: Vec<(Arc<Value>, Value, f64)>,
-        now: f64,
-    ) -> Pin<
-        Box<
-            dyn Future<
-                    Output = Result<
-                        Vec<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
-                        HistoryError,
-                    >,
-                > + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            if captures.is_empty() {
-                return Ok(Vec::new());
-            }
-            crate::budget_service::prepare_legacy_corrections(
-                self.store,
-                captures
-                    .iter()
-                    .map(|(agent, params, _)| ((**agent).clone(), params.clone()))
-                    .collect(),
-            )
-            .await?;
-            let conflicts = self
-                .store
-                .transaction_with::<_, HistoryError>(move |tx| {
-                    let mut page_agent = captures
-                        .first()
-                        .map(|(agent, _, _)| (**agent).clone())
-                        .ok_or(HistoryError::BudgetUnavailable)?;
-                    let mut conflicts = Vec::new();
-                    for (_, params, at) in captures {
-                        let acceptance = if params.get("studioUsage").is_some()
-                            && params.get("agentId").is_some()
-                        {
-                            crate::budget_service::capture_persisted_acceptance(
-                                tx,
-                                &mut page_agent,
-                                &params,
-                                at,
-                                now,
-                            )?
-                        } else {
-                            crate::budget_service::capture_acceptance(
-                                tx,
-                                &mut page_agent,
-                                &params,
-                                at,
-                                crate::budget::CaptureSource::History,
-                                now,
-                            )?
-                        };
-                        if let crate::budget::UsageAcceptance::RejectedReplayConflict(conflict) =
-                            acceptance
-                        {
-                            conflicts.push(conflict);
-                        }
-                    }
-                    Ok(conflicts)
-                })
-                .await?;
-            Ok(conflicts)
-        })
-    }
-}
-
-pub struct BudgetUnavailable;
-impl HistoryBudgetSink for BudgetUnavailable {
-    fn capture_page<'a>(
-        &'a self,
-        _: Vec<(Arc<Value>, Value, f64)>,
-        _: f64,
-    ) -> Pin<Box<dyn Future<Output = Result<(), HistoryError>> + Send + 'a>> {
-        Box::pin(async { Err(HistoryError::BudgetUnavailable) })
-    }
-}
 pub struct HistorySnapshot {
     ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     agent: Arc<Value>,
@@ -436,7 +281,6 @@ pub struct HistoryBatch {
     previous: Option<Value>,
     state: Value,
     captures: Vec<PreparedCapture>,
-    budget: Vec<(Arc<Value>, Value, f64)>,
     advanced: bool,
     read_proof: Option<ReadProof>,
 }
@@ -450,10 +294,9 @@ impl HistoryBatch {
     pub async fn commit(
         mut self,
         store: &RuntimeStore,
-        budget: &dyn HistoryBudgetSink,
         now: f64,
     ) -> Result<Vec<ResponseRateAssociation>, HistoryError> {
-        // Re-read only before entering either writer or invoking budget effects.
+        // Re-read only before entering the writer.
         if let Some(mut proof) = self.read_proof.take() {
             studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-services/analytics_history_proof",
@@ -462,14 +305,6 @@ impl HistoryBatch {
             .await
             .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
         }
-        if !self.budget.is_empty() {
-            let conflicts = budget
-                .capture_page_with_conflicts(std::mem::take(&mut self.budget), now)
-                .await?;
-            for capture in &mut self.captures {
-                capture.apply_budget_conflicts(&conflicts);
-            }
-        }
         store
             .analytics_transaction(move |tx, canvas| {
                 check_identity(canvas, &self.agent)?;
@@ -477,13 +312,10 @@ impl HistoryBatch {
                 if current != self.previous {
                     return Err(HistoryError::StaleCheckpoint);
                 }
-                let epoch = studio_runtime_store::budget::BudgetRepository::ledger_since(
-                    canvas,
-                    text(&self.agent["id"]),
-                )?;
+                let epoch = studio_runtime_schema::usage::ledger::LedgerEpoch::Current;
                 let mut effects = Vec::new();
                 for mut prepared in self.captures {
-                    prepared.bind_budget(canvas, epoch)?;
+                    prepared.bind_budget(tx, epoch)?;
                     let decision = decide(CaptureSnapshot::load(tx, Arc::new(prepared))?, epoch)?;
                     decision.apply(tx)?;
                     if let Some(effect) = decision.response_rate {
@@ -517,7 +349,6 @@ pub async fn collect_one(
     limits: BatchLimits,
     now: f64,
     cancel: Arc<AtomicBool>,
-    budget: &dyn HistoryBudgetSink,
 ) -> Result<bool, HistoryError> {
     let path_profile = profile.clone();
     let thread = text(&agent["threadId"]).to_owned();
@@ -535,7 +366,7 @@ pub async fn collect_one(
     )
     .await
     .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
-    collect_path(store, agent, profile, (path, limits), now, cancel, budget).await
+    collect_path(store, agent, profile, (path, limits), now, cancel).await
 }
 async fn collect_path(
     store: &RuntimeStore,
@@ -544,7 +375,6 @@ async fn collect_path(
     selection: (RolloutPath, BatchLimits),
     now: f64,
     cancel: Arc<AtomicBool>,
-    budget: &dyn HistoryBudgetSink,
 ) -> Result<bool, HistoryError> {
     let key = format!(
         "{}:{}:{}",
@@ -552,20 +382,16 @@ async fn collect_path(
         agent["accountKey"].as_str().unwrap_or("default"),
         text(&agent["threadId"])
     );
-    let budget_advanced =
-        crate::analytics_history_repair::migrate_budget(store, agent.clone(), budget, now).await?;
     let previous = read_history_checkpoint(store, &key, &agent).await?;
     let prepare_cancel = Arc::clone(&cancel);
-    let epoch_agent = text(&agent["id"]).to_owned();
-    let ledger_since = store
-        .read_async("analytics/history-ledger-epoch", move |db| {
-            studio_runtime_store::budget::BudgetRepository::ledger_since(db, &epoch_agent)
-        })
-        .await?;
     let batch = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/analytics_history_prepare",
         move || {
-            let snapshot = HistorySnapshot::from_records(agent, previous, ledger_since)?;
+            let snapshot = HistorySnapshot::from_records(
+                agent,
+                previous,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+            )?;
             prepare(
                 snapshot,
                 &profile,
@@ -579,8 +405,8 @@ async fn collect_path(
     .await
     .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
     let advanced = batch.advanced();
-    batch.commit(store, budget, now).await?;
-    Ok(advanced || budget_advanced)
+    batch.commit(store, now).await?;
+    Ok(advanced)
 }
 
 /// Read one checkpoint without allowing one malformed stored row to stop the
@@ -1129,7 +955,6 @@ pub fn prepare(
     let mut partial = false;
     let mut oversized = false;
     let mut captures = Vec::new();
-    let mut budget = Vec::new();
     // Proven inherited source threads are passed through the checked repair chain.
     snapshot
         .context
@@ -1189,9 +1014,6 @@ pub fn prepare(
         for action in actions {
             match action {
                 RolloutAction::Event { method, params, at } => {
-                    if method == "thread/tokenUsage/updated" {
-                        budget.push((Arc::clone(&agent), params.clone(), at));
-                    }
                     captures.push(PreparedCapture::event_shared(
                         Arc::clone(&agent),
                         &method,
@@ -1249,7 +1071,6 @@ pub fn prepare(
         previous: snapshot.previous,
         state: snapshot.state,
         captures,
-        budget,
         advanced: consumed > 0,
         read_proof: Some(ReadProof::new(
             reader.into_inner(),
@@ -1282,7 +1103,6 @@ fn refused(mut snapshot: HistorySnapshot, status: &str, error: Option<&str>) -> 
         previous: snapshot.previous,
         state: snapshot.state,
         captures: vec![],
-        budget: vec![],
         advanced: false,
         read_proof: None,
     }
@@ -1463,7 +1283,6 @@ impl HistoryCollector {
         profile: impl FnOnce(&str) -> Result<PathBuf, HistoryError> + Send + 'static,
         clock: HistoryClock,
         cancel: Arc<AtomicBool>,
-        budget: &dyn HistoryBudgetSink,
     ) -> Result<bool, HistoryError> {
         let Some(row) = self.schedule.next(clock.monotonic)? else {
             self.begin_round();
@@ -1479,24 +1298,14 @@ impl HistoryCollector {
         }
         self.visited.insert(text(&agent["id"]).to_owned());
         let result = self
-            .step_selected(store, agent.clone(), profile, clock, cancel, budget)
+            .step_selected(store, agent.clone(), profile, clock, cancel)
             .await;
         if matches!(
             &result,
-            Err(error) if matches!(
-                error.retry_policy(),
-                HistoryRetryPolicy::WaitForProfileInput | HistoryRetryPolicy::WaitForBudgetChange
-            )
+            Err(error) if error.retry_policy() == HistoryRetryPolicy::WaitForProfileInput
         ) {
-            match &result {
-                Err(error) if error.retry_policy() == HistoryRetryPolicy::WaitForBudgetChange => {
-                    self.schedule
-                        .block_for_budget_change(&agent, clock.monotonic)?;
-                }
-                _ => self
-                    .schedule
-                    .block_for_input_change(&agent, clock.monotonic)?,
-            }
+            self.schedule
+                .block_for_input_change(&agent, clock.monotonic)?;
         }
         result
     }
@@ -1508,7 +1317,6 @@ impl HistoryCollector {
         profile: impl FnOnce(&str) -> Result<PathBuf, HistoryError> + Send + 'static,
         clock: HistoryClock,
         cancel: Arc<AtomicBool>,
-        budget: &dyn HistoryBudgetSink,
     ) -> Result<bool, HistoryError> {
         let discovery = Arc::clone(&self.discovery);
         let cancel_discovery = Arc::clone(&cancel);
@@ -1538,13 +1346,6 @@ impl HistoryCollector {
         )
         .await
         .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
-        let budget_advanced = crate::analytics_history_repair::migrate_budget(
-            store,
-            agent.clone(),
-            budget,
-            clock.observed_at,
-        )
-        .await?;
         let key = format!(
             "{}:{}:{}",
             text(&agent["id"]),
@@ -1554,17 +1355,14 @@ impl HistoryCollector {
         let prepare_agent = agent.clone();
         let prepare_cancel = Arc::clone(&cancel);
         let previous = read_history_checkpoint(store, &key, &agent).await?;
-        let epoch_agent = text(&agent["id"]).to_owned();
-        let ledger_since = store
-            .read_async("analytics/history-ledger-epoch", move |db| {
-                studio_runtime_store::budget::BudgetRepository::ledger_since(db, &epoch_agent)
-            })
-            .await?;
         let batch = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/analytics_history_prepare",
             move || {
-                let snapshot =
-                    HistorySnapshot::from_records(prepare_agent, previous, ledger_since)?;
+                let snapshot = HistorySnapshot::from_records(
+                    prepare_agent,
+                    previous,
+                    studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+                )?;
                 prepare(
                     snapshot,
                     &home,
@@ -1578,7 +1376,7 @@ impl HistoryCollector {
         .await
         .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
         let advanced = batch.advanced();
-        batch.commit(store, budget, clock.observed_at).await?;
+        batch.commit(store, clock.observed_at).await?;
         let root = store.root().to_owned();
         let checkpoint_key = key;
         let checkpoint = studio_runtime_process::blocking_pool::spawn_blocking(
@@ -1596,7 +1394,7 @@ impl HistoryCollector {
             self.schedule
                 .completed(&agent, &checkpoint, clock.monotonic)?;
         }
-        Ok(advanced || budget_advanced)
+        Ok(advanced)
     }
 }
 

@@ -173,6 +173,11 @@ impl ToolCall {
             "orchestration_review" => Some("review:"),
             "orchestration_servers" if args["action"] != "receipt" => Some("server:"),
             "orchestration_move" | "orchestration_teleport" => Some("move:"),
+            "orchestration_agent_manage"
+                if matches!(args["action"].as_str(), Some("recover" | "reset_tools")) =>
+            {
+                Some("agent-manage:")
+            }
             _ => None,
         };
         let alias = if alias_prefix.is_some() && args.get("request_id").is_some() {

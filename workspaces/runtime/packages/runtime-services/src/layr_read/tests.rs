@@ -318,7 +318,7 @@ fn layr_read_keeps_the_python_argument_rules() {
         json!(["blame", "--", "x"]),
         json!(["grep", "-n", "x"]),
         json!(["merge-base", "a", "b"]),
-        json!(["rev-parse", "HEAD"]),
+        json!(["rev-parse", "head"]),
         json!(["diff", "x".repeat(4096)]),
         Value::Array(std::iter::repeat_n(json!("status"), 64).collect()),
     ] {

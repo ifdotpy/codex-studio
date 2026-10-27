@@ -222,6 +222,38 @@ struct CatalogState {
     next_generation: u64,
 }
 
+impl CatalogState {
+    fn admission_read(
+        &self,
+        account_key: &str,
+        home: &str,
+        provider: ProviderKind,
+        now: Instant,
+    ) -> AdmissionCatalogRead {
+        let key = (account_key.to_owned(), home.to_owned(), provider);
+        let Some(entry) = self.entries.get(&key) else {
+            return AdmissionCatalogRead::Pending;
+        };
+        if entry.pending {
+            return AdmissionCatalogRead::Pending;
+        }
+        if entry.error {
+            return AdmissionCatalogRead::Unavailable;
+        }
+        match (&entry.value, entry.expires_at) {
+            (Some(value), Some(expires_at)) if expires_at > now => AdmissionCatalogRead::Fresh {
+                value: value.clone(),
+                account_key: key.0,
+                home: key.1,
+                provider: key.2,
+                generation: entry.generation,
+                expires_at: expires_at.into_std(),
+            },
+            _ => AdmissionCatalogRead::Pending,
+        }
+    }
+}
+
 struct CatalogInner {
     state: Mutex<CatalogState>,
     accounts: Mutex<HashMap<String, (String, ProviderKind)>>,
@@ -248,32 +280,45 @@ impl ModelCatalogService {
         home: &str,
         provider: ProviderKind,
     ) -> AdmissionCatalogRead {
-        let key = (account_key.to_owned(), home.to_owned(), provider);
         let Ok(cache) = self.0.state.lock() else {
             return AdmissionCatalogRead::Unavailable;
         };
-        let Some(entry) = cache.entries.get(&key) else {
-            return AdmissionCatalogRead::Pending;
+        cache.admission_read(account_key, home, provider, Instant::now())
+    }
+
+    /// Observe exact account tuples under one lock and at one time after parallel reads.
+    /// This never starts a provider or returns the display cache's stale fallback.
+    #[must_use]
+    pub fn read_for_admission_batch(
+        &self,
+        accounts: &[(&str, &str, ProviderKind)],
+    ) -> Vec<AdmissionCatalogRead> {
+        if accounts.is_empty() {
+            return Vec::new();
+        }
+        // Match refresh admission's lock order. A retired binding cannot reuse
+        // an old cache entry while retain_accounts waits for the cache lock.
+        let Ok(profiles) = self.0.accounts.lock() else {
+            return vec![AdmissionCatalogRead::Unavailable; accounts.len()];
         };
-        if entry.pending {
-            return AdmissionCatalogRead::Pending;
-        }
-        if entry.error {
-            return AdmissionCatalogRead::Unavailable;
-        }
-        match (&entry.value, entry.expires_at) {
-            (Some(value), Some(expires_at)) if expires_at > Instant::now() => {
-                AdmissionCatalogRead::Fresh {
-                    value: value.clone(),
-                    account_key: key.0,
-                    home: key.1,
-                    provider: key.2,
-                    generation: entry.generation,
-                    expires_at: expires_at.into_std(),
+        let initialized = self.0.accounts_initialized.load(Ordering::Acquire);
+        let Ok(cache) = self.0.state.lock() else {
+            return vec![AdmissionCatalogRead::Unavailable; accounts.len()];
+        };
+        let now = Instant::now();
+        accounts
+            .iter()
+            .map(|(account, home, provider)| {
+                if initialized
+                    && !profiles
+                        .get(*account)
+                        .is_some_and(|identity| identity.0 == *home && identity.1 == *provider)
+                {
+                    return AdmissionCatalogRead::Unavailable;
                 }
-            }
-            _ => AdmissionCatalogRead::Pending,
-        }
+                cache.admission_read(account, home, *provider, now)
+            })
+            .collect()
     }
 
     /// Start/coalesce the async refresh and wait for its published result at a
@@ -597,9 +642,6 @@ impl ModelCatalogService {
         home: &str,
         provider: ProviderKind,
     ) -> CatalogRead {
-        if provider != ProviderKind::Codex {
-            return CatalogRead::Unavailable;
-        }
         let wait_for_result = async {
             loop {
                 if let AdmissionCatalogRead::Fresh { value, .. } =
@@ -1180,36 +1222,33 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn read_until_fresh_waits_for_catalog_change_notification() {
-        let service = ModelCatalogService::new();
-        let _pages = serve_pages(&service, AccountSessionPages::gated(Vec::new()));
-        let key = (
-            "account".to_owned(),
-            "/home".to_owned(),
-            ProviderKind::Codex,
-        );
-        service.0.state.lock().expect("cache").entries.insert(
-            key.clone(),
-            CacheEntry {
-                generation: 7,
-                value: Some(typed(json!({"data":[{"model":"stale"}]}))),
-                expires_at: None,
-                error: false,
-                pending: true,
-            },
-        );
-        let waiting = service.clone();
-        let read = tokio::spawn(async move {
-            waiting
-                .read_until_fresh("account", "/home", ProviderKind::Codex)
-                .await
-        });
-        tokio::task::yield_now().await;
-        let value = json!({"data":[{"model":"fixture"}]});
-        assert!(store_result(&service.0, &key, 7, Ok(typed(value.clone()))));
-        assert_eq!(
-            read.await.expect("catalog waiter"),
-            CatalogRead::Ready(typed(value))
-        );
+        for provider in [ProviderKind::Codex, ProviderKind::Claude] {
+            let service = ModelCatalogService::new();
+            let _pages = serve_pages(&service, AccountSessionPages::gated(Vec::new()));
+            let key = ("account".to_owned(), "/home".to_owned(), provider);
+            service.0.state.lock().expect("cache").entries.insert(
+                key.clone(),
+                CacheEntry {
+                    generation: 7,
+                    value: Some(typed(json!({"data":[{"model":"stale"}]}))),
+                    expires_at: None,
+                    error: false,
+                    pending: true,
+                },
+            );
+            let waiting = service.clone();
+            let read = tokio::spawn(async move {
+                waiting.read_until_fresh("account", "/home", provider).await
+            });
+            tokio::task::yield_now().await;
+            let value = json!({"data":[{"model":"fixture"}]});
+            assert!(store_result(&service.0, &key, 7, Ok(typed(value.clone()))));
+            assert_eq!(
+                read.await.expect("catalog waiter"),
+                CatalogRead::Ready(typed(value))
+            );
+            service.shutdown().await.expect("catalog task shutdown");
+        }
     }
 
     #[tokio::test]

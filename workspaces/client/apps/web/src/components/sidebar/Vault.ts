@@ -1,6 +1,7 @@
 import { ApiError } from "../../api";
 import * as defaultResources from "../../sync/subscriptions/events";
 import { subscribeProgress } from "../../sync/progressSubscription";
+import { randomUUID } from "../../uuid";
 import type { PostBody } from "../../apiTypes";
 import type { ResourceProgress } from "../../sync/resourceEvents";
 import type { components } from "../../generated/api";
@@ -181,7 +182,7 @@ export async function pullVault(
   projectId: string,
   to: string | null,
   {
-    requestId = crypto.randomUUID(),
+    requestId = randomUUID(),
     ...options
   }: { requestId?: string } & JobOptions<VaultPull> = {},
 ): Promise<VaultPull> {

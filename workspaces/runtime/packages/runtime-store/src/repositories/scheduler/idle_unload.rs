@@ -10,8 +10,6 @@ use crate::startup_recovery::{
 
 /// Agent statuses whose turn may still be starting or running.
 const ACTIVE_AGENT_STATUSES: &str = "'queued','starting','running','approval'";
-/// Queue event statuses whose input is not yet settled by a finished turn.
-const UNSETTLED_EVENT_STATUSES: &str = "'pending','reserved','dispatching','uncertain'";
 /// Context repair phases that still read or replace the agent's thread.
 const ACTIVE_CONTEXT_REPAIR_PHASES: &str = "'preparing','submitted','unknown','ready'";
 /// Context repair source cleanup phases that still own the source thread.
@@ -31,6 +29,7 @@ fn agent_in_use(connection: &Connection) -> StoreResult<String> {
         "workspace_operation IS NOT NULL".to_owned(),
         "COALESCE(json_extract(record,'$.accountTransferId'),'')!=''".to_owned(),
         "COALESCE(native_tool_refresh_id,'')!=''".to_owned(),
+        "COALESCE(json_extract(record,'$.nativeRelease.resetPending'),0)!=0".to_owned(),
         format!("context_repair_phase IN ({ACTIVE_CONTEXT_REPAIR_PHASES})"),
         format!("({})", unresolved_sql()),
         format!(
@@ -86,6 +85,21 @@ fn transfer_pending_predicate(connection: &Connection) -> StoreResult<String> {
         .to_owned())
 }
 
+/// A running command keeps its original provider after its actor changes account.
+/// `?1` is the source account key, not the actor's current model account.
+fn monitor_source_in_use(connection: &Connection) -> StoreResult<Option<String>> {
+    if !table_exists(connection, "runtime_monitors")? {
+        return Ok(None);
+    }
+    // Reuse the startup owner's partial active-monitor index, so old command
+    // history is not decoded on every provider idle decision.
+    Ok(Some(format!(
+        "EXISTS(SELECT 1 FROM runtime_monitors WHERE {} \
+        AND COALESCE(json_extract(record,'$.operation.accountKey'),json_extract(record,'$.accountKey'))=?1)",
+        active_monitor_predicate()
+    )))
+}
+
 /// Work item statuses that are done: the owner expects no further turn for them.
 /// Any other status (`ready`, `running`, `blocked`, `review`) means a
 /// continuation, a rejection, or a follow-up may still reach the owner.
@@ -130,7 +144,10 @@ impl SchedulerRepository {
     )> {
         let transfer = transfer_pending_predicate(connection)?;
         let in_use = agent_in_use(connection)?;
-        let account_in_use = format!("({transfer} OR EXISTS({ACCOUNT_AGENT_SQL} AND ({in_use})))");
+        let source_monitor = monitor_source_in_use(connection)?.unwrap_or_else(|| "0".into());
+        let account_in_use = format!(
+            "({transfer} OR {source_monitor} OR EXISTS({ACCOUNT_AGENT_SQL} AND ({in_use})))"
+        );
         let thread_in_use = format!(
             "({transfer} OR EXISTS({ACCOUNT_AGENT_SQL} \
                AND thread_id=c.thread_id AND ({in_use})) \
@@ -243,6 +260,13 @@ impl SchedulerRepository {
         if transfer_pending(connection, account)? {
             return Ok(true);
         }
+        if let Some(source_monitor) = monitor_source_in_use(connection)?
+            && connection.query_row(&format!("SELECT {source_monitor}"), [account], |row| {
+                row.get::<_, bool>(0)
+            })?
+        {
+            return Ok(true);
+        }
         let in_use = agent_in_use(connection)?;
         exists(
             connection,
@@ -254,7 +278,7 @@ impl SchedulerRepository {
 
 #[cfg(test)]
 mod tests {
-    use super::SchedulerRepository;
+    use super::{SchedulerRepository, monitor_source_in_use};
     use rusqlite::Connection;
     use serde_json::{Value, json};
 
@@ -314,6 +338,79 @@ mod tests {
             json!({"status":"running","deletedAt":1.0}),
         );
         assert!(!thread_in_use(&connection), "a deleted owner holds nothing");
+    }
+
+    #[test]
+    fn a_transferred_monitor_keeps_its_source_provider_until_its_real_exit() {
+        let connection = database();
+        crate::StartupRecoveryRepository::prepare_indexes(&connection)
+            .expect("active monitor index");
+        let sql = format!(
+            "EXPLAIN QUERY PLAN SELECT {}",
+            monitor_source_in_use(&connection)
+                .expect("monitor source predicate")
+                .expect("monitor table exists")
+        );
+        let plan = connection
+            .prepare(&sql)
+            .expect("prepare source plan")
+            .query_map(["acct"], |row| row.get::<_, String>(3))
+            .expect("query source plan")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect source plan")
+            .join("\n");
+        assert!(
+            plan.contains("USING INDEX runtime_monitor_startup_active"),
+            "{plan}"
+        );
+        agent(&connection, "a", json!({"accountKey":"target"}));
+        connection.execute("INSERT INTO runtime_monitors VALUES('watch',?1)",
+            [json!({"id":"watch","agent":"a","epoch":1,"status":"running","operation":{"agent":"a","epoch":1,"accountKey":"acct","connectionId":"original"}}).to_string()]).expect("running source command");
+        assert!(
+            account_in_use(&connection),
+            "the command still needs its original provider"
+        );
+        assert!(
+            !thread_in_use(&connection),
+            "the process does not keep every old model thread loaded"
+        );
+        let (_, _, busy) = SchedulerRepository::idle_unload_usage_snapshot(
+            &connection,
+            "acct",
+            &Default::default(),
+        )
+        .expect("batched source ownership");
+        assert!(busy, "the batched idle decision uses the same source owner");
+        connection.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','completed') WHERE id='watch'",[]).expect("actual command exit");
+        assert!(
+            !account_in_use(&connection),
+            "the real exit releases its source"
+        );
+        connection
+            .execute_batch("DROP TABLE runtime_monitors")
+            .expect("remove optional monitor table");
+        assert!(
+            !account_in_use(&connection),
+            "the optional monitor schema can be absent"
+        );
+    }
+
+    #[test]
+    fn a_manual_reset_waits_for_its_own_closure_without_an_idle_unsubscribe() {
+        let connection = database();
+        agent(
+            &connection,
+            "a",
+            json!({"nativeRelease":{"phase":"released","resetPending":true}}),
+        );
+        assert!(thread_in_use(&connection));
+        assert!(account_in_use(&connection));
+        agent(
+            &connection,
+            "a",
+            json!({"nativeRelease":{"phase":"released","resetPending":false,"closedAt":1.0}}),
+        );
+        assert!(!thread_in_use(&connection));
     }
 
     #[test]

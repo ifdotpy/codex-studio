@@ -168,10 +168,7 @@ async fn reconcile_job(
         if snapshot.automatic_turn().is_some());
     if recovery_turn
         && matches!(&job, RecoveryJob::Connection { snapshot, .. }
-        if !crate::image_workspace::restart_follow_up_allowed(
-            snapshot.record(),
-            crate::image_workspace::IMAGE_EXECUTION_SUPPORTED,
-        ))
+        if crate::legacy_image_workspace::is_legacy(snapshot.record()))
     {
         return Ok(None);
     }
@@ -331,6 +328,9 @@ async fn record_failure(
             at: unix_seconds(),
             monitor_id: None,
             event_id: None,
+            rule_id: None,
+            count: None,
+            first_at: None,
             diagnostics: Diagnostics {
                 context,
                 certainty: kind.certainty(),
@@ -354,8 +354,12 @@ async fn record_failure(
 /// starts a new connection.
 fn automatic_check_id(snapshot: &RecoverySnapshot, scope: &ConnectionScope) -> String {
     let check = snapshot.connection_recovery_id();
-    let marker = &snapshot.record()["restartRecovery"];
-    if marker["stage"] == "continued" && marker["outcome"] == "active" {
+    let record = snapshot.record();
+    let marker = &record["restartRecovery"];
+    // A turn adopted after a provider disconnect stays `running` the same way.
+    let adopted_transport_turn =
+        record["status"] == "running" && record["connectionRecovery"]["outcome"] == "active";
+    if (marker["stage"] == "continued" && marker["outcome"] == "active") || adopted_transport_turn {
         studio_runtime_store::sha256_hex(
             json!([check, scope.account, scope.connection, scope.generation])
                 .to_string()

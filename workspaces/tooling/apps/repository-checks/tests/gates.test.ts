@@ -238,6 +238,54 @@ test("interrupt waits for running children and cancels unstarted dependents", as
   assert.equal(result.exitCode, 1);
 });
 
+test("the real HTTP web fixture does not overlap Rust witness execution", async () => {
+  const steps = gateSteps(process.cwd(), "test-fast").filter((step) =>
+    ["wasm", "renderer", "workspace", "rust-tests", "web unit tests"].includes(
+      step.id ?? "",
+    ),
+  );
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const trace: (string | undefined)[] = [];
+  const result = executeRecipe(process.cwd(), "test-fast", steps, {
+    write: () => {},
+    execute: async (_root, _item, _case, _json, options) => {
+      if (options.label === "Rust nextest") {
+        started.resolve();
+        await release.promise;
+        trace.push("Rust finished");
+      }
+      trace.push(options.label);
+      return { status: "passed", exitCode: 0, durationSeconds: 0 };
+    },
+  });
+  await started.promise;
+  try {
+    assert.ok(
+      !trace.includes("web unit tests"),
+      "the draft HTTP fixture must not compete with Rust witnesses",
+    );
+  } finally {
+    release.resolve();
+    await result;
+  }
+  assert.ok(trace.indexOf("Rust finished") < trace.indexOf("web unit tests"));
+  for (const name of ["test-fast", "test-comprehensive", "test-fast-rest"]) {
+    assert.equal(
+      gateSteps(process.cwd(), name).find(
+        (step) => step.id === "web unit tests",
+      )!.lane,
+      "rust",
+    );
+  }
+  const nonRust = gateSteps(process.cwd(), "test-fast-rest-non-rust");
+  assert.equal(
+    nonRust.find((step) => step.id === "web unit tests")!.requires,
+    "workspace",
+  );
+  assert.ok(nonRust.every((step) => !step.requiresCargo));
+});
+
 test(
   "owned process groups clean nested children after failure and cancellation",
   { skip: process.platform === "win32" },
@@ -391,7 +439,12 @@ require('node:fs').appendFileSync(process.env.CAPTURE, JSON.stringify({args: pro
     ]);
     assert.equal(
       recorded.supervisor,
-      path.join(root, "target", "debug", "codex-process-supervisor"),
+      path.join(
+        realpathSync(root),
+        "target",
+        "debug",
+        "codex-process-supervisor",
+      ),
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -406,6 +459,46 @@ test("native platform filter keeps every common clause identical", () => {
   assert.ok(linux!.startsWith(common + "\n    | "));
   assert.match(source, /platform = 'cfg\(target_os = "linux"\)'/);
   assert.match(source, /inherits = "ci"/);
+});
+
+test("only the four exact Git process fixtures reserve all fast runner slots", () => {
+  const source = readFileSync(".config/nextest.toml", "utf8");
+  const expectedFilter =
+    "package(=studio-runtime-services) & kind(lib) & (test(=agent_management_store::archive_finished_tests::archive_finished_removes_accepted_worktree_and_target_and_keeps_dirty_work) | test(=task_gate::tests::acceptance_gate_command_checks_revision_source_changes_and_exit_code) | test(=bounded_child::tests::fixture_git_config_does_not_read_the_supplied_hostile_global_file) | test(=bounded_child::tests::fixture_git_config_isolates_nested_git_and_preserves_other_request_inputs))";
+  const reservations = [
+    ...source.matchAll(
+      /\[\[profile\.([^\].]+)\.overrides\]\]\n([\s\S]*?)(?=\n\[|$)/g,
+    ),
+  ]
+    .map((match) => {
+      const [, profile, body] = match;
+      if (profile === undefined || body === undefined)
+        throw new Error("expected a profile override with a body");
+      return { profile, body };
+    })
+    .filter(({ body }) => /^threads-required\s*=/m.test(body))
+    .map(({ profile, body }) => ({
+      profile,
+      filter: body.match(/^filter = '([^']+)'$/m)?.[1],
+      slots: body.match(/^threads-required = "([^"]+)"$/m)?.[1],
+      settings: [...body.matchAll(/^([a-z-]+)\s*=/gm)].map(
+        (setting) => setting[1],
+      ),
+    }));
+  assert.deepEqual(reservations, [
+    {
+      profile: "fast",
+      filter: expectedFilter,
+      slots: "num-test-threads",
+      settings: ["filter", "threads-required"],
+    },
+  ]);
+  assert.equal(
+    [...source.matchAll(/^threads-required\s*=/gm)].length,
+    1,
+    "the reservation must not become a profile-wide default",
+  );
+  assert.doesNotMatch(source, /^test-threads\s*=\s*1\s*$/m);
 });
 
 test("non-Cargo output may quote nextest installation guidance without failing the gate", async () => {

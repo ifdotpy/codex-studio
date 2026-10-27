@@ -1,6 +1,6 @@
-//! Lines (branch, switch, checkout, adopt) and tags.
+//! Lines, adoption, removed folder-switch commands, and tags.
 
-use super::{exit, here, work};
+use super::{exit, here};
 use crate::args::{parse, Spec};
 use crate::ctx::{Caller, Ctx};
 use crate::ids;
@@ -25,7 +25,20 @@ fn owner_arg(ctx: &Ctx, v: Option<&str>) -> Result<u32> {
     }
 }
 
-pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
+fn line_json(repo: &crate::repo::Repo, line: &crate::model::Line) -> serde_json::Value {
+    serde_json::json!({"id": line.id, "name": line.name, "head": line.head, "owner": line.owner,
+        "machine": line.machine, "path": repo.working(line)})
+}
+
+pub fn line(ctx: &Ctx, args: &[String]) -> Result<i32> {
+    let (sub, rest) = args.split_first().ok_or_else(|| exit(2, "usage: layr line new/list/delete/rename"))?;
+    if !matches!(sub.as_str(), "new" | "list" | "delete" | "rename") {
+        return Err(exit(2, "usage: layr line new/list/delete/rename"));
+    }
+    line_command(ctx, rest, sub)
+}
+
+fn line_command(ctx: &Ctx, args: &[String], sub: &str) -> Result<i32> {
     let spec = Spec::new()
         .flag("-l|--list")
         .flag("-v|--verbose")
@@ -39,10 +52,44 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
         .flag("--show-current")
         .flag("--path")
         .value("--owner")
+        .value("--count")
+        .flag("--json")
         .optional("--format")
         .value("--contains")
         .flag("-q|--quiet");
-    let a = parse(&spec, args)?;
+    let mut a = parse(&spec, args)?;
+    let delete = a.has("-d") || a.has("-D");
+    let rename = a.has("-m") || a.has("-M");
+    let list = a.has("-l") || a.has("--show-current");
+    if (delete && sub != "delete") || (rename && sub != "rename") || (list && sub != "list") {
+        return Err(exit(2, "Use 'layr line new', 'layr line list', 'layr line delete', or 'layr line rename'."));
+    }
+    match sub {
+        "new" if !(1..=2).contains(&a.pos.len()) => {
+            return Err(exit(2, "usage: layr line new <name> [<rev>] [--count N]"));
+        }
+        "list" => {
+            a.flags.insert("-l".into(), 1);
+        }
+        "delete" if !a.has("-D") => {
+            a.flags.insert("-d".into(), 1);
+        }
+        "rename" if !a.has("-M") => {
+            a.flags.insert("-m".into(), 1);
+        }
+        _ => {}
+    }
+    if a.has("--count")
+        && (!(1..=2).contains(&a.pos.len())
+            || a.has("-d")
+            || a.has("-D")
+            || a.has("-m")
+            || a.has("-M")
+            || a.has("-l")
+            || a.has("--show-current"))
+    {
+        return Err(exit(128, "usage: layr line new <prefix> [<rev>] --count <N>"));
+    }
     let h = here(ctx)?;
     let repo = &h.repo;
     let current = h.line.clone();
@@ -70,7 +117,7 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 };
                 let base_only = repo.p.db.line_states(&l.id, StateKind::Commit)?.is_empty();
                 if !merged && !base_only {
-                    return Err(exit(1, format!("error: the line '{name}' is not fully merged.\nIf you are sure you want to delete it, run 'layr branch -D {name}'.")));
+                    return Err(exit(1, format!("error: the line '{name}' is not fully merged.\nIf you are sure you want to delete it, run 'layr line delete -D {name}'.")));
                 }
             }
             let _lock = repo.p.lock()?;
@@ -88,7 +135,7 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 if changed || !repo.pending_moves(&l).is_empty() {
                     return Err(exit(
                         1,
-                        format!("error: line '{name}' has uncommitted changes of overlay files, which automatic states do not keep; commit them, or delete the line with -f"),
+                        format!("error: line '{name}' has unsaved changes of overlay files, which automatic states do not keep; save them, or delete the line with -f"),
                     ));
                 }
             }
@@ -120,7 +167,7 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
         let (old, new) = match a.pos.len() {
             1 => (current.as_ref().map(|c| c.name.clone()).unwrap_or_default(), a.pos[0].clone()),
             2 => (a.pos[0].clone(), a.pos[1].clone()),
-            _ => return Err(exit(128, "usage: layr branch -m [<old>] <new>")),
+            _ => return Err(exit(128, "usage: layr line rename [<old>] <new>")),
         };
         crate::store::check_name("line", &new)?;
         let l = repo.line(&old)?;
@@ -169,6 +216,14 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
             },
         }
         .filter(|l| l.head == start);
+        let explicit_view = match a.pos.get(1) {
+            Some(rev) if rev.starts_with("views/") => Some(revs::resolve_view(repo, current.as_ref(), rev)?),
+            Some(rev) if rev.starts_with("attestations/") => {
+                let view = revs::resolve_view(repo, current.as_ref(), rev)?;
+                (!view.layers.is_empty()).then_some(view)
+            }
+            _ => None,
+        };
         let owner = owner_arg(ctx, a.get("--owner"))?;
         repo.require(ctx, "line.create").map_err(|e| exit(128, format!("fatal: {e}")))?;
         if owner != ctx.caller.uid {
@@ -178,7 +233,30 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
             return Err(exit(128, "fatal: only root can create a line owned by root"));
         }
         let _lock = repo.p.lock()?;
-        let l = repo.create_line_from(ctx, name, &start, owner, source.as_ref())?;
+        if let Some(count) = a.get("--count") {
+            let count = count.parse::<usize>().map_err(|_| exit(128, "--count must be a positive integer"))?;
+            let lines = repo.create_lines(ctx, name, &start, owner, source.as_ref(), count, explicit_view.as_ref())?;
+            if a.has("--json") {
+                outln!(ctx, "{}", serde_json::to_string(&lines.iter().map(|line| line_json(repo, line)).collect::<Vec<_>>())?);
+            } else {
+                for l in lines {
+                    if a.has("--path") {
+                        outln!(ctx, "{}", repo.working(&l).display());
+                    } else if !a.has("-q") {
+                        outln!(ctx, "Created line {} at {} from {}", l.name, repo.working(&l).display(), ids::short(&start));
+                    }
+                }
+            }
+            return Ok(0);
+        }
+        let l = match &explicit_view {
+            Some(view) => repo.create_line_view(ctx, name, view, owner)?,
+            None => repo.create_line_from(ctx, name, &start, owner, source.as_ref())?,
+        };
+        if a.has("--json") {
+            outln!(ctx, "{}", line_json(repo, &l));
+            return Ok(0);
+        }
         if a.has("--path") {
             outln!(ctx, "{}", repo.working(&l).display());
         } else if !a.has("-q") {
@@ -189,6 +267,18 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
     // List.
     let lines = repo.lines()?;
     let pat = a.pos.first().cloned();
+    if a.has("--json") {
+        if a.has("-a") || a.has("-r") {
+            return Err(exit(2, "line list --json supports local lines; omit --all and --remotes"));
+        }
+        let rows: Vec<_> = lines
+            .iter()
+            .filter(|line| pat.as_ref().map(|p| super::glob(p, &line.name)).unwrap_or(true))
+            .map(|line| line_json(repo, line))
+            .collect();
+        outln!(ctx, "{}", serde_json::to_string(&rows)?);
+        return Ok(0);
+    }
     let show_local = !a.has("-r");
     if show_local {
         for l in &lines {
@@ -231,92 +321,20 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
-pub fn switch(ctx: &Ctx, args: &[String]) -> Result<i32> {
-    let spec = Spec::new().value("-c|--create").value("-C|--force-create").flag("-d|--detach").flag("-q");
-    let a = parse(&spec, args)?;
-    if let Some(n) = a.get("-c").or(a.get("-C")) {
-        let mut v = vec![n.to_string()];
-        v.extend(a.pos.iter().cloned());
-        let code = branch(ctx, &v)?;
-        let h = here(ctx)?;
-        let l = h.repo.line(n)?;
-        outln!(ctx, "Lines are folders: run 'cd {}' to work in it.", h.repo.working(&l).display());
-        return Ok(code);
-    }
-    let h = here(ctx)?;
-    match a.pos.first() {
-        Some(n) => match h.repo.line(n) {
-            Ok(l) => Err(exit(
-                1,
-                format!("Lines are folders: run 'cd {}' to work in line '{}'.", h.repo.working(&l).display(), l.name),
-            )),
-            Err(_) => Err(exit(128, format!("fatal: invalid reference: {n}"))),
+/// Removed folder-switch commands never change files or create a line.
+pub fn removed_switch(ctx: &Ctx, args: &[String]) -> Result<i32> {
+    let name = args.iter().find(|a| !a.starts_with('-')).map(String::as_str);
+    let folder = match here(ctx) {
+        Ok(h) => match name {
+            Some(n) if crate::store::check_name("line", n).is_ok() => h.repo.p.line_path(n),
+            _ => h.line.as_ref().map(|l| h.repo.working(l)).unwrap_or_else(|| h.repo.p.line_path("<name>")),
         },
-        None => Err(exit(128, "fatal: missing line name")),
-    }
-}
-
-pub fn checkout(ctx: &Ctx, args: &[String]) -> Result<i32> {
-    let spec = Spec::new()
-        .value("-b")
-        .value("-B")
-        .flag("--ours")
-        .flag("--theirs")
-        .flag("-f|--force")
-        .flag("-q|--quiet")
-        .flag("--detach");
-    let a = parse(&spec, args)?;
-    if let Some(n) = a.get("-b").or(a.get("-B")) {
-        let mut v = vec![n.to_string()];
-        v.extend(a.pos.iter().cloned());
-        branch(ctx, &v)?;
-        let h = here(ctx)?;
-        let l = h.repo.line(n)?;
-        outln!(ctx, "Lines are folders: run 'cd {}' to work in it.", h.repo.working(&l).display());
-        return Ok(0);
-    }
-    let h = here(ctx)?;
-    let line = h.line()?.clone();
-    // checkout [<rev>] -- <paths>: restore paths into the index and the working folder.
-    if !a.paths.is_empty() || a.has("--ours") || a.has("--theirs") {
-        let mut paths = a.paths.clone();
-        let mut rev: Option<String> = None;
-        if a.dashdash {
-            rev = a.pos.first().cloned();
-        } else {
-            paths.extend(a.pos.iter().cloned());
-        }
-        let specs = h.specs(&paths)?;
-        let staged = rev.is_some();
-        return work::restore_impl(ctx, &h, &line, &specs, staged, true, rev.as_deref(), a.has("--ours"), a.has("--theirs"));
-    }
-    let target = match a.pos.first() {
-        Some(t) => t.clone(),
-        None => return Ok(0),
+        Err(_) => ctx.store.root.join("projects/<project>/lines").join(name.unwrap_or("<name>")),
     };
-    if let Ok(l) = h.repo.line(&target) {
-        if l.id == line.id {
-            outln!(ctx, "Already on '{}'", l.name);
-            return Ok(0);
-        }
-        return Err(exit(
-            1,
-            format!("Lines are folders: run 'cd {}' to work in line '{}'.", h.repo.working(&l).display(), l.name),
-        ));
-    }
-    if revs::resolve(&h.repo, Some(&line), &target).is_ok() {
-        // Could also be a path.
-        let p = super::normalize(&h.loc.sub, &target)?;
-        if crate::fsutil::lmeta(&h.repo.working(&line), &p).is_some() {
-            return work::restore_impl(ctx, &h, &line, &[p], false, true, None, false, false);
-        }
-        return Err(exit(
-            1,
-            format!("layr does not detach a line. Use 'layr reset --hard {target}' to move this line, or 'layr branch <name> {target}' for a new line."),
-        ));
-    }
-    let p = super::normalize(&h.loc.sub, &target)?;
-    work::restore_impl(ctx, &h, &line, &[p], false, true, None, false, false)
+    Err(exit(
+        2,
+        format!("A line is a folder. Use 'cd {}' to work there. Create a line with 'layr line new <name>'.", folder.display()),
+    ))
 }
 
 /// Give a line a working folder on this machine (after a move or a restore).
@@ -341,7 +359,7 @@ pub fn adopt(ctx: &Ctx, args: &[String]) -> Result<i32> {
             .db
             .line_states(&l.id, StateKind::Auto)?
             .into_iter()
-            .find(|s| repo.p.state_path(&s.id).exists())
+            .find(|s| repo.p.has_state(&s.id))
             .map(|s| s.id)
             .unwrap_or(l.head.clone()),
     };
@@ -359,7 +377,7 @@ pub fn adopt(ctx: &Ctx, args: &[String]) -> Result<i32> {
             working_after: Some(start.clone()),
         },
     );
-    rec.data = serde_json::json!({"name": l.name, "from_state": start});
+    rec.data = serde_json::json!({"name": l.name, "from_state": start, "stack":repo.public_stack_data(&l.id, &repo.readable_layers(&moved)?)?});
     repo.commit_record(ctx, rec)?;
     outln!(ctx, "Line {} now has a working folder here: {} (content of {})", l.name, w.display(), ids::short(&start));
     Ok(0)
@@ -408,7 +426,7 @@ pub fn tag(ctx: &Ctx, args: &[String]) -> Result<i32> {
     crate::store::check_name("tag", name)?;
     // Tags are names of the whole project and keep their states from gc: the admin sets them.
     repo.require(ctx, "tag")?;
-    let id = revs::resolve(repo, line.as_ref(), a.pos.get(1).map(|s| s.as_str()).unwrap_or("HEAD"))?;
+    let id = revs::resolve(repo, line.as_ref(), a.pos.get(1).map(|s| s.as_str()).unwrap_or("head"))?;
     let _lock = repo.p.lock()?;
     if repo.p.db.tag(name)?.is_some() && !a.has("-f") {
         return Err(exit(128, format!("fatal: tag '{name}' already exists")));

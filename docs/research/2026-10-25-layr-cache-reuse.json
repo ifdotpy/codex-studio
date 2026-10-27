@@ -1,0 +1,2302 @@
+{
+  "studio_commit": "1c2e4c1e3f39bf38de9da1fd8c72706974878ec9",
+  "layr_commit": "efa2fa142b44c278d264f59355d0d97d815fe5ba",
+  "concurrent_builds": true,
+  "cargo_jobs": 4,
+  "task": "work-1792917911219744000-4",
+  "commands": [
+    {
+      "name": "version",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "--version"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e",
+      "started_utc": "2026-10-25T08:50:11Z",
+      "seconds": 0.058,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/version.log"
+    },
+    {
+      "name": "init",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "init",
+        "cabench",
+        "--from",
+        "/Users/igor/layr-cache-bench-e/import"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e",
+      "started_utc": "2026-10-25T08:50:11Z",
+      "seconds": 10.464,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/init.log"
+    },
+    {
+      "name": "cache-main-before",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "cache",
+        "list"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main",
+      "started_utc": "2026-10-25T08:50:21Z",
+      "seconds": 2.013,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cache-main-before.log"
+    },
+    {
+      "name": "line-before-save",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "line",
+        "new",
+        "before",
+        "main",
+        "--json"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main",
+      "started_utc": "2026-10-25T08:50:23Z",
+      "seconds": 0.814,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/line-before-save.log"
+    },
+    {
+      "name": "cache-before-line-before-save",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "cache",
+        "list"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/before",
+      "started_utc": "2026-10-25T08:50:24Z",
+      "seconds": 2.386,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cache-before-line-before-save.log"
+    },
+    {
+      "name": "cargo-main-cold",
+      "argv": [
+        "cargo",
+        "build",
+        "-v",
+        "-j",
+        "4",
+        "--locked",
+        "-p",
+        "studio-runtime-http"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main",
+      "started_utc": "2026-10-25T08:50:27Z",
+      "seconds": 386.815,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cargo-main-cold.log",
+      "fresh": 0,
+      "compiling": 286,
+      "dirty": [],
+      "running_rustc": 349,
+      "running_build_scripts": 37
+    },
+    {
+      "name": "cargo-main-noop",
+      "argv": [
+        "cargo",
+        "build",
+        "-v",
+        "-j",
+        "4",
+        "--locked",
+        "-p",
+        "studio-runtime-http"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main",
+      "started_utc": "2026-10-25T08:56:53Z",
+      "seconds": 1.152,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cargo-main-noop.log",
+      "fresh": 286,
+      "compiling": 0,
+      "dirty": [],
+      "running_rustc": 0,
+      "running_build_scripts": 0
+    },
+    {
+      "name": "pnpm-main-install",
+      "argv": ["pnpm", "install", "--frozen-lockfile"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main",
+      "started_utc": "2026-10-25T08:56:55Z",
+      "seconds": 5.691,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/pnpm-main-install.log"
+    },
+    {
+      "name": "pnpm-main-store",
+      "argv": ["pnpm", "store", "path"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main",
+      "started_utc": "2026-10-25T08:57:00Z",
+      "seconds": 0.148,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/pnpm-main-store.log"
+    },
+    {
+      "name": "cache-main-before-seed",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "cache",
+        "list"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main",
+      "started_utc": "2026-10-25T08:57:00Z",
+      "seconds": 1.555,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cache-main-before-seed.log"
+    },
+    {
+      "name": "save-caches",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "save",
+        "--caches"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main",
+      "started_utc": "2026-10-25T08:57:02Z",
+      "seconds": 270.612,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/save-caches.log"
+    },
+    {
+      "name": "cache-main-after-seed",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "cache",
+        "list"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main",
+      "started_utc": "2026-10-25T09:01:33Z",
+      "seconds": 4.45,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cache-main-after-seed.log"
+    },
+    {
+      "name": "du-main-after-seed",
+      "argv": ["du", "-sk", "target", "node_modules"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main",
+      "started_utc": "2026-10-25T09:01:37Z",
+      "seconds": 1.917,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/du-main-after-seed.log"
+    },
+    {
+      "name": "line-w1",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "line",
+        "new",
+        "w1",
+        "main",
+        "--json"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main",
+      "started_utc": "2026-10-25T09:01:39Z",
+      "seconds": 28.76,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/line-w1.log"
+    },
+    {
+      "name": "cache-w1-before-build",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "cache",
+        "list"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1",
+      "started_utc": "2026-10-25T09:02:08Z",
+      "seconds": 1.822,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cache-w1-before-build.log"
+    },
+    {
+      "name": "du-w1-before-build",
+      "argv": ["du", "-sk", "target", "node_modules"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1",
+      "started_utc": "2026-10-25T09:02:10Z",
+      "seconds": 1.127,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/du-w1-before-build.log"
+    },
+    {
+      "name": "cargo-w1-warm",
+      "argv": [
+        "cargo",
+        "build",
+        "-v",
+        "-j",
+        "4",
+        "--locked",
+        "-p",
+        "studio-runtime-http"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1",
+      "started_utc": "2026-10-25T09:02:11Z",
+      "seconds": 180.391,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cargo-w1-warm.log",
+      "fresh": 285,
+      "compiling": 1,
+      "dirty": [
+        "studio-runtime-http v0.1.0 (/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1/workspaces/runtime/packages/runtime-http): the rerun-if-changed instructions changed"
+      ],
+      "running_rustc": 1,
+      "running_build_scripts": 1
+    },
+    {
+      "name": "cargo-w1-noop",
+      "argv": [
+        "cargo",
+        "build",
+        "-v",
+        "-j",
+        "4",
+        "--locked",
+        "-p",
+        "studio-runtime-http"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1",
+      "started_utc": "2026-10-25T09:05:11Z",
+      "seconds": 1.947,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cargo-w1-noop.log",
+      "fresh": 286,
+      "compiling": 0,
+      "dirty": [],
+      "running_rustc": 0,
+      "running_build_scripts": 0
+    },
+    {
+      "name": "pnpm-w1-install",
+      "argv": ["pnpm", "install", "--frozen-lockfile"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1",
+      "started_utc": "2026-10-25T09:05:13Z",
+      "seconds": 3.733,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/pnpm-w1-install.log"
+    },
+    {
+      "name": "pnpm-w1-tsc-version",
+      "argv": ["pnpm", "exec", "tsc", "--version"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1",
+      "started_utc": "2026-10-25T09:05:17Z",
+      "seconds": 0.58,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/pnpm-w1-tsc-version.log"
+    },
+    {
+      "name": "metadata-init",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "init",
+        "metaprobe",
+        "--from",
+        "/Users/igor/layr-cache-bench-e/metadata-import"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e",
+      "started_utc": "2026-10-25T09:06:02Z",
+      "seconds": 0.367,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/metadata-init.log"
+    },
+    {
+      "name": "metadata-repair",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "cache",
+        "repair"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/metaprobe/lines/main",
+      "started_utc": "2026-10-25T09:06:03Z",
+      "seconds": 0.162,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/metadata-repair.log"
+    },
+    {
+      "name": "metadata-save",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "save",
+        "--caches"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/metaprobe/lines/main",
+      "started_utc": "2026-10-25T09:06:03Z",
+      "seconds": 0.273,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/metadata-save.log"
+    },
+    {
+      "name": "metadata-new",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "line",
+        "new",
+        "w1",
+        "main"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/metaprobe/lines/main",
+      "started_utc": "2026-10-25T09:06:03Z",
+      "seconds": 0.058,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/metadata-new.log"
+    },
+    {
+      "name": "cargo-w1-one-edit",
+      "argv": [
+        "cargo",
+        "build",
+        "-v",
+        "-j",
+        "4",
+        "--locked",
+        "-p",
+        "studio-runtime-http"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1",
+      "started_utc": "2026-10-25T09:05:17Z",
+      "seconds": 136.98,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cargo-w1-one-edit.log",
+      "fresh": 285,
+      "compiling": 1,
+      "dirty": [
+        "studio-runtime-http v0.1.0 (/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1/workspaces/runtime/packages/runtime-http): the file `workspaces/runtime/packages/runtime-http/src/lib.rs` has changed (1792919117.941732128s, 3m 2s after last build at 1792918935.652963046s)"
+      ],
+      "running_rustc": 1,
+      "running_build_scripts": 0
+    },
+    {
+      "name": "line-count",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "line",
+        "new",
+        "batch",
+        "main",
+        "--count",
+        "2",
+        "--json"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main",
+      "started_utc": "2026-10-25T09:07:34Z",
+      "seconds": 69.988,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/line-count.log"
+    },
+    {
+      "name": "lines-after-count",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "line",
+        "list",
+        "--json"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main",
+      "started_utc": "2026-10-25T09:08:44Z",
+      "seconds": 0.155,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/lines-after-count.log"
+    },
+    {
+      "name": "cargo-count-warm",
+      "argv": [
+        "cargo",
+        "build",
+        "-v",
+        "-j",
+        "4",
+        "--locked",
+        "-p",
+        "studio-runtime-http"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-2",
+      "started_utc": "2026-10-25T09:08:45Z",
+      "seconds": 218.174,
+      "exit": 101,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cargo-count-warm.log",
+      "fresh": 285,
+      "compiling": 1,
+      "dirty": [
+        "studio-runtime-http v0.1.0 (/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-2/workspaces/runtime/packages/runtime-http): the rerun-if-changed instructions changed"
+      ],
+      "running_rustc": 1,
+      "running_build_scripts": 1
+    },
+    {
+      "name": "pnpm-count-before-tsc",
+      "argv": ["pnpm", "exec", "tsc", "--version"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-2",
+      "started_utc": "2026-10-25T09:15:02Z",
+      "seconds": 2.732,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/pnpm-count-before-tsc.log"
+    },
+    {
+      "name": "pnpm-count-install",
+      "argv": ["pnpm", "install", "--frozen-lockfile"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-2",
+      "started_utc": "2026-10-25T09:15:05Z",
+      "seconds": 0.187,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/pnpm-count-install.log"
+    },
+    {
+      "name": "cache-before-line-after-save",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "cache",
+        "list"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/before",
+      "started_utc": "2026-10-25T09:15:05Z",
+      "seconds": 2.249,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cache-before-line-after-save.log"
+    },
+    {
+      "name": "cargo-before-line-cold-small",
+      "argv": [
+        "cargo",
+        "build",
+        "-v",
+        "-j",
+        "4",
+        "--locked",
+        "-p",
+        "studio-diagnostics"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/before",
+      "started_utc": "2026-10-25T09:15:07Z",
+      "seconds": 7.355,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cargo-before-line-cold-small.log",
+      "fresh": 0,
+      "compiling": 6,
+      "dirty": [],
+      "running_rustc": 9,
+      "running_build_scripts": 3
+    },
+    {
+      "name": "pnpm-before-line-install",
+      "argv": ["pnpm", "install", "--frozen-lockfile"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/before",
+      "started_utc": "2026-10-25T09:15:15Z",
+      "seconds": 6.643,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/pnpm-before-line-install.log"
+    },
+    {
+      "name": "cargo-clean",
+      "argv": ["cargo", "clean"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-1",
+      "started_utc": "2026-10-25T09:15:21Z",
+      "seconds": 1.516,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cargo-clean.log"
+    },
+    {
+      "name": "cache-after-clean",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "cache",
+        "list"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-1",
+      "started_utc": "2026-10-25T09:15:23Z",
+      "seconds": 3.373,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cache-after-clean.log"
+    },
+    {
+      "name": "cache-repair",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "cache",
+        "repair"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-1",
+      "started_utc": "2026-10-25T09:15:26Z",
+      "seconds": 0.891,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cache-repair.log"
+    },
+    {
+      "name": "cache-after-repair",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "cache",
+        "list"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-1",
+      "started_utc": "2026-10-25T09:15:27Z",
+      "seconds": 1.97,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cache-after-repair.log"
+    },
+    {
+      "name": "cache-after-recreate",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "cache",
+        "list"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-1",
+      "started_utc": "2026-10-25T09:15:29Z",
+      "seconds": 1.993,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cache-after-recreate.log"
+    },
+    {
+      "name": "cache-repair-recreated",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "cache",
+        "repair"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-1",
+      "started_utc": "2026-10-25T09:15:31Z",
+      "seconds": 1.02,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cache-repair-recreated.log"
+    },
+    {
+      "name": "cache-after-recreated-repair",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "cache",
+        "list"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-1",
+      "started_utc": "2026-10-25T09:15:32Z",
+      "seconds": 2.22,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/cache-after-recreated-repair.log"
+    },
+    {
+      "name": "du-main-final",
+      "argv": ["du", "-sk", "target", "node_modules"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main",
+      "started_utc": "2026-10-25T09:15:34Z",
+      "seconds": 7.169,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/du-main-final.log"
+    },
+    {
+      "name": "du-w1-final",
+      "argv": ["du", "-sk", "target", "node_modules"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1",
+      "started_utc": "2026-10-25T09:15:42Z",
+      "seconds": 6.088,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/du-w1-final.log"
+    },
+    {
+      "name": "df-final",
+      "argv": ["df", "-k", "/Users/igor/layr-cache-bench-e"],
+      "cwd": "/Users/igor/layr-cache-bench-e",
+      "started_utc": "2026-10-25T09:15:48Z",
+      "seconds": 0.009,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/df-final.log"
+    },
+    {
+      "name": "clean-failed-count-target",
+      "argv": ["cargo", "clean"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-2",
+      "started_utc": "2026-10-25T09:15:48Z",
+      "seconds": 3.72,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/clean-failed-count-target.log"
+    },
+    {
+      "name": "probe-init",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "init",
+        "rustprobe",
+        "--from",
+        "/Users/igor/layr-cache-bench-e/probe-import"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e",
+      "started_utc": "2026-10-25T09:15:51Z",
+      "seconds": 0.321,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-init.log"
+    },
+    {
+      "name": "probe-main-cold",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/main",
+      "started_utc": "2026-10-25T09:15:52Z",
+      "seconds": 2.866,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-main-cold.log",
+      "fresh": 0,
+      "compiling": 1,
+      "dirty": [],
+      "running_rustc": 3,
+      "running_build_scripts": 1
+    },
+    {
+      "name": "probe-main-exec",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/main/target/debug/cache-path-probe"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/main",
+      "started_utc": "2026-10-25T09:15:55Z",
+      "seconds": 0.186,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-main-exec.log"
+    },
+    {
+      "name": "probe-save",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "save",
+        "--caches"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/main",
+      "started_utc": "2026-10-25T09:15:55Z",
+      "seconds": 0.486,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-save.log"
+    },
+    {
+      "name": "probe-new",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "line",
+        "new",
+        "w1",
+        "main"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/main",
+      "started_utc": "2026-10-25T09:15:55Z",
+      "seconds": 0.055,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-new.log"
+    },
+    {
+      "name": "probe-w1-warm",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w1",
+      "started_utc": "2026-10-25T09:15:55Z",
+      "seconds": 1.736,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-w1-warm.log",
+      "fresh": 0,
+      "compiling": 1,
+      "dirty": [],
+      "running_rustc": 3,
+      "running_build_scripts": 1
+    },
+    {
+      "name": "probe-w1-exec",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w1/target/debug/cache-path-probe"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w1",
+      "started_utc": "2026-10-25T09:15:57Z",
+      "seconds": 0.175,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-w1-exec.log"
+    },
+    {
+      "name": "probe-w1-input-edit",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w1",
+      "started_utc": "2026-10-25T09:15:57Z",
+      "seconds": 0.563,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-w1-input-edit.log",
+      "fresh": 0,
+      "compiling": 1,
+      "dirty": [
+        "cache-path-probe v0.1.0 (/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w1): the file `input.txt` has changed (1792919757.810781677s, 754222190ns after last build at 1792919757.056559487s)"
+      ],
+      "running_rustc": 2,
+      "running_build_scripts": 1
+    },
+    {
+      "name": "probe-w1-edited-exec",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w1/target/debug/cache-path-probe"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w1",
+      "started_utc": "2026-10-25T09:15:58Z",
+      "seconds": 0.175,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-w1-edited-exec.log"
+    },
+    {
+      "name": "probe-w1-mtime-change",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w1",
+      "started_utc": "2026-10-25T09:15:58Z",
+      "seconds": 0.475,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-w1-mtime-change.log",
+      "fresh": 0,
+      "compiling": 1,
+      "dirty": [
+        "cache-path-probe v0.1.0 (/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w1): the file `src/lib.rs` has changed (1792919758.551517000s, 1s after last build at 1792919757.982254724s)"
+      ],
+      "running_rustc": 2,
+      "running_build_scripts": 0
+    },
+    {
+      "name": "probe-w1-after-touch-exec",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w1/target/debug/cache-path-probe"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w1",
+      "started_utc": "2026-10-25T09:15:59Z",
+      "seconds": 0.163,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-w1-after-touch-exec.log"
+    },
+    {
+      "name": "external-target-metadata",
+      "argv": ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w1",
+      "started_utc": "2026-10-25T09:15:59Z",
+      "seconds": 0.096,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/external-target-metadata.log"
+    },
+    {
+      "name": "sccache-probe-init",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "init",
+        "sccacheprobe",
+        "--from",
+        "/Users/igor/layr-cache-bench-e/sccache-import"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e",
+      "started_utc": "2026-10-25T09:15:59Z",
+      "seconds": 0.135,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-probe-init.log"
+    },
+    {
+      "name": "sccache-plain-start",
+      "argv": ["sccache", "--start-server"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:15:59Z",
+      "seconds": 0.083,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-plain-start.log"
+    },
+    {
+      "name": "sccache-plain-main-clean",
+      "argv": ["cargo", "clean"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:15:59Z",
+      "seconds": 0.991,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-plain-main-clean.log"
+    },
+    {
+      "name": "sccache-plain-main",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:16:00Z",
+      "seconds": 1.754,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-plain-main.log",
+      "fresh": 0,
+      "compiling": 1,
+      "dirty": [],
+      "running_rustc": 1,
+      "running_build_scripts": 0
+    },
+    {
+      "name": "sccache-probe-save",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "save",
+        "--caches"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:16:02Z",
+      "seconds": 0.192,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-probe-save.log"
+    },
+    {
+      "name": "sccache-probe-new",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "line",
+        "new",
+        "w1",
+        "main"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:16:02Z",
+      "seconds": 0.057,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-probe-new.log"
+    },
+    {
+      "name": "sccache-plain-w1-clean",
+      "argv": ["cargo", "clean"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/w1",
+      "started_utc": "2026-10-25T09:16:02Z",
+      "seconds": 0.267,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-plain-w1-clean.log"
+    },
+    {
+      "name": "sccache-plain-w1",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/w1",
+      "started_utc": "2026-10-25T09:16:02Z",
+      "seconds": 0.835,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-plain-w1.log",
+      "fresh": 0,
+      "compiling": 1,
+      "dirty": [],
+      "running_rustc": 1,
+      "running_build_scripts": 0
+    },
+    {
+      "name": "sccache-plain-stats",
+      "argv": ["sccache", "--show-stats", "--stats-format", "json"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/w1",
+      "started_utc": "2026-10-25T09:16:03Z",
+      "seconds": 0.019,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-plain-stats.log"
+    },
+    {
+      "name": "sccache-plain-stop",
+      "argv": ["sccache", "--stop-server"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:16:03Z",
+      "seconds": 0.026,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-plain-stop.log"
+    },
+    {
+      "name": "sccache-normalized-start",
+      "argv": ["sccache", "--start-server"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:16:03Z",
+      "seconds": 0.069,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-normalized-start.log"
+    },
+    {
+      "name": "sccache-normalized-main-clean",
+      "argv": ["cargo", "clean"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:16:03Z",
+      "seconds": 0.14,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-normalized-main-clean.log"
+    },
+    {
+      "name": "sccache-normalized-main",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:16:03Z",
+      "seconds": 2.165,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-normalized-main.log",
+      "fresh": 0,
+      "compiling": 1,
+      "dirty": [],
+      "running_rustc": 1,
+      "running_build_scripts": 0
+    },
+    {
+      "name": "sccache-normalized-w1-clean",
+      "argv": ["cargo", "clean"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/w1",
+      "started_utc": "2026-10-25T09:16:06Z",
+      "seconds": 0.068,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-normalized-w1-clean.log"
+    },
+    {
+      "name": "sccache-normalized-w1",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/w1",
+      "started_utc": "2026-10-25T09:16:06Z",
+      "seconds": 0.791,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-normalized-w1.log",
+      "fresh": 0,
+      "compiling": 1,
+      "dirty": [],
+      "running_rustc": 1,
+      "running_build_scripts": 0
+    },
+    {
+      "name": "sccache-normalized-stats",
+      "argv": ["sccache", "--show-stats", "--stats-format", "json"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/w1",
+      "started_utc": "2026-10-25T09:16:06Z",
+      "seconds": 0.017,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-normalized-stats.log"
+    },
+    {
+      "name": "sccache-incremental-clean",
+      "argv": ["cargo", "clean"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/w1",
+      "started_utc": "2026-10-25T09:16:06Z",
+      "seconds": 0.078,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-incremental-clean.log"
+    },
+    {
+      "name": "sccache-incremental-w1",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/w1",
+      "started_utc": "2026-10-25T09:16:06Z",
+      "seconds": 0.064,
+      "exit": 101,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-incremental-w1.log",
+      "fresh": 0,
+      "compiling": 0,
+      "dirty": [],
+      "running_rustc": 0,
+      "running_build_scripts": 0
+    },
+    {
+      "name": "sccache-normalized-stop",
+      "argv": ["sccache", "--stop-server"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:16:07Z",
+      "seconds": 0.015,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-normalized-stop.log"
+    },
+    {
+      "name": "probe-enable-direct",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "protect",
+        "main",
+        "--direct"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/main",
+      "started_utc": "2026-10-25T09:17:22Z",
+      "seconds": 0.769,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-enable-direct.log"
+    },
+    {
+      "name": "probe-add-lock",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "add",
+        "Cargo.lock"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/main",
+      "started_utc": "2026-10-25T09:17:22Z",
+      "seconds": 0.063,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-add-lock.log"
+    },
+    {
+      "name": "probe-save-lock",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "save",
+        "-m",
+        "Record probe lockfile"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/main",
+      "started_utc": "2026-10-25T09:17:22Z",
+      "seconds": 0.182,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-save-lock.log"
+    },
+    {
+      "name": "probe-incremental-main",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/main",
+      "started_utc": "2026-10-25T09:17:23Z",
+      "seconds": 0.123,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-incremental-main.log",
+      "fresh": 1,
+      "compiling": 0,
+      "dirty": [],
+      "running_rustc": 0,
+      "running_build_scripts": 0
+    },
+    {
+      "name": "probe-seed-with-lock",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "save",
+        "--caches"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/main",
+      "started_utc": "2026-10-25T09:17:23Z",
+      "seconds": 0.157,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-seed-with-lock.log"
+    },
+    {
+      "name": "probe-warm-new",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "line",
+        "new",
+        "w2",
+        "main"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/main",
+      "started_utc": "2026-10-25T09:17:23Z",
+      "seconds": 0.078,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-warm-new.log"
+    },
+    {
+      "name": "probe-warm-cache-list",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/layr-target/debug/layr",
+        "cache",
+        "list"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w2",
+      "started_utc": "2026-10-25T09:17:23Z",
+      "seconds": 0.026,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-warm-cache-list.log"
+    },
+    {
+      "name": "probe-genuine-warm-build",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w2",
+      "started_utc": "2026-10-25T09:17:59Z",
+      "seconds": 2.741,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-genuine-warm-build.log",
+      "fresh": 0,
+      "compiling": 1,
+      "dirty": [
+        "cache-path-probe v0.1.0 (/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w2): the rerun-if-changed instructions changed"
+      ],
+      "running_rustc": 2,
+      "running_build_scripts": 1
+    },
+    {
+      "name": "probe-genuine-warm-exec",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w2/target/debug/cache-path-probe"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w2",
+      "started_utc": "2026-10-25T09:18:01Z",
+      "seconds": 0.183,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-genuine-warm-exec.log"
+    },
+    {
+      "name": "probe-genuine-warm-input-edit",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w2",
+      "started_utc": "2026-10-25T09:18:02Z",
+      "seconds": 0.874,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-genuine-warm-input-edit.log",
+      "fresh": 0,
+      "compiling": 1,
+      "dirty": [
+        "cache-path-probe v0.1.0 (/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w2): the file `input.txt` has changed (1792919882.078442689s, 3s after last build at 1792919879.402627348s)"
+      ],
+      "running_rustc": 2,
+      "running_build_scripts": 1
+    },
+    {
+      "name": "probe-genuine-warm-input-exec",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w2/target/debug/cache-path-probe"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w2",
+      "started_utc": "2026-10-25T09:18:02Z",
+      "seconds": 0.179,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/probe-genuine-warm-input-exec.log"
+    },
+    {
+      "name": "pnpm-cloned-shim-direct",
+      "argv": [
+        "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-1/node_modules/.bin/tsc",
+        "--version"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-1",
+      "started_utc": "2026-10-25T09:18:27Z",
+      "seconds": 0.32,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/pnpm-cloned-shim-direct.log"
+    },
+    {
+      "name": "sccache-same-line-start",
+      "argv": ["sccache", "--start-server"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:18:54Z",
+      "seconds": 0.096,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-same-line-start.log"
+    },
+    {
+      "name": "sccache-same-line-clean",
+      "argv": ["cargo", "clean"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:18:54Z",
+      "seconds": 0.423,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-same-line-clean.log"
+    },
+    {
+      "name": "sccache-same-line-build",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:18:55Z",
+      "seconds": 4.016,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-same-line-build.log",
+      "fresh": 0,
+      "compiling": 1,
+      "dirty": [],
+      "running_rustc": 1,
+      "running_build_scripts": 0
+    },
+    {
+      "name": "sccache-same-line-stats",
+      "argv": ["sccache", "--show-stats", "--stats-format", "json"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:18:59Z",
+      "seconds": 0.031,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-same-line-stats.log"
+    },
+    {
+      "name": "sccache-same-line-stop",
+      "argv": ["sccache", "--stop-server"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:18:59Z",
+      "seconds": 0.019,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-same-line-stop.log"
+    },
+    {
+      "name": "pnpm-new-user-store-offline",
+      "argv": [
+        "pnpm",
+        "install",
+        "--offline",
+        "--frozen-lockfile",
+        "--store-dir",
+        "/Users/igor/layr-cache-bench-e/empty-user-pnpm-store"
+      ],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-1",
+      "started_utc": "2026-10-25T09:19:30Z",
+      "seconds": 21.001,
+      "exit": 1,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/pnpm-new-user-store-offline.log"
+    },
+    {
+      "name": "sccache-control-start",
+      "argv": ["sccache", "--start-server"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:20:03Z",
+      "seconds": 0.085,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-control-start.log"
+    },
+    {
+      "name": "sccache-control-clean-1",
+      "argv": ["cargo", "clean"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:20:03Z",
+      "seconds": 0.197,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-control-clean-1.log"
+    },
+    {
+      "name": "sccache-control-build-1",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:20:03Z",
+      "seconds": 3.132,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-control-build-1.log",
+      "fresh": 0,
+      "compiling": 1,
+      "dirty": [],
+      "running_rustc": 1,
+      "running_build_scripts": 0
+    },
+    {
+      "name": "sccache-control-stats-1",
+      "argv": ["sccache", "--show-stats", "--stats-format", "json"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:20:06Z",
+      "seconds": 0.019,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-control-stats-1.log"
+    },
+    {
+      "name": "sccache-control-clean-2",
+      "argv": ["cargo", "clean"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:20:06Z",
+      "seconds": 0.136,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-control-clean-2.log"
+    },
+    {
+      "name": "sccache-control-build-2",
+      "argv": ["cargo", "build", "-v", "-j", "4"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:20:06Z",
+      "seconds": 1.436,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-control-build-2.log",
+      "fresh": 0,
+      "compiling": 1,
+      "dirty": [],
+      "running_rustc": 1,
+      "running_build_scripts": 0
+    },
+    {
+      "name": "sccache-control-stats-2",
+      "argv": ["sccache", "--show-stats", "--stats-format", "json"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:20:08Z",
+      "seconds": 0.019,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-control-stats-2.log"
+    },
+    {
+      "name": "sccache-control-stop",
+      "argv": ["sccache", "--stop-server"],
+      "cwd": "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main",
+      "started_utc": "2026-10-25T09:20:08Z",
+      "seconds": 0.029,
+      "exit": 0,
+      "log": "/Users/igor/layr-cache-bench-e/evidence/sccache-control-stop.log"
+    }
+  ],
+  "samples": {
+    "environment": {
+      "utc": "2026-10-25T08:50:03Z",
+      "environment": {},
+      "commands": {
+        "rustc": {
+          "argv": ["rustc", "--version"],
+          "exit": 0,
+          "stdout": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\n",
+          "stderr": ""
+        },
+        "cargo": {
+          "argv": ["cargo", "--version"],
+          "exit": 0,
+          "stdout": "cargo 1.99.1 (5f94df478 2026-08-27)\n",
+          "stderr": ""
+        },
+        "pnpm": {
+          "argv": ["pnpm", "--version"],
+          "exit": 0,
+          "stdout": "12.15.0\n",
+          "stderr": ""
+        },
+        "sccache": {
+          "argv": ["sccache", "--version"],
+          "exit": 0,
+          "stdout": "sccache 0.16.0\n",
+          "stderr": ""
+        },
+        "pnpm_store": {
+          "argv": ["pnpm", "store", "path"],
+          "exit": 0,
+          "stdout": "/Users/igor/Library/pnpm/store/v11\n",
+          "stderr": ""
+        },
+        "disk": {
+          "argv": ["diskutil", "info", "/System/Volumes/Data"],
+          "exit": 0,
+          "stdout": "   Device Identifier:         disk3s5\n   Device Node:               /dev/disk3s5\n   Whole:                     No\n   Part of Whole:             disk3\n\n   Volume Name:               Data\n   Mounted:                   Yes\n   Mount Point:               /System/Volumes/Data\n\n   Partition Type:            41504653-0000-11AA-AA11-00306543ECAC\n   File System Personality:   APFS\n   Type (Bundle):             apfs\n   Name (User Visible):       APFS\n   Owners:                    Enabled\n\n   OS Can Be Installed:       Yes\n   Booter Disk:               disk3s2\n   Recovery Disk:             disk3s3\n   Media Type:                Generic\n   Protocol:                  Apple Fabric\n   SMART Status:              Verified\n   Volume UUID:               64DCAAB7-BEFD-4B60-979A-8CDEDEEFE61B\n   Disk / Partition UUID:     64DCAAB7-BEFD-4B60-979A-8CDEDEEFE61B\n\n   Disk Size:                 2.0 TB (1995165736960 Bytes) (exactly 3896808080 512-Byte-Units)\n   Device Block Size:         4096 Bytes\n\n   Volume Used Space:         1.9 TB (1922669187072 Bytes) (exactly 3755213256 512-Byte-Units)\n   Container Total Space:     2.0 TB (1995165736960 Bytes) (exactly 3896808080 512-Byte-Units)\n   Container Free Space:      22.2 GB (22153854976 Bytes) (exactly 43269248 512-Byte-Units)\n   Allocation Block Size:     4096 Bytes\n\n   Media OS Use Only:         No\n   Media Read-Only:           No\n   Volume Read-Only:          No\n\n   Device Location:           Internal\n   Removable Media:           Fixed\n\n   Solid State:               Yes\n   Hardware AES Support:      Yes\n\n   This disk is an APFS Volume.  APFS Information:\n   APFS Container:            disk3\n   APFS Physical Store:       disk0s2\n   APFS Volume Group:         64DCAAB7-BEFD-4B60-979A-8CDEDEEFE61B\n   FileVault:                 Yes\n   Sealed:                    No\n   Locked:                    No\n\n",
+          "stderr": ""
+        },
+        "df": {
+          "argv": ["df", "-k", "/Users/igor"],
+          "exit": 0,
+          "stdout": "Filesystem   1024-blocks       Used Available Capacity  iused     ifree %iused  Mounted on\n/dev/disk3s5  1948404040 1877608308  21635624    99% 19148558 216356240    8%   /System/Volumes/Data\n",
+          "stderr": ""
+        },
+        "vm_processes": {
+          "argv": ["pgrep", "-fl", "studio-linux-vm"],
+          "exit": 1,
+          "stdout": "",
+          "stderr": ""
+        },
+        "hardware": {
+          "argv": ["sysctl", "-n", "hw.memsize", "hw.ncpu"],
+          "exit": 0,
+          "stdout": "137438953472\n18\n",
+          "stderr": ""
+        }
+      },
+      "vm": {
+        "path": "/Users/igor/.local/state/codex-agents/linux-vm",
+        "entries": ["layr-projects", "maintenance.lock"],
+        "control_socket_exists": false,
+        "guest_socket_exists": false
+      }
+    },
+    "identities-w1-before": [
+      {
+        "relative": "workspaces/runtime/packages/runtime-http/src/lib.rs",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/workspaces/runtime/packages/runtime-http/src/lib.rs",
+          "size": 648,
+          "blocks": 8,
+          "inode": 1255243427,
+          "nlink": 1,
+          "mtime_ns": 1792917738000000000,
+          "generation": 1,
+          "clone_id": 1255214571,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1/workspaces/runtime/packages/runtime-http/src/lib.rs",
+          "size": 648,
+          "blocks": 8,
+          "inode": 1255949525,
+          "nlink": 1,
+          "mtime_ns": 1792917738000000000,
+          "generation": 1,
+          "clone_id": 1255214571,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      },
+      {
+        "relative": "target/debug/deps/libserde-69b47a1464679434.rlib",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/target/debug/deps/libserde-69b47a1464679434.rlib",
+          "size": 926008,
+          "blocks": 1816,
+          "inode": 1255737852,
+          "nlink": 1,
+          "mtime_ns": 1792918244000000000,
+          "generation": 115,
+          "clone_id": 1255737852,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1/target/debug/deps/libserde-69b47a1464679434.rlib",
+          "size": 926008,
+          "blocks": 1816,
+          "inode": 1256014070,
+          "nlink": 1,
+          "mtime_ns": 1792918244000000000,
+          "generation": 1,
+          "clone_id": 1255737852,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      },
+      {
+        "relative": "target/debug/deps/libstudio_runtime_http-bd3fec6ded26f34c.rlib",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/target/debug/deps/libstudio_runtime_http-bd3fec6ded26f34c.rlib",
+          "size": 462500336,
+          "blocks": 903328,
+          "inode": 1255803849,
+          "nlink": 1,
+          "mtime_ns": 1792918613000000000,
+          "generation": 56459,
+          "clone_id": 1255803849,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1/target/debug/deps/libstudio_runtime_http-bd3fec6ded26f34c.rlib",
+          "size": 462500336,
+          "blocks": 903328,
+          "inode": 1256014635,
+          "nlink": 1,
+          "mtime_ns": 1792918613000000000,
+          "generation": 1,
+          "clone_id": 1255803849,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      },
+      {
+        "relative": "node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js",
+          "size": 9112572,
+          "blocks": 17800,
+          "inode": 1255687332,
+          "nlink": 1,
+          "mtime_ns": 1791625232000000000,
+          "generation": 1114,
+          "clone_id": 1255687332,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1/node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js",
+          "size": 9112572,
+          "blocks": 17800,
+          "inode": 1255980950,
+          "nlink": 1,
+          "mtime_ns": 1791625232000000000,
+          "generation": 1,
+          "clone_id": 1255687332,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      }
+    ],
+    "identities-w1-after-cargo": [
+      {
+        "relative": "workspaces/runtime/packages/runtime-http/src/lib.rs",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/workspaces/runtime/packages/runtime-http/src/lib.rs",
+          "size": 648,
+          "blocks": 8,
+          "inode": 1255243427,
+          "nlink": 1,
+          "mtime_ns": 1792917738000000000,
+          "generation": 1,
+          "clone_id": 1255214571,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1/workspaces/runtime/packages/runtime-http/src/lib.rs",
+          "size": 648,
+          "blocks": 8,
+          "inode": 1255949525,
+          "nlink": 1,
+          "mtime_ns": 1792917738000000000,
+          "generation": 1,
+          "clone_id": 1255214571,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      },
+      {
+        "relative": "target/debug/deps/libserde-69b47a1464679434.rlib",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/target/debug/deps/libserde-69b47a1464679434.rlib",
+          "size": 926008,
+          "blocks": 1816,
+          "inode": 1255737852,
+          "nlink": 1,
+          "mtime_ns": 1792918244000000000,
+          "generation": 115,
+          "clone_id": 1255737852,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1/target/debug/deps/libserde-69b47a1464679434.rlib",
+          "size": 926008,
+          "blocks": 1816,
+          "inode": 1256014070,
+          "nlink": 1,
+          "mtime_ns": 1792918244000000000,
+          "generation": 1,
+          "clone_id": 1255737852,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      },
+      {
+        "relative": "target/debug/deps/libstudio_runtime_http-bd3fec6ded26f34c.rlib",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/target/debug/deps/libstudio_runtime_http-bd3fec6ded26f34c.rlib",
+          "size": 462500336,
+          "blocks": 903328,
+          "inode": 1255803849,
+          "nlink": 1,
+          "mtime_ns": 1792918613000000000,
+          "generation": 56459,
+          "clone_id": 1255803849,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1/target/debug/deps/libstudio_runtime_http-bd3fec6ded26f34c.rlib",
+          "size": 462504440,
+          "blocks": 903336,
+          "inode": 1256071296,
+          "nlink": 1,
+          "mtime_ns": 1792919111285053106,
+          "generation": 196,
+          "clone_id": 1256071296,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      },
+      {
+        "relative": "node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js",
+          "size": 9112572,
+          "blocks": 17800,
+          "inode": 1255687332,
+          "nlink": 1,
+          "mtime_ns": 1791625232000000000,
+          "generation": 1114,
+          "clone_id": 1255687332,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1/node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js",
+          "size": 9112572,
+          "blocks": 17800,
+          "inode": 1255980950,
+          "nlink": 1,
+          "mtime_ns": 1791625232000000000,
+          "generation": 1,
+          "clone_id": 1255687332,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      }
+    ],
+    "identities-w1-after-pnpm": [
+      {
+        "relative": "workspaces/runtime/packages/runtime-http/src/lib.rs",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/workspaces/runtime/packages/runtime-http/src/lib.rs",
+          "size": 648,
+          "blocks": 8,
+          "inode": 1255243427,
+          "nlink": 1,
+          "mtime_ns": 1792917738000000000,
+          "generation": 1,
+          "clone_id": 1255214571,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1/workspaces/runtime/packages/runtime-http/src/lib.rs",
+          "size": 648,
+          "blocks": 8,
+          "inode": 1255949525,
+          "nlink": 1,
+          "mtime_ns": 1792917738000000000,
+          "generation": 1,
+          "clone_id": 1255214571,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      },
+      {
+        "relative": "target/debug/deps/libserde-69b47a1464679434.rlib",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/target/debug/deps/libserde-69b47a1464679434.rlib",
+          "size": 926008,
+          "blocks": 1816,
+          "inode": 1255737852,
+          "nlink": 1,
+          "mtime_ns": 1792918244000000000,
+          "generation": 115,
+          "clone_id": 1255737852,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1/target/debug/deps/libserde-69b47a1464679434.rlib",
+          "size": 926008,
+          "blocks": 1816,
+          "inode": 1256014070,
+          "nlink": 1,
+          "mtime_ns": 1792918244000000000,
+          "generation": 1,
+          "clone_id": 1255737852,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      },
+      {
+        "relative": "target/debug/deps/libstudio_runtime_http-bd3fec6ded26f34c.rlib",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/target/debug/deps/libstudio_runtime_http-bd3fec6ded26f34c.rlib",
+          "size": 462500336,
+          "blocks": 903328,
+          "inode": 1255803849,
+          "nlink": 1,
+          "mtime_ns": 1792918613000000000,
+          "generation": 56459,
+          "clone_id": 1255803849,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1/target/debug/deps/libstudio_runtime_http-bd3fec6ded26f34c.rlib",
+          "size": 462504440,
+          "blocks": 903336,
+          "inode": 1256071296,
+          "nlink": 1,
+          "mtime_ns": 1792919111285053106,
+          "generation": 196,
+          "clone_id": 1256071296,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      },
+      {
+        "relative": "node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js",
+          "size": 9112572,
+          "blocks": 17800,
+          "inode": 1255687332,
+          "nlink": 1,
+          "mtime_ns": 1791625232000000000,
+          "generation": 1114,
+          "clone_id": 1255687332,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/w1/node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js",
+          "size": 9112572,
+          "blocks": 17800,
+          "inode": 1255980950,
+          "nlink": 1,
+          "mtime_ns": 1791625232000000000,
+          "generation": 1,
+          "clone_id": 1255687332,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      }
+    ],
+    "identities-count-before": [
+      {
+        "relative": "workspaces/runtime/packages/runtime-http/src/lib.rs",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/workspaces/runtime/packages/runtime-http/src/lib.rs",
+          "size": 648,
+          "blocks": 8,
+          "inode": 1255243427,
+          "nlink": 1,
+          "mtime_ns": 1792917738000000000,
+          "generation": 1,
+          "clone_id": 1255214571,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-2/workspaces/runtime/packages/runtime-http/src/lib.rs",
+          "size": 648,
+          "blocks": 8,
+          "inode": 1256103010,
+          "nlink": 1,
+          "mtime_ns": 1792917738000000000,
+          "generation": 1,
+          "clone_id": 1255214571,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      },
+      {
+        "relative": "target/debug/deps/libserde-69b47a1464679434.rlib",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/target/debug/deps/libserde-69b47a1464679434.rlib",
+          "size": 926008,
+          "blocks": 1816,
+          "inode": 1255737852,
+          "nlink": 1,
+          "mtime_ns": 1792918244000000000,
+          "generation": 115,
+          "clone_id": 1255737852,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-2/target/debug/deps/libserde-69b47a1464679434.rlib",
+          "size": 926008,
+          "blocks": 1816,
+          "inode": 1256219500,
+          "nlink": 1,
+          "mtime_ns": 1792918244000000000,
+          "generation": 1,
+          "clone_id": 1255737852,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      },
+      {
+        "relative": "target/debug/deps/libstudio_runtime_http-bd3fec6ded26f34c.rlib",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/target/debug/deps/libstudio_runtime_http-bd3fec6ded26f34c.rlib",
+          "size": 462500336,
+          "blocks": 903328,
+          "inode": 1255803849,
+          "nlink": 1,
+          "mtime_ns": 1792918613000000000,
+          "generation": 56459,
+          "clone_id": 1255803849,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-2/target/debug/deps/libstudio_runtime_http-bd3fec6ded26f34c.rlib",
+          "size": 462500336,
+          "blocks": 903328,
+          "inode": 1256220066,
+          "nlink": 1,
+          "mtime_ns": 1792918613000000000,
+          "generation": 1,
+          "clone_id": 1255803849,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      },
+      {
+        "relative": "node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/main/node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js",
+          "size": 9112572,
+          "blocks": 17800,
+          "inode": 1255687332,
+          "nlink": 1,
+          "mtime_ns": 1791625232000000000,
+          "generation": 1114,
+          "clone_id": 1255687332,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/cabench/lines/batch-2/node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js",
+          "size": 9112572,
+          "blocks": 17800,
+          "inode": 1256190975,
+          "nlink": 1,
+          "mtime_ns": 1791625232000000000,
+          "generation": 1,
+          "clone_id": 1255687332,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      }
+    ],
+    "metadata-before": [
+      {
+        "path": "/Users/igor/layr-cache-bench-e/store/projects/metaprobe/lines/main/target/a",
+        "size": 21,
+        "blocks": 8,
+        "inode": 1256086370,
+        "nlink": 2,
+        "mtime_ns": 1700000000123456789,
+        "generation": 2,
+        "clone_id": 1256086370,
+        "getattrlist_result": 0,
+        "getattrlist_errno": 0
+      },
+      {
+        "path": "/Users/igor/layr-cache-bench-e/store/projects/metaprobe/lines/main/target/b",
+        "size": 21,
+        "blocks": 8,
+        "inode": 1256086370,
+        "nlink": 2,
+        "mtime_ns": 1700000000123456789,
+        "generation": 2,
+        "clone_id": 1256086370,
+        "getattrlist_result": 0,
+        "getattrlist_errno": 0
+      }
+    ],
+    "metadata-after-repair": [
+      {
+        "path": "/Users/igor/layr-cache-bench-e/store/projects/metaprobe/lines/main/target/a",
+        "size": 21,
+        "blocks": 8,
+        "inode": 1256086463,
+        "nlink": 1,
+        "mtime_ns": 1700000000000000000,
+        "generation": 2,
+        "clone_id": 1256086463,
+        "getattrlist_result": 0,
+        "getattrlist_errno": 0
+      },
+      {
+        "path": "/Users/igor/layr-cache-bench-e/store/projects/metaprobe/lines/main/target/b",
+        "size": 21,
+        "blocks": 8,
+        "inode": 1256086464,
+        "nlink": 1,
+        "mtime_ns": 1700000000000000000,
+        "generation": 2,
+        "clone_id": 1256086464,
+        "getattrlist_result": 0,
+        "getattrlist_errno": 0
+      }
+    ],
+    "metadata-in-w1": [
+      {
+        "path": "/Users/igor/layr-cache-bench-e/store/projects/metaprobe/lines/w1/target/a",
+        "size": 21,
+        "blocks": 8,
+        "inode": 1256086493,
+        "nlink": 1,
+        "mtime_ns": 1700000000000000000,
+        "generation": 1,
+        "clone_id": 1256086463,
+        "getattrlist_result": 0,
+        "getattrlist_errno": 0
+      },
+      {
+        "path": "/Users/igor/layr-cache-bench-e/store/projects/metaprobe/lines/w1/target/b",
+        "size": 21,
+        "blocks": 8,
+        "inode": 1256086494,
+        "nlink": 1,
+        "mtime_ns": 1700000000000000000,
+        "generation": 1,
+        "clone_id": 1256086464,
+        "getattrlist_result": 0,
+        "getattrlist_errno": 0
+      }
+    ],
+    "before-line-cold-state": {
+      "target_exists": false,
+      "node_modules_exists": false
+    },
+    "repair-target": {
+      "exists": false,
+      "file_count": 0
+    },
+    "repaired-files": ["marker"],
+    "external-target": {
+      "target_directory": "/Users/igor/layr-cache-bench-e/outside-target",
+      "layr_cache_path": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w1/target",
+      "external_target_exists": false
+    },
+    "probe-incremental-identities": [
+      {
+        "relative": "target/debug/incremental/build_script_build-3dvtq7c1cvzh2/s-hnjbypiw74-0j45kj7-1ajsh0yrk7yyhcr8kdkighyb9/dep-graph.bin",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/main/target/debug/incremental/build_script_build-3dvtq7c1cvzh2/s-hnjbypiw74-0j45kj7-1ajsh0yrk7yyhcr8kdkighyb9/dep-graph.bin",
+          "size": 477166,
+          "blocks": 936,
+          "inode": 1256405326,
+          "nlink": 1,
+          "mtime_ns": 1792919754000000000,
+          "generation": 60,
+          "clone_id": 1256405326,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w2/target/debug/incremental/build_script_build-3dvtq7c1cvzh2/s-hnjbypiw74-0j45kj7-1ajsh0yrk7yyhcr8kdkighyb9/dep-graph.bin",
+          "size": 477166,
+          "blocks": 936,
+          "inode": 1256414529,
+          "nlink": 1,
+          "mtime_ns": 1792919754000000000,
+          "generation": 1,
+          "clone_id": 1256405326,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      },
+      {
+        "relative": "target/debug/incremental/cache_path_probe-3cb4hwkzfm9wa/s-hnjbyq8okf-01nvml6-6p21q17tmoyv20gteoyraztiz/dep-graph.bin",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/main/target/debug/incremental/cache_path_probe-3cb4hwkzfm9wa/s-hnjbyq8okf-01nvml6-6p21q17tmoyv20gteoyraztiz/dep-graph.bin",
+          "size": 99885,
+          "blocks": 200,
+          "inode": 1256405346,
+          "nlink": 1,
+          "mtime_ns": 1792919754000000000,
+          "generation": 14,
+          "clone_id": 1256405346,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w2/target/debug/incremental/cache_path_probe-3cb4hwkzfm9wa/s-hnjbyq8okf-01nvml6-6p21q17tmoyv20gteoyraztiz/dep-graph.bin",
+          "size": 99885,
+          "blocks": 200,
+          "inode": 1256414494,
+          "nlink": 1,
+          "mtime_ns": 1792919754000000000,
+          "generation": 1,
+          "clone_id": 1256405346,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      },
+      {
+        "relative": "target/debug/incremental/cache_path_probe-295ywt22xon0m/s-hnjbyq4sb9-0oyyifr-cd23s0nwxbgtu2ptva6n9q04z/dep-graph.bin",
+        "left": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/main/target/debug/incremental/cache_path_probe-295ywt22xon0m/s-hnjbyq4sb9-0oyyifr-cd23s0nwxbgtu2ptva6n9q04z/dep-graph.bin",
+          "size": 21362,
+          "blocks": 48,
+          "inode": 1256405356,
+          "nlink": 1,
+          "mtime_ns": 1792919754000000000,
+          "generation": 4,
+          "clone_id": 1256405356,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        },
+        "right": {
+          "path": "/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w2/target/debug/incremental/cache_path_probe-295ywt22xon0m/s-hnjbyq4sb9-0oyyifr-cd23s0nwxbgtu2ptva6n9q04z/dep-graph.bin",
+          "size": 21362,
+          "blocks": 48,
+          "inode": 1256414484,
+          "nlink": 1,
+          "mtime_ns": 1792919754000000000,
+          "generation": 1,
+          "clone_id": 1256405356,
+          "getattrlist_result": 0,
+          "getattrlist_errno": 0
+        }
+      }
+    ]
+  },
+  "sccache_stats": {
+    "sccache-plain-stats": {
+      "stats": {
+        "compile_requests": 14,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 12,
+        "requests_executed": 2,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 2
+          },
+          "adv_counts": {
+            "rust": 2
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 2,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 1953834
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compilations": 2,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 166335209
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "missing input": 10,
+          "-": 2
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"/Users/igor/layr-cache-bench-e/sc-plain-cache\"",
+      "cache_size": 21897,
+      "max_cache_size": 10737418240,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.16.0",
+      "basedirs": []
+    },
+    "sccache-normalized-stats": {
+      "stats": {
+        "compile_requests": 12,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 10,
+        "requests_executed": 2,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 2
+          },
+          "adv_counts": {
+            "rust": 2
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 2,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 1790417
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compilations": 2,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 136417875
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "missing input": 8,
+          "-": 2
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"/Users/igor/layr-cache-bench-e/sc-normalized-cache\"",
+      "cache_size": 21897,
+      "max_cache_size": 10737418240,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.16.0",
+      "basedirs": [
+        "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/main/",
+        "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/w1/",
+        "/Users/igor/layr-cache-bench-e/store/projects/sccacheprobe/lines/w2/"
+      ]
+    },
+    "sccache-same-line-stats": {
+      "stats": {
+        "compile_requests": 6,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 5,
+        "requests_executed": 1,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 1
+          },
+          "adv_counts": {
+            "rust": 1
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 1,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 3828500
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compilations": 1,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 213167584
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "missing input": 4,
+          "-": 1
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"/Users/igor/layr-cache-bench-e/sc-plain-cache\"",
+      "cache_size": 38992,
+      "max_cache_size": 10737418240,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.16.0",
+      "basedirs": []
+    },
+    "sccache-control-stats-1": {
+      "stats": {
+        "compile_requests": 6,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 5,
+        "requests_executed": 1,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 1
+          },
+          "adv_counts": {
+            "rust": 1
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 1,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 892250
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compilations": 1,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 208160167
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "-": 1,
+          "missing input": 4
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"/Users/igor/layr-cache-bench-e/sc-control-cache\"",
+      "cache_size": 10947,
+      "max_cache_size": 10737418240,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.16.0",
+      "basedirs": []
+    },
+    "sccache-control-stats-2": {
+      "stats": {
+        "compile_requests": 12,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 10,
+        "requests_executed": 2,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "Rust": 1
+          },
+          "adv_counts": {
+            "rust": 1
+          }
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 1
+          },
+          "adv_counts": {
+            "rust": 1
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 1,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 892250
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 1908583
+        },
+        "compilations": 1,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 208160167
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "-": 2,
+          "missing input": 8
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"/Users/igor/layr-cache-bench-e/sc-control-cache\"",
+      "cache_size": 10947,
+      "max_cache_size": 10737418240,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.16.0",
+      "basedirs": []
+    }
+  },
+  "cli_outputs": {
+    "cache-main-before-seed": "node_modules\tplain folder (run layr cache repair)\ntarget\tplain folder (run layr cache repair)\nworkspaces/client/apps/desktop/node_modules\tplain folder (run layr cache repair)\nworkspaces/client/apps/native/node_modules\tplain folder (run layr cache repair)\nworkspaces/client/apps/web/node_modules\tplain folder (run layr cache repair)\nworkspaces/providers/apps/claude-bridge/node_modules\tplain folder (run layr cache repair)\n",
+    "cache-main-after-seed": "node_modules\tcache\ntarget\tcache\nworkspaces/client/apps/desktop/node_modules\tcache\nworkspaces/client/apps/native/node_modules\tcache\nworkspaces/client/apps/web/node_modules\tcache\nworkspaces/providers/apps/claude-bridge/node_modules\tcache\n",
+    "cache-w1-before-build": "node_modules\tcache\ntarget\tcache\nworkspaces/client/apps/desktop/node_modules\tcache\nworkspaces/client/apps/native/node_modules\tcache\nworkspaces/client/apps/web/node_modules\tcache\nworkspaces/providers/apps/claude-bridge/node_modules\tcache\n",
+    "cache-before-line-after-save": "",
+    "cache-after-clean": "node_modules\tcache\nworkspaces/client/apps/desktop/node_modules\tcache\nworkspaces/client/apps/native/node_modules\tcache\nworkspaces/client/apps/web/node_modules\tcache\nworkspaces/providers/apps/claude-bridge/node_modules\tcache\n",
+    "cache-after-repair": "node_modules\tcache\nworkspaces/client/apps/desktop/node_modules\tcache\nworkspaces/client/apps/native/node_modules\tcache\nworkspaces/client/apps/web/node_modules\tcache\nworkspaces/providers/apps/claude-bridge/node_modules\tcache\n",
+    "cache-after-recreated-repair": "node_modules\tcache\ntarget\tcache\nworkspaces/client/apps/desktop/node_modules\tcache\nworkspaces/client/apps/native/node_modules\tcache\nworkspaces/client/apps/web/node_modules\tcache\nworkspaces/providers/apps/claude-bridge/node_modules\tcache\n",
+    "pnpm-new-user-store-offline": "Scope: all 5 workspace projects\n\u2713 Lockfile passes supply-chain policies (verified 1d ago)\nLockfile is up to date, resolution step is skipped\nError: ERR_PNPM_NO_OFFLINE_TARBALL\n\n  \u00d7 installing dependencies\n  \u2570\u2500\u25b6 Failed to fetch tarball for d3@7.9.0 from https://registry.npmjs.org/\n      d3/-/d3-7.9.0.tgz in offline mode: snapshot not present in local store\n  help: Drop `--offline` (or `offline=true` in pnpm-workspace.yaml) or run an\n        online install first to populate the store.\n\n",
+    "pnpm-cloned-shim-direct": "Version 5.9.3\n",
+    "probe-genuine-warm-exec": "MAIN|/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w2\n",
+    "probe-genuine-warm-input-exec": "WARM-WORKER|/Users/igor/layr-cache-bench-e/store/projects/rustprobe/lines/w2\n",
+    "sccache-incremental-w1": "error: process didn't exit successfully: `/opt/homebrew/bin/sccache rustc -vV` (exit status: 1)\n--- stdout\nsccache: incremental compilation is prohibited: Unset CARGO_INCREMENTAL to continue.\n\n"
+  },
+  "limits": [
+    "VM unavailable; no btrfs measurement.",
+    "--count HTTP compile failed with ENOSPC after showing 285 Fresh / 1 Compiling.",
+    "Pre-save line used smaller diagnostics build because disk space was low.",
+    "First standalone Cargo probe lacked a committed lockfile and did not receive warm caches.",
+    "Warm probe resume corrected a measurement helper that assumed the large workspace layout.",
+    "Incremental graph files copied, but compiler query reuse was not measured.",
+    "Actual VM users and store permissions were not tested."
+  ]
+}

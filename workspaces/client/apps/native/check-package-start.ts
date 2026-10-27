@@ -3,7 +3,15 @@ import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { open, mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import {
+  open,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+} from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -13,12 +21,16 @@ import { identity } from "../desktop/backend.ts";
 const startupTimeoutMs = 60_000;
 const startupPollMs = 100;
 const hostStopTimeoutMs = 10_000;
-const bundleArgument = process.argv[2];
+// The host must use the canonical bundle path for its resource access.
+const application = process.argv[2];
+assert.ok(application, "Supply the packaged application path.");
+const bundle = await realpath(path.resolve(application));
+const options = process.argv.slice(3);
 assert.ok(
-  bundleArgument !== undefined,
-  "Usage: check-package-start.ts <application bundle>",
+  options.every((option) => option === "--symlink-launch"),
+  "Unknown startup check option",
 );
-const bundle = path.resolve(bundleArgument);
+const symlinkLaunch = options.includes("--symlink-launch");
 const executableName = execFileSync(
   "plutil",
   [
@@ -35,6 +47,12 @@ assert.equal(path.basename(executableName), executableName);
 const fixture = await realpath(
   await mkdtemp(path.join(os.tmpdir(), "studio-native-pkg-")),
 );
+let launchBundle = bundle;
+if (symlinkLaunch) {
+  const alias = path.join(fixture, "bundle-parent");
+  await symlink(path.dirname(bundle), alias, "dir");
+  launchBundle = path.join(alias, path.basename(bundle));
+}
 const state = path.join(fixture, "state");
 const listener = createServer();
 listener.listen(0, "127.0.0.1");
@@ -48,7 +66,7 @@ let host: ChildProcess | undefined;
 let ownedPid;
 try {
   host = spawn(
-    path.join(bundle, "Contents/MacOS", executableName),
+    path.join(launchBundle, "Contents/MacOS", executableName),
     ["--hidden", "-ApplePersistenceIgnoreState", "YES"],
     {
       env: {
@@ -82,7 +100,8 @@ try {
   }
   assert.ok(
     backend,
-    "The packaged host did not start its backend before the deadline",
+    "The packaged host did not start its backend before the deadline\n" +
+      (await readFile(path.join(fixture, "host.log"), "utf8")).slice(-4000),
   );
   assert.equal(backend.backendKind, "rust");
   const command = execFileSync(
@@ -108,6 +127,7 @@ try {
       result: "PASS",
       bundle,
       backendPid: ownedPid,
+      symlinkLaunch,
       stateDir: backend.stateDir,
       checks:
         "hidden packaged host started its bundled Rust backend with Python unavailable",

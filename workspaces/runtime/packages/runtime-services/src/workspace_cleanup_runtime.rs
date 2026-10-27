@@ -4,7 +4,7 @@
 //! process restart turns an unfinished intent into `unknown`; callers must
 //! inspect the external workspace and must never resend that effect.
 use std::{path::PathBuf, sync::Arc, time::Duration};
-use studio_runtime_store::path_identity::CanonicalPath;
+use studio_runtime_store::path_identity::{CanonicalPath, LexicalPath};
 
 use crate::linux_vm_guest::GuestRpc;
 use rusqlite::OptionalExtension;
@@ -81,6 +81,8 @@ pub enum WorkspaceCleanupError {
 pub enum CleanupEffect {
     ArchiveImage,
     RemoveImage,
+    SaveNativeTurn,
+    ReleaseNativeLine,
     SaveVmTurn { turn_id: String },
     ReleaseVmLine { method: String },
     SaveWorktreeRef { identity: Value },
@@ -431,11 +433,14 @@ fn plan(
     }
     let mut effects = Vec::new();
     let is_vm = agent.get("executionMode").and_then(Value::as_str) == Some("vm");
-    let image = agent.get("imageWorkspace").and_then(Value::as_bool) == Some(true);
+
     let vm_dispose = is_vm
         && (agent.get("layrReady").and_then(Value::as_bool) == Some(true)
             || action == CleanupAction::Archive);
-    if vm_dispose {
+    if crate::layr_native::is_native(agent) && agent["layrReady"] == true {
+        effects.push(CleanupEffect::SaveNativeTurn);
+        effects.push(CleanupEffect::ReleaseNativeLine);
+    } else if vm_dispose {
         if let Some(turns) = agent.get("layrTurnSaves").and_then(Value::as_object) {
             for (turn, state) in turns {
                 if state.get("status").and_then(Value::as_str) != Some("saved") {
@@ -452,19 +457,6 @@ fn plan(
                 "line.remove".into()
             },
         });
-    } else if image && action == CleanupAction::Archive {
-        if agent.get("imageWorkspaceReady").and_then(Value::as_bool) == Some(true)
-            || agent
-                .pointer("/cleanedImageWorkspace/phase")
-                .and_then(Value::as_str)
-                == Some("archiving")
-        {
-            effects.push(CleanupEffect::ArchiveImage);
-        }
-    } else if image && action == CleanupAction::Delete {
-        if agent.get("imageWorkspacePhase").and_then(Value::as_str) != Some("removed") {
-            effects.push(CleanupEffect::RemoveImage);
-        }
     } else if action == CleanupAction::Archive
         && agent.get("worktreeReady").and_then(Value::as_bool) == Some(true)
     {
@@ -501,6 +493,45 @@ pub(crate) fn check_archive_worktree(
     Ok(())
 }
 
+/// Describe stale worktrees through the cleanup owner's exact path checks.
+/// A clean Git tree alone does not authorize removal of the worker.
+pub(crate) fn maintenance_worktree(agent: &Value, state_dir: &std::path::Path) -> Option<Value> {
+    if agent["worktreeReady"] != true {
+        return None;
+    }
+    let id = agent["id"].as_str()?;
+    let deleted = studio_runtime_store::truthy(agent.get("deletedAt"));
+    let root = agent["cwd"]
+        .as_str()
+        .and_then(|cwd| cleanup_cwd(std::path::Path::new(cwd)))
+        .and_then(|cwd| {
+            owned_worktree_root(&cwd, id)
+                .ok()
+                .map(|owned| owned.root().to_path_buf())
+        });
+    let Some(root) = root else {
+        return deleted.then(|| {
+            json!({"id":id,"folderMissing":false,
+            "reason":"The recorded path is outside the Studio worktree folder"})
+        });
+    };
+    let metadata = std::fs::symlink_metadata(&root);
+    let missing = matches!(&metadata, Err(error) if error.kind() == std::io::ErrorKind::NotFound);
+    if !deleted && !missing {
+        return None;
+    }
+    let reason = if missing {
+        "worktree folder missing"
+    } else if metadata.is_err() {
+        "The worktree folder state is unavailable"
+    } else if check_archive_worktree(agent, state_dir).is_ok() {
+        "The Git worktree is clean. Inspect the worker before removal"
+    } else {
+        "The worktree is changed or unverified. Preserve its files for inspection"
+    };
+    Some(json!({"id":id,"folderMissing":missing,"reason":reason}))
+}
+
 /// The owned worktree root of worker `id` that contains `cwd`
 /// (`crate::worktree_root`). Layout only; the caller proves ownership.
 fn owned_worktree_root<'a>(
@@ -532,6 +563,15 @@ fn owning_repository(root: &std::path::Path) -> Result<PathBuf, WorkspaceCleanup
         .ok_or(WorkspaceCleanupError::InvalidRecord)
 }
 
+// Older agent records can contain one trailing directory separator. Keep the
+// stored lifecycle spelling unchanged; do not accept traversal or other aliases.
+fn cleanup_cwd(path: &std::path::Path) -> Option<LexicalPath> {
+    LexicalPath::exact(path).or_else(|| {
+        let legacy = path.to_str()?.strip_suffix(std::path::MAIN_SEPARATOR)?;
+        LexicalPath::exact(std::path::Path::new(legacy))
+    })
+}
+
 fn worktree_identity(
     agent: &Value,
     _state_dir: &std::path::Path,
@@ -547,8 +587,7 @@ fn worktree_identity(
     }
     let owner: WorktreeOwner =
         serde_json::from_value(agent.clone()).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
-    let lexical = studio_runtime_store::path_identity::LexicalPath::exact(&owner.cwd)
-        .ok_or(WorkspaceCleanupError::InvalidRecord)?;
+    let lexical = cleanup_cwd(&owner.cwd).ok_or(WorkspaceCleanupError::InvalidRecord)?;
     let lexical_owned = owned_worktree_root(&lexical, &owner.id)?;
     let lexical_root = lexical_owned.root();
     // Inspect the exact owned root, not a canonicalized parent or a missing cwd
@@ -583,7 +622,18 @@ fn worktree_identity(
     let expected = match (&owner.common_dir, lexical_owned) {
         (Some(recorded), _) => CanonicalPath::existing(recorded),
         (None, crate::worktree_root::OwnedRoot::Repository { repository, .. }) => {
-            CanonicalPath::existing(repository.join(".git"))
+            let git = repository.join(".git");
+            if git.is_file() {
+                // Legacy workers can belong to a linked project. Prove that
+                // project is registered before using its common directory.
+                let project = CanonicalPath::existing(repository)
+                    .map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
+                let main = owning_repository(&project)?;
+                registered_worktree_branch(&main, &project)?;
+                CanonicalPath::existing(main.join(".git"))
+            } else {
+                CanonicalPath::existing(git)
+            }
         }
         (None, crate::worktree_root::OwnedRoot::Linked(_)) => {
             return Err(WorkspaceCleanupError::InvalidRecord);
@@ -828,12 +878,13 @@ async fn complete_effect(
 
 fn valid_receipt(effect: &CleanupEffect, receipt: &Value) -> bool {
     match effect {
-        CleanupEffect::SaveVmTurn { .. } => receipt
+        CleanupEffect::SaveNativeTurn | CleanupEffect::SaveVmTurn { .. } => receipt
             .get("stateId")
             .and_then(Value::as_str)
             .is_some_and(|state_id| !state_id.is_empty()),
         CleanupEffect::ArchiveImage
         | CleanupEffect::RemoveImage
+        | CleanupEffect::ReleaseNativeLine
         | CleanupEffect::ReleaseVmLine { .. }
         | CleanupEffect::SaveWorktreeRef { .. }
         | CleanupEffect::RemoveWorktree { .. } => true,
@@ -883,16 +934,8 @@ fn apply_effect_result(
     receipt: &Value,
 ) -> Result<(), WorkspaceCleanupError> {
     match effect {
-        CleanupEffect::ArchiveImage => {
-            agent["imageWorkspaceReady"] = json!(false);
-            agent["imageWorkspacePhase"] = json!("archived");
-            agent["cleanedImageWorkspace"] = json!({"phase":"archived","freedBytes":receipt.get("freedBytes").cloned().unwrap_or(json!(0))});
-        }
-        CleanupEffect::RemoveImage => {
-            agent["imageWorkspaceReady"] = json!(false);
-            agent["imageWorkspacePhase"] = json!("removed");
-        }
-        CleanupEffect::ReleaseVmLine { .. } => {
+        CleanupEffect::ArchiveImage | CleanupEffect::RemoveImage => {}
+        CleanupEffect::ReleaseNativeLine | CleanupEffect::ReleaseVmLine { .. } => {
             agent["layrReady"] = json!(false);
         }
         CleanupEffect::RemoveWorktree { identity } => {
@@ -929,6 +972,14 @@ fn apply_effect_result(
                 .as_object_mut()
                 .ok_or(WorkspaceCleanupError::InvalidRecord)?
                 .remove("worktreeCleanup");
+        }
+        CleanupEffect::SaveNativeTurn => {
+            agent["layrStateId"] = receipt["stateId"].clone();
+            if let Some(turns) = agent["layrTurnSaves"].as_object_mut() {
+                for save in turns.values_mut().filter(|save| save["status"] != "saved") {
+                    *save = json!({"status":"saved","stateId":receipt["stateId"]});
+                }
+            }
         }
         CleanupEffect::SaveWorktreeRef { .. } => {}
         CleanupEffect::SaveVmTurn { turn_id } => {
@@ -1018,15 +1069,18 @@ impl CleanupPorts for ProductionPorts {
         request_id: &str,
     ) -> Result<Value, EffectFailure> {
         match effect {
-            CleanupEffect::ArchiveImage => crate::image_workspace::archive_workspace(
-                agent["id"].as_str().ok_or(EffectFailure::NotSent)?,
-            )
-            .map_err(|_| EffectFailure::Unknown),
-            CleanupEffect::RemoveImage => crate::image_workspace::remove_workspace(
-                agent["id"].as_str().ok_or(EffectFailure::NotSent)?,
-                false,
-            )
-            .map_err(|_| EffectFailure::Unknown),
+            CleanupEffect::SaveNativeTurn => {
+                crate::layr_native::save(&self.state_dir, agent, request_id)
+                    .map_err(|_| EffectFailure::Unknown)
+            }
+            CleanupEffect::ReleaseNativeLine => {
+                crate::layr_native::remove(&self.state_dir, agent, request_id)
+                    .map_err(|_| EffectFailure::Unknown)
+            }
+            // Historical image records keep their files. New cleanup plans never emit these effects.
+            CleanupEffect::ArchiveImage | CleanupEffect::RemoveImage => {
+                Ok(json!({"state":"kept","reason":"legacy image workspace"}))
+            }
             CleanupEffect::SaveVmTurn { turn_id } => {
                 let client =
                     crate::linux_vm_guest::UnixGuestRpc::for_runtime_state(&self.state_dir);
@@ -1151,11 +1205,39 @@ fn check_worktree(identity: &Value) -> Result<(PathBuf, PathBuf, String, String)
         None,
     )?)
     .map_err(|_| ())?;
+    let common = String::from_utf8(git_output(
+        &repo,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        None,
+    )?)
+    .map_err(|_| ())?;
+    let common = CanonicalPath::existing(PathBuf::from(common.trim())).map_err(|_| ())?;
+    let worker_common = String::from_utf8(git_output(
+        &root,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        None,
+    )?)
+    .map_err(|_| ())?;
+    let linked_gitdir = CanonicalPath::existing(&linked_gitdir).map_err(|_| ())?;
     if CanonicalPath::existing(PathBuf::from(actual_gitdir.trim())).map_err(|_| ())?
-        != CanonicalPath::existing(&linked_gitdir).map_err(|_| ())?
-        || !CanonicalPath::existing(&linked_gitdir)
-            .map_err(|_| ())?
-            .starts_with(CanonicalPath::existing(repo.join(".git/worktrees")).map_err(|_| ())?)
+        != linked_gitdir
+        || CanonicalPath::existing(PathBuf::from(worker_common.trim())).map_err(|_| ())? != common
+        || !linked_gitdir
+            .starts_with(CanonicalPath::existing(common.join("worktrees")).map_err(|_| ())?)
+    {
+        return Err(());
+    }
+    let backlink = linked_gitdir.join("gitdir");
+    if !std::fs::symlink_metadata(&backlink)
+        .map_err(|_| ())?
+        .file_type()
+        .is_file()
+    {
+        return Err(());
+    }
+    let backlink = std::fs::read_to_string(backlink).map_err(|_| ())?;
+    if CanonicalPath::existing(PathBuf::from(backlink.trim())).map_err(|_| ())?
+        != CanonicalPath::existing(root.join(".git")).map_err(|_| ())?
     {
         return Err(());
     }
@@ -1298,7 +1380,10 @@ fn remove_worktree(identity: &Value) -> Result<(), EffectFailure> {
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        path::PathBuf,
+        sync::{Arc, Mutex},
+    };
 
     use serde_json::{Value, json};
     use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
@@ -1547,7 +1632,8 @@ mod tests {
         put_agent(
             &store,
             json!({
-                "imageWorkspace":true, "imageWorkspaceReady":true,
+                "executionMode":"vm", "layrReady":true,
+                "layrTurnSaves":{"turn-1":{"status":"pending"}},
                 "agentArchive":{"cleanupPending":true}
             }),
         )
@@ -1610,7 +1696,8 @@ mod tests {
         let (directory, store) = fixture().await;
         put_agent(
             &store,
-            json!({"imageWorkspace":true,"imageWorkspaceReady":true,
+            json!({"executionMode":"vm", "layrReady":true,
+                "layrTurnSaves":{"turn-1":{"status":"pending"}},
                 "agentArchive":{"cleanupPending":true}}),
         )
         .await;
@@ -1646,31 +1733,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_removes_image_workspace_through_the_effect_port() {
+    async fn legacy_image_cleanup_preserves_files_and_record_fields() {
         let (_directory, store) = fixture().await;
         put_agent(
             &store,
             json!({"imageWorkspace":true,"imageWorkspaceReady":true}),
         )
         .await;
-        let ports = Arc::new(FakePorts::new(vec![Ok(
-            json!({"state":"removed","freedBytes":44}),
-        )]));
+        let ports = Arc::new(FakePorts::new(vec![]));
         cleanup_agent_workspace_with_ports(
             Arc::clone(&store),
-            "cleanup-agent".to_owned(),
+            "cleanup-agent".into(),
             CleanupAction::Delete,
             ports.clone(),
         )
         .await
-        .expect("delete removes image workspace");
-        assert!(matches!(
-            ports.calls.lock().expect("calls mutex")[0].0,
-            CleanupEffect::RemoveImage
-        ));
-        let saved = agent(&store);
-        assert_eq!(saved["imageWorkspacePhase"], "removed");
-        assert_eq!(saved["imageWorkspaceReady"], false);
+        .expect("metadata cleanup");
+        assert!(
+            ports
+                .calls
+                .lock()
+                .expect("fixture operation succeeds")
+                .is_empty()
+        );
+        assert_eq!(agent(&store)["imageWorkspaceReady"], true);
     }
 
     #[tokio::test]
@@ -2403,6 +2489,192 @@ mod tests {
             .expect("fixture Git output is UTF-8")
             .trim()
             .to_owned()
+    }
+
+    #[test]
+    fn linked_project_cleanup_path_preserves_only_legacy_trailing_separator() {
+        let directory = tempfile::tempdir().expect("owned path fixture");
+        let base = std::fs::canonicalize(directory.path()).expect("fixture path resolves");
+        let root = base.join(".worktrees/codex-agents/cleanup-agent");
+        for spelling in [root.display().to_string(), format!("{}/", root.display())] {
+            assert_eq!(
+                super::cleanup_cwd(std::path::Path::new(&spelling))
+                    .map(|path| path.into_path_buf()),
+                Some(root.clone())
+            );
+        }
+        for spelling in [
+            format!("{}//", root.display()),
+            format!("{}/./", root.display()),
+            format!("{}/../cleanup-agent", root.display()),
+        ] {
+            assert!(
+                super::cleanup_cwd(std::path::Path::new(&spelling)).is_none(),
+                "an alias must not become cleanup authority: {spelling}"
+            );
+        }
+    }
+
+    struct LinkedProjectFixture {
+        store: Arc<RuntimeStore>,
+        main: PathBuf,
+        project: PathBuf,
+        worker: PathBuf,
+        _directory: tempfile::TempDir,
+    }
+
+    async fn linked_project_fixture() -> LinkedProjectFixture {
+        let (directory, store) = fixture().await;
+        let base = std::fs::canonicalize(directory.path()).expect("fixture path resolves");
+        let main = base.join("main-project");
+        let project = base.join("linked-project");
+        let worker = project.join(".worktrees/codex-agents/cleanup-agent");
+        std::fs::create_dir(&main).expect("main project creates");
+        fixture_git(&main, &["init", "-q"]);
+        std::fs::write(main.join("file.txt"), "original\n").expect("fixture file writes");
+        fixture_git(&main, &["add", "file.txt"]);
+        fixture_git(&main, &["commit", "-qm", "base"]);
+        fixture_git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                project.to_str().expect("project path is UTF-8"),
+            ],
+        );
+        fixture_git(
+            &project,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                worker.to_str().expect("worker path is UTF-8"),
+            ],
+        );
+        put_agent(
+            &store,
+            json!({"cwd":format!("{}/",worker.display()),"worktreeReady":true,
+                "agentArchive":{"at":7,"epoch":7,"cleanupPending":true}}),
+        )
+        .await;
+        LinkedProjectFixture {
+            _directory: directory,
+            store,
+            main,
+            project,
+            worker,
+        }
+    }
+
+    #[tokio::test]
+    async fn linked_project_cleanup_retries_a_proven_unsent_archive_without_user_input() {
+        let f = linked_project_fixture().await;
+        let expected = agent(&f.store);
+        let effect = super::plan(&expected, CleanupAction::Archive, f.store.state_dir())
+            .expect("archive plan")
+            .remove(0);
+        let (request, _) = begin_effect(
+            &f.store,
+            "cleanup-agent",
+            CleanupAction::Archive,
+            &effect,
+            &expected,
+        )
+        .await
+        .expect("original attempt reserves");
+        super::mark_effect(&f.store, "cleanup-agent", &request, "not_sent", Value::Null)
+            .await
+            .expect("old preflight refusal stores");
+        let head = fixture_git(&f.main, &["rev-parse", "HEAD"]);
+
+        let results = reconcile_pending_cleanup(Arc::clone(&f.store))
+            .await
+            .expect("automatic recovery runs");
+
+        assert_eq!(results.len(), 1);
+        assert!(
+            !results[0].held,
+            "a clean registered child of a linked project must clean automatically"
+        );
+        assert!(!f.worker.exists(), "only the worker is removed");
+        assert!(
+            f.project.join(".git").is_file(),
+            "the linked project survives"
+        );
+        assert_eq!(fixture_git(&f.project, &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            fixture_git(
+                &f.main,
+                &["rev-parse", "refs/codex-agents/archive/cleanup-agent"]
+            ),
+            head
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.main.join("file.txt")).expect("main file reads"),
+            "original\n"
+        );
+        let saved = agent(&f.store);
+        assert_eq!(saved["worktreeReady"], false);
+        assert_eq!(saved["agentArchive"]["cleanupPending"], false);
+        assert!(saved.get("workspaceCleanupIntent").is_none());
+    }
+
+    #[tokio::test]
+    async fn linked_project_cleanup_preserves_modified_and_untracked_files() {
+        let f = linked_project_fixture().await;
+        std::fs::write(f.worker.join("file.txt"), "worker changes\n").expect("worker file changes");
+        std::fs::write(f.worker.join("notes.txt"), "private notes\n")
+            .expect("untracked file writes");
+        let outcome = super::cleanup_agent_workspace(
+            Arc::clone(&f.store),
+            "cleanup-agent".into(),
+            CleanupAction::Archive,
+        )
+        .await;
+
+        assert!(matches!(outcome, Err(WorkspaceCleanupError::NotSent)));
+        assert_eq!(
+            std::fs::read_to_string(f.worker.join("file.txt")).expect("worker file reads"),
+            "worker changes\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.worker.join("notes.txt")).expect("untracked file reads"),
+            "private notes\n"
+        );
+        assert_eq!(agent(&f.store)["worktreeReady"], true);
+    }
+
+    #[tokio::test]
+    async fn linked_project_cleanup_rejects_another_registered_worktree_gitdir() {
+        let f = linked_project_fixture().await;
+        let other = f.project.join(".worktrees/codex-agents/other-agent");
+        fixture_git(
+            &f.project,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                other.to_str().expect("other path is UTF-8"),
+            ],
+        );
+        let link = std::fs::read(other.join(".git")).expect("other Git link reads");
+        std::fs::write(f.worker.join(".git"), link).expect("worker Git link redirects");
+
+        let outcome = super::cleanup_agent_workspace(
+            Arc::clone(&f.store),
+            "cleanup-agent".into(),
+            CleanupAction::Archive,
+        )
+        .await;
+
+        assert!(matches!(outcome, Err(WorkspaceCleanupError::NotSent)));
+        assert!(f.worker.exists(), "the unverified worker survives");
+        assert!(other.exists(), "the other registered worktree survives");
+        assert_eq!(agent(&f.store)["worktreeReady"], true);
     }
 
     async fn submodule_fixture() -> (

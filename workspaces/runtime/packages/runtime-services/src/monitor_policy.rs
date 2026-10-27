@@ -39,6 +39,8 @@ pub enum MonitorError {
     TaskFailed,
     #[error("{0}")]
     Refused(&'static str),
+    #[error("Monitor input outcome unknown; do not repeat it")]
+    InputOutcomeUnknown,
     #[error("Not implemented: requires {0}")]
     Unavailable(&'static str),
     #[error("{stage}: {source:?}")]
@@ -98,6 +100,7 @@ impl MonitorError {
             | Self::InvalidDeliveryIdentity(_)
             | Self::InvalidOutputReceipt(_)
             | Self::TaskFailed
+            | Self::InputOutcomeUnknown
             | Self::Refused(_)
             | Self::Unavailable(_)
             | Self::ProviderRequest { .. }
@@ -144,6 +147,7 @@ impl MonitorError {
                 crate::event_write::EventWriteError::Store(error),
             )) => fatal_store_error(error),
             Self::Refused(_)
+            | Self::InputOutcomeUnknown
             | Self::Unavailable(_)
             | Self::ProviderRequest { .. }
             | Self::ConfigurationRejected { .. }
@@ -356,6 +360,26 @@ impl MonitorSnapshot {
             .as_ref()
             .is_some_and(|recovery| recovery.status == RecoveryStatus::Running)
     }
+    /// A loss decided at the command deadline. The provider process may still
+    /// send the command's real answer, which then completes it once.
+    pub(crate) fn deadline_lost(&self) -> bool {
+        self.fields.status == MonitorStatus::Lost
+            && self.fields.rule_id.as_deref().is_none_or(str::is_empty)
+            && self
+                .fields
+                .reattach_recovery
+                .as_ref()
+                .is_some_and(|recovery| recovery.proof.as_deref() == Some(DEADLINE_PASSED))
+    }
+    /// A deadline loss whose late answer is still awaited at `now`.
+    pub(crate) fn awaits_late_answer(&self, now: f64) -> bool {
+        self.deadline_lost()
+            && self
+                .record
+                .get("finished")
+                .and_then(Value::as_f64)
+                .is_some_and(|finished| now < finished + MONITOR_LATE_ANSWER_SECONDS)
+    }
     pub(crate) fn reconciliation_deadline(&self) -> Option<f64> {
         self.fields
             .reattach_recovery
@@ -365,6 +389,12 @@ impl MonitorSnapshot {
     }
     pub fn operation(&self) -> Option<&Operation> {
         self.fields.operation.as_ref()
+    }
+    /// The native process stays on its submitted account after a model-account move.
+    fn command_account(&self) -> &str {
+        self.operation()
+            .map(|operation| operation.account_key.as_str())
+            .unwrap_or(&self.actor.account_key)
     }
     pub(crate) fn active_owner(&self) -> bool {
         self.actor.deleted_at.is_none_or(|at| at == 0.0)
@@ -534,7 +564,9 @@ pub fn finish(
         ));
     }
     let mut decision = snapshot.decision();
-    if !snapshot.fields.status.terminal() {
+    // The real answer of a command lost at its deadline completes it once.
+    let late = snapshot.deadline_lost();
+    if !snapshot.fields.status.terminal() || late {
         remove(&mut decision.record, "reattachRecovery");
         crate::monitor_matches::flush(&mut decision.record)?;
         output_effect(snapshot, &mut decision, now, true);
@@ -553,6 +585,9 @@ pub fn finish(
         decision.record["configurationPending"] = json!(false);
         if snapshot.fields.cancel_requested && snapshot.record().get("cancelDispatch").is_some() {
             decision.record["cancelDispatch"] = json!({"status":"done","updatedAt":now});
+        }
+        if late {
+            decision.record["lateAnswerAt"] = json!(now);
         }
     }
     decision.effects.push(
@@ -675,6 +710,17 @@ fn present_dimension<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Optio
     u16::deserialize(input).map(Some)
 }
 
+/// Native input effect identity, including the complete caller ticket.
+pub fn input_effect_identity(monitor: &str, ticket: &str) -> String {
+    format!("monitor-input:{monitor}:{ticket}")
+}
+
+pub fn input_effect_ticket<'a>(monitor: &str, identity: &'a str) -> Option<&'a str> {
+    identity
+        .strip_prefix(&input_effect_identity(monitor, ""))
+        .filter(|ticket| !ticket.is_empty())
+}
+
 pub fn begin_input(
     snapshot: &MonitorSnapshot,
     operation: &Operation,
@@ -701,7 +747,6 @@ pub fn begin_input(
         || !snapshot.active_owner()
         || f.cancel_requested
         || !f.interactive
-        || snapshot.actor.account_key != operation.account_key
     {
         return Err(MonitorError::Refused(
             "This interactive monitor is not active",
@@ -753,7 +798,7 @@ pub fn begin_input(
         remove(&mut decision.record, "stdinError");
     }
     decision.effects.push(Effect::Native {
-        identity: format!("monitor-input:{}:{attempt_id}", f.id),
+        identity: input_effect_identity(&f.id, attempt_id),
         method,
         params,
     });
@@ -889,6 +934,18 @@ pub fn start(
 /// Afterwards each remaining recovery settles as `not_reattachable` once.
 pub const MONITOR_REATTACH_WINDOW_SECONDS: f64 = 600.0;
 
+/// Proof of a loss decided because the provider gave no answer by the command
+/// deadline: `timeout_ms` after creation plus the provider grace. The provider
+/// process may still answer; see [`MONITOR_LATE_ANSWER_SECONDS`].
+pub const DEADLINE_PASSED: &str = "deadline_passed";
+
+/// How long after a deadline loss the command's real answer still completes it.
+/// Owner: monitor deadline policy. Unit: seconds.
+pub const MONITOR_LATE_ANSWER_SECONDS: f64 = 3600.0;
+
+const DEADLINE_LOST_ERROR: &str =
+    "Command deadline passed without an answer. Outcome unknown; not rerun.";
+
 /// A supervisor's operation receipt is evidence of the original command; it is never
 /// permission to run it again. The connection owner supplies this verified receipt.
 pub struct ReattachProof {
@@ -923,7 +980,7 @@ pub fn restart_recovery(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision
         return Ok(decision);
     }
     decision.record["reattachRecovery"] = json!(ReattachRecovery {
-        account_key: snapshot.actor.account_key.clone(),
+        account_key: snapshot.command_account().to_owned(),
         epoch: snapshot.actor.epoch,
         status: RecoveryStatus::Running,
         started_at: now,
@@ -952,8 +1009,11 @@ pub(crate) fn restart_lost(
     decision.record["reattachRecovery"] = json!(recovery);
     decision.record["status"] = json!(MonitorStatus::Lost);
     decision.record["finished"] = json!(now);
-    decision.record["error"] =
-        json!("Command outcome unknown after losing the provider result; not rerun.");
+    decision.record["error"] = json!(if reason == DEADLINE_PASSED {
+        DEADLINE_LOST_ERROR
+    } else {
+        "Command outcome unknown after losing the provider result; not rerun."
+    });
     decision.effects.push(if snapshot.fields.rule_id.is_some() {
         Effect::RuleFinished
     } else {
@@ -973,11 +1033,11 @@ pub fn reattach(
         MonitorStatus::Running | MonitorStatus::Starting | MonitorStatus::Approval
     ) || proof.operation_id != format!("monitor:{}", snapshot.id())
         || proof.current_connection.is_empty()
-        || proof.operation.account_key != snapshot.actor.account_key
+        || proof.operation.account_key != snapshot.command_account()
         || recovery.is_none_or(|recovery| {
             recovery.status != RecoveryStatus::Running
                 || recovery.epoch != snapshot.actor.epoch
-                || recovery.account_key != snapshot.actor.account_key
+                || recovery.account_key != snapshot.command_account()
         })
     {
         return Err(MonitorError::Refused(
@@ -1000,6 +1060,8 @@ pub fn reattach(
 pub enum ReattachDisposition {
     AwaitExit,
     Cancel,
+    /// Another transaction settled or reattached this exact command.
+    Superseded,
 }
 
 /// Build the same initial row as Python. Identity, actor and time are server-owned;

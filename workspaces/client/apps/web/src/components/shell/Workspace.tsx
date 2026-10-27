@@ -1,3 +1,4 @@
+import { randomUUID } from "../../uuid";
 import { ProviderKind } from "../../generated/providerKind.ts";
 import { McpInventory } from "./McpInventory";
 import {
@@ -608,7 +609,7 @@ function Changes(c: Context) {
                               ? { turnId: report.turnId }
                               : {}),
                             text: "",
-                            id: crypto.randomUUID(),
+                            id: randomUUID(),
                           })
                         }
                       >
@@ -727,8 +728,7 @@ function Plan(c: Context) {
 function Checkpoints(c: Context) {
   if (
     c.selected?.provider === ProviderKind.Claude &&
-    (c.selected.imageWorkspace ||
-      c.selected.workspaceMode === "shared" ||
+    (c.selected.workspaceMode === "shared" ||
       (!c.selected.worktree && c.selected.workspaceMode !== "worktree"))
   ) {
     return (
@@ -1092,7 +1092,7 @@ function Profiles(c: Context) {
           leftSection={<Plus size={14} />}
           onClick={() =>
             setDraft({
-              id: crypto.randomUUID(),
+              id: randomUUID(),
               isNew: true,
               name: "",
               role: "implementer",
@@ -1116,7 +1116,7 @@ function Profiles(c: Context) {
                 disabled={!lead || lead.autoWake === false}
                 onClick={() =>
                   setLaunch({
-                    id: crypto.randomUUID(),
+                    id: randomUUID(),
                     profile_id: profile.id,
                     provider:
                       modelProvider(profile.model) ?? lead?.provider ?? "",
@@ -1349,7 +1349,7 @@ function Rules(c: Context) {
           leftSection={<Plus size={14} />}
           onClick={() =>
             setDraft({
-              id: crypto.randomUUID(),
+              id: randomUUID(),
               isNew: true,
               name: "",
               kind: "interval",

@@ -29,10 +29,8 @@
 //! waking the retained monitor runtime. Managed MonitorInput uses the callback
 //! request id as its durable provider ticket and callback replay identity.
 //!
-//! Registered owner decision: "monitor input has no request identity; pending owner decision".
-//! A lost HTTP response cannot be distinguished from a new
-//! input. Provider writes still persist their own ticket first and never resend
-//! Unknown.
+//! HTTP input uses its caller request header and a separate durable receipt.
+//! Managed callback identities and their tool schemas stay unchanged.
 //!
 //! Remote-origin routing follows Python `Runtime.dynamic` (codex_runtime.py
 //! 8969–8997, 9004–9049): Search and local Context topics remain local, while
@@ -878,13 +876,7 @@ fn project_child(record: &Value, task_id: Option<&str>) -> Value {
             .filter(|mode| truthy(Some(mode)))
             .cloned()
             .unwrap_or_else(|| {
-                if truthy(record.get("imageWorkspace")) {
-                    if record["environment"] == "linux" {
-                        json!("linux")
-                    } else {
-                        json!("image")
-                    }
-                } else if truthy(record.get("worktree")) {
+                if truthy(record.get("worktree")) {
                     json!("worktree")
                 } else {
                     json!("shared")
@@ -898,19 +890,6 @@ fn project_child(record: &Value, task_id: Option<&str>) -> Value {
             .cloned()
             .unwrap_or(Value::Null),
     );
-    if truthy(record.get("imageWorkspace")) {
-        output.insert(
-            "workspaceState".to_owned(),
-            json!(if truthy(record.get("imageWorkspaceReady")) {
-                "ready"
-            } else {
-                "building"
-            }),
-        );
-    }
-    if truthy(record.get("imageWorkspaceError")) {
-        copy_if(record, &mut output, "workspaceError", "imageWorkspaceError");
-    }
     if let Some(base_commit) = record.get("workerBaseCommit") {
         output.insert("baseRef".to_owned(), record["workerBaseRef"].clone());
         output.insert("baseCommit".to_owned(), base_commit.clone());

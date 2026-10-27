@@ -1,3 +1,4 @@
+import { randomUUID } from "../../../uuid";
 import {
   ApiError,
   errorText,
@@ -41,7 +42,11 @@ function outcome(
   result: BackgroundResult,
   request: BackgroundRequest,
 ): BackgroundOutcome {
-  const response = result.response;
+  // A monitor input receipt is never a background move result.
+  const response =
+    result.response && !("kind" in result.response)
+      ? result.response
+      : undefined;
   const status = response?.status;
   if (result.status === "uncertain")
     return { kind: "uncertain", request, message: UNKNOWN };
@@ -106,7 +111,7 @@ export async function requestCommandBackground(
     };
   return submit(api, {
     action: "background_command",
-    requestId: crypto.randomUUID(),
+    requestId: randomUUID(),
     agent: agentId,
     accountKey: target.accountKey,
     epoch: target.epoch,

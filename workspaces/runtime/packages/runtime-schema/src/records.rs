@@ -19,6 +19,8 @@ pub enum WorkStatus {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceMode {
+    #[serde(rename = "layr-native")]
+    LayrNative,
     Layr,
     Image,
     Worktree,
@@ -46,9 +48,8 @@ const WORKSPACE_MODE_FIELDS: &[&str] = &[
     "/components/schemas/AgentRecordResponse/properties/workspaceMode/anyOf/0",
     "/components/schemas/AgentResponse/properties/workspaceMode/anyOf/0",
     "/components/schemas/BranchResponse/properties/workspaceMode/anyOf/0",
-    "/components/schemas/CreateAgentRequest/properties/workspaceMode",
 ];
-const LEAD_WORKSPACE_MODE: &str = "/components/schemas/CreateLeadRequest/properties/workspaceMode";
+// Creation request modes belong to workspace_modes.rs; stored records keep legacy modes.
 
 fn schema<T: JsonSchema>() -> Value {
     T::json_schema(&mut schemars::generate::SchemaSettings::openapi3().into_generator()).to_value()
@@ -71,19 +72,6 @@ pub(crate) fn refresh_openapi(openapi: &mut Value) -> Result<(), String> {
             field.insert("$ref".into(), json!(format!("#/components/schemas/{name}")));
         }
     }
-    // Lead creation intentionally permits the existing three-mode subset.
-    // Generate it from the same owner rather than maintaining another list.
-    let mut lead = schema::<WorkspaceMode>();
-    let shared = serde_json::to_value(WorkspaceMode::Shared).map_err(|error| error.to_string())?;
-    lead["enum"]
-        .as_array_mut()
-        .ok_or("WorkspaceMode must be an enum")?
-        .retain(|mode| mode != &shared);
-    let field = openapi
-        .pointer_mut(LEAD_WORKSPACE_MODE)
-        .and_then(Value::as_object_mut)
-        .ok_or("OpenAPI is missing lead workspace mode")?;
-    field.insert("enum".into(), lead["enum"].clone());
     Ok(())
 }
 
@@ -95,7 +83,6 @@ pub(crate) fn check_schema_parity(openapi: &Value) -> Result<(), String> {
         .chain(WORKSPACE_MODE_FIELDS)
         .copied()
         .chain([
-            LEAD_WORKSPACE_MODE,
             "/components/schemas/WorkStatus",
             "/components/schemas/WorkspaceMode",
         ])

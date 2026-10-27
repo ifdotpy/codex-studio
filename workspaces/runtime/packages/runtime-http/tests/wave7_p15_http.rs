@@ -78,8 +78,18 @@ fn database_snapshot(store: &studio_runtime_store::RuntimeStore) -> Value {
 }
 
 async fn call(app: &axum::Router, path: &str, body: Value) -> (u16, Value) {
-    let request = Request::builder()
-        .method("POST")
+    call_with_identity(app, "POST", path, body, Some("http-input-fixture")).await
+}
+
+async fn call_with_identity(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+    body: Value,
+    identity: Option<&str>,
+) -> (u16, Value) {
+    let mut request = Request::builder()
+        .method(method)
         .uri(path)
         .header("host", "127.0.0.1:49171")
         .header("content-type", "application/json")
@@ -92,9 +102,11 @@ async fn call(app: &axum::Router, path: &str, body: Value) -> (u16, Value) {
             "127.0.0.1:12345"
                 .parse::<std::net::SocketAddr>()
                 .expect("address"),
-        ))
-        .body(Body::from(body.to_string()))
-        .expect("request");
+        ));
+    if let Some(identity) = identity {
+        request = request.header("x-studio-request-id", identity);
+    }
+    let request = request.body(Body::from(body.to_string())).expect("request");
     let response = app.clone().oneshot(request).await.expect("HTTP");
     let status = response.status().as_u16();
     let bytes = to_bytes(response.into_body(), 1024 * 1024)
@@ -135,14 +147,14 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
     *port.unknown.lock().expect("unknown") = true;
     let (status, result) = call(&app, "/api/monitor/input", body.clone()).await;
     assert_eq!(
-        status, 400,
+        status, 503,
         "unknown input result must be surfaced: {result}"
     );
     assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
     let after_unknown = database_snapshot(&store);
     let (status, retry) = call(&app, "/api/monitor/input", body).await;
     assert_eq!(
-        status, 400,
+        status, 503,
         "unknown input retry must stay refused: {retry}"
     );
     assert_eq!(
@@ -155,6 +167,16 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
         after_unknown,
         "refusing a repeat must leave the durable Unknown latch unchanged"
     );
+    let agent = case["actor"]["id"].as_str().expect("actor id");
+    let epoch = case["actor"]["epoch"].as_i64().expect("actor epoch");
+    let path = format!(
+        "/api/processes/action?requestId=http-input-fixture&agent={agent}&accountKey=default&epoch={epoch}"
+    );
+    let (status, receipt) = call_with_identity(&app, "GET", &path, Value::Null, None).await;
+    assert_eq!(status, 200, "{receipt}");
+    assert_eq!(receipt["found"], true);
+    assert_eq!(receipt["result"]["status"], "uncertain");
+    assert_eq!(receipt["result"]["response"]["status"], "unknown");
     *port.unknown.lock().expect("unknown") = false;
     for _ in 0..2 {
         let (status, response) = call(
@@ -231,13 +253,23 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
 
     // Missing dimensions write stdin; a supplied dimension resizes using only
     // the missing dimension's default. Explicit null was refused above.
-    for (dimension, size) in [
-        (json!({"rows": 19}), json!({"rows": 19, "cols": 80})),
-        (json!({"cols": 37}), json!({"rows": 24, "cols": 37})),
+    for (identity, dimension, size) in [
+        (
+            "http-resize-rows",
+            json!({"rows": 19}),
+            json!({"rows": 19, "cols": 80}),
+        ),
+        (
+            "http-resize-cols",
+            json!({"cols": 37}),
+            json!({"rows": 24, "cols": 37}),
+        ),
     ] {
         let mut body = dimension;
         body["id"] = json!(id);
-        let (status, response) = call(&app, "/api/monitor/input", body).await;
+        // Each distinct input keeps its own request identity.
+        let (status, response) =
+            call_with_identity(&app, "POST", "/api/monitor/input", body, Some(identity)).await;
         assert_eq!(status, 200, "resize should succeed: {response}");
         let submitted = port.submitted.lock().expect("resize effects");
         let Some(studio_runtime_services::monitor_policy::Effect::Native {
@@ -260,31 +292,32 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
     assert_eq!(status, 200, "acknowledged input should succeed: {response}");
     assert!(response.get("_syncEntities").is_none());
     assert!(response.get("_syncEntitiesAfter").is_none());
-    let submitted = port.submitted.lock().expect("submitted effects");
-    assert_eq!(
-        submitted.len(),
-        3,
-        "one HTTP input submits one native effect"
-    );
-    let studio_runtime_services::monitor_policy::Effect::Native {
-        identity,
-        method,
-        params,
-    } = &submitted[2]
-    else {
-        panic!("input must submit a native effect");
-    };
-    assert!(identity.starts_with(&format!("monitor-input:{id}:")));
-    assert_eq!(*method, "command/exec/write");
-    assert_eq!(
-        params,
-        &json!({
-            "processId": id,
-            "deltaBase64": "Zml4dHVyZSBpbnB1dA==",
-            "closeStdin": false
-        })
-    );
-    drop(submitted);
+    {
+        let submitted = port.submitted.lock().expect("submitted effects");
+        assert_eq!(
+            submitted.len(),
+            3,
+            "one HTTP input submits one native effect"
+        );
+        let studio_runtime_services::monitor_policy::Effect::Native {
+            identity,
+            method,
+            params,
+        } = &submitted[2]
+        else {
+            panic!("input must submit a native effect");
+        };
+        assert!(identity.starts_with(&format!("monitor-input:{id}:")));
+        assert_eq!(*method, "command/exec/write");
+        assert_eq!(
+            params,
+            &json!({
+                "processId": id,
+                "deltaBase64": "Zml4dHVyZSBpbnB1dA==",
+                "closeStdin": false
+            })
+        );
+    }
 
     let saved = MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
         .expect("read monitor record")
@@ -298,6 +331,103 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
         "Zml4dHVyZSBpbnB1dA=="
     );
     assert!(saved.get("inputAttempt").is_none());
+
+    // Discarding the first successful HTTP response must not repeat its stdin.
+    let (status, replay) = call(
+        &app,
+        "/api/monitor/input",
+        json!({"id":id,"text":"fixture input"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{replay}");
+    assert_eq!(replay["requestId"], "http-input-fixture");
+    assert_eq!(replay["status"], "acknowledged");
+    // Two resizes and one stdin write; the replay adds no effect.
+    assert_eq!(port.submitted.lock().expect("one input").len(), 3);
+    let (status, _) = call(
+        &app,
+        "/api/monitor/input",
+        json!({"id":id,"text":"changed input"}),
+    )
+    .await;
+    assert_eq!(status, 400, "same identity cannot change content");
+    let (status, _) = call_with_identity(
+        &app,
+        "POST",
+        "/api/monitor/input",
+        json!({"id":id,"text":"no identity"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 400, "old clients must fail before a native write");
+    let (status, _) = call_with_identity(
+        &app,
+        "POST",
+        "/api/monitor/input",
+        json!({"id":id,"text":"bad identity"}),
+        Some("not a safe identity"),
+    )
+    .await;
+    assert_eq!(status, 400, "invalid identities fail before a native write");
+    assert_eq!(port.submitted.lock().expect("no second input").len(), 3);
+
+    let owner = case["before"]["agent"].as_str().expect("monitor owner");
+    let epoch = case["actor"]["epoch"].as_i64().expect("actor epoch");
+    let account = case["actor"]["accountKey"].as_str().unwrap_or("default");
+    for (agent, account, epoch, found) in [
+        (owner, account, epoch, true),
+        ("foreign-owner", account, epoch, false),
+        (owner, "foreign-account", epoch, false),
+        (owner, account, epoch + 1, false),
+    ] {
+        let path = format!(
+            "/api/processes/action?requestId=http-input-fixture&agent={agent}&accountKey={account}&epoch={epoch}"
+        );
+        let (status, receipt) = call_with_identity(&app, "GET", &path, Value::Null, None).await;
+        assert_eq!(status, 200, "{receipt}");
+        assert_eq!(receipt["found"], found, "{receipt}");
+        if found {
+            assert_eq!(
+                receipt["result"]["response"],
+                json!({"kind":"monitor_input","monitorId":id,"status":"acknowledged"})
+            );
+            assert!(!receipt.to_string().contains("Zml4dHVyZSBpbnB1dA=="));
+            assert!(!receipt.to_string().contains("fixture input"));
+        }
+    }
+    let operation =
+        serde_json::from_value(case["before"]["operation"].clone()).expect("command operation");
+    let finished_id = id.to_owned();
+    store
+        .transaction_with(move |tx| {
+            studio_runtime_services::monitor_runtime::finish_in_transaction(
+                tx,
+                &finished_id,
+                Some(&operation),
+                Some(0),
+                None,
+                studio_runtime_services::event_write::unix_time()?,
+            )
+        })
+        .await
+        .expect("command exits immediately after input acknowledgement");
+    let path = format!(
+        "/api/processes/action?requestId=http-input-fixture&agent={owner}&accountKey={account}&epoch={epoch}"
+    );
+    let (status, receipt) = call_with_identity(&app, "GET", &path, Value::Null, None).await;
+    assert_eq!(status, 200, "{receipt}");
+    assert_eq!(
+        receipt["found"], true,
+        "a process exit does not erase the durable input outcome"
+    );
+    assert_eq!(receipt["result"]["response"]["status"], "acknowledged");
+    assert_eq!(
+        port.submitted
+            .lock()
+            .expect("receipt read has no effect")
+            .len(),
+        3
+    );
 }
 
 #[tokio::test]

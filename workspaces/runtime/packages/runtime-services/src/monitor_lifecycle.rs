@@ -91,6 +91,7 @@ fn lifecycle_monitor_error(error: MonitorError) -> ManagementError {
         | MonitorError::InvalidDeliveryIdentity(_)
         | MonitorError::InvalidOutputReceipt(_)
         | MonitorError::TaskFailed
+        | MonitorError::InputOutcomeUnknown
         | MonitorError::Refused(_)
         | MonitorError::ProviderRequest { .. }
         | MonitorError::ConfigurationRejected { .. }

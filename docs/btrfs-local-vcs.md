@@ -33,9 +33,9 @@ so models learn it quickly, and it has equal convenience. It does not take the n
    share. There is no mirror copy. `layr export` makes a normal copy on request, and backups use
    `btrfs send` and the remote (changed on 2026-10-09: first from "the Mac folder is the source of
    truth", then from a one-way mirror, to remove sync and the extra copy).
-7. Chat creation selects `layr`, `image`, or `worktree`. On macOS, `layr` is the default.
-   Layr runs the lead and all agents in the VM. Native image workspaces use macOS ASIF only.
-   Native Git worktrees remain available. Linux servers use worktrees until host layr support arrives.
+7. Chat creation selects `layr-native`, `layr`, or `worktree`. Native Layr is the default on macOS. Linux uses it only when the native capability is ready; otherwise it uses WT.
+   Layr VM runs the lead and agents in the Studio Linux VM.
+   Native Git worktrees remain available.
 8. No staged rollout: all parts of the utility are built together.
 9. All agents run in the VM: the lead, workers and reviewers. The Mac is reached only through the
    general `host_exec` tool, for work that needs macOS (Xcode builds and tests, signing, simulators).
@@ -83,19 +83,19 @@ so models learn it quickly, and it has equal convenience. It does not take the n
     (`studio-p-<hash>`, the lead agent's user) owns main and is the project admin from
     `layr init --owner`. A worker owns its line and has no role: a line owner may read, try and
     export (layr `dd497ad`). Every agent user is in the `studio-agents` Unix group, with a deny
-    rule for `access`, `sync`, `remote`, `records` and `backup`. `access` covers roles, deny
+    rule for `access`, `sync`, `remote`, and `records`. `access` covers roles, deny
     rules, protection rules and the commands of named checks, so no agent changes the rules,
     whatever role it gets later. The lead keeps `config` for layers and merge drivers. Only the
     owner changes a line; the lead does not write into a worker's line (it makes its own line
     from it, or deletes it).
-19. One commit per task (decision 5) is Studio's choice: `layr push --squash -m <task title>`.
+19. One commit per task (decision 5) is Studio's choice: `layr git push --squash -m <task title>`.
     layr's default push keeps every state as a commit.
 20. Exploration groups (below) and the `host_exec` slots are Studio workflows built from lines,
     `merge --expect`, `layr export` and the line folders; layr no longer has `group` and `slot`.
-21. The end of an agent turn: `layr cache repair`, then `layr save -m "Studio turn <n>"`
+21. The end of an agent turn: `layr cache repair`, then `layr save --force --note "Studio turn <n>"`
     (replaces `layr save --turn-end`).
 22. The layr copy in `workspaces/runtime/apps/layr` is vendored from a fixed revision
-    (`workspaces/runtime/apps/server/src/update-vm-layr.py`). Moving it to `942c1b6` also needs
+    (`workspaces/tooling/apps/repository-checks/update-vm-layr.py`). Moving it to `942c1b6` also needs
     the guest changes of 18, 21 and 23; revisions before `9254261` lack fixes for reading root
     files through merge drivers, for signed backups and stream checks, and for files too large
     for memory, and revisions before `942c1b6` let a user with `config` change check commands.
@@ -125,7 +125,7 @@ so models learn it quickly, and it has equal convenience. It does not take the n
     and Studio keeps it equal to the VM project in both directions through a `mac` line
     owned by the project user, a manifest of the agreed state, and protected merges into
     main. Conflicts are resolved in the VM, never with markers in the Mac folder; Git
-    stays on the Mac, so `layr push` is off for a synced project. The read-only Finder
+    stays on the Mac, so `layr git push` is off for a synced project. The read-only Finder
     view stays. Design: [vm-mac-sync.md](vm-mac-sync.md).
 
 ## Data model
@@ -285,7 +285,7 @@ over ssh or the paired server channel, [multiple Studio servers](multi-server.md
   Only the store folder decides. git writes the content below it with
   `core.sharedRepository=0644` (files `0644`, folders `0755`), also under the `0077` umask of the
   service unit, so a line owner reads the objects through the `alternates` of its `.git` folder.
-  A store of an earlier layr gets read access below its folder once: at the next `layr branch`
+  A store of an earlier layr gets read access below its folder once: at the next `layr line new`
   or role change, or at the first periodic run of the daemon after it starts.
 
 A state snapshot keeps the owner of the line root, so its owner could clear the read-only flag if it
@@ -658,9 +658,7 @@ Design:
 
 Studio integration:
 
-- Use layr for Linux workspaces instead of the overlayfs engine
-  ([image workspaces](workspace-images.md)) and the git status change detector
-  ([Linux VM workspaces](linux-vm-workspaces.md)), behind the same public API.
+- Use Layr for native and [Linux VM workspaces](linux-vm-workspaces.md).
 - Call `layr cache repair` and `layr save` at the end of each agent turn; run `layr daemon` in the
   VM.
 - The read-only network share of the main line and `states/`.

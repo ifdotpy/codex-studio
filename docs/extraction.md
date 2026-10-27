@@ -54,7 +54,6 @@ After removal of the old source paths, the installed Electron application attach
 to this backend and displays the client built from this repository. Verification
 uses a hidden window with a separate Electron profile because the user's normal
 application is already open. Closing the test instance preserves the backend.
-The installed `codex-control list` command also reads the same runtime.
 
 Evidence: `~/.local/state/codex-agents/evidence/source-extraction-20260906/`.
 Old ignored web build files were preserved outside the skill at

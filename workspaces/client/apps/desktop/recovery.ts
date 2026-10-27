@@ -91,12 +91,12 @@ async function supportedPython({
   env,
   saved,
   script,
-  checkInterpreter,
+  checkInterpreter = checkRecoveryInterpreter,
 }: {
   env: NodeJS.ProcessEnv;
   saved: SavedRecovery;
   script: string;
-  checkInterpreter: typeof checkRecoveryInterpreter;
+  checkInterpreter?: typeof checkRecoveryInterpreter;
 }) {
   const refused = [];
   for (const candidate of interpreterCandidates(env, saved)) {
@@ -639,6 +639,7 @@ async function configureRecovery({
   return { enabled: true, ...files };
 }
 export {
+  supportedPython,
   atomicJSON,
   configureRecovery,
   recoveryPreference,

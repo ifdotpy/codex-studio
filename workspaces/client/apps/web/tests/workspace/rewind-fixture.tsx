@@ -7,7 +7,7 @@ import Restore from "../../src/components/ClaudeCheckpointRestore.tsx";
 const agent: Agent = {
   id: "worker",
   provider: "claude",
-  imageWorkspace: true,
+  workspaceMode: "shared",
   status: "paused",
 };
 function Fixture() {

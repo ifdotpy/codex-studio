@@ -77,6 +77,9 @@ pub(super) struct Wake {
     pub account: String,
     pub agent_id: String,
     pub epoch: i64,
+    /// Proof from the retained connection's initialize reply. Unknown bridges
+    /// keep Claude input queued until the current turn ends.
+    pub claude_steer_receipts: bool,
     pub effect: Option<String>,
     /// Native review children run their first turn with these resources.
     pub resources: Arc<preparation::PreparationResources>,
@@ -218,9 +221,10 @@ async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError
         })
         .await?;
     let (a, g) = (account.clone(), agent_id.clone());
+    let claude_steer_receipts = wake.claude_steer_receipts;
     match bridge
         .worker_run("claim_steer", move |store| async move {
-            steer::claim_for_wake(store, &a, &g, epoch).await
+            steer::claim_for_wake(store, &a, &g, epoch, claude_steer_receipts).await
         })
         .await?
     {

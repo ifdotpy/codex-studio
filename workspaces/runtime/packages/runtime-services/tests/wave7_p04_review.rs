@@ -652,14 +652,6 @@ async fn non_radio_async_answer_is_steered_and_acknowledged() {
         ) -> Result<Vec<serde_json::Value>, CoordinationError> {
             Ok(vec![])
         }
-        fn budget(
-            &self,
-            _: &Transaction<'_>,
-            _: &AgentRecord,
-            _: &AgentRecord,
-        ) -> Result<(), CoordinationError> {
-            Ok(())
-        }
     }
     let (_root, store, context) = fixture().await;
     let agent = context.agent.clone();

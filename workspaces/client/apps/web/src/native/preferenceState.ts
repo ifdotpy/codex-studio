@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { storageKeySnapshot } from "../storageKeys";
 import { maxPreferenceKeyBytes } from "./preferenceLimits";
 import { DRAFT_JOURNAL_PREFIX } from "./draftJournal";
@@ -147,7 +148,7 @@ export class NativePreferenceStorage implements Storage {
       if (Object.keys(entries).length) {
         storage.enqueue([
           {
-            id: crypto.randomUUID(),
+            id: randomUUID(),
             method: "preferences.import",
             params: { version: 1, entries },
           },
@@ -234,7 +235,7 @@ export class NativePreferenceStorage implements Storage {
     if (this.values.get(key) === value) return;
     this.enqueue([
       {
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         method: "preferences.raw_set",
         params: { key, raw: value },
       },
@@ -248,7 +249,7 @@ export class NativePreferenceStorage implements Storage {
     if (!this.values.has(key)) return;
     this.enqueue([
       {
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         method: "preferences.raw_remove",
         params: { key },
       },
@@ -260,7 +261,7 @@ export class NativePreferenceStorage implements Storage {
   clear() {
     this.enqueue(
       [...this.values.keys()].map((key) => ({
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         method: "preferences.raw_remove",
         params: { key },
       })),

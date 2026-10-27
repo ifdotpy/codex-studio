@@ -1605,17 +1605,11 @@ async fn real_python_start_speech_end_rows_match_rust_with_rpc_boundary_stub() {
 }
 
 #[tokio::test]
-async fn start_preflight_matches_python_context_repair_and_budget_denials() {
-    for (case, patch) in [
-        (
-            "context repair",
-            "UPDATE runtime_agents SET record=json_set(record,'$.contextRepair',json('{\"id\":\"repair\",\"phase\":\"unknown\"}')) WHERE id='agent'",
-        ),
-        (
-            "budget admission",
-            "UPDATE runtime_agents SET record=json_set(record,'$.tokenBudget',0) WHERE id='agent'",
-        ),
-    ] {
+async fn start_preflight_matches_python_context_repair_denial() {
+    for (case, patch) in [(
+        "context repair",
+        "UPDATE runtime_agents SET record=json_set(record,'$.contextRepair',json('{\"id\":\"repair\",\"phase\":\"unknown\"}')) WHERE id='agent'",
+    )] {
         let (_root, store) = seeded_store().await;
         store
             .transaction(|tx| {
@@ -2087,6 +2081,7 @@ impl VoiceProviderPort for BlockingProvider {
                 | Method::ClaudeSettings
                 | Method::ClaudeActivity
                 | Method::ClaudeStopTask
+                | Method::ClaudeShellPolicy
                 | Method::ClaudeDiagnostics
                 | Method::ClaudeMoveVersions
                 | Method::McpServerReconnect
@@ -2161,6 +2156,7 @@ impl VoiceProviderPort for BlockingProvider {
                 | Method::ThreadClosed
                 | Method::ThreadStatusChanged
                 | Method::ThreadTokenUsageUpdated
+                | Method::ThreadShellPolicyUpdated
                 | Method::ThreadIdleCompactionUpdated
                 | Method::AccountLoginCompleted
                 | Method::AccountUpdated

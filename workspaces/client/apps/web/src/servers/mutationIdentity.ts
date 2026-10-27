@@ -1,5 +1,13 @@
+import { randomUUID } from "../uuid";
+import { sha256Hex } from "../sha256";
 import { serverViewId } from "./environment";
 import { serverLocalStorage } from "./storage";
+import {
+  createMonitorInputStore,
+  type MonitorInputEntry,
+  type MonitorInputStore,
+} from "./monitorInputStore";
+const MONITOR_INPUT_PATH = "/api/monitor/input";
 const UNCERTAIN_RESPONSE_CODES = new Set([
   "remote_timeout",
   "remote_unavailable",
@@ -11,6 +19,30 @@ const UNCERTAIN_RESPONSE_CODES = new Set([
   "receipt_expired",
   "request_conflict",
 ]);
+
+type MonitorJournalOwner = { readonly monitorInput: MonitorInputStore };
+
+export async function pendingMonitorInput(
+  journal: MonitorJournalOwner,
+  monitorId: string,
+): Promise<{ requestId: string } | null> {
+  return journal.monitorInput.transition(monitorId, (entry) => ({
+    entry,
+    result: entry ? { requestId: entry.requestId } : null,
+  }));
+}
+
+// The caller must first verify an exact acknowledged or rejected process receipt.
+export async function finishMonitorInput(
+  journal: MonitorJournalOwner,
+  monitorId: string,
+  requestId: string,
+): Promise<boolean> {
+  return journal.monitorInput.transition(monitorId, (entry) => {
+    const matches = entry?.requestId === requestId;
+    return { entry: matches ? undefined : entry, result: matches };
+  });
+}
 
 export function serverMutationResponseIsUncertain(
   status: number,
@@ -29,7 +61,80 @@ export function serverMutationResponseIsUncertain(
 export function createMutationJournal(
   serverId: string | null,
   storage: Storage,
+  monitorInput: MonitorInputStore = createMonitorInputStore(serverId),
 ) {
+  async function beginMonitorInput(body: unknown, explicitRequestId?: string) {
+    const value =
+      body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+    if (typeof value.id !== "string" || !value.id) {
+      throw new Error("A monitor ID is required for input.");
+    }
+    const monitorId = value.id;
+    const serialized = JSON.stringify(body);
+    const payloadDigest = await sha256Hex(
+      new TextEncoder().encode(MONITOR_INPUT_PATH + "\n" + serialized),
+    );
+    if (JSON.stringify(body) !== serialized) {
+      throw new Error("Monitor input changed before its identity was saved.");
+    }
+    const explicit = [
+      explicitRequestId,
+      value.requestId,
+      value.request_id,
+    ].find((id): id is string => typeof id === "string" && !!id);
+    const entry = await monitorInput.transition(monitorId, (saved) => {
+      if (JSON.stringify(body) !== serialized) {
+        throw new Error("Monitor input changed before its identity was saved.");
+      }
+      if (
+        saved &&
+        (saved.payloadDigest !== payloadDigest ||
+          (explicit && saved.requestId !== explicit))
+      ) {
+        throw new Error(
+          "Resolve the pending monitor input before sending different input.",
+        );
+      }
+      // A saved unresolved attempt can have reached the process before a reload.
+      const next: MonitorInputEntry = saved
+        ? { ...saved, uncertain: true }
+        : {
+            requestId: explicit || randomUUID(),
+            payloadDigest,
+            uncertain: false,
+          };
+      return { entry: next, result: next };
+    });
+    const updateCurrent = (
+      update: (current: MonitorInputEntry) => MonitorInputEntry | undefined,
+    ) =>
+      monitorInput.transition(monitorId, (current) => ({
+        entry:
+          current?.requestId === entry.requestId &&
+          current.payloadDigest === entry.payloadDigest
+            ? update(current)
+            : current,
+        result: undefined,
+      }));
+    const finish = () => updateCurrent(() => undefined);
+    const unknown = () =>
+      updateCurrent((current) => ({ ...current, uncertain: true }));
+    return {
+      requestId: entry.requestId,
+      finish,
+      unknown,
+      reject(status: number, body: unknown) {
+        return updateCurrent((current) =>
+          serverMutationResponseIsUncertain(status, body)
+            ? { ...current, uncertain: true }
+            : current.uncertain
+              ? current
+              : undefined,
+        );
+      },
+    };
+  }
+
   async function beginServerMutation(
     path: string,
     body: unknown,
@@ -37,6 +142,8 @@ export function createMutationJournal(
   ) {
     // Session control recovers by reopening the full stream; dead sessions have no durable receipt.
     if (path === "/api/sync/subscriptions") return null;
+    if (path === MONITOR_INPUT_PATH)
+      return beginMonitorInput(body, explicitRequestId);
     if (explicitRequestId)
       return {
         requestId: explicitRequestId,
@@ -61,15 +168,9 @@ export function createMutationJournal(
         unknown() {},
         reject(_status: number, _body: unknown) {},
       };
-    const hash = Array.from(
-      new Uint8Array(
-        await crypto.subtle.digest(
-          "SHA-256",
-          new TextEncoder().encode(path + "\n" + JSON.stringify(body)),
-        ),
-      ),
-      (byte) => byte.toString(16).padStart(2, "0"),
-    ).join("");
+    const hash = await sha256Hex(
+      new TextEncoder().encode(path + "\n" + JSON.stringify(body)),
+    );
     const key = `studio-server-write:${hash}`;
     const existing = storage.getItem(key);
     let saved: { requestId: string; uncertain: boolean } | undefined;
@@ -80,7 +181,7 @@ export function createMutationJournal(
         saved = { requestId: existing, uncertain: true };
       }
     }
-    const entry = saved || { requestId: crypto.randomUUID(), uncertain: false };
+    const entry = saved || { requestId: randomUUID(), uncertain: false };
     const requestId = entry.requestId;
     const save = () => storage.setItem(key, JSON.stringify(entry));
     save();
@@ -104,7 +205,9 @@ export function createMutationJournal(
     };
   }
 
-  return beginServerMutation;
+  return Object.defineProperty(beginServerMutation, "monitorInput", {
+    value: monitorInput,
+  }) as typeof beginServerMutation & MonitorJournalOwner;
 }
 export const beginServerMutation = createMutationJournal(
   serverViewId,

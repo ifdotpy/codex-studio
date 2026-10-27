@@ -1,3 +1,4 @@
+import { randomUUID } from "./uuid";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { errorText } from "./api";
 import type {
@@ -254,7 +255,7 @@ export function useProjectDelete(options: {
       const intent = new ProjectDeleteIntent(
         {
           id: target.project.id,
-          request_id: crypto.randomUUID(),
+          request_id: randomUUID(),
           expected_workspace_id: workspaceId,
           expected_project_seq: target.seq,
         },

@@ -34,7 +34,8 @@ OpenAPI stays the owner of every DTO; Rust and TypeScript types stay generated.
 
 One limit, `SYNC_STREAM_EVENT_MAX_BYTES` (owner: `runtime-schema/src/shared_values.rs`),
 bounds the complete serialized SSE event in UTF-8 bytes including `event:`, `id:`,
-`data:` lines. It replaces `SYNC_ENTITY_STREAM_MAX_BYTES`,
+`data:` lines. The native bridge has its own limit, `NATIVE_SSE_EVENT_MAX_BYTES`
+(owner: `client-domain/src/lib.rs`), for every event type. It replaces `SYNC_ENTITY_STREAM_MAX_BYTES`,
 `SYNC_TRANSCRIPT_STREAM_MAX_BYTES`, and `SYNC_DRAFT_STREAM_MAX_BYTES`. A larger
 event carries revisions only, and the client pulls the interval over HTTP
 (Brotli JSON). The HTTP compression threshold is a separate contract.

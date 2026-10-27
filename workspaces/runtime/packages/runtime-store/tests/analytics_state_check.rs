@@ -20,6 +20,26 @@ fn create_history(root: &std::path::Path) -> Connection {
     db
 }
 
+#[test]
+fn compressed_item_records_receive_the_same_readonly_validation() {
+    let root = tempdir().expect("temporary state");
+    let db = create_history(root.path());
+    db.execute_batch("CREATE TABLE analytics_items (id TEXT PRIMARY KEY, record TEXT NOT NULL);")
+        .expect("item table");
+    let text = json!({"id":"item","agentId":"agent","type":"agentMessage"}).to_string();
+    db.execute("INSERT INTO analytics_items VALUES ('item',?1)", [&text])
+        .expect("plain item");
+    let plain = report_for(root.path(), "analytics_items");
+    db.execute(
+        "UPDATE analytics_items SET record=?1",
+        [studio_runtime_store::stored_text::encode(&text)],
+    )
+    .expect("compressed item");
+    let compressed = report_for(root.path(), "analytics_items");
+    assert_eq!(compressed.row_count, plain.row_count);
+    assert_eq!(compressed.rejected_count, plain.rejected_count);
+}
+
 fn add_history(db: &Connection, id: &str, agent: &str, record: Value) {
     db.execute(
         "INSERT INTO analytics_history(id,agent,record) VALUES (?1,?2,?3)",
