@@ -15,9 +15,9 @@ import "./edge-rail.css";
 
 interface RailAction {
   onClick: () => void;
-  id?: string;
-  disabled?: boolean;
-  expanded?: boolean;
+  id?: string | undefined;
+  disabled?: boolean | undefined;
+  expanded?: boolean | undefined;
 }
 
 interface RailEntry {
@@ -30,13 +30,13 @@ interface RailEntry {
 
 export interface EdgeRailProps {
   geometry: EdgeRailGeometry | null;
-  sidebar: RailAction & { label?: string };
-  messages?: RailAction & { count: number };
+  sidebar: RailAction & { label?: string | undefined };
+  messages?: (RailAction & { count: number }) | undefined;
   /** The chat team; absent for chats without one. Counts are workers. */
-  team?: RailAction & { active: number; total: number };
+  team?: (RailAction & { active: number; total: number }) | undefined;
   /** Existing Menu.Item children retain their handlers and permissions. */
   menu?: ReactNode;
-  menuButtonRef?: Ref<HTMLButtonElement>;
+  menuButtonRef?: Ref<HTMLButtonElement> | undefined;
 }
 
 export function EdgeRail({
@@ -223,7 +223,7 @@ export function EdgeRail({
                 key={key}
                 leftSection={icon}
                 rightSection={badge}
-                disabled={action.disabled}
+                disabled={action.disabled === true}
                 onClick={action.onClick}
               >
                 {label}

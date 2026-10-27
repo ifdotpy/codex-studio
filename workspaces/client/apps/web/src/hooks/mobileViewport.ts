@@ -89,7 +89,7 @@ export function useMobileViewport(active: boolean, compact = false) {
         const current = /^matrix\((?:[^,]+,){5}\s*([^)]+)\)$/.exec(
           getComputedStyle(node).transform,
         );
-        if (current) start = parseFloat(current[1]);
+        if (current?.[1]) start = parseFloat(current[1]);
         composerMotion.cancel();
       }
       const motion = node.animate(

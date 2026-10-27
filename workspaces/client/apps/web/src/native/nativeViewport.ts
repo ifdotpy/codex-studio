@@ -70,17 +70,18 @@ export function nativeViewport(): NativeViewportState | undefined {
 
 // UIKit's keyboard uses the private curve 7. The others are the public
 // UIViewAnimationCurve values easeInOut, easeIn, easeOut, and linear.
+const uikitKeyboardEasing = "cubic-bezier(0.38, 0.7, 0.125, 1)";
 const keyboardEasing: Record<number, string> = {
   0: "cubic-bezier(0.42, 0, 0.58, 1)",
   1: "cubic-bezier(0.42, 0, 1, 1)",
   2: "cubic-bezier(0, 0, 0.58, 1)",
   3: "linear",
-  7: "cubic-bezier(0.38, 0.7, 0.125, 1)",
+  7: uikitKeyboardEasing,
 };
 
 /** CSS easing that matches one UIViewAnimationCurve value. */
-export function nativeKeyboardEasing(curve: number) {
-  return keyboardEasing[curve] ?? keyboardEasing[7];
+export function nativeKeyboardEasing(curve: number): string {
+  return keyboardEasing[curve] ?? uikitKeyboardEasing;
 }
 
 /** UIKit keyboard animation duration, in ms. */

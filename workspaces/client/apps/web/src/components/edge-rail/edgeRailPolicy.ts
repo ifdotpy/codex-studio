@@ -4,9 +4,9 @@ export interface EdgeRailMetrics {
   statusReserve: number;
   targetSize: number;
   /** Outer screen edge to the system status column center; strip center when absent. */
-  statusColumnCenter?: number;
+  statusColumnCenter?: number | undefined;
   /** Width kept clear at the right end of a top strip for the clock and Wi-Fi. */
-  topStatusReserve?: number;
+  topStatusReserve?: number | undefined;
 }
 
 export interface EdgeRailViewport {
@@ -14,15 +14,15 @@ export interface EdgeRailViewport {
   viewportHeight: number;
   insets: { top: number; right: number; bottom: number; left: number };
   /** Page width; needed for a top strip. */
-  viewportWidth?: number;
+  viewportWidth?: number | undefined;
   /** Height of a top status strip that the page does not reserve (Duo portrait). */
-  topStrip?: number;
+  topStrip?: number | undefined;
   /**
    * Bottom and left edges of the system status column in the strip, from the
    * native shell. It grows with a call or recording pill. Without it the
    * metrics' fixed status reserves apply.
    */
-  statusColumn?: { bottom: number; left: number };
+  statusColumn?: { bottom: number; left: number } | undefined;
 }
 
 function measuredStatus({ statusColumn }: EdgeRailViewport) {
