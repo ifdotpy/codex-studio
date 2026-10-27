@@ -1079,6 +1079,19 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             ),
         },
         Rendered {
+            path: web("accountTransfer.ts"),
+            text: format!(
+                "// {HEADER}\n// Owner: OpenAPI TransferStatus.\nexport const TRANSFER_STATUSES = [{}] as const;\n",
+                openapi["components"]["schemas"]["TransferStatus"]["enum"]
+                    .as_array()
+                    .ok_or("OpenAPI TransferStatus must be a closed enum")?
+                    .iter()
+                    .map(Value::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        },
+        Rendered {
             path: web("claudePermissions.ts"),
             text: format!(
                 "// {HEADER}\nexport const CLAUDE_PERMISSION_MODES = [\n{}] as const;\nexport type ClaudePermissionMode = (typeof CLAUDE_PERMISSION_MODES)[number];\n",
