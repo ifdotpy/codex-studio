@@ -1,6 +1,7 @@
 //! Git reads remain available in native lines; Layr owns state changes.
 use super::{NativeLayrError, binary_path, store_path};
 use std::{
+    collections::BTreeSet,
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -17,12 +18,73 @@ fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn wrapper_script(state_dir: &Path, real_git: &Path) -> String {
-    include_str!("git-guard.sh")
+/// Keep old mapped and imported roots protected after the selected root changes.
+fn store_patterns(state_dir: &Path) -> Result<String, NativeLayrError> {
+    let mut roots = BTreeSet::from([super::settings::selected_store(state_dir)?]);
+    let stores = state_dir.join(super::NATIVE_LAYR_DIRECTORY).join("stores");
+    let folders = match fs::read_dir(stores) {
+        Ok(folders) => Some(folders),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    for folder in folders.into_iter().flatten() {
+        let folder = folder?;
+        if !folder.file_type()?.is_dir() {
+            continue;
+        }
+        for receipt in fs::read_dir(folder.path())? {
+            let path = receipt?.path();
+            if path.extension().is_none_or(|extension| extension != "json") || !path.is_file() {
+                continue;
+            }
+            let record: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path)?).map_err(|error| {
+                    NativeLayrError::Refused(format!(
+                        "Invalid native Layr receipt {}: {error}",
+                        path.display()
+                    ))
+                })?;
+            let root = if let Some(root) = record.get("storeRoot") {
+                root.as_str().map(PathBuf::from)
+            } else if let Some(main) = record.get("mainPath") {
+                main.as_str()
+                    .and_then(|main| super::settings::root_from_cwd(Path::new(main)))
+            } else {
+                continue;
+            };
+            roots.insert(root.ok_or_else(|| {
+                NativeLayrError::Refused(format!(
+                    "Missing store root in native Layr receipt {}",
+                    path.display()
+                ))
+            })?);
+        }
+    }
+    roots
+        .into_iter()
+        .map(|root| {
+            let root = CanonicalPath::missing_tail(&root).ok_or_else(|| {
+                NativeLayrError::Refused(format!(
+                    "Invalid native Layr Git guard root: {}",
+                    root.display()
+                ))
+            })?;
+            Ok(format!(
+                "{}/projects/*/lines/*",
+                quote(&root.to_string_lossy())
+            ))
+        })
+        .collect::<Result<Vec<_>, NativeLayrError>>()
+        .map(|patterns| patterns.join("|"))
+}
+
+fn wrapper_script(state_dir: &Path, real_git: &Path) -> Result<String, NativeLayrError> {
+    Ok(include_str!("git-guard.sh")
         .replace("@REAL_GIT@", &quote(&real_git.to_string_lossy()))
         .replace("@LAYR@", &quote(&binary_path(state_dir).to_string_lossy()))
         .replace("@STORE@", &quote(&store_path(state_dir).to_string_lossy()))
-        .replace("@COMMIT_REFUSAL@", &quote(COMMIT_REFUSAL))
+        .replace("@BOUND_STORES@", &store_patterns(state_dir)?)
+        .replace("@COMMIT_REFUSAL@", &quote(COMMIT_REFUSAL)))
 }
 
 fn hook_script() -> String {
@@ -134,7 +196,7 @@ pub(super) fn ensure(state_dir: &Path) -> Result<(), NativeLayrError> {
             "The saved real Git executable is unavailable".into(),
         ));
     }
-    let script = wrapper_script(&state_dir, &real_git);
+    let script = wrapper_script(&state_dir, &real_git)?;
     if fs::read(&wrapper).ok().as_deref() != Some(script.as_bytes()) {
         crate::atomic_file::replace(&wrapper, script.as_bytes(), Some(0o755), true)?;
     }
@@ -248,7 +310,9 @@ mod tests {
         let wrapper = root.path().join("git");
         crate::atomic_file::replace(
             &wrapper,
-            wrapper_script(&state, &real_git).as_bytes(),
+            wrapper_script(&state, &real_git)
+                .expect("wrapper roots")
+                .as_bytes(),
             Some(0o755),
             false,
         )
@@ -321,6 +385,66 @@ mod tests {
             invoke(&wrapper, root.path(), &args).is_err(),
             "-C must not bypass the guard"
         );
+    }
+
+    #[test]
+    fn native_git_guard_keeps_selected_and_bound_stores_when_environment_is_cleared() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let state = fixture.path().join("state");
+        let selected = fixture.path().join("selected store'");
+        let bound = fixture.path().join("previous store\nwith newline");
+        let imported = fixture.path().join("previous imported store");
+        for root in [&selected, &bound, &imported] {
+            fs::create_dir_all(root.join("projects/project/lines/main")).expect("line");
+        }
+        super::super::settings::configure(&state, Some(&selected)).expect("selected store");
+        for (root, receipt) in [
+            (&bound, serde_json::json!({"storeRoot":bound})),
+            (
+                &imported,
+                serde_json::json!({"mainPath":imported.join("projects/project/lines/main")}),
+            ),
+        ] {
+            let metadata = super::super::settings::metadata(&state, root);
+            fs::create_dir_all(&metadata).expect("store metadata");
+            fs::write(metadata.join("project.json"), receipt.to_string()).expect("receipt");
+        }
+        let state = CanonicalPath::existing(&state)
+            .expect("state")
+            .into_path_buf();
+        let real_git = fixture.path().join("real-git");
+        crate::atomic_file::replace(
+            &real_git,
+            b"#!/bin/sh\nprintf '%s\\n' \"$@\"\n",
+            Some(0o755),
+            false,
+        )
+        .expect("fake Git");
+        let wrapper = fixture.path().join("git");
+        crate::atomic_file::replace(
+            &wrapper,
+            wrapper_script(&state, &real_git)
+                .expect("wrapper roots")
+                .as_bytes(),
+            Some(0o755),
+            false,
+        )
+        .expect("wrapper");
+        for root in [&selected, &bound, &imported] {
+            let line = root.join("projects/project/lines/main");
+            let error = invoke(
+                Path::new("/usr/bin/env"),
+                &line,
+                &[
+                    "-u",
+                    "LAYR_ROOT",
+                    wrapper.to_str().expect("wrapper path"),
+                    "commit",
+                ],
+            )
+            .expect_err("clearing LAYR_ROOT must not enable Git writes");
+            assert!(matches!(error, ChildError::Failed(reason) if reason.contains(COMMIT_REFUSAL)));
+        }
     }
 
     #[test]
@@ -782,7 +906,9 @@ fn main() {
         let wrapper = binary_path(&state).with_file_name("git");
         crate::atomic_file::replace(
             &wrapper,
-            wrapper_script(&state, &real_git).as_bytes(),
+            wrapper_script(&state, &real_git)
+                .expect("wrapper roots")
+                .as_bytes(),
             Some(0o755),
             false,
         )
@@ -923,7 +1049,9 @@ fn main() {
         let wrapper = binary_path(&state).with_file_name("git");
         crate::atomic_file::replace(
             &wrapper,
-            wrapper_script(&state, &git).as_bytes(),
+            wrapper_script(&state, &git)
+                .expect("wrapper roots")
+                .as_bytes(),
             Some(0o755),
             false,
         )
