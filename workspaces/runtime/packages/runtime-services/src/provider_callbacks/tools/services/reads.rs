@@ -1,7 +1,7 @@
 //! Bounded model projections with the same authority as their full-text reader.
 use super::*;
 use crate::submit_gates::{
-    AuthorizationScope, AuthorizationSnapshot, EventDenial, StoredEvent, authorize_events,
+    AuthorizationRecords, AuthorizationScope, EventDenial, StoredEvent, authorize_events,
 };
 use rusqlite::OptionalExtension;
 use serde_json::Map;
@@ -323,8 +323,10 @@ fn authorize_event(
     ) {
         return Ok(());
     }
-    let mut rows = messages::authorization_records(tx)?;
-    rows.recipient_id = agent.into();
+    let mut rows = AuthorizationRecords {
+        recipient_id: agent.into(),
+        ..AuthorizationRecords::default()
+    };
     if let Some(meta) = meta {
         rows.event_meta.insert(event.id.clone(), meta.into());
     }
@@ -340,8 +342,8 @@ fn authorize_event(
             rows.complaints.insert(id.clone(), complaint.to_string());
         }
     }
-    let snapshot = AuthorizationSnapshot::from_records(&rows)
-        .map_err(|e| CallbackError::Stored(e.location))?;
+    let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
+    let snapshot = messages::message_authority(directory.agents(), directory.projects(), rows)?;
     authorize_events(&snapshot).map_err(event_denial)
 }
 

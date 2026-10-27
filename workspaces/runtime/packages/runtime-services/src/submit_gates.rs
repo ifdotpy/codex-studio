@@ -46,6 +46,7 @@ pub struct AgentAuthorityRow {
     #[serde(default, skip_serializing_if = "StoredField::is_missing")]
     pub name: StoredField<String>,
     pub shared_room_id: Option<String>,
+    pub execution_mode: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -84,10 +85,10 @@ struct ComplaintAuthority {
 #[derive(Clone, Debug)]
 pub struct AuthorizationSnapshot {
     recipient_id: String,
-    agents: BTreeMap<String, AgentAuthority>,
+    agents: BTreeMap<String, Result<AgentAuthority, SnapshotError>>,
     rooms: BTreeMap<String, RoomAuthority>,
     complaints: BTreeMap<String, ComplaintAuthority>,
-    projects: BTreeMap<LexicalPath, Vec<Vec<String>>>,
+    projects: Result<BTreeMap<LexicalPath, Vec<Vec<String>>>, SnapshotError>,
     events: Vec<EventSnapshot>,
 }
 
@@ -141,6 +142,32 @@ pub enum EventDenial {
 }
 
 impl AuthorizationSnapshot {
+    fn agent(&self, id: &str) -> Option<&AgentAuthority> {
+        self.agents.get(id).and_then(|agent| agent.as_ref().ok())
+    }
+
+    fn check_agent(&self, id: &str) -> Result<(), SnapshotError> {
+        match self.agents.get(id) {
+            Some(Err(error)) => Err(error.clone()),
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) fn for_message(
+        &mut self,
+        recipient: &str,
+        sender: &str,
+    ) -> Result<(), SnapshotError> {
+        if recipient.is_empty() {
+            return Err(invalid("recipient_id"));
+        }
+        self.check_agent(recipient)?;
+        self.projects.as_ref().map_err(Clone::clone)?;
+        self.check_agent(sender)?;
+        self.recipient_id = recipient.to_owned();
+        Ok(())
+    }
+
     pub(crate) fn authorize_message(
         &mut self,
         sender: &str,
@@ -164,7 +191,7 @@ impl AuthorizationSnapshot {
     }
     fn same_team(&self, root: &str, sender: Option<&str>) -> bool {
         sender
-            .and_then(|id| self.agents.get(id))
+            .and_then(|id| self.agent(id))
             .is_some_and(|agent| agent.root_id.as_deref() == Some(root))
     }
 
@@ -172,7 +199,7 @@ impl AuthorizationSnapshot {
         if left == right {
             return false;
         }
-        let (Some(left), Some(right)) = (self.agents.get(left), self.agents.get(right)) else {
+        let (Some(left), Some(right)) = (self.agent(left), self.agent(right)) else {
             return false;
         };
         let Some(path) = left.resolved_cwd.as_deref() else {
@@ -187,10 +214,12 @@ impl AuthorizationSnapshot {
         };
         lead(left)
             && lead(right)
-            && self.projects.get(path).is_some_and(|teams| {
-                teams
-                    .iter()
-                    .any(|team| team.contains(&left.id) && team.contains(&right.id))
+            && self.projects.as_ref().is_ok_and(|projects| {
+                projects.get(path).is_some_and(|teams| {
+                    teams
+                        .iter()
+                        .any(|team| team.contains(&left.id) && team.contains(&right.id))
+                })
             })
     }
 
@@ -205,8 +234,7 @@ impl AuthorizationSnapshot {
             | EventSnapshot::ComplaintResponse { .. } => {}
         }
         let recipient = self
-            .agents
-            .get(&self.recipient_id)
+            .agent(&self.recipient_id)
             .ok_or(D::RecipientUnavailable)?;
         let root = recipient
             .root_id
@@ -409,19 +437,47 @@ pub fn followup_event_ids(events: &[StoredEvent]) -> impl Iterator<Item = &str> 
         .map(|event| event.id.as_str())
 }
 
-/// Persisted SQLite JSON text, including malformed rows, crosses this boundary.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// Authority rows decode once at the storage boundary. Malformed rows remain
+/// errors until the gate checks their recipient or sender authority.
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct AuthorizationRecords {
     pub recipient_id: String,
-    pub agents: BTreeMap<String, String>,
+    #[serde(deserialize_with = "deserialize_authority_rows")]
+    pub agents: BTreeMap<String, Result<AgentAuthorityRow, SnapshotError>>,
     pub rooms: BTreeMap<String, String>,
     pub complaints: BTreeMap<String, String>,
-    pub projects: BTreeMap<String, String>,
+    #[serde(deserialize_with = "deserialize_authority_rows")]
+    pub projects: BTreeMap<String, Result<ProjectAuthorityRow, SnapshotError>>,
     pub event_meta: BTreeMap<String, String>,
     pub events: Vec<StoredEvent>,
     /// Results of the caller's expanduser/resolve step, keyed by original path.
     /// Canonicalization is an observation, not filesystem I/O inside a gate.
     pub resolved_paths: BTreeMap<String, String>,
+}
+
+/// Decode each persisted authority row once, retaining malformed rows for the
+/// gate's existing recipient/sender checks instead of rejecting unrelated rows.
+pub(crate) fn decode_authority_rows<T: serde::de::DeserializeOwned>(
+    rows: BTreeMap<String, String>,
+) -> BTreeMap<String, Result<T, SnapshotError>> {
+    rows.into_iter()
+        .map(|(key, raw)| {
+            let row = serde_json::from_str(&raw).map_err(|_| invalid(&key));
+            (key, row)
+        })
+        .collect()
+}
+
+fn deserialize_authority_rows<'de, D, T>(
+    deserializer: D,
+) -> Result<BTreeMap<String, Result<T, SnapshotError>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    Ok(decode_authority_rows(
+        BTreeMap::<String, String>::deserialize(deserializer)?,
+    ))
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -461,86 +517,51 @@ fn strings(value: Option<&Value>, location: &str) -> Result<Vec<String>, Snapsho
 }
 impl AuthorizationSnapshot {
     pub fn from_records(rows: &AuthorizationRecords) -> Result<Self, SnapshotError> {
-        let agents = rows
-            .agents
-            .iter()
-            .map(|(key, raw)| {
-                (
-                    key.clone(),
-                    serde_json::from_str(raw).map_err(|_| invalid(format!("agents/{key}"))),
-                )
-            })
-            .collect();
-        let projects = rows
-            .projects
-            .iter()
-            .map(|(key, raw)| {
-                (
-                    key.clone(),
-                    serde_json::from_str(raw).map_err(|_| invalid(format!("projects/{key}"))),
-                )
-            })
-            .collect();
-        Self::from_typed(rows, &agents, &projects, &[])
-    }
-
-    pub(crate) fn from_typed(
-        rows: &AuthorizationRecords,
-        agents: &BTreeMap<String, Result<AgentAuthorityRow, SnapshotError>>,
-        projects: &BTreeMap<String, Result<ProjectAuthorityRow, SnapshotError>>,
-        required_senders: &[&str],
-    ) -> Result<Self, SnapshotError> {
         if rows.recipient_id.is_empty() {
             return Err(invalid("recipient_id"));
         }
+        Self::from_typed(rows)
+    }
+
+    pub(crate) fn from_typed(rows: &AuthorizationRecords) -> Result<Self, SnapshotError> {
         let mut snapshot = Self {
             recipient_id: rows.recipient_id.clone(),
             agents: BTreeMap::new(),
             rooms: BTreeMap::new(),
             complaints: BTreeMap::new(),
-            projects: BTreeMap::new(),
+            projects: Ok(BTreeMap::new()),
             events: Vec::new(),
         };
-        let mut malformed_agents = BTreeMap::new();
-        for (key, row) in agents {
+        for (key, row) in &rows.agents {
             let location = format!("agents/{key}");
             let authority = (|| {
-                let row = row.clone()?;
+                let row = row.as_ref().map_err(|_| invalid(&location))?;
                 let id = row
                     .id
-                    .filter(|id| !id.is_empty() && id == key)
+                    .as_ref()
+                    .filter(|id| !id.is_empty() && *id == key)
                     .ok_or_else(|| invalid(format!("{location}/id")))?;
-                let cwd = row.cwd.filter(|path| !path.trim().is_empty());
+                let cwd = row.cwd.as_ref().filter(|path| !path.trim().is_empty());
                 let resolved_cwd = cwd
                     .map(|path| {
                         rows.resolved_paths
-                            .get(&path)
+                            .get(path)
                             .and_then(|path| LexicalPath::exact(std::path::Path::new(path)))
                             .ok_or_else(|| invalid(format!("{location}/cwd")))
                     })
                     .transpose()?;
                 Ok::<_, SnapshotError>(AgentAuthority {
-                    id,
-                    root_id: row.root_id,
-                    parent_id: row.parent_id,
+                    id: id.clone(),
+                    root_id: row.root_id.clone(),
+                    parent_id: row.parent_id.clone(),
                     is_lead: row.is_lead == Some(true),
                     deleted: row.deleted_at.as_ref().is_some_and(Deletion::is_deleted),
                     resolved_cwd,
                 })
             })();
-            match authority {
-                Ok(authority) => {
-                    snapshot.agents.insert(key.clone(), authority);
-                }
-                Err(error) if key != &rows.recipient_id => {
-                    // A malformed row has no authority unless a submitted
-                    // event names it as a sender. Keep the refusal so that a
-                    // missing authority cannot become a room-boundary result.
-                    malformed_agents.insert(key.clone(), error);
-                }
-                Err(error) => return Err(error),
-            }
+            snapshot.agents.insert(key.clone(), authority);
         }
+        snapshot.check_agent(&rows.recipient_id)?;
         for (key, raw) in &rows.rooms {
             let location = format!("rooms/{key}");
             let row = object(raw, &location)?;
@@ -566,50 +587,53 @@ impl AuthorizationSnapshot {
                 },
             );
         }
-        for (key, row) in projects {
-            let location = format!("projects/{key}");
-            let row = row.clone()?;
-            let original = row
-                .path
-                .filter(|path| !path.trim().is_empty())
-                .ok_or_else(|| invalid(&location))?;
-            let path = rows
-                .resolved_paths
-                .get(&original)
-                .and_then(|path| LexicalPath::exact(std::path::Path::new(path)))
-                .ok_or_else(|| invalid(format!("{location}/path")))?;
-            let mut teams = Vec::new();
-            for (index, team) in row.peer_teams.into_iter().enumerate() {
-                let at = format!("{location}/peerTeams/{index}");
-                for (field, value) in [("id", &team.id), ("name", &team.name)] {
-                    if value.is_empty() {
-                        return Err(invalid(format!("{at}/{field}")));
+        snapshot.projects = (|| {
+            let mut projects = BTreeMap::new();
+            for (key, row) in &rows.projects {
+                let location = format!("projects/{key}");
+                let row = row.as_ref().map_err(|_| invalid(&location))?;
+                let original = row
+                    .path
+                    .as_ref()
+                    .filter(|path| !path.trim().is_empty())
+                    .ok_or_else(|| invalid(&location))?;
+                let path = rows
+                    .resolved_paths
+                    .get(original)
+                    .and_then(|path| LexicalPath::exact(std::path::Path::new(path)))
+                    .ok_or_else(|| invalid(format!("{location}/path")))?;
+                let mut teams = Vec::new();
+                for (index, team) in row.peer_teams.iter().enumerate() {
+                    let at = format!("{location}/peerTeams/{index}");
+                    for (field, value) in [("id", &team.id), ("name", &team.name)] {
+                        if value.is_empty() {
+                            return Err(invalid(format!("{at}/{field}")));
+                        }
                     }
+                    let members = &team.members;
+                    if members.len() < 2
+                        || members.iter().any(String::is_empty)
+                        || members
+                            .iter()
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len()
+                            != members.len()
+                    {
+                        return Err(invalid(format!("{at}/members")));
+                    }
+                    teams.push(members.clone());
                 }
-                let members = team.members;
-                if members.len() < 2
-                    || members.iter().any(String::is_empty)
-                    || members
-                        .iter()
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .len()
-                        != members.len()
-                {
-                    return Err(invalid(format!("{at}/members")));
+                if path.to_str() == Some(key.as_str()) {
+                    projects.insert(path, teams);
                 }
-                teams.push(members);
             }
-            if path.to_str() == Some(key.as_str()) {
-                snapshot.projects.insert(path, teams);
-            }
+            Ok(projects)
+        })();
+        if !rows.recipient_id.is_empty() {
+            snapshot.projects.as_ref().map_err(Clone::clone)?;
         }
         for event in &rows.events {
             snapshot.events.push(project_event(event, &rows.event_meta));
-        }
-        for sender in required_senders {
-            if let Some(error) = malformed_agents.get(*sender) {
-                return Err(error.clone());
-            }
         }
         for event in &snapshot.events {
             let sender = match event {
@@ -620,8 +644,8 @@ impl AuthorizationSnapshot {
                 } => sender.as_deref(),
                 EventSnapshot::ChatReview | EventSnapshot::RadioTurn | EventSnapshot::Other => None,
             };
-            if let Some(error) = sender.and_then(|sender| malformed_agents.get(sender)) {
-                return Err(error.clone());
+            if let Some(sender) = sender {
+                snapshot.check_agent(sender)?;
             }
         }
         Ok(snapshot)
@@ -1070,18 +1094,7 @@ mod tests {
         let snapshot = AuthorizationSnapshot::from_records(&records).expect("checked rows");
         assert!(snapshot.peer_pair("left", "right"));
         assert!(!snapshot.peer_pair("left", "left"));
-        let agents = records
-            .agents
-            .iter()
-            .map(|(key, raw)| (key.clone(), Ok(serde_json::from_str(raw).unwrap())))
-            .collect();
-        let projects = records
-            .projects
-            .iter()
-            .map(|(key, raw)| (key.clone(), Ok(serde_json::from_str(raw).unwrap())))
-            .collect();
-        let shared = AuthorizationSnapshot::from_typed(&records, &agents, &projects, &[])
-            .expect("typed rows");
+        let shared = AuthorizationSnapshot::from_typed(&records).expect("typed rows");
         assert!(shared.peer_pair("left", "right"));
         assert!(!shared.peer_pair("left", "left"));
     }

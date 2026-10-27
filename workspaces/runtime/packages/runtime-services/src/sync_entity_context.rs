@@ -553,6 +553,7 @@ mod room_preparation_tests {
             cwd: None,
             name: StoredField::Missing,
             shared_room_id: None,
+            execution_mode: None,
         }
     }
 
