@@ -1,4 +1,5 @@
 {
+  "provider": "codex",
   "id": "legacy-agent",
   "rootId": "legacy-agent",
   "epoch": 3,

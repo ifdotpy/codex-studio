@@ -779,7 +779,7 @@ mod catalog_wait_tests {
                 .expect("runtime store"),
         );
         let agent = json!({
-            "id": "agent-a", "rootId": "agent-a", "epoch": 1, "status": "running",
+            "provider": "codex", "id": "agent-a", "rootId": "agent-a", "epoch": 1, "status": "running",
             "autoWake": true, "accountKey": "account-a", "threadId": "thread-a",
             "turnId": "turn-a",
             "startAttempt": {"connectionGeneration": 7, "connectionId": "connection-a"}

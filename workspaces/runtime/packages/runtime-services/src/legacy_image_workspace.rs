@@ -191,7 +191,7 @@ mod tests {
             .await
             .expect("fixture operation succeeds");
         store.transaction(|tx| {
-            let agent = json!({"id":"legacy-worker", "rootId":"lead", "parentId":"lead", "epoch":1,
+            let agent = json!({"provider":"codex", "id":"legacy-worker", "rootId":"lead", "parentId":"lead", "epoch":1,
                 "workspaceMode":"image", "status":"running", "autoWake":true, "inFlight":true,
                 "turnId":"old-turn", "startAttempt":{"turnId":"old-turn"},
                 "restartRecovery":{"turnId":"old-turn","stage":"pending"}});

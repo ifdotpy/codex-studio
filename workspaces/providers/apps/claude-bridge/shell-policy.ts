@@ -6,7 +6,7 @@ import {
   PRESSURE_IDLE_MS,
   PRESSURE_RESTART_GUARD_MS,
 } from "./shell-policy.generated.ts";
-import { isRecord } from "./move.ts";
+import { isRecord } from "./failure-causes.ts";
 
 export type ShellPolicyReport = {
   id: string;

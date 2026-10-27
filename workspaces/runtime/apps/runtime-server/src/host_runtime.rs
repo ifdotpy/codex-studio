@@ -3182,7 +3182,7 @@ IFS= read -r release
         fs::write(
             &registry,
             json!({
-                "version":1,"defaultAccountKey":"claude-test",
+                "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"claude-test",
                 "accounts":{"claude-test":{
                     "id":"claude-test","provider":"claude","home":root.path().join("home"),
                     "label":"fixture","source":"test","status":"ready",

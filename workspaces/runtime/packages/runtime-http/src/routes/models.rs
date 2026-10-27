@@ -625,7 +625,7 @@ mod tests {
         for provider in ["codex", "claude"] {
             for workers in [false, true] {
                 let startup = serde_json::to_vec(&json!({
-                "version":1, "defaultAccountKey":"target", "logins":{},
+                "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION, "defaultAccountKey":"target", "logins":{},
                 "accounts":{"target":{"id":"target","home":"fixture","provider":provider,"label":"Target","source":"fixture","status":"ready"}}
             })).expect("startup account");
                 let policy = Arc::new(

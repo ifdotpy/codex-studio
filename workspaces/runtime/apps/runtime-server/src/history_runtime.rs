@@ -1076,7 +1076,7 @@ mod tests {
             OBSERVER_DEADLINE,
             store.transaction(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_agents(id,record) VALUES('observer-witness','{}')",
+                    r#"INSERT INTO runtime_agents(id,record) VALUES('observer-witness','{"provider":"codex"}')"#,
                     [],
                 )?;
                 Ok(())

@@ -142,7 +142,7 @@ impl Fixture {
             .expect("synthetic metadata");
         }
         std::fs::create_dir_all(&lead_home).expect("fixture Claude profile");
-        let registry = json!({"version":1,"defaultAccountKey":TARGET,"accounts":{
+        let registry = json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":TARGET,"accounts":{
             LEAD_ACCOUNT:{"id":LEAD_ACCOUNT,"home":lead_home,"provider":"claude","label":"PM lead","source":"Fixture","status":"signedOut",
                 "claudeOptions":{"configDir":lead_home,"binaryPath":cwd.join("no-provider-executable")}},
             TARGET:{"id":TARGET,"home":target_home,"provider":"codex","label":"Future","source":"Fixture","status":"ready"},

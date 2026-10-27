@@ -1190,7 +1190,7 @@ mod tests {
                 .expect("store"),
         );
         let record = studio_runtime_store::AgentRecord::from_value(json!({
-            "id":"lead", "rootId":"lead", "epoch":1, "status":"running",
+            "provider":"codex", "id":"lead", "rootId":"lead", "epoch":1, "status":"running",
             "isLead":true, "autoWake":true, "cwd":root.path(), "threadId":"thread"
         }))
         .expect("lead");

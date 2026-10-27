@@ -4564,7 +4564,7 @@ mod tests {
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let policy = AccountPolicyState::from_startup(
-            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{},"logins":{}}"#),
+            Some(br#"{"version":2,"defaultAccountKey":"default","accounts":{},"logins":{}}"#),
             [],
         )
         .expect("policy");

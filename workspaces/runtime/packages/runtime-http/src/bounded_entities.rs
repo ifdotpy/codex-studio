@@ -1798,7 +1798,7 @@ mod tests {
                 tx.execute("DELETE FROM runtime_agents WHERE id='b'", [])?;
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES('c',?1)",
-                    [json!({"id":"c","rootId":"c","isLead":true}).to_string()],
+                    [json!({"provider":"codex","id":"c","rootId":"c","isLead":true}).to_string()],
                 )?;
                 Ok(())
             })

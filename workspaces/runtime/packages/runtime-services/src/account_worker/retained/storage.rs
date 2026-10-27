@@ -771,7 +771,7 @@ mod replay_identity_tests {
             request.method = "claude/shellPolicy".into();
             request.operation = "shell-policy:agent-1:tick".into();
             request.params = json!({"threadId":"thread-1","settings":studio_runtime_schema::shell_policy::Settings::default(),"eligible":true,"critical":true});
-            let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"id":"agent-1","rootId":"agent-1","epoch":7,"threadId":"thread-1","status":"idle","autoWake":true}))?;
+            let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"threadId":"thread-1","status":"idle","autoWake":true}))?;
             AgentRepository::put(tx,&agent)?;
             assert!(authorize(tx,&request).expect("eligible handoff"));
             agent.extra.insert("inFlight".into(),json!(true)); AgentRepository::put(tx,&agent)?;
@@ -1110,7 +1110,7 @@ mod replay_identity_tests {
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let cwd = root.path().to_owned();
         store.transaction_with(move |tx| {
-            AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(json!({"id":"agent-1","rootId":"agent-1","epoch":7,"accountKey":"target","status":"queued","autoWake":true})).expect("actor"))?;
+            AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(json!({"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"accountKey":"target","status":"queued","autoWake":true})).expect("actor"))?;
             let original = Call {operation:"monitor:watch".into(),method:"command/exec".into(),params:json!({"processId":"watch","command":["true"],"cwd":cwd}),..call()};
             let key=original.key();
             store::save(tx,&key,"submitted",json!({"call":original,"request":{"id":key,"generation":4,"method":"command/exec","operation":key,"thread":null,"lightweight":true,"deadline":60000,"remoteId":null}}))?;

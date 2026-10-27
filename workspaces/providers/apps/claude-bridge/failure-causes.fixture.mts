@@ -1,7 +1,7 @@
 export { resolveSettings } from "./sdk-fixtures.ts";
 import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
-import { isRecord } from "./move.ts";
+import { isRecord } from "./failure-causes.ts";
 
 function textOf(content: unknown): string {
   const block: unknown = Array.isArray(content) ? content[0] : undefined;

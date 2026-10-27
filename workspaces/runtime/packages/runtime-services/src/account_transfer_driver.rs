@@ -744,7 +744,7 @@ mod background_read_compat_tests {
             "method":method,"params":params});
         let old = legacy.clone();
         store.transaction(move |tx| {
-            let agent = AgentRecord::from_value(json!({"id":"member","rootId":"member","epoch":3,
+            let agent = AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"member","rootId":"member","epoch":3,
                 "status":"completed","isLead":true,"autoWake":false,"accountKey":"target",
                 "threadId":"source-thread","accountTransferId":TRANSFER}))?;
             AgentRepository::put(tx, &agent)?;

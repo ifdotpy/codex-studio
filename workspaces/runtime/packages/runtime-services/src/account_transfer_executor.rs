@@ -295,7 +295,7 @@ mod reconnect_read_tests {
         }
         let expected = saved.clone();
         store.transaction(move |tx| {
-            let agent = studio_runtime_store::AgentRecord::from_value(json!({"id":"member","rootId":"member","epoch":3,
+            let agent = studio_runtime_store::AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"member","rootId":"member","epoch":3,
                 "status":"completed","isLead":true,"autoWake":false,"accountKey":"target","accountTransferId":"move"}))?;
             studio_runtime_store::AgentRepository::put(tx, &agent)?;
             let operation = json!({"id":"move","leadId":"member","targetAccountKey":"target",
@@ -2122,7 +2122,7 @@ mod retained_executor_tests {
         let catalog = ModelCatalogService::new();
         let account_driver = if register_from_driver {
             let registry_path = root.path().join("fixture-accounts.json");
-            let registry = json!({"version":1,"defaultAccountKey":"source","accounts":{
+            let registry = json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"source","accounts":{
                 "source":{"id":"source","home":root.path().join("source-home"),
                     "provider":"codex","label":"Source","source":"Codex CLI","status":"signedOut"},
                 "target":{"id":"target","home":root.path().join("target-home"),

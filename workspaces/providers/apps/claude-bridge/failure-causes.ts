@@ -1,6 +1,8 @@
 import { claudeFailureSchema } from "./claude-failure.generated.ts";
 import type { ClaudeFailure } from "./runtime-contract.generated.ts";
-import { isRecord } from "./move.ts";
+// Plain JSON object guard for SDK messages and results.
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
 
 // Maximum raw diagnostic scan in UTF-16 code units. Raw text is never retained.
 const RAW_DETAILS_SCAN_MAX_CHARS = 65_536;

@@ -1483,7 +1483,7 @@ mod tests {
 
     fn catalog_state() -> HttpState {
         let policy = Arc::new(studio_runtime_services::account_policy::AccountPolicyState::from_startup(
-            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"fixture","label":"Default","source":"Codex CLI","status":"signedOut"},"changed":{"id":"changed","home":"fixture","label":"Changed","source":"Codex CLI","status":"changed"}},"logins":{}}"#), []
+            Some(br#"{"version":2,"defaultAccountKey":"default","accounts":{"default":{"provider":"codex","id":"default","home":"fixture","label":"Default","source":"Codex CLI","status":"signedOut"},"changed":{"provider":"codex","id":"changed","home":"fixture","label":"Changed","source":"Codex CLI","status":"changed"}},"logins":{}}"#), []
         ).expect("policy"));
         HttpState::new(
             "token".into(),
