@@ -402,25 +402,25 @@ impl Plan {
             .parent()
             .and_then(Path::parent)
             .ok_or_else(|| NativeLayrError::Refused("Missing private project directory".into()))?;
-        let mut head = head.to_owned();
-        let mut seen = BTreeSet::new();
         let mut layers = Vec::new();
-        loop {
-            if head.len() != 36
-                || uuid::Uuid::parse_str(&head).is_err()
-                || !seen.insert(head.clone())
-            {
-                return Err(NativeLayrError::Refused(
-                    "Invalid or cyclic saved main state".into(),
-                ));
-            }
-            let full = project.join("states").join(&head);
-            if full.exists() {
-                layers.push(Self::existing_main(&full, destination)?);
-                break;
-            }
-            #[cfg(target_os = "macos")]
-            {
+        #[cfg(target_os = "macos")]
+        {
+            let mut head = head.to_owned();
+            let mut seen = BTreeSet::new();
+            loop {
+                if head.len() != 36
+                    || uuid::Uuid::parse_str(&head).is_err()
+                    || !seen.insert(head.clone())
+                {
+                    return Err(NativeLayrError::Refused(
+                        "Invalid or cyclic saved main state".into(),
+                    ));
+                }
+                let full = project.join("states").join(&head);
+                if full.exists() {
+                    layers.push(Self::existing_main(&full, destination)?);
+                    break;
+                }
                 let delta = project.join("deltas").join(&head);
                 let layer = Self::existing_main(&delta, destination)?;
                 let count =
@@ -437,12 +437,21 @@ impl Plan {
                     .to_owned();
                 layers.push(layer);
             }
-            #[cfg(not(target_os = "macos"))]
-            {
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            if head.len() != 36 || uuid::Uuid::parse_str(head).is_err() {
+                return Err(NativeLayrError::Refused(
+                    "Invalid or cyclic saved main state".into(),
+                ));
+            }
+            let full = project.join("states").join(head);
+            if !full.exists() {
                 return Err(NativeLayrError::Refused(
                     "Saved main state is unavailable".into(),
                 ));
             }
+            layers.push(Self::existing_main(&full, destination)?);
         }
         // Summing layers also charges removed and replaced entries. It is a read-only upper bound.
         let mut result = layers

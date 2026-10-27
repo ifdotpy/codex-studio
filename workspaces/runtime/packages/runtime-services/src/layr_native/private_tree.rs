@@ -106,7 +106,10 @@ impl Directory {
         result
     }
     pub fn mode(&self) -> std::io::Result<u32> {
-        Ok(u32::from(rustix::fs::fstat(&self.0)?.st_mode & 0o7777))
+        let mode = rustix::fs::fstat(&self.0)?.st_mode;
+        #[cfg(target_os = "macos")]
+        let mode = u32::from(mode);
+        Ok(mode & 0o7777)
     }
     pub fn set_mode(&self, mode: u32) -> std::io::Result<()> {
         rustix::fs::fchmod(&self.0, Mode::from_raw_mode((mode & 0o7777) as _))?;
