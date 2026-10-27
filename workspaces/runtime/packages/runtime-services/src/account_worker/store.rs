@@ -8,11 +8,13 @@ use crate::notification_dispatch::{
     ProviderDeliveryIdentity, dispatch_notification_with_effects, flush_notification_streams,
 };
 use rusqlite::{OptionalExtension, params};
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
 use studio_runtime_schema::shared_values::{
     PROVIDER_RESUME_UNKNOWN_ERROR, PROVIDER_SESSION_MISSING_ERROR,
     PROVIDER_THREAD_START_UNKNOWN_ERROR,
 };
 use studio_runtime_store::CachedSql;
+use studio_runtime_store::outbox::{Outbox, OutboxRow};
 use studio_runtime_store::{AgentRecord, EventWriteRepository, NotificationDispatchRepository};
 
 pub(super) const PUBLICATION_DRAIN_LIMIT: usize = 64;
@@ -49,6 +51,84 @@ pub(super) fn publication_operation(account: &str, sequence: u64, index: usize) 
 /// The journal receipt operation of one provider cursor.
 pub(super) fn journal_operation(journal_scope: &str, generation: u64, cursor: u64) -> String {
     format!("journal:{journal_scope}:{generation}:{cursor:0JOURNAL_CURSOR_DIGITS$}")
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct JournalSettlement {
+    cursor: u64,
+    digest: String,
+    ready: bool,
+    committed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    notification: Option<crate::notification_dispatch::NotificationSettlement>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "family", content = "payload", rename_all = "snake_case")]
+pub(super) enum ProviderCall {
+    Account(AccountCall),
+    Retained(super::retained::storage::RetainedCall),
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct AccountCall {
+    pub context: Pending,
+    pub request: super::retained::storage::TransportRequest,
+    pub written: Option<super::retained::storage::TransportRequest>,
+    pub restarted: bool,
+}
+
+fn save_journal(
+    tx: &studio_runtime_store::Transaction<'_>,
+    identity: JournalIdentity<'_>,
+    entry: &JournalEntry,
+    digest: String,
+    committed: bool,
+) -> Result<(), WorkerError> {
+    let id = journal_operation(identity.journal_scope, entry.generation.0, entry.cursor.0);
+    let old = Outbox::get::<JournalSettlement>(tx, &id).map_err(outbox_error)?;
+    let mut row = old.unwrap_or_else(|| OutboxRow {
+        signature: studio_runtime_store::sha256_hex(id.as_bytes()),
+        id,
+        kind: OutboxKind::JournalEntry,
+        owner_kind: if identity.expected_vm_actor.is_some() {
+            OwnerKind::Agent
+        } else {
+            OwnerKind::Account
+        },
+        owner_id: identity
+            .expected_vm_actor
+            .map_or(identity.account, |(actor, _)| actor)
+            .to_owned(),
+        request_id: None,
+        status: OutboxStatus::Pending,
+        account: Some(identity.account.to_owned()),
+        stream_id: Some(identity.journal_scope.to_owned()),
+        generation: Some(entry.generation.0 as i64),
+        ordinal: Some(entry.cursor.0 as i64),
+        next_at: Some(0),
+        payload: JournalSettlement {
+            cursor: entry.cursor.0,
+            digest: digest.clone(),
+            ready: committed,
+            committed,
+            notification: None,
+        },
+        created: (now() * 1000.0) as i64,
+    });
+    if row.payload.digest != digest && !row.payload.digest.is_empty() {
+        return Err(invalid(&row.id));
+    }
+    row.payload.digest = digest;
+    row.payload.ready = committed;
+    row.payload.committed = committed;
+    row.status = if committed {
+        OutboxStatus::Committed
+    } else {
+        OutboxStatus::Pending
+    };
+    row.next_at = if committed { None } else { Some(0) };
+    Outbox::put(tx, &row).map_err(outbox_error)
 }
 
 pub(super) struct SubmissionEvidence {
@@ -287,7 +367,6 @@ pub(super) async fn recover(
                 crate::lifecycle_effects::notify_parent_of_disconnect(tx, &agent_id, at)?;
             }
         }
-        pad_legacy_receipt_keys(tx, &account)?;
         for (id, attempt) in restore {
             let mut agent = stored_agent(tx, &id)?;
             if agent.extra.get("startAttempt").is_none_or(Value::is_null) {
@@ -2117,12 +2196,7 @@ fn park_entry(
 ) -> Result<(), WorkerError> {
     let operation = journal_operation(identity.journal_scope, entry.generation.0, entry.cursor.0);
     let digest = journal_digest(entry, &operation)?;
-    replace(
-        tx,
-        &operation,
-        "settled",
-        json!({"cursor":entry.cursor.0,"digest":digest,"ready":true,"committed":true}),
-    )
+    save_journal(tx, identity, entry, digest, true)
 }
 
 /// The provider method of one journal entry, if it is a notification or request.
@@ -2268,24 +2342,11 @@ fn journal_one(
     if entry.cursor.0 <= checkpoint(tx, journal_scope, entry.generation.0)? {
         return Ok(Some((streams.clone(), None)));
     }
-    if let Some(old) = receipt(tx, &operation, "settled")? {
-        if old["digest"] != digest {
+    if let Some(old) = Outbox::get::<JournalSettlement>(tx, &operation).map_err(outbox_error)? {
+        if !old.payload.digest.is_empty() && old.payload.digest != digest {
             return Err(invalid(&operation));
         }
-        if old["committed"] == true {
-            if old["ready"] != true {
-                // Journaled while an unanswered request held its cursor.
-                super::callback_record::adopt_legacy(
-                    tx,
-                    account,
-                    journal_scope,
-                    expected_vm_actor,
-                    entry,
-                )?;
-                let mut ready = old;
-                ready["ready"] = json!(true);
-                replace(tx, &operation, "settled", ready)?;
-            }
+        if old.payload.committed {
             return Ok(Some((streams.clone(), None)));
         }
     }
@@ -2489,12 +2550,7 @@ fn journal_one(
                         if !bound {
                             // The deferred entry holds the checkpoint below
                             // itself until it is journaled again.
-                            replace(
-                                tx,
-                                &operation,
-                                "settled",
-                                json!({"cursor":entry.cursor.0,"digest":digest,"ready":false,"committed":false}),
-                            )?;
+                            save_journal(tx, identity, entry, digest, false)?;
                             return Ok(None);
                         }
                         next = flush_notification_streams(
@@ -2642,12 +2698,7 @@ fn journal_one(
     // A provider request is accepted with its batch: its record owns the
     // answer, so the cursor settles without waiting for it.
     super::callback_record::accept(tx, account, journal_scope, expected_vm_actor, entry)?;
-    replace(
-        tx,
-        &operation,
-        "settled",
-        json!({"cursor":entry.cursor.0,"digest":digest,"ready":true,"committed":true}),
-    )?;
+    save_journal(tx, identity, entry, digest, true)?;
     Ok(Some((next, effect)))
 }
 pub(super) async fn save_recovery(
@@ -2845,26 +2896,120 @@ pub(super) fn persist_effect(
     effect: &Effect,
 ) -> Result<(), WorkerError> {
     if let Some(key) = effect_key(account, effect) {
-        if receipt(tx, &key, "pending")?.is_some() {
+        if Outbox::get::<Effect>(tx, &key)
+            .map_err(outbox_error)?
+            .is_some()
+        {
             return Ok(());
         }
-        let prefix = format!("account-worker:effect:{account}:");
-        let order: i64 = tx.query_row_cached("SELECT COALESCE(MAX(json_extract(result,'$.order')),0)+1 FROM runtime_operation_receipts WHERE id>=?1 AND id<?2", params![prefix,format!("{prefix}~")], |row| row.get(0))?;
-        save(
-            tx,
-            &key,
-            "pending",
-            json!({"order":order,"effect":serde_json::to_value(effect).map_err(|_|invalid(&key))?}),
+        let order: i64 = tx.query_row_cached(
+            "SELECT COALESCE(MAX(ordinal),0)+1 FROM runtime_outbox WHERE account=?1 AND kind=?2 AND status=?3",
+            params![account, OutboxKind::FollowupEffect, OutboxStatus::Pending], |row| row.get(0),
         )?;
+        Outbox::put(
+            tx,
+            &OutboxRow {
+                signature: studio_runtime_store::sha256_hex(
+                    &serde_json::to_vec(effect).map_err(StoreError::from)?,
+                ),
+                id: key,
+                kind: OutboxKind::FollowupEffect,
+                owner_kind: OwnerKind::Account,
+                owner_id: account.to_owned(),
+                request_id: None,
+                status: OutboxStatus::Pending,
+                account: Some(account.to_owned()),
+                stream_id: None,
+                generation: None,
+                ordinal: Some(order),
+                next_at: Some(0),
+                payload: effect,
+                created: (now() * 1000.0) as i64,
+            },
+        )
+        .map_err(outbox_error)?;
     }
     Ok(())
 }
 fn delete_effect(tx: &studio_runtime_store::Transaction<'_>, key: &str) -> Result<(), WorkerError> {
-    tx.execute_cached(
-        "DELETE FROM runtime_operation_receipts WHERE id=?1",
-        [receipt_id(key, "pending")],
-    )?;
+    if let Some(mut row) = Outbox::get::<Effect>(tx, key).map_err(outbox_error)? {
+        row.status = OutboxStatus::Committed;
+        row.next_at = None;
+        Outbox::put(tx, &row).map_err(outbox_error)?;
+        Outbox::delete_settled(tx, key, &row.signature).map_err(outbox_error)?;
+    }
     Ok(())
+}
+
+fn outbox_error(error: studio_runtime_store::outbox::OutboxError) -> WorkerError {
+    match error {
+        studio_runtime_store::outbox::OutboxError::Sql(error) => StoreError::from(error).into(),
+        studio_runtime_store::outbox::OutboxError::Json(error) => StoreError::from(error).into(),
+        studio_runtime_store::outbox::OutboxError::Conflict(id) => invalid(&id),
+    }
+}
+
+#[cfg(test)]
+mod effect_obligation_tests {
+    use super::*;
+
+    #[test]
+    fn followup_obligations_recover_in_order_without_receipt_history() {
+        let mut connection = rusqlite::Connection::open_in_memory().expect("database");
+        studio_runtime_store::receipt_schema::create(&connection).expect("target schema");
+        let tx = connection.transaction().expect("transaction");
+        let first = Effect::Wake("first".into(), 1);
+        let second = Effect::Wake("second".into(), 2);
+        persist_effect(&tx, "account", &first).expect("first obligation");
+        persist_effect(&tx, "account", &second).expect("second obligation");
+        persist_effect(&tx, "account", &first).expect("same obligation");
+        let recovered = recover_effects(&tx, "account").expect("recover");
+        assert_eq!(
+            serde_json::to_value(recovered).expect("effects"),
+            json!([first, second])
+        );
+        delete_effect(&tx, &effect_key("account", &first).expect("effect key"))
+            .expect("settlement");
+        assert_eq!(recover_effects(&tx, "account").expect("remaining").len(), 1);
+        tx.commit().expect("commit");
+    }
+
+    #[test]
+    fn committed_journal_gap_does_not_advance_ack_or_lose_later_evidence() {
+        let mut connection = rusqlite::Connection::open_in_memory().expect("database");
+        studio_runtime_store::receipt_schema::create(&connection).expect("target schema");
+        connection.execute("INSERT INTO runtime_account_state VALUES('account',3,3,'connection',0,0,'null',NULL,NULL)", []).expect("account");
+        let tx = connection.transaction().expect("transaction");
+        for cursor in [2, 1] {
+            Outbox::put(&tx, &OutboxRow {
+                id: journal_operation("account", 3, cursor),
+                kind: OutboxKind::JournalEntry,
+                owner_kind: OwnerKind::Account,
+                owner_id: "account".into(),
+                request_id: None,
+                signature: cursor.to_string(),
+                status: OutboxStatus::Committed,
+                account: Some("account".into()),
+                stream_id: Some("account".into()),
+                generation: Some(3),
+                ordinal: Some(cursor as i64),
+                next_at: None,
+                payload: json!({"cursor":cursor,"digest":cursor.to_string(),"ready":true,"committed":true}),
+                created: 1,
+            }).expect("journal gap");
+            compact(&tx, "account", 3).expect("compact ready prefix");
+            assert_eq!(
+                checkpoint(&tx, "account", 3).expect("ack"),
+                if cursor == 2 { 0 } else { 2 }
+            );
+        }
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_outbox", [], |row| row
+                .get::<_, i64>(0))
+                .expect("remaining gaps"),
+            0
+        );
+    }
 }
 pub(super) async fn complete_effect(store: &RuntimeStore, key: &str) -> Result<(), WorkerError> {
     let key = key.to_owned();
@@ -2876,22 +3021,17 @@ pub(super) fn recover_effects(
     connection: &rusqlite::Connection,
     account: &str,
 ) -> Result<VecDeque<Effect>, WorkerError> {
-    let prefix = format!("account-worker:effect:{account}:");
-    let mut stmt = connection.prepare(
-        "SELECT result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY json_extract(result,'$.order'),rowid",
-    )?;
-    let rows = stmt
-        .query_map(params![prefix, format!("{prefix}~")], |r| {
-            r.get::<_, String>(0)
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    rows.into_iter()
-        .map(|raw| {
-            let value: Value = serde_json::from_str(&raw).map_err(|_| invalid(account))?;
-            serde_json::from_value(value.get("effect").unwrap_or(&value).clone())
-                .map_err(|_| invalid(account))
-        })
-        .collect()
+    Ok(Outbox::for_account::<Effect>(
+        connection,
+        account,
+        OutboxKind::FollowupEffect,
+        OutboxStatus::Pending,
+        u32::MAX,
+    )
+    .map_err(outbox_error)?
+    .into_iter()
+    .map(|row| row.payload)
+    .collect())
 }
 
 fn forget_request(
@@ -2925,15 +3065,56 @@ fn replace_text(
     tx.execute_cached("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET result=excluded.result", params![receipt_id(operation, phase),phase,text])?;
     Ok(())
 }
-pub(super) fn checkpoint(
-    tx: &studio_runtime_store::Transaction<'_>,
+pub(crate) fn checkpoint(
+    tx: &rusqlite::Connection,
     journal_scope: &str,
     generation: u64,
 ) -> Result<u64, WorkerError> {
+    if let Some((account, actor)) = journal_scope.rsplit_once(":vm:")
+        && let Some(agent) = AgentRepository::get(tx, &AgentId::from(actor))?
+        && account_key(&agent) == account
+        && agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+    {
+        let state = agent.extra.get("providerStream").unwrap_or(&Value::Null);
+        return Ok(if state["generation"].as_u64() == Some(generation) {
+            state["ack"].as_u64().unwrap_or(0)
+        } else {
+            0
+        });
+    }
+    Ok(studio_runtime_store::account_state::provider_checkpoint(
+        tx,
+        journal_scope,
+        generation,
+    )?)
+}
+
+fn set_checkpoint(
+    tx: &studio_runtime_store::Transaction<'_>,
+    scope: &str,
+    generation: u64,
+    cursor: u64,
+) -> Result<(), WorkerError> {
+    if let Some((account, actor)) = scope.rsplit_once(":vm:")
+        && let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(actor))?
+        && account_key(&agent) == account
+        && agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+    {
+        let state = agent
+            .extra
+            .entry("providerStream".into())
+            .or_insert_with(|| json!({"generation":generation,"ack":0,"streams":null}));
+        if state["generation"].as_u64() != Some(generation) {
+            return Err(invalid(scope));
+        }
+        state["ack"] = json!(state["ack"].as_u64().unwrap_or(0).max(cursor));
+        AgentRepository::put(tx, &agent)?;
+        return Ok(());
+    }
     Ok(
-        receipt(tx, &format!("cursor:{journal_scope}:{generation}"), "ack")?
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0),
+        studio_runtime_store::account_state::set_provider_checkpoint(
+            tx, scope, generation, cursor,
+        )?,
     )
 }
 pub(super) fn journal_committed(
@@ -2942,8 +3123,14 @@ pub(super) fn journal_committed(
     generation: u64,
     cursor: u64,
 ) -> Result<bool, WorkerError> {
-    let operation = journal_operation(journal_scope, generation, cursor);
-    Ok(receipt(tx, &operation, "settled")?.is_some_and(|value| value["committed"] == true))
+    if cursor <= checkpoint(tx, journal_scope, generation)? {
+        return Ok(true);
+    }
+    Ok(
+        Outbox::get::<JournalSettlement>(tx, &journal_operation(journal_scope, generation, cursor))
+            .map_err(outbox_error)?
+            .is_some_and(|row| row.payload.committed),
+    )
 }
 /// Advance the checkpoint over the ready prefix of settled receipts and delete
 /// what it covers. Keys are in cursor order, so the work is bounded by
@@ -2953,50 +3140,45 @@ fn compact(
     journal_scope: &str,
     generation: u64,
 ) -> Result<(), WorkerError> {
-    let prefix = format!("account-worker:journal:{journal_scope}:{generation}:");
-    let mut stmt = tx.prepare_cached("SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY id LIMIT ?3")?;
+    let mut stmt = tx.prepare_cached("SELECT id,payload FROM runtime_outbox WHERE stream_id=?1 AND generation=?2 AND kind=?3 ORDER BY ordinal,id LIMIT ?4")?;
     let rows = stmt
         .query_map(
             params![
-                prefix,
-                format!("{prefix}~"),
+                journal_scope,
+                generation as i64,
+                OutboxKind::JournalEntry,
                 JOURNAL_COMPACTION_LIMIT as i64
             ],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )?
         .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    let before = checkpoint(tx, journal_scope, generation)?;
+    let mut cursor = before;
     let mut covered = Vec::new();
-    let mut last = None;
     for (id, raw) in rows {
-        let row: Value = serde_json::from_str(&raw).map_err(|_| invalid(journal_scope))?;
-        // A missing earlier row may still be deferred before its dispatch.
-        if row["ready"] != true {
+        let row: JournalSettlement =
+            serde_json::from_str(&raw).map_err(|_| invalid(journal_scope))?;
+        if row.cursor <= before {
+            covered.push(id);
+            continue;
+        }
+        if !row.ready || !row.committed || cursor.checked_add(1) != Some(row.cursor) {
             break;
         }
-        covered.push(
-            row["cursor"]
-                .as_u64()
-                .ok_or_else(|| invalid(journal_scope))?,
-        );
-        last = Some(id);
+        cursor = row.cursor;
+        covered.push(id);
     }
-    let (Some(last), Some(&cursor)) = (last, covered.last()) else {
-        return Ok(());
-    };
-    tx.prepare_cached("DELETE FROM runtime_operation_receipts WHERE id>=?1 AND id<=?2")?
-        .execute(params![prefix, last])?;
-    let mut delete = tx.prepare_cached("DELETE FROM runtime_operation_receipts WHERE id=?1")?;
-    for cursor in covered {
-        let identity = json!({"providerHandle":ProviderHandle::for_account(journal_scope).as_str(),"generation":generation,"cursor":cursor});
-        let signature = studio_runtime_store::sha256_hex(identity.to_string().as_bytes());
-        delete.execute([format!("provider-notification:{signature}")])?;
+    if cursor > before {
+        set_checkpoint(tx, journal_scope, generation, cursor)?;
     }
-    replace(
-        tx,
-        &format!("cursor:{journal_scope}:{generation}"),
-        "ack",
-        json!(cursor),
-    )
+    for id in covered {
+        tx.execute_cached(
+            "DELETE FROM runtime_outbox WHERE id=?1 AND kind=?2 AND status=?3",
+            params![id, OutboxKind::JournalEntry, OutboxStatus::Committed],
+        )?;
+    }
+    Ok(())
 }
 
 /// Rename journal and publication receipts written before their numbers were
