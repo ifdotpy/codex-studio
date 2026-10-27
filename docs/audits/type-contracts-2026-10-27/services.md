@@ -4,6 +4,31 @@ Read-only systematic census at the named commit. Every tracked file is inventori
 
 See the [complete result](services.json) for exact inventory, metrics, methodology and inspection depth.
 
+## Source paths and assigned-away exclusions
+
+Unless otherwise identified, abbreviated source paths in the family table are relative to `workspaces/runtime/packages/runtime-services/src/`. Line numbers refer to the pinned revision. The following 20 paths were inventoried but excluded from this report’s source scan. They are not counted as scanned by the original report. The separate [pinned supplement](services-addendum.md) scans all 20 and records its own family traces and limits. See [current type-contract coverage](../../type-contracts.md) for subsequent implementation status.
+
+- `workspaces/runtime/packages/runtime-services/src/account_transfer.rs`
+- `workspaces/runtime/packages/runtime-services/src/account_transfer_driver.rs`
+- `workspaces/runtime/packages/runtime-services/src/account_transfer_executor.rs`
+- `workspaces/runtime/packages/runtime-services/src/claude_controls.rs`
+- `workspaces/runtime/packages/runtime-services/src/claude_controls/service.rs`
+- `workspaces/runtime/packages/runtime-services/src/claude_controls/store.rs`
+- `workspaces/runtime/packages/runtime-services/src/managed_host_tools.rs`
+- `workspaces/runtime/packages/runtime-services/src/managed_host_tools/ingress_tests.rs`
+- `workspaces/runtime/packages/runtime-services/src/managed_host_tools/ingress_tests/claim_settlement.rs`
+- `workspaces/runtime/packages/runtime-services/src/managed_host_tools/ingress_tests/claude_permissions.rs`
+- `workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools.rs`
+- `workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/runtime_dispatch.rs`
+- `workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/runtime_ports.rs`
+- `workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/services.rs`
+- `workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/services/context.rs`
+- `workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/services/manage.rs`
+- `workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/services/messages.rs`
+- `workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/services/reads.rs`
+- `workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/services/sends_tests.rs`
+- `workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/services/work.rs`
+
 | id  | group                 | family                                                             | classification | priority | inspection | evidence                                                                                                                                                                                                                                                                   | owner                                                                                                                    | replacement                                                                                                                                                                                           | essential                                                                                                                                      | compatibility                                                                                                                                                                                                                                       | witness                                                                                                                           |
 | --- | --------------------- | ------------------------------------------------------------------ | -------------- | -------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | L1  | native_layr           | Operation receipt state machine                                    | remove         | P1       | focused    | layr_native/runtime.rs:207 writer pending → :169 JSON load → :176 status branch → :223/:225 terminal write.                                                                                                                                                                | layr_native/runtime.rs operation_with_preflight_in_store                                                                 | Deserialize OperationReceipt enum with pending/completed/failed; delete status strings and required-result/error getters. Keep intent/result as raw JSON.                                             | Intent identity, store lock, preflight, atomic durable write; pending/unknown never resends.                                                   | Old failed rows may omit error; failed-save/import retry exceptions must stay explicit.                                                                                                                                                             | Round-trip pending/completed/failed; malformed completed result; exact retry versus changed intent; pending never executes twice. |

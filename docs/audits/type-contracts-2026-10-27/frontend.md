@@ -4,6 +4,8 @@ The systematic scan covers all tracked files under `workspaces/client/apps/web/s
 
 No files were edited. No builds, tests, installs, generators, benchmark/load runs, live server reads, browser automation, agent/monitor inspection or state-directory operations were performed. Static git/rg/file reads and TypeScript AST parsing only. HEAD and the tracked scoped files still match the requested commit. The known Linux compile defect is outside this review.
 
+Source references are relative to `workspaces/client/apps/web/src/` unless they name `scripts/` (relative to `workspaces/client/apps/web/`) or explicitly identify another workspace. Component basenames identify files under `src/components/`; other abbreviated paths follow the corresponding `src/` subtree. Line numbers refer to the pinned revision.
+
 ## Inventory, exact exclusions and reproducibility
 
 | Category                                                               | Files |  Lines |

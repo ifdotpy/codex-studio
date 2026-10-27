@@ -2,6 +2,8 @@ Read-only HTTP type census at 1b18e26491860b644f6e7373bc554e814cf95b66
 
 Scope: workspaces/runtime/packages/runtime-http/. No source changes, builds, tests, installs, service calls, database/state reads, or live model/reset-credit requests were performed. This is source evidence of representation/migration opportunities, not a report of witnessed runtime bugs. The known unrelated Linux compile defect is outside this review.
 
+Source references such as `routes/` are relative to `workspaces/runtime/packages/runtime-http/src/`; `services/` denotes `workspaces/runtime/packages/runtime-services/src/`, and `openapi.json` and `build.rs` are under `workspaces/runtime/packages/runtime-http/`. Explicit web and native references point to the respective client workspace; selected client aliases are listed at the end. Line numbers refer to the pinned revision.
+
 Method and coverage
 
 Used the engineering-protocol investigation lane. Read repository/package guidance and relevant source. Enumerated tracked files with git ls-tree -r --name-only at the pinned revision, read their committed contents for inventory, and scanned every production file with rg/committed-content searches for ApiJson<Value>, generated_json/from_value/from_str/from_slice/to_value, Value/get/as_*/pointer, json! result construction, schema validation and closed string dispatch. The tracked working-tree source used for line inspection matched the pinned revision; a final git diff --name-only over HTTP, runtime-services, runtime-schema and client returned no paths.

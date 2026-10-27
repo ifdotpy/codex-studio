@@ -1,0 +1,30 @@
+{
+  "revision": "1b18e26491860b644f6e7373bc554e814cf95b66",
+  "original_inventory": "inventory.json",
+  "source_like_extension_scope": [
+    ".rs",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".mts",
+    ".cts",
+    ".py",
+    ".swift",
+    ".sh",
+    ".mm",
+    ".h"
+  ],
+  "original_seven_distinct_tracked_paths": 3009,
+  "web_addendum_tracked_paths": 430,
+  "web_addendum_source_like_paths": 388,
+  "guest_support_addendum_tracked_paths": 88,
+  "guest_support_addendum_source_like_paths": 70,
+  "distinct_tracked_paths_combined": 3527,
+  "original_gap_count": 458,
+  "remaining_source_like_paths_outside_combined_manifests": [],
+  "services_original_exclusions": "services-addendum.json: files; these 20 were already in the original tracked inventory and were scanned in the supplement",
+  "checks": "All added web and guest/support paths match their pinned git tree scopes; both source lists partition the original gap exactly. This is an extension-based path inventory, not a claim of exhaustive line-by-line inspection."
+}
