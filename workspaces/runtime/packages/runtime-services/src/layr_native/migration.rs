@@ -487,13 +487,18 @@ pub fn migrate_with_options(
                     .map(|saved| super::private_tree::Directory::open(saved.path()))
                     .transpose()?;
                 with_git_aside(&destination, saved_directory.as_ref(), || {
-                    let mut cache_roots: BTreeSet<PathBuf> =
-                        run(state_dir, &cwd, &["cache", "list"])?
-                            .lines()
-                            .filter_map(|line| line.split_once('\t'))
-                            .filter(|(_, kind)| *kind == "cache")
-                            .map(|(path, _)| PathBuf::from(path))
-                            .collect();
+                    let overlays: Vec<Value> = serde_json::from_str(&run(
+                        state_dir,
+                        &cwd,
+                        &["overlay", "list", "--json"],
+                    )?)
+                    .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
+                    let mut cache_roots: BTreeSet<PathBuf> = overlays
+                        .iter()
+                        .filter(|overlay| overlay["state"] == "cache")
+                        .filter_map(|overlay| overlay["folder"].as_str())
+                        .map(PathBuf::from)
+                        .collect();
                     let versioned_roots: Vec<_> = cache_roots
                         .iter()
                         .filter(|cache| {
@@ -572,7 +577,7 @@ mod tests {
         let aside = super::super::private_tree::Directory::open(saved.path()).expect("aside");
         let failed: Result<()> = with_git_aside(&destination, Some(&aside), || {
             assert!(!line.join(".git").exists());
-            Err(NativeLayrError::Refused("cache list failed".into()))
+            Err(NativeLayrError::Refused("overlay list failed".into()))
         });
         assert!(failed.is_err());
         drop(saved);
@@ -955,18 +960,17 @@ mod tests {
             fs::read_to_string(line.join("sub/target/from-main")).expect("warm worktree cache"),
             "base-data"
         );
-        let caches = run(&state, &line, &["cache", "list"]).expect("line cache list");
         assert!(
-            caches
-                .lines()
-                .any(|entry| entry.starts_with("target\tnot a cache: has versioned files"))
+            super::super::overlay_folder_state(&state, &line, "target")
+                .is_some_and(|folder| folder.starts_with("not a cache: has versioned files"))
         );
-        assert!(caches.lines().any(|entry| entry == "sub/target\tcache"));
-        assert!(
-            run(&state, &main, &["cache", "list"])
-                .expect("main caches")
-                .lines()
-                .any(|entry| entry == "target\tcache")
+        assert_eq!(
+            super::super::overlay_folder_state(&state, &line, "sub/target").as_deref(),
+            Some("cache")
+        );
+        assert_eq!(
+            super::super::overlay_folder_state(&state, &main, "target").as_deref(),
+            Some("cache")
         );
         assert_eq!(
             run(&state, &main, &["show", "head:sub/target/from-main"])

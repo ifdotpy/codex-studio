@@ -83,8 +83,9 @@ class Slots(HostSlotHandlers):
             if args[1].endswith("^{tree}"):
                 return FIXTURE_TREE + "\n"
             return FIXTURE_STATE
-        if args[:2] == ["cache", "list"]:
-            return "".join(path + ("\tcache\n" if (line / path).is_dir() else "\tabsent\n") for path in self.caches)
+        if args[:3] == ["overlay", "list", "--json"]:
+            return json.dumps([{"name": "cache." + path.replace("/", "."), "folder": path,
+                                "state": "cache" if (line / path).is_dir() else "absent"} for path in self.caches])
         if args[0] == "export":
             source = Path(args[2])
             shutil.rmtree(source)

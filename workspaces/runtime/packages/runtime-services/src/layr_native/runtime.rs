@@ -598,6 +598,24 @@ fn working_state(state_dir: &Path, cwd: &Path) -> Result<String> {
     }
 }
 
+/// Repairs each folder overlay at a quiet point: a folder that a build tool made again is a cache.
+fn repair_caches(state_dir: &Path, cwd: &Path) -> Result<()> {
+    let overlays: Vec<Value> =
+        serde_json::from_str(&run(state_dir, cwd, &["overlay", "list", "--json"])?)
+            .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
+    for overlay in overlays
+        .iter()
+        .filter(|overlay| overlay["folder"].is_string())
+    {
+        run(
+            state_dir,
+            cwd,
+            &["overlay", "repair", text(overlay, "name")?],
+        )?;
+    }
+    Ok(())
+}
+
 pub fn save(state_dir: &Path, record: &Value, request_id: &str) -> Result<Value> {
     let cwd = associated_cwd(state_dir, record)?;
     operation_in_store(
@@ -607,7 +625,7 @@ pub fn save(state_dir: &Path, record: &Value, request_id: &str) -> Result<Value>
         &json!({"agent":record["id"],"cwd":cwd,"kind":"save"}),
         || {
             if record["role"] != "reviewer" {
-                run(state_dir, &cwd, &["cache", "repair"])?;
+                repair_caches(state_dir, &cwd)?;
                 run(state_dir, &cwd, &["save"])?;
             }
             let state = if record["role"] == "reviewer" {

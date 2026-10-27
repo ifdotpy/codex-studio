@@ -119,6 +119,7 @@ impl Repo<'_> {
                 };
                 self.put_layers(tmp, &layers, self.own(line))?;
                 self.prepare_at(line, start, tmp)?;
+                self.take_caches(ctx, line, start, source, tmp)?;
                 let mut rec = Record::new("line.create");
                 rec.data = serde_json::json!({"name": line.name, "start": start});
                 if !layers.is_empty() {

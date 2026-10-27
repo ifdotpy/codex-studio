@@ -7,29 +7,36 @@ use crate::args::{parse, Spec};
 use crate::ctx::Ctx;
 use crate::ids;
 use crate::model::{Record, StateKind, StateRec};
-use crate::overlay::{Layer, Mode};
+use crate::overlay::{Layer, MergeKind, Mode, Props, PROPS};
 use crate::repo::Repo;
 use crate::storage as btrfs;
 use crate::store::{check_name, Project};
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
 
-const USAGE: &str = "usage: layr overlay create <name> [--readers <principal>,...] [--mode shared|follow] [--hidden]
+const USAGE: &str =
+    "usage: layr overlay create <name> [--readers <principal>,...] [--mode shared|follow] [--hidden] [--folder <path>] [<properties>]
+       layr overlay set <name> <properties>
+       layr overlay remote add <name> <remote> <git url> | list <name> | remove <name> <remote>
        layr overlay show-to-project <name>
        layr overlay list
        layr overlay readers <name> [<principal>...]
        layr overlay managers <name> [machine:<id>...]
        layr overlay use [--add|--remove] <name>... | --none
        layr overlay move [--purge] <name> <path>... | --cancel [<path>...]
+       layr overlay repair <overlay>
        layr overlay show <name> --json
        layr overlay log <name> --ops [--json]
-       layr overlay log|show|diff|grep|ls-files|blame <name> [<args>]";
+       layr overlay log|show|diff|grep|ls-files|blame <name> [<args>]
+properties: --history all|last|<N>  --quiet|--no-quiet  --merge three-way|union-theirs  --gc none|lru:<size>  --key-files <files>|none";
 
 pub fn overlay(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
     let rest = args.get(1..).unwrap_or(&[]).to_vec();
     match sub {
         "create" => create(ctx, &rest),
+        "set" => set(ctx, &rest),
+        "remote" => super::layerpush::overlay_remote(ctx, &rest),
         "list" => list(ctx, &rest),
         "show-to-project" => show_to_project(ctx, &rest),
         "readers" => readers(ctx, &rest),
@@ -37,6 +44,7 @@ pub fn overlay(ctx: &Ctx, args: &[String]) -> Result<i32> {
         "mode" => access_mode(ctx, &rest),
         "use" => use_cmd(ctx, &rest),
         "move" => move_cmd(ctx, &rest),
+        "repair" => repair(ctx, &rest),
         "show" if rest.iter().take_while(|s| s.as_str() != "--").any(|s| s == "--json") => show_json(ctx, &rest),
         "log" if rest.iter().take_while(|s| s.as_str() != "--").any(|s| s == "--ops") => operations(ctx, &rest),
         "log" | "show" | "diff" | "grep" | "ls-files" | "blame" | "rev-parse" => read(ctx, sub, &rest),
@@ -72,7 +80,7 @@ fn principals(list: &[String]) -> Result<Vec<String>> {
 }
 
 /// The access policy of an overlay: its owner is its admin, the readers read it.
-fn access_map(owner: u32, readers: &[String]) -> serde_json::Value {
+pub(crate) fn access_map(owner: u32, readers: &[String]) -> serde_json::Value {
     let mut m = serde_json::Map::new();
     for r in readers {
         m.insert(r.clone(), serde_json::json!("reader"));
@@ -82,8 +90,9 @@ fn access_map(owner: u32, readers: &[String]) -> serde_json::Value {
 }
 
 fn create(ctx: &Ctx, args: &[String]) -> Result<i32> {
-    let spec = Spec::new().value("--readers|-r").value("--mode").flag("--hidden").flag("-q|--quiet");
+    let spec = props_spec(Spec::new().value("--readers|-r").value("--mode").flag("--hidden").flag("-q").value("--folder"));
     let a = parse(&spec, args)?;
+    let props = props_of(&a, Props::default())?;
     let h = here(ctx)?;
     let repo = &h.repo;
     if repo.p.is_overlay() {
@@ -93,25 +102,66 @@ fn create(ctx: &Ctx, args: &[String]) -> Result<i32> {
     check_name("overlay", &name)?;
     repo.require(ctx, "line.create")?;
     let hidden = a.has("--hidden");
+    let folder = a.get("--folder").map(crate::cache_overlay::folder_path).transpose()?;
     let mode = match a.get("--mode") {
         Some(m) => Mode::parse(m).ok_or_else(|| exit(128, format!("fatal: unknown mode '{m}' (shared or follow)")))?,
-        None if hidden => Mode::Follow,
+        None if hidden || folder.is_some() => Mode::Follow,
         None => Mode::Shared,
     };
     if hidden && mode != Mode::Follow {
         return Err(exit(128, "hidden overlays require follow mode"));
+    }
+    if folder.is_some() && (hidden || mode != Mode::Follow) {
+        return Err(exit(128, "a folder overlay uses follow mode and is not hidden"));
     }
     let readers = principals(&a.all("--readers"))?;
     let _lock = repo.p.lock()?;
     if repo.overlay_info(&name)?.is_some() {
         return Err(exit(128, format!("fatal: overlay '{name}' already exists")));
     }
+    if let Some(f) = &folder {
+        if let Some((other, _)) = repo.folder_overlays()?.into_iter().find(|(_, x)| x == f) {
+            return Err(exit(128, format!("fatal: overlay '{other}' already holds folder {f}")));
+        }
+    }
+    let key_files = a.get("--key-files").map(key_files_value).transpose()?;
+    make_overlay(ctx, repo, &name, &readers, mode, hidden, &props, folder.as_deref(), false, key_files.as_ref())?;
+    if !a.has("-q") {
+        let mut who: Vec<String> = vec![ctx.caller.user.clone()];
+        who.extend(readers.iter().map(|r| show_principal(r)));
+        who.dedup();
+        let mut shown = props.describe();
+        if let Some(f) = &folder {
+            shown.insert(0, format!("folder={f}"));
+        }
+        let extra = if shown.is_empty() { String::new() } else { format!("; {}", shown.join(" ")) };
+        outln!(ctx, "Created overlay {name} (mode {}; readers: {}{extra})", mode.name(), who.join(", "));
+    }
+    Ok(0)
+}
+
+/// Make overlay `name` of the caller with its empty first state and its records. The caller holds
+/// the project lock and has checked that no overlay has the name. `folder`: a folder overlay;
+/// `cache`: the cache overlay of a cache path (`save --caches`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn make_overlay(
+    ctx: &Ctx,
+    repo: &Repo,
+    name: &str,
+    readers: &[String],
+    mode: Mode,
+    hidden: bool,
+    props: &Props,
+    folder: Option<&str>,
+    cache: bool,
+    key_files: Option<&serde_json::Value>,
+) -> Result<()> {
     let owner = ctx.caller.uid;
     let pname = format!("{}%{name}", repo.p.name);
     let dir = ctx.store.project_dir(&pname)?;
     let made = (|| -> Result<String> {
         let config = serde_json::json!({
-            "access": access_map(owner, &readers),
+            "access": access_map(owner, readers),
             "overlay": {"project": repo.p.id, "name": name, "mode": mode.name(), "hidden": hidden},
         });
         let op = Project::create_overlay(&ctx.store, &pname, &ctx.actor(), config)?;
@@ -150,6 +200,23 @@ fn create(ctx: &Ctx, args: &[String]) -> Result<i32> {
             format!("overlay.{name}"),
             serde_json::json!({"id":orepo.p.id,"owner": owner, "mode": mode.name(), "root": id, "hidden": hidden}),
         );
+        // Properties are separate settings, so an older layr reads the overlay as before.
+        for prop in PROPS {
+            let v = props.value(prop);
+            if !v.is_null() {
+                cfg.insert(format!("overlay.{name}.{prop}"), v);
+            }
+        }
+        if let Some(f) = folder {
+            cfg.insert(format!("overlay.{name}.folder"), serde_json::json!(f));
+        }
+        if let Some(k) = key_files {
+            cfg.insert(format!("overlay.{name}.key-files"), k.clone());
+        }
+        // A cache overlay follows the cache paths (`regenerable`, `cache add`) of each line.
+        if cache {
+            cfg.insert(format!("overlay.{name}.cache"), serde_json::json!(true));
+        }
         rec.data = serde_json::json!({"name": name, "parent":repo.p.id, "config": cfg});
         if hidden {
             orepo.commit_record(ctx, rec)?;
@@ -160,16 +227,115 @@ fn create(ctx: &Ctx, args: &[String]) -> Result<i32> {
     })();
     if let Err(e) = made {
         // No record of the project names the overlay: its folder goes.
-        if repo.overlay_info(&name)?.is_none() {
+        if repo.overlay_info(name)?.is_none() {
             let _ = btrfs::delete_tree(&dir);
         }
         return Err(e);
     }
-    if !a.has("-q") {
-        let mut who: Vec<String> = vec![ctx.caller.user.clone()];
-        who.extend(readers.iter().map(|r| show_principal(r)));
-        who.dedup();
-        outln!(ctx, "Created overlay {name} (mode {}; readers: {})", mode.name(), who.join(", "));
+    Ok(())
+}
+
+/// A folder overlay is not part of the file stack: `save --caches`, `line new` and `merge` move it (docs/cache-overlays.md, section 3).
+fn refuse_folder(repo: &Repo, name: &str) -> Result<()> {
+    if repo.overlay_info(name)?.is_some() {
+        if let Some(f) = repo.overlay_setting(name, "folder")? {
+            return Err(exit(
+                1,
+                format!(
+                    "error: overlay '{name}' is the folder overlay of {}; use layr save --caches or layr merge",
+                    f.as_str().unwrap_or("?")
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The options of overlay properties (docs/cache-overlays.md, section 4).
+fn props_spec(spec: Spec) -> Spec {
+    spec.value("--history").flag("--quiet").flag("--no-quiet").value("--merge").value("--gc").value("--key-files")
+}
+
+/// `--key-files a,b` as the setting value; `none` clears it.
+fn key_files_value(v: &str) -> Result<serde_json::Value> {
+    if v == "none" {
+        return Ok(serde_json::Value::Null);
+    }
+    let mut files = Vec::new();
+    for f in v.split(',').map(str::trim).filter(|f| !f.is_empty()) {
+        files.push(crate::cache_overlay::folder_path(f)?);
+    }
+    Ok(serde_json::json!(files))
+}
+
+/// `base` with the property options of `a`.
+fn props_of(a: &crate::args::Parsed, base: Props) -> Result<Props> {
+    let mut p = base;
+    if let Some(v) = a.get("--history") {
+        p.history = crate::overlay::parse_history(v)
+            .ok_or_else(|| exit(128, format!("fatal: invalid --history '{v}' (all, last or a number)")))?;
+    }
+    if a.has("--quiet") && a.has("--no-quiet") {
+        return Err(exit(128, "fatal: --quiet and --no-quiet exclude each other"));
+    }
+    if a.has("--quiet") {
+        p.quiet = true;
+    }
+    if a.has("--no-quiet") {
+        p.quiet = false;
+    }
+    if let Some(v) = a.get("--merge") {
+        p.merge =
+            MergeKind::parse(v).ok_or_else(|| exit(128, format!("fatal: invalid --merge '{v}' (three-way or union-theirs)")))?;
+    }
+    if let Some(v) = a.get("--gc") {
+        p.gc_lru = crate::overlay::parse_gc(v)
+            .ok_or_else(|| exit(128, format!("fatal: invalid --gc '{v}' (none or lru:<size>, for example lru:20G)")))?;
+    }
+    Ok(p)
+}
+
+/// `layr overlay set <name> <properties>`: the owner changes properties. The settings go into the
+/// records of the project, or of the overlay when it is hidden.
+fn set(ctx: &Ctx, args: &[String]) -> Result<i32> {
+    let a = parse(&props_spec(Spec::new()), args)?;
+    let h = here(ctx)?;
+    let name = a.pos.first().ok_or_else(|| exit(128, USAGE))?.clone();
+    if a.pos.len() != 1 {
+        return Err(exit(128, USAGE));
+    }
+    let info = visible_info(ctx, &h.repo, &name)?;
+    let orepo = h.repo.overlay_repo(&name)?;
+    if !orepo.is_admin(ctx) {
+        return Err(exit(1, format!("permission denied: only the owner of overlay '{name}' sets its properties")));
+    }
+    let _lock = h.repo.p.lock()?;
+    let old = h.repo.overlay_props(&name)?;
+    let new = props_of(&a, old.clone())?;
+    let mut cfg = serde_json::Map::new();
+    for prop in PROPS {
+        if old.value(prop) != new.value(prop) {
+            cfg.insert(format!("overlay.{name}.{prop}"), new.value(prop));
+        }
+    }
+    // The files of the platform key of a cache (docs/cache-overlays.md, section 6).
+    if let Some(v) = a.get("--key-files") {
+        cfg.insert(format!("overlay.{name}.key-files"), key_files_value(v)?);
+    }
+    if !cfg.is_empty() {
+        let mut rec = Record::new("config");
+        rec.data = serde_json::json!({"config": cfg});
+        if info.hidden {
+            let _olock = orepo.p.lock()?;
+            orepo.commit_record(ctx, rec)?;
+        } else {
+            h.repo.commit_record(ctx, rec)?;
+        }
+    }
+    let shown = new.describe();
+    outln!(ctx, "overlay {name}: {}", if shown.is_empty() { "no properties".to_string() } else { shown.join(" ") });
+    if new.history.is_some() && new.history != old.history {
+        h.repo.after_overlay_move(ctx, &name);
     }
     Ok(0)
 }
@@ -178,6 +344,32 @@ fn create(ctx: &Ctx, args: &[String]) -> Result<i32> {
 fn reader_list(p: &Project) -> Vec<String> {
     let pol = Policy::load(p);
     pol.access.iter().filter(|(_, r)| **r >= Role::Reader).map(|(k, _)| show_principal(k)).collect()
+}
+
+/// A folder overlay's folder in a line, as `cache list -v` showed it: the state, the size of a
+/// cache, and the head of the overlay line that the line saved.
+struct InLine {
+    state: String,
+    size: Option<u64>,
+    saved: Option<String>,
+}
+
+fn folder_in_line(repo: &Repo, l: &crate::model::Line, name: &str, folder: &str, versioned: bool) -> InLine {
+    let cp = repo.working(l).join(folder);
+    let state = match (versioned, btrfs::is_subvolume(&cp)) {
+        (true, true) => format!("not a cache: has versioned files (run layr overlay repair {name})"),
+        (true, false) => crate::cmd::admin::VERSIONED.to_string(),
+        (false, true) => "cache".to_string(),
+        (false, false) if cp.exists() => format!("plain folder (run layr overlay repair {name})"),
+        (false, false) => "absent".to_string(),
+    };
+    let size = (state == "cache").then(|| crate::cache_overlay::tree_size(&cp));
+    let saved = repo
+        .overlay_project(name)
+        .ok()
+        .and_then(|p| p.db.line_by_name(&format!("line-{}", l.id)).ok().flatten())
+        .map(|ol| ids::short(&ol.head));
+    InLine { state, size, saved }
 }
 
 fn list(ctx: &Ctx, args: &[String]) -> Result<i32> {
@@ -189,6 +381,11 @@ fn list(ctx: &Ctx, args: &[String]) -> Result<i32> {
         Some(l) => repo.layers(l)?.into_iter().map(|x| x.overlay).collect(),
         None => BTreeSet::new(),
     };
+    // The versioned folders of the line: a folder overlay there is no cache.
+    let versioned = match &h.line {
+        Some(l) => repo.line_cache_paths(l)?.1,
+        None => Vec::new(),
+    };
     for name in repo.visible_overlay_names(ctx)? {
         let info = match repo.overlay_info(&name)? {
             Some(i) => i,
@@ -197,20 +394,85 @@ fn list(ctx: &Ctx, args: &[String]) -> Result<i32> {
         let readers = repo.overlay_project(&name).map(|p| reader_list(&p)).unwrap_or_default();
         let mark = if shown.contains(&name) { "* " } else { "  " };
         let owner = crate::ctx::Caller::from_uid(info.owner).user;
+        let props = repo.overlay_props(&name)?;
+        let folder = repo.overlay_setting(&name, "folder")?.and_then(|v| v.as_str().map(str::to_owned));
+        let line_state = match (&h.line, &folder) {
+            (Some(l), Some(f)) => Some(folder_in_line(repo, l, &name, f, versioned.contains(f))),
+            _ => None,
+        };
         if a.has("--json") {
-            rows.push(serde_json::json!({"name":name,"mode":info.mode.name(),"hidden":info.hidden,"owner":info.owner,"readers":readers,"shown":shown.contains(&name)}));
+            rows.push(serde_json::json!({
+                "name":name,"mode":info.mode.name(),"hidden":info.hidden,"owner":info.owner,"readers":readers,
+                "shown":shown.contains(&name),"properties":props.to_json(),"folder":folder,
+                "state":line_state.as_ref().map(|s| &s.state),"size":line_state.as_ref().and_then(|s| s.size),
+                "saved":line_state.as_ref().and_then(|s| s.saved.clone()),
+            }));
         } else {
+            let mut described = props.describe();
+            if let Some(f) = &folder {
+                described.insert(0, format!("folder={f}"));
+            }
+            let keys = repo.key_files(&name)?;
+            if !keys.is_empty() {
+                described.push(format!("key-files={}", keys.join(",")));
+            }
+            // A folder overlay in the line: its state, its size and its saved state (was `cache list -v`).
+            let tail = line_state
+                .map(|s| {
+                    let size = s.size.map(crate::cmd::admin::human_size).unwrap_or_else(|| "-".into());
+                    let saved = s.saved.map(|x| format!("saved {x}")).unwrap_or_else(|| "not saved".into());
+                    format!("\t{}\t{size}\t{saved}", s.state)
+                })
+                .unwrap_or_default();
             outln!(
                 ctx,
-                "{mark}{name}\t{}{}\towner {owner}\treaders {}",
+                "{mark}{name}\t{}{}\towner {owner}\treaders {}{}{tail}",
                 info.mode.name(),
                 if info.hidden { " hidden" } else { "" },
-                readers.join(",")
+                readers.join(","),
+                if described.is_empty() { String::new() } else { format!("\t{}", described.join(" ")) }
             );
         }
     }
     if a.has("--json") {
         outln!(ctx, "{}", serde_json::to_string(&rows)?);
+    }
+    Ok(0)
+}
+
+/// `layr overlay repair <overlay>`: in the current line, the folder of a folder overlay that a tool
+/// made again as a plain folder becomes a cache again. A cache folder with versioned files becomes
+/// a plain folder again (`layr cache repair` before; docs/cache-overlays.md, section 4).
+fn repair(ctx: &Ctx, args: &[String]) -> Result<i32> {
+    let a = parse(&Spec::new(), args)?;
+    let name = match a.pos.as_slice() {
+        [name] => name.clone(),
+        _ => return Err(exit(128, "usage: layr overlay repair <overlay>")),
+    };
+    let h = here(ctx)?;
+    let repo = &h.repo;
+    repo.need_overlay(&name)?;
+    let folder = repo
+        .overlay_setting(&name, "folder")?
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .ok_or_else(|| exit(128, format!("fatal: overlay '{name}' is no folder overlay")))?;
+    let l = h.line()?.clone();
+    repo.authorize_line(ctx, &l, crate::repo::LineOp::Save)?;
+    let _lock = repo.p.lock()?;
+    let l = repo.line(&l.id)?;
+    let (u, g) = repo.owner_ids(&l);
+    crate::repo::recover_cache_replacements(&repo.working(&l))?;
+    let (caches, versioned) = repo.line_cache_paths(&l)?;
+    if versioned.contains(&folder) {
+        if crate::repo::uncache(&repo.working(&l), &folder, u, g)? {
+            outln!(ctx, "{folder}: {}", crate::cmd::admin::VERSIONED_AGAIN);
+        }
+    } else if caches.contains(&folder) {
+        if crate::repo::convert_cache(&repo.working(&l), &folder, u, g)? {
+            outln!(ctx, "{folder}: a cache again");
+        }
+    } else {
+        return Err(exit(1, format!("error: {folder} is no cache path of this line (regenerable)")));
     }
     Ok(0)
 }
@@ -425,7 +687,7 @@ fn show_json(ctx: &Ctx, args: &[String]) -> Result<i32> {
         "managers":crate::overlay_managers::of(&h.repo, name)?.machines,
         "epochs":layr_model::overlays::epochs(&records),
         "patterns":setting("patterns")?.unwrap_or_else(|| serde_json::json!([])),
-        "peers":setting("peers")?,"state":state,
+        "peers":setting("peers")?,"state":state,"properties":h.repo.overlay_props(name)?.to_json(),
     });
     outln!(ctx, "{}", serde_json::to_string(&value)?);
     Ok(0)
@@ -598,6 +860,7 @@ fn use_cmd(ctx: &Ctx, args: &[String]) -> Result<i32> {
         names.extend(cur.iter().map(|l| l.overlay.clone()));
     }
     for n in &a.pos {
+        refuse_folder(&h.repo, n)?;
         if a.has("--remove") {
             names.retain(|x| x != n);
         } else if !names.contains(n) {
@@ -672,6 +935,7 @@ fn move_cmd(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let name = a.rest()[0].clone();
     let specs = h.specs(&a.rest()[1..])?;
     repo.need_overlay(&name)?;
+    refuse_folder(repo, &name)?;
     repo.authorize_line(ctx, &line, crate::repo::LineOp::Save)?;
     let _lock = repo.p.lock()?;
     let mut line = repo.line(&line.id)?;

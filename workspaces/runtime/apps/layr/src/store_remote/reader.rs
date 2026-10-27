@@ -112,15 +112,30 @@ pub(super) struct Reader<'a> {
     identity: &'a str,
     keys: &'a BTreeMap<String, VerifyingKey>,
     trees: BTreeMap<(String, String), (Header, Vec<u8>, Tree)>,
+    depths: BTreeMap<(String, String), usize>,
     parts: BTreeMap<String, Vec<u8>>,
     part_bytes: usize,
+    gets: std::cell::Cell<usize>,
 }
 
 impl<'a> Reader<'a> {
     pub fn new(backend: &'a Backend, identity: &'a str, keys: &'a BTreeMap<String, VerifyingKey>) -> Self {
-        Self { backend, identity, keys, trees: BTreeMap::new(), parts: BTreeMap::new(), part_bytes: 0 }
+        Self {
+            backend,
+            identity,
+            keys,
+            trees: BTreeMap::new(),
+            depths: BTreeMap::new(),
+            parts: BTreeMap::new(),
+            part_bytes: 0,
+            gets: std::cell::Cell::new(0),
+        }
+    }
+    pub fn get_count(&self) -> usize {
+        self.gets.get()
     }
     fn decrypted(&self, key: &str) -> Result<Vec<u8>> {
+        self.gets.set(self.gets.get() + 1);
         self.backend.decrypted(key, self.identity).with_context(|| format!("decrypt {key}"))
     }
     pub fn tree(&mut self, state: &str, attempt: &str) -> Result<(Header, Vec<u8>, Tree)> {
@@ -133,6 +148,7 @@ impl<'a> Reader<'a> {
         let mut pending = Vec::new();
         let mut seen = BTreeSet::new();
         let mut canonical;
+        let mut depth = 0;
         loop {
             if !seen.insert(at.clone()) {
                 bail!("tree chain has a loop");
@@ -142,6 +158,7 @@ impl<'a> Reader<'a> {
             }
             if let Some((_, bytes, _)) = self.trees.get(&at) {
                 canonical = bytes.clone();
+                depth = self.depths[&at];
                 break;
             }
             let object = self.decrypted(&format::tree_name(&at.0, &at.1))?;
@@ -162,6 +179,10 @@ impl<'a> Reader<'a> {
             at = base.context("delta tree has no base")?;
         }
         while let Some((header, frame)) = pending.pop() {
+            depth = if header.tree == "full" { 0 } else { depth + 1 };
+            if depth >= format::FULL_TREE_EVERY {
+                bail!("tree chain exceeds 32 states");
+            }
             canonical = zst::decompress(&frame, if header.tree == "full" { None } else { Some(&canonical) })?;
             let key = self.keys.get(&header.machine).context("tree signer has no verified machine record")?;
             header.verify(&canonical, key)?;
@@ -169,10 +190,15 @@ impl<'a> Reader<'a> {
             // At most two complete delta chains, rather than every tree in project history.
             if self.trees.len() >= format::FULL_TREE_EVERY * 2 {
                 self.trees.clear();
+                self.depths.clear();
             }
+            self.depths.insert((header.state.clone(), header.attempt.clone()), depth);
             self.trees.insert((header.state.clone(), header.attempt.clone()), (header, canonical.clone(), tree));
         }
         self.trees.get(&wanted).cloned().context("tree was not decoded")
+    }
+    pub fn tree_depth(&self, state: &str, attempt: &str) -> Result<usize> {
+        self.depths.get(&(state.to_string(), attempt.to_string())).copied().context("tree depth was not decoded")
     }
     pub fn read(&mut self, entry: &Entry) -> Result<Vec<u8>> {
         let mut data = Vec::new();
@@ -365,6 +391,15 @@ pub(super) fn fetch(store: &mut Store, ctx: &Ctx, repo: &mut Repo, opts: &Option
         if !wanted(&state, opts) && !required.contains(id) {
             continue;
         }
+        // A cache overlay state of another platform stays on the remote (docs/cache-overlays.md).
+        if repo.p.is_overlay() && crate::cache_overlay::other_platform(state.cache_platform.as_deref()) {
+            report.omitted.push(format!(
+                "cache state {}: platform {}",
+                crate::ids::short(id),
+                state.cache_platform.as_deref().unwrap_or("")
+            ));
+            continue;
+        }
         if repo.p.has_state(id) {
             repo.p.db.set_present(id, true)?;
         } else {
@@ -555,7 +590,10 @@ pub(super) fn gc(store: &Store, dry_run: bool) -> Result<Vec<String>> {
         if object.modified >= cutoff || referenced.contains(&object.key) {
             continue;
         }
-        // Attempts cannot publish after 24 hours, so an old orphan cannot become complete now.
+        // Writers stop at +23h, using the earliest of the new attempt start and
+        // server modified times of reused unpublished parts. Pending hashes retain
+        // those times across crashes until a referencing tree publishes. Thus an
+        // unreferenced part older than 24h cannot acquire a new published reference.
         if store.backend.get(&format::tree_name(&state, &attempt))?.is_some() {
             continue;
         }

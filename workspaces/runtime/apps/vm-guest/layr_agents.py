@@ -382,9 +382,12 @@ class AgentHandlers:
             return {"projectId": context["projectId"], "line": context["line"], "stateId": state}
         if method == "line.save":
             turn = identifier(params.get("turnId"))
-            # The end of a turn is a quiet point: cache folders that a build tool made again
-            # become caches, then the line's content is saved.
-            await self.layr(context, "cache", "repair", root=context["readOnly"])
+            # The end of a turn is a quiet point: each folder overlay whose folder a build tool made
+            # again becomes a cache again, then the line's content is saved.
+            overlays = json.loads(await self.layr(context, "overlay", "list", "--json", root=context["readOnly"]))
+            for overlay in overlays:
+                if overlay["folder"] is not None:
+                    await self.layr(context, "overlay", "repair", overlay["name"], root=context["readOnly"])
             await self.layr(context, "save", "--force", "--note", "Studio turn " + turn, root=context["readOnly"])
             state = await self.layr(context, "rev-parse", "head@{0}", root=True)
             return {"stateId": state, "turnId": turn}

@@ -82,7 +82,7 @@ class LayrEndToEnd(unittest.IsolatedAsyncioTestCase):
         # may change the project's caches.
         owner = pwd.getpwuid(main.stat().st_uid).pw_name
         ran = await self.projects.exec(uuid.uuid4().hex, {"projectId": self.project, "argv": ["sh", "-c",
-            "id -un; pwd; touch made; stat -c %U made; rm made; layr cache add node_modules && layr cache remove node_modules"]})
+            "id -un; pwd; touch made; stat -c %U made; rm made; layr config regenerable \'[\"node_modules\"]\' && layr config --unset regenerable"]})
         self.assertEqual(ran["exitCode"], 0, base64.b64decode(ran["stderr"]))
         self.assertEqual(base64.b64decode(ran["stdout"]).decode().split(), [owner, str(main), owner])
         failed = await self.projects.exec(uuid.uuid4().hex, {"projectId": self.project, "argv": ["sh", "-c", "exit 3"]})
