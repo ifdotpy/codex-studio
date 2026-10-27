@@ -65,6 +65,10 @@ function fixture() {
   chmodSync(path.join(root, ".githooks", "pre-commit"), 0o755);
   copyFileSync(checkSource, checkerPath);
   copyFileSync(
+    path.join(path.dirname(checkSource), "enum-literals.ts"),
+    path.join(path.dirname(checkerPath), "enum-literals.ts"),
+  );
+  copyFileSync(
     path.join(path.dirname(checkSource), "javascript-policy.ts"),
     path.join(path.dirname(checkerPath), "javascript-policy.ts"),
   );
@@ -422,6 +426,56 @@ try {
     );
   }
 
+  {
+    const root = fixture();
+    stage(
+      root,
+      "tsconfig.base.json",
+      '{"compilerOptions":{"strict":true,"module":"ESNext","moduleResolution":"Bundler"}}',
+    );
+    stage(
+      root,
+      "workspaces/client/apps/web/tsconfig.json",
+      '{"extends":"../../../../tsconfig.base.json"}',
+    );
+    stage(
+      root,
+      "workspaces/client/apps/web/src/generated/api.ts",
+      'export const Reason = { slot: "slot", budget: "budget" } as const;\nexport type Reason = typeof Reason[keyof typeof Reason];\n',
+    );
+    stage(
+      root,
+      "workspaces/client/apps/web/src/generated/providerKind.ts",
+      'export const ProviderKind = { Codex: "codex", Claude: "claude" } as const;\n',
+    );
+    const target = "workspaces/client/apps/web/src/startWait.ts";
+    stage(
+      root,
+      target,
+      'import type { Reason } from "./generated/api";\nexport function waiting(reason: Reason) { return reason === "slot"; }\n',
+    );
+    const lint = () =>
+      command(
+        process.execPath,
+        [
+          "workspaces/tooling/apps/repository-checks/check-code.ts",
+          "staged",
+          "lint",
+        ],
+        root,
+      );
+    const rejected = lint();
+    assert.notEqual(rejected.status, 0, rejected.stdout + rejected.stderr);
+    assert.match(rejected.stdout + rejected.stderr, /import and use Reason/);
+    stage(
+      root,
+      target,
+      'import { Reason } from "./generated/api";\nexport function waiting(reason: Reason) { return reason === Reason.slot; }\n',
+    );
+    writeFileSync(path.join(root, target), "const broken = ;\n");
+    const accepted = lint();
+    assert.equal(accepted.status, 0, accepted.stdout + accepted.stderr);
+  }
   console.log("Pre-commit staged-content fixtures passed.");
 } finally {
   for (const root of temporaryRoots)

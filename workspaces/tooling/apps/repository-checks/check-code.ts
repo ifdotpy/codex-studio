@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import ts from "typescript";
+import { enumLiteralFindings } from "./enum-literals.ts";
+
 import {
   JAVASCRIPT_EXCEPTIONS_FILE,
   type JavaScriptException,
@@ -16,6 +19,7 @@ import {
   rmSync,
   writeFileSync,
   mkdirSync,
+  symlinkSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -134,6 +138,18 @@ function main() {
         "utf8",
       ),
     );
+    const enumTargets =
+      check !== "format"
+        ? lintPaths.filter(
+            (file) =>
+              file.startsWith("workspaces/client/apps/web/src/") &&
+              /\.tsx?$/.test(file) &&
+              !file.includes("/generated/"),
+          )
+        : [];
+    const enumSources = enumTargets.length
+      ? [...indexPaths].filter((file) => /\.tsx?$/.test(file))
+      : [];
     const policyPaths = [
       ...new Set([
         ...selectedPaths.filter(isJavaScript),
@@ -144,6 +160,7 @@ function main() {
       ...lintPaths,
       ...formatPaths,
       ...policyPaths,
+      ...enumSources,
       ...[...indexPaths].filter(
         (file) => isTypeScriptProject(file) || file === "tsconfig.base.json",
       ),
@@ -171,6 +188,49 @@ function main() {
       for (const finding of policyFindings)
         console.error(`JavaScript policy: ${finding}`);
       return 1;
+    }
+
+    if (enumTargets.length) {
+      const generatedOwners = [
+        "workspaces/client/apps/web/src/generated/api.ts",
+        "workspaces/client/apps/web/src/generated/providerKind.ts",
+      ].map((file) => path.join(temporaryRoot, file));
+      symlinkSync(
+        path.join(repositoryRoot, "node_modules"),
+        path.join(temporaryRoot, "node_modules"),
+        "dir",
+      );
+      const configPath = path.join(
+        temporaryRoot,
+        "workspaces/client/apps/web/tsconfig.json",
+      );
+      const config = ts.getParsedCommandLineOfConfigFile(
+        configPath,
+        {},
+        {
+          ...ts.sys,
+          onUnRecoverableConfigFileDiagnostic(diagnostic) {
+            throw new Error(
+              ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+            );
+          },
+        },
+      );
+      if (!config || config.errors.length)
+        throw new Error("Cannot parse staged web TypeScript configuration");
+      const targets = enumTargets.map((file) => path.join(temporaryRoot, file));
+      const program = ts.createProgram(
+        [...targets, ...generatedOwners],
+        config.options,
+      );
+      const findings = enumLiteralFindings(program, targets, generatedOwners);
+      if (findings.length) {
+        for (const finding of findings)
+          console.error(
+            `Enum policy: ${finding.replaceAll(`${temporaryRoot}/`, "")}`,
+          );
+        return 1;
+      }
     }
 
     const binDirectory = path.join(repositoryRoot, "node_modules", ".bin");

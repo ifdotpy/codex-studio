@@ -10,12 +10,33 @@ import { gateSteps, typescriptProjects } from "../facade.ts";
 const root = process.cwd();
 const strictOptions = [
   "strict",
+  "noImplicitAny",
+  "noImplicitThis",
+  "strictNullChecks",
+  "strictFunctionTypes",
+  "strictBindCallApply",
+  "strictPropertyInitialization",
+  "strictBuiltinIteratorReturn",
+  "useUnknownInCatchVariables",
+  "alwaysStrict",
   "noImplicitReturns",
   "noImplicitOverride",
   "noFallthroughCasesInSwitch",
   "exactOptionalPropertyTypes",
   "noUncheckedIndexedAccess",
 ] as const satisfies readonly (keyof ts.CompilerOptions)[];
+
+const strictSubflags = new Set<keyof ts.CompilerOptions>(
+  strictOptions.slice(1, 10),
+);
+function effectiveOption(
+  options: ts.CompilerOptions,
+  option: (typeof strictOptions)[number],
+) {
+  return (
+    options[option] ?? (strictSubflags.has(option) ? options.strict : undefined)
+  );
+}
 
 function compilerOptions(file: string): ts.CompilerOptions {
   const parsed = ts.getParsedCommandLineOfConfigFile(
@@ -35,35 +56,47 @@ function compilerOptions(file: string): ts.CompilerOptions {
   return parsed.options;
 }
 
+function assertStrictParity(
+  owner: ts.CompilerOptions,
+  options: ts.CompilerOptions,
+  project: string,
+) {
+  for (const option of strictOptions)
+    assert.equal(
+      effectiveOption(options, option),
+      effectiveOption(owner, option),
+      `${project} weakens ${option} from tsconfig.base.json`,
+    );
+}
+
 test("every TypeScript program preserves the strict compiler owner", () => {
   const owner = compilerOptions("tsconfig.base.json");
   for (const option of strictOptions)
     assert.equal(
-      owner[option],
+      effectiveOption(owner, option),
       true,
       `tsconfig.base.json must enable ${option}`,
     );
   const projects = execFileSync(
     "git",
     ["ls-files", "--", "*tsconfig.json", "*tsconfig.*.json"],
-    {
-      cwd: root,
-      encoding: "utf8",
-    },
+    { cwd: root, encoding: "utf8" },
   )
     .trim()
     .split("\n")
     .filter((file) => file !== "tsconfig.base.json");
   assert.ok(projects.length > 0);
-  for (const project of projects) {
-    const options = compilerOptions(project);
-    for (const option of strictOptions)
-      assert.equal(
-        options[option],
-        owner[option],
-        `${project} weakens ${option} from tsconfig.base.json`,
-      );
-  }
+  for (const project of projects)
+    assertStrictParity(owner, compilerOptions(project), project);
+});
+
+test("strict subflag override cannot weaken a project", () => {
+  const owner = compilerOptions("tsconfig.base.json");
+  assert.throws(
+    () =>
+      assertStrictParity(owner, { ...owner, noImplicitAny: false }, "fixture"),
+    /fixture weakens noImplicitAny/,
+  );
 });
 
 test("local and hosted gate compositions enforce root lint", () => {
@@ -153,5 +186,64 @@ test("root Oxlint rejects type erasure and unchecked compiler suppressions", () 
     assert.equal(witness.status, 0, witness.stdout + witness.stderr);
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("generated enum owners reject raw literals in typed positions", async () => {
+  const { enumLiteralFindings } = await import("../enum-literals.ts");
+  const directory = mkdtempSync(path.join(tmpdir(), "studio-enum-policy-"));
+  try {
+    const owner = path.join(directory, "generated.ts");
+    const target = path.join(directory, "consumer.ts");
+    writeFileSync(
+      owner,
+      'export const Reason = { slot: "slot", budget: "budget" } as const;\nexport type Reason = typeof Reason[keyof typeof Reason];\nexport interface components { schemas: { Reason: "slot" | "budget"; Dto: { reason: components["schemas"]["Reason"] } } }\nexport type Dto = components["schemas"]["Dto"];\n',
+    );
+    const check = (body: string) => {
+      writeFileSync(
+        target,
+        `import { Reason, type Dto } from "./generated";\n${body}`,
+      );
+      const program = ts.createProgram([owner, target], {
+        strict: true,
+        noEmit: true,
+      });
+      return enumLiteralFindings(program, [target], [owner]);
+    };
+    const prefix =
+      "declare const reason: Reason; declare function use(value: Reason): void;\n";
+    for (const body of [
+      'if (reason === "slot") {}',
+      'switch (reason) { case "slot": break; }',
+      'use("slot");',
+      'const object: { reason: Reason } = { reason: "slot" };',
+      'declare const dto: Dto; switch (dto.reason) { case "slot": break; }',
+      'const object: Dto = { reason: "slot" };',
+    ]) {
+      const findings = check(prefix + body);
+      assert.equal(findings.length, 1, body);
+      assert.match(findings[0] ?? "", /import and use Reason\["slot"\]/);
+    }
+    assert.deepEqual(
+      check(
+        prefix +
+          'use(Reason.slot); const text: string = "slot"; const data: unknown = "slot"; type Text = "slot" | "budget"; const textChoice: Text = "slot";',
+      ),
+      [],
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("contract gates execute schema compile-fail doctests", () => {
+  for (const gate of ["test-fast", "test-comprehensive"]) {
+    const steps = gateSteps(root, gate).filter(
+      (step) => step.id === "schema-doctests",
+    );
+    assert.equal(steps.length, 1, `${gate}: schema doctest owner`);
+    assert.deepEqual(steps[0]?.commands, [
+      ["cargo", ["test", "--locked", "-p", "studio-runtime-schema", "--doc"]],
+    ]);
   }
 });
