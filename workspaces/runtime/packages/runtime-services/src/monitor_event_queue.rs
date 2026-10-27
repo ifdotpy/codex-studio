@@ -132,9 +132,6 @@ pub fn enqueue_output_with_scope_in_transaction(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .map_err(|_| NotificationDispatchError::invalid())?;
-    if bytes.len() > crate::monitor_policy::CHUNK_BYTES {
-        return Err(NotificationDispatchError::invalid());
-    }
     let mut queue = record
         .get("streamQueue")
         .and_then(Value::as_array)
@@ -290,9 +287,7 @@ pub async fn next(store: &RuntimeStore) -> Result<Option<Delivery>, MonitorError
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded_bytes)
         .map_err(|_| MonitorError::InvalidDeliveryIdentity("monitor output encoding"))?;
-    if bytes.len() > crate::monitor_policy::CHUNK_BYTES
-        || item["byteLength"].as_u64() != Some(bytes.len() as u64)
-    {
+    if item["byteLength"].as_u64() != Some(bytes.len() as u64) {
         return Err(MonitorError::InvalidDeliveryIdentity("monitor output size"));
     }
     Ok(Some(Delivery {
