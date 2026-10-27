@@ -13,27 +13,60 @@ use thiserror::Error;
 use super::cost_aggregate::CostMember;
 use crate::{CachedSql, RuntimeStore};
 
-thread_local! {
-    // Cost reads include journal I/O: thread-local readers reuse ATTACH and prepared
-    // statements without holding the generation reader or a shared pool's locks.
-    static COST_READERS: std::cell::RefCell<BTreeMap<std::path::PathBuf, Connection>> = const { std::cell::RefCell::new(BTreeMap::new()) };
+type CostReadJob = Box<dyn FnOnce(&mut Connection) + Send>;
+
+/// One connection owner per store, independent of the blocking pool's thread lifetimes.
+pub(crate) struct CostReader(std::sync::mpsc::Sender<CostReadJob>);
+
+impl CostReader {
+    pub(crate) fn open(root: &Path) -> Result<Self, AnalyticsStoreError> {
+        let connection = AnalyticsRepository::new(root).open_read_only()?;
+        let (sender, receiver) = std::sync::mpsc::channel::<CostReadJob>();
+        let _owner = std::thread::Builder::new()
+            .name("session-cost-reader".into())
+            .spawn(move || {
+                let mut connection = connection;
+                for job in receiver {
+                    job(&mut connection);
+                }
+            })?;
+        Ok(Self(sender))
+    }
 }
 
 impl RuntimeStore {
-    /// Run one cost computation on this blocking thread's read-only state connection.
-    pub fn with_cost_reader<T, E: From<AnalyticsStoreError>>(
+    /// Run one synchronous cost computation on the store's retained reader thread.
+    pub fn with_cost_reader<T: Send + 'static, E: From<AnalyticsStoreError> + Send + 'static>(
         &self,
-        operation: impl FnOnce(&mut Connection) -> Result<T, E>,
+        operation: impl FnOnce(&mut Connection) -> Result<T, E> + Send + 'static,
     ) -> Result<T, E> {
-        COST_READERS.with_borrow_mut(|readers| {
-            let db = match readers.entry(self.root().to_path_buf()) {
-                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(AnalyticsRepository::new(self.root()).open_read_only()?)
-                }
-            };
-            operation(db)
-        })
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        self.cost_reader
+            .0
+            .send(Box::new(move |db| {
+                #[cfg(any(test, feature = "test-support"))]
+                take_cost_read_witness();
+                let result = operation(db);
+                #[cfg(any(test, feature = "test-support"))]
+                let result = (result, take_cost_read_witness());
+                let _undelivered = sender.send(result);
+            }))
+            .map_err(|_| AnalyticsStoreError::CostReaderClosed)?;
+        let result = receiver
+            .recv()
+            .map_err(|_| AnalyticsStoreError::CostReaderClosed)?;
+        #[cfg(any(test, feature = "test-support"))]
+        let result = {
+            let (result, counts) = result;
+            COST_READ_WITNESS.update(|mut total| {
+                total.opens += counts.opens;
+                total.attaches += counts.attaches;
+                total.decoded_rows += counts.decoded_rows;
+                total
+            });
+            result
+        };
+        result
     }
 }
 
@@ -42,7 +75,7 @@ impl RuntimeStore {
 pub struct CostReadWitness {
     pub opens: usize,
     pub attaches: usize,
-    /// Stored member/root JSON records decoded on the publication's blocking thread.
+    /// Stored member/root JSON records decoded for the publication.
     pub decoded_rows: usize,
 }
 
@@ -75,12 +108,30 @@ const TOKEN_FIELDS: [&str; 6] = [
 
 #[derive(Debug, Error)]
 pub enum AnalyticsStoreError {
+    #[error("session cost reader thread failed to start: {0}")]
+    CostReaderThread(#[from] std::io::Error),
+    #[error("session cost reader closed before returning its result")]
+    CostReaderClosed,
     #[error("analytics state path is not valid UTF-8")]
     InvalidPath,
     #[error("analytics SQLite read failed: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("analytics stored text cannot be read: {0}")]
     StoredText(String),
+}
+
+impl From<AnalyticsStoreError> for crate::StoreError {
+    fn from(error: AnalyticsStoreError) -> Self {
+        match error {
+            AnalyticsStoreError::Sqlite(error) => error.into(),
+            AnalyticsStoreError::CostReaderThread(error) => Self::StateDirectory(error),
+            AnalyticsStoreError::CostReaderClosed => Self::ReadTaskFailed,
+            AnalyticsStoreError::InvalidPath => {
+                Self::RecordContract("analytics state path is not valid UTF-8")
+            }
+            AnalyticsStoreError::StoredText(error) => Self::SchemaMismatch(error),
+        }
+    }
 }
 
 /// Read-only analytics and attached Canvas paths in one application state.

@@ -833,13 +833,29 @@ mod tests {
                 .expect("warm publication");
             let baseline = entity(&state, "sessionCost", "b");
             assert_eq!(baseline["totalUSD"], 0.000002, "{baseline}");
-            publish_session_roots(
-                &state,
-                Some(["a".to_owned()].into()),
-                PricingReadiness::Settled,
-            )
-            .await
-            .expect("scoped publication");
+            for _ in 0..8 {
+                std::thread::scope(|scope| {
+                    scope.spawn(|| {
+                        tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .max_blocking_threads(1)
+                            .build()
+                            .expect("fresh publication runtime")
+                            .block_on(publish_session_roots(
+                                &state,
+                                Some(["a".to_owned()].into()),
+                                PricingReadiness::Settled,
+                            ))
+                            .expect("publication on a fresh blocking pool");
+                    }).join().expect("publication thread");
+                });
+                let counts = COST_READ_WITNESSES.lock().expect("cost witnesses")
+                    .get(store.root()).copied().expect("publication witness");
+                eprintln!("fresh-pool session-cost witness: {counts:?}");
+                assert_eq!(counts.opens, 0);
+                assert_eq!(counts.attaches, 0);
+                assert_eq!(counts.decoded_rows, 2);
+            }
             let counts = COST_READ_WITNESSES
                 .lock()
                 .expect("cost witnesses")
