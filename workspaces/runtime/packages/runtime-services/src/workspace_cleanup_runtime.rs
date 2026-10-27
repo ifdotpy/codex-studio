@@ -147,12 +147,12 @@ pub async fn cleanup_agent_workspace_with_ports(
     let mut worktree = None;
     for effect in effects {
         let (request_id, replay) = begin_effect(&store, &agent_id, action, &effect, &agent).await?;
-        if let Some(receipt) = replay {
-            finalize_effect(&store, &agent_id, &request_id, &effect, &receipt).await?;
+        if let Some((completed, raw)) = replay {
+            finalize_effect(&store, &agent_id, &request_id, &completed).await?;
             if matches!(effect, CleanupEffect::RemoveWorktree { .. }) {
-                worktree = Some(receipt.raw().clone());
+                worktree = Some(raw);
             } else {
-                workspace = Some(receipt.raw().clone());
+                workspace = Some(raw);
             }
             continue;
         }
@@ -363,29 +363,14 @@ struct CleanupRecord {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RawCleanupIntent {
     action: CleanupAction,
-    #[serde(flatten)]
-    progress: RawCleanupProgress,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "phase", rename_all = "snake_case")]
-enum RawCleanupProgress {
-    Queued,
-    Written {
-        #[serde(rename = "requestId")]
-        request_id: String,
-        effect: CleanupEffect,
-        #[serde(default)]
-        receipt: Value,
-    },
-    NotSent,
-    Pending {
-        #[serde(rename = "requestId")]
-        request_id: String,
-    },
-    Unknown,
+    phase: String,
+    request_id: Option<String>,
+    effect: Option<CleanupEffect>,
+    #[serde(default)]
+    receipt: Value,
 }
 
 struct CleanupIntent {
@@ -397,8 +382,8 @@ enum CleanupProgress {
     Queued,
     Written {
         request_id: String,
-        effect: CleanupEffect,
-        receipt: CleanupReceipt,
+        effect: CompletedEffect,
+        raw: Value,
     },
     NotSent,
     Pending {
@@ -408,35 +393,45 @@ enum CleanupProgress {
 }
 
 #[derive(Clone)]
-enum CleanupReceipt {
-    Saved { state_id: String, raw: Value },
-    Other(Value),
+enum CompletedEffect {
+    ArchiveImage,
+    RemoveImage,
+    SaveNativeTurn { state_id: String },
+    ReleaseNativeLine,
+    SaveVmTurn { turn_id: String, state_id: String },
+    ReleaseVmLine,
+    SaveWorktreeRef,
+    RemoveWorktree { identity: Value, bytes: Value },
 }
 
-impl CleanupReceipt {
-    fn checked(effect: &CleanupEffect, raw: Value) -> Result<Self, WorkspaceCleanupError> {
-        match effect {
-            CleanupEffect::SaveNativeTurn | CleanupEffect::SaveVmTurn { .. } => {
-                let state_id = raw
-                    .get("stateId")
-                    .and_then(Value::as_str)
-                    .filter(|id| !id.is_empty())
-                    .ok_or(WorkspaceCleanupError::Held)?
-                    .to_owned();
-                Ok(Self::Saved { state_id, raw })
-            }
-            CleanupEffect::ArchiveImage
-            | CleanupEffect::RemoveImage
-            | CleanupEffect::ReleaseNativeLine
-            | CleanupEffect::ReleaseVmLine { .. }
-            | CleanupEffect::SaveWorktreeRef { .. }
-            | CleanupEffect::RemoveWorktree { .. } => Ok(Self::Other(raw)),
-        }
-    }
-    fn raw(&self) -> &Value {
-        match self {
-            Self::Saved { raw, .. } | Self::Other(raw) => raw,
-        }
+impl CompletedEffect {
+    fn checked(effect: &CleanupEffect, receipt: &Value) -> Result<Self, WorkspaceCleanupError> {
+        let state_id = || {
+            receipt
+                .get("stateId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+                .ok_or(WorkspaceCleanupError::Held)
+        };
+        Ok(match effect {
+            CleanupEffect::ArchiveImage => Self::ArchiveImage,
+            CleanupEffect::RemoveImage => Self::RemoveImage,
+            CleanupEffect::SaveNativeTurn => Self::SaveNativeTurn {
+                state_id: state_id()?,
+            },
+            CleanupEffect::ReleaseNativeLine => Self::ReleaseNativeLine,
+            CleanupEffect::SaveVmTurn { turn_id } => Self::SaveVmTurn {
+                turn_id: turn_id.clone(),
+                state_id: state_id()?,
+            },
+            CleanupEffect::ReleaseVmLine { .. } => Self::ReleaseVmLine,
+            CleanupEffect::SaveWorktreeRef { .. } => Self::SaveWorktreeRef,
+            CleanupEffect::RemoveWorktree { identity } => Self::RemoveWorktree {
+                identity: identity.clone(),
+                bytes: receipt.get("bytes").cloned().unwrap_or(Value::Null),
+            },
+        })
     }
 }
 
@@ -444,23 +439,22 @@ impl CleanupIntent {
     fn decode(value: Value) -> Result<Self, WorkspaceCleanupError> {
         let raw: RawCleanupIntent =
             serde_json::from_value(value).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
-        let progress = match raw.progress {
-            RawCleanupProgress::Queued => CleanupProgress::Queued,
-            RawCleanupProgress::Written {
-                request_id,
-                effect,
-                receipt,
-            } => {
-                let receipt = CleanupReceipt::checked(&effect, receipt)?;
-                CleanupProgress::Written {
-                    request_id,
-                    effect,
-                    receipt,
-                }
-            }
-            RawCleanupProgress::NotSent => CleanupProgress::NotSent,
-            RawCleanupProgress::Pending { request_id } => CleanupProgress::Pending { request_id },
-            RawCleanupProgress::Unknown => CleanupProgress::Unknown,
+        let progress = match raw.phase.as_str() {
+            "queued" => CleanupProgress::Queued,
+            "written" => CleanupProgress::Written {
+                request_id: raw.request_id.ok_or(WorkspaceCleanupError::InvalidRecord)?,
+                effect: CompletedEffect::checked(
+                    &raw.effect.ok_or(WorkspaceCleanupError::InvalidRecord)?,
+                    &raw.receipt,
+                )?,
+                raw: raw.receipt,
+            },
+            "not_sent" => CleanupProgress::NotSent,
+            "pending" => CleanupProgress::Pending {
+                request_id: raw.request_id.ok_or(WorkspaceCleanupError::InvalidRecord)?,
+            },
+            "unknown" => CleanupProgress::Unknown,
+            _ => return Err(WorkspaceCleanupError::InvalidRecord),
         };
         Ok(Self {
             action: raw.action,
@@ -831,7 +825,7 @@ async fn begin_effect(
     action: CleanupAction,
     effect: &CleanupEffect,
     expected_agent: &Value,
-) -> Result<(String, Option<CleanupReceipt>), WorkspaceCleanupError> {
+) -> Result<(String, Option<(CompletedEffect, Value)>), WorkspaceCleanupError> {
     let agent_id = agent_id.to_owned();
     let effect = effect.clone();
     let expected_agent = expected_agent.clone();
@@ -857,9 +851,8 @@ async fn begin_effect(
             let same_effect = intent.get("action") == Some(&serde_json::to_value(action).map_err(StoreError::from)?)
                 && intent.get("effect") == Some(&serde_json::to_value(&effect).map_err(StoreError::from)?);
             if phase == Some("written") && same_effect {
-                if let CleanupProgress::Written { request_id, effect: saved_effect, receipt } = decoded.progress {
-                    if saved_effect != effect { return Err(WorkspaceCleanupError::Held); }
-                    return Ok((request_id, Some(receipt)));
+                if let CleanupProgress::Written { request_id, effect: completed, raw } = decoded.progress {
+                    return Ok((request_id, Some((completed, raw))));
                 }
                 return Err(WorkspaceCleanupError::InvalidRecord);
             }
@@ -932,7 +925,7 @@ async fn complete_effect(
                 )?;
                 return Ok(false);
             }
-            let checked_receipt = match CleanupReceipt::checked(&effect, receipt.clone()) {
+            let completed = match CompletedEffect::checked(&effect, &receipt) {
                 Ok(receipt) => receipt,
                 Err(_) => {
                     agent[INTENT_FIELD]["phase"] = json!("unknown");
@@ -950,7 +943,7 @@ async fn complete_effect(
                 .ok_or(WorkspaceCleanupError::InvalidRecord)?;
             intent.insert("phase".into(), json!("written"));
             intent.insert("receipt".into(), receipt.clone());
-            apply_effect_result(&mut agent, &effect, &checked_receipt)?;
+            apply_effect_result(&mut agent, &completed)?;
             let updated_identity = lifecycle_identity(&agent);
             agent[INTENT_FIELD]["identity"] = updated_identity;
             AgentRepository::put(
@@ -970,13 +963,11 @@ async fn finalize_effect(
     store: &RuntimeStore,
     agent_id: &str,
     request_id: &str,
-    effect: &CleanupEffect,
-    receipt: &CleanupReceipt,
+    effect: &CompletedEffect,
 ) -> Result<(), WorkspaceCleanupError> {
     let agent_id = agent_id.to_owned();
     let request_id = request_id.to_owned();
     let effect = effect.clone();
-    let receipt = receipt.clone();
     store
         .transaction_with_error(move |tx| {
             let mut agent = load_agent(tx, &agent_id)?;
@@ -993,7 +984,7 @@ async fn finalize_effect(
             {
                 return Err(WorkspaceCleanupError::Held);
             }
-            apply_effect_result(&mut agent, &effect, &receipt)?;
+            apply_effect_result(&mut agent, &effect)?;
             AgentRepository::put(
                 tx,
                 &AgentRecord::from_value(agent).map_err(StoreError::from)?,
@@ -1006,16 +997,14 @@ async fn finalize_effect(
 
 fn apply_effect_result(
     agent: &mut Value,
-    effect: &CleanupEffect,
-    receipt: &CleanupReceipt,
+    effect: &CompletedEffect,
 ) -> Result<(), WorkspaceCleanupError> {
-    let raw = receipt.raw();
     match effect {
-        CleanupEffect::ArchiveImage | CleanupEffect::RemoveImage => {}
-        CleanupEffect::ReleaseNativeLine | CleanupEffect::ReleaseVmLine { .. } => {
+        CompletedEffect::ArchiveImage | CompletedEffect::RemoveImage => {}
+        CompletedEffect::ReleaseNativeLine | CompletedEffect::ReleaseVmLine => {
             agent["layrReady"] = json!(false);
         }
-        CleanupEffect::RemoveWorktree { identity } => {
+        CompletedEffect::RemoveWorktree { identity, bytes } => {
             let repo = identity
                 .get("repository")
                 .cloned()
@@ -1043,17 +1032,14 @@ fn apply_effect_result(
                 "branch": identity.get("branch").and_then(Value::as_str),
                 "head": identity.get("head"),
                 "identity": identity.get("lifecycleIdentity"),
-                "bytes": raw.get("bytes").cloned().unwrap_or(Value::Null)
+                "bytes": bytes
             });
             agent
                 .as_object_mut()
                 .ok_or(WorkspaceCleanupError::InvalidRecord)?
                 .remove("worktreeCleanup");
         }
-        CleanupEffect::SaveNativeTurn => {
-            let CleanupReceipt::Saved { state_id, .. } = receipt else {
-                return Err(WorkspaceCleanupError::InvalidRecord);
-            };
+        CompletedEffect::SaveNativeTurn { state_id } => {
             agent["layrStateId"] = json!(state_id);
             if let Some(turns) = agent["layrTurnSaves"].as_object_mut() {
                 for save in turns.values_mut().filter(|save| save["status"] != "saved") {
@@ -1061,11 +1047,8 @@ fn apply_effect_result(
                 }
             }
         }
-        CleanupEffect::SaveWorktreeRef { .. } => {}
-        CleanupEffect::SaveVmTurn { turn_id } => {
-            let CleanupReceipt::Saved { state_id, .. } = receipt else {
-                return Err(WorkspaceCleanupError::InvalidRecord);
-            };
+        CompletedEffect::SaveWorktreeRef => {}
+        CompletedEffect::SaveVmTurn { turn_id, state_id } => {
             agent["layrTurnSaves"][turn_id] = json!({"status":"saved","stateId":state_id});
             agent["layrStateId"] = json!(state_id);
         }
