@@ -514,7 +514,7 @@ pub(super) fn managed_reply_authority_in(
     }))
 }
 
-fn callback_context_in(
+pub(super) fn callback_context_in(
     db: &rusqlite::Connection,
     account: &str,
     generation: u64,
