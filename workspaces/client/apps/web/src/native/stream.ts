@@ -1,182 +1,174 @@
 import { randomUUID } from "../uuid";
 import { listenNativeEvents, nativeRequest } from "./client";
-import { NATIVE_SSE_EVENT_MAX_BYTES } from "../generated/sharedValues";
+import type {
+  NativeStreamRetry,
+  ServerEventSource,
+} from "../servers/eventSource";
 
-// The core owns HTTP and SSE framing. This adapter carries its decoded events
-// through the existing per-server stream bridge without exposing credentials.
-export async function nativeEventResponse(
-  request: Request,
-  path: string,
-): Promise<Response> {
-  request.signal.throwIfAborted();
-  const subscription = randomUUID();
-  const encoder = new TextEncoder();
-  let controller: ReadableStreamDefaultController<Uint8Array>;
-  let stopped = false;
-  let confirmed = false;
-  let unlisten: (() => void) | undefined;
-  let opened = false;
-  let credit: string | undefined;
-  let pending:
-    | { credit: string; resolve: () => void; reject: (error: unknown) => void }
-    | undefined;
-  let resolveOpen: () => void;
-  let rejectOpen: (error: unknown) => void;
-  const ready = new Promise<void>((resolve, reject) => {
-    resolveOpen = resolve;
-    rejectOpen = reject;
-  });
-  // A rejection can precede listener registration completing.
-  void ready.catch(() => {});
-  let reason = "closed by the page";
-  const stop = () => {
-    if (stopped) return;
-    stopped = true;
-    pending?.resolve();
-    pending = undefined;
-    credit = undefined;
-    request.signal.removeEventListener("abort", abort);
-    unlisten?.();
-    if (confirmed)
-      void nativeRequest("view.unsubscribe", { subscription, reason }).catch(
-        () => {},
-      );
+type NativeStreamMessage = {
+  event?: string;
+  credit?: unknown;
+  consumedCredit?: unknown;
+  error?: { message?: string };
+  value?: {
+    type?: string;
+    data?: string;
+    message?: string;
+    closed?: boolean;
+    opened?: boolean;
+    retryInMs?: number;
   };
-  const fail = (error: unknown) => {
-    if (stopped) return;
-    reason = String((error as Error)?.message ?? error).slice(0, 300);
-    rejectOpen(error);
-    pending?.reject(error);
-    pending = undefined;
-    controller.error(error);
-    stop();
-  };
-  const abort = () => fail(request.signal.reason);
-  const body = new ReadableStream<Uint8Array>(
-    {
-      start(value) {
-        controller = value;
-      },
-      pull() {
-        if (stopped) return;
-        if (!credit || pending) {
-          fail(new Error("The native event credit is invalid."));
-          return;
-        }
-        const token = credit;
-        return new Promise<void>((resolve, reject) => {
-          pending = { credit: token, resolve, reject };
-          void nativeRequest("view.next", { subscription, credit: token }).then(
-            (result) => {
-              if (!result || (result as { granted?: boolean }).granted !== true)
-                fail(new Error("The native event credit was not accepted."));
-            },
-            fail,
-          );
-        });
-      },
-      cancel(cause) {
-        reason = `reader cancelled: ${String(cause?.message ?? cause)}`.slice(
-          0,
-          300,
-        );
-        stop();
-      },
-    },
-    { highWaterMark: 0, size: (chunk) => chunk.byteLength },
-  );
-  try {
-    unlisten = await listenNativeEvents((input) => {
-      if (stopped || !input || typeof input !== "object") return;
-      const event = input as {
-        event?: string;
-        credit?: unknown;
-        consumedCredit?: unknown;
-        error?: { message?: string };
-        value?: { type?: string; data?: string; id?: string; message?: string };
-      };
-      if (event.event !== subscription) return;
-      if (
-        event.error ||
-        (event.value?.type === "error" && event.value.data === undefined)
-      ) {
-        fail(
-          new Error(
-            event.error?.message ||
-              event.value?.message ||
-              "The server event stream closed.",
-          ),
-        );
-      } else if (
-        event.value?.type === "open" &&
-        event.value.data === undefined
-      ) {
-        if (opened || typeof event.credit !== "string" || !event.credit) {
-          fail(new Error("The native event credit is invalid."));
-          return;
-        }
-        credit = event.credit;
-        opened = true;
-        resolveOpen();
-      } else if (typeof event.value?.data === "string") {
-        if (!opened) {
-          fail(new Error("The native event stream is not open."));
-          return;
-        }
-        if (
-          !pending ||
-          event.consumedCredit !== pending.credit ||
-          typeof event.credit !== "string" ||
-          !event.credit ||
-          event.credit === pending.credit
-        ) {
-          fail(new Error("The native event credit is invalid."));
-          return;
-        }
-        const value = event.value;
-        const type = value.type || "message";
-        if (/[\r\n]/.test(type) || /[\r\n\0]/.test(value.id || "")) {
-          fail(new Error("The native event metadata is invalid."));
-          return;
-        }
-        const bytes = encoder.encode(
-          `id: ${value.id || ""}\nevent: ${type}\n${value
-            .data!.split("\n")
-            .map((line) => `data: ${line}\n`)
-            .join("")}\n`,
-        );
-        if (bytes.byteLength > NATIVE_SSE_EVENT_MAX_BYTES) {
-          fail(new Error("The native event exceeds its size limit."));
-          return;
-        }
-        const delivered = pending;
-        pending = undefined;
-        credit = event.credit;
-        controller.enqueue(bytes);
-        delivered.resolve();
-      }
-    });
-    request.signal.addEventListener("abort", abort, { once: true });
-    request.signal.throwIfAborted();
-    void nativeRequest("view.subscribe", {
-      subscription,
+};
+
+/**
+ * One server event stream that the native core owns end to end: connect,
+ * credits, reconnect with backoff, the silence watchdog and close reasons
+ * (`client-core/src/events.rs`). The page never retries. It only answers a
+ * resume request with its current path and asks for a restart when it cannot
+ * use a connection. `onerror` means the core stopped the stream for good.
+ */
+export class NativeEventSource
+  extends EventTarget
+  implements ServerEventSource
+{
+  onopen: ServerEventSource["onopen"] = null;
+  onerror: ServerEventSource["onerror"] = null;
+  onretry: ((detail: NativeStreamRetry) => void) | null = null;
+  onresume: (() => void) | null = null;
+  private readonly subscription = randomUUID();
+  private stopped = false;
+  private confirmed = false;
+  /** The page ended or lost this connection; its late events are dropped. */
+  private lost = false;
+  private hold: Promise<unknown> = Promise.resolve();
+  /** The latest credit from the core, and the one the page last granted. */
+  private credit: string | undefined;
+  private granted: string | undefined;
+  private unlisten: (() => void) | undefined;
+
+  constructor(path: string) {
+    super();
+    void this.start(path).catch((error: unknown) => this.fail(error));
+  }
+
+  holdUntil(ready: Promise<unknown>) {
+    this.hold = Promise.all([this.hold, ready]);
+  }
+
+  resume(path: string) {
+    this.command("view.resume", { path });
+  }
+
+  restart(reason: string) {
+    this.lost = true;
+    this.command("view.restart", { reason: reason.slice(0, 300) });
+  }
+
+  /** The reason reaches the desktop stream log. */
+  close(reason = "closed by the page") {
+    if (this.stopped) return;
+    this.stopped = true;
+    this.unlisten?.();
+    if (this.confirmed)
+      void nativeRequest("view.unsubscribe", {
+        subscription: this.subscription,
+        reason: reason.slice(0, 300),
+      }).catch(() => {});
+  }
+
+  private async start(path: string) {
+    const unlisten = await listenNativeEvents((input) => this.receive(input));
+    if (this.stopped) return unlisten();
+    this.unlisten = unlisten;
+    await nativeRequest("view.subscribe", {
+      subscription: this.subscription,
       topic: "sse",
       path,
       flowControl: true,
-    }).then(() => {
-      confirmed = true;
-      // A close can race backend verification and subscription creation.
-      if (stopped)
-        void nativeRequest("view.unsubscribe", { subscription }).catch(
-          () => {},
-        );
-    }, fail);
-    await ready;
-    return new Response(body, {
-      headers: { "Content-Type": "text/event-stream" },
     });
-  } catch (error) {
-    stop();
-    throw error;
+    this.confirmed = true;
+    // A close can race backend verification and subscription creation.
+    if (this.stopped)
+      void nativeRequest("view.unsubscribe", {
+        subscription: this.subscription,
+      }).catch(() => {});
+  }
+
+  private command(method: string, params: Record<string, unknown>) {
+    if (this.stopped) return;
+    void nativeRequest(method, {
+      subscription: this.subscription,
+      ...params,
+    }).catch((error: unknown) => this.fail(error));
+  }
+
+  private fail(error: unknown) {
+    if (this.stopped) return;
+    this.close(String((error as Error)?.message ?? error));
+    this.onerror?.call(this, new Event("error"));
+  }
+
+  private receive(input: unknown) {
+    const message = input as NativeStreamMessage | null;
+    if (this.stopped || message?.event !== this.subscription) return;
+    const value = message.value;
+    if (
+      message.error ||
+      (value?.type === "error" && value.data === undefined)
+    ) {
+      if (message.error || value?.closed !== false)
+        return this.fail(
+          new Error(
+            message.error?.message ||
+              value?.message ||
+              "The server event stream closed.",
+          ),
+        );
+      this.lost = true;
+      this.onretry?.({
+        opened: value.opened === true,
+        retryAt: Date.now() + (value.retryInMs ?? 0),
+      });
+    } else if (value?.type === "resume" && value.data === undefined) {
+      this.onresume?.();
+    } else if (value?.type === "open" && value.data === undefined) {
+      if (typeof message.credit !== "string" || !message.credit)
+        return this.fail(new Error("The native event credit is invalid."));
+      this.lost = false;
+      this.credit = message.credit;
+      this.onopen?.call(this, new Event("open"));
+      this.grant();
+    } else if (typeof value?.data === "string") {
+      if (
+        this.granted === undefined ||
+        message.consumedCredit !== this.granted ||
+        typeof message.credit !== "string" ||
+        !message.credit ||
+        message.credit === this.granted
+      )
+        return this.fail(new Error("The native event credit is invalid."));
+      this.credit = message.credit;
+      if (this.lost) return;
+      this.dispatchEvent(
+        new MessageEvent(value.type || "message", { data: value.data }),
+      );
+      this.grant();
+    }
+  }
+
+  /** Grants the current credit once the page has applied earlier events. */
+  private grant() {
+    const credit = this.credit;
+    if (!credit || credit === this.granted) return;
+    void this.hold.then(
+      () => {
+        if (this.stopped || this.lost || credit !== this.credit) return;
+        if (credit === this.granted) return;
+        this.granted = credit;
+        // A lost grant response has an unknown outcome; it is never repeated.
+        this.command("view.next", { credit });
+      },
+      (error: unknown) => this.fail(error),
+    );
   }
 }

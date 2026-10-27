@@ -80,6 +80,28 @@ impl Views {
                 )
             };
         }
+        if request.method == "view.resume" || request.method == "view.restart" {
+            let accepted = self.flows.get(id).is_some_and(|flow| {
+                if request.method == "view.restart" {
+                    let reason = request.params["reason"].as_str().unwrap_or("");
+                    crate::stream_log::line(&format!("restart {id} reason={reason}"));
+                    flow.restart(reason);
+                    return true;
+                }
+                request.params["path"]
+                    .as_str()
+                    .is_some_and(|path| flow.resume(path))
+            });
+            return if accepted {
+                Response::success(request.id.clone(), json!({"accepted":true}))
+            } else {
+                Response::failure(
+                    request.id.clone(),
+                    "invalid_subscription",
+                    "The stream is not waiting for this request.",
+                )
+            };
+        }
         if request.method != "view.subscribe"
             || self.tasks.contains_key(id)
             || self.tasks.len() >= 64
@@ -499,6 +521,32 @@ mod flow_tests {
         assert!(owner.command(&next).error.is_some());
         assert!(owner.command(&subscribe).error.is_none());
         assert!(owner.command(&next).error.is_some());
+    }
+    #[tokio::test]
+    async fn resume_and_restart_reach_only_this_connections_waiting_stream() {
+        let mut owner = views();
+        let mut foreign = views();
+        let subscribe = request(
+            "view.subscribe",
+            json!({"subscription":"one","topic":"sse","path":"/api/sync/stream","flowControl":true}),
+        );
+        assert!(owner.command(&subscribe).error.is_none());
+        let restart = request(
+            "view.restart",
+            json!({"subscription":"one","reason":"invalid-frame"}),
+        );
+        let resume = request(
+            "view.resume",
+            json!({"subscription":"one","path":"/api/sync/stream?next"}),
+        );
+        assert!(foreign.command(&restart).error.is_some());
+        assert!(owner.command(&restart).error.is_none());
+        // The stream has not asked for a path, so an early answer is refused.
+        assert!(owner.command(&resume).error.is_some());
+        owner.flows["one"].expect_path();
+        assert!(foreign.command(&resume).error.is_some());
+        assert!(owner.command(&resume).error.is_none());
+        assert!(owner.command(&resume).error.is_some());
     }
     #[tokio::test]
     async fn push_views_remain_push_and_flow_control_is_sse_only() {
