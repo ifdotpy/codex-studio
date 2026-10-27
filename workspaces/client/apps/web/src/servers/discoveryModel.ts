@@ -1,10 +1,12 @@
+import type { components } from "../generated/api";
+
 // The wire adapter maps the local server's discovery snapshot to this view.
 export type DiscoveredServer = {
   id: string;
   label: string;
   origin: string;
-  status: "discovered" | "paired" | "revoked" | "unreachable";
-  reachability?: "reachable" | "unreachable" | "unknown" | null | undefined;
+  status: components["schemas"]["DiscoveredServer"]["status"];
+  reachability?: components["schemas"]["DiscoveredServer"]["reachability"];
   lastSeen: number | null;
   paired: boolean;
   publicKey: string;
