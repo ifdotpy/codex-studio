@@ -1,13 +1,26 @@
 import { randomUUID } from "../uuid";
-import type { NativeEvent } from "./host";
+import type { NativeVoiceEvent } from "../generated/rustOwned";
 import { listenNativeEvents, nativeRequest } from "./client";
 import { isNativeFrame } from "./frame";
-export type NativeVoiceEvent = {
-  type: string;
-  state?: string;
-  data?: string;
-  message?: string;
-};
+function decodeNativeVoiceEvent(value: unknown): NativeVoiceEvent | undefined {
+  if (!value || typeof value !== "object" || !("type" in value)) return;
+  switch (value.type) {
+    case "message":
+      if ("data" in value && typeof value.data === "string")
+        return { type: value.type, data: value.data };
+      break;
+    case "state":
+    case "channel":
+    case "microphone":
+      if ("state" in value && typeof value.state === "string")
+        return { type: value.type, state: value.state };
+      break;
+    case "error":
+      if ("message" in value && typeof value.message === "string")
+        return { type: value.type, message: value.message };
+  }
+  return undefined;
+}
 export function nativeVoice(
   session: string,
   onEvent: (event: NativeVoiceEvent) => void,
@@ -26,9 +39,17 @@ export function nativeVoice(
     async offer() {
       try {
         listening = await listen((input) => {
-          // The native host owns voice events; retain its base checks.
-          const event = input as NativeEvent<NativeVoiceEvent>;
-          if (!closed && event?.event === subscription) onEvent(event.value);
+          if (
+            closed ||
+            !input ||
+            typeof input !== "object" ||
+            !("event" in input) ||
+            input.event !== subscription ||
+            !("value" in input)
+          )
+            return;
+          const event = decodeNativeVoiceEvent(input.value);
+          if (event) onEvent(event);
         });
         if (closed) throw new Error("Voice ended.");
         await request("view.subscribe", {

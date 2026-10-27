@@ -32,6 +32,9 @@ it("subscribes before creating a Rust peer, then applies answer, mute and close"
   ).toEqual(["view.subscribe", "voice.create"]);
   emit({ event: "other", value: { type: "error" } });
   expect(receive).not.toHaveBeenCalled();
+  emit({ event: subscription, value: null });
+  emit({ event: subscription, value: { type: "message", data: {} } });
+  expect(receive).not.toHaveBeenCalled();
   emit({ event: subscription, value: { type: "message", data: "hello" } });
   expect(receive).toHaveBeenCalledWith({ type: "message", data: "hello" });
   await peer.answer("answer");
