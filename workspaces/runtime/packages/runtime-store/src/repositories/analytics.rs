@@ -258,24 +258,20 @@ pub fn rollup<'a>(
         },
     )?;
     let tool_filter = usage_filter.clone().and("is_tool=1", []);
-    let tools = item_grouped(
-        &tool_filter,
-        "COALESCE(json_extract(record,'$.name'),'')",
-        "COALESCE(json_extract(record,'$.type'),'')",
-    )?
-    .into_iter()
-    .map(|((name, kind), totals)| Tool {
-        name,
-        model_input_bytes: (kind == "modelToolCall")
-            .then_some(totals.input_bytes)
-            .flatten(),
-        model_output_bytes: (kind == "modelToolCall")
-            .then_some(totals.output_bytes)
-            .flatten(),
-        kind,
-        totals,
-    })
-    .collect::<Vec<_>>();
+    let tools = item_grouped(&tool_filter, "COALESCE(name,'')", "COALESCE(type,'')")?
+        .into_iter()
+        .map(|((name, kind), totals)| Tool {
+            name,
+            model_input_bytes: (kind == "modelToolCall")
+                .then_some(totals.input_bytes)
+                .flatten(),
+            model_output_bytes: (kind == "modelToolCall")
+                .then_some(totals.output_bytes)
+                .flatten(),
+            kind,
+            totals,
+        })
+        .collect::<Vec<_>>();
     let agent_calls: BTreeMap<_, _> = item_grouped(&call_filter, "agent", TOOL_BOUNDARY)?
         .into_iter()
         .collect();
@@ -313,7 +309,7 @@ pub fn rollup<'a>(
     let item_counts = query(
         db,
         &format!(
-            "SELECT COALESCE(json_extract(record,'$.type'),''),COUNT(*),CASE WHEN COUNT(json_extract(record,'$.input.bytes'))+COUNT(json_extract(record,'$.output.bytes'))=0 THEN NULL ELSE COALESCE(SUM(json_extract(record,'$.input.bytes')),0)+COALESCE(SUM(json_extract(record,'$.output.bytes')),0) END,CASE WHEN COUNT(json_extract(record,'$.input.chars'))+COUNT(json_extract(record,'$.output.chars'))=0 THEN NULL ELSE COALESCE(SUM(json_extract(record,'$.input.chars')),0)+COALESCE(SUM(json_extract(record,'$.output.chars')),0) END FROM analytics_items {usage_where} GROUP BY json_extract(record,'$.type') ORDER BY MIN(at),MIN(id)"
+            "SELECT COALESCE(type,''),COUNT(*),CASE WHEN COUNT(json_extract(record,'$.input.bytes'))+COUNT(json_extract(record,'$.output.bytes'))=0 THEN NULL ELSE COALESCE(SUM(json_extract(record,'$.input.bytes')),0)+COALESCE(SUM(json_extract(record,'$.output.bytes')),0) END,CASE WHEN COUNT(json_extract(record,'$.input.chars'))+COUNT(json_extract(record,'$.output.chars'))=0 THEN NULL ELSE COALESCE(SUM(json_extract(record,'$.input.chars')),0)+COALESCE(SUM(json_extract(record,'$.output.chars')),0) END FROM analytics_items {usage_where} GROUP BY type ORDER BY MIN(at),MIN(id)"
         ),
         params_from_iter(&usage_filter.params),
         |r| {
@@ -758,7 +754,7 @@ fn item_breakdown(filter: &ScopeFilter) -> Result<Vec<ItemBreakdown>, AnalyticsE
     query(
         db,
         &format!(
-            "SELECT COALESCE(json_extract(record,'$.type'),''),COALESCE(json_extract(record,'$.payloadBoundary'),'protocol'),json_extract(record,'$.category'),json_extract(record,'$.role'),COUNT(*),SUM(json_extract(record,'$.input.bytes')),SUM(json_extract(record,'$.output.bytes')),COUNT(json_extract(record,'$.input')),COUNT(json_extract(record,'$.output')) FROM analytics_items {} GROUP BY 1,2,3,4 ORDER BY 1,2,3,4",
+            "SELECT COALESCE(type,''),COALESCE(json_extract(record,'$.payloadBoundary'),'protocol'),json_extract(record,'$.category'),json_extract(record,'$.role'),COUNT(*),SUM(json_extract(record,'$.input.bytes')),SUM(json_extract(record,'$.output.bytes')),COUNT(json_extract(record,'$.input')),COUNT(json_extract(record,'$.output')) FROM analytics_items {} GROUP BY 1,2,3,4 ORDER BY 1,2,3,4",
             filter.sql
         ),
         params_from_iter(&filter.params),
@@ -1542,5 +1538,25 @@ mod capture_error_tests {
         assert!(served["last"]["at"].is_number(), "{served}");
         assert_eq!(served["last"]["at"].as_f64(), Some(1_792_320_464.0));
         assert_eq!(served["last"]["error"], "Publication queue limit reached");
+    }
+}
+
+#[cfg(test)]
+mod item_scalar_tests {
+    use super::*;
+
+    #[test]
+    fn item_breakdown_uses_scalar_type_and_validates_record() {
+        let db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE analytics_items(id TEXT, type TEXT, record TEXT); INSERT INTO analytics_items VALUES ('one','scalar','{\"agentId\":\"agent\",\"type\":\"json\"}');").expect("fixture");
+        let filter = ScopeFilter::new(&db);
+        filter.validate("analytics_items").expect("valid record");
+        assert_eq!(
+            item_breakdown(&filter).expect("breakdown")[0].kind,
+            "scalar"
+        );
+        db.execute("UPDATE analytics_items SET record='{}'", [])
+            .expect("corrupt");
+        assert!(filter.validate("analytics_items").is_err());
     }
 }
