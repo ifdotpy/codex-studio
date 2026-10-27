@@ -1,0 +1,100 @@
+.workspace-panel-inline {
+  position: relative;
+  flex: none;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  border-left: 1px solid var(--line);
+  background: var(--mantine-color-body);
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+}
+.workspace-panel-inline[hidden] {
+  display: none;
+}
+.workspace-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+.workspace-panel-header > button:last-child {
+  margin-left: auto;
+}
+.workspace-panel-body {
+  min-height: 0;
+  flex: 1;
+}
+.workspace-panel-inline > .workspace-panel-body {
+  overflow: auto;
+}
+.workspace-panel-resize {
+  position: absolute;
+  inset-block: 0;
+  left: -0.25rem;
+  width: 0.5rem;
+  cursor: col-resize;
+  touch-action: none;
+}
+.workspace-panel-resize:hover,
+.workspace-panel-resize:focus-visible {
+  background: var(--mantine-color-indigo-light);
+}
+.workspace-panel-surface-host,
+.workspace-surface {
+  height: 100%;
+  min-height: 0;
+}
+.workspace-panel-inline .workspace-shell {
+  min-height: 100%;
+}
+.workspace-panel-inline .workspace-nav {
+  display: flex;
+  flex-wrap: wrap;
+  padding: 0.5rem;
+  border-right: 0;
+  border-bottom: 1px solid var(--line);
+}
+.workspace-panel-inline .workspace-shell:not(.workspace-focused-messages) {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
+}
+.workspace-panel-inline .workspace-nav-item {
+  width: auto;
+}
+.workspace-panel-inline .workspace-content {
+  padding: 1rem;
+}
+.workspace-panel-inline .workspace-heading {
+  flex-wrap: wrap;
+}
+.workspace-panel-inline .workspace-scope {
+  flex-wrap: wrap;
+}
+.workspace-panel-inline .workspace-heading > .mantine-TextInput-root {
+  flex-basis: 100%;
+}
+.workspace-messages-drawer .mantine-Drawer-body {
+  display: flex;
+  flex-direction: column;
+}
+.workspace-panel-surface-host:focus {
+  outline: none;
+}
+.workspace-panel-inline .workspace-messages .team-chats {
+  grid-template-columns: minmax(0, 1fr);
+}
+.workspace-panel-inline .team-room-detail {
+  display: none;
+}
+.workspace-panel-inline .team-chats.show-room .team-room-list {
+  display: none;
+}
+.workspace-panel-inline .team-chats.show-room .team-room-detail {
+  display: flex;
+}
+.workspace-panel-inline .team-room-back {
+  display: flex;
+}

@@ -1,33 +1,124 @@
+import { hasTouchCapability, touchPointerMedia } from "./touchCapability";
 import { useEffect } from "react";
+import { layoutValues } from "../layout/layout-contract.generated";
 
-/** Keep the phone layout inside the visible area without treating pinch zoom as a keyboard. */
-export function useMobileViewport(enabled: boolean) {
+/** Count of touch gestures intercepted by the active viewport owner, in gestures. */
+export const viewportGestureCountAttribute = "data-keyboard-gesture-count";
+
+const fullFrames = new WeakMap<Document, { height: number; width: number }>();
+
+/** Keep the full touch layout behind the keyboard while its composer follows the visible bottom. */
+export function useMobileViewport(active: boolean, compact = false) {
   useEffect(() => {
-    if (!enabled) return;
+    if (!active) return;
     const viewport = window.visualViewport;
     const root = document.documentElement;
+    const coarsePointer = touchPointerMedia();
     let frame = 0;
+    let focusFrame = 0;
+    let focusDeadline = 0;
+    let hadComposerFocus = false;
+    let composerClosing = false;
+    let sampledGeometry = "";
+    let interceptedTextarea: HTMLTextAreaElement | null = null;
+    let gestureCount = 0;
+    const previousFrame = fullFrames.get(document);
+    let fullHeight = previousFrame?.height || 0;
+    let fullWidth = previousFrame?.width || 0;
+    let keyboardRecoveryPending = false;
+    let composer: HTMLElement | null = null;
+    let messages: HTMLElement | null = null;
+    const recoveryFrames = new Set<number>();
+    const resetComposer = () => {
+      composer?.removeAttribute("data-keyboard-floating");
+      composer?.style.removeProperty("--keyboard-composer-shift");
+      messages?.style.removeProperty("--keyboard-scroll-clearance");
+      composer?.getBoundingClientRect();
+      messages?.getBoundingClientRect();
+    };
+    const clear = () => {
+      resetComposer();
+      root.removeAttribute(viewportGestureCountAttribute);
+      root.removeAttribute("data-viewport-surface");
+      root.removeAttribute("data-viewport-keyboard");
+      root.removeAttribute("data-viewport-keyboard-compact");
+      root.removeAttribute("data-viewport-short-landscape");
+      for (const property of [
+        "--mobile-viewport-height",
+        "--mobile-viewport-top",
+        "--mobile-safe-area-bottom",
+        "--mobile-safe-area-top",
+      ])
+        root.style.removeProperty(property);
+    };
     const update = () => {
+      cancelAnimationFrame(frame);
       frame = 0;
+      if (
+        !compact &&
+        !hasTouchCapability(coarsePointer.matches, navigator.maxTouchPoints)
+      ) {
+        clear();
+        return;
+      }
       // During zoom the browser owns viewport movement and scaling.
-      if (viewport && Math.abs(viewport.scale - 1) > 0.01) return;
+      if (
+        viewport &&
+        Math.abs(viewport.scale - 1) > layoutValues.viewport.zoomTolerance
+      )
+        return;
       const layoutHeight = Math.max(root.clientHeight, window.innerHeight);
       const height = Math.min(
         viewport?.height || window.innerHeight,
         layoutHeight,
       );
-      const top = Math.min(
-        Math.max(0, viewport?.offsetTop || 0),
-        Math.max(0, layoutHeight - height),
-      );
+      // iOS can shrink innerHeight and pan the visual viewport at the same time.
+      // Its offset remains relative to the layout viewport after that shrink.
+      const top = Math.max(0, viewport?.offsetTop ?? 0);
       if (!Number.isFinite(height) || height <= 0 || !Number.isFinite(top))
         return;
-      const keyboard = layoutHeight - height - top > 100;
-      root.style.setProperty("--mobile-viewport-height", `${height}px`);
+      root.setAttribute("data-viewport-surface", "");
+      const width = viewport?.width || window.innerWidth;
+      const sameWidth = !fullWidth || width === fullWidth;
+      const keyboard =
+        !!viewport &&
+        Math.max(
+          layoutHeight - height,
+          sameWidth ? fullHeight - height : 0,
+          top,
+        ) > layoutValues.keyboard.occlusionMin;
+      if (!keyboard || !sameWidth) {
+        fullHeight = height;
+        fullWidth = width;
+        fullFrames.set(document, { height: fullHeight, width: fullWidth });
+      } else if (!fullHeight) {
+        fullHeight = layoutHeight;
+        fullWidth = width;
+      }
+      if (keyboard) keyboardRecoveryPending = true;
+      if (keyboard) root.setAttribute("data-viewport-keyboard", "");
+      else root.removeAttribute("data-viewport-keyboard");
+      const overlay =
+        keyboard &&
+        hasTouchCapability(coarsePointer.matches, navigator.maxTouchPoints) &&
+        width > fullHeight &&
+        fullHeight < layoutValues.header.shortLandscapeMaxHeight;
+      const surfaceHeight = overlay ? fullHeight : height;
+      if (keyboard && height < layoutValues.keyboard.compactMaxHeight)
+        root.setAttribute("data-viewport-keyboard-compact", "");
+      else root.removeAttribute("data-viewport-keyboard-compact");
+      if (
+        hasTouchCapability(coarsePointer.matches, navigator.maxTouchPoints) &&
+        width > fullHeight &&
+        fullHeight < layoutValues.header.shortLandscapeMaxHeight
+      )
+        root.setAttribute("data-viewport-short-landscape", "");
+      else root.removeAttribute("data-viewport-short-landscape");
+      root.style.setProperty("--mobile-viewport-height", `${surfaceHeight}px`);
       root.style.setProperty("--mobile-viewport-top", `${top}px`);
       root.style.setProperty(
         "--mobile-safe-area-bottom",
-        keyboard ? "0px" : "env(safe-area-inset-bottom)",
+        keyboard && !overlay ? "0px" : "env(safe-area-inset-bottom)",
       );
       root.style.setProperty(
         "--mobile-safe-area-top",
@@ -35,6 +126,72 @@ export function useMobileViewport(enabled: boolean) {
           ? `max(0px, calc(env(safe-area-inset-top) - ${top}px))`
           : "env(safe-area-inset-top)",
       );
+      const nextComposer =
+        Array.from(document.querySelectorAll<HTMLElement>("#composer")).find(
+          (node) => node.getClientRects().length > 0,
+        ) || null;
+      if (composer !== nextComposer) {
+        resetComposer();
+        composerResize.disconnect();
+        composer = nextComposer;
+        messages =
+          composer
+            ?.closest("#conversation")
+            ?.querySelector<HTMLElement>("#messages") || null;
+        if (composer) composerResize.observe(composer);
+      }
+      if (overlay && composer && !composerClosing) {
+        const appRoot = document.getElementById("root");
+        // Both rectangles use the browser's coordinate origin. pageTop may use
+        // a different origin while iOS pans its layout viewport.
+        const visibleTop = appRoot?.getBoundingClientRect().top ?? top;
+        // Layout offsets exclude the compositor's in-flight transform. Reading
+        // a presentation rectangle and a computed transform can mix two frames.
+        let naturalBottom = visibleTop + composer.offsetHeight;
+        for (
+          let node: HTMLElement | null = composer;
+          node && node !== appRoot;
+        ) {
+          naturalBottom += node.offsetTop;
+          node = node.offsetParent as HTMLElement | null;
+          if (node) naturalBottom += node.clientTop;
+        }
+        for (
+          let node = composer.parentElement;
+          node;
+          node = node.parentElement
+        ) {
+          naturalBottom -= node.scrollTop;
+          if (node === appRoot) break;
+        }
+        const composerShift = Math.min(0, visibleTop + height - naturalBottom);
+        const retainTarget = (
+          node: HTMLElement,
+          property: string,
+          value: number,
+        ) => {
+          const previous = parseFloat(node.style.getPropertyValue(property));
+          if (
+            !Number.isFinite(previous) ||
+            Math.abs(previous - value) >
+              layoutValues.keyboard.motionTargetTolerance
+          )
+            node.style.setProperty(property, `${value}px`);
+        };
+        retainTarget(composer, "--keyboard-composer-shift", composerShift);
+        composer.setAttribute("data-keyboard-floating", "");
+        if (messages) {
+          const clearance = Math.max(
+            0,
+            messages.getBoundingClientRect().bottom -
+              (naturalBottom - composer.offsetHeight + composerShift),
+          );
+          retainTarget(messages, "--keyboard-scroll-clearance", clearance);
+        }
+        // Resolve the CSS transition before WebKit suspends frame callbacks.
+        composer.getBoundingClientRect();
+        messages?.getBoundingClientRect();
+      } else resetComposer();
       // Safari can retain a document scroll offset after it reveals a focused input.
       const activeElement = document.activeElement;
       const composerFocused =
@@ -48,26 +205,168 @@ export function useMobileViewport(enabled: boolean) {
     const schedule = () => {
       if (!frame) frame = requestAnimationFrame(update);
     };
+    const composerResize = new ResizeObserver(schedule);
+    const content = new MutationObserver(() => {
+      if (!composer?.isConnected) schedule();
+    });
+    content.observe(root, { childList: true, subtree: true });
+    const sampleNativePan = (time: number) => {
+      focusFrame = 0;
+      if (time > focusDeadline) return;
+      const geometry = [
+        viewport?.height,
+        viewport?.width,
+        viewport?.scale,
+        viewport?.offsetTop,
+        viewport?.pageTop,
+        window.innerHeight,
+        window.scrollX,
+        window.scrollY,
+      ].join("|");
+      if (geometry !== sampledGeometry) {
+        sampledGeometry = geometry;
+        update();
+      }
+      focusFrame = requestAnimationFrame(sampleNativePan);
+    };
+    const startFocusSampling = (focused: boolean) => {
+      if (
+        !viewport ||
+        (!compact &&
+          !hasTouchCapability(coarsePointer.matches, navigator.maxTouchPoints))
+      )
+        return;
+      cancelAnimationFrame(focusFrame);
+      sampledGeometry = "";
+      focusDeadline = focused
+        ? Infinity
+        : performance.now() + layoutValues.keyboard.focusSampleWindow;
+      focusFrame = requestAnimationFrame(sampleNativePan);
+    };
+    const sampleAfterFocus = () => {
+      const target = document.activeElement;
+      if (
+        !(target instanceof HTMLTextAreaElement) ||
+        !target.matches("#composer textarea")
+      )
+        return;
+      hadComposerFocus = true;
+      composerClosing = false;
+      startFocusSampling(true);
+    };
+    const recoverAfterBlur = () => {
+      if (hadComposerFocus) {
+        hadComposerFocus = false;
+        composerClosing = true;
+        resetComposer();
+        startFocusSampling(false);
+      }
+      if (!keyboardRecoveryPending || recoveryFrames.size) return;
+      const next = (remaining: number) => {
+        const id = requestAnimationFrame(() => {
+          recoveryFrames.delete(id);
+          const focused = document.activeElement;
+          if (
+            focused instanceof HTMLTextAreaElement &&
+            focused.matches("#composer textarea")
+          )
+            return;
+          window.scrollTo(0, 0);
+          update();
+          if (remaining > 0) next(remaining - 1);
+          else keyboardRecoveryPending = false;
+        });
+        recoveryFrames.add(id);
+      };
+      next(1);
+    };
+    const focusWithoutNativePan = (event: Event) => {
+      if (
+        !viewport ||
+        !hasTouchCapability(coarsePointer.matches, navigator.maxTouchPoints)
+      )
+        return;
+      if (
+        event.type === "pointerdown" &&
+        (event as PointerEvent).pointerType === "mouse"
+      )
+        return;
+      const target = event.target;
+      if (
+        !(target instanceof HTMLTextAreaElement) ||
+        !target.matches("#composer textarea")
+      )
+        return;
+      const focused = document.activeElement === target;
+      if (
+        focused &&
+        root.hasAttribute("data-viewport-keyboard") &&
+        interceptedTextarea !== target
+      )
+        return;
+      event.preventDefault();
+      if (interceptedTextarea !== target) {
+        interceptedTextarea = target;
+        root.setAttribute(
+          viewportGestureCountAttribute,
+          String(++gestureCount),
+        );
+        if (focused) target.blur();
+        target.focus({ preventScroll: true });
+      }
+    };
+    const endGesture = () => {
+      interceptedTextarea = null;
+    };
+    document.addEventListener("pointerdown", focusWithoutNativePan, {
+      capture: true,
+      passive: false,
+    });
+    document.addEventListener("touchstart", focusWithoutNativePan, {
+      capture: true,
+      passive: false,
+    });
+    const gestureEndEvents = [
+      "pointerup",
+      "pointercancel",
+      "touchend",
+      "touchcancel",
+    ];
+    for (const type of gestureEndEvents)
+      document.addEventListener(type, endGesture, true);
+    document.addEventListener("focusin", sampleAfterFocus);
+    document.addEventListener("focusout", recoverAfterBlur);
     update();
-    viewport?.addEventListener("resize", schedule);
-    viewport?.addEventListener("scroll", schedule);
-    window.addEventListener("resize", schedule);
-    window.addEventListener("orientationchange", schedule);
-    window.addEventListener("scroll", schedule);
+    sampleAfterFocus();
+    coarsePointer.addEventListener("change", schedule);
+    viewport?.addEventListener("resize", update);
+    viewport?.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+    window.addEventListener("scroll", update);
     return () => {
       cancelAnimationFrame(frame);
-      viewport?.removeEventListener("resize", schedule);
-      viewport?.removeEventListener("scroll", schedule);
-      window.removeEventListener("resize", schedule);
-      window.removeEventListener("orientationchange", schedule);
-      window.removeEventListener("scroll", schedule);
-      for (const property of [
-        "--mobile-viewport-height",
-        "--mobile-viewport-top",
-        "--mobile-safe-area-bottom",
-        "--mobile-safe-area-top",
-      ])
-        root.style.removeProperty(property);
+      cancelAnimationFrame(focusFrame);
+      recoveryFrames.forEach(cancelAnimationFrame);
+      document.removeEventListener("pointerdown", focusWithoutNativePan, {
+        capture: true,
+      });
+      document.removeEventListener("touchstart", focusWithoutNativePan, {
+        capture: true,
+      });
+      for (const type of gestureEndEvents)
+        document.removeEventListener(type, endGesture, true);
+      document.removeEventListener("focusin", sampleAfterFocus);
+      document.removeEventListener("focusout", recoverAfterBlur);
+      composerResize.disconnect();
+      content.disconnect();
+      coarsePointer.removeEventListener("change", schedule);
+      viewport?.removeEventListener("resize", update);
+      viewport?.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
+      window.removeEventListener("scroll", update);
+      clear();
     };
-  }, [enabled]);
+  }, [active, compact]);
 }

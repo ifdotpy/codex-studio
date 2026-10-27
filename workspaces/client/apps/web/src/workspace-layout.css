@@ -1,13 +1,14 @@
+@import "./layout/layout-contract.generated.css";
 :root {
   /* Desktop fleet column; the closed terminal dock consumes the same width. */
-  --studio-sidebar-width: 19.8rem;
+  --studio-sidebar-width: var(--layout-sidebar-preferred);
 }
 
 /* Shared geometry for the conversation and its persistent controls. */
 .workspace {
-  --chat-width: 860px;
-  --chat-text-width: 680px;
-  --chat-gutter: 24px;
+  --chat-width: var(--layout-conversation-composer-max);
+  --chat-text-width: var(--layout-conversation-text-max);
+  --chat-gutter: var(--layout-spacing-conversation-gutter);
   --chat-inset: max(
     var(--chat-gutter),
     calc((100% - var(--chat-text-width)) / 2)
@@ -15,7 +16,8 @@
   container: workspace / inline-size;
 }
 
-@media (min-width: 761px) {
+/* layout-query: navigation.inlineMin >= */
+@media (width >= 761px) {
   .workspace-shortcuts {
     flex-wrap: nowrap;
     overflow-x: auto;
@@ -73,7 +75,8 @@
   }
 }
 
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .workspace {
     --chat-gutter: 14px;
   }
@@ -243,7 +246,8 @@
 .message-bottom .message-delivery-status {
   margin: 0;
 }
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .conversation-header-tools-menu[data-compact="yes"] > summary {
     width: 44px;
     height: 44px;
@@ -322,5 +326,40 @@
     position: static;
     flex: 0 0 var(--studio-team-size);
     inline-size: var(--studio-team-size);
+  }
+}
+
+/* The measured row excludes the navigation column exactly once. */
+.workspace-layout-row {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: clip;
+}
+.workspace-layout-row > .workspace {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+.workspace-panel-slot {
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
+}
+.workspace-panel-slot:empty {
+  display: none;
+}
+.workspace-header {
+  padding-inline: var(--chat-gutter);
+}
+#conversation-header-tools {
+  max-width: 100%;
+}
+@media (any-pointer: coarse) {
+  .conversation-header-tools-menu[data-compact="yes"] > summary {
+    min-width: var(--layout-controls-touch-min);
+    min-height: var(--layout-controls-touch-min);
   }
 }

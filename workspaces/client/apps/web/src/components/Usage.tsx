@@ -1,4 +1,5 @@
 import { randomUUID } from "../uuid";
+import { PassiveUsage } from "../hooks/BottomInsetBand";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
 import { accountLimits } from "../usage/accountUsage";
@@ -495,57 +496,59 @@ export default function Usage({
       id="usage-footer"
       data-account-key={agent.accountKey || "default"}
     >
-      <div
-        className="session-cost-summary"
-        aria-label={
-          sessionCost
-            ? `Session estimate: ${dollars(sessionCost.totalUSD)}`
-            : "Current team session API cost estimate"
-        }
-        aria-busy={sessionCostUpdating}
-        title={[
-          sessionCost
-            ? `Session estimate: ${dollars(sessionCost.totalUSD)}`
-            : "",
-          ...Object.entries(sessionCost?.breakdown?.providers || {}).map(
-            ([provider, value]) => `${provider}: ${dollars(value)}`,
-          ),
-          ...(Array.isArray(sessionCost?.unknownModels) &&
-          sessionCost.unknownModels.length
-            ? [`Unpriced models: ${sessionCost.unknownModels.join(", ")}`]
-            : []),
-          ...(sessionCost?.claudeHistoryIncomplete
-            ? ["Earlier Claude totals may be incomplete."]
-            : []),
-          typeof sessionCost?.cacheAgeSeconds === "number"
-            ? `Updated ${Math.round(sessionCost.cacheAgeSeconds)} seconds ago`
-            : "",
-          typeof sessionCost?.method === "string" ? sessionCost.method : "",
-        ]
-          .filter(Boolean)
-          .join("\n")}
-      >
-        {sessionCost?.pricingState === "loading" ? (
-          ""
-        ) : sessionCost ? (
-          <>
-            <span className="session-cost-label">Session estimate: </span>
-            <span className="session-cost-compact-label" aria-hidden="true">
-              <CircleDollarSign size={13} />
-            </span>
-            <span>
-              {dollars(sessionCost.totalUSD)}
-              {sessionCost.claudeHistoryIncomplete ||
-              sessionCost.unknownModels?.length
-                ? "*"
-                : ""}
-            </span>
-          </>
-        ) : (
-          ""
-        )}
-      </div>
-      <TokenRate agent={agent} />
+      <PassiveUsage>
+        <div
+          className="session-cost-summary"
+          aria-label={
+            sessionCost
+              ? `Session estimate: ${dollars(sessionCost.totalUSD)}`
+              : "Current team session API cost estimate"
+          }
+          aria-busy={sessionCostUpdating}
+          title={[
+            sessionCost
+              ? `Session estimate: ${dollars(sessionCost.totalUSD)}`
+              : "",
+            ...Object.entries(sessionCost?.breakdown?.providers || {}).map(
+              ([provider, value]) => `${provider}: ${dollars(value)}`,
+            ),
+            ...(Array.isArray(sessionCost?.unknownModels) &&
+            sessionCost.unknownModels.length
+              ? [`Unpriced models: ${sessionCost.unknownModels.join(", ")}`]
+              : []),
+            ...(sessionCost?.claudeHistoryIncomplete
+              ? ["Earlier Claude totals may be incomplete."]
+              : []),
+            typeof sessionCost?.cacheAgeSeconds === "number"
+              ? `Updated ${Math.round(sessionCost.cacheAgeSeconds)} seconds ago`
+              : "",
+            typeof sessionCost?.method === "string" ? sessionCost.method : "",
+          ]
+            .filter(Boolean)
+            .join("\n")}
+        >
+          {sessionCost?.pricingState === "loading" ? (
+            ""
+          ) : sessionCost ? (
+            <>
+              <span className="session-cost-label">Session estimate: </span>
+              <span className="session-cost-compact-label" aria-hidden="true">
+                <CircleDollarSign size={13} />
+              </span>
+              <span>
+                {dollars(sessionCost.totalUSD)}
+                {sessionCost.claudeHistoryIncomplete ||
+                sessionCost.unknownModels?.length
+                  ? "*"
+                  : ""}
+              </span>
+            </>
+          ) : (
+            ""
+          )}
+        </div>
+        <TokenRate agent={agent} />
+      </PassiveUsage>
       <Popover
         opened={contextOpen}
         onChange={setContextOpen}

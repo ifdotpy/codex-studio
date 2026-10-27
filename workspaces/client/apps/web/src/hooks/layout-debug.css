@@ -1,0 +1,36 @@
+.layout-debug {
+  position: fixed;
+  transform: translateY(var(--mobile-viewport-top, 0px));
+  top: max(8px, env(safe-area-inset-top, 0px));
+  left: max(8px, env(safe-area-inset-left, 0px));
+  z-index: var(--layout-layers-app);
+  max-width: calc(100vw - 16px);
+  margin: 0;
+  padding: 8px;
+  overflow: hidden;
+  background: #000d;
+  color: #fff;
+  font: 9px/1.2 monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+.layout-debug-probe {
+  position: fixed;
+  visibility: hidden;
+  pointer-events: none;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
+
+/* Readable by the simulator accessibility harness without changing pane pixels. */
+.layout-debug-frames {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  clip-path: inset(50%);
+  overflow: hidden;
+  pointer-events: none;
+}

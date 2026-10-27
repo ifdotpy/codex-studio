@@ -25,9 +25,11 @@ function elapsed(created: number | undefined, now: number) {
 export default function SessionActivity({
   activities,
   onOpen,
+  compact = false,
 }: {
   activities: SessionActivityItem[];
   onOpen: (activity: SessionActivityItem) => void;
+  compact?: boolean;
 }) {
   const [visualRef, visualActive] = useVisualActivity<HTMLElement>();
   const [expanded, setExpanded] = useState(false);
@@ -46,13 +48,14 @@ export default function SessionActivity({
     if (activities.length <= 1) setExpanded(false);
   }, [activities.length]);
   if (!activities.length) return null;
-  const shown = expanded ? activities : activities.slice(0, 1);
+  const shown = expanded && !compact ? activities : activities.slice(0, 1);
   return (
     <section
       ref={visualRef}
       className="session-activity"
       aria-label="Session activity"
       data-expanded={expanded}
+      data-compact={compact || undefined}
     >
       <ul aria-label="Active work">
         {shown.map((activity) => {
@@ -101,12 +104,15 @@ export default function SessionActivity({
                   </span>
                 )}
                 <ChevronRight size={14} aria-hidden="true" />
+                {compact && activities.length > 1 && (
+                  <span>+{activities.length - 1}</span>
+                )}
               </button>
             </li>
           );
         })}
       </ul>
-      {activities.length > 1 && (
+      {!compact && activities.length > 1 && (
         <button
           type="button"
           className="session-activity-more"

@@ -1,5 +1,11 @@
 import { randomUUID } from "../uuid";
+import type { ReactNode } from "react";
 import { IdleCompactionNotice } from "./IdleCompactionNotice";
+import {
+  isCompactTools,
+  resolveLayoutLength,
+} from "../layout/deriveWorkspaceLayout";
+import { layoutQueries } from "../layout/layout-contract.generated";
 import { MAX_TURN_ATTACHMENTS } from "../generated/sharedValues";
 import { DeliveryMoment } from "../generated/deliveryMoment";
 import { useSendingMessageRemoval } from "./useSendingMessageRemoval";
@@ -171,13 +177,6 @@ function FollowLatest(p: {
   );
 }
 
-const compactToolsBreakpoint = "(max-width: 760px)";
-const compactToolsWorkspaceWidthPx = 900;
-const compactToolsFontThresholdPx = 20;
-const compactToolsMenuMaxWidthPx = 360;
-const compactToolsMenuViewportGutterPx = 8;
-const compactToolsMenuGapPx = 4;
-
 function useCompactHeaderTools() {
   const isCompact = () => {
     const fontSize = Number.parseFloat(
@@ -186,19 +185,18 @@ function useCompactHeaderTools() {
       ),
     );
     const workspaceWidth =
-      document.querySelector<HTMLElement>(".workspace")?.clientWidth ??
-      window.innerWidth;
+      document.querySelector<HTMLElement>(".workspace")?.getBoundingClientRect()
+        .width ?? window.innerWidth;
     return (
-      window.matchMedia(compactToolsBreakpoint).matches ||
-      fontSize >= compactToolsFontThresholdPx ||
-      workspaceWidth < compactToolsWorkspaceWidthPx
+      window.matchMedia(layoutQueries.navigationCompact).matches ||
+      isCompactTools(workspaceWidth, fontSize)
     );
   };
   const [compact, setCompact] = useState(() =>
     typeof window === "undefined" ? false : isCompact(),
   );
   useEffect(() => {
-    const viewport = window.matchMedia(compactToolsBreakpoint);
+    const viewport = window.matchMedia(layoutQueries.navigationCompact);
     const workspace = document.querySelector<HTMLElement>(".workspace");
     const update = () => setCompact(isCompact());
     const preferences = new MutationObserver(update);
@@ -224,6 +222,9 @@ function useCompactHeaderTools() {
 export default function Conversation(p: {
   id: string | null;
   projectName?: string;
+  headerToolsInMenu?: boolean;
+  onRailToolsChange?: (tools: ReactNode) => void;
+  transcriptHeading?: ReactNode;
   recentChats?: RecentProjectChat[];
   syncWorkspaceId?: string;
   agent?: Agent;
@@ -278,7 +279,7 @@ export default function Conversation(p: {
     : undefined;
   const planType =
     typeof rateLimits?.planType === "string" ? rateLimits.planType : undefined;
-  const mobileClient = useMediaQuery("(max-width: 760px)");
+  const mobileClient = useMediaQuery(layoutQueries.navigationCompact);
   const kind = p.room ? "room" : p.legacy ? "legacy" : "agent";
   const compactHeaderTools = useCompactHeaderTools();
   const [headerTools, setHeaderTools] = useState<HTMLElement | null>(null);
@@ -289,8 +290,12 @@ export default function Conversation(p: {
     width: number;
   } | null>(null);
   useLayoutEffect(() => {
-    setHeaderTools(document.getElementById("conversation-header-tools"));
-  }, []);
+    setHeaderTools(
+      p.headerToolsInMenu
+        ? null
+        : document.getElementById("conversation-header-tools"),
+    );
+  }, [p.headerToolsInMenu]);
   useEffect(() => {
     if (!compactHeaderTools) setToolsExpanded(false);
   }, [compactHeaderTools]);
@@ -326,6 +331,21 @@ export default function Conversation(p: {
     if (!summary) return;
     const updatePosition = () => {
       const anchor = summary.getBoundingClientRect();
+      const rootFontPx = Number.parseFloat(
+        getComputedStyle(document.documentElement).fontSize,
+      );
+      const compactToolsMenuMaxWidthPx = resolveLayoutLength(
+        "tools.menuMax",
+        rootFontPx,
+      );
+      const compactToolsMenuViewportGutterPx = resolveLayoutLength(
+        "tools.menuGutter",
+        rootFontPx,
+      );
+      const compactToolsMenuGapPx = resolveLayoutLength(
+        "tools.menuGap",
+        rootFontPx,
+      );
       const viewportWidth =
         document.documentElement.clientWidth || window.innerWidth;
       const menuWidth = Math.min(
@@ -1460,6 +1480,54 @@ export default function Conversation(p: {
       quote,
     ],
   );
+  const promptNavigation = useMemo(
+    () =>
+      !p.room && p.id ? (
+        <PromptNavigator
+          compact
+          inMenu={p.headerToolsInMenu}
+          key={p.id}
+          messages={items}
+          loadOlder={
+            before
+              ? () => {
+                  setFollow(false);
+                  setPageAnchor(getAnchorId());
+                  void older().catch((e) => p.notify(errorText(e)));
+                }
+              : undefined
+          }
+          loadingOlder={pageLoading}
+          agentId={managed ? p.id || undefined : undefined}
+          container={scroll}
+          storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
+          jump={jumpToPrompt}
+        />
+      ) : null,
+    [
+      p.room,
+      p.id,
+      p.headerToolsInMenu,
+      items,
+      before,
+      pageLoading,
+      managed,
+      scroll,
+      p.data.stateDir,
+      jumpToPrompt,
+      older,
+      setFollow,
+      getAnchorId,
+      p.notify,
+    ],
+  );
+  useLayoutEffect(() => {
+    p.onRailToolsChange?.(p.headerToolsInMenu ? promptNavigation : null);
+  }, [p.headerToolsInMenu, p.onRailToolsChange, promptNavigation]);
+  useLayoutEffect(
+    () => () => p.onRailToolsChange?.(null),
+    [p.onRailToolsChange],
+  );
   return (
     <section
       id="conversation"
@@ -1532,7 +1600,8 @@ export default function Conversation(p: {
           chooseChat={p.onChooseChat}
         />
       )}
-      {headerTools &&
+      {!p.headerToolsInMenu &&
+        headerTools &&
         !p.room &&
         (p.id || managed) &&
         createPortal(
@@ -1569,25 +1638,7 @@ export default function Conversation(p: {
             >
               {!p.room && p.id && (
                 <div className="conversation-prompt-navigation-slot">
-                  <PromptNavigator
-                    compact
-                    key={p.id}
-                    messages={items}
-                    loadOlder={
-                      before
-                        ? () => {
-                            setFollow(false);
-                            setPageAnchor(getAnchorId());
-                            void older().catch((e) => p.notify(errorText(e)));
-                          }
-                        : undefined
-                    }
-                    loadingOlder={pageLoading}
-                    agentId={managed ? p.id || undefined : undefined}
-                    container={scroll}
-                    storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
-                    jump={jumpToPrompt}
-                  />
+                  {promptNavigation}
                 </div>
               )}
             </div>
@@ -1603,6 +1654,9 @@ export default function Conversation(p: {
         }}
       >
         <div ref={content} className="message-content">
+          {p.transcriptHeading && (
+            <div className="transcript-heading">{p.transcriptHeading}</div>
+          )}
           {removed.hasRemoved && (
             <Button size="compact-xs" onClick={() => removed.restore()}>
               Restore removed messages

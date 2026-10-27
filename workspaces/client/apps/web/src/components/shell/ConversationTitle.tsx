@@ -7,6 +7,8 @@ import "../conversation/conversation-chrome.css";
 
 export type ConversationTitleProps = {
   title: string;
+  passive?: boolean;
+  projectName?: string;
   agent?: Agent;
   serverAlias?: string;
   serverOffline?: boolean;
@@ -15,6 +17,8 @@ export type ConversationTitleProps = {
 
 export default function ConversationTitle({
   title,
+  passive = false,
+  projectName,
   agent,
   serverAlias,
   serverOffline = false,
@@ -22,7 +26,7 @@ export default function ConversationTitle({
 }: ConversationTitleProps) {
   return (
     <div className="conversation-heading">
-      {onBack && (
+      {!passive && onBack && (
         <ActionButton
           actionRole="quiet"
           size="compact-xs"
@@ -52,7 +56,10 @@ export default function ConversationTitle({
             />
           </span>
         )}
-        <WorkspaceBadge agent={agent} />
+        <WorkspaceBadge agent={agent} passive={passive} />
+        {projectName && (
+          <span className="conversation-project">{projectName}</span>
+        )}
       </div>
     </div>
   );
