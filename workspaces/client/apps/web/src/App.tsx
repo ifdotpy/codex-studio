@@ -2,6 +2,8 @@ import {
   AgentStatus as GeneratedApiAgentStatus,
   AgentSource as GeneratedApiAgentSource,
   RequestStatus as GeneratedApiRequestStatus,
+  AgentRole as GeneratedApiAgentRole,
+  WorkspaceMode as GeneratedApiWorkspaceMode,
 } from "./generated/api.ts";
 import { useSubscription } from "./sync/subscriptions";
 import { ProviderKind } from "./generated/providerKind.ts";
@@ -2679,8 +2681,9 @@ export default function App({ active = true }: { active?: boolean }) {
               Stop team
             </Menu.Item>
           )}
-          {agent.workspaceMode === "worktree" &&
-            (agent.isLead || agent.role === "implementer") && (
+          {agent.workspaceMode === GeneratedApiWorkspaceMode.worktree &&
+            (agent.isLead ||
+              agent.role === GeneratedApiAgentRole.implementer) && (
               <Menu.Item
                 data-action="switch-to-layr"
                 leftSection={<Layers size={14} />}
