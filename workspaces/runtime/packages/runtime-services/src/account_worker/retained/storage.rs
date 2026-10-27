@@ -1,5 +1,122 @@
 use super::*;
 use rusqlite::OptionalExtension;
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind, RequestIdentity};
+use studio_runtime_store::{
+    outbox::{Outbox, OutboxRow},
+    request_results::{Admission, AdmittedRequest, RequestResults, ResultEnvelope},
+};
+
+/// The exact prepared transport request. Method stays in the provider enum owner.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(in crate::account_worker) struct TransportRequest {
+    pub id: RequestId,
+    pub generation: u64,
+    pub method: Method,
+    pub operation: String,
+    pub thread: Option<String>,
+    pub lightweight: bool,
+    pub deadline: u64,
+    pub unknown: bool,
+    #[serde(rename = "remoteId")]
+    pub remote_id: Option<u64>,
+}
+impl From<&RecoveredRequest> for TransportRequest {
+    fn from(request: &RecoveredRequest) -> Self {
+        Self::from_request(request)
+    }
+}
+impl TransportRequest {
+    pub(in crate::account_worker) fn from_request(request: &RecoveredRequest) -> Self {
+        Self {
+            id: request.ticket.id.clone(),
+            generation: request.ticket.generation,
+            method: request.ticket.method,
+            operation: request.operation_id.0.clone(),
+            thread: request.thread_id.clone(),
+            lightweight: request.lightweight,
+            deadline: request.deadline_ms,
+            unknown: request.unknown,
+            remote_id: request.remote_id,
+        }
+    }
+    pub(in crate::account_worker) fn recovered(&self) -> RecoveredRequest {
+        RecoveredRequest {
+            ticket: RequestTicket {
+                id: self.id.clone(),
+                generation: self.generation,
+                method: self.method,
+            },
+            operation_id: OperationId(self.operation.clone()),
+            thread_id: self.thread.clone(),
+            lightweight: self.lightweight,
+            deadline_ms: self.deadline,
+            unknown: true,
+            remote_id: self.remote_id,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(in crate::account_worker) struct RetainedOutcome {
+    pub result: RequestResult,
+    pub cursor: u64,
+}
+
+/// One obligation, including every unresolved predecessor's exact provenance.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(in crate::account_worker) struct RetainedCall {
+    pub call: Call,
+    pub request: TransportRequest,
+    pub admitted: AdmittedRequest,
+    pub written: bool,
+    pub outcome: Option<RetainedOutcome>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(in crate::account_worker) struct CommittedAck {
+    pub stream_id: String,
+    pub generation: u64,
+    pub cursor: u64,
+}
+
+/// Immutable replay needs no historical journal cursor or submitted sibling.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(in crate::account_worker) struct RetainedReply {
+    pub call: Call,
+    pub request: TransportRequest,
+    pub written: bool,
+    pub result: RequestResult,
+    pub ack: CommittedAck,
+}
+
+type RetainedRow = OutboxRow<store::ProviderCall>;
+fn outbox_error(error: studio_runtime_store::outbox::OutboxError) -> WorkerError {
+    match error {
+        studio_runtime_store::outbox::OutboxError::Sql(error) => WorkerError::Store(error.into()),
+        studio_runtime_store::outbox::OutboxError::Json(error) => WorkerError::Store(error.into()),
+        studio_runtime_store::outbox::OutboxError::Conflict(id) => {
+            WorkerError::PreparationRefused(format!("retained-session/identity-changed: {id}"))
+        }
+    }
+}
+fn result_error(error: studio_runtime_store::request_results::RequestResultError) -> WorkerError {
+    WorkerError::PreparationRefused(error.to_string())
+}
+fn row(tx: &rusqlite::Connection, key: &str) -> Result<Option<RetainedRow>, WorkerError> {
+    Outbox::get(tx, key).map_err(outbox_error)
+}
+fn retained(row: &RetainedRow) -> Result<&RetainedCall, WorkerError> {
+    match &row.payload {
+        store::ProviderCall::Retained(call) => Ok(call),
+        store::ProviderCall::Account(_) => Err(WorkerError::Capacity),
+    }
+}
+fn put(tx: &rusqlite::Transaction<'_>, row: &RetainedRow) -> Result<(), WorkerError> {
+    Outbox::put(tx, row).map_err(outbox_error)
+}
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
 
 /// SQL for the account that owns a monitor's provider command. A rule monitor
 /// stores `accountKey`; a submitted command stores `operation.accountKey`. A tool
@@ -446,38 +563,16 @@ fn authorize_deleted_voice_stop(
     {
         return Ok(false);
     }
-    let receipt_id = format!("agent-delete-voice:{}:{}", actor.agent, actor.epoch);
-    let raw: Option<String> = tx
-        .query_row(
-            "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-            [&receipt_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(raw) = raw else {
-        return Ok(false);
-    };
-    let Ok(receipt) = serde_json::from_str::<Value>(&raw) else {
-        return Ok(false);
-    };
-    if receipt.get("agent").and_then(Value::as_str) != Some(actor.agent.as_str())
-        || receipt.get("epoch").and_then(Value::as_i64) != Some(actor.epoch)
-    {
-        return Ok(false);
-    }
-    let Some(sessions) = receipt.get("voiceEndSessions").and_then(Value::as_array) else {
-        return Ok(false);
-    };
+    let sessions = crate::voice::provider::deleted_voice_sessions(tx, &actor.agent, actor.epoch)
+        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
     Ok(sessions.iter().any(|session| {
-        session.get("sessionId").and_then(Value::as_str) == Some(session_id)
-            && session.get("agentId").and_then(Value::as_str) == Some(actor.agent.as_str())
-            && session.get("epoch").and_then(Value::as_i64) == Some(actor.epoch)
-            && session.get("accountKey").and_then(Value::as_str)
-                == Some(call.scope.account.as_str())
-            && session.get("threadId").and_then(Value::as_str) == Some(thread_id)
-            && session.get("connectionId").and_then(Value::as_str)
-                == Some(call.scope.connection.as_str())
-            && session.get("generation").and_then(Value::as_u64) == Some(call.scope.generation)
+        session.session_id == session_id
+            && session.agent_id == actor.agent
+            && session.epoch == actor.epoch
+            && session.account_key == call.scope.account
+            && session.thread_id == thread_id
+            && session.connection_id == call.scope.connection
+            && session.generation == call.scope.generation
     }))
 }
 
@@ -486,26 +581,31 @@ fn thread_started_for_actor(
     call: &Call,
     thread: &str,
 ) -> Result<bool, WorkerError> {
-    let Some(actor) = call.actor.as_ref() else {
+    let Some(actor) = &call.actor else {
         return Ok(false);
     };
-    let prefix = format!("account-worker:retained:{}:", call.scope.account);
-    let exists: i64 = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts submitted JOIN runtime_operation_receipts result ON result.id=substr(submitted.id,1,length(submitted.id)-10)||':result' WHERE submitted.id>=?1 AND submitted.id<?2 AND substr(submitted.id,-10)=':submitted' AND json_extract(submitted.result,'$.call.method')='thread/start' AND json_extract(submitted.result,'$.call.actor.agent')=?3 AND json_extract(submitted.result,'$.call.actor.epoch')=?4 AND json_extract(submitted.result,'$.call.scope.generation')=?5 AND json_extract(result.result,'$.result.Reply.thread.id')=?6 AND json_extract(result.result,'$.result.Reply.thread.id') IS NOT NULL)",
-        rusqlite::params![
-            prefix,
-            format!("{prefix}~"),
-            actor.agent,
-            actor.epoch,
-            i64::try_from(call.scope.generation).map_err(|_| WorkerError::Capacity)?,
-            thread,
-        ],
-        |row| row.get(0),
-    )?;
-    Ok(exists != 0)
+    let Some(agent) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
+        return Ok(false);
+    };
+    let Some(provenance) = agent
+        .extra
+        .get("threadProvenance")
+        .and_then(|map| map.get(thread))
+    else {
+        return Ok(false);
+    };
+    #[derive(serde::Deserialize)]
+    struct Provenance {
+        scope: ConnectionScope,
+        actor: RequestActor,
+    }
+    let provenance: Provenance =
+        serde_json::from_value(provenance.clone()).map_err(StoreError::from)?;
+    Ok(provenance.actor == *actor
+        && provenance.scope.account == call.scope.account
+        && provenance.scope.generation == call.scope.generation)
 }
-/// Apply the same authorization as durable requests without a receipt write.
-/// Recheck after provider preparation, as `submitted` does for durable calls.
+
 pub(super) async fn authorize_volatile_read(
     s: &RuntimeStore,
     call: &Call,
@@ -520,7 +620,6 @@ pub(super) async fn authorize_volatile_read(
     })
     .await
 }
-
 pub(super) async fn replay(
     s: &RuntimeStore,
     call: &Call,
@@ -531,9 +630,6 @@ pub(super) async fn replay(
     })
     .await
 }
-
-/// Resolve a replay from a reader snapshot: it only reads receipts, so it never
-/// takes the writer lane. Kept synchronous so actor callbacks never await.
 pub(super) fn replay_in_transaction(
     tx: &rusqlite::Transaction<'_>,
     call: &Call,
@@ -543,204 +639,524 @@ pub(super) fn replay_in_transaction(
     }
     replay_recorded(tx, call)
 }
-
-/// Resolve a replay from `call`'s own receipts without the live authorization.
-/// Only for reading the answer of a request that was authorized and submitted
-/// earlier: it never queues a provider write.
+pub(super) enum Replay {
+    Miss,
+    Return(SessionReceipt),
+    Retry(RequestTicket),
+}
+fn same_replay_identity(prior: &Call, current: &Call) -> bool {
+    prior.signature() == current.signature()
+        && prior.root_request_id == current.root_request_id
+        && prior.admitted_request == current.admitted_request
+}
+fn result_id(call: &Call) -> Result<String, PortError> {
+    match &call.admitted_request {
+        Some(token) => Ok(token.id().into()),
+        None => Ok(call.identity()?.id().into()),
+    }
+}
+fn saved_reply(
+    tx: &rusqlite::Connection,
+    id: &str,
+    signature: &str,
+) -> Result<Option<RetainedReply>, WorkerError> {
+    RequestResults::replay(tx, id, signature, now_ms())
+        .map_err(result_error)?
+        .map(|saved| {
+            serde_json::from_str::<ResultEnvelope<RetainedReply>>(&saved.result)
+                .map(|envelope| envelope.reply)
+                .map_err(|error| WorkerError::Store(error.into()))
+        })
+        .transpose()
+}
 pub(super) fn replay_recorded(
     tx: &rusqlite::Transaction<'_>,
     call: &Call,
 ) -> Result<Result<Replay, PortError>, WorkerError> {
-    let Some(prior) = store::receipt(tx, &call.key(), "submitted")? else {
+    if let Some(row) = row(tx, &call.key())? {
+        let prior = retained(&row)?;
+        if !same_replay_identity(&prior.call, call) {
+            return Ok(Err(PortError::Identity));
+        }
+        return replay_submitted(tx, &prior.call, prior);
+    }
+    let id = match result_id(call) {
+        Ok(id) => id,
+        Err(error) => return Ok(Err(error)),
+    };
+    let saved = match RequestResults::replay(tx, &id, &call.signature(), now_ms()) {
+        Ok(saved) => saved,
+        Err(studio_runtime_store::request_results::RequestResultError::Conflict { .. }) => {
+            return Ok(Err(PortError::Identity));
+        }
+        Err(studio_runtime_store::request_results::RequestResultError::Identity(_)) => {
+            return Ok(Err(PortError::Invalid));
+        }
+        Err(error) => return Err(result_error(error)),
+    };
+    let Some(saved) = saved else {
+        if call.admitted_request.is_some() {
+            // A token proves admission, never that the external attempt was NotSent.
+            return Ok(Err(PortError::Unknown));
+        }
+        if call
+            .identity()
+            .and_then(|id| {
+                id.validate(
+                    now_ms(),
+                    RequestResults::expired_before_ms(tx).map_err(|_| PortError::Unknown)?,
+                )
+                .map_err(|_| PortError::Invalid)
+            })
+            .is_err()
+        {
+            return Ok(Err(PortError::Invalid));
+        }
         return Ok(Ok(Replay::Miss));
     };
-    let prior_call: Call =
-        serde_json::from_value(prior["call"].clone()).map_err(|_| WorkerError::Capacity)?;
-    if !same_replay_identity(&prior_call, call) {
+    let saved: ResultEnvelope<RetainedReply> =
+        serde_json::from_str(&saved.result).map_err(StoreError::from)?;
+    if saved.reply.call.signature() != call.signature() {
         return Ok(Err(PortError::Identity));
     }
-    replay_submitted(tx, &prior_call, &prior)
-}
-
-pub(super) fn replay_submitted(
-    tx: &rusqlite::Transaction<'_>,
-    prior_call: &Call,
-    prior: &Value,
-) -> Result<Result<Replay, PortError>, WorkerError> {
-    let request = store::decode(&prior["request"])?;
-    let saved = store::receipt(tx, &prior_call.key(), "result")?;
-    let result = if let Some(saved) = saved {
-        // The result receipt is committed before its journal event advances
-        // the checkpoint. Only expose it after that event is known committed
-        // in the generation that recorded the result. Looking up the prior
-        // generation is important: reconnecting must not hide a settled
-        // result merely because the new generation has a different cursor.
-        let checkpoint = crate::account_worker::store::checkpoint(
-            tx,
-            &prior_call.scope.account,
-            prior_call.scope.generation,
-        )?;
-        if saved["cursor"]
-            .as_u64()
-            .is_some_and(|cursor| cursor <= checkpoint)
-        {
-            serde_json::from_value(saved["result"].clone()).map_err(|_| WorkerError::Capacity)?
-        } else {
-            RequestResult::Unknown
-        }
-    } else {
-        RequestResult::Unknown
-    };
-    if result == RequestResult::NotSent {
-        return Ok(Ok(Replay::Retry(request.ticket)));
-    }
-    // A committed operation may be inspected after the provider reconnects.
-    // Return its original ticket and scope; this path only reads receipts and
-    // never queues another provider write.
-    let mut receipt = prior_call.receipt(request.ticket, result);
+    let mut receipt = saved
+        .reply
+        .call
+        .receipt(saved.reply.request.recovered().ticket, saved.reply.result);
     receipt.replayed = true;
     Ok(Ok(Replay::Return(receipt)))
 }
-
-pub(super) enum Replay {
-    Miss,
-    Return(SessionReceipt),
-    Retry(studio_runtime_providers::RequestTicket),
-}
-
-fn same_replay_identity(prior: &Call, current: &Call) -> bool {
-    if prior.scope.account != current.scope.account {
-        return false;
+pub(super) fn replay_submitted(
+    _tx: &rusqlite::Transaction<'_>,
+    prior_call: &Call,
+    prior: &RetainedCall,
+) -> Result<Result<Replay, PortError>, WorkerError> {
+    let result = prior.outcome.as_ref().map(|outcome| &outcome.result);
+    if result == Some(&RequestResult::NotSent)
+        && prior
+            .outcome
+            .as_ref()
+            .is_some_and(|outcome| outcome.cursor == 0)
+    {
+        return Ok(Ok(Replay::Retry(prior.request.recovered().ticket)));
     }
-    let mut prior = prior.clone();
-    prior.scope.connection = current.scope.connection.clone();
-    prior.scope.generation = current.scope.generation;
-    prior == *current
+    let mut receipt = prior_call.receipt(prior.request.recovered().ticket, RequestResult::Unknown);
+    receipt.replayed = true;
+    Ok(Ok(Replay::Return(receipt)))
 }
 
 pub(super) async fn submitted(
     s: &RuntimeStore,
     call: &Call,
     request: &RecoveredRequest,
-    retry_ticket: Option<&studio_runtime_providers::RequestTicket>,
+    retry_ticket: Option<&RequestTicket>,
 ) -> Result<Result<(), PortError>, WorkerError> {
     let call = call.clone();
-    let request = request.clone();
+    let request = TransportRequest::from(request);
     let retry_ticket = retry_ticket.cloned();
     scheduler::lifecycle_transaction_with(s, move |tx| {
         if !authorize(tx, &call)? {
             return Ok(Err(PortError::Identity));
         }
-        if let Some(expected_ticket) = retry_ticket {
-            let Some(prior) = store::receipt(tx, &call.key(), "submitted")? else {
+        if let Some(mut row) = row(tx, &call.key())? {
+            let mut prior = retained(&row)?.clone();
+            if !same_replay_identity(&prior.call, &call) {
                 return Ok(Err(PortError::Identity));
+            }
+            let Some(expected) = retry_ticket else {
+                return Ok(Err(PortError::Unknown));
             };
-            let prior_call: Call =
-                serde_json::from_value(prior["call"].clone()).map_err(|_| WorkerError::Capacity)?;
-            if !same_replay_identity(&prior_call, &call) {
-                return Ok(Err(PortError::Identity));
-            }
-            let prior_request = store::decode(&prior["request"])?;
-            let checkpoint =
-                store::checkpoint(tx, &prior_call.scope.account, prior_call.scope.generation)?;
-            let proven_not_sent = store::receipt(tx, &call.key(), "result")?.is_some_and(|saved| {
-                saved["result"] == json!(RequestResult::NotSent)
-                    && saved["cursor"]
-                        .as_u64()
-                        .is_some_and(|cursor| cursor <= checkpoint)
-            });
-            if prior_request.ticket != expected_ticket
-                || request.ticket != expected_ticket
-                || !proven_not_sent
+            if prior.request.recovered().ticket != expected
+                || request.recovered().ticket != expected
+                || !prior.outcome.as_ref().is_some_and(|outcome| {
+                    outcome.result == RequestResult::NotSent && outcome.cursor == 0
+                })
             {
-                return Ok(Err(PortError::Identity));
+                return Ok(Err(PortError::Unknown));
             }
-            store::delete_receipt(tx, &call.key(), "result")?;
-            store::replace(
-                tx,
-                &call.key(),
-                "submitted",
-                json!({"call":call,"request":store::record(&request)}),
-            )?;
-        } else {
-            // The replay read and this admission are separate transactions. Two
-            // concurrent callers can both observe a miss, then race to persist
-            // the same operation key. Validate the winner's durable intent,
-            // then resolve a changed identity as a caller refusal and an exact
-            // identity as uncertain. Neither race may overwrite the intent or
-            // submit a second provider request.
-            if let Some(prior) = store::receipt(tx, &call.key(), "submitted")? {
-                let prior_call: Call = serde_json::from_value(prior["call"].clone())
-                    .map_err(|_| WorkerError::Capacity)?;
-                let prior_request = store::decode(&prior["request"])?;
-                let key = call.key();
-                if prior_call.key() != key
-                    || prior_request.ticket.id
-                        != studio_runtime_providers::RequestId::String(key.clone())
-                    || prior_request.ticket.generation != prior_call.scope.generation
-                    || prior_request.ticket.method.as_str() != prior_call.method
-                    || prior_request.operation_id.0 != key
-                {
-                    return Err(WorkerError::Capacity);
-                }
-                return Ok(Err(if same_replay_identity(&prior_call, &call) {
-                    PortError::Unknown
-                } else {
-                    PortError::Identity
-                }));
-            }
-            store::save(
-                tx,
-                &call.key(),
-                "submitted",
-                json!({"call":call,"request":store::record(&request)}),
-            )?;
+            prior.request = request;
+            prior.outcome = None;
+            prior.written = false;
+            row.payload = store::ProviderCall::Retained(prior);
+            row.status = OutboxStatus::Unknown;
+            row.next_at = None;
+            put(tx, &row)?;
+            return Ok(Ok(()));
         }
+        if retry_ticket.is_some() {
+            return Ok(Err(PortError::Unknown));
+        }
+        let signature = call.signature();
+        let admitted = match &call.admitted_request {
+            Some(token) if token.signature() == signature => token.clone(),
+            Some(_) => return Ok(Err(PortError::Identity)),
+            None => {
+                let identity = match call.identity() {
+                    Ok(identity) => identity,
+                    Err(error) => return Ok(Err(error)),
+                };
+                match RequestResults::admit(tx, &identity, &signature, now_ms())
+                    .map_err(result_error)?
+                {
+                    Admission::Fresh(token) => token,
+                    Admission::Replay(_) => return Ok(Err(PortError::Unknown)),
+                }
+            }
+        };
+        // Recheck result in the same writer transaction as admission.
+        if RequestResults::replay(tx, admitted.id(), &signature, now_ms())
+            .map_err(result_error)?
+            .is_some()
+        {
+            return Ok(Err(PortError::Unknown));
+        }
+        let actor_id = match &call.actor {
+            Some(actor) if vm_actor(tx, &actor.agent)? => Some(actor.agent.as_str()),
+            _ => None,
+        };
+        let stream_id = actor_id.map_or_else(
+            || call.scope.account.clone(),
+            |actor| super::super::vm_journal_scope(&call.scope.account, actor),
+        );
+        let row = OutboxRow {
+            id: call.key(),
+            kind: OutboxKind::ProviderCall,
+            owner_kind: if call.actor.is_some() {
+                OwnerKind::Agent
+            } else {
+                OwnerKind::Account
+            },
+            owner_id: call
+                .actor
+                .as_ref()
+                .map_or_else(|| call.scope.account.clone(), |actor| actor.agent.clone()),
+            request_id: Some(admitted.id().into()),
+            signature,
+            status: OutboxStatus::Unknown,
+            account: Some(call.scope.account.clone()),
+            stream_id: Some(stream_id),
+            generation: Some(
+                i64::try_from(call.scope.generation).map_err(|_| WorkerError::Capacity)?,
+            ),
+            ordinal: None,
+            next_at: None,
+            created: admitted.created(),
+            payload: store::ProviderCall::Retained(RetainedCall {
+                call,
+                request,
+                admitted,
+                written: false,
+                outcome: None,
+            }),
+        };
+        put(tx, &row)?;
         Ok(Ok(()))
     })
     .await
 }
+
+/// Called in the journal-prefix transaction before its cursor evidence retires.
+pub(in crate::account_worker) fn checkpoint_covered(
+    tx: &rusqlite::Transaction<'_>,
+    stream: &str,
+    generation: u64,
+    cursor: u64,
+) -> Result<(), WorkerError> {
+    let mut query=tx.prepare("SELECT id FROM runtime_outbox WHERE stream_id=?1 AND generation=?2 AND kind=?3 ORDER BY ordinal,id")?;
+    let ids = query
+        .query_map(
+            rusqlite::params![
+                stream,
+                i64::try_from(generation).map_err(|_| WorkerError::Capacity)?,
+                OutboxKind::ProviderCall
+            ],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for id in ids {
+        let Some(row) = row(tx, &id)? else { continue };
+        let store::ProviderCall::Retained(payload) = &row.payload else {
+            continue;
+        };
+        if payload
+            .outcome
+            .as_ref()
+            .is_some_and(|outcome| outcome.cursor <= cursor)
+        {
+            settle(tx, &row, stream, generation, cursor)?;
+        }
+    }
+    Ok(())
+}
+fn settle(
+    tx: &rusqlite::Transaction<'_>,
+    row: &RetainedRow,
+    stream: &str,
+    generation: u64,
+    cursor: u64,
+) -> Result<(), WorkerError> {
+    let payload = retained(row)?;
+    let Some(outcome) = &payload.outcome else {
+        return Ok(());
+    };
+    if outcome.result == RequestResult::NotSent {
+        let mut row = row.clone();
+        let mut payload = payload.clone();
+        payload
+            .outcome
+            .as_mut()
+            .ok_or(WorkerError::Capacity)?
+            .cursor = 0;
+        row.status = OutboxStatus::Pending;
+        row.payload = store::ProviderCall::Retained(payload);
+        return put(tx, &row);
+    }
+    if !matches!(
+        outcome.result,
+        RequestResult::Reply(_) | RequestResult::Rejected(_)
+    ) {
+        return Ok(());
+    }
+    if payload.call.method == Method::ThreadStart.as_str()
+        && let RequestResult::Reply(reply) = &outcome.result
+        && let Some(thread) = reply["thread"]["id"].as_str()
+        && let Some(actor) = &payload.call.actor
+        && let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))?
+    {
+        let provenance = agent
+            .extra
+            .entry("threadProvenance".into())
+            .or_insert_with(|| json!({}));
+        let map = provenance.as_object_mut().ok_or(WorkerError::Capacity)?;
+        map.insert(
+            thread.into(),
+            json!({"scope":payload.call.scope,"actor":actor,"operation":payload.call.operation}),
+        );
+        AgentRepository::put(tx, &agent)?;
+    }
+    let reply = RetainedReply {
+        call: payload.call.clone(),
+        request: payload.request.clone(),
+        written: payload.written,
+        result: outcome.result.clone(),
+        ack: CommittedAck {
+            stream_id: stream.into(),
+            generation,
+            cursor,
+        },
+    };
+    RequestResults::settle(
+        tx,
+        &payload.admitted,
+        &ResultEnvelope {
+            actor: payload.call.actor.as_ref().map(|actor| actor.agent.clone()),
+            reply,
+            references: vec![],
+        },
+    )
+    .map_err(result_error)?;
+    Outbox::delete_settled(tx, &row.id, &row.signature).map_err(outbox_error)?;
+    Ok(())
+}
+
+pub(super) fn record_outcome(
+    tx: &rusqlite::Transaction<'_>,
+    key: &str,
+    written: Option<RecoveredRequest>,
+    value: Option<RequestResult>,
+    cursor: u64,
+) -> Result<Option<(RequestResult, u64)>, WorkerError> {
+    let Some(mut row) = row(tx, key)? else {
+        return Ok(None);
+    };
+    let mut payload = retained(&row)?.clone();
+    if let Some(written) = written {
+        payload.request = TransportRequest::from(&written);
+        payload.written = true;
+    }
+    if let Some(value) = value {
+        if !payload.outcome.as_ref().is_some_and(|old| {
+            matches!(
+                old.result,
+                RequestResult::Reply(_) | RequestResult::Rejected(_)
+            )
+        }) {
+            if matches!(value, RequestResult::Reply(_) | RequestResult::Rejected(_)) {
+                payload.written = true;
+            }
+            payload.outcome = Some(RetainedOutcome {
+                result: value,
+                cursor,
+            });
+        }
+    }
+    let accepted = payload
+        .outcome
+        .as_ref()
+        .map(|outcome| (outcome.result.clone(), outcome.cursor));
+    row.status = if payload
+        .outcome
+        .as_ref()
+        .is_some_and(|outcome| outcome.result == RequestResult::NotSent && outcome.cursor == 0)
+    {
+        OutboxStatus::Pending
+    } else {
+        OutboxStatus::Unknown
+    };
+    row.payload = store::ProviderCall::Retained(payload);
+    put(tx, &row)?;
+    let stream = row.stream_id.as_deref().ok_or(WorkerError::Capacity)?;
+    let generation = u64::try_from(row.generation.ok_or(WorkerError::Capacity)?)
+        .map_err(|_| WorkerError::Capacity)?;
+    let checkpoint = store::checkpoint(tx, stream, generation)?;
+    if accepted
+        .as_ref()
+        .is_some_and(|(_, cursor)| *cursor <= checkpoint)
+    {
+        settle(tx, &row, stream, generation, checkpoint)?;
+    }
+    Ok(accepted)
+}
+
 pub(in crate::account_worker) async fn recover(
     s: &RuntimeStore,
     account: &str,
     generation: u64,
 ) -> Result<Vec<(PendingRequest, RecoveredRequest)>, WorkerError> {
     let account = account.to_owned();
-    s.transaction_with(move |tx| {
-        let prefix = format!("account-worker:retained:{account}:");
-        let checkpoint = store::checkpoint(tx, &account, generation)?;
-        let mut statement = tx.prepare("SELECT r.result FROM runtime_operation_receipts r WHERE r.id>=?1 AND r.id<?2 AND substr(r.id,-10)=':submitted' AND json_extract(r.result,'$.call.scope.generation')=?3 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':result' AND json_extract(done.result,'$.result') != 'Unknown' AND json_extract(done.result,'$.cursor') <=?4) ORDER BY r.id")?;
-        let rows = statement.query_map(rusqlite::params![prefix, format!("{prefix}~"), i64::try_from(generation).map_err(|_|WorkerError::Capacity)?, i64::try_from(checkpoint).map_err(|_|WorkerError::Capacity)?], |row|row.get::<_,String>(0))?;
-        let mut result = Vec::new();
-        for row in rows {
-            let value: Value = serde_json::from_str(&row?).map_err(|_|WorkerError::Capacity)?;
-            let call: Call = serde_json::from_value(value["call"].clone()).map_err(|_|WorkerError::Capacity)?;
-            let checkpoint = store::checkpoint(tx, &call.scope.account, generation)?;
-            if let Some(value) = store::receipt(tx, &call.key(), "result")?
-                && value["result"] != json!("Unknown")
-                && value["cursor"].as_u64().is_some_and(|c| c <= checkpoint) { continue; }
-            let mut request = store::decode(&store::receipt(tx, &call.key(), "written")?.unwrap_or(value["request"].clone()))?;
-            // Older retained calls marked every method lightweight. Recover
-            // ownership from the call itself, including Submitted-only intent.
-            request.lightweight = !studio_runtime_schema::provider_method_policy::is_recovered_thread_serialized(&call.method, &call.params);
-            // The answer comes back on the lane the request was sent on, as
-            // in `retained_request`: a host request keeps no actor lane.
-            let actor_id = match call.actor.as_ref() {
-                Some(actor) if vm_actor(tx, &actor.agent)? => Some(actor.agent.clone()),
-                _ => None,
-            };
-            result.push((PendingRequest {
-                call,
-                ticket: request.ticket.clone(),
-                actor_id,
-                reply: None,
-                result: None,
-                result_cursor: 0,
-                volatile: false,
-            }, request));
+    s.read_async("runtime-services/retained_recover", move |tx| {
+        let mut recovered = Vec::new();
+        for status in [OutboxStatus::Pending, OutboxStatus::Unknown] {
+            for row in Outbox::for_account::<store::ProviderCall>(
+                tx,
+                &account,
+                OutboxKind::ProviderCall,
+                status,
+                u32::MAX,
+            )
+            .map_err(outbox_error)?
+            {
+                let store::ProviderCall::Retained(payload) = row.payload else {
+                    continue;
+                };
+                if payload.call.scope.generation != generation {
+                    continue;
+                }
+                if payload.outcome.as_ref().is_some_and(|outcome| {
+                    outcome.result == RequestResult::NotSent && outcome.cursor == 0
+                }) {
+                    continue;
+                }
+                let mut request = payload.request.recovered();
+                request.lightweight =
+                    !studio_runtime_schema::provider_method_policy::is_recovered_thread_serialized(
+                        &payload.call.method,
+                        &payload.call.params,
+                    );
+                let actor_id = match &payload.call.actor {
+                    Some(actor) if vm_actor(tx, &actor.agent)? => Some(actor.agent.clone()),
+                    _ => None,
+                };
+                recovered.push((
+                    PendingRequest {
+                        call: payload.call,
+                        ticket: request.ticket.clone(),
+                        actor_id,
+                        reply: None,
+                        result: payload
+                            .outcome
+                            .as_ref()
+                            .map(|outcome| outcome.result.clone()),
+                        result_cursor: payload.outcome.as_ref().map_or(0, |outcome| outcome.cursor),
+                        volatile: false,
+                    },
+                    request,
+                ));
+            }
         }
-        Ok(result)
-    }).await
+        Ok(recovered)
+    })
+    .await
+}
+
+/// Read-only inspection for owners whose authorization outlives their provider wait.
+pub(in crate::account_worker) fn recorded_call(
+    tx: &rusqlite::Connection,
+    key: &str,
+) -> Result<Option<RetainedCall>, WorkerError> {
+    row(tx, key)?.map(|row| retained(&row).cloned()).transpose()
+}
+
+pub(super) enum RecordedCall {
+    Pending(RetainedCall),
+    Final(RetainedReply),
+}
+impl RecordedCall {
+    pub(super) fn call(&self) -> &Call {
+        match self {
+            Self::Pending(value) => &value.call,
+            Self::Final(value) => &value.call,
+        }
+    }
+    pub(super) fn request(&self) -> &TransportRequest {
+        match self {
+            Self::Pending(value) => &value.request,
+            Self::Final(value) => &value.request,
+        }
+    }
+    pub(super) fn written(&self) -> bool {
+        match self {
+            Self::Pending(value) => value.written,
+            Self::Final(value) => value.written,
+        }
+    }
+    pub(super) fn replay(&self) -> Replay {
+        match self {
+            Self::Pending(value)
+                if value.outcome.as_ref().is_some_and(|outcome| {
+                    outcome.result == RequestResult::NotSent && outcome.cursor == 0
+                }) =>
+            {
+                Replay::Retry(value.request.recovered().ticket)
+            }
+            Self::Pending(value) => {
+                let mut receipt = value
+                    .call
+                    .receipt(value.request.recovered().ticket, RequestResult::Unknown);
+                receipt.replayed = true;
+                Replay::Return(receipt)
+            }
+            Self::Final(value) => {
+                let mut receipt = value
+                    .call
+                    .receipt(value.request.recovered().ticket, value.result.clone());
+                receipt.replayed = true;
+                Replay::Return(receipt)
+            }
+        }
+    }
+}
+pub(super) fn recorded_operation(
+    tx: &rusqlite::Connection,
+    key: &str,
+    result_id: Option<&str>,
+) -> Result<Option<RecordedCall>, WorkerError> {
+    if let Some(value) = recorded_call(tx, key)? {
+        return Ok(Some(RecordedCall::Pending(value)));
+    }
+    let Some(id) = result_id else { return Ok(None) };
+    // This inspection is authorized by the immutable monitor operation, not ingress.
+    let signature: Option<String> = tx
+        .query_row(
+            "SELECT signature FROM request_results WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(signature) = signature else {
+        return Ok(None);
+    };
+    Ok(saved_reply(tx, id, &signature)?.map(RecordedCall::Final))
 }
 
 #[cfg(test)]
@@ -749,6 +1165,8 @@ mod replay_identity_tests {
 
     fn call() -> Call {
         Call {
+            root_request_id: RequestIdentity::issue_root(),
+            admitted_request: None,
             scope: ConnectionScope {
                 account: "default".into(),
                 connection: "old-connection".into(),
@@ -1181,6 +1599,8 @@ mod replay_identity_tests {
             .await
             .expect("open retained receipt test store");
         let first = Call {
+            root_request_id: RequestIdentity::issue_root(),
+            admitted_request: None,
             scope: ConnectionScope {
                 account: "default".into(),
                 connection: "connection-1".into(),

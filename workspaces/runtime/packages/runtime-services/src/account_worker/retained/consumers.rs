@@ -63,14 +63,18 @@ impl ClaudeSessionPort for ClaudePort {
             {
                 return Err(ControlError::Conflict);
             }
-            let mut nonce = [0u8; 16];
-            getrandom::fill(&mut nonce).map_err(|_| ControlError::Unavailable)?;
             let request = call
                 .identity
                 .scope
                 .request_id
                 .clone()
-                .unwrap_or_else(|| studio_runtime_store::sha256_hex(&nonce));
+                .ok_or(ControlError::Changed)?;
+            if uuid::Uuid::parse_str(&request)
+                .ok()
+                .is_none_or(|root| root.get_version_num() != 7)
+            {
+                return Err(ControlError::Changed);
+            }
             let operation = format!(
                 "claude-control:{}",
                 crate::event_write::request_signature(&json!([
@@ -107,6 +111,8 @@ impl ClaudeSessionPort for ClaudePort {
             let receipt = self
                 .port
                 .request(SessionRequest {
+                    root_request_id: request,
+                    admitted_request: None,
                     scope: self.port.scope().clone(),
                     expected_scope: None,
                     operation,
@@ -196,14 +202,21 @@ pub struct HistoryPort {
     port: RetainedSessionPort,
     actor: RequestActor,
     recovery_id: String,
+    root_request_id: String,
     read_step: u64,
 }
 impl HistoryPort {
-    pub fn new(port: RetainedSessionPort, actor: RequestActor, recovery_id: String) -> Self {
+    pub fn new(
+        port: RetainedSessionPort,
+        actor: RequestActor,
+        recovery_id: String,
+        root_request_id: String,
+    ) -> Self {
         Self {
             port,
             actor,
             recovery_id,
+            root_request_id,
             read_step: 0,
         }
     }
@@ -235,6 +248,8 @@ impl crate::recovery_runtime::RetainedHistory for HistoryPort {
             return Box::pin(async { Err(HistoryError::Unsupported) });
         };
         let request = self.port.request(SessionRequest {
+            root_request_id: self.root_request_id.clone(),
+            admitted_request: None,
             scope: scope.clone(),
             expected_scope: None,
             actor: Some(self.actor.clone()),

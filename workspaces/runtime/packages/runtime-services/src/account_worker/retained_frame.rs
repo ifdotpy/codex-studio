@@ -1,5 +1,4 @@
-//! Transport-only callback delivery. The caller already owns its Submitted
-//! marker; this lane preserves it and records only the exact frame receipt.
+//! Transport delivery uses the canonical ProviderCallback obligation.
 use super::retained::{PortError, RetainedSessionPort};
 use super::*;
 use crate::recovery_history::ConnectionScope;
@@ -138,11 +137,7 @@ impl Worker {
             let _ignored = reply.send(Ok(WriteOutcome::NotSent));
             return Ok(());
         }
-        let key = format!(
-            "retained-frame:{}:{}",
-            self.account,
-            studio_runtime_store::sha256_hex(operation.as_bytes())
-        );
+        let key = operation.clone();
         let prepared = match self.control.prepare_frame(OperationId(key.clone()), &frame) {
             Ok(prepared) => prepared,
             Err(_) => {
@@ -150,41 +145,30 @@ impl Worker {
                 return Ok(());
             }
         };
-        let encoded =
-            studio_runtime_providers::encode_line(&frame).map_err(|_| WorkerError::Capacity)?;
-        let signature = json!({"scope":scope,"operation":operation,"frame":String::from_utf8(encoded).map_err(|_|WorkerError::Capacity)?});
-        let save_key = key.clone();
+        let stream = self.account.clone();
+        let generation = self.generation.0;
         let replay = self
-            .db("retained_frame_intent", move |s| async move {
-                s.transaction_with(move |tx| {
-                    if let Some(old) = store::receipt(tx, &save_key, "frame")? {
-                        if old != signature {
-                            return Ok(Err(PortError::Identity));
-                        }
-                        return Ok(Ok(Some(
-                            store::receipt(tx, &save_key, "written")?.unwrap_or(json!("unknown")),
-                        )));
-                    }
-                    store::save(tx, &save_key, "frame", signature)?;
-                    Ok(Ok(None))
-                })
-                .await
+            .db("retained_frame_intent", move |store| async move {
+                store
+                    .transaction_with(move |tx| {
+                        crate::provider_callbacks::begin_frame(
+                            tx, &stream, generation, &operation, &frame,
+                        )
+                        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+                    })
+                    .await
             })
             .await?;
         match replay {
-            Err(error) => {
-                let _ignored = reply.send(Err(error));
+            crate::provider_callbacks::FrameAdmission::Send => {}
+            crate::provider_callbacks::FrameAdmission::Written => {
+                let _ignored = reply.send(Ok(WriteOutcome::Written));
                 return Ok(());
             }
-            Ok(Some(value)) => {
-                let _ignored = reply.send(Ok(match value.as_str() {
-                    Some("written") => WriteOutcome::Written,
-                    Some("not-sent") => WriteOutcome::NotSent,
-                    _ => WriteOutcome::Unknown,
-                }));
+            crate::provider_callbacks::FrameAdmission::Unknown => {
+                let _ignored = reply.send(Ok(WriteOutcome::Unknown));
                 return Ok(());
             }
-            Ok(None) => {}
         }
         self.retained_frames.insert(
             key.clone(),
@@ -230,16 +214,13 @@ impl Worker {
         };
         self.db("retained_frame_written", move |s| async move {
             s.transaction_with(move |tx| {
-                store::save(
-                    tx,
-                    &pending.key,
-                    "written",
-                    json!(match outcome {
-                        WriteOutcome::Written => "written",
-                        WriteOutcome::NotSent => "not-sent",
-                        WriteOutcome::Unknown => "unknown",
-                    }),
-                )
+                let delivery = match outcome {
+                    WriteOutcome::Written => crate::provider_callbacks::DeliveryOutcome::Written,
+                    WriteOutcome::NotSent => crate::provider_callbacks::DeliveryOutcome::NotSent,
+                    WriteOutcome::Unknown => crate::provider_callbacks::DeliveryOutcome::Unknown,
+                };
+                crate::provider_callbacks::record_frame_outcome(tx, &pending.key, delivery)
+                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
             })
             .await
         })
