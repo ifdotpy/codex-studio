@@ -1,6 +1,6 @@
 //! Pure supervisor admission and journal decisions. No I/O or clock access.
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 /// Version of the maintained process supervisor wire protocol.
@@ -356,11 +356,19 @@ struct ReceiptRecord {
     digest: String,
     native_id: Option<NativeId>,
     generation: Option<u64>,
-    response: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_stored_response")]
+    response: Option<Value>,
     response_sequence: Option<u64>,
 }
 pub struct ReceiptSnapshot {
     record: ReceiptRecord,
+}
+fn deserialize_stored_response<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Option::<String>::deserialize(deserializer)?
+        .map(|raw| serde_json::from_str(&raw).map_err(serde::de::Error::custom))
+        .transpose()
 }
 impl ReceiptSnapshot {
     pub fn from_record(record: Value) -> Result<Self, Refusal> {
@@ -373,29 +381,21 @@ impl ReceiptSnapshot {
         {
             return Err(Refusal("Invalid supervisor operations integer range"));
         }
-        if let Some(raw) = &record.response {
-            serde_json::from_str::<Value>(raw)
-                .map_err(|_| Refusal("Invalid supervisor operations response"))?;
-        }
         Ok(Self { record })
     }
-    pub fn status(&self, current: &HandleSnapshot) -> Result<Value, Refusal> {
-        use serde_json::json;
+    pub fn status(&self, current: &HandleSnapshot) -> Value {
         if self.record.generation != Some(current.record.generation) {
-            return Ok(json!({"accepted":false,"reason":"native_generation_changed"}));
+            return json!({"accepted":false,"reason":"native_generation_changed"});
         }
         // Only an integer id proves the RPC identity of a monitor request.
         let Some(native_id) = self.record.native_id.as_ref().and_then(NativeId::rpc) else {
-            return Ok(json!({"accepted":false,"reason":"rpc_identity_missing"}));
+            return json!({"accepted":false,"reason":"rpc_identity_missing"});
         };
         let response = match (&self.record.response, self.record.response_sequence) {
-            (Some(raw), Some(seq)) if seq <= current.record.acknowledged => {
-                serde_json::from_str(raw)
-                    .map_err(|_| Refusal("Invalid supervisor operations response"))?
-            }
+            (Some(response), Some(seq)) if seq <= current.record.acknowledged => response.clone(),
             _ => Value::Null,
         };
-        Ok(json!({"accepted":true,"nativeId":native_id,"response":response}))
+        json!({"accepted":true,"nativeId":native_id,"response":response})
     }
 }
 pub enum WriteDecision {
@@ -440,7 +440,28 @@ pub fn compare_start(expected: &str, actual: Option<&str>) -> StartMatch {
 
 #[cfg(test)]
 mod start_identity_tests {
-    use super::{StartMatch, compare_start, is_native_start};
+    #![allow(clippy::unwrap_used)]
+    use super::{HandleSnapshot, ReceiptSnapshot, StartMatch, compare_start, is_native_start};
+    use serde_json::json;
+
+    #[test]
+    fn receipt_response_requires_acknowledgement_and_preserves_partial_records() {
+        let receipt = ReceiptSnapshot::from_record(json!({"digest":"d","native_id":7,"generation":1,"response":"{\"result\":{\"exitCode\":0}}","response_sequence":2})).unwrap();
+        let snapshot = |acknowledged| {
+            HandleSnapshot::from_record(
+                json!({"sequence":2,"acknowledged":acknowledged,"rpc_sequence":1,"generation":1}),
+            )
+            .unwrap()
+        };
+        assert!(receipt.status(&snapshot(1))["response"].is_null());
+        assert_eq!(
+            receipt.status(&snapshot(2))["response"]["result"]["exitCode"],
+            0
+        );
+        let partial = ReceiptSnapshot::from_record(json!({"digest":"d","native_id":7,"generation":1,"response":"{}","response_sequence":null})).unwrap();
+        assert!(partial.status(&snapshot(2))["response"].is_null());
+        assert!(ReceiptSnapshot::from_record(json!({"digest":"d","native_id":7,"generation":1,"response":"bad","response_sequence":2})).is_err());
+    }
 
     const MAC: &str = "macos:1CCC2169-B973-447A-B702-3F226EECA807:1790895321.190147";
 

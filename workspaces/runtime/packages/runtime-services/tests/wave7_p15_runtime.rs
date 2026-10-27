@@ -71,6 +71,75 @@ fn due_rule_case() -> Value {
 }
 
 #[tokio::test]
+async fn oversized_provider_delta_is_persisted_in_order_and_replayed_exactly() {
+    let root = fixtures::tempdir();
+    let mut case = running(&fixtures::corpus(root.path()));
+    let store = Arc::new(fixtures::store(root.path(), "large-output").await);
+    let id = case["before"]["id"].as_str().expect("id").to_owned();
+    case["before"]["log"] = json!(store.root().join("monitor-logs").join(format!("{id}.log")));
+    let account = case["before"]["operation"]["accountKey"]
+        .as_str()
+        .expect("account")
+        .to_owned();
+    fixtures::seed(&store, &case).await;
+    let mut bytes = vec![b'a'; studio_runtime_services::monitor_policy::CHUNK_BYTES];
+    bytes.push(b'z');
+    let params = json!({"processId":id, "stream":"stderr", "deltaBase64":base64::engine::general_purpose::STANDARD.encode(&bytes)});
+    let enqueue_id = id.clone();
+    store
+        .transaction_with(move |tx| {
+            assert!(monitor_event_queue::enqueue_output_in_transaction(
+                tx,
+                &enqueue_id,
+                &account,
+                7,
+                11,
+                &params
+            )?);
+            Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
+        })
+        .await
+        .expect("accept large provider delta");
+    let output = monitor_event_queue::next(&store)
+        .await
+        .expect("queue")
+        .expect("output");
+    let runtime = runtime(&store, &Arc::new(Port::default()));
+    let mut partial = output.clone();
+    partial.event = MonitorEvent::OutputStream {
+        offset: 0,
+        stream: "stderr".into(),
+        bytes: bytes[..studio_runtime_services::monitor_policy::CHUNK_BYTES].to_vec(),
+    };
+    runtime
+        .deliver(&partial, 1999.0)
+        .await
+        .expect("persist first chunk before interruption");
+    runtime
+        .deliver(&output, 1999.0)
+        .await
+        .expect("persist output");
+    runtime
+        .deliver(&output, 1999.0)
+        .await
+        .expect("replay after lost acknowledgement");
+    monitor_event_queue::acknowledge(&store, &output)
+        .await
+        .expect("acknowledge");
+    assert_eq!(
+        std::fs::read(store.root().join("monitor-logs").join(format!("{id}.log"))).expect("log"),
+        bytes
+    );
+    assert_eq!(record(&store, &id)["bytes"], bytes.len());
+    assert!(
+        monitor_event_queue::next(&store)
+            .await
+            .expect("queue")
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledged() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());

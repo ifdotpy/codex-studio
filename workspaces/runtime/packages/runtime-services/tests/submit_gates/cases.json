@@ -2761,6 +2761,8 @@
     },
     {
       "name": "deletedAt-truthiness-",
+      "deviation": "invalid-stored-input",
+      "refusal_location": "agents/sender",
       "gate": "authorization",
       "patches": [
         {
@@ -2800,6 +2802,8 @@
     },
     {
       "name": "deletedAt-truthiness-deleted",
+      "deviation": "invalid-stored-input",
+      "refusal_location": "agents/sender",
       "gate": "authorization",
       "patches": [
         {
@@ -2839,6 +2843,8 @@
     },
     {
       "name": "deletedAt-truthiness-[]",
+      "deviation": "invalid-stored-input",
+      "refusal_location": "agents/sender",
       "gate": "authorization",
       "patches": [
         {
@@ -2878,6 +2884,8 @@
     },
     {
       "name": "deletedAt-truthiness-[0]",
+      "deviation": "invalid-stored-input",
+      "refusal_location": "agents/sender",
       "gate": "authorization",
       "patches": [
         {
@@ -2917,6 +2925,8 @@
     },
     {
       "name": "deletedAt-truthiness-{}",
+      "deviation": "invalid-stored-input",
+      "refusal_location": "agents/sender",
       "gate": "authorization",
       "patches": [
         {
@@ -2956,6 +2966,8 @@
     },
     {
       "name": "deletedAt-truthiness-{'at': 1}",
+      "deviation": "invalid-stored-input",
+      "refusal_location": "agents/sender",
       "gate": "authorization",
       "patches": [
         {
@@ -3036,6 +3048,8 @@
     },
     {
       "name": "literal-lead-0",
+      "deviation": "invalid-stored-input",
+      "refusal_location": "agents/sender",
       "gate": "authorization",
       "patches": [
         {
@@ -3075,6 +3089,8 @@
     },
     {
       "name": "literal-lead-1",
+      "deviation": "invalid-stored-input",
+      "refusal_location": "agents/sender",
       "gate": "authorization",
       "patches": [
         {
@@ -3114,6 +3130,8 @@
     },
     {
       "name": "literal-lead-true",
+      "deviation": "invalid-stored-input",
+      "refusal_location": "agents/sender",
       "gate": "authorization",
       "patches": [
         {

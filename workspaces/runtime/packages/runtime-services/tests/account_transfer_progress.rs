@@ -49,12 +49,9 @@ fn agent(store: &RuntimeStore) -> Value {
 }
 
 fn operation(store: &RuntimeStore) -> Value {
-    serde_json::from_str(
-        &AccountTransferRepository::get(&store.test_reader().expect("reader"), OP)
-            .expect("read transfer")
-            .expect("transfer exists"),
-    )
-    .expect("transfer JSON")
+    AccountTransferRepository::get(&store.test_reader().expect("reader"), OP)
+        .expect("read transfer")
+        .expect("transfer exists")
 }
 
 async fn request(store: &RuntimeStore) -> Value {

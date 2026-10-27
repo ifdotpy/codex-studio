@@ -82,7 +82,7 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
         let target = if !crate::managed_host_tools::is_agent_target(target) {
             target
         } else {
-            resolved = messages::resolve_agent(tx, &snapshot, target).map_err(callback_refusal)?;
+            resolved = messages::resolve_target(tx, &snapshot, target).map_err(callback_refusal)?;
             resolved.as_str()
         };
         if is_descendant(tx, snapshot.context().agent.as_str(), target)? {
@@ -249,7 +249,7 @@ impl crate::managed_host_tools::InterruptPort for ProductionPorts {
     ) -> Result<String, crate::managed_host_tools::Error> {
         let snapshot = super::super::storage::snapshot(tx, &self.context)
             .map_err(|_| crate::managed_host_tools::Error::Stale)?;
-        messages::resolve_agent(tx, &snapshot, supplied).map_err(|error| match error {
+        messages::resolve_target(tx, &snapshot, supplied).map_err(|error| match error {
             CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
             CallbackError::Stored(location) => crate::managed_host_tools::Error::StoredAt(location),
             CallbackError::Invalid(message) => crate::managed_host_tools::Error::Invalid(message),
@@ -626,22 +626,26 @@ pub(super) async fn resolve_interrupt_target(
             let snapshot = super::super::storage::snapshot(tx, &context)
                 .map_err(|_| crate::managed_host_tools::Error::Stale)?;
             let target =
-                messages::resolve_agent(tx, &snapshot, &supplied).map_err(|error| match error {
-                    CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
-                    CallbackError::Stored(location) => {
-                        crate::managed_host_tools::Error::StoredAt(location)
-                    }
-                    CallbackError::Invalid(message) => {
-                        crate::managed_host_tools::Error::Invalid(message)
-                    }
-                    CallbackError::InvalidResultSchema(_)
-                    | CallbackError::Dependency(_)
-                    | CallbackError::Stale
-                    | CallbackError::Conflict
-                    | CallbackError::Unknown => {
-                        crate::managed_host_tools::Error::Invalid("Unknown managed agent")
-                    }
-                })?;
+                messages::resolve_target(tx, &snapshot, &supplied).map_err(
+                    |error| match error {
+                        CallbackError::Store(error) => {
+                            crate::managed_host_tools::Error::Store(error)
+                        }
+                        CallbackError::Stored(location) => {
+                            crate::managed_host_tools::Error::StoredAt(location)
+                        }
+                        CallbackError::Invalid(message) => {
+                            crate::managed_host_tools::Error::Invalid(message)
+                        }
+                        CallbackError::InvalidResultSchema(_)
+                        | CallbackError::Dependency(_)
+                        | CallbackError::Stale
+                        | CallbackError::Conflict
+                        | CallbackError::Unknown => {
+                            crate::managed_host_tools::Error::Invalid("Unknown managed agent")
+                        }
+                    },
+                )?;
             if !is_descendant(tx, &context.agent, &target)? {
                 return Err(crate::managed_host_tools::Error::Invalid(
                     "You can interrupt only your descendants",
@@ -666,22 +670,26 @@ pub(super) async fn resolve_send_target(
             let snapshot = super::super::storage::snapshot(tx, &context)
                 .map_err(|_| crate::managed_host_tools::Error::Stale)?;
             let target =
-                messages::resolve_agent(tx, &snapshot, &supplied).map_err(|error| match error {
-                    CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
-                    CallbackError::Stored(location) => {
-                        crate::managed_host_tools::Error::StoredAt(location)
-                    }
-                    CallbackError::Invalid(message) => {
-                        crate::managed_host_tools::Error::Invalid(message)
-                    }
-                    CallbackError::InvalidResultSchema(_)
-                    | CallbackError::Dependency(_)
-                    | CallbackError::Stale
-                    | CallbackError::Conflict
-                    | CallbackError::Unknown => {
-                        crate::managed_host_tools::Error::Invalid("Unknown managed agent")
-                    }
-                })?;
+                messages::resolve_target(tx, &snapshot, &supplied).map_err(
+                    |error| match error {
+                        CallbackError::Store(error) => {
+                            crate::managed_host_tools::Error::Store(error)
+                        }
+                        CallbackError::Stored(location) => {
+                            crate::managed_host_tools::Error::StoredAt(location)
+                        }
+                        CallbackError::Invalid(message) => {
+                            crate::managed_host_tools::Error::Invalid(message)
+                        }
+                        CallbackError::InvalidResultSchema(_)
+                        | CallbackError::Dependency(_)
+                        | CallbackError::Stale
+                        | CallbackError::Conflict
+                        | CallbackError::Unknown => {
+                            crate::managed_host_tools::Error::Invalid("Unknown managed agent")
+                        }
+                    },
+                )?;
             let descendant = is_descendant(tx, &context.agent, &target)?;
             Ok((target, descendant))
         })
@@ -770,19 +778,12 @@ pub(super) fn execute(
     }
     let mut resolved_args = args.clone();
     let field = match kind {
-        ToolKind::Message => args["target"]
-            .as_str()
-            .filter(|target| {
-                !matches!(*target, "user" | "parent" | "lead" | "broadcast" | "all")
-                    && !target.starts_with("remote:")
-                    && !target.starts_with("federated:")
-            })
-            .map(|_| "target"),
         ToolKind::Task => args["owner"]
             .as_str()
             .filter(|owner| !owner.is_empty())
             .map(|_| "owner"),
         ToolKind::Request
+        | ToolKind::Message
         | ToolKind::ChatRead
         | ToolKind::Context
         | ToolKind::Peers
@@ -810,7 +811,7 @@ pub(super) fn execute(
         | ToolKind::Unknown => None,
     };
     if let Some(field) = field {
-        resolved_args[field] = json!(messages::resolve_agent(tx, snapshot, text(args, field)?)?);
+        resolved_args[field] = json!(messages::resolve_target(tx, snapshot, text(args, field)?)?);
     }
     let args = &resolved_args;
     if matches!(kind, ToolKind::CancelMonitor) {

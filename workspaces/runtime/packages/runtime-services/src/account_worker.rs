@@ -909,23 +909,12 @@ pub async fn start_account_worker_with_publication_sink(
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Pending {
     intent: TurnIntent,
-    method: String,
+    method: Method,
     operation: String,
     #[serde(default)]
     thread: Option<crate::thread_prepare::PreparedAttempt>,
     #[serde(default)]
     compiled: Option<crate::turn_prepare::PreparedSubmission>,
-}
-impl Pending {
-    fn method(&self) -> Result<Method, WorkerError> {
-        Method::from_wire(&self.method).ok_or_else(|| {
-            StoreError::InvalidSyncObject {
-                scope: "account_worker".into(),
-                id: self.operation.clone(),
-            }
-            .into()
-        })
-    }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 enum Effect {
@@ -1303,12 +1292,8 @@ impl Worker {
                 && let Ok(turn_preparation::Outcome::Committed(submission::Committed::Ready(ready))) =
                     done.outcome
             {
-                let submission::Ready {
-                    id,
-                    context,
-                    method,
-                    ..
-                } = *ready;
+                let submission::Ready { id, context, .. } = *ready;
+                let method = context.method;
                 if let Err(error) = self.settle_unwritten(id, context, method).await {
                     commit_result = commit_result.and(Err(error));
                 }
@@ -2331,10 +2316,9 @@ impl Worker {
                 thread,
                 compiled,
                 intent,
-                method: method.as_str().into(),
+                method,
                 operation,
             },
-            method,
             params,
             interrupt_turn,
             submission,
@@ -2368,7 +2352,7 @@ impl Worker {
         commit: submission::Commit,
         launch: Result<Option<preparation::VmProviderLaunchRequest>, WorkerError>,
     ) -> Result<Option<Box<submission::Ready>>, WorkerError> {
-        let method = commit.method;
+        let method = commit.context.method;
         let actor_session = match self
             .ensure_vm_session(launch, &commit.context.intent, method)
             .await
@@ -2435,11 +2419,11 @@ impl Worker {
         let submission::Ready {
             id,
             context,
-            method,
             prepared,
             control,
             vm,
         } = ready;
+        let method = context.method;
         if self.closing {
             // Boxed: keeps the rare closing path out of the hot `write` future.
             return Box::pin(self.settle_unwritten(id, context, method)).await;
@@ -2575,7 +2559,7 @@ impl Worker {
             thread: None,
             compiled: Some(compiled.compiled.clone()),
             intent,
-            method: Method::TurnSteer.as_str().into(),
+            method: Method::TurnSteer,
             operation: operation.clone(),
         };
         let control = self.control.clone();
@@ -3492,7 +3476,7 @@ impl Worker {
             // Any turn/start outcome but its write or accepted reply may mean
             // the provider no longer has the thread loaded.
             let turn_unsettled = pending.as_ref().is_some_and(|context| {
-                context.method == Method::TurnStart.as_str()
+                context.method == Method::TurnStart
                     && !matches!(
                         outcome,
                         SessionOutcome::Write {

@@ -356,6 +356,14 @@ pub trait Host: Send + Sync + 'static {
     fn compact<'a>(&'a self, agent: &'a str, episode: Episode, limits: Value) -> HostFuture<'a>;
 }
 
+const NEXT_EPISODE_SQL: &str = "SELECT a.id,a.record FROM runtime_agents a WHERE a.idle_episode_type='object' AND a.idle_episode_id NOT IN (SELECT value FROM json_each(?1)) AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id=a.idle_episode_id) ORDER BY a.idle_episode_fire_at,a.id LIMIT 1";
+
+#[derive(Deserialize)]
+struct EpisodeRecord {
+    #[serde(rename = "idleCompactionEpisode")]
+    episode: Episode,
+}
+
 /// Due timers are read from SQLite, never from a bridge's process lifetime.
 pub async fn next(store: &RuntimeStore) -> Result<Option<(String, Episode)>, StoreError> {
     next_excluding(store, Vec::new()).await
@@ -364,10 +372,21 @@ async fn next_excluding(
     store: &RuntimeStore,
     running: Vec<String>,
 ) -> Result<Option<(String, Episode)>, StoreError> {
-    store.read_async("runtime-services/idle-compaction/deadline", move |db| {
-        let raw: Option<(String, String)> = db.query_row("SELECT a.id,json_extract(a.record,'$.idleCompactionEpisode') FROM runtime_agents a WHERE json_type(a.record,'$.idleCompactionEpisode')='object' AND json_extract(a.record,'$.idleCompactionEpisode.id') NOT IN (SELECT value FROM json_each(?1)) AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id=json_extract(a.record,'$.idleCompactionEpisode.id')) ORDER BY json_extract(a.record,'$.idleCompactionEpisode.fireAt'),a.id LIMIT 1", [json!(running).to_string()], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
-        raw.map(|(agent, raw)| serde_json::from_str(&raw).map(|episode| (agent,episode)).map_err(|error| StoreError::SchemaMismatch(error.to_string()))).transpose()
-    }).await
+    store
+        .read_async("runtime-services/idle-compaction/deadline", move |db| {
+            let raw: Option<(String, String)> = db
+                .query_row(NEXT_EPISODE_SQL, [json!(running).to_string()], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .optional()?;
+            raw.map(|(agent, raw)| {
+                serde_json::from_str::<EpisodeRecord>(&raw)
+                    .map(|record| (agent, record.episode))
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
+            })
+            .transpose()
+        })
+        .await
 }
 
 pub async fn fire(
@@ -505,6 +524,90 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn episode_lookup_searches_deadline_index() {
+        let db = studio_runtime_store::test_canvas();
+        let plan = db
+            .prepare(&format!("EXPLAIN QUERY PLAN {NEXT_EPISODE_SQL}"))
+            .expect("plan")
+            .query_map(["[]"], |row| row.get::<_, String>(3))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows");
+        eprintln!("episode lookup plan: {plan:?}");
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("SEARCH a USING INDEX runtime_idle_compaction_deadline")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|line| line.contains("SCAN a") || line.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn episode_lookup_keeps_order_exclusions_and_updates() {
+        let root = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store
+            .transaction(|tx| {
+                let (_, mut episode, mut agent, _) = fixture();
+                agent["rootId"] = json!("root");
+                agent["events"] = json!(0);
+                for (id, deadline) in [("later", 20.0), ("first", 10.0), ("second", 10.0)] {
+                    agent["id"] = json!(id);
+                    episode.id = id.into();
+                    episode.fire_at = deadline;
+                    agent["idleCompactionEpisode"] = json!(episode);
+                    AgentRepository::put(
+                        tx,
+                        &studio_runtime_store::AgentRecord::from_value(agent.clone())?,
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("episodes");
+        assert_eq!(
+            next(&store).await.expect("next").expect("episode").0,
+            "first"
+        );
+        assert_eq!(
+            next_excluding(&store, vec!["first".into()])
+                .await
+                .expect("next")
+                .expect("episode")
+                .0,
+            "second"
+        );
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_operation_receipts VALUES('first','idle-compaction','{}')", [])?;
+            tx.execute("UPDATE runtime_agents SET record=json_remove(record,'$.idleCompactionEpisode') WHERE id='second'", [])?;
+            Ok(())
+        }).await.expect("settle and remove");
+        assert_eq!(
+            next(&store).await.expect("next").expect("episode").0,
+            "later"
+        );
+        assert!(
+            next_excluding(&store, vec!["later".into()])
+                .await
+                .expect("next")
+                .is_none()
+        );
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.idleCompactionEpisode.fireAt','invalid') WHERE id='later'", [])?;
+            Ok(())
+        }).await.expect("invalid episode fixture");
+        assert!(matches!(
+            next(&store).await,
+            Err(StoreError::SchemaMismatch(_))
+        ));
+    }
+
     #[test]
     fn unsupported_rate_evidence_never_proves_resume_or_compaction() {
         let agent =

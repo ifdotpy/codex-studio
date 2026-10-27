@@ -93,6 +93,43 @@ const validConfirmed = (value: unknown): value is Confirmed => {
   );
 };
 
+export function decodeStoredConcurrency(
+  raw: string | null,
+  leadId: string,
+): Stored {
+  let value: unknown;
+  try {
+    value = raw === null ? {} : JSON.parse(raw);
+  } catch {
+    throw new Error("The saved concurrency request cannot be read.");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("The saved concurrency request cannot be read.");
+  const record = value as { confirmed?: unknown; pending?: unknown };
+  const legacy =
+    record.confirmed &&
+    typeof record.confirmed === "object" &&
+    "mode" in record.confirmed &&
+    "revision" in record.confirmed &&
+    (record.confirmed.mode === "multi" || record.confirmed.mode === "single") &&
+    validRevision(record.confirmed.revision);
+  if (
+    (record.confirmed !== undefined &&
+      !validConfirmed(record.confirmed) &&
+      !legacy) ||
+    (record.pending !== undefined && !validPending(record.pending, leadId))
+  )
+    throw new Error("The saved concurrency request cannot be read.");
+  return {
+    ...(validConfirmed(record.confirmed)
+      ? { confirmed: record.confirmed }
+      : {}),
+    ...(validPending(record.pending, leadId)
+      ? { pending: record.pending }
+      : {}),
+  };
+}
+
 export default function SubagentConcurrencyControl(props: Props) {
   const scope = JSON.stringify([
     props.stateDir,
@@ -122,38 +159,11 @@ function ScopedConcurrencyControl({
   const supported = snapshot !== undefined;
   const [initial, setInitial] = useState(() => {
     try {
-      const value = JSON.parse(localStorage.getItem(storageKey) || "{}") as {
-        confirmed?: unknown;
-        pending?: unknown;
-      };
-      if (
-        !value ||
-        typeof value !== "object" ||
-        (value.confirmed &&
-          !validConfirmed(value.confirmed) &&
-          // A previous release stored the mode here. It must not override the
-          // server's new numeric concurrency value during upgrade.
-          !(
-            typeof value.confirmed === "object" &&
-            value.confirmed !== null &&
-            ["multi", "single"].includes(
-              String((value.confirmed as { mode?: unknown }).mode),
-            ) &&
-            validRevision((value.confirmed as { revision?: unknown }).revision)
-          )) ||
-        (value.pending && !validPending(value.pending, lead.id))
-      )
-        throw new Error("The saved concurrency request cannot be read.");
-      const pending = validPending(value.pending, lead.id)
-        ? value.pending
-        : undefined;
       return {
-        value: {
-          ...(validConfirmed(value.confirmed)
-            ? { confirmed: value.confirmed }
-            : {}),
-          ...(pending ? { pending } : {}),
-        } satisfies Stored,
+        value: decodeStoredConcurrency(
+          localStorage.getItem(storageKey),
+          lead.id,
+        ),
         error: "",
       };
     } catch (cause) {
@@ -162,6 +172,15 @@ function ScopedConcurrencyControl({
   });
   const [stored, setStored] = useState(initial.value);
   const [error, setError] = useState(initial.error);
+  const readStored = () => {
+    try {
+      return decodeStoredConcurrency(localStorage.getItem(storageKey), lead.id);
+    } catch (cause) {
+      if (mounted.current)
+        setInitial({ value: stored, error: errorText(cause) });
+      throw cause;
+    }
+  };
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState<number | string>(() =>
     snapshot
@@ -282,9 +301,7 @@ function ScopedConcurrencyControl({
         throw new Error(
           "The server did not confirm the concurrency request. Retry the same request.",
         );
-      const disk = JSON.parse(
-        localStorage.getItem(storageKey) || "{}",
-      ) as Stored;
+      const disk = readStored();
       const newest = [latest.current, disk.confirmed, accepted]
         .filter(validConfirmed)
         .sort((a, b) => b.revision - a.revision)[0]!;
@@ -304,9 +321,7 @@ function ScopedConcurrencyControl({
     } catch (cause) {
       if (cause instanceof ApiError && cause.outcome === "not_applied") {
         try {
-          const disk = JSON.parse(
-            localStorage.getItem(storageKey) || "{}",
-          ) as Stored;
+          const disk = readStored();
           const newest = [disk.confirmed, latest.current]
             .filter(validConfirmed)
             .sort((a, b) => b.revision - a.revision)[0];
@@ -322,8 +337,10 @@ function ScopedConcurrencyControl({
             dirty.current = false;
             if (newest) setDraft(newest.concurrency);
           }
-        } catch {
+        } catch (failure) {
           // Keep the receipt until its confirmed rejection can be saved.
+          if (mounted.current) setError(errorText(failure));
+          return;
         }
         void Promise.resolve()
           .then(refresh)
@@ -444,6 +461,7 @@ function ScopedConcurrencyControl({
         <Button
           type="button"
           className="agent-mode-retry"
+          disabled={!!initial.error}
           onClick={() => void submit()}
         >
           {"subagent_concurrency" in pending

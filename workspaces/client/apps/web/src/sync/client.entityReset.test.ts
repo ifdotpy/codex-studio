@@ -765,6 +765,12 @@ describe("entity pull reset wiring", () => {
     async ({ liveBeforeConflict, stopDuringBackoff, typed = false }) => {
       const workspaceId = "9".repeat(32);
       const rows = new Map<string, Record<string, unknown>>();
+      const checkpoint = JSON.stringify({
+        format: 2,
+        epoch: "epoch",
+        metadata: { truncated: false },
+        order: [],
+      });
       const storageInstance = {
         findDocumentsById: vi.fn(async (ids: string[]) =>
           ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])),
@@ -961,8 +967,19 @@ describe("entity pull reset wiring", () => {
         await projectionWatched.promise;
         expect(mocks.connectionListener).toBeTypeOf("function");
         expect(projections.findOne).toHaveBeenCalledWith("transcript:agent");
+        rows.set("transcript:agent", {
+          id: "transcript:agent",
+          seq: 1,
+          payload: checkpoint,
+        });
+        const parse = vi.spyOn(JSON, "parse");
         mocks.transcriptInvalidation?.();
         await firstPull;
+        expect(
+          parse.mock.calls.filter(([text]) => text === checkpoint),
+        ).toHaveLength(1);
+        parse.mockRestore();
+        rows.delete("transcript:agent");
         expect(pullCount).toBe(1);
         if (liveBeforeConflict) mocks.connectionListener?.("live");
         vi.useFakeTimers();

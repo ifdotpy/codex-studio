@@ -450,7 +450,7 @@ pub fn maintain_entity_projections_with_server_id(
                     "complaint" => complaint_entity_view(
                         &record,
                         &ComplaintViewContext {
-                            agents: rooms.agents().to_vec(),
+                            agents: rooms.agents(),
                         },
                     ),
                     "project" => {
@@ -1434,8 +1434,8 @@ pub(crate) fn monitor_owner_index_exists(connection: &Connection) -> StoreResult
         .query_row([], |row| row.get(0))?)
 }
 
-fn projection_records(
-    transaction: &Transaction<'_>,
+pub(crate) fn projection_records(
+    transaction: &Connection,
     table: &str,
 ) -> StoreResult<Vec<(String, String)>> {
     // Legacy behavior: codex_sync_entities._stored_record skips malformed rows
@@ -1446,18 +1446,22 @@ fn projection_records(
         .collect())
 }
 
-pub(crate) fn projection_values(connection: &Connection, table: &str) -> StoreResult<Vec<Value>> {
-    Ok(stored_record_rows(connection, table)?
-        .into_iter()
-        .filter(|(id, raw)| valid_stored_record(table, id, raw))
-        .map(|(_, raw)| serde_json::from_str(&raw))
-        .collect::<Result<Vec<_>, _>>()?)
-}
-
 /// Stored agent rows without `deletedAt`, in rowid order (the agent columns
 /// refuse malformed JSON at write). The `runtime_agent_live_root_v2` partial
 /// index serves the predicate, so tombstones are not read.
 pub(crate) fn live_agent_records(connection: &Connection) -> StoreResult<Vec<(String, String)>> {
+    agent_volatile::merged_rows(
+        connection,
+        live_agent_record_rows(connection)?
+            .into_iter()
+            .filter(|(id, raw)| valid_stored_record("runtime_agents", id, raw))
+            .collect(),
+    )
+}
+
+pub(crate) fn live_agent_record_rows(
+    connection: &Connection,
+) -> StoreResult<Vec<(String, String)>> {
     if !table_exists(connection, "runtime_agents")? {
         return Ok(Vec::new());
     }
@@ -1465,17 +1469,11 @@ pub(crate) fn live_agent_records(connection: &Connection) -> StoreResult<Vec<(St
         "SELECT id,record FROM runtime_agents INDEXED BY runtime_agent_live_root_v2 \
          WHERE deleted_at IS NULL ORDER BY rowid",
     )?;
-    let rows = statement
+    Ok(statement
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
-        .collect::<Result<Vec<_>, _>>()?;
-    agent_volatile::merged_rows(
-        connection,
-        rows.into_iter()
-            .filter(|(id, raw)| valid_stored_record("runtime_agents", id, raw))
-            .collect(),
-    )
+        .collect::<Result<Vec<_>, _>>()?)
 }
 
 /// Every stored row of `table`, refusing the first invalid one.
@@ -1496,7 +1494,10 @@ pub(crate) fn stored_records(
     Ok(rows)
 }
 
-fn stored_record_rows(connection: &Connection, table: &str) -> StoreResult<Vec<(String, String)>> {
+pub(crate) fn stored_record_rows(
+    connection: &Connection,
+    table: &str,
+) -> StoreResult<Vec<(String, String)>> {
     if !table_exists(connection, table)? {
         return Ok(Vec::new());
     }

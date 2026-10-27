@@ -370,7 +370,7 @@ impl SupervisorJournal {
         }
         let db = self.lock()?;
         match receipt(&db, handle, operation)? {
-            Some(receipt) => Ok(receipt.status(&snapshot(&db, handle)?)?),
+            Some(receipt) => Ok(receipt.status(&snapshot(&db, handle)?)),
             None => Ok(json!({"accepted":false,"reason":"operation_missing"})),
         }
     }

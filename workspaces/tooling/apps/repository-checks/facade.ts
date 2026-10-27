@@ -1040,22 +1040,22 @@ export function gateSteps(root: string, name: string): GateStep[] {
       ...(!fast
         ? [
             {
-              ...cargo(
-                "clippy",
-                "Rust Clippy",
+              id: "clippy",
+              label: "Rust Clippy",
+              lane: "rust",
+              requiresCargo: true,
+              item: { name: "Rust Clippy", ecosystem: "cargo" },
+              commands: [
                 [
-                  "clippy",
-                  "--workspace",
-                  "--all-targets",
-                  "--locked",
-                  "--",
-                  "-D",
-                  "warnings",
+                  "node",
+                  [
+                    "workspaces/tooling/apps/repository-checks/clippy-ratchet.ts",
+                  ],
                 ],
-                { buildOnly: true },
-              ),
+              ],
+              options: { buildOnly: true },
               requires: "renderer",
-            },
+            } satisfies GateStep,
           ]
         : []),
       {

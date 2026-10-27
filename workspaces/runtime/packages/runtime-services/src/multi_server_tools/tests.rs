@@ -1085,7 +1085,7 @@ impl crate::voice_runtime::VoiceRequestPort for RecordingVoice {
         'a,
         Result<
             crate::voice_runtime::VoiceConnectionScope,
-            crate::voice_runtime::VoiceWriteCertainty,
+            crate::voice_runtime::VoicePrepareFailure,
         >,
     > {
         Box::pin(async move {

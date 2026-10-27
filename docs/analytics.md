@@ -94,6 +94,11 @@ removes the retired Python JSON cost projection and usage triggers in the same
 transaction that prepares the Rust aggregate. Usage records are preserved;
 reopening an updated database leaves its schema unchanged.
 
+Session estimates reuse a read-only analytics connection per blocking thread and
+state path, with Canvas attached once. Each computation starts a fresh transaction
+and reads only the selected root's members as typed rows through the existing root
+index; pricing remains current.
+
 Claude response usage retains the one-hour subset of prompt-cache writes in
 [`UsageTokens`](../workspaces/runtime/packages/runtime-schema/src/usage.rs).
 Session estimates, reconciliation, and account journal scans price that subset

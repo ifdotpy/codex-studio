@@ -13,7 +13,7 @@ export const initializeInstrumentation = ({
     // The fixture stream and renderer share the generated resource envelope.
     return JSON.parse(source) as components["schemas"]["ResourceChangeEvent"];
   }
-  localStorage.setItem(`codex-desktop-opened:${stateDir}`, JSON.stringify(id));
+  localStorage.setItem(`codex-desktop-opened:${stateDir}`, id);
   window.__resourceFlushAcks = [];
   window.__resourceFlushObserved = [];
   window.__pendingResourceFlushRevisions = [];

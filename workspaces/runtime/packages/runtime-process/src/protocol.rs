@@ -46,6 +46,8 @@ impl SupervisorHandshakeV2 {
     }
 }
 
+// Serde's skip_serializing_if callback requires a reference to the field.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(value: &bool) -> bool {
     !value
 }
@@ -374,27 +376,77 @@ pub struct RetireCommandResult {
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct WriteResult {
-    pub accepted: bool,
-    pub duplicate: bool,
-    #[serde(rename = "remoteId")]
-    pub remote_id: Option<NativeId>,
-    #[serde(rename = "durableMs")]
-    pub durable_ms: f64,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "WriteResultWire")]
+pub enum WriteResult {
+    Refused,
+    Fresh {
+        remote_id: Option<NativeId>,
+        durable_ms: f64,
+    },
+    Duplicate {
+        remote_id: Option<NativeId>,
+        durable_ms: f64,
+    },
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Deserialize)]
+struct WriteResultWire {
+    accepted: bool,
+    duplicate: bool,
+    #[serde(rename = "remoteId")]
+    remote_id: Option<NativeId>,
+    #[serde(rename = "durableMs")]
+    durable_ms: f64,
+}
+impl TryFrom<WriteResultWire> for WriteResult {
+    type Error = &'static str;
+    fn try_from(wire: WriteResultWire) -> Result<Self, Self::Error> {
+        match (wire.accepted, wire.duplicate, wire.remote_id) {
+            (false, false, None) => Ok(Self::Refused),
+            (true, false, remote_id) => Ok(Self::Fresh {
+                remote_id,
+                durable_ms: wire.durable_ms,
+            }),
+            (true, true, remote_id) => Ok(Self::Duplicate {
+                remote_id,
+                durable_ms: wire.durable_ms,
+            }),
+            (false, _, _) => Err("contradictory write receipt"),
+        }
+    }
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "OperationStatusWire<R>")]
+pub enum OperationStatusResult<R = Value> {
+    Refused {
+        reason: Option<String>,
+    },
+    Accepted {
+        native_id: NativeId,
+        response: Option<R>,
+    },
+}
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OperationStatusResult {
-    pub accepted: bool,
-    pub reason: Option<String>,
+struct OperationStatusWire<R> {
+    accepted: bool,
+    reason: Option<String>,
     #[serde(rename = "nativeId")]
-    pub native_id: Option<NativeId>,
-    pub response: Option<Value>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
+    native_id: Option<NativeId>,
+    response: Option<R>,
+}
+impl<R> TryFrom<OperationStatusWire<R>> for OperationStatusResult<R> {
+    type Error = &'static str;
+    fn try_from(wire: OperationStatusWire<R>) -> Result<Self, Self::Error> {
+        match (wire.accepted, wire.reason, wire.native_id, wire.response) {
+            (false, reason, None, None) => Ok(Self::Refused { reason }),
+            (true, None, Some(native_id), response) => Ok(Self::Accepted {
+                native_id,
+                response,
+            }),
+            _ => Err("contradictory operation status"),
+        }
+    }
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AckResult {

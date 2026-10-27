@@ -2,7 +2,7 @@ import type { ScreenSearchResultsMessage } from "./screenChannel";
 import { useScreenChannel } from "./ScreenContext";
 import { useServerApi, useServerResources } from "./ServerServicesContext";
 import {
-  parseStudioPreferences,
+  normalizeStudioPreferences,
   studioPreferencesStorageKey,
 } from "../studioPreferences";
 import { errorText } from "../api";
@@ -188,7 +188,7 @@ export function useServerFrame(
           publishServerAliases(aliases);
         try {
           const value = JSON.stringify(
-            parseStudioPreferences(JSON.stringify(event.data.preferences)),
+            normalizeStudioPreferences(event.data.preferences),
           );
           if (localStorage.getItem(studioPreferencesStorageKey) !== value) {
             localStorage.setItem(studioPreferencesStorageKey, value);

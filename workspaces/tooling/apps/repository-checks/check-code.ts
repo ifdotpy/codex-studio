@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 
 import ts from "typescript";
-import { enumLiteralDiagnostics } from "./enum-literals.ts";
+import {
+  enumLiteralDiagnostics,
+  generatedTypeDiagnostics,
+  switchDefaultDiagnostics,
+} from "./enum-literals.ts";
+import { checkRatchet, fingerprintMatches, readBaseline } from "./ratchet.ts";
 
 import {
   JAVASCRIPT_EXCEPTIONS_FILE,
@@ -100,8 +105,142 @@ function enumTarget(file: string) {
   return (
     file.startsWith("workspaces/client/apps/web/src/") &&
     /\.tsx?$/.test(file) &&
-    !file.includes("/generated/")
+    !file.includes("/generated/") &&
+    !file.endsWith(".generated.ts")
   );
+}
+function toolingTarget(file: string) {
+  return (
+    file.startsWith("workspaces/tooling/") &&
+    /\.tsx?$/.test(file) &&
+    !file.endsWith(".d.ts")
+  );
+}
+function otherClientTarget(file: string) {
+  return (
+    (file.startsWith("workspaces/client/apps/desktop/") ||
+      file.startsWith("workspaces/client/apps/native/")) &&
+    /\.[cm]?tsx?$/.test(file) &&
+    !file.endsWith(".d.ts") &&
+    !file.includes("/generated/") &&
+    !file.endsWith(".generated.ts")
+  );
+}
+
+function checkTypeGuards(
+  root: string,
+  allPaths: Iterable<string>,
+  targets: string[],
+  partial: boolean,
+  json = false,
+): number {
+  const paths = [...allPaths];
+  const owners = paths.filter(
+    (file) =>
+      file.endsWith(".ts") &&
+      (file.startsWith("workspaces/client/apps/web/src/generated/") ||
+        (file.startsWith("workspaces/client/apps/web/src/") &&
+          file.endsWith(".generated.ts")) ||
+        (file.startsWith("workspaces/providers/") &&
+          (file.includes("/codex-generated/") ||
+            file.endsWith(".generated.ts")))) &&
+      !file.endsWith(".type-test.ts"),
+  );
+  const web = targets.filter(enumTarget);
+  const tooling = targets.filter(toolingTarget);
+  const desktop = targets.filter(
+    (file) =>
+      otherClientTarget(file) &&
+      file.startsWith("workspaces/client/apps/desktop/"),
+  );
+  const native = targets.filter(
+    (file) =>
+      otherClientTarget(file) &&
+      file.startsWith("workspaces/client/apps/native/"),
+  );
+  const matches: Record<
+    "generated-types" | "switch-default",
+    { file: string; text: string; message: string }[]
+  > = { "generated-types": [], "switch-default": [] };
+  for (const [selected, configFile] of [
+    [web, "workspaces/client/apps/web/tsconfig.json"],
+    [desktop, "workspaces/client/apps/desktop/tsconfig.json"],
+    [native, "workspaces/client/apps/native/tsconfig.json"],
+    [tooling, "workspaces/tooling/tsconfig.json"],
+  ] as const) {
+    if (!selected.length) continue;
+    const config = ts.getParsedCommandLineOfConfigFile(
+      path.join(root, configFile),
+      {},
+      {
+        ...ts.sys,
+        onUnRecoverableConfigFileDiagnostic(diagnostic) {
+          throw new Error(
+            ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+          );
+        },
+      },
+    );
+    if (!config || config.errors.length)
+      throw new Error(`Cannot parse ${configFile}`);
+    const absoluteTargets = selected.map((file) => path.join(root, file));
+    const absoluteOwners = owners.map((file) => path.join(root, file));
+    const program = ts.createProgram(
+      [
+        ...absoluteTargets,
+        ...(configFile.includes("/client/") ? absoluteOwners : []),
+      ],
+      config.options,
+    );
+    const relative = (finding: {
+      file: string;
+      text: string;
+      message: string;
+    }) => ({
+      ...finding,
+      file: path.relative(root, finding.file).replaceAll(path.sep, "/"),
+    });
+    if (configFile.includes("/client/"))
+      matches["generated-types"].push(
+        ...generatedTypeDiagnostics(
+          program,
+          absoluteTargets,
+          absoluteOwners,
+        ).map(relative),
+      );
+    matches["switch-default"].push(
+      ...switchDefaultDiagnostics(program, absoluteTargets).map(relative),
+    );
+  }
+  const violations = Object.fromEntries(
+    Object.entries(matches).map(([rule, entries]) => [
+      rule,
+      fingerprintMatches(entries),
+    ]),
+  );
+  if (json) {
+    console.log(JSON.stringify(violations, null, 2));
+    return 0;
+  }
+  let failed = false;
+  const baseline = readBaseline(
+    path.join(
+      root,
+      "workspaces/tooling/apps/repository-checks/ratchet-baseline.json",
+    ),
+  );
+  if (partial) {
+    const selected = new Set(targets);
+    for (const rule of Object.keys(baseline))
+      baseline[rule] =
+        baseline[rule]?.filter((entry) => selected.has(entry.file)) ?? [];
+  }
+  for (const [rule, entries] of Object.entries(violations)) {
+    const diagnostics = checkRatchet(rule, entries, baseline);
+    for (const message of diagnostics) console.error(message);
+    failed ||= diagnostics.length > 0;
+  }
+  return failed ? 1 : 0;
 }
 function checkEnums(
   root: string,
@@ -226,7 +365,51 @@ function main() {
             (selected) => file === selected || file.startsWith(`${selected}/`),
           ),
       );
-    return targets.length ? checkEnums(repositoryRoot, targets, false) : 0;
+    const allPaths = [...getIndexPaths()];
+    const selected = allPaths
+      .filter(
+        (file) =>
+          enumTarget(file) || otherClientTarget(file) || toolingTarget(file),
+      )
+      .filter(
+        (file) =>
+          !paths.length ||
+          paths.includes("") ||
+          paths.some(
+            (selected) => file === selected || file.startsWith(`${selected}/`),
+          ),
+      );
+    const statusTypes = checkTypeGuards(
+      repositoryRoot,
+      allPaths,
+      selected,
+      paths.length > 0 && !paths.includes(""),
+    );
+    if (statusTypes) return statusTypes;
+    const enumStatus = targets.length
+      ? checkEnums(repositoryRoot, targets, false)
+      : 0;
+    return (
+      enumStatus ||
+      run(
+        process.execPath,
+        [path.join(scriptDirectory, "ast-grep.ts")],
+        repositoryRoot,
+      )
+    );
+  }
+  if (mode === "type-guards" && check === "--json") {
+    const paths = [...getIndexPaths()];
+    return checkTypeGuards(
+      repositoryRoot,
+      paths,
+      paths.filter(
+        (file) =>
+          enumTarget(file) || otherClientTarget(file) || toolingTarget(file),
+      ),
+      false,
+      true,
+    );
   }
   if (mode === "enums" && (check === undefined || check === "--json")) {
     return checkEnums(
@@ -284,7 +467,16 @@ function main() {
       ),
     );
     const enumTargets = check !== "format" ? lintPaths.filter(enumTarget) : [];
-    const enumSources = enumTargets.length
+    const typeTargets =
+      check !== "format"
+        ? lintPaths.filter(
+            (file) =>
+              enumTarget(file) ||
+              otherClientTarget(file) ||
+              toolingTarget(file),
+          )
+        : [];
+    const enumSources = typeTargets.length
       ? [...indexPaths].filter((file) => /\.(?:[cm]?[jt]sx?|json)$/.test(file))
       : [];
     const policyPaths = [
@@ -327,7 +519,7 @@ function main() {
       return 1;
     }
 
-    if (enumTargets.length) {
+    if (typeTargets.length) {
       // Generated WASM declarations are build outputs, not Git-index source.
       const wasmOutput = "workspaces/client/apps/web/src/wasm/generated";
       if (existsSync(path.join(repositoryRoot, wasmOutput))) {
@@ -385,7 +577,16 @@ function main() {
           } else linkEntry(from, to);
         }
       }
-      const status = checkEnums(temporaryRoot, enumTargets, false, true);
+      const typeStatus = checkTypeGuards(
+        temporaryRoot,
+        indexPaths,
+        typeTargets,
+        true,
+      );
+      if (typeStatus) return typeStatus;
+      const status = enumTargets.length
+        ? checkEnums(temporaryRoot, enumTargets, false, true)
+        : 0;
       if (status !== 0) return status;
     }
 

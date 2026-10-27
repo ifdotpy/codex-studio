@@ -64,8 +64,18 @@ fn session_cost_inner(
     accounts: &BTreeMap<String, Value>,
     has_account_profiles: bool,
 ) -> Result<Value, CostsError> {
-    let repository = AnalyticsRepository::new(store.root());
-    let mut db = repository.open_read_only()?;
+    store.with_cost_reader(|db| {
+        session_cost_on_reader(db, store, agent_id, accounts, has_account_profiles)
+    })
+}
+
+fn session_cost_on_reader(
+    db: &mut rusqlite::Connection,
+    store: &RuntimeStore,
+    agent_id: &str,
+    accounts: &BTreeMap<String, Value>,
+    has_account_profiles: bool,
+) -> Result<Value, CostsError> {
     let tx = db.transaction()?;
     let root = analytics::cost_root(&tx, agent_id)?;
     let generation = analytics::usage_generation(&tx, &root)?;

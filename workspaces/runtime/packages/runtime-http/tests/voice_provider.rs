@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_services::voice::runtime::{
-    Method, VoiceConnectionScope, VoiceFuture, VoiceReply, VoiceRequestPort, VoiceRequestReceipt,
-    VoiceWriteCertainty,
+    Method, VoiceConnectionScope, VoiceFuture, VoicePrepareFailure, VoiceReply, VoiceRequestPort,
+    VoiceRequestReceipt, VoiceWriteCertainty,
 };
 use studio_runtime_store::RuntimeStore;
 use tower::ServiceExt;
@@ -34,7 +34,7 @@ impl VoiceRequestPort for RecordingPort {
         account_key: &'a str,
         thread_id: &'a str,
         epoch: i64,
-    ) -> VoiceFuture<'a, Result<VoiceConnectionScope, VoiceWriteCertainty>> {
+    ) -> VoiceFuture<'a, Result<VoiceConnectionScope, VoicePrepareFailure>> {
         Box::pin(async move {
             Ok(VoiceConnectionScope {
                 agent_id: agent_id.to_owned(),

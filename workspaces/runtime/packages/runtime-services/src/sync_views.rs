@@ -6,6 +6,7 @@ use std::sync::{Arc, OnceLock};
 use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 
 use crate::event_write::truthy;
+use crate::submit_gates::{AgentAuthorityRow, Deletion, PeerTeamRow, StoredField};
 
 /// Derived list-attention fields. Compatibility agent envelopes omit these;
 /// view-scoped summaries own them. Unit: OpenAPI field names.
@@ -570,25 +571,20 @@ pub fn native_thread_block(record: &Value) -> Option<Value> {
 
 #[derive(Clone, Debug, Default)]
 pub struct RoomViewContext {
-    pub agents: Arc<Vec<Value>>,
-    pub peer_teams: Arc<Vec<Value>>,
+    pub agents: Arc<Vec<AgentAuthorityRow>>,
+    pub peer_teams: Arc<Vec<PeerTeamRow>>,
     pub active_agent_indices: Arc<HashMap<String, usize>>,
     pub last_message: Option<Value>,
     pub federation: Option<Value>,
 }
 
 impl RoomViewContext {
-    pub(crate) fn new(agents: Vec<Value>, peer_teams: Vec<Value>) -> Self {
+    pub(crate) fn new(agents: Vec<AgentAuthorityRow>, peer_teams: Vec<PeerTeamRow>) -> Self {
         let active_agent_indices = agents
             .iter()
             .enumerate()
-            .filter(|(_, agent)| !truthy(agent.get("deletedAt")))
-            .filter_map(|(index, agent)| {
-                agent
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .map(|id| (id.to_owned(), index))
-            })
+            .filter(|(_, agent)| !agent.deleted_at.as_ref().is_some_and(Deletion::is_deleted))
+            .filter_map(|(index, agent)| agent.id.clone().map(|id| (id, index)))
             .collect();
         Self {
             agents: Arc::new(agents),
@@ -600,7 +596,7 @@ impl RoomViewContext {
     }
 }
 
-fn active_agent<'a>(context: &'a RoomViewContext, id: &str) -> Option<&'a Value> {
+fn active_agent<'a>(context: &'a RoomViewContext, id: &str) -> Option<&'a AgentAuthorityRow> {
     context
         .active_agent_indices
         .get(id)
@@ -614,10 +610,6 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
     }
     let kind = record.get("kind").and_then(Value::as_str)?;
     let mut view = record.as_object()?.clone();
-    view.insert(
-        studio_runtime_schema::agent_progress::START_WAIT_FIELD.into(),
-        serde_json::to_value(agent_start_wait(record).ok()?).ok()?,
-    );
 
     let members: Vec<String>;
     if kind == "federated" {
@@ -659,11 +651,9 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
         members = context
             .agents
             .iter()
-            .filter(|agent| !truthy(agent.get("deletedAt")))
-            .filter(|agent| {
-                root == "all" || agent.get("rootId").and_then(Value::as_str) == Some(root)
-            })
-            .filter_map(|agent| agent.get("id").and_then(Value::as_str).map(str::to_owned))
+            .filter(|agent| !agent.deleted_at.as_ref().is_some_and(Deletion::is_deleted))
+            .filter(|agent| root == "all" || agent.root_id.as_deref() == Some(root))
+            .filter_map(|agent| agent.id.clone())
             .collect();
         if root != "all" && active_agent(context, root).is_none() {
             return None;
@@ -673,7 +663,7 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
         } else {
             format!(
                 "{} · Broadcast",
-                active_agent(context, root)?.get("name")?.as_str()?
+                active_agent(context, root)?.name.value_or(None)?
             )
         };
         view.insert(
@@ -699,7 +689,7 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
         let name = members
             .iter()
             .filter_map(|id| active_agent(context, id))
-            .filter_map(|agent| agent.get("name").and_then(Value::as_str))
+            .filter_map(|agent| agent.name.value_or(None).map(String::as_str))
             .collect::<Vec<_>>()
             .join(" ↔ ");
         view.insert(
@@ -711,23 +701,13 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
                 .unwrap_or(Value::String(name)),
         );
         if kind == "private" && members.len() == 2 {
-            if let Some(team) = context.peer_teams.iter().find(|team| {
-                team.get("members")
-                    .and_then(Value::as_array)
-                    .is_some_and(|team_members| {
-                        members
-                            .iter()
-                            .all(|member| team_members.contains(&Value::String(member.clone())))
-                    })
-            }) {
-                view.insert(
-                    "peerTeamId".to_owned(),
-                    team.get("id").cloned().unwrap_or(Value::Null),
-                );
-                view.insert(
-                    "peerTeamName".to_owned(),
-                    team.get("name").cloned().unwrap_or(Value::Null),
-                );
+            if let Some(team) = context
+                .peer_teams
+                .iter()
+                .find(|team| members.iter().all(|member| team.members.contains(member)))
+            {
+                view.insert("peerTeamId".to_owned(), json!(team.id));
+                view.insert("peerTeamName".to_owned(), json!(team.name));
             } else {
                 view.remove("peerTeamId");
                 view.remove("peerTeamName");
@@ -743,8 +723,8 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ComplaintViewContext {
-    pub agents: Vec<Value>,
+pub struct ComplaintViewContext<'a> {
+    pub agents: &'a [AgentAuthorityRow],
 }
 
 /// Build the viewer-independent renderer view for one stored complaint.
@@ -782,13 +762,12 @@ pub fn complaint_entity_view(record: &Value, context: &ComplaintViewContext) -> 
             context
                 .agents
                 .iter()
-                .find(|agent| agent.get("id").and_then(Value::as_str) == Some(key))
+                .find(|agent| agent.id.as_deref() == Some(key))
         });
-        agent
-            .and_then(|agent| agent.get("name"))
-            .cloned()
-            .or_else(|| fallback.map(|value| Value::String(value.to_owned())))
-            .unwrap_or(Value::Null)
+        match agent.map(|agent| &agent.name) {
+            None | Some(StoredField::Missing) => json!(fallback),
+            Some(name) => json!(name),
+        }
     };
     let mut view = Map::new();
     view.insert("id".to_owned(), Value::String(id.to_owned()));
@@ -835,10 +814,6 @@ pub fn project_entity_view(
     vault: Option<&Value>,
 ) -> Option<Value> {
     let mut view = record.as_object()?.clone();
-    view.insert(
-        studio_runtime_schema::agent_progress::START_WAIT_FIELD.into(),
-        serde_json::to_value(agent_start_wait(record).ok()?).ok()?,
-    );
 
     if let Some(readiness) = readiness.filter(|value| truthy(Some(value))) {
         view.insert("layrReadiness".to_owned(), readiness.clone());
@@ -881,6 +856,30 @@ mod projection_plan_tests {
         schema_projection_properties,
     };
     use serde_json::json;
+
+    #[test]
+    fn complaint_names_preserve_missing_and_null() {
+        for (agent, expected) in [
+            (r#"{"id":"author"}"#, json!("author")),
+            (r#"{"id":"author","name":null}"#, json!(null)),
+            (r#"{"id":"author","name":"Author"}"#, json!("Author")),
+        ] {
+            let agents = [serde_json::from_str(agent).expect("typed agent")];
+            let view = super::complaint_entity_view(
+                &json!({"id":"complaint","author":"author","text":"Question"}),
+                &super::ComplaintViewContext { agents: &agents },
+            )
+            .expect("complaint view");
+            assert_eq!(view["authorName"], expected);
+        }
+    }
+
+    #[test]
+    fn project_with_extension_status_is_projected() {
+        let view =
+            super::project_entity_view(&json!({"id": "project", "status": 42}), None, None, None);
+        assert!(view.is_some());
+    }
 
     /// The agent view publishes no team budget or token count, also when an
     /// older build stored them. The older view never published an empty pattern list, and

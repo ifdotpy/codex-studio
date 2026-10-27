@@ -1,3 +1,4 @@
+import { cacheFixture } from "../cacheFixture.ts";
 import { required } from "../teams/helpers.ts";
 import { installMobileSend } from "./mobile-send.fixture.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
@@ -354,7 +355,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     assert.ok(failedChatName, "The stored failure belongs to a fixture chat");
     const pendingKey = `studio-pending-sends:${stateDir}`;
     await page.evaluate(
-      async ({ body, pendingKey }) => {
+      async ({ body, pendingKey, selected }) => {
         await window.storage.db.outbox.insert({
           id: body.id,
           seq: 0,
@@ -368,9 +369,9 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
           }),
         });
         localStorage.setItem(pendingKey, JSON.stringify({ [body.room]: body }));
-        localStorage.setItem("codex-mobile-opened", JSON.stringify(body.room));
+        localStorage.setItem("codex-mobile-opened", selected);
       },
-      { body: failedBody, pendingKey },
+      { body: failedBody, pendingKey, selected: cacheFixture(failedBody.room) },
     );
     await page.reload();
     await input.waitFor();

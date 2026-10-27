@@ -969,13 +969,15 @@ impl AdapterTask {
             Err(_) if !rpc.started => return Ok(CommandReceipt::NotSent),
             Err(error) => return Err(error),
         };
-        if !result.accepted {
-            return Ok(CommandReceipt::NotSent);
-        }
+        let (remote_id, duplicate) = match result {
+            WriteResult::Refused => return Ok(CommandReceipt::NotSent),
+            WriteResult::Fresh { remote_id, .. } => (remote_id, false),
+            WriteResult::Duplicate { remote_id, .. } => (remote_id, true),
+        };
         if rpc_request {
-            let remote = rpc_remote_id(result.remote_id.as_ref()).ok_or(
-                SupervisorError::InvalidFrame("accepted request has no integer remote ID".into()),
-            )?;
+            let remote = rpc_remote_id(remote_id.as_ref()).ok_or(SupervisorError::InvalidFrame(
+                "accepted request has no integer remote ID".into(),
+            ))?;
             if let Some(local) = local_id {
                 if initialize {
                     self.initialize_id = Some(local.clone());
@@ -989,8 +991,8 @@ impl AdapterTask {
         }
         Ok(CommandReceipt::Written {
             // A reply can find a Python-written receipt with a text id; it is no RPC identity.
-            remote_id: rpc_remote_id(result.remote_id.as_ref()),
-            duplicate: result.duplicate,
+            remote_id: rpc_remote_id(remote_id.as_ref()),
+            duplicate,
         })
     }
 

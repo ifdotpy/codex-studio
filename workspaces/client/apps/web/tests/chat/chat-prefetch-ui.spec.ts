@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { cacheFixture } from "../cacheFixture.ts";
 import type {
   LegacyPullFixture,
   LegacyIdentityFixture,
@@ -251,7 +252,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     page.on("pageerror", (error) => errors.push(error.message));
     await page.addInitScript(initializeInstrumentation, {
       stateDir: original.stateDir,
-      id: a.id,
+      id: cacheFixture(a.id),
     });
 
     const handle = async (route: Route) => {

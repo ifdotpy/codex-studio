@@ -1,3 +1,4 @@
+import { cacheFixture } from "../cacheFixture.ts";
 import { required } from "./helpers.ts";
 import type { TranscriptPageResponse } from "../playwright.ts";
 import type { Message } from "../../src/types.ts";
@@ -445,13 +446,10 @@ async function runMessageReceiptScenario(
     );
     await context.addInitScript(
       ({ stateDir, agent }) => {
-        localStorage.setItem(
-          `codex-desktop-opened:${stateDir}`,
-          JSON.stringify(agent),
-        );
-        localStorage.setItem("codex-mobile-opened", JSON.stringify(agent));
+        localStorage.setItem(`codex-desktop-opened:${stateDir}`, agent);
+        localStorage.setItem("codex-mobile-opened", agent);
       },
-      { stateDir: state.stateDir, agent: agent.id },
+      { stateDir: state.stateDir, agent: cacheFixture(agent.id) },
     );
 
     const storage = await context.newPage();

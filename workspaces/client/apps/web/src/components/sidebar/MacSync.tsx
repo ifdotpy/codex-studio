@@ -17,7 +17,8 @@ export type LayrSyncSummary = {
   deletes: number;
   title: string;
 };
-export type MacSyncChoice = "mac" | "vm" | "agent";
+export type MacSyncChoice =
+  components["schemas"]["MacSyncResolveRequest"]["choice"];
 
 // The row shows the state that needs attention first.
 const ATTENTION: LayrSync["state"][] = [

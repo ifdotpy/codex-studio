@@ -1,5 +1,6 @@
 import { required } from "./performance-fixture.ts";
 import { installResponsivenessFixture } from "./ui-responsiveness.fixture.ts";
+import { cacheFixture } from "../cacheFixture.ts";
 import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
 import type { PerformanceTranscriptItem as Message } from "./performance-fixture.ts";
 import { transcriptFixtureAgent } from "./performance-fixture.ts";
@@ -173,7 +174,20 @@ test(
           {
             stateDir: required(original.stateDir),
             id: a.id,
+            cachedId: cacheFixture(a.id),
             rows: [...histories],
+            toolCaches: Object.fromEntries(
+              [...histories].map(([chat, items]) => [
+                chat,
+                cacheFixture(
+                  Object.fromEntries(
+                    items
+                      .filter((item) => item.role === "tool")
+                      .map((item) => [item.id, false]),
+                  ),
+                ),
+              ]),
+            ),
           };
         await page.addInitScript(installResponsivenessFixture, initOptions);
         await page.route("**/*", async (route) => {

@@ -19,6 +19,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use studio_client_domain::protocol::NativeVoiceEvent;
 use tokio::{sync::mpsc, task::JoinHandle};
 use webrtc::{
     data_channel::DataChannelEvent,
@@ -193,7 +194,9 @@ impl PeerConnectionEventHandler for Handler {
         };
         drop(
             self.events
-                .send(json!({"type":"state","state":state}))
+                .send(json!(NativeVoiceEvent::State {
+                    state: state.into()
+                }))
                 .await,
         );
     }
@@ -206,7 +209,11 @@ impl PeerConnectionEventHandler for Handler {
             let mut decoder = match Decoder::new() {
                 Ok(value) => value,
                 Err(error) => {
-                    drop(events.send(json!({"type":"error","message":error})).await);
+                    drop(
+                        events
+                            .send(json!(NativeVoiceEvent::Error { message: error }))
+                            .await,
+                    );
                     return;
                 }
             };
@@ -313,15 +320,18 @@ impl Peer {
         tasks.push(tokio::spawn(async move {
             while let Some(event) = channel.poll().await {
                 let value = match event {
-                    DataChannelEvent::OnOpen => json!({"type":"channel","state":"open"}),
-                    DataChannelEvent::OnMessage(message) => json!({
-                        "type":"message",
-                        "data": String::from_utf8_lossy(&message.data),
+                    DataChannelEvent::OnOpen => json!(NativeVoiceEvent::Channel {
+                        state: "open".into()
+                    }),
+                    DataChannelEvent::OnMessage(message) => json!(NativeVoiceEvent::Message {
+                        data: String::from_utf8_lossy(&message.data).into_owned(),
                     }),
                     DataChannelEvent::OnClose => {
                         drop(
                             channel_events
-                                .send(json!({"type":"channel","state":"closed"}))
+                                .send(json!(NativeVoiceEvent::Channel {
+                                    state: "closed".into()
+                                }))
                                 .await,
                         );
                         break;
@@ -337,7 +347,11 @@ impl Peer {
             let mut encoder = match Encoder::new() {
                 Ok(value) => value,
                 Err(error) => {
-                    drop(events.send(json!({"type":"error","message":error})).await);
+                    drop(
+                        events
+                            .send(json!(NativeVoiceEvent::Error { message: error }))
+                            .await,
+                    );
                     return;
                 }
             };
@@ -367,7 +381,9 @@ impl Peer {
             // The microphone ended. The UI shows the reason and closes the session.
             drop(
                 events
-                    .send(json!({"type":"microphone","state":"ended"}))
+                    .send(json!(NativeVoiceEvent::Microphone {
+                        state: "ended".into()
+                    }))
                     .await,
             );
         }));
@@ -502,7 +518,9 @@ async fn create(params: &Value) -> Result<Value, String> {
                     device_muted,
                     Box::new(move |_| {
                         // A canceled voice subscriber no longer needs this final device event.
-                        drop(ended.try_send(json!({"type":"microphone","state":"ended"})));
+                        drop(ended.try_send(json!(NativeVoiceEvent::Microphone {
+                            state: "ended".into()
+                        })));
                     }),
                 )
             })

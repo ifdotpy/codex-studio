@@ -1,3 +1,4 @@
+import { cacheFixture } from "../cacheFixture.ts";
 import type { PerformanceTranscriptItem as Message } from "./performance-fixture.ts";
 import { transcriptFixtureAgent } from "./performance-fixture.ts";
 import {
@@ -100,20 +101,21 @@ test("Large history @performance", async ({ context }) => {
   await page.addInitScript((id) => (window.largeHistoryChatId = id), lead.id);
   await page.addInitScript(({ key, id }) => localStorage.setItem(key, id), {
     key: `codex-desktop-opened:${state.stateDir}`,
-    id: other.id,
+    id: cacheFixture(other.id),
   });
   // Small tool groups open by default. Exercise a reader's saved collapsed
   // history here; turn-history-ui separately checks the small-group default.
   await page.addInitScript(
-    ({ key, ids }) => {
-      localStorage.setItem(
-        key,
-        JSON.stringify(Object.fromEntries(ids.map((id) => [id, false]))),
-      );
-    },
+    ({ key, value }) => localStorage.setItem(key, value),
     {
       key: `studio-turns:${state.stateDir}:${lead.id}:tools-v3`,
-      ids: items.filter((item) => item.role === "tool").map((item) => item.id),
+      value: cacheFixture(
+        Object.fromEntries(
+          items
+            .filter((item) => item.role === "tool")
+            .map((item) => [item.id, false]),
+        ),
+      ),
     },
   );
   const syncContract = await readFixtureSyncContract(origin);

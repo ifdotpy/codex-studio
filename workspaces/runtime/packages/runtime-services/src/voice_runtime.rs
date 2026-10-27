@@ -29,6 +29,23 @@ pub enum VoiceWriteCertainty {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VoicePrepareFailure {
+    NotSent,
+    Unknown,
+    Rejected,
+}
+
+impl From<VoicePrepareFailure> for VoiceWriteCertainty {
+    fn from(failure: VoicePrepareFailure) -> Self {
+        match failure {
+            VoicePrepareFailure::NotSent => Self::NotSent,
+            VoicePrepareFailure::Unknown => Self::Unknown,
+            VoicePrepareFailure::Rejected => Self::Rejected,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VoiceRequestReceipt {
     pub certainty: VoiceWriteCertainty,
 }
@@ -48,6 +65,14 @@ pub struct VoiceReply {
 /// Port to one retained provider connection. `prepare` resolves the current
 /// account connection using a session-scoped durable operation; `request` must
 /// preserve the supplied identity and deadline and never resend an Unknown.
+///
+/// A successful write is not a preparation failure:
+/// ```compile_fail
+/// use studio_runtime_services::voice_runtime::{VoiceConnectionScope, VoiceFuture, VoiceRequestPort, VoiceWriteCertainty};
+/// fn incorrect(port: &dyn VoiceRequestPort) {
+///     let _: VoiceFuture<'_, Result<VoiceConnectionScope, VoiceWriteCertainty>> = port.prepare("agent", "session", "account", "thread", 1);
+/// }
+/// ```
 pub trait VoiceRequestPort: Send + Sync {
     fn prepare<'a>(
         &'a self,
@@ -56,7 +81,7 @@ pub trait VoiceRequestPort: Send + Sync {
         account_key: &'a str,
         thread_id: &'a str,
         epoch: i64,
-    ) -> VoiceFuture<'a, Result<VoiceConnectionScope, VoiceWriteCertainty>>;
+    ) -> VoiceFuture<'a, Result<VoiceConnectionScope, VoicePrepareFailure>>;
 
     fn request<'a>(
         &'a self,

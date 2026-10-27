@@ -436,7 +436,12 @@ impl crate::provider_callbacks::MonitorInputPort for ScriptedMonitorPort {
                                 &monitor_id,
                             )?
                             .ok_or(Error::Invalid("Unknown test monitor"))?;
-                            record["inputAttempt"] = json!({"id":ticket,"status":"pending"});
+                            // Mirror the stored attempt: the monitor operation plus its identity.
+                            let mut attempt = record["operation"].clone();
+                            attempt["id"] = json!(ticket);
+                            attempt["method"] = json!("command/exec/write");
+                            attempt["status"] = json!("pending");
+                            record["inputAttempt"] = attempt;
                             tx.execute(
                                 "UPDATE runtime_monitors SET record=?1 WHERE id=?2",
                                 rusqlite::params![record.to_string(), monitor_id],

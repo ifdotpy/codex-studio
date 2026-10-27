@@ -124,7 +124,7 @@
     "file": "workspaces/runtime/packages/runtime-services/src/monitor_policy.rs",
     "edits": [
       {
-        "before": "|| f.stall_probe_generation != Some(generation)",
+        "before": "|| f.probe.0.as_ref().map(|lease| lease.generation) != Some(generation)",
         "after": "|| false"
       }
     ]

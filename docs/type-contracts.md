@@ -167,6 +167,21 @@ only for the pure ProviderKind parser; schema trees and opaque adapters remain
 permitted. Schema doctests and the migrated service compile-fail witnesses run
 in the local gates.
 
+The same checker compares handwritten client type declarations with tracked
+generated contracts: matching names require equivalent types, and explicit
+string-literal union member sets are compared regardless of name. Types derived
+from a generated owner are allowed. It
+also checks defaults on string- or number-literal union property switches in client and
+tooling sources. It accepts a terminating return or throw, or a call whose
+argument and corresponding parameter are both `never`, or a `never`-typed
+binding of the narrowed value or its discriminated object. It does not check switches without a default,
+prove all other branches are covered, detect structural copies of object types,
+or follow `JSON.parse` results through typed data flow. Existing findings are tracked by the
+[ratchet baseline](../workspaces/tooling/apps/repository-checks/ratchet-baseline.json).
+After fixing a finding, remove its file and fingerprint from that baseline;
+the full check rejects both new findings and entries whose finding disappeared.
+Staged checks apply the same rule to staged source files and the staged baseline.
+
 ## Current migration coverage
 
 The source contains typed contracts alongside legacy and open representations.
@@ -210,6 +225,10 @@ The following flows preserve their owning types through internal callers:
 | Managed dispatch and recovery     | [DispatchedOperation](../workspaces/runtime/packages/runtime-services/src/managed_host_tools.rs) owns applied, rejected, not-sent and unknown callback outcomes, each carrying its result and signals. Actual child creation producers return that outcome. [RecoveryReceipt](../workspaces/runtime/packages/runtime-services/src/recovery.rs) carries semantic confirmation through the account worker, retained port and server broker to callback settlement; RecoveryOutcome::Applied denotes a committed transaction and may contain an unknown receipt. Stored legacy status is interpreted only by the named saved-receipt adapter. Heterogeneous tool payloads stay opaque.                                                                                                                                                                                                                                                                                                                                                                                           |
 | Server access                     | [The access client](../workspaces/client/apps/web/src/api.ts) derives requests and AccessSnapshot from the generated multi-server operation. GET and POST retain method-specific bodies and results; UI actions retain their narrower supported set, required settings and request identity. Scoped tokens, workspace headers, timeouts and SSE recovery remain runtime behavior.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Native draft publication          | [DraftSnapshot](../workspaces/client/packages/client-domain/src/drafts.rs) owns workspace identity, committed revision, error and reconciled draft fields. The store carries it to the native response serialization boundary, and the renderer uses its generated declaration. Published snapshots are deeply readonly at their TypeScript API; editing forms copy the values they change. This is a static API constraint, not a runtime freeze or proof that structurally compatible mutable aliases cannot exist. Local initial revision and journal/replay policy retain their separate meanings.                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+
+For account-worker submissions, `Pending.method` carries the provider `Method`
+through preparation, durable authorization, dispatch, and recovery. The provider
+codec owns its stored wire spelling; legacy envelopes retain their optional fields.
 
 When migrating a boundary, update its owner, adapters, generated consumers, and
 caller tests together, following the [persisted-format migration policy](#migrate-studio-owned-persisted-formats)

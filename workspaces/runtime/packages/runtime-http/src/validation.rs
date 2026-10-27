@@ -447,11 +447,6 @@ impl Registry {
         self.validate_stored(schema, value)
     }
 
-    pub(crate) fn valid_table_record(&self, table: &str, id: &str, value: &Value) -> bool {
-        self.validate_table_record(table, value)
-            && value.get("id").and_then(Value::as_str) == Some(id)
-    }
-
     pub(crate) fn project_entity(&self, schema: &str, value: &Value) -> Option<Value> {
         studio_runtime_services::sync_views::project_persisted_record(schema, value)
     }

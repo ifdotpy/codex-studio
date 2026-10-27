@@ -33,8 +33,7 @@ async fn bridge_startup_recovers_transfer_phases_before_exposing_workers() {
     .await
     .expect("request");
     let saved = store.transaction(|tx| {
-        let raw = studio_runtime_store::AccountTransferRepository::get(tx, TRANSFER)?.expect("operation");
-        let mut operation: Value = serde_json::from_str(&raw)?;
+        let mut operation = studio_runtime_store::AccountTransferRepository::get(tx, TRANSFER)?.expect("operation");
         for (id, phase) in [("lead","reading"), ("submitted","submitted"), ("lazy-submitted","lazy_submitted"), ("interrupting","interrupting")] {
             operation["members"][id]["phase"] = json!(phase);
             if id == "lead" {
@@ -54,13 +53,12 @@ async fn bridge_startup_recovers_transfer_phases_before_exposing_workers() {
         .await
         .expect("startup barrier");
     let read = || {
-        let raw = studio_runtime_store::AccountTransferRepository::get(
+        studio_runtime_store::AccountTransferRepository::get(
             &store.test_reader().expect("reader"),
             TRANSFER,
         )
         .expect("operation")
-        .expect("exists");
-        serde_json::from_str::<Value>(&raw).expect("JSON")
+        .expect("exists")
     };
     let recovered = read();
     assert_eq!(recovered["members"]["lead"]["phase"], "lazy");

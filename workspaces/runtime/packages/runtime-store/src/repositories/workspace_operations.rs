@@ -1,5 +1,8 @@
 //! Narrow persistence for workspace completion receipts, lineage and recovery writes.
-use crate::{AgentRecord, AgentRepository, CheckpointsRepository, StoreError, StoreResult};
+use crate::{
+    AgentRecord, AgentRepository, CheckpointsRepository, StoreError, StoreResult, Table,
+    WorkspaceOperationRecord,
+};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
@@ -28,21 +31,19 @@ impl WorkspaceOperationsRepository {
             .is_some())
     }
     pub fn operation(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
-        let text: Option<String> = connection
-            .query_row(
-                "SELECT record FROM runtime_workspace_operations WHERE id=?1",
-                [id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        text.map(|s| serde_json::from_str(&s).map_err(StoreError::from))
-            .transpose()
+        Ok(Table::<WorkspaceOperationRecord>::new(connection)
+            .get(&id.to_owned())?
+            .map(WorkspaceOperationRecord::into_value))
     }
     pub fn active_operations(connection: &Connection) -> StoreResult<Vec<Value>> {
-        let mut query = connection.prepare_cached("SELECT record FROM runtime_workspace_operations WHERE json_extract(record,'$.phase') IS NULL OR json_extract(record,'$.phase') NOT IN ('completed','failed') ORDER BY id")?;
+        let table = Table::<WorkspaceOperationRecord>::new(connection);
+        let mut query = connection.prepare_cached("SELECT id,record FROM runtime_workspace_operations WHERE json_extract(record,'$.phase') IS NULL OR json_extract(record,'$.phase') NOT IN ('completed','failed') ORDER BY id")?;
         query
-            .query_map([], |r| r.get::<_, String>(0))?
-            .map(|r| serde_json::from_str(&r?).map_err(StoreError::from))
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .map(|r| {
+                let (id, raw) = r?;
+                Ok(table.decode_stored(&id, &raw)?.into_value())
+            })
             .collect()
     }
     pub fn history(
@@ -79,11 +80,13 @@ impl WorkspaceOperationsRepository {
         AgentRepository::put(tx, &AgentRecord::from_value(a.record)?)
     }
     pub fn put_operation(tx: &Transaction<'_>, operation: &Value) -> StoreResult<()> {
-        let record = crate::WorkspaceOperationRecord::from_value(operation.clone())?;
-        tx.execute(
-            "UPDATE runtime_workspace_operations SET record=?1 WHERE id=?2",
-            params![record.value().to_string(), record.id()],
-        )?;
+        let record = WorkspaceOperationRecord::from_value(operation.clone())?;
+        if !Table::new(tx).update(&record)? {
+            return Err(StoreError::InvalidStoredObject {
+                table: "runtime_workspace_operations",
+                id: record.id().clone(),
+            });
+        }
         Ok(())
     }
     /// Read, decide and apply on this same writer transaction; no external effects.
@@ -94,5 +97,66 @@ impl WorkspaceOperationsRepository {
     ) -> StoreResult<()> {
         Self::put_operation(tx, operation)?;
         AgentRepository::put(tx, &AgentRecord::from_value(agent.clone())?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn operation_identity_and_writes_are_checked() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_workspace_operations (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let operation =
+            json!({"id":"b","agent":"agent","kind":"capture","phase":"capture_pending"});
+        db.execute(
+            "INSERT INTO runtime_workspace_operations VALUES (?1,?2)",
+            params!["a", operation.to_string()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO runtime_workspace_operations VALUES (?1,?2)",
+            params!["b", operation.to_string()],
+        )
+        .unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL); INSERT INTO runtime_agents VALUES ('agent', 'unchanged')").unwrap();
+        assert!(WorkspaceOperationsRepository::operation(&db, "a").is_err());
+        assert!(WorkspaceOperationsRepository::active_operations(&db).is_err());
+        let b: String = db
+            .query_row(
+                "SELECT record FROM runtime_workspace_operations WHERE id='b'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let agent: String = db
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id='agent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(b, operation.to_string());
+        assert_eq!(agent, "unchanged");
+        db.execute("DELETE FROM runtime_workspace_operations WHERE id='b'", [])
+            .unwrap();
+        let tx = db.transaction().unwrap();
+        assert!(
+            WorkspaceOperationsRepository::apply_recovery(&tx, &operation, &json!({"id":"agent"}))
+                .is_err()
+        );
+        let invalid = json!({"id":"a","phase":17});
+        assert!(WorkspaceOperationsRepository::put_operation(&tx, &invalid).is_err());
+        let valid = json!({"id":"a","agent":"agent","kind":"capture","phase":"completed"});
+        WorkspaceOperationsRepository::put_operation(&tx, &valid).unwrap();
+        assert_eq!(
+            WorkspaceOperationsRepository::operation(&tx, "a").unwrap(),
+            Some(valid)
+        );
     }
 }

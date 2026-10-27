@@ -12,8 +12,8 @@ use serde_json::{Value, json};
 use studio_runtime_process::{
     AckRequest, AdminCloseHandleRequest, BackendId, BackendIdentity, CursorRequest, EventCursor,
     EventKind, FinishFallbackRequest, HandleRequest, HealthRequest, OperationId,
-    OperationStatusRequest, RetireCommandRequest, SupervisorClient, SupervisorError,
-    SupervisorHandle, WriteRequest,
+    OperationStatusRequest, OperationStatusResult, RetireCommandRequest, SupervisorClient,
+    SupervisorError, SupervisorHandle, WriteRequest, WriteResult,
 };
 use support::*;
 
@@ -631,7 +631,9 @@ printf '{"id":%s,"result":{"echo":"%s"}}\n' "$id" "$text"
             extra: BTreeMap::new(),
         })
         .unwrap();
-    assert!(write.accepted);
+    let WriteResult::Fresh { remote_id, .. } = write else {
+        panic!("expected fresh write")
+    };
     let receipt = client
         .operation_status(OperationStatusRequest {
             handle: handle.clone(),
@@ -639,8 +641,10 @@ printf '{"id":%s,"result":{"echo":"%s"}}\n' "$id" "$text"
             extra: BTreeMap::new(),
         })
         .unwrap();
-    assert!(receipt.accepted);
-    assert_eq!(receipt.native_id, write.remote_id);
+    let OperationStatusResult::Accepted { native_id, .. } = receipt else {
+        panic!("expected accepted receipt")
+    };
+    assert_eq!(Some(native_id), remote_id);
 
     let (_watcher, changes) = watch_changes(&state.0);
     let mut cursor = ready.sequence;
@@ -718,10 +722,10 @@ printf '{"id":%s,"result":{"echo":"%s"}}\n' "$id" "$text"
             extra: BTreeMap::new(),
         })
         .unwrap();
-    assert_eq!(
-        receipt.response.unwrap()["result"]["echo"],
-        "hello-from-rust"
-    );
+    let OperationStatusResult::Accepted { response, .. } = receipt else {
+        panic!("expected accepted receipt")
+    };
+    assert_eq!(response.unwrap()["result"]["echo"], "hello-from-rust");
 
     let command_handle = SupervisorHandle(format!("server-command:retire-{}", std::process::id()));
     let mut quick = open_request(

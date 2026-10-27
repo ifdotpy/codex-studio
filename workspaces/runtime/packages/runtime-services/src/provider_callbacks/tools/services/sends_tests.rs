@@ -5,6 +5,360 @@ use super::*;
 use crate::managed_host_tools::{PostCommitPort, SendPort};
 use studio_runtime_store::RuntimeStore;
 
+thread_local! { static AGENT_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+thread_local! { static AGENT_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+fn trace_agent_scans(event: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Stmt(statement, _) = event
+        && statement
+            .sql()
+            .contains("SELECT id,record FROM runtime_agents ORDER BY rowid")
+    {
+        AGENT_SCANS.with(|count| count.set(count.get() + 1));
+    }
+}
+
+fn trace_agent_rows(event: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Row(statement) = event {
+        let sql = statement.sql();
+        if sql.contains("FROM runtime_agents")
+            && (sql.starts_with("SELECT id,record") || sql.starts_with("SELECT record FROM"))
+        {
+            AGENT_ROWS.with(|count| count.set(count.get() + 1));
+        }
+    }
+}
+
+#[tokio::test]
+async fn message_ignores_unrelated_invalid_agent() {
+    message_with_unrelated_invalid("runtime_agents", json!({"id":"unrelated-invalid","rootId":"unrelated-invalid", "provider":"codex", "epoch":"invalid", "status":"idle"})).await;
+}
+
+#[tokio::test]
+async fn message_ignores_unrelated_invalid_project() {
+    message_with_unrelated_invalid(
+        "runtime_projects",
+        json!({"id":"unrelated-invalid","path":"/unrelated-project","peerTeams":"invalid"}),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn message_ignores_invalid_parent_project_outside_sender_cwd() {
+    let (_directory, store, oracle) = frozen::state().await;
+    let worker = oracle["agents"][1].clone();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
+    let context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().into(),
+        turn: worker["turnId"].as_str().unwrap().into(),
+    };
+    store.transaction_with(move |tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.cwd','/sender-project') WHERE id=?1", [&context.agent])?;
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.cwd','/other-parent-project') WHERE id=?1", [&lead])?;
+        tx.execute("INSERT INTO runtime_projects(id,record) VALUES('invalid-parent-project',?1)", [json!({"id":"invalid-parent-project","path":"/other-parent-project","peerTeams":"invalid"}).to_string()])?;
+        let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+        messages::send(tx, &snapshot, &json!({"target":"lead","text":"hello"}), "parent-project-witness", 20.0)?;
+        Ok::<_, CallbackError>(())
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn message_delivers_between_user_grouped_leads() {
+    let (_directory, store, oracle) = frozen::state().await;
+    let worker = oracle["agents"][1].clone();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
+    let context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().into(),
+        turn: worker["turnId"].as_str().unwrap().into(),
+    };
+    store.transaction_with(move |tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.rootId',id,'$.parentId',NULL,'$.isLead',json('true'),'$.cwd','/peer-project') WHERE id=?1", [&context.agent])?;
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.cwd','/peer-project') WHERE id=?1", [&lead])?;
+        tx.execute("INSERT INTO runtime_projects(id,record) VALUES('peer-project',?1)", [json!({"id":"peer-project","path":"/peer-project","peerTeams":[{"id":"peers","name":"Peers","members":[context.agent,lead]}]}).to_string()])?;
+        let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+        let sent = messages::send(tx, &snapshot, &json!({"target":lead,"text":"hello"}), "peer-message-witness", 20.0)?;
+        assert!(sent["deliveries"].get(&lead).is_some());
+        let payload: String = tx.query_row("SELECT payload FROM sync_entities WHERE collection='room' AND id=?1", [sent["room"].as_str().unwrap()], |row| row.get(0))?;
+        let projection: Value = serde_json::from_str(&payload)?;
+        assert_eq!(projection["value"]["peerTeamId"], "peers");
+        Ok::<_, CallbackError>(())
+    }).await.unwrap();
+}
+
+async fn message_with_unrelated_invalid(table: &'static str, record: Value) {
+    let (_directory, store, oracle) = frozen::state().await;
+    let worker = oracle["agents"][1].clone();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                &format!("INSERT INTO {table}(id,record) VALUES(?1,?2)"),
+                params!["unrelated-invalid", record.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().into(),
+        turn: worker["turnId"].as_str().unwrap().into(),
+    };
+    store
+        .transaction_with(move |tx| {
+            let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+            messages::send(
+                tx,
+                &snapshot,
+                &json!({"target":lead,"text":"hello"}),
+                "invalid-unrelated-witness",
+                20.0,
+            )
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn message_send_agent_rows_are_bounded() {
+    let small = count_message_agent_rows(0).await;
+    let large = count_message_agent_rows(64).await;
+    eprintln!(
+        "private message agent-record rows: {small} with 0 unrelated, {large} with 64 unrelated"
+    );
+    assert_eq!(
+        large, small,
+        "unrelated agents must not increase decoded rows"
+    );
+    assert!(
+        large <= 10,
+        "decoded {large} agent rows for a private message"
+    );
+}
+
+async fn count_message_agent_rows(unrelated: usize) -> usize {
+    let (_directory, store, oracle) = frozen::state().await;
+    let worker = oracle["agents"][1].clone();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
+    let seed = worker.clone();
+    store
+        .transaction(move |tx| {
+            for n in 0..unrelated {
+                let mut agent = seed.clone();
+                agent["id"] = json!(format!("unrelated-{n}"));
+                agent["rootId"] = agent["id"].clone();
+                studio_runtime_store::AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(agent)?,
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().into(),
+        turn: worker["turnId"].as_str().unwrap().into(),
+    };
+    let reader = store.test_reader().unwrap();
+    let admission = crate::message_admission::PreparedAdmission::read(&reader, &context.agent)
+        .unwrap()
+        .prepare()
+        .await
+        .unwrap();
+    drop(reader);
+    let ports = ProductionPorts::new(ProductionPortsConfig {
+        context: context.clone(),
+        room_directory: None,
+        admission,
+        event_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
+        monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
+        runtime_ports: empty_runtime_ports(),
+        preparation: None,
+    });
+    let prefix = lead[..8].to_owned();
+    store
+        .transaction_with(move |tx| {
+            let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+            AGENT_ROWS.with(|count| count.set(0));
+            tx.trace_v2(
+                rusqlite::trace::TraceEventCodes::SQLITE_TRACE_ROW,
+                Some(trace_agent_rows),
+            );
+            let result = super::execute(
+                tx,
+                &snapshot,
+                ToolKind::Message,
+                "orchestration_message",
+                &json!({"target":prefix,"text":"hello"}),
+                "rows-witness",
+                20.0,
+                None,
+                &ports,
+            );
+            tx.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_ROW, None);
+            result?;
+            Ok::<_, CallbackError>(AGENT_ROWS.with(|count| count.get()))
+        })
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn message_refuses_unknown_foreign_and_deleted_targets() {
+    let (_directory, store, oracle) = frozen::state().await;
+    let worker = oracle["agents"][1].clone();
+    let mut foreign = worker.clone();
+    foreign["id"] = json!("foreign-target");
+    foreign["rootId"] = json!("foreign-target");
+    let mut deleted = worker.clone();
+    deleted["id"] = json!("deleted-target");
+    deleted["deletedAt"] = json!(1);
+    let context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().into(),
+        turn: worker["turnId"].as_str().unwrap().into(),
+    };
+    store
+        .transaction_with(move |tx| {
+            for agent in [foreign, deleted] {
+                studio_runtime_store::AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(agent).unwrap(),
+                )?;
+            }
+            let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+            for target in ["unknown-target", "foreign-target", "deleted-target"] {
+                let result = messages::send(
+                    tx,
+                    &snapshot,
+                    &json!({"target":target,"text":"hello"}),
+                    "refusal-witness",
+                    20.0,
+                );
+                assert!(
+                    matches!(
+                        result,
+                        Err(CallbackError::Invalid(
+                            "Unknown agent ID in this caller's scope"
+                        ))
+                    ),
+                    "{target}: {result:?}"
+                );
+            }
+            Ok::<_, CallbackError>(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn same_team_target_is_resolved_before_message_validation_without_project_reads() {
+    let (_directory, store, oracle) = frozen::state().await;
+    let worker = oracle["agents"][1].clone();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
+    let context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().into(),
+        turn: worker["turnId"].as_str().unwrap().into(),
+    };
+    store
+        .transaction_with(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_projects(id,record) VALUES('invalid-project',?1)",
+                [
+                    json!({"id":"invalid-project","path":worker["cwd"],"peerTeams":"invalid"})
+                        .to_string(),
+                ],
+            )?;
+            let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+            let result = messages::send(
+                tx,
+                &snapshot,
+                &json!({"target":lead,"text":""}),
+                "invalid-text-witness",
+                20.0,
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(CallbackError::Invalid(
+                        "Message must have 1 to 12000 characters"
+                    ))
+                ),
+                "{result:?}"
+            );
+            Ok::<_, CallbackError>(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn message_send_does_not_scan_agent_directory() {
+    let (_directory, store, oracle) = frozen::state().await;
+    let worker = oracle["agents"][1].clone();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
+    let context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().into(),
+        turn: worker["turnId"].as_str().unwrap().into(),
+    };
+    let scans = store
+        .transaction_with(move |tx| {
+            let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+            AGENT_SCANS.with(|count| count.set(0));
+            tx.trace_v2(
+                rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+                Some(trace_agent_scans),
+            );
+            let result = messages::send(
+                tx,
+                &snapshot,
+                &json!({"target":lead,"text":"hello"}),
+                "scan-witness",
+                20.0,
+            );
+            tx.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, None);
+            result?;
+            Ok::<_, CallbackError>(AGENT_SCANS.with(|count| count.get()))
+        })
+        .await
+        .unwrap();
+    assert_eq!(scans, 0, "one message should not scan the agent directory");
+}
+
 #[path = "../../../../tests/provider_callbacks/fixture.rs"]
 mod frozen;
 
@@ -583,17 +937,22 @@ async fn an_unusual_record_of_another_team_does_not_refuse_sends() {
     }
     let (_root, store, refused) =
         try_send_with(0, "bbbbbbbb-relative-cwd", "send-hidden", others()).await;
-    let mut rows = store
-        .transaction(|tx| Ok(messages::authorization_records(tx).unwrap()))
+    store
+        .transaction(|tx| {
+            let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
+            let mut authority = messages::message_authority(
+                directory.agents(),
+                directory.projects(),
+                Default::default(),
+            )
+            .unwrap();
+            authority
+                .for_message("aaaaaaaa-trailing-slash", "aaaaaaaa-trailing-slash")
+                .expect("a trailing slash is the same path identity");
+            Ok(())
+        })
         .await
         .unwrap();
-    assert_eq!(
-        rows.resolved_paths[&trailing],
-        lead["cwd"].as_str().unwrap()
-    );
-    rows.recipient_id = "aaaaaaaa-trailing-slash".into();
-    crate::submit_gates::AuthorizationSnapshot::from_records(&rows)
-        .expect("a trailing slash is the same path identity");
     assert!(
         matches!(
             refused,

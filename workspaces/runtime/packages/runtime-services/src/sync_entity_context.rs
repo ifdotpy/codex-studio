@@ -1,13 +1,14 @@
 //! Persisted context needed to build canonical renderer entity views.
 
 use rusqlite::{Connection, OptionalExtension, Transaction};
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::Arc;
 use studio_runtime_store::CachedSql;
 use studio_runtime_store::{StoreResult, system_reads as records};
 
 use crate::event_write::truthy;
+use crate::submit_gates::{AgentAuthorityRow, Deletion, ProjectAuthorityRow};
 use crate::sync_policy::table_exists;
 use crate::sync_views::{AgentViewContext, RoomViewContext};
 
@@ -304,49 +305,73 @@ fn exists_for_agent(
     Ok(transaction.query_row(&sql, [agent_id], |row| row.get(0))?)
 }
 
-/// Schema-valid agent and project rows a sync [`RoomDirectory`] is resolved from.
+/// Checked record text retained only to recheck the directory's exact snapshot.
+#[derive(Default, PartialEq)]
 pub struct RoomSources {
-    agents: Vec<Value>,
-    projects: Vec<Value>,
+    agents: Vec<(String, String)>,
+    projects: Vec<(String, String)>,
 }
 
 impl RoomSources {
     /// Read the checked rows in a short snapshot; resolve them after the read ends.
     pub fn read(connection: &Connection) -> StoreResult<Self> {
+        Self::checked(Self::read_raw(connection)?)
+    }
+
+    fn read_raw(connection: &Connection) -> StoreResult<Self> {
         Ok(Self {
-            agents: records::all(connection, "runtime_agents")?,
-            projects: records::all(connection, "runtime_projects")?,
+            agents: crate::sync_policy::stored_record_rows(connection, "runtime_agents")?,
+            projects: crate::sync_policy::stored_record_rows(connection, "runtime_projects")?,
         })
+    }
+
+    fn checked(sources: Self) -> StoreResult<Self> {
+        for (table, rows) in [
+            ("runtime_agents", &sources.agents),
+            ("runtime_projects", &sources.projects),
+        ] {
+            for (id, raw) in rows {
+                records::decode(table, id, raw)?;
+            }
+        }
+        Ok(sources)
     }
 
     /// Read the rows like [`Self::read`], skipping malformed records as the
     /// Python sync projection owner does.
     pub fn read_for_sync(connection: &Connection) -> StoreResult<Self> {
         Ok(Self {
-            agents: crate::sync_policy::projection_values(connection, "runtime_agents")?,
-            projects: crate::sync_policy::projection_values(connection, "runtime_projects")?,
+            agents: crate::sync_policy::projection_records(connection, "runtime_agents")?,
+            projects: crate::sync_policy::projection_records(connection, "runtime_projects")?,
         })
     }
 }
 
+fn room_rows<T: DeserializeOwned>(rows: &[(String, String)], table: &str) -> StoreResult<Vec<T>> {
+    rows.iter()
+        .map(|(id, raw)| serde_json::from_str(raw).map_err(|_| records::invalid(table, id)))
+        .collect()
+}
+
 /// Schema-validated snapshot; only the database loader can construct its contents.
 pub struct RoomDirectory {
-    agents: Arc<Vec<Value>>,
-    projects: Vec<Value>,
-    peers: Arc<Vec<Value>>,
-    active_agent_indices: Arc<HashMap<String, usize>>,
+    context: RoomViewContext,
+    projects: Vec<ProjectAuthorityRow>,
+    sources: RoomSources,
 }
 impl RoomDirectory {
     pub(crate) fn load(tx: &Transaction<'_>) -> Result<Self, studio_runtime_store::StoreError> {
-        Self::resolve(
-            records::all(tx, "runtime_agents")?,
-            records::all(tx, "runtime_projects")?,
-        )
+        Self::prepare(RoomSources::read(tx)?)
     }
     /// Prepare room membership from stored, already resolved path identities.
     /// This is pure; callers retaining the whole directory check [`Self::matches`].
     pub fn prepare(sources: RoomSources) -> StoreResult<Self> {
-        Self::resolve(sources.agents, sources.projects)
+        let mut directory = Self::resolve(
+            room_rows(&sources.agents, "runtime_agents")?,
+            room_rows(&sources.projects, "runtime_projects")?,
+        )?;
+        directory.sources = sources;
+        Ok(directory)
     }
     /// Read [`RoomSources`] from `store`, then prepare the room directory.
     pub async fn read_and_prepare(store: &studio_runtime_store::RuntimeStore) -> StoreResult<Self> {
@@ -362,10 +387,15 @@ impl RoomDirectory {
         .await
         .map_err(|_| studio_runtime_store::StoreError::ReadTaskFailed)?
     }
-    fn resolve(agents: Vec<Value>, projects: Vec<Value>) -> StoreResult<Self> {
+    /// Use already decoded rows inside the caller's transaction. Retained
+    /// directories use `prepare`, which also captures the snapshot for rechecks.
+    pub(crate) fn resolve(
+        agents: Vec<AgentAuthorityRow>,
+        projects: Vec<ProjectAuthorityRow>,
+    ) -> StoreResult<Self> {
         let mut peers = Vec::new();
         for project in &projects {
-            let Some(path) = project["path"].as_str().filter(|s| !s.is_empty()) else {
+            let Some(path) = project.path.as_deref().filter(|s| !s.is_empty()) else {
                 continue;
             };
             // Project/agent writers persist resolved host paths. Room membership
@@ -377,17 +407,17 @@ impl RoomDirectory {
                 // directory and cannot bind local peer membership.
                 continue;
             };
-            for team in project["peerTeams"].as_array().into_iter().flatten() {
+            for team in &project.peer_teams {
                 let mut members = Vec::new();
-                for id in team["members"].as_array().into_iter().flatten() {
+                for id in &team.members {
                     if agents.iter().any(|a| {
-                        a["id"] == *id
-                            && a["rootId"] == *id
-                            && a["isLead"] == true
-                            && !truthy(a.get("deletedAt"))
-                            && !truthy(a.get("parentId"))
-                            && a["cwd"]
-                                .as_str()
+                        a.id.as_ref() == Some(id)
+                            && a.root_id.as_ref() == Some(id)
+                            && a.is_lead == Some(true)
+                            && !a.deleted_at.as_ref().is_some_and(Deletion::is_deleted)
+                            && a.parent_id.as_deref().is_none_or(str::is_empty)
+                            && a.cwd
+                                .as_deref()
                                 .and_then(|path| {
                                     studio_runtime_store::path_identity::lexical(
                                         std::path::Path::new(path),
@@ -402,66 +432,48 @@ impl RoomDirectory {
                 }
                 if members.len() >= 2 {
                     let mut team = team.clone();
-                    team["members"] = json!(members);
+                    team.members = members;
                     peers.push(team);
                 }
             }
         }
-        let active_agent_indices = agents
-            .iter()
-            .enumerate()
-            .filter(|(_, agent)| !truthy(agent.get("deletedAt")))
-            .filter_map(|(index, agent)| {
-                agent
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .map(|id| (id.to_owned(), index))
-            })
-            .collect();
         Ok(Self {
-            agents: Arc::new(agents),
+            context: RoomViewContext::new(agents, peers),
             projects,
-            peers: Arc::new(peers),
-            active_agent_indices: Arc::new(active_agent_indices),
+            sources: RoomSources::default(),
         })
     }
     /// Directory of live agents only, which is all a room view reads: peers,
     /// broadcast members and member names all exclude deleted agents.
     pub(crate) fn load_live(tx: &Connection) -> StoreResult<Self> {
-        Self::resolve(
-            records::live_agents(tx)?,
-            records::all(tx, "runtime_projects")?,
-        )
+        Self::prepare(RoomSources::checked(RoomSources {
+            agents: studio_runtime_store::agent_volatile::merged_rows(
+                tx,
+                crate::sync_policy::live_agent_record_rows(tx)?,
+            )?,
+            projects: crate::sync_policy::stored_record_rows(tx, "runtime_projects")?,
+        })?)
     }
     /// Build the live-agent sync context inside a writer transaction, skipping
     /// malformed rows like `RoomSources::read_for_sync`. Only agent liveness changes take
     /// this path, so path resolution under the writer stays rare.
     pub(crate) fn load_live_for_sync(tx: &Connection) -> StoreResult<Self> {
-        Self::resolve(
-            crate::sync_policy::live_agent_records(tx)?
-                .into_iter()
-                .map(|(_, raw)| serde_json::from_str(&raw))
-                .collect::<Result<Vec<Value>, _>>()?,
-            crate::sync_policy::projection_values(tx, "runtime_projects")?,
-        )
+        Self::prepare(RoomSources {
+            agents: crate::sync_policy::live_agent_records(tx)?,
+            projects: crate::sync_policy::projection_records(tx, "runtime_projects")?,
+        })
     }
     /// Recheck persisted inputs in the consumer's snapshot without resolving paths again.
     pub fn matches(&self, connection: &Connection) -> StoreResult<bool> {
-        Ok(
-            self.agents.as_ref() == &records::all(connection, "runtime_agents")?
-                && self.projects == records::all(connection, "runtime_projects")?,
-        )
+        Ok(self.sources == RoomSources::read_raw(connection)?)
     }
     pub fn matches_for_sync(&self, connection: &Connection) -> StoreResult<bool> {
-        Ok(self.agents.as_ref()
-            == &crate::sync_policy::projection_values(connection, "runtime_agents")?
-            && self.projects
-                == crate::sync_policy::projection_values(connection, "runtime_projects")?)
+        Ok(self.sources == RoomSources::read_for_sync(connection)?)
     }
-    pub(crate) fn agents(&self) -> &[Value] {
-        &self.agents
+    pub(crate) fn agents(&self) -> &[AgentAuthorityRow] {
+        &self.context.agents
     }
-    pub(crate) fn projects(&self) -> &[Value] {
+    pub(crate) fn projects(&self) -> &[ProjectAuthorityRow] {
         &self.projects
     }
     pub(crate) fn for_room(
@@ -482,9 +494,6 @@ impl RoomDirectory {
             None
         };
         Ok(RoomViewContext {
-            agents: Arc::clone(&self.agents),
-            peer_teams: Arc::clone(&self.peers),
-            active_agent_indices: Arc::clone(&self.active_agent_indices),
             last_message,
             federation: if room["kind"] == "federated" {
                 records::get(tx, "runtime_federation_rooms", id)?
@@ -503,6 +512,7 @@ impl RoomDirectory {
             } else {
                 None
             },
+            ..self.context.clone()
         })
     }
 }
@@ -530,6 +540,23 @@ fn pending_attention(
 #[cfg(test)]
 mod room_preparation_tests {
     use super::*;
+    use crate::submit_gates::{PeerTeamRow, StoredField};
+    use std::sync::Arc;
+
+    fn agent(id: &str) -> AgentAuthorityRow {
+        AgentAuthorityRow {
+            id: Some(id.to_owned()),
+            root_id: None,
+            parent_id: None,
+            is_lead: None,
+            deleted_at: None,
+            cwd: None,
+            name: StoredField::Missing,
+            shared_room_id: None,
+            execution_mode: None,
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn room_membership_uses_symlink_paths_resolved_by_the_creation_owner() {
@@ -544,13 +571,28 @@ mod room_preparation_tests {
             project.path(),
         )
         .expect("resolved real cwd");
-        let directory = RoomDirectory::resolve(vec![
-            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"first","rootId":"first","isLead":true,"cwd":first}),
-            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"second","rootId":"second","isLead":true,"cwd":second}),
-        ], vec![json!({"id":"project","path":first,"peerTeams":[{"id":"peers","members":["first","second"]}]})])
+        let agents = [("first", &first), ("second", &second)]
+            .into_iter()
+            .map(|(id, cwd)| AgentAuthorityRow {
+                root_id: Some(id.to_owned()),
+                is_lead: Some(true),
+                cwd: Some(cwd.to_str().expect("UTF-8 path").to_owned()),
+                ..agent(id)
+            })
+            .collect();
+        let projects = vec![ProjectAuthorityRow {
+            id: Some("project".to_owned()),
+            path: Some(first.to_str().expect("UTF-8 path").to_owned()),
+            peer_teams: vec![PeerTeamRow {
+                id: "peers".to_owned(),
+                name: "Peers".to_owned(),
+                members: vec!["first".to_owned(), "second".to_owned()],
+            }],
+        }];
+        let directory = RoomDirectory::resolve(agents, projects)
             .expect("room membership resolves canonical paths");
-        let members = &directory.peers;
-        assert_eq!(members[0]["members"], json!(["first", "second"]));
+        let members = &directory.context.peer_teams;
+        assert_eq!(members[0].members, ["first", "second"]);
     }
 
     #[test]
@@ -570,9 +612,39 @@ mod room_preparation_tests {
         let prepared =
             RoomDirectory::prepare(RoomSources::read(&connection).expect("read room sources"))
                 .expect("prepare after the read");
+        assert!(
+            prepared
+                .matches(&connection)
+                .expect("unchanged source text")
+        );
         connection.execute("UPDATE runtime_projects SET record=json_set(record,'$.name','after') WHERE id='project'", []).expect("project edit between prepare and transaction");
         let tx = connection.transaction().expect("read transaction");
         assert!(!prepared.matches(&tx).expect("check database preconditions"));
+    }
+
+    #[test]
+    fn snapshot_rechecks_unprojected_and_volatile_agent_fields() {
+        let connection = Connection::open_in_memory().expect("database");
+        connection
+            .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
+                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);",
+            ))
+            .expect("agents table");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile table");
+        connection.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","provider":"codex"}).to_string()]).expect("agent");
+        for sql in [
+            "UPDATE runtime_agents SET record=json_set(record,'$.prompt','changed') WHERE id='agent'",
+            "INSERT INTO runtime_agent_volatile(id,tail) VALUES('agent','\"changed\"')",
+        ] {
+            let directory =
+                RoomDirectory::prepare(RoomSources::read(&connection).expect("sources"))
+                    .expect("directory");
+            assert!(directory.matches(&connection).expect("unchanged snapshot"));
+            connection.execute(sql, []).expect("source edit");
+            assert!(!directory.matches(&connection).expect("changed snapshot"));
+        }
     }
 
     #[test]
@@ -595,7 +667,7 @@ mod room_preparation_tests {
             RoomSources::read_for_sync(&connection).expect("sync sources read"),
         )
         .expect("sync context skips malformed source rows");
-        assert!(prepared.agents.is_empty());
+        assert!(prepared.agents().is_empty());
         assert!(prepared.projects.is_empty());
         let tx = connection.transaction().expect("sync transaction");
         assert!(
@@ -609,8 +681,11 @@ mod room_preparation_tests {
     fn room_contexts_share_agents_peers_and_the_active_agent_index() {
         let directory = RoomDirectory::resolve(
             vec![
-                json!({"id":"agent-a"}),
-                json!({"id":"agent-b","deletedAt":"now"}),
+                agent("agent-a"),
+                AgentAuthorityRow {
+                    deleted_at: Some(Deletion::Number(1.0)),
+                    ..agent("agent-b")
+                },
             ],
             Vec::new(),
         )

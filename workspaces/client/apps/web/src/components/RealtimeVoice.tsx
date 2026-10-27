@@ -17,6 +17,7 @@ import type { ResourceVersion } from "../sync/subscriptions/events";
 import "./realtime-voice.css";
 import { useServerResourceReads } from "../servers/ServerServicesContext";
 import { watchVoiceTransport } from "./voiceTransport";
+import { decodeVoiceEvent } from "./voiceEvent";
 
 type VoiceRecords = PostResult<"/api/voice/records">;
 type VoiceRecord = VoiceRecords["records"][number];
@@ -273,14 +274,15 @@ function NativeVoice({
   };
   const messageReceived = (current: Peer, data: string) => {
     if (current.closed) return;
-    let event;
+    let value: unknown;
     try {
-      event = JSON.parse(data);
+      value = JSON.parse(data);
     } catch {
       return;
     }
+    const event = decodeVoiceEvent(value);
     if (event.type === "error") {
-      failure(new Error(event.error?.message || "Voice failed"));
+      failure(new Error(event.message || "Voice failed"));
       return;
     }
     if (event.type === "session.started") {
@@ -290,11 +292,11 @@ function NativeVoice({
     }
     if (event.type === "input_transcript.added") {
       setStatus("Listening");
-      setPartial(event.item?.text || "");
+      setPartial(event.text);
     }
     if (event.type === "output_transcript.added") {
       setStatus("Speaking");
-      setPartial(event.item?.text || "");
+      setPartial(event.text);
     }
     if (event.type === "delegation.created") {
       setStatus("Working");
@@ -363,7 +365,7 @@ function NativeVoice({
           )
             failure(
               new Error(
-                event.message ||
+                (event.type === "error" && event.message) ||
                   "Voice disconnected. The saved transcript remains.",
               ),
             );

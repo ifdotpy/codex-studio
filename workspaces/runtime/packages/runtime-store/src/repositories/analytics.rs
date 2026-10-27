@@ -11,7 +11,58 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use super::cost_aggregate::CostMember;
-use crate::CachedSql;
+use crate::{CachedSql, RuntimeStore};
+
+thread_local! {
+    // Cost reads include journal I/O: thread-local readers reuse ATTACH and prepared
+    // statements without holding the generation reader or a shared pool's locks.
+    static COST_READERS: std::cell::RefCell<BTreeMap<std::path::PathBuf, Connection>> = const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+
+impl RuntimeStore {
+    /// Run one cost computation on this blocking thread's read-only state connection.
+    pub fn with_cost_reader<T, E: From<AnalyticsStoreError>>(
+        &self,
+        operation: impl FnOnce(&mut Connection) -> Result<T, E>,
+    ) -> Result<T, E> {
+        COST_READERS.with_borrow_mut(|readers| {
+            let db = match readers.entry(self.root().to_path_buf()) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(AnalyticsRepository::new(self.root()).open_read_only()?)
+                }
+            };
+            operation(db)
+        })
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CostReadWitness {
+    pub opens: usize,
+    pub attaches: usize,
+    /// Stored member/root JSON records decoded on the publication's blocking thread.
+    pub decoded_rows: usize,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static COST_READ_WITNESS: std::cell::Cell<CostReadWitness> = const { std::cell::Cell::new(CostReadWitness { opens: 0, attaches: 0, decoded_rows: 0 }) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn take_cost_read_witness() -> CostReadWitness {
+    COST_READ_WITNESS.take()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn record_cost_decode() {
+    COST_READ_WITNESS.update(|mut counts| {
+        counts.decoded_rows += 1;
+        counts
+    });
+}
 
 const TOKEN_FIELDS: [&str; 6] = [
     "inputTokens",
@@ -52,6 +103,11 @@ impl AnalyticsRepository {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
+        #[cfg(any(test, feature = "test-support"))]
+        COST_READ_WITNESS.update(|mut counts| {
+            counts.opens += 1;
+            counts
+        });
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         crate::stored_text_dictionary::install_analytics_sql(&connection)
             .map_err(|error| AnalyticsStoreError::StoredText(error.to_string()))?;
@@ -59,6 +115,11 @@ impl AnalyticsRepository {
         let path = self.state_root.join("canvas.sqlite3");
         let uri = read_only_uri(&path)?;
         connection.execute("ATTACH DATABASE ?1 AS canvas", [uri])?;
+        #[cfg(any(test, feature = "test-support"))]
+        COST_READ_WITNESS.update(|mut counts| {
+            counts.attaches += 1;
+            counts
+        });
         Ok(connection)
     }
 }
@@ -1440,6 +1501,8 @@ pub fn cost_agents(
     root: &str,
 ) -> Result<Vec<(String, CostMember)>, SessionCostError> {
     let decode = |raw: &str, table| {
+        #[cfg(any(test, feature = "test-support"))]
+        record_cost_decode();
         serde_json::from_str::<CostMember>(raw)
             .map_err(|_| SessionCostError::InvalidStoredObject(table))
     };
@@ -1477,16 +1540,13 @@ pub fn usage_generation(db: &Connection, root: &str) -> Result<i64, SessionCostE
     )?)
 }
 pub fn cost_root(db: &Connection, agent: &str) -> Result<String, SessionCostError> {
-    let (table,raw): (String,String) = db.query_row("SELECT 'analytics_agents',record FROM analytics_agents WHERE id=?1 UNION ALL SELECT 'runtime_agents',record FROM canvas.runtime_agents WHERE id=?1 LIMIT 1",[agent],|r|Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or(SessionCostError::InvalidRequest("Unknown chat"))?;
-    let table = if table == "analytics_agents" {
-        "analytics_agents"
-    } else {
-        "runtime_agents"
-    };
-    let record: Value =
-        serde_json::from_str(&raw).map_err(|_| SessionCostError::InvalidStoredObject(table))?;
-    Ok(record["rootId"]
-        .as_str()
+    let root: Option<String> = db.query_row_cached(
+        "SELECT CASE WHEN json_type(record,'$.rootId')='text' THEN json_extract(record,'$.rootId') END FROM analytics_agents WHERE id=?1
+         UNION ALL SELECT CASE WHEN json_type(record,'$.rootId')='text' THEN root_id END FROM canvas.runtime_agents WHERE id=?1 LIMIT 1",
+        [agent], |row| row.get(0),
+    ).optional()?.ok_or(SessionCostError::InvalidRequest("Unknown chat"))?;
+    Ok(root
+        .as_deref()
         .filter(|s| !s.is_empty())
         .unwrap_or(agent)
         .into())

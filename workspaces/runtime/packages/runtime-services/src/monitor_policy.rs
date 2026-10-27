@@ -197,6 +197,51 @@ pub(crate) struct ReattachRecovery {
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ProbeFields {
+    #[serde(default)]
+    stall_probe_generation: Option<i64>,
+    #[serde(default)]
+    stall_probe_started: Option<f64>,
+}
+
+#[derive(Clone)]
+struct ProbeLease {
+    generation: i64,
+    started: f64,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(try_from = "ProbeFields")]
+struct ProbeState(Option<ProbeLease>);
+
+impl TryFrom<ProbeFields> for ProbeState {
+    type Error = &'static str;
+
+    fn try_from(fields: ProbeFields) -> Result<Self, Self::Error> {
+        match fields.stall_probe_generation {
+            Some(generation) => Ok(Self(Some(ProbeLease {
+                generation,
+                started: fields.stall_probe_started.ok_or("probe start missing")?,
+            }))),
+            None => Ok(Self(None)),
+        }
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InputAttempt {
+    id: String,
+    agent: String,
+    epoch: i64,
+    account_key: String,
+    connection_id: String,
+    #[serde(rename = "method")]
+    _method: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Fields {
     id: String,
     agent: String,
@@ -221,10 +266,8 @@ struct Fields {
     activity_generation: i64,
     #[serde(default = "minus_one")]
     stall_wake_generation: i64,
-    #[serde(default)]
-    stall_probe_generation: Option<i64>,
-    #[serde(default)]
-    stall_probe_started: Option<f64>,
+    #[serde(flatten)]
+    probe: ProbeState,
     #[serde(default)]
     activity_at: Option<f64>,
     #[serde(default)]
@@ -240,7 +283,7 @@ struct Fields {
     #[serde(default)]
     stdin_close_requested: Option<String>,
     #[serde(default)]
-    input_attempt: Option<Value>,
+    input_attempt: Option<InputAttempt>,
 }
 fn minus_one() -> i64 {
     -1
@@ -636,9 +679,9 @@ pub fn tick(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision, MonitorErr
     {
         return Ok(decision);
     }
-    if f.stall_probe_generation == Some(f.activity_generation)
-        && now - f.stall_probe_started.unwrap_or(now) < PROBE_LEASE_SECONDS
-    {
+    if f.probe.0.as_ref().is_some_and(|lease| {
+        lease.generation == f.activity_generation && now - lease.started < PROBE_LEASE_SECONDS
+    }) {
         return Ok(decision);
     }
     decision.record["lastStallAt"] = json!(now);
@@ -671,7 +714,7 @@ pub fn probe_result(
     if f.status != MonitorStatus::Running
         || snapshot.actor.deleted_at.is_some_and(|at| at != 0.0)
         || Some(snapshot.actor.epoch) != f.epoch
-        || f.stall_probe_generation != Some(generation)
+        || f.probe.0.as_ref().map(|lease| lease.generation) != Some(generation)
         || f.activity_generation != generation
     {
         return Ok(decision);
@@ -830,16 +873,17 @@ pub fn settle_input(
     let Some(attempt) = &snapshot.fields.input_attempt else {
         return Ok(decision);
     };
-    if attempt.get("id").and_then(Value::as_str) != Some(attempt_id)
-        || ["agent", "epoch", "accountKey", "connectionId"]
-            .iter()
-            .any(|key| attempt.get(*key) != snapshot.record.pointer(&format!("/operation/{key}")))
+    if attempt.id != attempt_id
+        || attempt.agent != operation.agent
+        || attempt.epoch != operation.epoch
+        || attempt.account_key != operation.account_key
+        || attempt.connection_id != operation.connection_id
     {
         return Err(MonitorError::Refused(
             "Monitor input receipt identity changed",
         ));
     }
-    let mut receipt = attempt.clone();
+    let mut receipt = snapshot.record["inputAttempt"].clone();
     receipt["finished"] = json!(now);
     receipt["status"] = json!(match outcome {
         InputOutcome::Acknowledged => "acknowledged",

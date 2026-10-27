@@ -1,3 +1,4 @@
+import { cacheFixture, readCacheFixture } from "../cacheFixture.ts";
 import {
   readTestState,
   entityPullFixtureForRequest,
@@ -387,17 +388,15 @@ test("Terminal dock transport", async () => {
       await route.fulfill({ json: value });
     });
     await page.addInitScript(
-      ({ stateDir, preferred }) => {
-        localStorage.setItem(
-          `codex-desktop-opened:${stateDir}`,
-          JSON.stringify("lead"),
-        );
-        localStorage.setItem(
-          "codex.terminal.height",
-          JSON.stringify(preferred),
-        );
+      ({ stateDir, preferred, lead }) => {
+        localStorage.setItem(`codex-desktop-opened:${stateDir}`, lead);
+        localStorage.setItem("codex.terminal.height", preferred);
       },
-      { stateDir: root, preferred: layoutValues.terminal.preferred * 16 },
+      {
+        stateDir: root,
+        lead: cacheFixture("lead"),
+        preferred: cacheFixture(layoutValues.terminal.preferred * 16),
+      },
     );
     const address = server.address();
     assert.ok(address && typeof address !== "string");
@@ -677,8 +676,10 @@ test("Terminal dock transport", async () => {
     await page.mouse.up();
     assert.ok(
       Number(
-        await page.evaluate(() =>
-          localStorage.getItem("codex.terminal.height"),
+        readCacheFixture(
+          (await page.evaluate(() =>
+            localStorage.getItem("codex.terminal.height"),
+          ))!,
         ),
       ) > dragStart.height,
       "Pointer completion persists the chosen preference",

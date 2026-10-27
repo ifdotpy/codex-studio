@@ -407,7 +407,7 @@ test("compiler policy witnesses run after dependency preparation outside the JS 
   assert.ok(rust);
   assert.match(rust, /run: pnpm run test:rust-lint-policy/);
   assert.ok(
-    rust.indexOf("cargo clippy --workspace") <
+    rust.indexOf("clippy-ratchet.ts") <
       rust.indexOf("run: pnpm run test:rust-lint-policy"),
   );
   const manifest: PackageManifest = JSON.parse(

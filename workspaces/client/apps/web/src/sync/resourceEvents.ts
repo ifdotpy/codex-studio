@@ -84,6 +84,36 @@ export type ResourceChangeEvent = components["schemas"]["ResourceChangeEvent"];
 export type ResourceHeartbeatEvent =
   components["schemas"]["ResourceHeartbeatEvent"];
 
+const authProgressStatuses = {
+  starting: true,
+  pending: true,
+  ready: true,
+  error: true,
+  cancelled: true,
+} satisfies Record<
+  NonNullable<components["schemas"]["AuthProgressEvent"]["value"]>["status"],
+  true
+>;
+const renameProgressStatuses = {
+  pending: true,
+  applied: true,
+  failed: true,
+} satisfies Record<
+  NonNullable<
+    NonNullable<components["schemas"]["RenameProgressEvent"]["value"]>["status"]
+  >,
+  true
+>;
+const vaultProgressStates = {
+  running: true,
+  done: true,
+  failed: true,
+  signin: true,
+} satisfies Record<
+  NonNullable<components["schemas"]["VaultJobProgressEvent"]["value"]>["state"],
+  true
+>;
+
 export type ResourceTokenRatesEvent =
   components["schemas"]["ResourceTokenRatesEvent"];
 
@@ -1187,9 +1217,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           (!receipt ||
             receipt.requestId !== resource.requestId ||
             typeof receipt.accountKey !== "string" ||
-            !["starting", "pending", "ready", "error", "cancelled"].includes(
-              String(receipt.status),
-            )))
+            !Object.hasOwn(authProgressStatuses, String(receipt.status))))
       )
         throw new TypeError("Invalid auth progress");
     } else if (resource.kind === "rename-progress") {
@@ -1201,7 +1229,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           (!receipt ||
             receipt.id !== resource.agentId ||
             receipt.request_id !== resource.requestId ||
-            !["pending", "applied", "failed"].includes(String(receipt.status))))
+            !Object.hasOwn(renameProgressStatuses, String(receipt.status))))
       )
         throw new TypeError("Invalid rename progress");
     } else if (resource.kind === "vault-job-progress") {
@@ -1212,9 +1240,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         (receipt !== null &&
           (!receipt ||
             receipt.requestId !== resource.requestId ||
-            !["running", "done", "failed", "signin"].includes(
-              String(receipt.state),
-            )))
+            !Object.hasOwn(vaultProgressStates, String(receipt.state))))
       )
         throw new TypeError("Invalid vault job progress");
     } else if (
@@ -2031,15 +2057,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         }
       });
       connected.addEventListener("resources", (message: Event) => {
-        applyFrame(
-          message,
-          (parsed) => {
-            if (!hasRevisionFrame(parsed) || !Array.isArray(parsed.resources))
-              throw new TypeError("Invalid resource frame");
-            receiveResourceEvent(parsed);
-          },
-          SYNC_STREAM_EVENT_MAX_BYTES,
-        );
+        applyFrame(message, receiveResourceEvent, SYNC_STREAM_EVENT_MAX_BYTES);
       });
       connected.addEventListener("entity-transfer", (message: Event) => {
         applyFrame(message, receiveEntityTransfer, SYNC_STREAM_EVENT_MAX_BYTES);
