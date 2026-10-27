@@ -41,6 +41,19 @@ macro_rules! domain {
     };
 }
 
+domain!(ExecutionReceiptKind { Submission=>"submission", StartResult=>"startResult", Unknown=>"unknown", ThreadPrepared=>"threadPrepared", Terminal=>"terminal", TerminalInput=>"terminalInput" });
+domain!(ContextRepairPhase { Preparing=>"preparing", Submitted=>"submitted", Unknown=>"unknown", Ready=>"ready", Completed=>"completed", Failed=>"failed", Unchanged=>"unchanged" });
+domain!(SteerStage { Reserved=>"reserved", Submitted=>"submitted", Unconfirmed=>"unconfirmed" });
+domain!(MonitorInputStatus { Pending=>"Pending", Acknowledged=>"Acknowledged", Rejected=>"Rejected", Unknown=>"Unknown" });
+domain!(NativeActionAdmissionStatus { Accepted=>"accepted" });
+domain!(VoiceStopOutcome { Submitted=>"submitted", Written=>"written", NotSent=>"not_sent", Unknown=>"unknown", Rejected=>"rejected" });
+domain!(TerminalInputDelivery { Sent=>"sent", Uncertain=>"uncertain" });
+domain!(ServerDeliveryState { Queued=>"queued", Running=>"running", Waiting=>"waiting", Complete=>"complete" });
+domain!(FederationDeliveryState { Queued=>"queued", Delivered=>"delivered" });
+domain!(FederationAckState { Pending=>"pending", Sent=>"sent", Confirmed=>"confirmed" });
+domain!(FederationMessageKind { ChatMessage=>"chat-message", RoomInvite=>"room-invite", RoomAccept=>"room-accept" });
+domain!(AccessOutboundState { Unknown=>"unknown", Complete=>"complete", Redacted=>"redacted" });
+domain!(RemoteOutcome { Applied=>"applied", NotApplied=>"not_applied", Unknown=>"unknown" });
 domain!(WorkStatus { Ready=>"ready", Blocked=>"blocked", Running=>"running", Review=>"review", Accepted=>"accepted", Cancelled=>"cancelled" });
 domain!(OwnerKind { Agent=>"agent", Task=>"task", Account=>"account", Vm=>"vm", Project=>"project", Monitor=>"monitor", Terminal=>"terminal", Message=>"message", Request=>"request", Server=>"server" });
 domain!(OutboxKind { ProviderCall=>"provider_call", ProviderCallback=>"provider_callback", JournalEntry=>"journal_entry", Publication=>"publication", StreamFlush=>"stream_flush", FollowupEffect=>"followup_effect", Steer=>"steer", VoiceStop=>"voice_stop", VoiceDelete=>"voice_delete", WorkArchive=>"work_archive", WorkVm=>"work_vm", TitleGeneration=>"title_generation", NativeAction=>"native_action", TerminalAction=>"terminal_action", MonitorInput=>"monitor_input", McpReconnect=>"mcp_reconnect", ProjectRegistration=>"project_registration", RemoteDelivery=>"remote_delivery", ManagedTool=>"managed_tool" });
@@ -49,15 +62,15 @@ domain!(HoldStatus { Clear=>"clear", Invalid=>"invalid", Unrecognized=>"unrecogn
 domain!(ToolRequestKind { ManagedTool=>"managed_tool", ProviderCallback=>"provider_callback", Unrecognized=>"unrecognized" });
 domain!(ToolRequestStatus { Queued=>"queued", Running=>"running", Cancelled=>"cancelled", Interrupted=>"interrupted", Failed=>"failed", Unknown=>"unknown", Completed=>"completed" });
 domain!(ToolRequestOutcome { Pending=>"pending", Applied=>"applied", NotApplied=>"not_applied", Unknown=>"unknown" });
-domain!(ExecutionStatus { Pending=>"pending", Accepted=>"accepted", Observed=>"observed", Running=>"running", Unknown=>"unknown", Rejected=>"rejected", Completed=>"completed", Failed=>"failed", Interrupted=>"interrupted", Cancelled=>"cancelled" });
-domain!(AttemptSubmission { Pending=>"pending", Accepted=>"accepted", Observed=>"observed", Rejected=>"rejected", Unknown=>"unknown" });
+domain!(ExecutionStatus { Unsent=>"unsent", Pending=>"pending", Accepted=>"accepted", Observed=>"observed", Running=>"running", Unknown=>"unknown", Rejected=>"rejected", Completed=>"completed", Failed=>"failed", Interrupted=>"interrupted", Cancelled=>"cancelled" });
+domain!(AttemptSubmission { Unsent=>"unsent", Pending=>"pending", Accepted=>"accepted", Observed=>"observed", Rejected=>"rejected", Unknown=>"unknown" });
 domain!(ExecutionEffectKind { Spawn=>"spawn", ToolRequests=>"tool_requests", Requests=>"requests", Unrecognized=>"unrecognized" });
-domain!(ExecutionEffectStatus { Pending=>"pending", Queued=>"queued", Starting=>"starting", Running=>"running", Idle=>"idle", Waiting=>"waiting", Scheduled=>"scheduled", Stopped=>"stopped", Cancelled=>"cancelled", Interrupted=>"interrupted", Failed=>"failed", Unknown=>"unknown", Completed=>"completed" });
-domain!(ExecutionNodeStatus { Idle=>"idle", Queued=>"queued", Starting=>"starting", Running=>"running", Waiting=>"waiting", Scheduled=>"scheduled", Stopped=>"stopped", Completed=>"completed", Failed=>"failed", Cancelled=>"cancelled" });
-domain!(WorkEffectStatus { Pending=>"pending", Retryable=>"retryable", Submitted=>"submitted", Unknown=>"unknown", NotSent=>"not_sent", Complete=>"complete", Applied=>"applied", Failed=>"failed", Cancelled=>"cancelled" });
-domain!(TitleStatus { Pending=>"pending", Submitted=>"submitted", Unknown=>"unknown", NotSent=>"not_sent", Applied=>"applied", Failed=>"failed" });
+domain!(ExecutionEffectStatus { Unknown=>"unknown", Idle=>"idle", Queued=>"queued", Starting=>"starting", Running=>"running", Waiting=>"waiting", WaitingOnMonitor=>"waiting_on_monitor", Approval=>"approval", Completed=>"completed", Interrupted=>"interrupted", Failed=>"failed", Blocked=>"blocked", Paused=>"paused", Parked=>"parked", Abandoned=>"abandoned", CapacityRetry=>"capacity-retry", Pending=>"pending", Cancelled=>"cancelled", Answering=>"answering", Answered=>"answered", Uncertain=>"uncertain", Resolved=>"resolved" });
+domain!(ExecutionNodeStatus { Unknown=>"unknown", Idle=>"idle", Queued=>"queued", Starting=>"starting", Running=>"running", Waiting=>"waiting", WaitingOnMonitor=>"waiting_on_monitor", Approval=>"approval", Completed=>"completed", Interrupted=>"interrupted", Failed=>"failed", Blocked=>"blocked", Paused=>"paused", Parked=>"parked", Abandoned=>"abandoned", CapacityRetry=>"capacity-retry" });
+domain!(WorkEffectStatus { Completed=>"completed", Terminal=>"terminal", Pending=>"pending", Retryable=>"retryable", Submitted=>"submitted", Unknown=>"unknown", NotSent=>"not_sent", Complete=>"complete", Applied=>"applied", Failed=>"failed", Cancelled=>"cancelled" });
+domain!(TitleStatus { Scheduled=>"scheduled", Written=>"written", Invalid=>"invalid", Discarded=>"discarded", Pending=>"pending", Submitted=>"submitted", Unknown=>"unknown", NotSent=>"not_sent", Applied=>"applied", Failed=>"failed" });
 domain!(VmLaunchStatus { Preparing=>"preparing", Submitted=>"submitted", Unknown=>"unknown", Ready=>"ready", Failed=>"failed" });
-domain!(IdleEpisodeOutcome { PrefixChanged=>"prefix_changed", Started=>"started", Dispatched=>"dispatched", Failed=>"failed", NotOneHour=>"not_one_hour", Lapsed=>"lapsed", Small=>"small", NewerRequest=>"newer_request", NearLimit=>"near_limit", Active=>"active", QueuedInput=>"queued_input", Stopped=>"stopped", NoHost=>"no_host", WouldCompact=>"would_compact" });
+domain!(IdleEpisodeOutcome { Compacted=>"compacted", Disabled=>"disabled", CompactionOff=>"compaction_off", IdleCompactionOff=>"idle_compaction_off", PrefixChanged=>"prefix_changed", Started=>"started", Dispatched=>"dispatched", Failed=>"failed", NotOneHour=>"not_one_hour", Lapsed=>"lapsed", Small=>"small", NewerRequest=>"newer_request", NearLimit=>"near_limit", Active=>"active", QueuedInput=>"queued_input", Stopped=>"stopped", NoHost=>"no_host", WouldCompact=>"would_compact" });
 domain!(ProjectRemovalReason { Delete=>"delete" });
 domain!(EventKind { User=>"user", Followup=>"followup", AgentMessage=>"agent_message", ChildResult=>"child_result", ChildStopped=>"child_stopped", Complaint=>"complaint", ComplaintResponse=>"complaint_response", ChatReview=>"chat_review", WorkReview=>"work_review", WorkDecision=>"work_decision", WorkReady=>"work_ready", MonitorExit=>"monitor_exit", MonitorStall=>"monitor_stall", Rule=>"rule", RuleMissed=>"rule_missed", RuleStall=>"rule_stall", RadioTurn=>"radio_turn", BrowserDeclined=>"browser_declined", BrowserJoined=>"browser_joined", BrowserOutcome=>"browser_outcome", BrowserUnanswered=>"browser_unanswered", EventWake=>"event_wake", MonitorCancelled=>"monitor_cancelled", MonitorOutput=>"monitor_output", PlanUpdate=>"plan_update", ShellPolicy=>"shell_policy", WorkReleased=>"work_released", WorkResultInvalid=>"work_result_invalid" });
 domain!(EventStatus { Pending=>"pending", Reserved=>"reserved", Dispatching=>"dispatching", Delivered=>"delivered", Uncertain=>"uncertain", Cancelled=>"cancelled", Failed=>"failed" });
@@ -93,6 +106,19 @@ macro_rules! contracts {
     };
 }
 contracts!(
+    RemoteOutcome,
+    VoiceStopOutcome,
+    TerminalInputDelivery,
+    ServerDeliveryState,
+    FederationDeliveryState,
+    FederationAckState,
+    FederationMessageKind,
+    AccessOutboundState,
+    ExecutionReceiptKind,
+    ContextRepairPhase,
+    SteerStage,
+    MonitorInputStatus,
+    NativeActionAdmissionStatus,
     WorkStatus,
     OwnerKind,
     OutboxKind,
