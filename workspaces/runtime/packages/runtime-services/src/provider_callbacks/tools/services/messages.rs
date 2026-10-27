@@ -9,21 +9,28 @@ use studio_runtime_store::{AgentId, AgentRepository, SyncDocumentsRepository};
 pub(super) fn authorization_records(
     tx: &Transaction<'_>,
 ) -> Result<AuthorizationRecords, CallbackError> {
+    authorization_records_from(
+        &records::all(tx, "runtime_agents")?,
+        &records::all(tx, "runtime_projects")?,
+    )
+}
+fn authorization_records_from(
+    agents: &[Value],
+    projects: &[Value],
+) -> Result<AuthorizationRecords, CallbackError> {
     // The gate reads only resolved paths. This read does no filesystem I/O,
     // so the resolution is `path_identity::lexical`: an equivalent
     // spelling, such as a trailing separator, gets the same identity. A path
     // without such a form stays unresolved, and the gate refuses its record.
-    let agents = records::all(tx, "runtime_agents")?;
     let mut paths = BTreeMap::new();
-    for actor in &agents {
+    for actor in agents {
         if let Some(path) = actor["cwd"].as_str()
             && let Some(resolved) = studio_runtime_store::path_identity::lexical_text(path)
         {
             paths.insert(path.into(), resolved.to_string_lossy().into_owned());
         }
     }
-    let projects = records::all(tx, "runtime_projects")?;
-    for project in &projects {
+    for project in projects {
         if let Some(path) = project["path"].as_str()
             && let Some(resolved) = studio_runtime_store::path_identity::lexical_text(path)
         {
@@ -33,7 +40,7 @@ pub(super) fn authorization_records(
     Ok(AuthorizationRecords {
         recipient_id: String::new(),
         agents: agents
-            .into_iter()
+            .iter()
             .map(|a| Ok((text(&a, "id")?.to_owned(), a.to_string())))
             .collect::<Result<_, CallbackError>>()?,
         rooms: BTreeMap::new(),
@@ -48,7 +55,7 @@ pub(super) fn authorization_records(
 /// directory, the record whose stored path is already that form wins, so a
 /// second spelling never replaces the authority of an exact record.
 fn projects_by_resolved_path(
-    projects: Vec<Value>,
+    projects: &[Value],
     paths: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>, CallbackError> {
     let mut exact = BTreeMap::new();
@@ -257,18 +264,20 @@ fn send_as_actor(
     let agents = records::all(tx, "runtime_agents")?;
     let recipients = if target == "broadcast" {
         agents
-            .into_iter()
+            .iter()
             .filter(|a| {
                 a["rootId"] == actor["rootId"]
                     && a["id"] != *who
                     && !studio_runtime_store::truthy(a.get("deletedAt"))
             })
+            .cloned()
             .collect::<Vec<_>>()
     } else {
         vec![
             agents
-                .into_iter()
+                .iter()
                 .find(|a| a["id"] == target && !studio_runtime_store::truthy(a.get("deletedAt")))
+                .cloned()
                 .ok_or(CallbackError::Invalid("Recipient conversation was deleted"))?,
         ]
     };
@@ -279,7 +288,9 @@ fn send_as_actor(
         ids.sort();
         json!({"id":format!("private:{}:{}",ids[0],ids[1]),"kind":"private","members":ids})
     };
-    let mut authority = authorization_records(tx)?;
+    let projects = records::all(tx, "runtime_projects")?;
+    let mut authority = authorization_records_from(&agents, &projects)?;
+    let directory = crate::sync_entity_context::RoomDirectory::resolve(agents, projects)?;
     let broadcast = target == "broadcast";
     let mut refused = serde_json::Map::new();
     let mut first_refusal = None;
@@ -343,7 +354,6 @@ fn send_as_actor(
     // it enqueues recipient events. Keep the shared global sync sequence in
     // that order; the room is projected again below after the chat message
     // supplies its new lastMessage.
-    let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
     if let Some(view) =
         crate::sync_views::room_entity_view(&room, &directory.for_room(tx, &room, true)?)
     {
@@ -394,7 +404,6 @@ fn send_as_actor(
         );
     }
     tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?1,?2,?3,?4,?5,?6)",params![id,room_id,who,message,now,json!(deliveries).to_string()])?;
-    let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
     let view = crate::sync_views::room_entity_view(&room, &directory.for_room(tx, &room, true)?)
         .ok_or_else(|| CallbackError::Stored(room_id.clone()))?;
     SyncDocumentsRepository::put_entity(tx, "room", &room_id, view, false)?;

@@ -5,6 +5,56 @@ use super::*;
 use crate::managed_host_tools::{PostCommitPort, SendPort};
 use studio_runtime_store::RuntimeStore;
 
+thread_local! { static AGENT_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+fn trace_agent_scans(event: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Stmt(statement, _) = event
+        && statement
+            .sql()
+            .contains("SELECT id,record FROM runtime_agents ORDER BY rowid")
+    {
+        AGENT_SCANS.with(|count| count.set(count.get() + 1));
+    }
+}
+
+#[tokio::test]
+async fn message_send_reads_agent_directory_once() {
+    let (_directory, store, oracle) = frozen::state().await;
+    let worker = oracle["agents"][1].clone();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
+    let context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().into(),
+        turn: worker["turnId"].as_str().unwrap().into(),
+    };
+    let scans = store
+        .transaction_with(move |tx| {
+            let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+            AGENT_SCANS.with(|count| count.set(0));
+            tx.trace_v2(
+                rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+                Some(trace_agent_scans),
+            );
+            let result = messages::send(
+                tx,
+                &snapshot,
+                &json!({"target":lead,"text":"hello"}),
+                "scan-witness",
+                20.0,
+            );
+            tx.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, None);
+            result?;
+            Ok::<_, CallbackError>(AGENT_SCANS.with(|count| count.get()))
+        })
+        .await
+        .unwrap();
+    assert_eq!(scans, 1, "one message should read the agent directory once");
+}
+
 #[path = "../../../../tests/provider_callbacks/fixture.rs"]
 mod frozen;
 

@@ -362,7 +362,7 @@ impl RoomDirectory {
         .await
         .map_err(|_| studio_runtime_store::StoreError::ReadTaskFailed)?
     }
-    fn resolve(agents: Vec<Value>, projects: Vec<Value>) -> StoreResult<Self> {
+    pub(crate) fn resolve(agents: Vec<Value>, projects: Vec<Value>) -> StoreResult<Self> {
         let mut peers = Vec::new();
         for project in &projects {
             let Some(path) = project["path"].as_str().filter(|s| !s.is_empty()) else {
