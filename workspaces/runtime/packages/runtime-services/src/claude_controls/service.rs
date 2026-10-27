@@ -1,6 +1,11 @@
 //! Durable control caller; a submitted request without a provider receipt is held.
 use super::*;
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use studio_runtime_providers::Method;
+use studio_runtime_schema::{
+    claude_controls::{ClaudeSettings, ControlId},
+    queue_command::Field,
+};
 pub type ControlFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 /// Implementations bind calls to one retained account/connection/generation.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -29,6 +34,251 @@ impl ControlBinding {
         &self.account
     }
 }
+/// Provider methods and their parameters stay associated until the retained wire boundary.
+/// Mutations carry their durable transport request identity; rollback also carries
+/// the original request and turn identities used by the bridge's proof.
+///
+/// ```compile_fail
+/// use studio_runtime_services::claude_controls::service::ControlInvocation;
+/// let call = ControlInvocation::Rollback { thread_id: "thread".into(), restore_files: true };
+/// ```
+/// ```compile_fail
+/// use studio_runtime_services::claude_controls::service::ControlInvocation;
+/// let turn_id = serde_json::from_str("\"turn\"").unwrap();
+/// let call = ControlInvocation::Rollback { thread_id: "thread".into(), turn_id, restore_files: true, transport_request_id: "transport".into() };
+/// ```
+/// ```compile_fail
+/// use studio_runtime_services::claude_controls::service::ControlInvocation;
+/// let request_id = serde_json::from_str("\"request\"").unwrap();
+/// let call = ControlInvocation::Rollback { thread_id: "thread".into(), request_id, restore_files: true, transport_request_id: "transport".into() };
+/// ```
+/// ```compile_fail
+/// use studio_runtime_services::claude_controls::service::ControlInvocation;
+/// let request_id = serde_json::from_str("\"request\"").unwrap();
+/// let turn_id = serde_json::from_str("\"turn\"").unwrap();
+/// let call = ControlInvocation::Rollback { thread_id: "thread".into(), request_id, turn_id, restore_files: true };
+/// ```
+/// ```compile_fail
+/// use studio_runtime_services::claude_controls::service::ControlInvocation;
+/// let call = ControlInvocation::Settings { thread_id: "thread".into(), settings: Default::default() };
+/// ```
+#[derive(Clone, Debug)]
+pub enum ControlInvocation {
+    State {
+        thread_id: String,
+    },
+    Queue {
+        thread_id: String,
+    },
+    RepairReport {
+        thread_id: String,
+    },
+    Commands {
+        cwd: String,
+    },
+    Settings {
+        thread_id: String,
+        settings: ClaudeSettings,
+        request_id: String,
+    },
+    Rollback {
+        thread_id: String,
+        request_id: ControlId,
+        turn_id: ControlId,
+        restore_files: bool,
+        transport_request_id: String,
+    },
+    StopTask {
+        thread_id: String,
+        task_id: String,
+        request_id: String,
+    },
+    FileBackups {
+        thread_id: String,
+        settled_request_ids: Option<Vec<String>>,
+        request_id: String,
+    },
+}
+impl ControlInvocation {
+    pub fn method(&self) -> Method {
+        match self {
+            Self::State { .. } => Method::ClaudeState,
+            Self::Queue { .. } => Method::ThreadQueueList,
+            Self::RepairReport { .. } => Method::ClaudeRepairReport,
+            Self::Commands { .. } => Method::ClaudeCommands,
+            Self::Settings { .. } => Method::ClaudeSettings,
+            Self::Rollback { .. } => Method::ThreadRollback,
+            Self::StopTask { .. } => Method::ClaudeStopTask,
+            Self::FileBackups { .. } => Method::ClaudeFileBackups,
+        }
+    }
+    pub fn request_id(&self) -> Option<&str> {
+        match self {
+            Self::Settings { request_id, .. }
+            | Self::StopTask { request_id, .. }
+            | Self::FileBackups { request_id, .. } => Some(request_id),
+            Self::Rollback {
+                transport_request_id,
+                ..
+            } => Some(transport_request_id),
+            Self::State { .. }
+            | Self::Queue { .. }
+            | Self::RepairReport { .. }
+            | Self::Commands { .. } => None,
+        }
+    }
+    /// Serialize exactly the established provider body for signing and transport.
+    pub fn params(&self) -> Value {
+        match self {
+            Self::State { thread_id }
+            | Self::Queue { thread_id }
+            | Self::RepairReport { thread_id } => json!({"threadId":thread_id}),
+            Self::Commands { cwd } => json!({"cwd":cwd}),
+            Self::Settings {
+                thread_id,
+                settings,
+                ..
+            } => json!({"threadId":thread_id,"settings":settings}),
+            Self::Rollback {
+                thread_id,
+                request_id,
+                turn_id,
+                restore_files,
+                ..
+            } => {
+                json!({"threadId":thread_id,"requestId":request_id,"turnId":turn_id,"restoreFiles":restore_files})
+            }
+            Self::StopTask {
+                thread_id, task_id, ..
+            } => json!({"threadId":thread_id,"taskId":task_id}),
+            Self::FileBackups {
+                thread_id,
+                settled_request_ids,
+                ..
+            } => json!({"threadId":thread_id,"settledRequestIds":settled_request_ids}),
+        }
+    }
+}
+
+/// Known fields used to prove idleness; SDK task details and extensions are opaque.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeState {
+    pub turns: Vec<NativeTurn>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub tasks: Field<Vec<Value>>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTurn {
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub id: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub status: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub can_restore_files: Field<bool>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct NativeQueue {
+    #[serde(default)]
+    pub data: Field<Vec<Value>>,
+    #[serde(default)]
+    pub items: Field<Vec<Value>>,
+}
+impl NativeQueue {
+    pub fn busy(&self) -> bool {
+        let selected = if self.data.is_missing() {
+            &self.items
+        } else {
+            &self.data
+        };
+        selected.value().is_some_and(|items| !items.is_empty())
+    }
+}
+
+/// A settings mutation and a rollback require different idle proofs.
+#[derive(Clone, Debug)]
+pub enum NativeProof {
+    Settings(NativeState),
+    Rollback {
+        state: NativeState,
+        queue: NativeQueue,
+    },
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct SettingsReply {
+    pub settings: serde_json::Map<String, Value>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RollbackReply {
+    pub thread_id: String,
+    pub native_id: String,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub files_restored: Field<bool>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+/// The only provider replies that can settle a control mutation.
+#[derive(Debug)]
+pub enum MutationReply {
+    Settings(SettingsReply),
+    Rollback(RollbackReply),
+}
+impl MutationReply {
+    pub fn into_value(self) -> Result<Value> {
+        match self {
+            Self::Settings(reply) => serde_json::to_value(reply),
+            Self::Rollback(reply) => serde_json::to_value(reply),
+        }
+        .map_err(|_| ControlError::Unknown)
+    }
+}
+
+/// The retained wire accepts arbitrary provider JSON. Once received, the method
+/// selects the corresponding reply; only SDK-specific and forwarded payloads stay opaque.
+#[derive(Debug)]
+pub enum ControlReply {
+    State(NativeState),
+    Queue(NativeQueue),
+    RepairReport(Value),
+    Commands(Value),
+    Settings(SettingsReply),
+    Rollback(RollbackReply),
+    StopTask(Value),
+    FileBackups(Value),
+}
+impl ControlReply {
+    pub fn from_wire(call: &ControlInvocation, value: Value) -> Result<Self> {
+        Ok(match call {
+            ControlInvocation::State { .. } => {
+                Self::State(serde_json::from_value(value).map_err(|_| ControlError::Unknown)?)
+            }
+            ControlInvocation::Queue { .. } => {
+                Self::Queue(serde_json::from_value(value).map_err(|_| ControlError::Unknown)?)
+            }
+            ControlInvocation::RepairReport { .. } => Self::RepairReport(value),
+            ControlInvocation::Commands { .. } => Self::Commands(value),
+            ControlInvocation::Settings { .. } => {
+                Self::Settings(serde_json::from_value(value).map_err(|_| ControlError::Unknown)?)
+            }
+            ControlInvocation::Rollback { .. } => {
+                Self::Rollback(serde_json::from_value(value).map_err(|_| ControlError::Unknown)?)
+            }
+            ControlInvocation::StopTask { .. } => Self::StopTask(value),
+            ControlInvocation::FileBackups { .. } => Self::FileBackups(value),
+        })
+    }
+}
+
 /// Agent/epoch come from the checked stored snapshot. A mutation's request ID
 /// is the durable control identity; read-only calls need no replay identity.
 #[derive(Clone, PartialEq, Eq)]
@@ -39,15 +289,11 @@ pub struct ControlScope {
 }
 pub trait ControlSession: Send + Sync {
     fn binding(&self) -> ControlBinding;
-    fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value>;
     fn call_scoped(
         &self,
-        _scope: ControlScope,
-        method: &str,
-        params: Value,
-    ) -> ControlFuture<'_, Value> {
-        self.call(method, params)
-    }
+        scope: ControlScope,
+        call: ControlInvocation,
+    ) -> ControlFuture<'_, ControlReply>;
 }
 /// Every method compares source, epoch and reservation inside the same transaction.
 /// `reserve` resolves shared workspace idle evidence before its comparison transaction.
@@ -73,13 +319,13 @@ pub trait ControlStorage: Send + Sync {
         &self,
         expected: ControlSnapshot,
         request: ControlRequest,
-        native: Value,
-        queue: Value,
+        proof: NativeProof,
     ) -> ControlFuture<'_, ControlSnapshot>;
     fn provider(
         &self,
         expected: ControlSnapshot,
-        result: Value,
+        request: ControlRequest,
+        result: MutationReply,
     ) -> ControlFuture<'_, ControlSnapshot>;
     fn complete(
         &self,
@@ -159,7 +405,7 @@ impl Controls {
         let scope = ControlScope {
             agent: snapshot.agent.id.clone(),
             epoch: snapshot.epoch(),
-            request_id: Some(transport_request),
+            request_id: Some(transport_request.clone()),
         };
         if snapshot
             .saved
@@ -170,31 +416,54 @@ impl Controls {
                 if *uncertain {
                     return Err(ControlError::Unknown);
                 }
-                let native = self
+                let native = match self
                     .bound_call(
                         binding,
                         &scope,
-                        "claude/state",
-                        json!({"threadId":thread}),
-                        20,
-                    )
-                    .await?;
-                let queue = if matches!(request, ControlRequest::Rollback { .. }) {
-                    self.bound_call(
-                        binding,
-                        &scope,
-                        "thread/queue/list",
-                        json!({"threadId":thread}),
+                        ControlInvocation::State {
+                            thread_id: thread.clone(),
+                        },
                         20,
                     )
                     .await?
+                {
+                    ControlReply::State(state) => state,
+                    _ => return Err(ControlError::Unknown),
+                };
+                let queue = if matches!(request, ControlRequest::Rollback { .. }) {
+                    Some(
+                        match self
+                            .bound_call(
+                                binding,
+                                &scope,
+                                ControlInvocation::Queue {
+                                    thread_id: thread.clone(),
+                                },
+                                20,
+                            )
+                            .await?
+                        {
+                            ControlReply::Queue(queue) => queue,
+                            _ => return Err(ControlError::Unknown),
+                        },
+                    )
                 } else {
-                    json!({})
+                    None
                 };
                 *uncertain = true;
                 *snapshot = match self
                     .store
-                    .submitted(snapshot.clone(), request.clone(), native, queue)
+                    .submitted(
+                        snapshot.clone(),
+                        request.clone(),
+                        match queue {
+                            Some(queue) => NativeProof::Rollback {
+                                state: native,
+                                queue,
+                            },
+                            None => NativeProof::Settings(native),
+                        },
+                    )
                     .await
                 {
                     Ok(next) => next,
@@ -208,26 +477,30 @@ impl Controls {
                         return Err(error);
                     }
                 };
-                let (method, params) = match request {
-                    ControlRequest::Settings { settings, .. } => (
-                        "claude/settings",
-                        json!({"threadId":thread,"settings":settings}),
-                    ),
+                let call = match request {
+                    ControlRequest::Settings { settings, .. } => ControlInvocation::Settings {
+                        thread_id: thread,
+                        settings: settings.clone(),
+                        request_id: transport_request.clone(),
+                    },
                     ControlRequest::Rollback {
+                        request_id,
                         turn_id,
                         restore_files,
                         ..
-                    } => (
-                        "thread/rollback",
-                        json!({"threadId":thread,"turnId":turn_id,"requestId":request.request_id(),"restoreFiles":restore_files}),
-                    ),
+                    } => ControlInvocation::Rollback {
+                        thread_id: thread,
+                        request_id: request_id.clone(),
+                        turn_id: turn_id.clone(),
+                        restore_files: *restore_files,
+                        transport_request_id: transport_request.clone(),
+                    },
                 };
                 match self
                     .bound_call(
                         binding,
                         &scope,
-                        method,
-                        params,
+                        call,
                         if request.restore_files() {
                             FILE_RESTORE_TIMEOUT_SECONDS
                         } else {
@@ -246,16 +519,39 @@ impl Controls {
                         }
                         return Err(error);
                     }
-                    result => result?,
+                    Ok(ControlReply::Settings(result))
+                        if matches!(request, ControlRequest::Settings { .. }) =>
+                    {
+                        MutationReply::Settings(result)
+                    }
+                    Ok(ControlReply::Rollback(result))
+                        if matches!(request, ControlRequest::Rollback { .. }) =>
+                    {
+                        MutationReply::Rollback(result)
+                    }
+                    Ok(_) => return Err(ControlError::Unknown),
+                    Err(error) => return Err(error),
                 }
             } else {
                 match request {
-                    ControlRequest::Settings { settings, .. } => json!({"settings":settings}),
+                    ControlRequest::Settings { settings, .. } => {
+                        MutationReply::Settings(SettingsReply {
+                            settings: serde_json::to_value(settings)
+                                .map_err(|_| ControlError::Unknown)?
+                                .as_object()
+                                .cloned()
+                                .ok_or(ControlError::Unknown)?,
+                            extra: Default::default(),
+                        })
+                    }
                     ControlRequest::Rollback { .. } => return Err(ControlError::Busy),
                 }
             };
             *uncertain = true;
-            *snapshot = self.store.provider(snapshot.clone(), result).await?;
+            *snapshot = self
+                .store
+                .provider(snapshot.clone(), request.clone(), result)
+                .await?;
         }
         self.store.complete(snapshot.clone(), request.clone()).await
     }
@@ -263,37 +559,30 @@ impl Controls {
         &self,
         binding: &ControlBinding,
         scope: &ControlScope,
-        method: &str,
-        params: Value,
+        call: ControlInvocation,
         seconds: u64,
-    ) -> Result<Value> {
+    ) -> Result<ControlReply> {
         if &self.session.binding() != binding {
             return Err(ControlError::Changed);
         }
         let mut scope = scope.clone();
         // Idle reads must be fresh and must not consume the mutation's receipt identity.
-        if matches!(method, "claude/state" | "thread/queue/list") {
+        if matches!(
+            call,
+            ControlInvocation::State { .. } | ControlInvocation::Queue { .. }
+        ) {
             scope.request_id = None;
         }
-        let result = self.call(scope, method, params, seconds).await?;
+        let result = tokio::time::timeout(
+            Duration::from_secs(seconds),
+            self.session.call_scoped(scope, call),
+        )
+        .await
+        .map_err(|_| ControlError::Unknown)??;
         if &self.session.binding() != binding {
             return Err(ControlError::Unknown);
         }
         Ok(result)
-    }
-    async fn call(
-        &self,
-        scope: ControlScope,
-        method: &str,
-        params: Value,
-        seconds: u64,
-    ) -> Result<Value> {
-        tokio::time::timeout(
-            Duration::from_secs(seconds),
-            self.session.call_scoped(scope, method, params),
-        )
-        .await
-        .map_err(|_| ControlError::Unknown)?
     }
     /// The caller supplies the latest durable operation for state projection.
     pub async fn read_or_stop(
@@ -334,14 +623,22 @@ impl Controls {
         match action {
             Some("state") => {
                 let mut result = if let Some(thread) = thread {
-                    self.bound_call(
-                        &binding,
-                        &scope,
-                        "claude/state",
-                        json!({"threadId":thread}),
-                        20,
-                    )
-                    .await?
+                    match self
+                        .bound_call(
+                            &binding,
+                            &scope,
+                            ControlInvocation::State {
+                                thread_id: thread.clone(),
+                            },
+                            20,
+                        )
+                        .await?
+                    {
+                        ControlReply::State(state) => {
+                            serde_json::to_value(state).map_err(|_| ControlError::Unknown)?
+                        }
+                        _ => return Err(ControlError::Unknown),
+                    }
                 } else {
                     json!({"settings":agent.get("claudeOptions").cloned().unwrap_or(json!({})),"turns":[],"tasks":[]})
                 };
@@ -354,14 +651,20 @@ impl Controls {
                 Ok(result)
             }
             Some("commands") => {
-                self.bound_call(
-                    &binding,
-                    &scope,
-                    "claude/commands",
-                    json!({"cwd":snapshot.agent.cwd}),
-                    25,
-                )
-                .await
+                match self
+                    .bound_call(
+                        &binding,
+                        &scope,
+                        ControlInvocation::Commands {
+                            cwd: snapshot.agent.cwd,
+                        },
+                        25,
+                    )
+                    .await?
+                {
+                    ControlReply::Commands(result) => Ok(result),
+                    _ => Err(ControlError::Unknown),
+                }
             }
             Some("stop_task") => {
                 if truthy(agent.get("accountTransferId")) {
@@ -378,14 +681,23 @@ impl Controls {
                 scope.request_id.get_or_insert_with(|| {
                     format!("stop-task:{}", request_signature(&json!([thread, task])))
                 });
-                self.bound_call(
-                    &binding,
-                    &scope,
-                    "claude/stopTask",
-                    json!({"threadId":thread,"taskId":task}),
-                    20,
-                )
-                .await
+                let request_id = scope.request_id.clone().ok_or(ControlError::Request)?;
+                match self
+                    .bound_call(
+                        &binding,
+                        &scope,
+                        ControlInvocation::StopTask {
+                            thread_id: thread,
+                            task_id: task.to_owned(),
+                            request_id,
+                        },
+                        20,
+                    )
+                    .await?
+                {
+                    ControlReply::StopTask(result) => Ok(result),
+                    _ => Err(ControlError::Unknown),
+                }
             }
             _ => Err(ControlError::Request),
         }

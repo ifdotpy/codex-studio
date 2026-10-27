@@ -3,7 +3,10 @@
 //! and settles the receipt before returning it; an unresolved hand-off is Unknown.
 use crate::claude_controls::{
     ControlError, Result,
-    service::{ControlBinding, ControlFuture, ControlScope, ControlSession},
+    service::{
+        ControlBinding, ControlFuture, ControlInvocation, ControlReply, ControlScope,
+        ControlSession,
+    },
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -23,7 +26,7 @@ pub struct ClaudeControlIdentity {
 #[derive(Clone)]
 pub struct ClaudeControlCall {
     pub identity: ClaudeControlIdentity,
-    pub params: Value,
+    pub invocation: ControlInvocation,
 }
 pub struct ClaudeControlReceipt {
     pub identity: ClaudeControlIdentity,
@@ -55,57 +58,36 @@ impl ControlSession for RetainedClaudeSession {
     fn binding(&self) -> ControlBinding {
         self.port.binding()
     }
-    fn call(&self, _method: &str, _params: Value) -> ControlFuture<'_, Value> {
-        Box::pin(async { Err(ControlError::Request) })
-    }
     fn call_scoped(
         &self,
         scope: ControlScope,
-        method: &str,
-        params: Value,
-    ) -> ControlFuture<'_, Value> {
-        let method = Method::from_wire(method).filter(|method| {
-            matches!(
-                method,
-                Method::ClaudeState
-                    | Method::ClaudeRepairReport
-                    | Method::ClaudeCommands
-                    | Method::ClaudeFileBackups
-                    | Method::ClaudeSettings
-                    | Method::ClaudeStopTask
-                    | Method::ThreadRollback
-                    | Method::ThreadQueueList
-            )
-        });
+        call: ControlInvocation,
+    ) -> ControlFuture<'_, ControlReply> {
         Box::pin(async move {
-            let method = method.ok_or(ControlError::Request)?;
             if scope.agent.is_empty()
                 || scope.agent.len() > 1024
                 || scope
                     .request_id
                     .as_ref()
                     .is_some_and(|id| id.is_empty() || id.len() > 4096)
-                || (matches!(
-                    method,
-                    Method::ClaudeFileBackups
-                        | Method::ClaudeSettings
-                        | Method::ClaudeStopTask
-                        | Method::ThreadRollback
-                ) && scope.request_id.is_none())
+                || call
+                    .request_id()
+                    .is_some_and(|id| scope.request_id.as_deref() != Some(id))
             {
                 return Err(ControlError::Request);
             }
-            if !params.is_object()
-                || serde_json::to_vec(&params)
-                    .map_err(|_| ControlError::Request)?
-                    .len()
-                    > MAX_CONTROL_BYTES
+            let params = call.params();
+            if serde_json::to_vec(&params)
+                .map_err(|_| ControlError::Request)?
+                .len()
+                > MAX_CONTROL_BYTES
             {
                 return Err(ControlError::Request);
             }
             if self.port.binding() != self.binding {
                 return Err(ControlError::Changed);
             }
+            let method = call.method();
             let identity = ClaudeControlIdentity {
                 binding: self.binding.clone(),
                 scope,
@@ -118,11 +100,11 @@ impl ControlSession for RetainedClaudeSession {
                 .port
                 .request(ClaudeControlCall {
                     identity: identity.clone(),
-                    params,
+                    invocation: call.clone(),
                 })
                 .await?;
             validate_receipt(&identity, &receipt, &self.port.binding())?;
-            Ok(receipt.result)
+            ControlReply::from_wire(&call, receipt.result)
         })
     }
 }

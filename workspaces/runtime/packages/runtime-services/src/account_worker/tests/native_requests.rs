@@ -398,7 +398,7 @@ async fn live_permissions_codex_next_turn_reads_the_saved_ask_policy() {
 async fn live_permissions_claude_rejection_keeps_confirmed_rollback_evidence() {
     use crate::claude_controls::{
         ControlError,
-        service::{ControlScope, ControlSession},
+        service::{ControlInvocation, ControlScope, ControlSession},
     };
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -413,8 +413,11 @@ async fn live_permissions_claude_rejection_keeps_confirmed_rollback_evidence() {
         session
             .call_scoped(
                 scope,
-                "claude/settings",
-                json!({"threadId":"fake-thread-0","settings":{"permissionMode":"plan"}}),
+                ControlInvocation::Settings {
+                    thread_id: "fake-thread-0".into(),
+                    settings: serde_json::from_value(json!({"permissionMode":"plan"})).unwrap(),
+                    request_id: "live-failure".into(),
+                },
             )
             .await
     });

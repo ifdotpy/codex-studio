@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     claude_controls::{
         ControlError,
-        service::{ControlBinding, ControlFuture},
+        service::{ControlBinding, ControlFuture, ControlInvocation},
     },
     claude_runtime::{ClaudeControlCall, ClaudeControlReceipt, ClaudeSessionPort},
     recovery_history::{HistoryError, HistoryMethod, HistoryReceipt},
@@ -50,10 +50,16 @@ impl ClaudeSessionPort for ClaudePort {
             if call.identity.binding != self.binding() {
                 return Err(ControlError::Changed);
             }
-            if call.identity.signature
-                != crate::event_write::request_signature(
-                    &json!({"method":call.identity.method.as_str(),"params":call.params}),
-                )
+            let params = call.invocation.params();
+            if call
+                .invocation
+                .request_id()
+                .is_some_and(|id| call.identity.scope.request_id.as_deref() != Some(id))
+                || call.identity.method != call.invocation.method()
+                || call.identity.signature
+                    != crate::event_write::request_signature(
+                        &json!({"method":call.identity.method.as_str(),"params":params}),
+                    )
             {
                 return Err(ControlError::Conflict);
             }
@@ -73,10 +79,16 @@ impl ClaudeSessionPort for ClaudePort {
                     request
                 ]))
             );
-            let restoring_files = call.identity.method == Method::ThreadRollback
-                && call.params["restoreFiles"] == true;
-            let rewind_request = call.params.get("requestId").cloned();
-            let rewind_turn = call.params.get("turnId").cloned();
+            let rewind = match &call.invocation {
+                ControlInvocation::Rollback {
+                    request_id,
+                    turn_id,
+                    restore_files: true,
+                    ..
+                } => Some((request_id.as_str().to_owned(), turn_id.as_str().to_owned())),
+                _ => None,
+            };
+            let restoring_files = rewind.is_some();
             let timeout_seconds = if restoring_files {
                 crate::claude_controls::FILE_RESTORE_TIMEOUT_SECONDS
             } else {
@@ -96,7 +108,7 @@ impl ClaudeSessionPort for ClaudePort {
                     transfer: None,
                     deleted_actor_session: None,
                     method: call.identity.method,
-                    params: call.params,
+                    params,
                     deadline: (tokio::time::Instant::now()
                         + std::time::Duration::from_secs(timeout_seconds))
                     .into_std(),
@@ -126,12 +138,10 @@ impl ClaudeSessionPort for ClaudePort {
                     let reason = reason.chars().take(MAX_CONTROL_ERROR_CHARACTERS).collect();
                     let data = &error["data"];
                     if data["fileRestoreOutcome"] == "not_applied"
-                        && rewind_request
-                            .as_ref()
-                            .is_some_and(|id| id.is_string() && data.get("requestId") == Some(id))
-                        && rewind_turn
-                            .as_ref()
-                            .is_some_and(|id| id.is_string() && data.get("turnId") == Some(id))
+                        && rewind.as_ref().is_some_and(|(request, turn)| {
+                            data.get("requestId").and_then(Value::as_str) == Some(request.as_str())
+                                && data.get("turnId").and_then(Value::as_str) == Some(turn.as_str())
+                        })
                     {
                         Err(ControlError::RewindNotApplied(reason))
                     } else {
@@ -139,7 +149,7 @@ impl ClaudeSessionPort for ClaudePort {
                     }
                 }
                 RequestResult::Rejected(error)
-                    if call.identity.method == studio_runtime_providers::Method::ClaudeSettings
+                    if matches!(call.invocation, ControlInvocation::Settings { .. })
                         && error
                             .pointer("/data/settingsOutcome")
                             .and_then(Value::as_str)

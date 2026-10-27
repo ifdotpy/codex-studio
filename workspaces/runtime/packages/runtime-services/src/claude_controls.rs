@@ -223,8 +223,7 @@ impl ControlSnapshot {
     pub fn submitted(
         &self,
         request: &ControlRequest,
-        native: &Value,
-        queue: &Value,
+        proof: &service::NativeProof,
         now: f64,
     ) -> Result<Value> {
         let mut op = self.saved.clone().ok_or(ControlError::Changed)?;
@@ -232,16 +231,22 @@ impl ControlSnapshot {
         if truthy(op.get("submitted")) {
             return Err(ControlError::Unknown);
         }
+        let (native, queue) = match (request, proof) {
+            (ControlRequest::Settings { .. }, service::NativeProof::Settings(state)) => {
+                (state, None)
+            }
+            (ControlRequest::Rollback { .. }, service::NativeProof::Rollback { state, queue }) => {
+                (state, Some(queue))
+            }
+            _ => return Err(ControlError::Request),
+        };
         if !self.live_permissions(request)
-            && (truthy(native.get("tasks"))
-                || native
-                    .get("turns")
-                    .and_then(Value::as_array)
-                    .is_some_and(|turns| {
-                        turns
-                            .iter()
-                            .any(|t| t.get("status") == Some(&json!("inProgress")))
-                    }))
+            && (native.tasks.value().is_some_and(|tasks| !tasks.is_empty())
+                || native.turns.iter().any(|turn| {
+                    turn.status
+                        .value()
+                        .is_some_and(|status| status == "inProgress")
+                }))
         {
             return Err(ControlError::Busy);
         }
@@ -251,33 +256,29 @@ impl ControlSnapshot {
             ..
         } = request
         {
-            if truthy(queue.get("data").or_else(|| queue.get("items"))) {
+            if queue.is_some_and(service::NativeQueue::busy) {
                 return Err(ControlError::Busy);
             }
-            let turns = native
-                .get("turns")
-                .and_then(Value::as_array)
-                .ok_or(ControlError::Request)?;
-            let index = turns
+            let index = native
+                .turns
                 .iter()
-                .position(|t| t.get("id").and_then(Value::as_str) == Some(turn_id.as_str()))
+                .position(|turn| turn.id.value().is_some_and(|id| id == turn_id.as_str()))
                 .ok_or(ControlError::Request)?;
-            if *restore_files
-                && turns[index].get("canRestoreFiles").and_then(Value::as_bool) != Some(true)
-            {
+            if *restore_files && native.turns[index].can_restore_files.value() != Some(&true) {
                 return Err(ControlError::Request);
             }
-            let removed: Vec<&str> = turns[index..]
+            let removed: Vec<&str> = native.turns[index..]
                 .iter()
-                .map(|t| {
-                    t.get("id")
-                        .and_then(Value::as_str)
+                .map(|turn| {
+                    turn.id
+                        .value()
+                        .map(String::as_str)
                         .ok_or(ControlError::Request)
                 })
                 .collect::<Result<_>>()?;
             op["removedTurns"] = json!(removed);
             op["retainedTurn"] = if index > 0 {
-                turns[index - 1].get("id").cloned().unwrap_or(Value::Null)
+                json!(native.turns[index - 1].id.value())
             } else {
                 Value::Null
             };
@@ -286,19 +287,41 @@ impl ControlSnapshot {
         op["updated"] = json!(now);
         Ok(op)
     }
-    pub fn provider_ready(&self, result: Value, now: f64) -> Result<Value> {
+    pub fn provider_ready(
+        &self,
+        request: &ControlRequest,
+        result: service::MutationReply,
+        now: f64,
+    ) -> Result<Value> {
         let mut op = self.saved.clone().ok_or(ControlError::Changed)?;
         self.check_owned(&op)?;
-        if !result.is_object() {
-            return Err(ControlError::Unknown);
-        }
-        if op["kind"] == "claude_rollback"
-            && (result.get("threadId") != self.raw.get("threadId")
-                || !truthy(result.get("nativeId")))
+        if self
+            .operation
+            .as_ref()
+            .is_none_or(|operation| operation.kind != format!("claude_{}", request.action_name()))
         {
             return Err(ControlError::Unknown);
         }
-        op["provider"] = result;
+        match (request, &result) {
+            (
+                ControlRequest::Settings { settings, .. },
+                service::MutationReply::Settings(reply),
+            ) => {
+                let expected = serde_json::to_value(settings).map_err(|_| ControlError::Unknown)?;
+                let expected = expected.as_object().ok_or(ControlError::Unknown)?;
+                if expected
+                    .iter()
+                    .any(|(key, value)| reply.settings.get(key) != Some(value))
+                {
+                    return Err(ControlError::Unknown);
+                }
+            }
+            (ControlRequest::Rollback { .. }, service::MutationReply::Rollback(reply))
+                if self.agent.thread_id.as_deref() == Some(reply.thread_id.as_str())
+                    && !reply.native_id.is_empty() => {}
+            _ => return Err(ControlError::Unknown),
+        }
+        op["provider"] = result.into_value()?;
         op["phase"] = json!("provider_ready");
         op["updated"] = json!(now);
         Ok(op)
