@@ -168,11 +168,13 @@ permitted. Schema doctests and the migrated service compile-fail witnesses run
 in the local gates.
 
 The same checker compares handwritten client type declarations with tracked
-generated contract names and explicit string-literal union member sets. It
+generated contracts: matching names require equivalent types, and explicit
+string-literal union member sets are compared regardless of name. Types derived
+from a generated owner are allowed. It
 also checks defaults on string- or number-literal union property switches in client and
 tooling sources. It accepts a terminating return or throw, or a call whose
 argument and corresponding parameter are both `never`, or a `never`-typed
-binding of the narrowed value. It does not check switches without a default,
+binding of the narrowed value or its discriminated object. It does not check switches without a default,
 prove all other branches are covered, detect structural copies of object types,
 or follow `JSON.parse` results through typed data flow. Existing findings are tracked by the
 [ratchet baseline](../workspaces/tooling/apps/repository-checks/ratchet-baseline.json).

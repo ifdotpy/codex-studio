@@ -406,11 +406,11 @@ test("generated types reject duplicate names and handwritten union copies", asyn
     const target = path.join(directory, "consumer.ts");
     writeFileSync(
       owner,
-      'export type State = "open" | "closed"; export const KINDS = ["one", "two"] as const; export type Kind = typeof KINDS[number]; export interface components { schemas: { Message: { id: string } } }',
+      'export type State = "open" | "closed"; export const KINDS = ["one", "two"] as const; export type Kind = typeof KINDS[number]; export interface components { schemas: { Message: { id: string }; Unrelated: { wire: string }; Derived: { id: string }; Wrapped: { id: string }; Reexport: { id: string } } } export type Reexport = components["schemas"]["Reexport"];',
     );
     writeFileSync(
       target,
-      'type Message = { id: string }; type Other = "closed" | "open"; type Copy = "two" | "one"; type Local = "other" | "local";',
+      'import type { components } from "./generated"; export type { Reexport } from "./generated"; type GetResult<T extends keyof components["schemas"]> = components["schemas"][T]; type Message = { id: string }; type Other = "closed" | "open"; type Copy = "two" | "one"; type Local = "other" | "local"; type Unrelated = { local: number }; type Derived = components["schemas"]["Derived"]; type Wrapped = Pick<GetResult<"Wrapped">, "id">;',
     );
     const program = ts.createProgram([owner, target], {
       strict: true,
@@ -443,6 +443,8 @@ test("union switches require a terminating or never-checked default", async () =
       function done() { switch (item.state) { default: return; } }
       function checked(value: { state: State }) { switch (value.state) { case "open": break; case "closed": break; default: assertNever(value.state); } }
       function binding(value: { state: State }) { switch (value.state) { case "open": break; case "closed": break; default: { const exhaustive: never = value.state; } } }
+      function objectBinding(value: { state: "open"; a: number } | { state: "closed"; b: number }) { while (true) { switch (value.state) { case "open": break; case "closed": break; default: { const exhaustive: never = value; void exhaustive; continue; } } break; } }
+      function wrongObject(value: { state: "open"; a: number } | { state: "closed"; b: number }) { switch (value.state) { case "open": break; default: { const exhaustive: never = value; void exhaustive; } } }
       switch (item.count) { default: console.log(item.count); }
       switch (item.mode) { default: console.log(item.mode); }
       function wrong(value: { state: State }) { switch (value.state) { default: assertNever(unrelated); } }
@@ -453,7 +455,7 @@ test("union switches require a terminating or never-checked default", async () =
     const findings = switchDefaultDiagnostics(program, [target]);
     assert.equal(
       findings.length,
-      4,
+      5,
       findings.map((item) => item.text).join("\n"),
     );
   } finally {

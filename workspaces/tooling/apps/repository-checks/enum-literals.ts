@@ -35,6 +35,29 @@ export function switchDefaultDiagnostics(
           while (last && ts.isBlock(last)) last = last.statements.at(-1);
           let safe =
             !!last && (ts.isReturnStatement(last) || ts.isThrowStatement(last));
+          const object = node.expression.expression.getText(source);
+          const checkObjectProof = (statement: ts.Statement): boolean => {
+            if (ts.isBlock(statement))
+              return statement.statements.some(checkObjectProof);
+            return (
+              ts.isVariableStatement(statement) &&
+              statement.declarationList.declarations.some(
+                (declaration) =>
+                  !!declaration.type &&
+                  !!declaration.initializer &&
+                  declaration.initializer.getText(source) === object &&
+                  !!(
+                    checker.getTypeFromTypeNode(declaration.type).flags &
+                    ts.TypeFlags.Never
+                  ) &&
+                  !!(
+                    checker.getTypeAtLocation(declaration.initializer).flags &
+                    ts.TypeFlags.Never
+                  ),
+              )
+            );
+          };
+          safe ||= fallback.statements.some(checkObjectProof);
           if (last && ts.isVariableStatement(last)) {
             safe ||= last.declarationList.declarations.some(
               (declaration) =>
@@ -100,8 +123,13 @@ export function generatedTypeDiagnostics(
   ownerFiles: readonly string[],
 ): GeneratedTypeDiagnostic[] {
   const checker = program.getTypeChecker();
-  const names = new Map<string, string>();
+  const names = new Map<string, { file: string; type: ts.Type }[]>();
   const unions = new Map<string, string>();
+  const addOwner = (name: string, node: ts.Node, file: string) => {
+    const entries = names.get(name) ?? [];
+    entries.push({ file, type: checker.getTypeAtLocation(node) });
+    names.set(name, entries);
+  };
   function unionKey(node: ts.Node): string | undefined {
     if (!ts.isUnionTypeNode(node) || node.types.length < 2) return;
     const values: string[] = [];
@@ -124,7 +152,7 @@ export function generatedTypeDiagnostics(
           (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
         )
       ) {
-        names.set(statement.name.text, file);
+        addOwner(statement.name.text, statement.name, file);
       }
     }
     const visit = (node: ts.Node) => {
@@ -147,7 +175,7 @@ export function generatedTypeDiagnostics(
           ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)
             ? node.name.text
             : undefined;
-        if (name) names.set(name, file);
+        if (name) addOwner(name, node, file);
       }
       const key = unionKey(node);
       if (key) {
@@ -165,6 +193,33 @@ export function generatedTypeDiagnostics(
     visit(source);
   }
   const findings: GeneratedTypeDiagnostic[] = [];
+  const ownerSet = new Set(ownerFiles);
+  function derivesFromOwner(
+    node: ts.Node,
+    visited = new Set<ts.Node>(),
+  ): boolean {
+    if (visited.has(node)) return false;
+    visited.add(node);
+    if (ownerSet.has(node.getSourceFile().fileName)) return true;
+    if (ts.isIdentifier(node)) {
+      let symbol = checker.getSymbolAtLocation(node);
+      if (symbol?.flags && symbol.flags & ts.SymbolFlags.Alias)
+        symbol = checker.getAliasedSymbol(symbol);
+      for (const declaration of symbol?.declarations ?? []) {
+        if (ownerSet.has(declaration.getSourceFile().fileName)) return true;
+        if (
+          (ts.isTypeAliasDeclaration(declaration) ||
+            ts.isInterfaceDeclaration(declaration)) &&
+          derivesFromOwner(declaration, visited)
+        )
+          return true;
+      }
+    }
+    return (
+      ts.forEachChild(node, (child) => derivesFromOwner(child, visited)) ??
+      false
+    );
+  }
   for (const file of targets) {
     if (ownerFiles.includes(file)) continue;
     const source = program.getSourceFile(file);
@@ -176,16 +231,23 @@ export function generatedTypeDiagnostics(
         ts.isEnumDeclaration(node)
       ) {
         const name = node.name.text;
-        const owner = names.get(name);
+        const type = checker.getTypeAtLocation(node.name);
+        const owner = names
+          .get(name)
+          ?.find(
+            (candidate) =>
+              checker.isTypeAssignableTo(type, candidate.type) &&
+              checker.isTypeAssignableTo(candidate.type, type),
+          );
         const union = ts.isTypeAliasDeclaration(node)
           ? unions.get(unionKey(node.type) ?? "")
           : undefined;
-        if (owner || union)
+        if ((owner || union) && !derivesFromOwner(node))
           findings.push({
             file,
             text: node.getText(source),
             message: owner
-              ? `Import ${name} from ${owner}`
+              ? `Import ${name} from ${owner.file}`
               : `Derive ${name} from ${union}`,
           });
       }
