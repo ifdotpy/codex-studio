@@ -1,0 +1,14 @@
+import { chromium } from "playwright";
+const [url] = process.argv.slice(2);
+const browser = await chromium.launch();
+const page = await (await browser.newContext({ viewport: { width: 951, height: 669 } })).newPage();
+const seen = [];
+page.on("response", async (r) => { const u = r.url(); if (u.includes("/api/") && (r.status() >= 300 || u.includes("multi-server") || u.includes("sync/stream"))) { let b = ""; try { if (r.status() >= 300) b = (await r.text()).slice(0, 200); } catch {} seen.push(`${r.request().method()} ${r.status()} ${u.split("?")[0]} ${b}`); } });
+page.on("requestfailed", (r) => { if (r.url().includes("/api/")) seen.push(`FAILED ${r.url().split("?")[0]} ${r.failure()?.errorText}`); });
+page.on("websocket", (ws) => { seen.push(`WS ${ws.url().split("?")[0]}`); ws.on("close", () => seen.push("WS closed")); ws.on("socketerror", (e) => seen.push(`WS error ${e}`)); });
+await page.goto(url);
+await page.waitForTimeout(15000);
+const banner = await page.getByText("Live updates are reconnecting").count();
+console.log("banner", banner);
+console.log(seen.slice(0, 20).join("\n"));
+await browser.close();

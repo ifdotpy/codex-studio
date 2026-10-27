@@ -1,0 +1,25 @@
+import { createRequire } from "node:module";
+const require = createRequire("/Users/igor/Projects/codex-agents/.worktrees/codex-agents/c6708b22-a9dd-55e2-ab93-e9fcee1a498c/workspaces/client/apps/web/package.json");
+const { chromium } = require("playwright");
+const [out, url] = process.argv.slice(2);
+const browser = await chromium.launch();
+const context = await browser.newContext({ viewport: { width: 951, height: 669 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2, colorScheme: "dark", serviceWorkers: "block", userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148" });
+const page = await context.newPage();
+await page.addInitScript(() => {
+  const original = window.matchMedia.bind(window);
+  window.matchMedia = (q) => { const r = original(q); if (/pointer: coarse/.test(q)) Object.defineProperty(r, "matches", { value: true }); return r; };
+  Object.defineProperty(navigator, "maxTouchPoints", { value: 5 });
+  const insets = { top: 0, right: 82, bottom: 34, left: 0 };
+  window.__studioNativeViewport = { version: 1, state: { insets, keyboard: { overlap: 0, duration: 0, curve: 7 } } };
+  const apply = () => { const r = document.documentElement; if (!r) return; for (const [k, v] of Object.entries(insets)) r.style.setProperty("--native-safe-" + k, v + "px"); r.dataset.nativeHinge = "open"; r.style.setProperty("--native-status-column-left", "867px"); r.style.setProperty("--native-status-column-bottom", "124px"); };
+  apply(); document.addEventListener("DOMContentLoaded", apply, { once: true });
+});
+await page.route("**/api/**", async (route) => { const r = await route.fetch(); const h = { ...r.headers(), "x-studio-api-schema": "0".repeat(64) }; await route.fulfill({ response: r, headers: h }); });
+await page.goto(url);
+await page.waitForTimeout(15000);
+const info = await page.evaluate(() => { const r = (s) => [...document.querySelectorAll(s)].filter((n) => n.getClientRects().length).map((n) => { const b = n.getBoundingClientRect(); return [b.x, b.y, b.width, b.height].map(Math.round); });
+  const h = [...document.querySelectorAll("h1,h2,h3")].find((n) => /update/i.test(n.textContent || ""));
+  return { heading: h ? [h.textContent, ...r("h1,h2,h3").filter(() => 0)] : null, headingRect: h ? (({ x, y, width, height }) => [x, y, width, height].map(Math.round))(h.getBoundingClientRect()) : null, sidebar: r("#sidebar"), rail: r(".edge-rail"), railButtons: r(".edge-rail button").length }; });
+console.log(JSON.stringify(info));
+await page.screenshot({ path: out });
+await browser.close();
