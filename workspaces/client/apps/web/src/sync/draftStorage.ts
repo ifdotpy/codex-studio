@@ -23,13 +23,20 @@ function workspaceOf(scope: string) {
 }
 
 function parseRecord(
-  raw: string,
+  value: unknown,
   workspace: string,
   session: string,
 ): LocalDraftRecord {
-  const value = JSON.parse(raw) as Record<string, unknown>;
   if (
     !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !("version" in value) ||
+    !("workspace" in value) ||
+    !("session" in value) ||
+    !("text" in value) ||
+    !("deleted" in value) ||
+    !("source" in value) ||
     value.version !== 1 ||
     value.workspace !== workspace ||
     value.session !== session ||
@@ -38,7 +45,9 @@ function parseRecord(
     (value.source !== "local" &&
       value.source !== "remote" &&
       value.source !== "legacy") ||
-    (value.updated !== undefined && !Number.isFinite(value.updated))
+    ("updated" in value &&
+      value.updated !== undefined &&
+      !Number.isFinite(value.updated))
   )
     throw new Error("A saved draft could not be read. Keep this chat open.");
   return {
@@ -48,7 +57,7 @@ function parseRecord(
     text: value.text,
     deleted: value.deleted,
     source: value.source === "legacy" ? "local" : value.source,
-    ...(value.updated !== undefined
+    ...("updated" in value && value.updated !== undefined
       ? { updated: value.updated as number }
       : {}),
   };
@@ -56,7 +65,9 @@ function parseRecord(
 export function createDraftStorage(localStorage: Storage) {
   function readLocalDraftRecord(scope: string, session: string) {
     const raw = localStorage.getItem(localDraftKey(scope, session));
-    return raw === null ? null : parseRecord(raw, workspaceOf(scope), session);
+    return raw === null
+      ? null
+      : parseRecord(JSON.parse(raw), workspaceOf(scope), session);
   }
 
   function readLocalDrafts(
@@ -72,7 +83,7 @@ export function createDraftStorage(localStorage: Storage) {
       try {
         const session = decodeURIComponent(key.slice(prefix.length));
         const record = parseRecord(
-          localStorage.getItem(key)!,
+          JSON.parse(localStorage.getItem(key)!),
           workspace,
           session,
         );
@@ -95,11 +106,11 @@ export function createDraftStorage(localStorage: Storage) {
     const previousRaw = localStorage.getItem(key);
     const previous = previousRaw
       ? (() => {
-          const parsed = parseRecord(previousRaw, workspaceOf(scope), session);
-          const raw = JSON.parse(previousRaw) as Record<string, unknown>;
+          const raw: unknown = JSON.parse(previousRaw);
+          const parsed = parseRecord(raw, workspaceOf(scope), session);
           return {
             ...Object.fromEntries(
-              Object.entries(raw).filter(
+              Object.entries(raw as Record<string, unknown>).filter(
                 ([field]) => !field.startsWith("legacy"),
               ),
             ),
@@ -136,7 +147,7 @@ export function createDraftStorage(localStorage: Storage) {
       try {
         session = decodeURIComponent(key.slice(prefix.length));
         record = parseRecord(
-          localStorage.getItem(key)!,
+          JSON.parse(localStorage.getItem(key)!),
           sourceWorkspace,
           session,
         );

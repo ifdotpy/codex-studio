@@ -10,7 +10,7 @@ import {
 import { draftVersionId } from "./draftIdentity.ts";
 import { activeDraftVersions } from "./draftVersions.ts";
 import { draftConflictHandler } from "./conflicts.ts";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 
 // The tests use only these Storage members; keep the fixture on the same global.
 const fixtureGlobal = globalThis as Omit<typeof globalThis, "localStorage"> & {
@@ -128,7 +128,10 @@ test("reads and rewrites current-key records left by the old migration", () => {
       copy: "copied",
     });
     assert.equal(readLocalDraftRecord(scope, "read")!.source, "local");
+    const parse = vi.spyOn(JSON, "parse");
     writeLocalDraftRecord(scope, "local", "local write", "local");
+    assert.equal(parse.mock.calls.length, 1);
+    parse.mockRestore();
     writeLocalDraftRecord(scope, "remote", "remote write", "remote");
     const local = JSON.parse(values.get(localDraftKey(scope, "local"))!);
     const remote = JSON.parse(values.get(localDraftKey(scope, "remote"))!);

@@ -1900,13 +1900,13 @@ export function createSyncClient(options: SyncClientOptions) {
                   [checkpointId],
                   true,
                 );
-              const hasTranscriptBase =
-                !scope.startsWith("transcript:") ||
-                (!!previous && !!readTranscriptMeta(previous.payload));
-              const cachedTranscriptEpoch =
+              const previousMeta =
                 previous && scope.startsWith("transcript:")
-                  ? readTranscriptMeta(previous.payload)?.epoch
+                  ? readTranscriptMeta(previous.payload)
                   : undefined;
+              const hasTranscriptBase =
+                !scope.startsWith("transcript:") || !!previousMeta;
+              const cachedTranscriptEpoch = previousMeta?.epoch;
               const after =
                 hasTranscriptBase &&
                 !(
@@ -2038,11 +2038,7 @@ export function createSyncClient(options: SyncClientOptions) {
                     ? null
                     : JSON.parse(document.payload);
                   if (incoming !== null) {
-                    if (
-                      isTranscriptDelta(incoming) &&
-                      (!previous?.payload ||
-                        !readTranscriptMeta(previous.payload))
-                    ) {
+                    if (isTranscriptDelta(incoming) && !previousMeta) {
                       const full = await retryRead(
                         () =>
                           pull(

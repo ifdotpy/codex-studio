@@ -168,6 +168,24 @@ it("sends, removes and cancels after one outbox write failed", async () => {
   await settles(outbox.changeOutbox("cancelled", "cancel"), "cancellation");
   const cancelled = await db.outbox.findOne("cancelled").exec();
   expect(JSON.parse(cancelled!.payload).status).toBe("cancelled");
+  await db.outbox.insert({
+    id: "legacy",
+    seq: 0,
+    payload: JSON.stringify({
+      body: message("legacy"),
+      status: "queued",
+      created: 1,
+    }),
+  });
+  await expect(outbox.changeOutbox("legacy", "cancel")).rejects.toThrow(
+    "Delivery may have started",
+  );
+  expect(await outbox.stopRemovedMessage("legacy")).toBe(false);
+  const legacy = await db.outbox.findOne("legacy").exec();
+  expect(JSON.parse(legacy!.payload)).toMatchObject({
+    status: "paused",
+    body: { id: "legacy" },
+  });
   expect(
     syncPost.mock.calls.some(([, body]) =>
       ["removed", "cancelled"].includes(body.id),
