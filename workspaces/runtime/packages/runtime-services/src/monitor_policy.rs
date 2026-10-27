@@ -230,6 +230,18 @@ impl TryFrom<ProbeFields> for ProbeState {
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct InputAttempt {
+    id: String,
+    agent: String,
+    epoch: i64,
+    account_key: String,
+    connection_id: String,
+    #[serde(rename = "method")]
+    _method: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Fields {
     id: String,
     agent: String,
@@ -271,7 +283,7 @@ struct Fields {
     #[serde(default)]
     stdin_close_requested: Option<String>,
     #[serde(default)]
-    input_attempt: Option<Value>,
+    input_attempt: Option<InputAttempt>,
 }
 fn minus_one() -> i64 {
     -1
@@ -861,16 +873,17 @@ pub fn settle_input(
     let Some(attempt) = &snapshot.fields.input_attempt else {
         return Ok(decision);
     };
-    if attempt.get("id").and_then(Value::as_str) != Some(attempt_id)
-        || ["agent", "epoch", "accountKey", "connectionId"]
-            .iter()
-            .any(|key| attempt.get(*key) != snapshot.record.pointer(&format!("/operation/{key}")))
+    if attempt.id != attempt_id
+        || attempt.agent != operation.agent
+        || attempt.epoch != operation.epoch
+        || attempt.account_key != operation.account_key
+        || attempt.connection_id != operation.connection_id
     {
         return Err(MonitorError::Refused(
             "Monitor input receipt identity changed",
         ));
     }
-    let mut receipt = attempt.clone();
+    let mut receipt = snapshot.record["inputAttempt"].clone();
     receipt["finished"] = json!(now);
     receipt["status"] = json!(match outcome {
         InputOutcome::Acknowledged => "acknowledged",
