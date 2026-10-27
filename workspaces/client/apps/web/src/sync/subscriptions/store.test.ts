@@ -1,15 +1,13 @@
+import type { ConnectionHealth } from "../connectionState";
 import { SubscriptionReplyKind } from "../../generated/api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSubscriptionStore } from "./store";
-import type {
-  ResourceVersion,
-  ResourceConnectionState,
-} from "../resourceEvents";
+import type { ResourceVersion } from "../resourceEvents";
 
 function fixture() {
   const removed = vi.fn();
   let deliver: (version?: ResourceVersion) => void = () => {};
-  let connection: (status: ResourceConnectionState) => void = () => {};
+  let connection: (status: ConnectionHealth) => void = () => {};
   const add = vi.fn((_ref, accept) => {
     deliver = accept;
     return removed;
@@ -27,7 +25,7 @@ function fixture() {
     add,
     removed,
     deliver: (version: ResourceVersion) => deliver(version),
-    connection: (status: ResourceConnectionState) => connection(status),
+    connection: (status: ConnectionHealth) => connection(status),
   };
 }
 const resource = { kind: "transcript", agentId: "visible-chat" } as const;

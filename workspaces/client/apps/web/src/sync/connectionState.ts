@@ -7,9 +7,7 @@ export type ReconnectCause =
   | "subscription-rejected"
   | "invalid-frame"
   | "local-state-error"
-  | "network-offline"
   | "network-online"
-  | "page-resumed"
   | "server-restart"
   | "unknown";
 
@@ -21,9 +19,7 @@ export const reconnectReasons: Record<ReconnectCause, string> = {
   "subscription-rejected": "Could not confirm live updates.",
   "invalid-frame": "Received invalid server updates.",
   "local-state-error": "Could not prepare or apply local sync data.",
-  "network-offline": "The device went offline.",
   "network-online": "The device is online again.",
-  "page-resumed": "The page resumed.",
   "server-restart": "The server restarted.",
   unknown: "Reason unknown.",
 };
@@ -50,21 +46,6 @@ export type ConnectionState =
   | { phase: "offline"; since: number }
   | { phase: "paused" }
   | { phase: "schema-mismatch" };
-
-export type ConnectionEvent =
-  | { type: "stopped" }
-  | { type: "connecting"; attempt: number; activity: ConnectingActivity }
-  | { type: "live"; at: number }
-  | {
-      type: "reconnecting";
-      attempt: number;
-      cause: ReconnectCause;
-      retryAt?: number | undefined;
-      activity: ReconnectingActivity;
-    }
-  | { type: "offline"; at: number }
-  | { type: "paused" }
-  | { type: "schema-mismatch" };
 
 /** Coarse health is the existing cross-tab wire representation. */
 export type ConnectionHealth =
@@ -110,46 +91,6 @@ export function activityOf(state: ConnectionState): ConnectionActivity {
       return "stopped";
     default: {
       const exhaustive: never = state;
-      return exhaustive;
-    }
-  }
-}
-
-export function transitionConnection(
-  state: ConnectionState,
-  event: ConnectionEvent,
-): ConnectionState {
-  switch (event.type) {
-    case "stopped":
-      return { phase: "stopped" };
-    case "connecting":
-      return {
-        phase: "connecting",
-        attempt: event.attempt,
-        activity: event.activity,
-      };
-    case "live":
-      return state.phase === "live"
-        ? state
-        : { phase: "live", since: event.at };
-    case "reconnecting":
-      return {
-        phase: "reconnecting",
-        attempt: event.attempt,
-        cause: event.cause,
-        activity: event.activity,
-        ...(event.retryAt === undefined ? {} : { retryAt: event.retryAt }),
-      };
-    case "offline":
-      return state.phase === "offline"
-        ? state
-        : { phase: "offline", since: event.at };
-    case "paused":
-      return { phase: "paused" };
-    case "schema-mismatch":
-      return { phase: "schema-mismatch" };
-    default: {
-      const exhaustive: never = event;
       return exhaustive;
     }
   }

@@ -1,12 +1,12 @@
 import type {
-  ResourceConnectionDetail,
-  ResourceConnectionState,
-  ResourceStreamState,
-} from "../sync/resourceConnection";
+  ConnectionActivity,
+  ConnectionHealth,
+} from "../sync/connectionState";
+import type { ResourceConnectionDetail } from "../sync/resourceConnection";
 import { localTime } from "../local-time";
 import { reconnectReasons } from "../sync/connectionState";
 
-const activityLabels: Record<ResourceStreamState, string> = {
+const activityLabels: Record<ConnectionActivity, string> = {
   stopped: "Connection interrupted.",
   preparing: "Preparing connection…",
   "waiting-owner": "Waiting for the shared connection…",
@@ -18,16 +18,16 @@ const activityLabels: Record<ResourceStreamState, string> = {
 };
 
 export type MessageConnection = {
-  health: ResourceConnectionState;
-  activity: ResourceStreamState | undefined;
+  health: ConnectionHealth;
+  activity: ConnectionActivity | undefined;
   message: string;
   icon: "waiting" | "connecting" | "offline";
 };
 
 /** Present transport facts without turning unhealthy data into a retry claim. */
 export function selectMessageConnection(
-  health: ResourceConnectionState,
-  activity?: ResourceStreamState,
+  health: ConnectionHealth,
+  activity?: ConnectionActivity,
   detail: ResourceConnectionDetail = {},
 ): MessageConnection {
   const connection: MessageConnection = {

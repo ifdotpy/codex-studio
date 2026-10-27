@@ -1,6 +1,7 @@
+import type { ConnectionHealth } from "../sync/connectionState";
 import { get, post, refreshSession, type GetResult } from "../api";
 import { serverLocalStorage } from "./storage";
-import type { ResourceConnectionState } from "../sync/subscriptions/events";
+
 import { readServers, type StudioServer } from "./registry";
 
 import type { components } from "../generated/api";
@@ -30,7 +31,7 @@ export type ProjectServerChoice = {
 };
 export function projectServerChoices(
   servers: StudioServer[],
-  statuses: Record<string, ResourceConnectionState>,
+  statuses: Record<string, ConnectionHealth>,
   reachability: Record<string, string | null | undefined> = {},
 ): ProjectServerChoice[] {
   return servers.map((server) => ({

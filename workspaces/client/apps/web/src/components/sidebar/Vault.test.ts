@@ -239,7 +239,7 @@ describe("vault menu", () => {
       version?: import("../../sync/resourceEvents").ResourceVersion,
     ) => void;
     let connected!: (
-      state: import("../../sync/resourceEvents").ResourceConnectionState,
+      state: import("../../sync/connectionState").ConnectionHealth,
     ) => void;
     const frames = jobFrames("/api/vault/pull");
     const post = vi

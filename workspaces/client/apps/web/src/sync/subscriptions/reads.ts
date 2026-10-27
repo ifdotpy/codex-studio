@@ -1,14 +1,11 @@
+import type { ConnectionActivity } from "../connectionState";
 import {
   watchResourceChanges as defaultWatchResourceChanges,
   watchResourceConnection as defaultWatchResourceConnection,
 } from "./events";
 import { onResume } from "../resume";
 import { ReadRecoveryBudget, retryableReadError } from "../readRetry";
-import type {
-  ResourceRef,
-  ResourceStreamState,
-  ResourceVersion,
-} from "./events";
+import type { ResourceRef, ResourceVersion } from "./events";
 
 type ResourceReadWatcher = (() => void) & { refresh: () => void };
 type ReadTrigger = {
@@ -219,7 +216,7 @@ export function watchResourceReads(
   let fallbackStarted = false;
   let wasLive = false;
   const stopConnection = watchResourceConnection(
-    (status, stream: ResourceStreamState) => {
+    (status, stream: ConnectionActivity) => {
       const reconnected = status === "live" && !wasLive;
       wasLive = status === "live";
       if (reconnected && (dirty || recovery.exhaustedError)) {
