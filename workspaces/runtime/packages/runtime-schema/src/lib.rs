@@ -16,6 +16,7 @@ pub mod idle_compaction;
 pub mod json_compat;
 pub mod model_catalog;
 pub mod multi_server_protocol;
+pub mod persistence;
 pub mod pricing;
 pub mod process_controls;
 pub mod provider_diagnostics;

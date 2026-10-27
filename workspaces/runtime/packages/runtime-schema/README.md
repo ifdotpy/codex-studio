@@ -8,7 +8,7 @@
   `OPENAPI_URI`, the `JsonSchemaRegistry` type alias, and values in
   `shared_values`; `DeliveryMoment` and its explicit legacy parser in
   [`src/delivery.rs`](src/delivery.rs).
-- **Boundaries:** This crate owns no SQL, record persistence, route handlers, or request
+- **Boundaries:** This crate owns no database connections, record persistence, route handlers, or request
   route parsing. The shared delivery contract owns canonical timing and legacy
   spelling normalization. `runtime-store` owns stored-object validation through `Table<R>`;
   `runtime-http` owns request validation and resolves schema references through
@@ -26,6 +26,28 @@
 The crate shares one lazily initialized set of persisted-record validators.
 HTTP request validators use `registry_for_document` to prepare references
 against the same OpenAPI document and the persisted-state schema documents.
+
+`persistence.rs` owns closed storage enums, their serde wire spellings,
+`strum::VariantNames`, generated SQL CHECK expressions, and optional `sqlite`
+feature codecs. `records::WorkStatus` and `studio_errors::Kind` re-export their
+persistence owners. `studio-contracts` generates the web `persistence.ts` unions
+and request-age constants from this module.
+
+`RequestIdentity::new(namespace, authority, root_request_id, operation)` creates
+a canonical tuple key from an explicit UUIDv7 root. `issue_root()` generates a
+root once; retries retain it. `validate(now_ms, expired_before_ms)` applies the
+30-day TTL and 120-second future skew. All policy timestamps use Unix
+milliseconds. Migrated result IDs remain ordinary stored strings; the store
+checks their saved creation time without parsing the key.
+
+The W0 slice exports target DDL and transaction-scoped repositories from
+`runtime-store`; it performs no family cutover or production caller conversion.
+Its disposable writer caller exercises admission, owner mutation and exact
+reply settlement in one transaction. Independent catalog migrations consume
+`receipt_migration_contract` for prepare/move/finish, shared cutover time,
+per-source checkpoints, and 500-row/8-MiB input budgets. Unknown classifications
+stop startup with the source table, key and signature; they are never dropped.
+
 This crate owns the shared runtime contracts: `src/shared_values.rs`,
 `src/agent_limits.rs`, `src/api_schema.rs`, `src/multi_server_protocol.rs`,
 `src/sync_protocol.rs`, `src/delivery.rs`, `src/provider_kind.rs`,
@@ -41,7 +63,8 @@ with schemars, through the same contract commands. `AgentCommandProgress` and
 `AgentStall` in `src/agent_progress.rs` also derive their OpenAPI fragments;
 the renderer refreshes those two components before generating API types and identity.
 
-[`src/records.rs`](src/records.rs) owns `WorkStatus` and `WorkspaceMode`.
+[`src/persistence.rs`](src/persistence.rs) owns `WorkStatus`;
+[`src/records.rs`](src/records.rs) re-exports it and owns `WorkspaceMode`.
 The store imports these enums; OpenAPI components and HTTP types are generated
 from the same owner, including the narrower lead-creation mode set. Checked work
 readers require a known status and string-list dependencies. Progress retains its

@@ -48,6 +48,18 @@
       "title": "Latestattemptid"
     },
     "status": {
+      "enum": [
+        "pending",
+        "accepted",
+        "observed",
+        "running",
+        "unknown",
+        "rejected",
+        "completed",
+        "failed",
+        "interrupted",
+        "cancelled"
+      ],
       "title": "Status",
       "type": "string"
     },

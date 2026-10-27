@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
+use strum::VariantNames;
 
 use crate::{
     DeliveryMoment, agent_limits, api_schema, delivery, multi_server_protocol,
@@ -30,6 +31,40 @@ const NODE_ENVIRONMENT: &str = "CODEX_NODE";
 pub struct Rendered {
     pub path: String,
     pub text: String,
+}
+
+fn persistence_ts(root: &Path) -> Result<String, String> {
+    let mut text = format!("// {HEADER}\n");
+    ts_constants(
+        &mut text,
+        &[
+            (
+                "REQUEST_RESULT_TTL_MS",
+                crate::persistence::REQUEST_RESULT_TTL_MS.to_string(),
+            ),
+            (
+                "REQUEST_ID_FUTURE_SKEW_MS",
+                crate::persistence::REQUEST_ID_FUTURE_SKEW_MS.to_string(),
+            ),
+        ],
+    );
+    for (name, variants) in crate::persistence::ENUM_CONTRACTS {
+        writeln!(text, "export const {name}Values = [").expect("String write");
+        for wire in *variants {
+            writeln!(text, "  {},", json_string(wire)).expect("String write");
+        }
+        writeln!(
+            text,
+            "] as const;\nexport type {name} = (typeof {name}Values)[number];"
+        )
+        .expect("String write");
+    }
+    run_node(
+        root,
+        "node_modules/oxfmt/bin/oxfmt",
+        "--stdin-filepath=workspaces/client/apps/web/src/generated/persistence.ts",
+        &text,
+    )
 }
 
 fn json_string(value: &str) -> String {
@@ -1243,6 +1278,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
         Rendered {
+            path: web("persistence.ts"),
+            text: persistence_ts(root)?,
+        },
+        Rendered {
             path: web("workspaceModes.ts"),
             text: workspace_modes_ts(),
         },
@@ -1357,6 +1396,45 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: linux_vm_swift(),
         },
     ];
+    for (file, field, variants) in [
+        (
+            "persisted-tool-request-record",
+            "stage",
+            crate::persistence::ToolRequestStatus::VARIANTS,
+        ),
+        (
+            "persisted-tool-request-record",
+            "outcome",
+            crate::persistence::ToolRequestOutcome::VARIANTS,
+        ),
+        (
+            "persisted-execution-run-record",
+            "status",
+            crate::persistence::ExecutionStatus::VARIANTS,
+        ),
+    ] {
+        let path =
+            format!("workspaces/runtime/packages/runtime-schema/src/schemas/{file}.schema.json");
+        // A document can have several enum leaves owned by this module.
+        let prior = rendered.iter().position(|rendered| rendered.path == path);
+        let mut schema = if let Some(index) = prior {
+            serde_json::from_str(&rendered[index].text).map_err(|error| error.to_string())?
+        } else {
+            read_json(root, &path)?
+        };
+        schema["properties"][field]["enum"] = serde_json::json!(variants);
+        let text = run_node(
+            root,
+            "node_modules/oxfmt/bin/oxfmt",
+            &format!("--stdin-filepath={path}"),
+            &serde_json::to_string_pretty(&schema).map_err(|error| error.to_string())?,
+        )?;
+        if let Some(index) = prior {
+            rendered[index].text = text;
+        } else {
+            rendered.push(Rendered { path, text });
+        }
+    }
     let monitor_path = crate::studio_errors::MONITOR_RECORD_SCHEMA_PATH;
     let mut monitor = read_json(root, monitor_path)?;
     monitor["properties"]["status"]["anyOf"][0] =

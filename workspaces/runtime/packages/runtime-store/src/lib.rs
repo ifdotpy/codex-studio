@@ -24,8 +24,11 @@ pub const WORK_DETAILS_SEED_MARKER: &str = "work_details_v1";
 mod multi_server_state_check;
 mod path;
 pub mod path_identity;
+pub mod receipt_migration_contract;
+pub mod receipt_schema;
 mod records;
 mod repositories;
+pub use repositories::{outbox, request_results};
 mod schema;
 mod sqlite_actor;
 pub mod sqlite_durability;
@@ -622,6 +625,9 @@ fn install_table_change_hooks(
                 return;
             }
             entity_publication::observe_row(table_name, row_id);
+            if table_name == request_results::TABLE {
+                resource_receipt_update_count.fetch_add(1, Ordering::Relaxed);
+            }
             if ENTITY_RESOURCE_TABLES.contains(&table_name) {
                 resource_entity_update_count.fetch_add(1, Ordering::Relaxed);
             }
@@ -648,9 +654,10 @@ fn install_table_change_hooks(
     connection.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Delete { table_name }
             if context.database_name == Some("main")
-                && OBSERVED_TABLES
-                    .iter()
-                    .any(|observed| observed.name() == table_name) =>
+                && (table_name == request_results::TABLE
+                    || OBSERVED_TABLES
+                        .iter()
+                        .any(|observed| observed.name() == table_name)) =>
         {
             // SQLite documents IGNORE here as retaining DELETE semantics while
             // disabling the truncate optimization, so update_hook sees rows.
