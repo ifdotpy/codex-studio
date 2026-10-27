@@ -70,7 +70,7 @@ async fn spawn_permission_case(
         return;
     }
     let spawned = spawned.unwrap();
-    let id = AgentId::from(spawned.value["agents"][0]["id"].as_str().unwrap());
+    let id = AgentId::from(spawned.result().value["agents"][0]["id"].as_str().unwrap());
     let child = AgentRepository::get(&store.test_reader().unwrap(), &id)
         .unwrap()
         .unwrap()
@@ -92,7 +92,10 @@ async fn spawn_permission_case(
     )
     .await
     .unwrap();
-    assert_eq!(replay.value["agents"], spawned.value["agents"]);
+    assert_eq!(
+        replay.result().value["agents"],
+        spawned.result().value["agents"]
+    );
     drop(store);
     let reopened = RuntimeStore::open(Some(directory.path())).await.unwrap();
     let restored = AgentRepository::get(&reopened.test_reader().unwrap(), &id)
@@ -225,7 +228,7 @@ async fn claude_child_reads_current_parent_permission_at_commit() {
     let spawned = crate::managed_child_create::spawn_agents(&store, &actor,
         &json!({"agents": [{"name": "Child", "prompt": "Do the task", "workspace": "shared", "permission_mode": "bypassPermissions"}]}),
         "current-permissions", 20.0, &CreationEnvironment).await.unwrap();
-    let id = AgentId::from(spawned.value["agents"][0]["id"].as_str().unwrap());
+    let id = AgentId::from(spawned.result().value["agents"][0]["id"].as_str().unwrap());
     let child = AgentRepository::get(&store.test_reader().unwrap(), &id)
         .unwrap()
         .unwrap()

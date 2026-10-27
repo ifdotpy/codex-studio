@@ -447,7 +447,7 @@ pub(crate) async fn spawn_agents(
     request_id: &str,
     now: f64,
     environment: &dyn ManagedCreationEnvironment,
-) -> Result<crate::managed_host_tools::OperationResult, Error> {
+) -> Result<crate::managed_host_tools::DispatchedOperation, Error> {
     let actor_record = actor.record().clone();
     if actor_record.extra.get("role").and_then(Value::as_str) == Some("reviewer") {
         return Err(
@@ -920,7 +920,9 @@ pub(crate) async fn spawn_agents(
             signals,
         })
     }).await.map_err(Error::from)?;
-    Ok(result)
+    Ok(crate::managed_host_tools::DispatchedOperation::Applied(
+        result,
+    ))
 }
 
 pub(crate) fn child_id(request_id: &str, index: usize) -> String {
@@ -1361,7 +1363,7 @@ pub(crate) async fn request_review(
     request_id: &str,
     now: f64,
     environment: &dyn ManagedCreationEnvironment,
-) -> Result<crate::managed_host_tools::OperationResult, Error> {
+) -> Result<crate::managed_host_tools::DispatchedOperation, Error> {
     let actor_record = actor.record().clone();
     if actor_record
         .extra
@@ -1450,10 +1452,12 @@ pub(crate) async fn request_review(
         let value = plan.existing(&saved).map_err(|_| {
             crate::managed_host_tools::Error::Invalid("This request id has different content")
         })?;
-        return Ok(crate::managed_host_tools::OperationResult {
-            value,
-            signals: Vec::new(),
-        });
+        return Ok(crate::managed_host_tools::DispatchedOperation::Applied(
+            crate::managed_host_tools::OperationResult {
+                value,
+                signals: Vec::new(),
+            },
+        ));
     }
     let account_key = parent_value
         .get("accountKey")
@@ -1586,10 +1590,12 @@ pub(crate) async fn request_review(
             Ok(response)
         }).await
         .map_err(Error::from)?;
-    Ok(crate::managed_host_tools::OperationResult {
-        value,
-        signals: vec![crate::managed_host_tools::WakeSignal::new("worker-driver")],
-    })
+    Ok(crate::managed_host_tools::DispatchedOperation::Applied(
+        crate::managed_host_tools::OperationResult {
+            value,
+            signals: vec![crate::managed_host_tools::WakeSignal::new("worker-driver")],
+        },
+    ))
 }
 
 struct ReviewCreator<'a> {

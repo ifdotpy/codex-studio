@@ -203,7 +203,6 @@ impl ChildCreationPort for ManagedChildCreationAdapter {
                 self.0.as_ref(),
             )
             .await
-            .map(DispatchedOperation::Applied)
             .map_err(child_creation_error)
         })
     }
@@ -226,7 +225,6 @@ impl ChildCreationPort for ManagedChildCreationAdapter {
                 self.0.as_ref(),
             )
             .await
-            .map(DispatchedOperation::Applied)
             .map_err(child_creation_error)
         })
     }
