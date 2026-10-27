@@ -379,6 +379,9 @@ impl JsonRecord for WorkItemRecord {
     fn record_key(&self) -> Option<&Self::Id> {
         Some(&self.fields.id)
     }
+    fn decode_stored(_connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
+        Self::decode(row_id, encoded)
+    }
 }
 record_newtype!(
     ExecutionRunRecord,
@@ -439,7 +442,7 @@ record_newtype!(
 
 impl WorkItemRecord {
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
-        let fields = serde_json::from_value(value.clone())?;
+        let fields = WorkItemFields::deserialize(&value)?;
         Ok(Self { value, fields })
     }
 
@@ -594,6 +597,10 @@ pub trait JsonRecord: Serialize + DeserializeOwned {
     const QUERY_SHAPE: RecordQueryShape;
 
     fn record_key(&self) -> Option<&Self::Id>;
+
+    fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
+        decode_record::<Self>(connection, row_id, encoded)
+    }
 }
 
 /// Typed access to one id/record JSON table.
@@ -620,7 +627,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
     }
 
     pub(crate) fn decode_stored(&self, row_id: &str, encoded: &str) -> StoreResult<R> {
-        decode_record::<R>(self.connection, row_id, encoded)
+        R::decode_stored(self.connection, row_id, encoded)
     }
 
     pub fn get(&self, id: &R::Id) -> StoreResult<Option<R>> {
@@ -646,7 +653,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             return Ok(None);
         };
         let encoded = stored_text_ref(row.get_ref(0)?, R::TABLE, id.as_ref())?;
-        decode_record::<R>(self.connection, id.as_ref(), encoded).map(Some)
+        R::decode_stored(self.connection, id.as_ref(), encoded).map(Some)
     }
 
     /// Keep the original JSON text for consumers whose contract depends on
@@ -674,7 +681,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             return Ok(None);
         };
         let encoded = stored_text(row.get_ref(0)?, R::TABLE, id.as_ref())?;
-        let record = decode_record::<R>(self.connection, id.as_ref(), &encoded)?;
+        let record = R::decode_stored(self.connection, id.as_ref(), &encoded)?;
         Ok(Some((record, self.reader_text(id.as_ref(), encoded)?)))
     }
 
@@ -701,7 +708,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         while let Some(row) = rows.next()? {
             let id = stored_text(row.get_ref(0)?, R::TABLE, "<invalid id>")?;
             let encoded = stored_text_ref(row.get_ref(1)?, R::TABLE, &id)?;
-            records.push(decode_record::<R>(self.connection, &id, encoded)?);
+            records.push(R::decode_stored(self.connection, &id, encoded)?);
         }
         Ok(records)
     }
@@ -729,7 +736,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         while let Some(row) = rows.next()? {
             let id = stored_text(row.get_ref(0)?, R::TABLE, "<invalid id>")?;
             let encoded = stored_text(row.get_ref(1)?, R::TABLE, &id)?;
-            let record = decode_record::<R>(self.connection, &id, &encoded)?;
+            let record = R::decode_stored(self.connection, &id, &encoded)?;
             records.push((record, self.reader_text(&id, encoded)?));
         }
         Ok(records)
@@ -749,7 +756,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         };
         let id = stored_text(row.get_ref(0)?, R::TABLE, "<invalid id>")?;
         let encoded = stored_text_ref(row.get_ref(1)?, R::TABLE, &id)?;
-        decode_record::<R>(self.connection, &id, encoded).map(Some)
+        R::decode_stored(self.connection, &id, encoded).map(Some)
     }
 
     /// Full rowid-ordered read that keeps each physical row id beside its record.
@@ -766,7 +773,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             let row_id = row.get::<_, i64>(0)?;
             let id = stored_text(row.get_ref(1)?, R::TABLE, "<invalid id>")?;
             let encoded = stored_text_ref(row.get_ref(2)?, R::TABLE, &id)?;
-            records.push((row_id, decode_record::<R>(self.connection, &id, encoded)?));
+            records.push((row_id, R::decode_stored(self.connection, &id, encoded)?));
         }
         Ok(records)
     }
@@ -1083,10 +1090,6 @@ pub(crate) fn decode_record<R: JsonRecord>(
         // The checked value already carries the typed fields; decode moves it.
         return serde_json::from_value::<R>(decode_agent_value(connection, row_id, encoded)?)
             .map_err(|_| invalid_agent_field(row_id, "", "record_decode", None));
-    }
-    if R::TABLE == WorkItemRecord::TABLE {
-        let work = WorkItemRecord::decode(row_id, encoded)?;
-        return Ok(serde_json::from_value(work.into_value())?);
     }
     let invalid = || crate::StoreError::InvalidStoredObject {
         table: R::TABLE,

@@ -2726,8 +2726,9 @@ async fn task_result_schema_spawn_assignment_contains_contract() {
     assert_eq!(
         studio_runtime_store::WorkItemsRepository::work_record(&read, "schema-task")
             .unwrap()
-            .unwrap()["owner"],
-        child
+            .unwrap()
+            .owner(),
+        Some(child)
     );
 }
 

@@ -185,12 +185,6 @@ pub fn check_schema_parity(openapi: &Value) -> Result<(), String> {
     if expected != *openapi {
         return Err("Task read schema differs from runtime-schema/src/task_results.rs".into());
     }
-    if openapi["components"]["schemas"]["WorkBody"]["properties"]["result"] != result_input_field()
-    {
-        return Err(
-            "WorkBody.result must use task_results::result_input_field from runtime-schema".into(),
-        );
-    }
     for name in [
         "WorkResultDto",
         "WorkResultRecord",
@@ -202,12 +196,7 @@ pub fn check_schema_parity(openapi: &Value) -> Result<(), String> {
             ));
         }
     }
-    if openapi["components"]["schemas"]["WorkBody"]["properties"]["result_schema"] != schema_input()
-    {
-        return Err(
-            "WorkBody.result_schema must use task_results::schema_input from runtime-schema".into(),
-        );
-    }
+    crate::task_command::check_api_contract(openapi)?;
     Ok(())
 }
 

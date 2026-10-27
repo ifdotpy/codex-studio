@@ -49,7 +49,7 @@ pub fn assign_in_transaction(
         return Err(EventWriteError::InvalidRequest("Worker belongs to another team").into());
     }
 
-    let mut work = WorkItemsRepository::work_record(tx, task_id)?.ok_or(
+    let work = WorkItemsRepository::work_record(tx, task_id)?.ok_or(
         EventWriteError::InvalidRequest("Unknown task_id in this team; no workers were created"),
     )?;
     if work.get("rootId").and_then(Value::as_str) != Some(current_actor.root_id.0.as_str()) {
@@ -87,6 +87,7 @@ pub fn assign_in_transaction(
         .checked_add(1)
         .ok_or_else(|| invalid_work(task_id))?;
 
+    let mut work = work.into_value();
     work["owner"] = Value::String(owner_id.to_owned());
     work["version"] = Value::from(next_version);
     work["updated"] = serde_json::Number::from_f64(now)

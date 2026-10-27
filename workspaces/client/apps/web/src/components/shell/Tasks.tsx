@@ -166,19 +166,25 @@ function TaskEditor({
             throw new Error(
               "Use true to allow any JSON result. An existing result schema cannot be removed.",
             );
-          const body: WorkBody = {
-            action: task ? "update" : "create",
+          const fields = {
             title: title.trim(),
             description,
             owner: owner.trim() || null,
             dependencies,
-            ...(task ? { task_id: task.id, version: task.version } : {}),
             ...(status ? { status } : {}),
             ...(mode === "custom" ? { gate: parseGate(command, timeout) } : {}),
             ...(resultSchema === undefined
               ? {}
               : { result_schema: resultSchema }),
           };
+          const body: WorkBody = task
+            ? {
+                action: "update",
+                task_id: task.id,
+                version: task.version,
+                ...fields,
+              }
+            : { action: "create", ...fields };
           if (await write(body)) onClose();
         } catch (failure) {
           setError(errorText(failure));

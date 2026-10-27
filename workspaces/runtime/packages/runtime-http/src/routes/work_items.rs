@@ -45,11 +45,9 @@ pub(crate) async fn work(
 }
 
 pub(crate) async fn work_for_agent(state: HttpState, agent_id: String) -> Result<Value, ApiError> {
-    read_agent(state, agent_id, |connection, agent, validators| {
+    read_agent(state, agent_id, |connection, agent, _validators| {
         let records = WorkItemsRepository::work(connection).map_err(ApiError::stored)?;
-        let records = stored_values("runtime_work", records, validators, false)?;
-        let mut list =
-            work_policy::work_list(&agent.root_id.0, &records).map_err(ApiError::stored)?;
+        let mut list = work_policy::work_list(&agent.root_id.0, &records);
         let lead = AgentRepository::get(connection, &agent.root_id)?
             .ok_or_else(|| invalid_stored("runtime_agents", &agent.root_id.0))?;
         list["rootId"] = json!(agent.root_id.0);
@@ -162,30 +160,6 @@ where
             read(connection, &agent, &validators)
         })
         .await
-}
-
-fn stored_values(
-    object: &'static str,
-    records: Vec<StoredRecord>,
-    validators: &Registry,
-    remove_path: bool,
-) -> Result<Vec<Value>, ApiError> {
-    records
-        .into_iter()
-        .map(|row| {
-            let mut value = record_value(object, &row)?;
-            if remove_path {
-                value
-                    .as_object_mut()
-                    .expect("record is object")
-                    .remove("path");
-            }
-            if !validators.valid_table_record(object, &row.id, &value) {
-                return Err(invalid_stored(object, &row.id));
-            }
-            Ok(value)
-        })
-        .collect()
 }
 
 fn record_value(object: &'static str, row: &StoredRecord) -> Result<Value, ApiError> {

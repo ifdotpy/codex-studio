@@ -76,6 +76,20 @@ The focused schema tests also compare the Python event reader to this owner on
 shared default, override, legacy, and invalid-input cases using Python's standard
 library and an in-memory SQLite database.
 
+[`src/task_command.rs`](src/task_command.rs) owns the tagged task commands,
+their ingress limits, and the generated HTTP and agent-tool mutation schemas.
+Both adapters use the same parser and service conversion. Commands carry their
+required arguments; gate inputs consume the existing gate owner. Integral
+decimal versions remain accepted, and receipt signatures use the original
+transport JSON, including unused known fields and null or omitted owner fields.
+The task editor consumes the generated action variants directly.
+
+Store work-item list, get, and dependent reads return `WorkItemRecord` through
+policy and dependency decisions. Its retained JSON preserves nulls, omission,
+and extension fields; serialization occurs at the response boundary. The table
+decoder returns that checked record directly instead of serializing and
+deserializing its operational fields again.
+
 `src/task_results.rs` owns optional task result contracts and their limits.
 The runtime uses the existing `jsonschema` crate from Cargo.lock (0.49.9).
 Task create and update compile the schema before the task changes.

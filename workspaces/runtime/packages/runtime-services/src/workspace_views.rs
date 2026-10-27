@@ -428,7 +428,7 @@ pub struct WorkspaceInboxData<'a> {
     pub all_agents: &'a [Value],
     pub requests: &'a [Value],
     pub complaints: &'a [Value],
-    pub work: &'a [Value],
+    pub work: &'a [studio_runtime_store::WorkItemRecord],
     pub statuses: &'a BTreeMap<String, studio_runtime_store::WorkStatus>,
     pub monitors: &'a [Value],
     pub rules: &'a [Value],
@@ -511,10 +511,13 @@ pub fn workspace_inbox(
             "text":"The lead must read and respond","complaint":projection,
         }));
     }
-    for item in work.iter().filter(|item| item["status"] == "review") {
+    for item in work
+        .iter()
+        .filter(|item| item.status() == studio_runtime_store::WorkStatus::Review)
+    {
         inbox.push(json!({
-            "id":item["id"],"kind":"work","agent":item["rootId"],"title":item["title"],
-            "text":"Result awaits acceptance","work":crate::work_policy::work_item_view(item, statuses)?,
+            "id":item.id(),"kind":"work","agent":item.value()["rootId"],"title":item.title(),
+            "text":"Result awaits acceptance","work":crate::work_policy::work_item_view(item, statuses),
         }));
     }
     for agent in agents

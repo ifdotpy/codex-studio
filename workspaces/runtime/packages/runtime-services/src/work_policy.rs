@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
-use studio_runtime_store::{StoreResult, StoredQueueEvent, WorkItemRecord, WorkStatus};
+use studio_runtime_store::{StoredQueueEvent, WorkItemRecord, WorkStatus};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -22,28 +22,24 @@ pub struct PreparedQueue {
     pub asset_ids: Vec<String>,
 }
 
-pub fn work_list(root: &str, records: &[Value]) -> StoreResult<Value> {
-    let statuses = work_statuses(records)?;
+pub fn work_list(root: &str, records: &[WorkItemRecord]) -> Value {
+    let statuses = work_statuses(records);
     let items = records
         .iter()
-        .filter(|item| item["rootId"] == root)
+        .filter(|item| item.value()["rootId"] == root)
         .map(|item| work_item_view(item, &statuses))
-        .collect::<StoreResult<Vec<_>>>()?;
-    Ok(json!({"items": items, "tasks": items}))
+        .collect::<Vec<_>>();
+    json!({"items": items, "tasks": items})
 }
 
-pub fn work_statuses(records: &[Value]) -> StoreResult<BTreeMap<String, WorkStatus>> {
+pub fn work_statuses(records: &[WorkItemRecord]) -> BTreeMap<String, WorkStatus> {
     records
         .iter()
-        .map(|item| {
-            let item = WorkItemRecord::checked(item.clone())?;
-            Ok((item.id().0.clone(), item.status()))
-        })
+        .map(|item| (item.id().0.clone(), item.status()))
         .collect()
 }
 
-pub fn work_item_view(item: &Value, statuses: &BTreeMap<String, WorkStatus>) -> StoreResult<Value> {
-    let item = WorkItemRecord::checked(item.clone())?;
+pub fn work_item_view(item: &WorkItemRecord, statuses: &BTreeMap<String, WorkStatus>) -> Value {
     let mut view = item.value().clone();
     let blocked = item.blocked_by(statuses);
     let status = if !blocked.is_empty()
@@ -55,7 +51,7 @@ pub fn work_item_view(item: &Value, statuses: &BTreeMap<String, WorkStatus>) -> 
     };
     view["blockedBy"] = json!(blocked);
     view["displayStatus"] = json!(status);
-    Ok(view)
+    view
 }
 
 pub fn plan_view(agent_id: &str, root_id: &str, stored: Option<Value>) -> Value {
@@ -155,6 +151,15 @@ mod tests {
 
     #[test]
     fn dependency_projection_keeps_record_fields_and_projects_blocking() {
+        let _: fn(
+            &[studio_runtime_store::WorkItemRecord],
+        ) -> std::collections::BTreeMap<String, studio_runtime_store::WorkStatus> =
+            super::work_statuses;
+        let _: fn(
+            &studio_runtime_store::Connection,
+            &studio_runtime_store::WorkItemRecord,
+        ) -> studio_runtime_store::StoreResult<serde_json::Value> =
+            crate::work_write::work_item_view;
         let records = json!([
             {"id":"ready","rootId":"lead","status":"ready","dependencies":["accepted","missing"],"title":"Ready"},
             {"id":"accepted","rootId":"lead","status":"accepted","dependencies":[]},
@@ -162,9 +167,15 @@ mod tests {
         ]);
         let result = work_list(
             "lead",
-            records.as_array().expect("work records are an array"),
-        )
-        .expect("checked work projection");
+            &records
+                .as_array()
+                .expect("work records are an array")
+                .iter()
+                .cloned()
+                .map(studio_runtime_store::WorkItemRecord::checked)
+                .collect::<Result<Vec<_>, _>>()
+                .expect("typed records"),
+        );
         assert_eq!(
             result["items"]
                 .as_array()

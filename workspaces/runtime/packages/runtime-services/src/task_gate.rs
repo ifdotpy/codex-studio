@@ -61,7 +61,7 @@ fn revision_command(command: &str, revision: &str) -> Option<String> {
 pub fn admit(
     tx: &Transaction<'_>,
     submitter: &AgentRecord,
-    task: &mut Value,
+    task: &mut studio_runtime_store::WorkItemRecord,
     workspace: Option<&(dyn WorkspaceAdmission + Send + Sync)>,
     state_dir: &Path,
     now: f64,
@@ -70,7 +70,8 @@ pub fn admit(
         return Ok(false);
     };
     let config = normalize(&config)?;
-    let result = task["results"]
+    let mut results = task.value()["results"].clone();
+    let result = results
         .as_array_mut()
         .and_then(|v| v.last_mut())
         .ok_or(MonitorError::Refused("Missing gate submission"))?;
@@ -102,7 +103,7 @@ pub fn admit(
         };
         let mut monitor =
             crate::monitor_runtime::create_in_transaction(tx, &admission, workspace, now)?;
-        monitor["taskGate"] = json!({"taskId":task["id"],"resultId":result_id});
+        monitor["taskGate"] = json!({"taskId":task.id(),"resultId":result_id});
         studio_runtime_store::monitor_runtime::put(tx, monitor.clone())?;
         evidence["status"] = json!("running");
         evidence["monitorId"] = monitor["id"].clone();
@@ -110,11 +111,13 @@ pub fn admit(
     } else {
         evidence["error"] = json!("Acceptance gate workspace was not prepared; submit again");
     }
-    task["results"]
+    results
         .as_array_mut()
         .expect("validated results remain an array")
         .last_mut()
         .expect("validated submission remains present")["gate"] = evidence;
+    task.set("results", results)
+        .map_err(studio_runtime_store::StoreError::from)?;
     Ok(true)
 }
 
@@ -177,9 +180,10 @@ pub fn settle(tx: &Transaction<'_>, monitor: &Value, now: f64) -> Result<bool, M
     let Some(task_id) = binding["taskId"].as_str() else {
         return Err(MonitorError::Refused("Invalid gate task identity"));
     };
-    let Some(mut task) = WorkItemsRepository::work_record(tx, task_id)? else {
+    let Some(task) = WorkItemsRepository::work_record(tx, task_id)? else {
         return Ok(true);
     };
+    let mut task = task.into_value();
     let Some(result) = task["results"].as_array_mut().and_then(|v| v.last_mut()) else {
         return Ok(true);
     };
@@ -219,10 +223,9 @@ pub fn settle(tx: &Transaction<'_>, monitor: &Value, now: f64) -> Result<bool, M
 }
 
 pub fn recover(tx: &Transaction<'_>, now: f64) -> Result<(), MonitorError> {
-    for row in WorkItemsRepository::work(tx)? {
-        let Some(mut task) = WorkItemsRepository::work_record(tx, &row.id)? else {
-            continue;
-        };
+    for task in WorkItemsRepository::work(tx)? {
+        let task_id = task.id().0.clone();
+        let mut task = task.into_value();
         let Some(result) = task["results"].as_array_mut().and_then(|v| v.last_mut()) else {
             continue;
         };
@@ -237,7 +240,7 @@ pub fn recover(tx: &Transaction<'_>, now: f64) -> Result<(), MonitorError> {
         let result = result.clone();
         task["version"] = json!(task["version"].as_u64().unwrap_or_default() + 1);
         task["updated"] = json!(now);
-        WorkItemsRepository::update_work(tx, &row.id, &task)?;
+        WorkItemsRepository::update_work(tx, &task_id, &task)?;
         if task["status"] == "review" {
             notify_review(tx, &task, &result, now)?;
         }

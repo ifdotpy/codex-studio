@@ -187,7 +187,7 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
             typeof body.result === "string"
               ? body.result
               : JSON.stringify(body.result),
-          gateOverrideReason: body.override_reason,
+          gateOverrideReason: body.override_reason ?? undefined,
           by: "lead",
           created: 3,
         });
@@ -216,11 +216,11 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
         assert.ok(body.status);
         const created = {
           ...common,
-          ...body,
           id: "created-task",
           title: body.title,
           description: body.description ?? undefined,
           dependencies: body.dependencies ?? undefined,
+          owner: body.owner,
           version: body.version ?? common.version,
           status: body.status,
           gate: body.gate,
@@ -389,7 +389,10 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
 
 /** The renderer serialized this request schema as JSON before the fixture received it. */
 function fixtureResultSchema(
-  schema: PostBody<"/api/work">["result_schema"],
+  schema: Extract<
+    PostBody<"/api/work">,
+    { action: "create" | "update" }
+  >["result_schema"],
 ):
   | (components["schemas"]["WorkItem"]["resultSchema"] &
       components["schemas"]["JsonValue"])

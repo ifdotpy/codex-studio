@@ -9,12 +9,29 @@ pub const MAX_TIMEOUT_MS: u64 = 3_600_000;
 /// Maximum command or override reason length, in Unicode code points.
 pub const MAX_TEXT_CODEPOINTS: usize = 32_000;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Gate {
     pub command: String,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
+}
+
+/// Supported gate input spellings. Null is represented by the caller's nullable field.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum GateInput {
+    Command(String),
+    Config(Gate),
+}
+
+impl GateInput {
+    pub fn into_value(self) -> Value {
+        match self {
+            Self::Command(command) => json!(command),
+            Self::Config(config) => json!(config),
+        }
+    }
 }
 fn default_timeout() -> u64 {
     DEFAULT_TIMEOUT_MS
@@ -24,13 +41,14 @@ pub fn parse(value: &Value) -> Result<Option<Gate>, &'static str> {
     if value.is_null() {
         return Ok(None);
     }
-    let gate: Gate = if let Some(command) = value.as_str() {
-        Gate {
-            command: command.into(),
+    let input: GateInput =
+        serde_json::from_value(value.clone()).map_err(|_| "Invalid acceptance gate")?;
+    let gate = match input {
+        GateInput::Command(command) => Gate {
+            command,
             timeout_ms: DEFAULT_TIMEOUT_MS,
-        }
-    } else {
-        serde_json::from_value(value.clone()).map_err(|_| "Invalid acceptance gate")?
+        },
+        GateInput::Config(gate) => gate,
     };
     if gate.command.trim().is_empty()
         || gate.command.chars().count() > MAX_TEXT_CODEPOINTS
@@ -83,10 +101,6 @@ pub fn apply_api_contract(document: &mut Value) {
             "output":{"type":"string","maxLength":crate::shared_values::MONITOR_OUTPUT_TAIL_CODEPOINTS},
             "log":{"type":["string","null"]},"error":{"type":["string","null"]},"finished":{"type":"number"}
         },"required":["status","config","cwd","revision","monitorId","exitCode","output","log"]});
-    let input = schemas["WorkBody"]
-        .as_object_mut()
-        .expect("WorkBody schema");
-    apply_tool_contract("orchestration_task", input);
     for name in ["WorkItem", "WorkViewRecordResponse"] {
         schemas[name]["properties"]["gate"] =
             json!({"$ref":"#/components/schemas/TaskAcceptanceGate"});

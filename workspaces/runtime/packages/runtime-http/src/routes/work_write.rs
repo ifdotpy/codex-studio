@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use serde_json::Value;
 use studio_runtime_services::work_write::{
-    self, AcceptWork, ClaimWork, CreateWork, SubmitWork, WorkMutation, WorkWrite, WorkWriteError,
+    self, AcceptWork, SubmitWork, WorkWrite, WorkWriteError,
 };
 
 use crate::error::ApiError;
@@ -148,9 +148,14 @@ pub(crate) async fn perform(
         .filter(|id| !id.is_empty())
         .map(str::to_owned);
     let signature = work_items::work_request_signature(&agent, actor_id.as_deref(), &body)?;
-    if action == "set_default_gate" {
+    let command = studio_runtime_schema::task_command::TaskCommand::parse(&body)
+        .map_err(|message| ApiError::new(StatusCode::BAD_REQUEST, message))?;
+    if let studio_runtime_schema::task_command::TaskCommand::SetDefaultGate { gate } = command {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let gate = body.get("gate").cloned().ok_or_else(invalid_request)?;
+        let gate = gate.map_or(
+            Value::Null,
+            studio_runtime_schema::task_gate::GateInput::into_value,
+        );
         return store
             .transaction_with(move |tx| {
                 studio_runtime_services::task_gate::set_default(
@@ -164,79 +169,9 @@ pub(crate) async fn perform(
             .await
             .map_err(|error| write_error(WorkWriteError::Event(error)));
     }
-    let mut command = match action {
-        "create" => WorkWrite::Create(CreateWork {
-            result_schema: body.get("result_schema").cloned(),
-            gate: body.get("gate").cloned(),
-            actor_id: agent.clone(),
-            title: required_text(&body, "title")?,
-            description: optional_text(&body, "description")?.unwrap_or_default(),
-            owner: body.get("owner").and_then(Value::as_str).map(str::to_owned),
-            status: optional_text(&body, "status")?,
-            dependencies: string_list(&body, "dependencies")?,
-        }),
-        "update" => WorkWrite::Mutate(WorkMutation::Update {
-            result_schema: body.get("result_schema").cloned(),
-            gate: body.get("gate").cloned(),
-            task_id: required_text(&body, "task_id")?,
-            version: version(&body)?,
-            title: optional_text(&body, "title")?,
-            description: optional_text(&body, "description")?,
-            owner: body
-                .get("owner")
-                .map(|value| value.as_str().map(str::to_owned)),
-            status: optional_text(&body, "status")?,
-            dependencies: body
-                .get("dependencies")
-                .map(|_| string_list(&body, "dependencies"))
-                .transpose()?,
-        }),
-        "cancel" => WorkWrite::Mutate(WorkMutation::Cancel {
-            task_id: required_text(&body, "task_id")?,
-            version: version(&body)?,
-            reason: required_text(&body, "reason")?,
-        }),
-        "reject" => WorkWrite::Mutate(WorkMutation::Reject {
-            task_id: required_text(&body, "task_id")?,
-            version: version(&body)?,
-            reason: review_result(&body)?,
-        }),
-        "claim" => WorkWrite::Claim(ClaimWork {
-            task_id: required_text(&body, "task_id")?,
-            version: version(&body)?,
-            claimant_id: body
-                .get("owner")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(|| agent.clone()),
-        }),
-        "submit" => WorkWrite::Submit(SubmitWork {
-            prepared_gate_workspace: None,
-            task_id: required_text(&body, "task_id")?,
-            version: version(&body)?,
-            result: body.get("result").cloned().ok_or_else(|| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "Supply result for this task action",
-                )
-            })?,
-            checks: required_text(&body, "checks")?,
-            revision: required_text(&body, "revision")?,
-            files: string_list(&body, "files")?,
-            prepared_files: None,
-            state_dir: state.state_dir.clone().into(),
-            vm_evidence: None,
-            vm_evidence_request_id: None,
-        }),
-        "accept" => WorkWrite::Accept(AcceptWork {
-            override_reason: optional_text(&body, "override_reason")?,
-            task_id: required_text(&body, "task_id")?,
-            version: version(&body)?,
-            reason: review_result(&body)?,
-            merged_result_id: None,
-        }),
-        _ => return Err(invalid_request()),
-    };
+    let mut command =
+        work_write::task_command(command, agent.clone(), state.state_dir.clone().into())
+            .map_err(|error| write_error(WorkWriteError::Event(error)))?;
     if action == "accept" {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let receipt = work_write::read_work_receipt(
@@ -280,7 +215,7 @@ pub(crate) async fn perform(
                             "Unknown work item",
                         ),
                     )?;
-                if task["rootId"] != actor.root_id.0 {
+                if task.value()["rootId"] != actor.root_id.0 {
                     return Err(
                         studio_runtime_services::event_write::EventWriteError::InvalidRequest(
                             "Unknown task in this team",
@@ -290,7 +225,7 @@ pub(crate) async fn perform(
                 if task.get("gate").is_none_or(Value::is_null) {
                     return Ok(None);
                 }
-                let owner = task["owner"].as_str().unwrap_or(&actor_id);
+                let owner = task.owner().unwrap_or(&actor_id);
                 studio_runtime_services::event_write::checked_agent(tx, owner).map(Some)
             })
             .await
@@ -641,12 +576,12 @@ async fn finalize_accepted_archive(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let work_id = record["id"].as_str().unwrap_or_default().to_owned();
     let work_id_for_read = work_id.clone();
-    let read = store.read_async("runtime-http/routes/work_write", move |connection| -> Result<(Value, AcceptedArchivePreparation, Option<HostGitCheck>), ApiError> {
+    let read = store.read_async("runtime-http/routes/work_write", move |connection| -> Result<(WorkItemRecord, AcceptedArchivePreparation, Option<HostGitCheck>), ApiError> {
         let work = studio_runtime_store::WorkItemsRepository::work_record(connection, &work_id_for_read)
             .map_err(|_| ApiError::internal())?
             .ok_or_else(ApiError::internal)?;
-        let owner_id = work["owner"].as_str().unwrap_or_default().to_owned();
-        let root_id = work["rootId"].as_str().unwrap_or_default().to_owned();
+        let owner_id = work.owner().unwrap_or_default().to_owned();
+        let root_id = work.value()["rootId"].as_str().unwrap_or_default().to_owned();
         if owner_id.is_empty() || owner_id == root_id {
             return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"skipped","reason":"The task owner is the lead or is unassigned"}), false), None));
         }
@@ -661,9 +596,8 @@ async fn finalize_accepted_archive(
         let owner_value = owner.value();
         let open_tasks = studio_runtime_store::WorkItemsRepository::work(connection)?
             .into_iter()
-            .filter_map(|item| item.record.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()))
-            .filter(|item| item["owner"] == owner_id && !matches!(item["status"].as_str(), Some("accepted" | "cancelled")))
-            .filter_map(|item| item["id"].as_str().map(str::to_owned))
+            .filter(|item| item.owner() == Some(owner_id.as_str()) && !matches!(item.status(), studio_runtime_store::WorkStatus::Accepted | studio_runtime_store::WorkStatus::Cancelled))
+            .map(|item| item.id().0.clone())
             .collect::<Vec<_>>();
         if !open_tasks.is_empty() {
             return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":"The owner has another open task","tasks":open_tasks.into_iter().take(20).collect::<Vec<_>>(),"retryable":true}), true), None));
@@ -676,7 +610,7 @@ async fn finalize_accepted_archive(
         }) {
             return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":"The remote worker workspace requires review on its own server"}), false), None));
         }
-        let latest = work["results"].as_array().and_then(|values| values.last()).cloned().unwrap_or(Value::Null);
+        let latest = work.value()["results"].as_array().and_then(|values| values.last()).cloned().unwrap_or(Value::Null);
         let revision = latest["revision"].as_str().unwrap_or_default();
         let execution_mode = owner_value.get("executionMode").and_then(Value::as_str).unwrap_or_default();
         // A host owner's Git checks run after this read ends.
@@ -736,7 +670,7 @@ async fn finalize_accepted_archive(
         }
         (work, preparation, _) => (work, preparation),
     };
-    let (mut work, outcome, retryable) = match result {
+    let (work, outcome, retryable) = match result {
         (work, AcceptedArchivePreparation::Finished(outcome, retryable)) => {
             (work, outcome, retryable)
         }
@@ -780,6 +714,7 @@ async fn finalize_accepted_archive(
             (work, outcome, retryable)
         }
     };
+    let mut work = work.into_value();
     let archive_result_id = work["decisions"]
         .as_array()
         .and_then(|values| values.last())
@@ -926,7 +861,10 @@ async fn finalize_accepted_archive(
                         studio_runtime_store::StoreError::RecordContract("work decision event")
                     })?;
                 }
-                let mut response = studio_runtime_services::work_write::work_item_view(tx, &work)?;
+                let mut response = studio_runtime_services::work_write::work_item_view(
+                    tx,
+                    &WorkItemRecord::checked(work.clone())?,
+                )?;
                 response["archive"] = work["archive"].clone();
                 response["archivePending"] = Value::Bool(retryable);
                 if let Some(object) = response.as_object_mut() {
@@ -986,93 +924,23 @@ pub(super) fn write_error(error: WorkWriteError) -> ApiError {
 }
 
 /// Python `codex_work.py` refuses a review decision without its text by this name.
-const REVIEW_RESULT_REQUIRED: &str =
-    "Supply result with 1 to 32000 characters for accept or reject";
-
-fn required_text(body: &Value, field: &str) -> Result<String, ApiError> {
-    body.get(field)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            // Name the field so the caller can correct the request.
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                format!("Supply {field} as text for this task action"),
-            )
-        })
-}
-
-/// The review decision text of accept and reject.
-fn review_result(body: &Value) -> Result<String, ApiError> {
-    body.get("result")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, REVIEW_RESULT_REQUIRED))
-}
-
-fn optional_text(body: &Value, field: &str) -> Result<Option<String>, ApiError> {
-    body.get(field)
-        .map(|value| {
-            value
-                .as_str()
-                .map(str::to_owned)
-                .ok_or_else(invalid_request)
-        })
-        .transpose()
-}
-
-fn string_list(body: &Value, field: &str) -> Result<Vec<String>, ApiError> {
-    match body.get(field) {
-        None => Ok(Vec::new()),
-        Some(Value::Array(values)) => values
-            .iter()
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(str::to_owned)
-                    .ok_or_else(invalid_request)
-            })
-            .collect(),
-        Some(_) => Err(invalid_request()),
-    }
-}
-
-fn version(body: &Value) -> Result<Option<i64>, ApiError> {
-    let Some(value) = body.get("version") else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(None);
-    }
-    let number = value.as_number().ok_or_else(invalid_request)?;
-    if let Some(value) = number.as_i64() {
-        return Ok(Some(value));
-    }
-    let value = number.as_f64().ok_or_else(invalid_request)?;
-    if value.is_finite()
-        && value.fract() == 0.0
-        && value >= i64::MIN as f64
-        && value < 9_223_372_036_854_775_808.0
-    {
-        Ok(Some(value as i64))
-    } else {
-        Err(invalid_request())
-    }
-}
-
-fn invalid_request() -> ApiError {
-    ApiError::new(StatusCode::BAD_REQUEST, "Invalid request")
-}
+#[cfg(test)]
+const REVIEW_RESULT_REQUIRED: &str = studio_runtime_schema::task_command::REVIEW_RESULT_REQUIRED;
 
 #[cfg(test)]
 mod tests {
-    use super::version;
     use serde_json::json;
+    use studio_runtime_schema::task_command::Version;
 
     #[test]
     fn integral_decimal_version_keeps_its_stale_value() {
-        assert!(matches!(version(&json!({"version": 0.0})), Ok(Some(0))));
-        assert!(version(&json!({"version": 1.5})).is_err());
+        assert_eq!(
+            serde_json::from_value::<Version>(json!(0.0))
+                .expect("integral version")
+                .0,
+            0
+        );
+        assert!(serde_json::from_value::<Version>(json!(1.5)).is_err());
     }
 }
 #[cfg(test)]
@@ -1128,6 +996,50 @@ mod managed_work_port_tests {
 
     fn schema() -> Value {
         json!({"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false})
+    }
+
+    #[tokio::test]
+    async fn task_command_ingress_preserves_receipt_body_and_owner_presence() {
+        let (state, _store, _directory) = state().await;
+        let port = managed_work_port(state, None);
+        let created = written(port.act("lead", &json!({"action":"create","title":"Typed ingress","description":"x".repeat(64000),"owner":"worker"}), "typed-create").await);
+        let task = &created["id"];
+        let update =
+            json!({"action":"update","task_id":task,"version":1.0,"description":"Changed"});
+        let updated = written(port.act("lead", &update, "typed-update").await);
+        assert_eq!(
+            updated["owner"], "worker",
+            "omitted owner retains assignment"
+        );
+        assert_eq!(
+            written(port.act("lead", &update, "typed-update").await),
+            updated
+        );
+        let mut changed = update;
+        changed["version"] = json!(1);
+        assert!(
+            matches!(port.act("lead", &changed, "typed-update").await,
+            WorkActionOutcome::Refused(message) if message.contains("different content")),
+            "decimal spelling remains part of the original receipt signature"
+        );
+        let cleared = written(
+            port.act(
+                "lead",
+                &json!({"action":"update","task_id":task,"version":2.0,"owner":null}),
+                "typed-clear",
+            )
+            .await,
+        );
+        assert_eq!(cleared["owner"], Value::Null);
+        assert!(matches!(
+            port.act(
+                "lead",
+                &json!({"action":"update","task_id":task,"owner":42}),
+                "typed-malformed"
+            )
+            .await,
+            WorkActionOutcome::Refused(_)
+        ));
     }
 
     #[tokio::test]
@@ -1434,9 +1346,9 @@ mod managed_work_port_tests {
             .await
             .expect("read")
             .expect("task");
-        assert_eq!(saved["version"], before["version"]);
-        assert_eq!(saved["status"], before["status"]);
-        assert_eq!(saved["results"], before["results"]);
+        assert_eq!(saved.value()["version"], before["version"]);
+        assert_eq!(serde_json::json!(saved.status()), before["status"]);
+        assert_eq!(saved.value()["results"], before["results"]);
         assert!(saved.get("submissionRefusal").is_none());
         let mut valid = args;
         valid["result"] = json!({"count":7});
@@ -1764,7 +1676,7 @@ mod managed_work_port_tests {
                 .expect("task query succeeds")
                 .expect("created task exists");
             assert!(
-                unchanged["results"]
+                unchanged.value()["results"]
                     .as_array()
                     .expect("task results")
                     .is_empty()
@@ -1827,8 +1739,16 @@ mod managed_work_port_tests {
                 .await
                 .expect("task query succeeds")
                 .expect("created task exists");
-            assert_eq!(unchanged["version"], submitted["version"], "{action}");
-            assert_eq!(unchanged["status"], submitted["status"], "{action}");
+            assert_eq!(
+                unchanged.value()["version"],
+                submitted["version"],
+                "{action}"
+            );
+            assert_eq!(
+                serde_json::json!(unchanged.status()),
+                submitted["status"],
+                "{action}"
+            );
             let allowed = written(
                 port.act("lead", &args, &format!("auth-lead-{action}"))
                     .await,
@@ -1862,8 +1782,12 @@ mod managed_work_port_tests {
                 let mut record =
                     studio_runtime_store::WorkItemsRepository::work_record(tx, &creator_task)?
                         .expect("created task exists");
-                record["createdBy"] = json!("worker");
-                studio_runtime_store::WorkItemsRepository::update_work(tx, &creator_task, &record)
+                record.set("createdBy", json!("worker"))?;
+                studio_runtime_store::WorkItemsRepository::update_work(
+                    tx,
+                    &creator_task,
+                    record.value(),
+                )
             })
             .await
             .expect("task creator updates");
