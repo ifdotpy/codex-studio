@@ -154,8 +154,8 @@ type ProjectionState = {
 
 type StateProjectionPayload = Snapshot | null;
 
-export type TranscriptProjectionPayload =
-  import("./transcriptCache").CachedTranscript["payload"];
+import type { TranscriptProjectionPayload } from "../apiTypes.ts";
+export type { TranscriptProjectionPayload } from "../apiTypes.ts";
 
 import { clearTranscript } from "./transcriptCache";
 export type SyncClientOptions = {

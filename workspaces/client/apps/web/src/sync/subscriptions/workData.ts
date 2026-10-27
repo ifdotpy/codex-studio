@@ -1,18 +1,8 @@
 import type { DeepReadonly } from "rxdb";
-import type { KnownApiFields } from "../../apiTypes";
-import type {
-  SyncEntityPayload as MutableSyncEntityPayload,
-  components,
-} from "../../generated/api";
+import type { SyncEntityPayload as MutableSyncEntityPayload } from "../../generated/api";
+import type { ReviewTask, WorkList } from "./contracts.ts";
+export type { ReviewTask, WorkList } from "./contracts.ts";
 type SyncEntityPayload = DeepReadonly<MutableSyncEntityPayload>;
-export type ReviewTask = DeepReadonly<
-  KnownApiFields<components["schemas"]["WorkItem"]>
->;
-export type WorkList = Omit<
-  DeepReadonly<components["schemas"]["WorkList"]>,
-  "items" | "tasks"
-> &
-  Record<"items" | "tasks", ReviewTask[]>;
 
 type History = Extract<
   SyncEntityPayload,

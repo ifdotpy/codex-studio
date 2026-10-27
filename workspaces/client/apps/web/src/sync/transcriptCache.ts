@@ -1,8 +1,10 @@
 import { createFrameBatch } from "./frameBatch";
 
-import type { TranscriptPageData } from "../types";
-type TranscriptPayload = Omit<Partial<TranscriptPageData>, "items"> &
-  Pick<TranscriptPageData, "items">;
+import type {
+  TranscriptPageData,
+  TranscriptProjectionPayload,
+} from "../apiTypes.ts";
+type TranscriptPayload = NonNullable<TranscriptProjectionPayload>;
 type TranscriptItem = TranscriptPageData["items"][number];
 export type CachedTranscript = {
   payload: TranscriptPayload | null;

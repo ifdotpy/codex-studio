@@ -52,6 +52,12 @@ export type TranscriptPageData = Omit<
   items: TranscriptWireItem[];
 };
 
+/** Local transcript pages require items but may omit server page metadata. */
+export type TranscriptProjectionPayload =
+  | (Omit<Partial<TranscriptPageData>, "items"> &
+      Pick<TranscriptPageData, "items">)
+  | null;
+
 export type ApiMethod = "get" | "post";
 
 export type ApiPathsFor<M extends ApiMethod> = PathsWithMethod<paths, M> &
