@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use studio_runtime_store::{RuntimeStore, StoreError};
 
 #[tokio::test]
-async fn open_recreates_entity_scope_indexes_on_existing_state() {
+async fn open_removes_retired_entity_scope_fingerprint_indexes() {
     let directory = temporary_state("entity-scope-index");
     drop(
         RuntimeStore::open(Some(directory.path()))
@@ -17,7 +17,7 @@ async fn open_recreates_entity_scope_indexes_on_existing_state() {
     let connection = Connection::open(directory.path().join("canvas.sqlite3")).expect("canvas");
     connection
         .execute_batch(
-            "DROP INDEX sync_entities_live_agent_scope; DROP INDEX sync_entities_live_root_scope; DROP INDEX sync_entities_invalid_payload;",
+            "CREATE INDEX IF NOT EXISTS sync_entities_live_agent_scope ON sync_entities(collection,id); CREATE INDEX IF NOT EXISTS sync_entities_live_root_scope ON sync_entities(collection,id); CREATE INDEX IF NOT EXISTS sync_entities_invalid_payload ON sync_entities(collection,id);",
         )
         .expect("old catalog");
     drop(connection);
@@ -28,7 +28,10 @@ async fn open_recreates_entity_scope_indexes_on_existing_state() {
     );
     let connection = Connection::open(directory.path().join("canvas.sqlite3")).expect("canvas");
     let count: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('sync_entities_live_agent_scope','sync_entities_live_root_scope','sync_entities_invalid_payload')", [], |row| row.get(0)).expect("catalog");
-    assert_eq!(count, 3);
+    assert_eq!(
+        count, 0,
+        "retired fingerprint indexes must not survive reopen"
+    );
 }
 
 #[tokio::test]

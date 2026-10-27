@@ -24,12 +24,10 @@ CREATE INDEX IF NOT EXISTS sync_entities_seq ON sync_entities(seq);
 CREATE INDEX IF NOT EXISTS sync_entities_collection_seq ON sync_entities(collection,seq);
 CREATE INDEX IF NOT EXISTS sync_entities_non_transcript_seq ON sync_entities(seq)
         WHERE collection NOT LIKE 'transcript:%';
-CREATE INDEX IF NOT EXISTS sync_entities_live_root_scope ON sync_entities(json_extract(payload,'$.value.rootId'),collection,seq)
-        WHERE deleted=0 AND collection NOT LIKE 'transcript:%' AND json_valid(payload);
-CREATE INDEX IF NOT EXISTS sync_entities_live_agent_scope ON sync_entities(json_extract(payload,'$.value.agent'),collection,seq)
-        WHERE deleted=0 AND collection NOT LIKE 'transcript:%' AND json_valid(payload);
-CREATE INDEX IF NOT EXISTS sync_entities_invalid_payload ON sync_entities(collection,id)
-        WHERE deleted=0 AND collection NOT LIKE 'transcript:%' AND NOT json_valid(payload);
+-- Retired subscription fingerprints must not keep maintaining their private indexes.
+DROP INDEX IF EXISTS sync_entities_live_root_scope;
+DROP INDEX IF EXISTS sync_entities_live_agent_scope;
+DROP INDEX IF EXISTS sync_entities_invalid_payload;
 CREATE INDEX IF NOT EXISTS sync_entities_collection_deleted
         ON sync_entities(collection,deleted);
 CREATE INDEX IF NOT EXISTS sync_entities_tombstone_order

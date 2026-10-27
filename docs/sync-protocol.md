@@ -99,10 +99,14 @@ does not apply a partial interval or cursor. Older browser HTTP recovery does no
 provide the typed stream's durable cursor proof. Supported lock-enabled clients
 need no fallback GET for large entity intervals.
 
-Entity change fingerprints cover every selected row, including rows beyond the
-stream's bounded initial page. The store hashes ordered identities and durable
-sequences using the same scope filter as delivery; unrelated view changes stay
-suppressed without hiding a newly appended worker or a changed team member.
+Entity subscriptions read only rows after their last delivered sequence through
+the `(collection, seq)` index, including sequence-bearing deletion tombstones.
+Empty live intervals stay suppressed without advancing the delivered cursor;
+reconnect still acknowledges the client's durable cursor with an empty delta.
+No selected collection is rehashed. The explicit exception is an ownership or
+team-membership movement detected by the indexed visibility fence: it replaces
+that affected scope so entities that left it are removed from the client.
+Missing or expired cursors likewise require a replacement baseline.
 
 Transcript history uses a typed `transcript` reference with an optional `tail`
 window. Its [default item count](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs)

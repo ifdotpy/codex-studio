@@ -8,7 +8,6 @@ use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::{
     SYNC_ENTITY_STREAM_MAX_DOCUMENTS, SYNC_STREAM_EVENT_MAX_BYTES,
 };
-use studio_runtime_schema::sync_protocol::subscription_entity_scopes;
 use studio_runtime_store::SyncDocumentsRepository;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -37,14 +36,7 @@ impl TransferReader {
 }
 
 pub(super) fn owns(resource: &ResourceRef) -> bool {
-    serde_json::to_value(resource)
-        .ok()
-        .and_then(|value| {
-            value["kind"]
-                .as_str()
-                .map(|kind| subscription_entity_scopes().contains_key(kind))
-        })
-        .unwrap_or(false)
+    super::subscription_entities::selection(resource).is_some()
 }
 
 /// The same per-scope cursor is used for the next delta; no changed notification
@@ -74,6 +66,20 @@ pub(super) async fn attach(
             .filter(|cursor| cursor.workspace_id == state.workspace_id)
             .cloned();
         let (entry, reader, cursor) = prepare(state, event, resource.clone(), cursor).await?;
+        if matches!(
+            event.reason,
+            crate::generated::ResourceChangeEventReason::Change
+        ) && entry.as_ref().is_some_and(|entry| {
+            entry.reply_kind == Some(crate::generated::SubscriptionReplyKind::Delta)
+                && entry
+                    .entity_changes
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .is_some_and(|batch| batch.documents.is_empty())
+        }) {
+            // Keep the delivered base: the client never received this empty interval.
+            continue;
+        }
         sequences.insert(key, cursor);
         if let Some(reader) = reader {
             readers.push(reader);
@@ -101,23 +107,12 @@ async fn prepare(
     ),
     ApiError,
 > {
-    let reference = serde_json::to_value(&resource).map_err(|_| ApiError::internal())?;
-    let scope = subscription_entity_scopes()
-        .get(reference["kind"].as_str().ok_or_else(ApiError::internal)?)
-        .ok_or_else(ApiError::internal)?
-        .clone();
+    let (scope, id, agent) =
+        super::subscription_entities::selection(&resource).ok_or_else(ApiError::internal)?;
     let collections =
         serde_json::to_string(&scope.collections).map_err(|_| ApiError::internal())?;
-    let id = scope
-        .id_field
-        .as_deref()
-        .and_then(|field| reference[field].as_str())
-        .map(str::to_owned);
-    let agent = scope
-        .agent_field
-        .as_deref()
-        .and_then(|field| reference[field].as_str())
-        .map(str::to_owned);
+    let id = id.map(str::to_owned);
+    let agent = agent.map(str::to_owned);
     let workspace = state.workspace_id.clone();
     let epoch = event.epoch.clone();
     let revision = event.revision;
@@ -125,6 +120,8 @@ async fn prepare(
     let validators = state.validators.clone();
     state.store.as_ref().ok_or_else(ApiError::internal)?.read_async("runtime-http/entity-transfer", move |tx| {
         let after = since.as_ref().map(|cursor| cursor.seq);
+        // Only actual ownership/team movement or expired cursors replace a scope.
+        // Ordinary writes and tombstones retain indexed sequence deltas.
         let visibility = agent.as_deref().map(|agent| SyncDocumentsRepository::entity_scope_visibility_revision(tx, &collections, agent, scope.include_team_members)).transpose().map_err(|_| ApiError::internal())?.unwrap_or(0);
         let after = after.filter(|after| *after >= visibility);
         let mut page = SyncDocumentsRepository::resume_entity_scope(tx, after, Some(&collections), id.as_deref(), agent.as_deref(), scope.include_team_members, SYNC_ENTITY_STREAM_MAX_DOCUMENTS).map_err(|_| ApiError::internal())?;
@@ -305,6 +302,145 @@ mod tests {
             .expect("bounded frame")
             .to_vec()
     }
+    #[tokio::test]
+    async fn reconnect_seq_cursor_delivers_exact_changes_and_empty_live_intervals_are_suppressed() {
+        let (_directory, state) = fixture().await;
+        let store = state.store.as_ref().expect("store");
+        let resource = ResourceRef::StateResource(crate::generated::StateResource {
+            kind: crate::generated::StateResourceKind::State,
+        });
+        let (_, _, baseline) = prepare(&state, &event(&state), resource.clone(), None)
+            .await
+            .expect("baseline");
+        store
+            .transaction(|tx| {
+                for index in 0..3 {
+                    SyncDocumentsRepository::put_entity(
+                        tx,
+                        "workspace",
+                        &format!("change-{index}"),
+                        json!({"stateDir":"changed"}),
+                        false,
+                    )?;
+                }
+                SyncDocumentsRepository::put_entity(tx, "workspace", "removed", json!({}), true)?;
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "agentDetail",
+                    "unrelated",
+                    json!({}),
+                    false,
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("four scoped changes while disconnected");
+        let (entry, _, cursor) = prepare(
+            &state,
+            &event(&state),
+            resource.clone(),
+            Some(baseline.clone()),
+        )
+        .await
+        .expect("reconnect");
+        let candidate = entry.expect("inline delta");
+        let batch = candidate
+            .entity_changes
+            .as_ref()
+            .and_then(Option::as_ref)
+            .expect("changes");
+        assert_eq!(batch.after, baseline.seq);
+        assert_eq!(
+            batch.documents.len(),
+            4,
+            "exactly the missed changes, including deletion"
+        );
+        assert_eq!(batch.documents[3].id, "removed");
+        assert_eq!(
+            batch.documents[3].op,
+            crate::generated::SyncEntityOp::Delete
+        );
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "agentDetail",
+                    "unrelated",
+                    json!({"ignored":true}),
+                    false,
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("unrelated notification");
+        let mut live = event(&state);
+        live.reason = crate::generated::ResourceChangeEventReason::Change;
+        live.resources.push(resource.clone());
+        live.resource_versions.push(candidate.clone());
+        let mut cursors = BTreeMap::from([(
+            serde_json::to_string(&resource).expect("key"),
+            cursor.clone(),
+        )]);
+        let readers = attach(&state, &mut live, &BTreeMap::new(), &mut cursors)
+            .await
+            .expect("empty live interval");
+        assert!(readers.is_empty());
+        assert!(
+            live.resources.is_empty(),
+            "an empty live delta must not notify a consumer"
+        );
+        assert_eq!(
+            cursors.values().next().expect("retained cursor").seq,
+            cursor.seq,
+            "a suppressed interval cannot silently advance the delivered base"
+        );
+        let (reconnected, _, _) = prepare(
+            &state,
+            &event(&state),
+            resource.clone(),
+            Some(cursor.clone()),
+        )
+        .await
+        .expect("current reconnect");
+        assert!(
+            reconnected
+                .expect("reconnect acknowledgement")
+                .entity_changes
+                .flatten()
+                .expect("empty delta")
+                .documents
+                .is_empty()
+        );
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "workspace",
+                    "later",
+                    json!({"stateDir":"later"}),
+                    false,
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("later visible change");
+        live.resources.push(resource.clone());
+        live.resource_versions.push(candidate);
+        attach(&state, &mut live, &BTreeMap::new(), &mut cursors)
+            .await
+            .expect("later delta");
+        let later = live.resource_versions[0]
+            .entity_changes
+            .as_ref()
+            .and_then(Option::as_ref)
+            .expect("later batch");
+        assert_eq!(
+            later.after, cursor.seq,
+            "client's durable base survives the suppressed notification"
+        );
+        assert_eq!(later.documents.len(), 1);
+    }
+
     #[tokio::test]
     async fn spool_frame_is_emitted_without_reencoding() {
         let mut file = tempfile::tempfile().expect("spool");
