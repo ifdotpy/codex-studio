@@ -3575,6 +3575,28 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         1
     );
     let (_query_watcher, mut query_events) = watch_file_changes(&queries);
+    assert_eq!(
+        app.clone()
+            .oneshot(direct_message_post(
+                &agent_id,
+                "af0f4452-3117-4d5a-b011-4f67d4efe18f",
+                "orchestration-peers",
+            ))
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    wait_for_durable_agent_status(&fixture, &agent_id, "completed").await;
+    let managed_calls: i64 = fixture.store.test_reader().unwrap().query_row(
+        "SELECT count(*) FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.tool')='orchestration_peers' AND json_extract(record,'$.stage')='completed' AND json_extract(record,'$.result.success')=1",
+        [&agent_id],
+        |row| row.get(0),
+    ).unwrap();
+    assert_eq!(
+        managed_calls, 1,
+        "the direct Claude bridge receives one successful managed callback answer"
+    );
     // A loaded thread with unchanged settings keeps its live query for the
     // next turn. Changed thread settings resume it in a new query, which the
     // in-flight restart below observes.

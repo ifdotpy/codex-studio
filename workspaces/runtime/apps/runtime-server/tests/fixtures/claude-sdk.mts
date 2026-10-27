@@ -561,6 +561,18 @@ export function query({
           )
             throw new Error("Missing multi answer");
         }
+        if (text.startsWith("orchestration-peers")) {
+          const peersTool = options.mcpServers?.studio?.tools.find(
+            (candidate) => candidate.name === "orchestration_peers",
+          );
+          assert.ok(peersTool, "Fixture requires the managed peers tool");
+          const result = await peersTool.call({}, { signal: turnSignal });
+          assert.notEqual(result.isError, true, "Managed peers must succeed");
+          assert.ok(
+            result.content.length,
+            "Managed peers must return a result",
+          );
+        }
         if (text === "tool") {
           const tool = options.mcpServers?.studio?.tools[0];
           assert.ok(tool, "Fixture requires a Studio tool");
