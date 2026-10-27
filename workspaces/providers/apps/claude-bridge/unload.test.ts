@@ -64,6 +64,7 @@ test("a settled turn's unload ends its CLI and the next turn resumes the session
   assert.equal(second.params.turn.status, "completed");
   const events = await log(bridge);
   const [started, resumed] = events.filter((event) => event.query);
+  assert.ok(started && resumed);
 
   assert.equal(started.query!.resume, null);
   assert.ok(started.query!.sessionId);

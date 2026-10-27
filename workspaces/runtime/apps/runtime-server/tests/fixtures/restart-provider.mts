@@ -10,14 +10,30 @@ import path from "node:path";
 import readline from "node:readline";
 
 // Requests come from the parent Rust witness; retain its JSON payload unchanged.
+type FixtureRequest = Record<string, JsonValue> & { id?: JsonValue } & (
+    | { method: "command/exec"; params: { processId: string } }
+    | {
+        method: "thread/resume" | "turn/start";
+        params: { threadId: string };
+      }
+    | {
+        method: "turn/interrupt";
+        params: { threadId: string; turnId: string };
+      }
+    | {
+        method:
+          | "initialize"
+          | "initialized"
+          | "config/read"
+          | "model/list"
+          | "thread/backgroundTerminals/clean";
+        params?: Record<string, JsonValue>;
+      }
+  );
 function parseFixtureRequest(line: string) {
-  return JSON.parse(line) as Record<string, JsonValue> & {
-    params?: Record<string, JsonValue> & {
-      clientInfo?: Record<string, JsonValue>;
-    };
-  };
+  return JSON.parse(line) as FixtureRequest;
 }
-const root = path.dirname(fs.realpathSync(process.argv[1]));
+const root = import.meta.dirname;
 const log = path.join(root, "requests.jsonl");
 const pendingExec = new Map<JsonValue, JsonValue>();
 const runningTurns = new Map<JsonValue, JsonValue>();
@@ -59,34 +75,36 @@ setInterval(() => {
 
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const request = parseFixtureRequest(line);
-  const params = request.params ?? {};
   // The trailing newline publishes a complete request to the Rust witness.
   fs.appendFileSync(log, `${line}\n`);
-  if (!Object.hasOwn(request, "id")) return;
+  if (!("id" in request)) return;
   const method = request.method;
 
   if (method === "command/exec") {
-    pendingExec.set(request.id, params.processId);
+    pendingExec.set(request.id, request.params.processId);
     return;
   }
   let result = {};
-  if (method === "thread/resume") result = { thread: { id: params.threadId } };
+  if (method === "thread/resume")
+    result = { thread: { id: request.params.threadId } };
   else if (method === "turn/start") {
-    const turnId = `turn-${params.threadId}`;
-    runningTurns.set(params.threadId, turnId);
+    const { threadId } = request.params;
+    const turnId = `turn-${threadId}`;
+    runningTurns.set(threadId, turnId);
     result = { turn: { id: turnId } };
     send({ id: request.id, result });
     notify("turn/started", {
-      threadId: params.threadId,
+      threadId,
       turn: { id: turnId, status: "inProgress" },
     });
     return;
   } else if (method === "turn/interrupt") {
-    runningTurns.delete(params.threadId);
+    const { threadId, turnId } = request.params;
+    runningTurns.delete(threadId);
     send({ id: request.id, result: {} });
     notify("turn/completed", {
-      threadId: params.threadId,
-      turn: { id: params.turnId, status: "interrupted" },
+      threadId,
+      turn: { id: turnId, status: "interrupted" },
     });
     return;
   } else if (method === "config/read") result = { config: {} };

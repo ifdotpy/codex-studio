@@ -181,7 +181,7 @@ export default function AgentPhase({
       role="status"
       data-phase={phase}
       data-wait-state={waiting ? (wait?.live ? "live" : "ended") : undefined}
-      data-agent-provider={agent.provider || "codex"}
+      data-agent-provider={agent.provider || ""}
     >
       {liveWait ? (
         <span className="phase-dots wait-dots" aria-hidden="true">

@@ -453,10 +453,12 @@ export default function HistoryWindow({
   return (
     <div ref={body} className="history-window" data-history-window>
       {indices.map((index) => {
-        const gap = offsets[index] - offsets[previous];
+        // Indices come from rows; offsets contains each row boundary plus its end.
+        const row = rows[index]!;
+        const gap = offsets[index]! - offsets[previous]!;
         previous = index + 1;
         return (
-          <Fragment key={rows[index].id}>
+          <Fragment key={row.id}>
             {gap > 0 && (
               <div
                 className="history-window-spacer"
@@ -464,18 +466,15 @@ export default function HistoryWindow({
                 aria-hidden="true"
               />
             )}
-            <div
-              className="history-window-row"
-              data-history-row={rows[index].id}
-            >
-              {render(rows[index], revealedMessage)}
+            <div className="history-window-row" data-history-row={row.id}>
+              {render(row, revealedMessage)}
             </div>
           </Fragment>
         );
       })}
       <div
         className="history-window-spacer"
-        style={{ height: offsets[rows.length] - offsets[previous] }}
+        style={{ height: offsets[rows.length]! - offsets[previous]! }}
         aria-hidden="true"
       />
     </div>

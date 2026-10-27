@@ -31,7 +31,7 @@ function fallback(
 }
 
 function headerPath(header: string): string {
-  const text = header.slice(4).split("\t")[0];
+  const [text = ""] = header.slice(4).split("\t");
   // Git quotes paths containing special characters. Decode only valid escapes.
   let path = text;
   if (text.startsWith('"')) {
@@ -63,7 +63,7 @@ function parseFile(source: string, requestedPath: string): FileDiff {
   let added = 0,
     removed = 0;
   for (let i = 0; i < input.length; i++) {
-    const text = input[i];
+    const text = input[i]!;
     if (
       text.startsWith("--- ") &&
       input[i + 1]?.startsWith("+++ ") &&
@@ -71,7 +71,7 @@ function parseFile(source: string, requestedPath: string): FileDiff {
       !hasHunks
     ) {
       oldPath = headerPath(text);
-      newPath = headerPath(input[i + 1]);
+      newPath = headerPath(input[i + 1]!);
       if (!oldPath || !newPath) return result;
       result.path =
         requestedPath || (oldPath === "/dev/null" ? newPath : oldPath);
@@ -118,7 +118,7 @@ function parseFile(source: string, requestedPath: string): FileDiff {
       i++;
       let canMark = false;
       for (; i < input.length; i++) {
-        const body = input[i];
+        const body = input[i]!;
         if (body === "\\ No newline at end of file") {
           if (!canMark) return result;
           lines.push({ kind: "meta", text: body });
@@ -145,7 +145,7 @@ function parseFile(source: string, requestedPath: string): FileDiff {
     }
     if (metadata.test(text) && !hasHunks) {
       const samePath = text.match(/^diff --git a\/(.+) b\/\1$/);
-      if (samePath) result.path ||= samePath[1];
+      if (samePath?.[1]) result.path ||= samePath[1];
       if (text.startsWith("new file mode ")) emptyKind = "add";
       if (text.startsWith("deleted file mode ")) emptyKind = "delete";
       if (text.startsWith("rename from ")) renameFrom = text.slice(12);
@@ -177,7 +177,7 @@ export function unifiedDiff(source: string, path = ""): FileDiff[] {
     newLeft = 0,
     seenHeader = false;
   for (let i = 0; i < input.length; i++) {
-    const text = input[i];
+    const text = input[i]!;
     const gitStart = text.startsWith("diff --git ");
     const pairStart =
       oldLeft === 0 &&
@@ -202,7 +202,7 @@ export function unifiedDiff(source: string, path = ""): FileDiff[] {
       } else if (text.startsWith("-")) oldLeft--;
       else if (text.startsWith("+")) newLeft--;
     }
-    chunk.push(rawLines[i]);
+    chunk.push(rawLines[i]!);
   }
   if (chunk.length) chunks.push(chunk.join(""));
   return chunks.map((part) => parseFile(part, chunks.length === 1 ? path : ""));
@@ -312,7 +312,7 @@ export function changeLabel(files: FileDiff[], status: string): string {
   if (status !== "completed") return "File changes";
   if (files.length !== 1)
     return files.length ? `Edited ${files.length} files` : "Edited files";
-  const file = files[0];
+  const file = files[0]!;
   const verb =
     file.kind === "add"
       ? "Added"

@@ -1,6 +1,7 @@
 //! Durable per-account model catalog entities.
 
 use serde_json::{Value, json};
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_services::model_catalog::ChangeCallback;
 use studio_runtime_store::{RuntimeStore, StoreError, SyncDocumentsRepository, Transaction};
 use tokio::sync::mpsc;
@@ -13,7 +14,7 @@ const MODEL_ID_SEPARATOR: &str = ":";
 enum ModelPublication {
     Catalog {
         account: String,
-        provider: String,
+        provider: ProviderKind,
         catalog: Option<Value>,
     },
     #[cfg(test)]
@@ -50,7 +51,7 @@ fn start_publisher(
                             publish_catalog(
                                 transaction,
                                 &publication_account,
-                                &provider,
+                                provider,
                                 catalog.as_ref(),
                             )
                         })
@@ -76,7 +77,7 @@ fn start_publisher(
     let callback: ChangeCallback = std::sync::Arc::new(move |account, _home, provider, catalog| {
         let publication = ModelPublication::Catalog {
             account: account.to_owned(),
-            provider: provider.to_owned(),
+            provider,
             catalog,
         };
         if callback_sender.send(publication).is_err() {
@@ -89,7 +90,7 @@ fn start_publisher(
 fn publish_catalog(
     transaction: &Transaction<'_>,
     account: &str,
-    provider: &str,
+    provider: ProviderKind,
     catalog: Option<&Value>,
 ) -> Result<bool, StoreError> {
     let prefix = format!("{account}{MODEL_ID_SEPARATOR}");
@@ -113,7 +114,7 @@ fn publish_catalog(
                 continue;
             };
             value.insert("accountKey".into(), Value::String(account.to_owned()));
-            value.insert("provider".into(), Value::String(provider.to_owned()));
+            value.insert("provider".into(), json!(provider));
             value.insert("catalogPosition".into(), json!(position));
             changed |= SyncDocumentsRepository::put_entity(
                 transaction,
@@ -169,19 +170,28 @@ mod tests {
         ]});
         assert!(
             store
-                .transaction_with(move |tx| publish_catalog(tx, "one", "codex", Some(&initial)))
+                .transaction_with(move |tx| publish_catalog(
+                    tx,
+                    "one",
+                    ProviderKind::Codex,
+                    Some(&initial)
+                ))
                 .await
                 .expect("catalog publishes")
         );
         let second_account = json!({"data":[{"model":"alpha","hidden":false}]});
         store
-            .transaction_with(move |tx| publish_catalog(tx, "two", "claude", Some(&second_account)))
+            .transaction_with(move |tx| {
+                publish_catalog(tx, "two", ProviderKind::Claude, Some(&second_account))
+            })
             .await
             .expect("second account publishes");
 
         let replacement = json!({"data":[{"model":"alpha","hidden":true}]});
         store
-            .transaction_with(move |tx| publish_catalog(tx, "one", "codex", Some(&replacement)))
+            .transaction_with(move |tx| {
+                publish_catalog(tx, "one", ProviderKind::Codex, Some(&replacement))
+            })
             .await
             .expect("catalog replacement publishes");
 
@@ -238,7 +248,7 @@ mod tests {
         callback(
             "one:child",
             "",
-            "codex",
+            ProviderKind::Codex,
             Some(json!({"data":[
                 {"model":"child-model","hidden":false}
             ]})),
@@ -246,7 +256,7 @@ mod tests {
         callback(
             "one",
             "",
-            "codex",
+            ProviderKind::Codex,
             Some(json!({"data":[
                 {"model":"old-model","hidden":false}
             ]})),
@@ -254,7 +264,7 @@ mod tests {
         callback(
             "one",
             "",
-            "codex",
+            ProviderKind::Codex,
             Some(json!({"data":[
                 {"model":"new-model","hidden":true}
             ]})),

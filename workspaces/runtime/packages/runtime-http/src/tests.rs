@@ -6,6 +6,19 @@ use crate::{
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 
 #[test]
+fn generated_provider_identity_is_the_schema_owner() {
+    for provider in studio_runtime_schema::ProviderKind::ALL {
+        let generated: crate::generated::ProviderKind = provider;
+        let owner: studio_runtime_schema::ProviderKind = generated;
+        assert_eq!(owner, provider);
+        assert_eq!(
+            serde_json::to_value(generated).expect("generated provider serializes"),
+            serde_json::to_value(provider).expect("owner serializes")
+        );
+    }
+}
+
+#[test]
 fn route_template_matching_is_segment_exact() {
     assert!(route_matches("/api/agents/{id}", "/api/agents/a"));
     assert!(!route_matches("/api/agents/{id}", "/api/agents/a/b"));

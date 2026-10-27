@@ -2,6 +2,7 @@
 use super::{LoginError, ports::LoginChats};
 use serde_json::{Value, json};
 use std::sync::Arc;
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, Table};
 
 pub struct StoredChats(pub Arc<RuntimeStore>);
@@ -26,7 +27,7 @@ impl LoginChats for StoredChats {
 pub fn refreshed_agent(agent: &Value, account: &str) -> Option<Value> {
     use crate::event_write::truthy;
     if agent.get("accountKey").and_then(Value::as_str) != Some(account)
-        || agent.get("provider") != Some(&json!("claude"))
+        || agent.get("provider") != Some(&json!(ProviderKind::Claude.key()))
         || agent.get("status") != Some(&json!("failed"))
         || ["deletedAt", "inFlight", "activeTools", "workspaceOperation"]
             .iter()

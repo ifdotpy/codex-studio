@@ -908,7 +908,7 @@ fn order_for_value(value: &Value) -> JsonOrder {
                 .collect(),
         ),
         Value::Array(values) => JsonOrder::Array(values.iter().map(order_for_value).collect()),
-        _ => JsonOrder::Scalar,
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => JsonOrder::Scalar,
     }
 }
 

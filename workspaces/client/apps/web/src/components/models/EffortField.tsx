@@ -24,7 +24,7 @@ export function EffortField({
       value={value}
       data-value={value}
       aria-label={label}
-      disabled={disabled}
+      disabled={!!disabled}
       aria-disabled={disabled}
       onChange={onChange}
       data={options.map((option) => ({

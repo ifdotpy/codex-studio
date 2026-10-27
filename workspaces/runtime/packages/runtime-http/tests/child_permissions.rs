@@ -119,7 +119,12 @@ async fn ui_child_permissions_inherit_override_review_and_refuse_escalation() {
     catalog.set_account_session(Some(Arc::new(Catalog)));
     assert!(matches!(
         catalog
-            .read_until_ready("default", &cwd, "claude", false)
+            .read_until_ready(
+                "default",
+                &cwd,
+                studio_runtime_providers::ProviderKind::Claude,
+                false
+            )
             .await,
         studio_runtime_services::model_catalog::CatalogRead::Ready(_)
     ));

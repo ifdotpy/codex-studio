@@ -142,6 +142,7 @@ test("sync initial resume browser", async ({ page }) => {
           ["entity:agent:stale"],
           true,
         );
+        if (!row) throw new Error("Missing stale projection");
         return row._deleted;
       }),
       true,

@@ -40,6 +40,8 @@ declare global {
   }
 }
 const fixtureRoot = document.getElementById("root");
+if (!fixtureRoot) throw new Error("Missing fixture root");
+
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,

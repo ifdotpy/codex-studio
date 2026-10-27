@@ -451,7 +451,21 @@ impl NativeRuntime {
                 Err(error) => {
                     let error = match error {
                         NativeRuntimeError::CompatibilityRefused(reason) => reason.to_string(),
-                        _ => "native compatibility approval failed".to_owned(),
+                        NativeRuntimeError::Io(_)
+                        | NativeRuntimeError::InvalidState
+                        | NativeRuntimeError::InvalidCandidate
+                        | NativeRuntimeError::Incompatible
+                        | NativeRuntimeError::StoreAlreadyLocked
+                        | NativeRuntimeError::UnsafeStorePath
+                        | NativeRuntimeError::InvalidVersion
+                        | NativeRuntimeError::InvalidBundle
+                        | NativeRuntimeError::InUse
+                        | NativeRuntimeError::FailPoint(_)
+                        | NativeRuntimeError::Poisoned
+                        | NativeRuntimeError::Json(_)
+                        | NativeRuntimeError::StateRead(_) => {
+                            "native compatibility approval failed".to_owned()
+                        }
                     };
                     let mut row = json!({
                         "path": candidate.path,

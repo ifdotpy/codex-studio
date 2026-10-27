@@ -228,10 +228,6 @@ pub async fn recover_tool_requests_on_startup(
                     .ok_or(CallbackError::Stored("tool request id".into()))?;
                 settle_abandoned(tx, &mut record, now)?;
             }
-            let deleted = storage::delete_legacy_tool_replies(tx)?;
-            if deleted > 0 {
-                eprintln!("Deleted {deleted} legacy managed tool reply rows");
-            }
             Ok(ids.len())
         })
         .await
@@ -446,6 +442,10 @@ mod legacy_tool_reply_tests {
             })
             .await
             .expect("seed leaked replies");
+        drop(store);
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("dated callback-cache migration");
 
         for _ in 0..2 {
             super::recover_tool_requests_on_startup(&store, 10.0)

@@ -82,7 +82,12 @@ impl GuestError {
     pub fn code(&self) -> Option<&str> {
         match self {
             Self::Rejected { code, .. } => code.as_deref(),
-            _ => None,
+            Self::InvalidRequest
+            | Self::Identity
+            | Self::SpacePreflight { .. }
+            | Self::Transport { .. }
+            | Self::Protocol { .. }
+            | Self::FrameCallback { .. } => None,
         }
     }
 
@@ -90,7 +95,12 @@ impl GuestError {
     pub fn detail(&self) -> Option<&str> {
         match self {
             Self::Rejected { detail, .. } => detail.as_deref(),
-            _ => None,
+            Self::InvalidRequest
+            | Self::Identity
+            | Self::SpacePreflight { .. }
+            | Self::Transport { .. }
+            | Self::Protocol { .. }
+            | Self::FrameCallback { .. } => None,
         }
     }
 }
@@ -575,7 +585,7 @@ fn error_fields(error: &Value) -> (Option<String>, Option<String>) {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         ),
-        _ => (None, None),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) => (None, None),
     }
 }
 

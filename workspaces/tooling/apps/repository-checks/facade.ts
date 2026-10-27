@@ -389,7 +389,8 @@ function justVersion() {
 }
 
 function compareVersions(a: number[], b: number[]) {
-  for (let i = 0; i < b.length; i += 1) if (a[i] !== b[i]) return a[i] - b[i];
+  for (const [i, part] of b.entries())
+    if (a[i] !== part) return Number(a[i]) - part;
   return 0;
 }
 
@@ -510,7 +511,7 @@ function manifestFor(item: WorkspacePackage): PackageManifest {
   return item.manifest ? JSON.parse(readFileSync(item.manifest, "utf8")) : {};
 }
 
-function pnpmTestCommand(item: WorkspacePackage, caseName: string): Command[] {
+function pnpmTestCommand(item: WorkspacePackage, caseName: string): [Command] {
   const manifest = manifestFor(item);
   const script = manifest.codexStudioChecks?.test;
   if (!script)
@@ -956,6 +957,15 @@ export function gateSteps(root: string, name: string): GateStep[] {
         options: { allowZeroTests: true },
       },
       {
+        id: "provider-contracts",
+        label: "provider contract drift witnesses",
+        lane: "rust",
+        requires: "workspace",
+        requiresCargo: true,
+        item: tooling,
+        commands: [["pnpm", ["--dir", root, "run", "test:provider-contracts"]]],
+      },
+      {
         ...cargo("rust-tests", "Rust nextest", [
           "nextest",
           "run",
@@ -1084,6 +1094,13 @@ export function gateSteps(root: string, name: string): GateStep[] {
         options: { allowZeroTests: true },
       },
       { id: "tooling", label: "tooling tests", lane: "js", item: tooling },
+      {
+        id: "root-lint",
+        label: "repository lint policy",
+        lane: "js",
+        item: tooling,
+        options: { script: "lint:all", allowZeroTests: true },
+      },
       {
         id: "guest",
         label: "VM guest Python suite",
@@ -1372,12 +1389,14 @@ export function parseCounts(
       /^\s*Summary\s+\[[^\]]+\]\s+(\d+) tests run:\s+(.+)$/m,
     );
     if (summary) {
-      const passed = +(summary[2].match(/(\d+) passed/)?.[1] ?? 0);
+      const total = Number(summary[1]);
+      const counts = summary[0];
+      const passed = +(counts.match(/(\d+) passed/)?.[1] ?? 0);
       return {
         passed,
-        failed: +summary[1] - passed,
-        skipped: +(summary[2].match(/(\d+) skipped/)?.[1] ?? 0),
-        executed: +summary[1],
+        failed: total - passed,
+        skipped: +(counts.match(/(\d+) skipped/)?.[1] ?? 0),
+        executed: total,
         summaryFound: true,
       };
     }
@@ -1448,10 +1467,10 @@ export function parseCounts(
   );
   if (tap)
     return {
-      passed: +tap[2],
-      failed: +tap[3],
-      skipped: +tap[5],
-      executed: +tap[2] + +tap[3],
+      passed: Number(tap[2]),
+      failed: Number(tap[3]),
+      skipped: Number(tap[5]),
+      executed: Number(tap[2]) + Number(tap[3]),
       summaryFound: true,
     };
   const nodeSpec = normalizedOutput.match(
@@ -1459,10 +1478,10 @@ export function parseCounts(
   );
   if (nodeSpec)
     return {
-      passed: +nodeSpec[2],
-      failed: +nodeSpec[3],
-      skipped: +nodeSpec[4],
-      executed: +nodeSpec[2] + +nodeSpec[3],
+      passed: Number(nodeSpec[2]),
+      failed: Number(nodeSpec[3]),
+      skipped: Number(nodeSpec[4]),
+      executed: Number(nodeSpec[2]) + Number(nodeSpec[3]),
       summaryFound: true,
     };
   return { passed: 0, failed: 0, skipped: 0, executed: 0, summaryFound: false };
@@ -1570,7 +1589,7 @@ function playwrightFailureSummaries(report: JSONReport) {
               result?.status ??
               test.status ??
               "unexpected result");
-        const firstLine = String(detail).split(/\r?\n/, 1)[0].trim();
+        const firstLine = String(detail).split(/\r?\n/, 1).join("").trim();
         failures.push({
           title: [...suiteTitles, spec.title, test.projectName]
             .filter(Boolean)
@@ -1773,20 +1792,20 @@ export function parseSelection(
   let passthrough: string[] = [];
   let cargoTargets: string[] = [];
   const flags: string[] = [];
-  for (let index = 0; index < rest.length; index += 1) {
-    const arg = rest[index];
+  const argumentsLeft = rest.values();
+  let current = argumentsLeft.next();
+  while (!current.done) {
+    const arg = current.value;
 
     if (arg === "--") {
-      const forwarded = rest
-        .slice(index + 1)
-        .filter((value) => value !== "--json");
-      for (let cursor = 0; cursor < forwarded.length; cursor += 1) {
-        const option = forwarded[cursor];
-
+      const forwarded = [...argumentsLeft]
+        .filter((value) => value !== "--json")
+        .values();
+      for (const option of forwarded) {
         if (["--test", "--bin", "--example", "--bench"].includes(option)) {
-          if (!forwarded[cursor + 1]) fail(`${option} requires a target name`);
-          cargoTargets.push(option, forwarded[cursor + 1]);
-          cursor += 1;
+          const target = forwarded.next().value;
+          if (!target) fail(`${option} requires a target name`);
+          cargoTargets.push(option, target);
         } else if (
           [
             "--lib",
@@ -1803,16 +1822,20 @@ export function parseSelection(
     }
     if (arg === "--name") {
       const values: string[] = [];
+      current = argumentsLeft.next();
       while (
-        rest[index + 1] &&
-        !["--", "--json", "--dry-run", "--name"].includes(rest[index + 1])
+        !current.done &&
+        current.value &&
+        !["--", "--json", "--dry-run", "--name"].includes(current.value)
       ) {
-        values.push(rest[index + 1]);
-        index += 1;
+        values.push(current.value);
+        current = argumentsLeft.next();
       }
       name = values.join(" ");
       if (!name) fail("--name requires a pattern");
+      continue;
     } else if (arg !== "--json" && arg !== "--dry-run") flags.push(arg);
+    current = argumentsLeft.next();
   }
   return {
     caseName: [requestedCase, ...flags].filter(Boolean).join(" "),
@@ -2051,7 +2074,7 @@ function packageImports(root: string, file: string, source: string) {
     const pattern =
       /\b(?:from\s*|import\s*\(|import\s+|export\s+[^;]*?\sfrom\s*|require\s*\()\s*["']([^"']+)["']/g;
     for (const match of source.matchAll(pattern))
-      specs.push({ specifier: match[1], typeOnly: false });
+      specs.push({ specifier: String(match[1]), typeOnly: false });
     return specs;
   }
 }

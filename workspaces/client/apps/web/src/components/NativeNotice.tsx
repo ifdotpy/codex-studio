@@ -187,7 +187,7 @@ export function NativeError({
           <Button
             size="xs"
             variant="light"
-            color={recovery ? "gray" : undefined}
+            {...(recovery ? { color: "gray" } : {})}
             onClick={openLimits}
           >
             View account limits

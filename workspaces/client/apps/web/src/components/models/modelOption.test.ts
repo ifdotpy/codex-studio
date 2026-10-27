@@ -1,3 +1,4 @@
+import { required } from "../componentTestFixtures";
 import { describe, expect, it } from "vitest";
 import {
   INHERITED_MODEL,
@@ -8,6 +9,16 @@ import {
 } from "./modelOption";
 
 describe("modelDisplayName", () => {
+  it("does not infer a known provider from part of an explicit provider name", () => {
+    expect(
+      modelDisplayName({
+        model: "custom",
+        provider: "claude-mirror",
+        displayName: "Private model",
+        description: "Claude Opus 4.6 · Compatibility protocol",
+      }),
+    ).toBe("Private model");
+  });
   it.each([
     ["gpt-6-astra", "Astra 6"],
     ["gpt-6.1-sol", "Sol 6.1"],
@@ -69,10 +80,18 @@ describe("Claude description aliases", () => {
 });
 
 describe("toModelOptions", () => {
+  it("does not assign a provider identity to an unnamed catalog source", () => {
+    expect(toModelOptions([{ model: "custom" }])[0]?.provider).toBe("");
+  });
   it("preserves values, provider, descriptions, default/current tags and disabled reasons", () => {
     const options = toModelOptions(
       [
-        { model: "gpt-6-astra", isDefault: true, description: "General work" },
+        {
+          model: "gpt-6-astra",
+          provider: "codex",
+          isDefault: true,
+          description: "General work",
+        },
         { model: "claude-opus-4-6", provider: "claude" },
       ],
       {
@@ -81,7 +100,7 @@ describe("toModelOptions", () => {
           row.provider === "claude" ? "Connect a Claude account." : undefined,
       },
     );
-    expect(options[0]).toEqual({
+    expect(required(options[0])).toEqual({
       value: "gpt-6-astra",
       label: "Astra 6",
       provider: "codex",
@@ -89,9 +108,13 @@ describe("toModelOptions", () => {
       badges: ["default", "current"],
       disabledReason: undefined,
     });
-    expect(options[1].disabledReason).toBe("Connect a Claude account.");
-    expect(modelOptionLabel(options[0])).toBe("Astra 6 (default, current)");
-    expect(modelOptionLabel(options[1])).toBe("Opus 4.6");
+    expect(required(options[1]).disabledReason).toBe(
+      "Connect a Claude account.",
+    );
+    expect(modelOptionLabel(required(options[0]))).toBe(
+      "Astra 6 (default, current)",
+    );
+    expect(modelOptionLabel(required(options[1]))).toBe("Opus 4.6");
     expect(INHERITED_MODEL).toBe("__model_default__");
   });
 });
@@ -126,15 +149,17 @@ describe("modelForValue", () => {
     { model: "opus", resolvedModel: "claude-opus-5-5" },
   ];
   it("prefers exact alias values and explicit resolved rows", () => {
-    expect(modelForValue(rows, "default")).toBe(rows[0]);
-    expect(modelForValue(rows, "opus")).toBe(rows[1]);
-    expect(modelForValue(rows, "claude-opus-5-5")).toBe(rows[1]);
+    expect(modelForValue(rows, "default")).toBe(required(rows[0]));
+    expect(modelForValue(rows, "opus")).toBe(required(rows[1]));
+    expect(modelForValue(rows, "claude-opus-5-5")).toBe(required(rows[1]));
     expect(modelForValue(toModelOptions(rows), "claude-opus-5-5")?.value).toBe(
       "opus",
     );
   });
   it("preserves default-only catalogs, inherited and unknown values", () => {
-    expect(modelForValue(rows.slice(0, 1), "claude-opus-5-5")).toBe(rows[0]);
+    expect(modelForValue(rows.slice(0, 1), "claude-opus-5-5")).toBe(
+      required(rows[0]),
+    );
     expect(modelForValue(rows, "missing")).toBeUndefined();
     expect(
       modelForValue([{ value: INHERITED_MODEL }], INHERITED_MODEL)?.value,

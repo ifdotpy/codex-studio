@@ -26,6 +26,8 @@ fn render(_: &[u8], _: u64) -> Result<Value, String> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
+// SAFETY: CoreGraphics receives the validated snapshot and owned pixel buffer below.
+#[allow(unsafe_code)]
 fn render(bytes: &[u8], index: u64) -> Result<Value, String> {
     use objc2_core_foundation::{CFData, CGPoint, CGRect, CGSize};
     use objc2_core_graphics::{

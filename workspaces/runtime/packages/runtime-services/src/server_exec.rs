@@ -630,7 +630,9 @@ impl ServerExec {
                 .iter()
                 .map(|value| value.as_str().unwrap_or_default().to_owned())
                 .collect(),
-            _ => return refused("Supply command argv of 1 to 256 strings, at most 128 KiB"),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => {
+                return refused("Supply command argv of 1 to 256 strings, at most 128 KiB");
+            }
         };
         let started_at = now();
         let timeout = p["timeout"].as_u64().unwrap_or(120);

@@ -74,7 +74,7 @@ fn legacy_match_fields(mut value: Value) -> Value {
                 *child = legacy_match_fields(child.take());
             }
         }
-        _ => (),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => (),
     }
     value
 }

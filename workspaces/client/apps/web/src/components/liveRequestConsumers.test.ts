@@ -1,3 +1,4 @@
+import { required } from "./componentTestFixtures.ts";
 import type { ComponentHookCell } from "./componentTestFixtures";
 import type { EffectCallback } from "react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -22,10 +23,12 @@ vi.mock("react", async (original) => {
       const index = h.cursor++;
       h.cells[index] ??= { value: initial };
       return [
-        h.cells[index].value,
+        required(h.cells[index]).value,
         (value: unknown) => {
-          h.cells[index].value =
-            typeof value === "function" ? value(h.cells[index].value) : value;
+          required(h.cells[index]).value =
+            typeof value === "function"
+              ? value(required(h.cells[index]).value)
+              : value;
         },
       ];
     },
@@ -37,7 +40,8 @@ vi.mock("react", async (original) => {
         previous?.cleanup?.();
         h.cells[index] = { deps };
         h.effects.push(() => {
-          h.cells[index].cleanup = effect() as ComponentHookCell["cleanup"];
+          required(h.cells[index]).cleanup =
+            effect() as ComponentHookCell["cleanup"];
         });
       }
     },
@@ -133,7 +137,7 @@ it("question history follows projected answers without a request-triggered HTTP 
         ],
       },
     } as unknown as Snapshot);
-  expect(render(read)(item)?.questions[0].answers).toEqual(["Yes"]);
+  expect(required(render(read)(item)?.questions[0]).answers).toEqual(["Yes"]);
   expect(h.get).not.toHaveBeenCalled();
 });
 

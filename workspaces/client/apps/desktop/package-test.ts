@@ -125,7 +125,7 @@ try {
   assert.equal(await desktop.evaluate(({ app }) => app.isPackaged), true);
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].isVisible(),
+      BrowserWindow.getAllWindows().at(0)?.isVisible(),
     ),
     false,
   );

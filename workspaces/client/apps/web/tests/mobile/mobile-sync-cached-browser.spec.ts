@@ -211,7 +211,9 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
       "A different server cannot receive cached drafts",
     );
     assert.equal(
-      await page.evaluate(() => window.mobileSyncState!.runtime.agents[0].name),
+      await page.evaluate(
+        () => window.mobileSyncState?.runtime.agents[0]?.name,
+      ),
       "Cached",
     );
     assert.ok(

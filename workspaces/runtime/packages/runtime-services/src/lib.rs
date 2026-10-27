@@ -146,6 +146,7 @@ pub mod projects;
 pub mod provider_adapter;
 pub mod provider_binaries;
 pub mod provider_callbacks;
+pub mod provider_pagination;
 pub mod provider_session_task;
 pub mod provider_versions;
 pub mod questions_reads;

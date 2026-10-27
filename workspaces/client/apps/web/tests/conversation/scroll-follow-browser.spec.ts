@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type {
   EntityFixtureState,
   TestStateView,
@@ -154,7 +155,8 @@ async function scrollFollow(page: Page, full: boolean) {
       agent,
       items: selected,
       truncated: selected.length < items.length,
-      nextCursor: selected.length < items.length ? selected[0].id : null,
+      nextCursor:
+        selected.length < items.length ? required(selected[0]).id : null,
       nextAfterCursor: null,
       historyVersion: "scroll-follow",
     };
@@ -342,7 +344,7 @@ async function scrollFollow(page: Page, full: boolean) {
       json: {
         items: live.items.slice(start, end),
         truncated: start > 0,
-        nextCursor: start > 0 ? live.items[start].id : null,
+        nextCursor: start > 0 ? required(live.items[start]).id : null,
         nextAfterCursor: live.items[end - 1]?.id || null,
         historyVersion: "scroll-follow",
       },
@@ -791,6 +793,8 @@ async function scrollFollow(page: Page, full: boolean) {
 
         // Trackpad-sized wheel steps, then more stream updates.
         const box = await root.boundingBox();
+        assert.ok(box, "transcript bounds exist");
+
         await page.mouse.move(
           box!.x + box!.width / 2,
           box!.y + box!.height / 2,
@@ -846,6 +850,8 @@ async function scrollFollow(page: Page, full: boolean) {
                   ].findLast(
                     (node) => node.getBoundingClientRect().bottom < top,
                   );
+                if (!above) throw new Error("No row above reader");
+
                 above!.style.paddingTop = "240px";
                 const observer = new MutationObserver(() => {
                   const current = element.querySelector(

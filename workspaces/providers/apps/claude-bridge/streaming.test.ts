@@ -58,6 +58,6 @@ test("a long streamed answer keeps every delta, line and the saved text", async 
     (item) => item.id === "message-1",
   );
   assert.equal(savedAnswer.length, 1);
-
+  assert.ok(savedAnswer[0]);
   assert.equal(savedAnswer[0].text, expected);
 });

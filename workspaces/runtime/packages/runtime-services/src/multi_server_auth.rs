@@ -47,7 +47,7 @@ impl AccessError {
     pub fn status(&self) -> u16 {
         match self {
             Self::Refused { status, .. } => *status,
-            _ => 503,
+            Self::Stored { .. } | Self::Store(_) | Self::Sqlite(_) => 503,
         }
     }
 }

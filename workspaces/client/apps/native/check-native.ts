@@ -377,7 +377,8 @@ async function main() {
         "Expected two distinct commands",
       );
       const [command, shell] = fixture.commands;
-
+      assert.ok(command);
+      assert.ok(shell);
       assert.equal(shell.body.toString(), "null");
       assert.equal(shell.headers["x-studio-request-id"], "shell-http-command");
       assert.equal(command.body.toString(), "null");

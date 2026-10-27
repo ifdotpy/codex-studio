@@ -70,7 +70,11 @@ impl From<TranscriptStoreError> for TranscriptError {
 impl From<StoreError> for TranscriptError {
     fn from(error: StoreError) -> Self {
         match error {
-            StoreError::InvalidSyncObject { scope, id } => {
+            StoreError::InvalidStoredObject { table, id } => {
+                Self::InvalidStoredObject { table, id }
+            }
+            StoreError::InvalidSyncObject { scope, id }
+            | StoreError::InvalidSyncObjectField { scope, id, .. } => {
                 Self::InvalidStoredState { table: scope, id }
             }
             StoreError::Sqlite(rusqlite::Error::SqliteFailure(error, _))
@@ -78,7 +82,24 @@ impl From<StoreError> for TranscriptError {
             {
                 Self::ReadOnlyRepair
             }
-            _ => Self::Store,
+            StoreError::StateDirectory(_)
+            | StoreError::AlreadyOwned
+            | StoreError::MissingDatabase(_)
+            | StoreError::Migration { .. }
+            | StoreError::UnsafeStateDirectory
+            | StoreError::SchemaMismatch(_)
+            | StoreError::InvalidStoredRecord { .. }
+            | StoreError::SchemaObjectMismatch { .. }
+            | StoreError::Sqlite(_)
+            | StoreError::CommitOutcomeUnknown(_)
+            | StoreError::Json(_)
+            | StoreError::SchemaValidation(_)
+            | StoreError::RecordContract(_)
+            | StoreError::WriterPoisoned
+            | StoreError::WriterActorInitialization(_)
+            | StoreError::WriterActorControl(_)
+            | StoreError::CommitActorOutcomeUnknown(_)
+            | StoreError::ReadTaskFailed => Self::Store,
         }
     }
 }
@@ -88,11 +109,18 @@ impl From<studio_runtime_store::analytics::AnalyticsError> for TranscriptError {
             studio_runtime_store::analytics::AnalyticsError::InvalidStoredRow { table, id } => {
                 invalid_stored(table, &id)
             }
-            _ => Self::Store,
+            studio_runtime_store::analytics::AnalyticsError::InvalidRequest(_)
+            | studio_runtime_store::analytics::AnalyticsError::InvalidStoredObject(_)
+            | studio_runtime_store::analytics::AnalyticsError::UnknownAgent
+            | studio_runtime_store::analytics::AnalyticsError::Read(_)
+            | studio_runtime_store::analytics::AnalyticsError::Sqlite(_)
+            | studio_runtime_store::analytics::AnalyticsError::Serialization(_) => Self::Store,
         }
     }
 }
 impl From<rusqlite::Error> for TranscriptError {
+    // rusqlite errors are non-exhaustive; only a read-only failure has a dedicated remedy.
+    #[allow(clippy::wildcard_enum_match_arm)]
     fn from(error: rusqlite::Error) -> Self {
         match error {
             rusqlite::Error::SqliteFailure(error, _)
@@ -604,14 +632,7 @@ pub(crate) fn search_work_in_transaction(
         ("runtime_complaints", "complaint", "title"),
         ("runtime_plans", "plan", "text"),
     ] {
-        for stored in
-            WorkspaceViewsRepository::records(connection, table).map_err(|error| match error {
-                StoreError::InvalidStoredObject { table, id } => {
-                    TranscriptError::InvalidStoredObject { table, id }
-                }
-                _ => TranscriptError::Store,
-            })?
-        {
+        for stored in WorkspaceViewsRepository::records(connection, table)? {
             let Some(encoded) = stored.record else {
                 return Err(invalid_stored(table, &stored.id));
             };

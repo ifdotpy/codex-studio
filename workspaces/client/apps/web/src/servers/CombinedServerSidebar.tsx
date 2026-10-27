@@ -116,8 +116,8 @@ export default function CombinedServerSidebar({
       creating={!!navigation[current]?.creating}
       mobile={mobile}
       collapsed={hidden}
-      paneRect={paneRect}
-      onCompactChange={onCompactChange}
+      {...(paneRect !== undefined ? { paneRect } : {})}
+      {...(onCompactChange ? { onCompactChange } : {})}
       close={close}
       settings={settings}
       onSearch={search}

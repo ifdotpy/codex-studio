@@ -67,7 +67,14 @@ fn execute_with_payload_recovery(
         crate::event_write::EventWriteError::InvalidStoredObject { object, id } => {
             ToolRequestError::Store(records::invalid(object, &id))
         }
-        _ => ToolRequestError::InvalidRequest("Unknown or deleted managed agent"),
+        crate::event_write::EventWriteError::InvalidRequest(_)
+        | crate::event_write::EventWriteError::InvalidResultSchema(_)
+        | crate::event_write::EventWriteError::Conflict(_)
+        | crate::event_write::EventWriteError::RemoteEventsUnavailable
+        | crate::event_write::EventWriteError::WorkerAssignmentUnavailable
+        | crate::event_write::EventWriteError::Clock => {
+            ToolRequestError::InvalidRequest("Unknown or deleted managed agent")
+        }
     })?;
     let actor = serde_json::to_value(actor).map_err(StoreError::from)?;
     if matches!(action, Action::List) {

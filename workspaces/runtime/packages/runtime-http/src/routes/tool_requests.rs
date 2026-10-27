@@ -141,7 +141,10 @@ fn resolve_payload_response(state_root: &std::path::Path, value: Value) -> Resul
                 .map(|(key, value)| Ok((key, resolve(state_root, value)?)))
                 .collect::<Result<serde_json::Map<_, _>, ApiError>>()
                 .map(Value::Object),
-            value => Ok(value),
+            value @ Value::Null
+            | value @ Value::Bool(_)
+            | value @ Value::Number(_)
+            | value @ Value::String(_) => Ok(value),
         }
     }
     resolve(state_root, value)

@@ -22,8 +22,11 @@ export type MoveProof = ToolProof & {
   tools: ProofTool[];
   session: Partial<Session>;
 };
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
 // Native session files move without credentials or a model request.
 import fs from "node:fs/promises";
+import { nativeProjectCwd } from "./native-history.ts";
 import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
@@ -127,14 +130,18 @@ type NativePromptAttachment = {
   removedNames?: string[];
   addedNames?: string[];
 };
-// Claude owns native history; this indexed view keeps its existing checks below.
-function parseNativePromptRecord(line: string): {
+type NativePromptRecord = {
   sessionId?: string;
   type?: string;
   subtype?: string;
   attachment?: NativePromptAttachment;
-} {
-  return JSON.parse(line);
+};
+// Claude owns native history; reject non-record JSON before reading its fields.
+function parseNativePromptRecord(line: string): NativePromptRecord {
+  const value: unknown = JSON.parse(line);
+  if (!isRecord(value))
+    throw new Error("The complete native snapshot history is unavailable");
+  return value as NativePromptRecord;
 }
 export async function savedPromptProof(
   file: string,
@@ -469,15 +476,15 @@ export async function nativeFile(
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
-  const current = cwd && nativeDestination(sessionId, cwd, configDir);
+  const current = cwd && (await nativeDestination(sessionId, cwd, configDir));
   if (current && found.includes(current)) return current;
   if (found.length !== 1)
     throw new Error(
       "The complete Claude native history is missing or ambiguous",
     );
-  return found[0];
+  return found[0]!;
 }
-export function nativeDestination(
+export async function nativeDestination(
   sessionId: string,
   cwd: string,
   configDir = process.env.CLAUDE_CONFIG_DIR ||
@@ -485,12 +492,11 @@ export function nativeDestination(
 ) {
   if (!/^[a-f0-9-]{36}$/i.test(sessionId) || !path.isAbsolute(cwd))
     throw new Error("Invalid Claude move destination");
-  return path.join(
-    configDir,
-    "projects",
-    cwd.replace(/[^a-zA-Z0-9]/g, "-"),
-    sessionId + ".jsonl",
-  );
+  const project = (await nativeProjectCwd(cwd)).replace(/[^a-zA-Z0-9]/g, "-");
+  // Claude hashes longer names. readNativeHistory leaves them unsupported too.
+  if (project.length > 200)
+    throw new Error("The Claude move destination path is too long");
+  return path.join(configDir, "projects", project, sessionId + ".jsonl");
 }
 export async function publishNative(
   source: string,

@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import type { Message } from "../types";
 import type { OutgoingMessage } from "./send";
 import type { MessageReceipt } from "./messageReceipts";
@@ -111,7 +112,7 @@ it("joins outgoing messages to accepted and delivered receipts by identity", () 
       { id: "second", status: "delivered" },
     ],
   );
-
+  assert.ok(receiptOutgoing);
   assert.equal(
     receiptOutgoing(accepted, delivered).receipt!.status,
     "delivered",
@@ -169,7 +170,7 @@ it("joins outgoing messages to accepted and delivered receipts by identity", () 
     "chat",
     new Map([["sso", delivered]]),
   )[0];
-
+  assert.ok(shown);
   assert.equal(shown.pending, false);
 
   assert.equal(
@@ -225,13 +226,15 @@ it("joins outgoing messages to accepted and delivered receipts by identity", () 
     id: "chatty",
     clientMessageId: undefined,
   };
-
+  assert.ok(receiptTranscript);
   assert.equal(
-    receiptTranscript(
-      [roomPrefixWithoutDelimiter],
-      "chat",
-      new Map([["chatty", { id: "chatty", status: "delivered" }]]),
-    )[0].deliveryStatus,
+    required(
+      receiptTranscript(
+        [roomPrefixWithoutDelimiter],
+        "chat",
+        new Map([["chatty", { id: "chatty", status: "delivered" }]]),
+      )[0],
+    ).deliveryStatus,
     "delivered",
     "Only the exact room prefix followed by a colon is stripped",
   );
@@ -242,14 +245,16 @@ it("joins outgoing messages to accepted and delivered receipts by identity", () 
   };
 
   assert.equal(
-    receiptTranscript(
-      [preferredClientId],
-      "chat",
-      new Map([
-        ["sso", { id: "sso", status: "failed" }],
-        ["other", { id: "other", status: "cancelled" }],
-      ]),
-    )[0].deliveryStatus,
+    required(
+      receiptTranscript(
+        [preferredClientId],
+        "chat",
+        new Map([
+          ["sso", { id: "sso", status: "failed" }],
+          ["other", { id: "other", status: "cancelled" }],
+        ]),
+      )[0],
+    ).deliveryStatus,
     "failed",
     "The stable client message ID takes precedence over the transcript ID",
   );

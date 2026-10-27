@@ -23,6 +23,7 @@ async function openFixture(page: Page) {
     write: false,
   });
   const output = bundle.outputFiles[0];
+  if (!output) throw new Error("Missing schema header fixture bundle");
 
   await page.addScriptTag({ content: output.text });
 }

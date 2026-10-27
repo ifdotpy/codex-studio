@@ -68,9 +68,9 @@ export function ChatServerLine({
   return (
     <span
       className="chat-server-line"
-      aria-label={`${providerLabel(provider || "codex")}, ${alias}`}
+      aria-label={`${providerLabel(provider || "")}, ${alias}`}
     >
-      <ProviderMark provider={provider || "codex"} />
+      <ProviderMark provider={provider || ""} />
       <span className="chat-server-alias" title={alias}>
         {alias}
       </span>

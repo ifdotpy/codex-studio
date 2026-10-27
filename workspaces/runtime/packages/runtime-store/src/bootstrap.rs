@@ -282,6 +282,16 @@ fn table_layout(connection: &Connection, name: &str) -> StoreResult<Option<Table
     Ok(Some((columns, without_rowid, strict, constraints)))
 }
 
+/// Compare table structure against the caller's canonical DDL without copying
+/// a column/constraint list into another schema owner.
+pub(crate) fn same_table_layout(
+    expected: &Connection,
+    actual: &Connection,
+    name: &str,
+) -> StoreResult<bool> {
+    Ok(table_layout(expected, name)? == table_layout(actual, name)?)
+}
+
 fn reconcile_derived_objects(
     transaction: &Transaction<'_>,
     expected: &[CatalogObject],

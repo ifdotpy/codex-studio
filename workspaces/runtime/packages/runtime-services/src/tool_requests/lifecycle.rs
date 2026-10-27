@@ -99,7 +99,9 @@ pub(super) fn cancel(record: &mut Value) -> Result<bool, ToolRequestError> {
             "Conflicting request lifecycle evidence",
         )),
         DecisionKind::Transitioned => apply(record, &decision.next_state),
-        _ => Ok(false),
+        DecisionKind::ReturnExisting
+        | DecisionKind::NoEffect
+        | DecisionKind::ReceiptMissingUnknown => Ok(false),
     }
 }
 

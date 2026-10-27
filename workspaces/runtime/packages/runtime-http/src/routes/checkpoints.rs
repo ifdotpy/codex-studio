@@ -345,7 +345,7 @@ async fn restore_owned(
             studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
                 message,
             ) => (ApiError::new(StatusCode::BAD_REQUEST, message), false),
-            _ => (
+            studio_runtime_services::account_session_runtime::AccountSessionError::InvalidResponse(_) | studio_runtime_services::account_session_runtime::AccountSessionError::Persistence | studio_runtime_services::account_session_runtime::AccountSessionError::Unknown => (
                 ApiError::new(
                     StatusCode::CONFLICT,
                     "Native thread result is unknown; inspect workspace recovery before retrying",

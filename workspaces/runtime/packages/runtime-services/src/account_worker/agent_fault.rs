@@ -103,6 +103,7 @@ pub(super) enum HoldResult {
 pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
     let named = match error {
         WorkerError::Store(error)
+        | WorkerError::Recovery(crate::recovery::RecoveryError::Store(error))
         | WorkerError::Scheduler(scheduler::SchedulerError::Store(error))
         | WorkerError::Notification(
             crate::notification_dispatch::NotificationDispatchError::Store(error),
@@ -111,7 +112,23 @@ pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
             | StoreError::InvalidSyncObjectField { scope, id, .. } => (scope.clone(), id.clone()),
             StoreError::InvalidStoredRecord { object, id } => ((*object).to_owned(), id.clone()),
             StoreError::InvalidStoredObject { table, id } => ((*table).to_owned(), id.clone()),
-            _ => return None,
+            StoreError::StateDirectory(_)
+            | StoreError::AlreadyOwned
+            | StoreError::MissingDatabase(_)
+            | StoreError::Migration { .. }
+            | StoreError::UnsafeStateDirectory
+            | StoreError::SchemaMismatch(_)
+            | StoreError::SchemaObjectMismatch { .. }
+            | StoreError::Sqlite(_)
+            | StoreError::CommitOutcomeUnknown(_)
+            | StoreError::Json(_)
+            | StoreError::SchemaValidation(_)
+            | StoreError::RecordContract(_)
+            | StoreError::WriterPoisoned
+            | StoreError::WriterActorInitialization(_)
+            | StoreError::WriterActorControl(_)
+            | StoreError::CommitActorOutcomeUnknown(_)
+            | StoreError::ReadTaskFailed => return None,
         },
         WorkerError::Notification(
             crate::notification_dispatch::NotificationDispatchError::InvalidStoredObject {
@@ -119,7 +136,21 @@ pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
                 id,
             },
         ) => (table.clone(), id.clone()),
-        _ => return None,
+        WorkerError::Recovery(_)
+        | WorkerError::Scheduler(_)
+        | WorkerError::Session(_)
+        | WorkerError::Notification(_)
+        | WorkerError::PreparationRefused(_)
+        | WorkerError::StaleVmActor
+        | WorkerError::PreparationPending(_)
+        | WorkerError::PreparationAwaitsAgent(_)
+        | WorkerError::CleanupUnconfirmed(_)
+        | WorkerError::AlreadyRunning
+        | WorkerError::Closed
+        | WorkerError::ShutdownTimeout
+        | WorkerError::TaskFailed
+        | WorkerError::Capacity
+        | WorkerError::CallbackUnknown => return None,
     };
     (!named.1.is_empty()).then_some(named)
 }
@@ -451,7 +482,11 @@ pub(super) fn completion_thread(entry: &JournalEntry) -> Option<&str> {
         {
             frame.fields.get("params")?
         }
-        _ => return None,
+        JournalPayload::Frame(_)
+        | JournalPayload::RawStdout { .. }
+        | JournalPayload::Stderr(_)
+        | JournalPayload::Exit(_)
+        | JournalPayload::Other { .. } => return None,
     };
     params.get("threadId").and_then(Value::as_str)
 }

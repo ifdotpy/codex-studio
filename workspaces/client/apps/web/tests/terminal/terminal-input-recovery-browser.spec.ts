@@ -52,6 +52,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
             );
           if (id === "@xterm/addon-fit")
             return fileURLToPath(new URL("./fit-stub.ts", import.meta.url));
+          return undefined;
         },
       },
     ],

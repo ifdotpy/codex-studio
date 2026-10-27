@@ -3,6 +3,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
+use studio_runtime_schema::complaints::ComplaintResponseStatus;
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, RuntimeStore,
     SyncDocumentsRepository, Transaction,
@@ -20,9 +21,6 @@ use crate::{
 
 const USER: &str = "user";
 const PENDING: &str = "pending";
-const IN_PROGRESS: &str = "in_progress";
-const RESOLVED: &str = "resolved";
-const DECLINED: &str = "declined";
 
 #[derive(Debug, Error)]
 pub enum QuestionsWriteError {
@@ -52,7 +50,7 @@ pub struct ComplaintResponseWrite<'a> {
     pub complaint_id: &'a str,
     pub request_id: &'a str,
     pub text: &'a str,
-    pub status: &'a str,
+    pub status: ComplaintResponseStatus,
     pub version: i64,
     pub signature: &'a str,
 }
@@ -250,7 +248,7 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
         ));
     }
     let text = event_write::python_strip(text);
-    let consumed = crate::radio_runtime::route_question_answer(
+    let route = crate::radio_runtime::route_question_answer(
         transaction,
         prepared,
         &record,
@@ -258,10 +256,7 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
         None,
         now,
     )?;
-    let event_inserted = if consumed {
-        false
-    } else {
-        let turn_id = record.get("turnId").and_then(Value::as_str);
+    let send_followup = |radio_answer_turn_id: Option<&str>| -> Result<bool, QuestionsWriteError> {
         let accepted = coordination::send_system_followup_with_radio_answer(
             transaction,
             SystemFollowup {
@@ -271,7 +266,7 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
                 delivery: studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
                 now,
             },
-            turn_id,
+            radio_answer_turn_id,
             admission,
         )?;
         crate::radio_runtime::record_question_answer_followup(
@@ -281,7 +276,14 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
             text,
             now,
         )?;
-        accepted.event_inserted
+        Ok(accepted.event_inserted)
+    };
+    let event_inserted = match &route {
+        crate::radio_runtime::QuestionAnswerRoute::ConsumedByRadio => false,
+        crate::radio_runtime::QuestionAnswerRoute::OrdinaryFollowup => send_followup(None)?,
+        crate::radio_runtime::QuestionAnswerRoute::RadioFollowup { turn_id } => {
+            send_followup(Some(turn_id))?
+        }
     };
 
     record["status"] = json!("answered");
@@ -605,7 +607,11 @@ pub fn respond_to_complaint(
             });
         let stopped = event_write::truthy(lead.extra.get("deletedAt"))
             || !event_write::truthy(lead.extra.get("autoWake"));
-        if !matches!(status, RESOLVED | DECLINED) || !(answered || stopped) {
+        let closing = match status {
+            ComplaintResponseStatus::InProgress => false,
+            ComplaintResponseStatus::Resolved | ComplaintResponseStatus::Declined => true,
+        };
+        if !closing || !(answered || stopped) {
             return Err(QuestionsWriteError::InvalidRequest(
                 "This complaint requires a response from its orchestrator",
             ));
@@ -617,10 +623,7 @@ pub fn respond_to_complaint(
         ));
     }
     let text = event_write::python_strip(text);
-    if text.is_empty()
-        || text.chars().count() > 12_000
-        || !matches!(status, IN_PROGRESS | RESOLVED | DECLINED)
-    {
+    if text.is_empty() || text.chars().count() > 12_000 {
         return Err(QuestionsWriteError::InvalidRequest(
             "Record an action or reason and select in_progress, resolved, or declined",
         ));

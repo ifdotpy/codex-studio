@@ -3,6 +3,8 @@ use crate::protocol::{Request, Response};
 use serde_json::{Value, json};
 use unicode_segmentation::UnicodeSegmentation;
 
+// SAFETY: The random-byte FFI call writes only into its owned byte array.
+#[allow(unsafe_code)]
 fn execute(request: &Request) -> Result<Value, String> {
     let p = &request.params;
     match request.method.as_str() {
@@ -86,14 +88,16 @@ fn execute(request: &Request) -> Result<Value, String> {
                 .as_str()
                 .ok_or("A query string is required.")?
                 .trim_start_matches('?');
-            let mut url = reqwest::Url::parse("http://localhost/").unwrap();
+            // This fixed HTTP URL is valid and independent of request input.
+            let mut url = reqwest::Url::parse("http://localhost/").expect("valid query base URL");
             url.set_query(Some(query));
             Ok(json!(url.query_pairs().collect::<Vec<_>>()))
         }
         "url.query_encode" => {
             let pairs: Vec<(String, String)> =
                 serde_json::from_value(p["pairs"].clone()).map_err(|e| e.to_string())?;
-            let mut url = reqwest::Url::parse("http://localhost/").unwrap();
+            // This fixed HTTP URL is valid and independent of request input.
+            let mut url = reqwest::Url::parse("http://localhost/").expect("valid query base URL");
             url.query_pairs_mut().extend_pairs(pairs);
             Ok(json!(url.query().unwrap_or("")))
         }

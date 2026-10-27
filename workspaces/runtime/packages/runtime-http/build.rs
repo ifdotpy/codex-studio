@@ -39,6 +39,82 @@ fn main() -> Result<(), Box<dyn Error>> {
     let document: serde_json::Value = serde_json::from_slice(&fs::read(&spec_path)?)?;
     let mut analyzer = SchemaAnalyzer::new(document)?;
     let mut analysis = analyzer.analyze()?;
+    for (name, owner) in [
+        ("WorkStatus", "studio_runtime_schema::records::WorkStatus"),
+        (
+            "WorkspaceMode",
+            "studio_runtime_schema::records::WorkspaceMode",
+        ),
+    ] {
+        analysis
+            .schemas
+            .get_mut(name)
+            .ok_or("missing owned record domain")?
+            .schema_type = SchemaType::Primitive {
+            rust_type: owner.into(),
+            serde_with: None,
+        };
+    }
+    analysis
+        .schemas
+        .get_mut("MonitorState")
+        .ok_or("missing monitor state schema")?
+        .schema_type = SchemaType::Primitive {
+        rust_type: "studio_runtime_schema::studio_errors::MonitorStatus".into(),
+        serde_with: None,
+    };
+    analysis
+        .schemas
+        .get_mut("StudioError")
+        .ok_or("missing incident schema")?
+        .schema_type = SchemaType::Primitive {
+        rust_type: "studio_runtime_schema::studio_errors::StudioError".into(),
+        serde_with: None,
+    };
+    // HTTP identities use the schema owner's enum, including through references.
+    analysis
+        .schemas
+        .get_mut("ProviderKind")
+        .ok_or("missing provider identity schema")?
+        .schema_type = SchemaType::Primitive {
+        rust_type: "studio_runtime_schema::ProviderKind".to_owned(),
+        serde_with: None,
+    };
+    // Alias the named component to its runtime owner. References retain their
+    // optional/null wrappers without generating a second status enum.
+    analysis
+        .schemas
+        .get_mut("ComplaintResponseStatus")
+        .ok_or("missing complaint response status schema")?
+        .schema_type = SchemaType::Primitive {
+        rust_type: "studio_runtime_schema::complaints::ComplaintResponseStatus".to_owned(),
+        serde_with: None,
+    };
+    // Queue ingress has one shared serde owner. Keep the generated request
+    // name as an alias, and do not emit unused parallel payload DTOs.
+    analysis
+        .schemas
+        .get_mut("QueueActionApiQueuePostRequest")
+        .ok_or("missing queue command schema")?
+        .schema_type = SchemaType::Primitive {
+        rust_type: "studio_runtime_schema::queue_command::QueueCommand".to_owned(),
+        serde_with: None,
+    };
+    for name in [
+        "QueueCancelBody",
+        "QueueEditBody",
+        "QueueFirstBody",
+        "QueueReorderBody",
+        "QueueCancelBodyAction",
+        "QueueEditBodyAction",
+        "QueueFirstBodyAction",
+        "QueueReorderBodyAction",
+    ] {
+        analysis
+            .schemas
+            .remove(name)
+            .ok_or("missing queue payload schema")?;
+    }
     // Keep the wire schema shared, and deserialize ingress timing directly
     // into its runtime owner through the explicit compatibility codec.
     let SchemaType::Object { properties, .. } = &mut analysis

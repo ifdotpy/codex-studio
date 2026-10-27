@@ -780,7 +780,11 @@ impl SessionTask {
                 .records
                 .remove(&ticket.id)
                 .map(|_| SessionOutcome::Resolved { ticket, outcome }),
-            _ => None,
+            Action::Write(_)
+            | Action::Resolve { .. }
+            | Action::Dispatch(_)
+            | Action::GenerationClosed { .. }
+            | Action::ThreadReleased { .. } => None,
         })
     }
 
@@ -1044,7 +1048,11 @@ impl SessionTask {
                 .and_then(|event| event.journal.as_ref())
                 .and_then(|entry| match &entry.payload {
                     JournalPayload::Frame(frame @ Frame::Response { .. }) => Some(frame.clone()),
-                    _ => None,
+                    JournalPayload::Frame(_)
+                    | JournalPayload::RawStdout { .. }
+                    | JournalPayload::Stderr(_)
+                    | JournalPayload::Exit(_)
+                    | JournalPayload::Other { .. } => None,
                 });
             if let Some(frame) = frame {
                 self.retained.actions = self.state.receive_at(frame, at)?.into();
@@ -1228,7 +1236,9 @@ impl SessionTask {
                             initialized: true,
                         });
                     }
-                    _ => return Err(SessionTaskError::Invalid),
+                    Frame::Notification(_) | Frame::UnknownMethod(_) | Frame::Response { .. } => {
+                        return Err(SessionTaskError::Invalid);
+                    }
                 },
                 Action::Resolve { ticket, outcome } => {
                     let ticket = ticket.clone();

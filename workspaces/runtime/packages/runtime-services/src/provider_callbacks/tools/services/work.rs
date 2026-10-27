@@ -30,10 +30,7 @@ pub(super) fn execute(
         .into_iter()
         .filter(|r| r["rootId"] == root)
         .collect::<Vec<_>>();
-    for record in &records {
-        validate_record(record)?;
-    }
-    let statuses = work_policy::work_statuses(&records);
+    let statuses = work_policy::work_statuses(&records)?;
     let action = args["action"].as_str().unwrap_or("list");
     if action == "list" {
         let mut rows = records
@@ -45,8 +42,8 @@ pub(super) fn execute(
                         .get("state")
                         .is_none_or(|v| !studio_runtime_store::truthy(Some(v)) || v == &r["status"])
             })
-            .map(|r| brief(&work_policy::work_item_view(r, &statuses)))
-            .collect::<Vec<_>>();
+            .map(|r| Ok(brief(&work_policy::work_item_view(r, &statuses)?)))
+            .collect::<Result<Vec<_>, studio_runtime_store::StoreError>>()?;
         rows.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
         return page(rows, args, json!([root, args["owner"], args["state"]]));
     }
@@ -62,13 +59,14 @@ pub(super) fn execute(
     };
     if let Some(work) = work {
         if action == "get" {
-            let mut result = brief(&work_policy::work_item_view(work, &statuses));
+            let mut result = brief(&work_policy::work_item_view(work, &statuses)?);
             result["gate"] = work.get("gate").cloned().unwrap_or(Value::Null);
             result["description"] = work["description"].clone();
             if let Some(schema) = work.get("resultSchema") {
                 result["resultSchema"] = schema.clone();
             }
-            result["dependencies"] = work["dependencies"].clone();
+            result["dependencies"] =
+                json!(studio_runtime_store::WorkItemRecord::checked(work.clone())?.dependencies());
             result["latestResult"] = work["results"]
                 .as_array()
                 .and_then(|v| v.last())
@@ -239,25 +237,6 @@ fn validate_command(args: &Value) -> Result<(), CallbackError> {
         return Err(CallbackError::Invalid(
             "Invalid task command field or bound",
         ));
-    }
-    Ok(())
-}
-
-fn validate_record(record: &Value) -> Result<(), CallbackError> {
-    let id = record["id"].as_str().unwrap_or("<unknown>");
-    if !record.is_object()
-        || record["id"].as_str().is_none()
-        || record["status"].as_str().is_none()
-        || ["results", "decisions"].iter().any(|field| {
-            !record[*field]
-                .as_array()
-                .is_some_and(|rows| rows.iter().all(Value::is_object))
-        })
-        || !record["dependencies"]
-            .as_array()
-            .is_some_and(|rows| rows.iter().all(Value::is_string))
-    {
-        return Err(CallbackError::Stored(format!("runtime_work/{id}")));
     }
     Ok(())
 }

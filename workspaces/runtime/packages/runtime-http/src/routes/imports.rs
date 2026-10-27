@@ -219,7 +219,11 @@ async fn provider_request(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Provider request outcome is unknown",
             ),
-            _ => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
+            AccountSessionError::Refused(_)
+            | AccountSessionError::InvalidResponse(_)
+            | AccountSessionError::Persistence => {
+                ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+            }
         })?;
     match (receipt.certainty, receipt.result) {
         (RequestCertainty::Written, Some(ProviderResponse::Reply(value))) => Ok(value),

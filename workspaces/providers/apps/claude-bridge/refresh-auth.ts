@@ -31,8 +31,12 @@ const q = query({
 });
 const verify = createAccountCheck({
   requireSubscription: false,
-  expectedEmail: process.env.STUDIO_CLAUDE_ACCOUNT,
-  expectedIdentity: process.env.STUDIO_CLAUDE_CREDENTIAL_IDENTITY,
+  ...(process.env.STUDIO_CLAUDE_ACCOUNT === undefined
+    ? {}
+    : { expectedEmail: process.env.STUDIO_CLAUDE_ACCOUNT }),
+  ...(process.env.STUDIO_CLAUDE_CREDENTIAL_IDENTITY === undefined
+    ? {}
+    : { expectedIdentity: process.env.STUDIO_CLAUDE_CREDENTIAL_IDENTITY }),
 });
 const lines = createInterface({ input: process.stdin });
 timer = setTimeout(() => {

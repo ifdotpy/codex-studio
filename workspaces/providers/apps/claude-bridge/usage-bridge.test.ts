@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { BridgeNote } from "./testing/bridge-harness.ts";
 import type { BridgeNotificationParams } from "./bridge-protocol.ts";
 import type { UsageObservation } from "./usage-contract.generated.ts";
@@ -101,6 +102,7 @@ test("equal per-turn results preserve cumulative totals and result-only turns ha
     .slice(before)
     .filter((n) => n.method === "thread/tokenUsage/updated");
   expect(notes).toHaveLength(1);
+  assert.ok(notes[0]);
   expect(notes[0].params.studioUsage).toMatchObject({
     kind: "cumulative",
     total: { output: 720 },
@@ -413,8 +415,9 @@ test("scripted Rust SDK close ends an aborted wait without inventing a successfu
   expect(
     b.notes.some(
       (n) =>
-        (n.params as Partial<BridgeNotificationParams<"item/completed">>)?.item
-          ?.text === "Visible answer",
+        n.method === "item/completed" &&
+        n.params.item.type === "agentMessage" &&
+        n.params.item.text === "Visible answer",
     ),
   ).toBe(false);
 });
@@ -685,3 +688,27 @@ test("a deduplicated unfinished stream still permits a later final response for 
     observations(b).filter((o) => o.responseId === "response-1"),
   ).toHaveLength(2);
 });
+
+test.each([
+  { input: "claude-limit", message: /Claude usage limit reached/ },
+  { input: "claude-offline", message: /Can't reach the API server/ },
+])(
+  "scripted Rust SDK $input retains its failed outcome",
+  async ({ input, message }) => {
+    const bridge = await startBridge(
+      new URL(
+        "../../../runtime/apps/runtime-server/tests/fixtures/claude-sdk.mts",
+        import.meta.url,
+      ),
+      "claude-runtime-result-",
+    );
+    bridges.push(bridge);
+    const id = await start(bridge, input);
+    const completion = await bridge.note(
+      "turn/completed",
+      (note) => note.params.turn.id === id,
+    );
+    expect(completion.params.turn.status).toBe("failed");
+    expect(completion.params.turn.error?.message).toMatch(message);
+  },
+);

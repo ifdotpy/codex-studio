@@ -1,3 +1,4 @@
+import { required } from "./components/componentTestFixtures.ts";
 import type { components } from "./generated/api";
 import { afterEach, expect, it, vi } from "vitest";
 import { readEntities } from "../tests/fixtures/rust-ui-fixture.ts";
@@ -38,7 +39,9 @@ it("reads scoped fixture baselines from fragmented SSE and closes the stream", a
   ).toEqual([entry]);
 
   expect(
-    JSON.parse(new URL(fetch.mock.calls[0][0]).searchParams.get("resources")!),
+    JSON.parse(
+      new URL(required(fetch.mock.calls[0])[0]).searchParams.get("resources")!,
+    ),
   ).toEqual([resource]);
   expect(cancel).toHaveBeenCalledOnce();
 });

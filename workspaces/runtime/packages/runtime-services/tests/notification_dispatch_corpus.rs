@@ -28,7 +28,9 @@ async fn live_limits_thread_dispatch_records_only_the_ignored_receipt() {
     let frame = match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, &bytes).payload
     {
         studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame,
-        other => panic!("fixture must decode: {other:?}"),
+        other @ studio_runtime_providers::DecodedJournalPayload::RawStdout { .. } => {
+            panic!("fixture must decode: {other:?}")
+        }
     };
     store
         .transaction_with_error(move |tx| {

@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+import assert from "node:assert/strict";
 import { expect, test } from "vitest";
 import vm from "node:vm";
 import { readFile } from "node:fs/promises";
@@ -50,7 +51,7 @@ async function worker({
     },
   ) => {
     let work: Promise<unknown> | undefined;
-
+    assert.ok(handlers[name]);
     handlers[name]({ ...event, waitUntil: (value) => (work = value) });
     await work;
   };

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
 const post = vi.hoisted(() => vi.fn());
 vi.mock("../api", async (original) => ({
@@ -42,6 +43,7 @@ it("accepts only the exact frame, origin, owner and correlation used for a reque
   const { rpc, child, reply, frames } = surface();
   const request = rpc.request("remote", { action: "refresh" });
   await Promise.resolve();
+  assert.ok(child.postMessage.mock.calls[0] != null);
   const sent = child.postMessage.mock.calls[0][0];
   const data = {
     kind: "studio-sidebar-result",
@@ -76,6 +78,7 @@ it("reconstructs the previous error wire shape and keeps uncertain timeouts with
   });
   const rejected = request.catch((error: unknown) => error);
   await Promise.resolve();
+  assert.ok(child.postMessage.mock.calls[0] != null);
   const sent = child.postMessage.mock.calls[0][0];
   reply({
     kind: "studio-sidebar-result",
@@ -121,6 +124,7 @@ it("reconstructs documented API diagnostics for the same error presentation as H
   const request = rpc.request("remote", { action: "refresh" });
   const rejected = request.catch((error: unknown) => error);
   await Promise.resolve();
+  assert.ok(child.postMessage.mock.calls[0] != null);
   const sent = child.postMessage.mock.calls[0][0];
   const payload = {
     message: "Conflict",

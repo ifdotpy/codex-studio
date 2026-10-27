@@ -2,7 +2,9 @@
 use super::{AccountCommand, StoreBridge};
 use crate::{
     account_worker::retained::{RequestActor, consumers::HistoryPort},
-    recovery::{RecoveryAction, RecoveryEffectResult, RecoveryError, RecoveryOutcome},
+    recovery::{
+        RecoveryAction, RecoveryEffectResult, RecoveryError, RecoveryFailure, RecoveryOutcome,
+    },
     recovery_absence::RecoveryObservation,
     recovery_history::ConnectionScope,
     recovery_policy::RecoverySnapshot,
@@ -15,6 +17,10 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
+use studio_runtime_schema::{
+    provider_lifecycle::{CodexTurnStatus, TerminalTurnStatus},
+    studio_errors::{Cause, Context, Diagnostics, Kind, RecoveryPhase, StudioError, Target},
+};
 use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, SchedulerRepository};
 
 pub(super) struct FirstPass {
@@ -28,60 +34,61 @@ pub(super) struct FirstPass {
 struct FirstPassResult {
     ready: Vec<(String, i64)>,
     streams: Option<crate::notification_dispatch::NotificationStreamBuffer>,
+    result: Result<(), RecoveryError>,
 }
 
 pub(super) fn start_first_pass(first_pass: FirstPass) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let store = first_pass.bridge.store.clone();
         let request_scope = first_pass.scope.clone();
-        if let Ok(result) = reconcile_first_pass(
+        let result = reconcile_first_pass(
             Arc::clone(&store),
             &first_pass.account,
             request_scope,
             first_pass.session.clone(),
         )
-        .await
+        .await;
+        if let Some(streams) = result.streams
+            && first_pass
+                .commands
+                .send(AccountCommand::RestartStreams(Box::new(streams)))
+                .await
+                .is_err()
         {
-            if let Some(streams) = result.streams
-                && first_pass
-                    .commands
-                    .send(AccountCommand::RestartStreams(Box::new(streams)))
-                    .await
-                    .is_err()
+            return;
+        }
+        for (agent_id, epoch) in result.ready {
+            if first_pass
+                .commands
+                .send(AccountCommand::Wake { agent_id, epoch })
+                .await
+                .is_err()
             {
                 return;
             }
-            for (agent_id, epoch) in result.ready {
-                if first_pass
-                    .commands
-                    .send(AccountCommand::Wake { agent_id, epoch })
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-            }
         }
-        // Restart turns are settled above, so their commands are checked too.
-        super::background_commands::check_account(
-            Arc::clone(&store),
-            &first_pass.account,
-            &first_pass.scope,
-            &first_pass.session,
-        )
-        .await;
-        // A turn stopped while no worker was attached still runs in this
-        // provider generation; end it on this connection.
-        super::stopped_turns::end_account(
-            store,
-            &first_pass.account,
-            &first_pass.scope,
-            &first_pass.session,
-        )
-        .await;
+        if result.result.is_ok() {
+            // Restart turns are settled above, so their commands are checked too.
+            super::background_commands::check_account(
+                Arc::clone(&store),
+                &first_pass.account,
+                &first_pass.scope,
+                &first_pass.session,
+            )
+            .await;
+            // A turn stopped while no worker was attached still runs in this
+            // provider generation; end it on this connection.
+            super::stopped_turns::end_account(
+                store,
+                &first_pass.account,
+                &first_pass.scope,
+                &first_pass.session,
+            )
+            .await;
+        }
         let _result = first_pass
             .commands
-            .send(AccountCommand::RestartRecoveryDone)
+            .send(AccountCommand::RestartRecoveryDone(result.result))
             .await;
     })
 }
@@ -91,145 +98,247 @@ async fn reconcile_first_pass(
     account: &str,
     scope: ConnectionScope,
     session: super::retained::RetainedSessionPort,
-) -> Result<FirstPassResult, RecoveryError> {
-    // Every agent of the account gets this pass. A load returns nothing for a
-    // full page without an eligible row, so only the sweep end stops the scan.
+) -> FirstPassResult {
+    // The cursor advances past located refusals. Only a fatal error stops the sweep.
     let mut cursor = RecoveryCursor::sweep();
     let mut recovered = Vec::new();
     let mut recovered_streams = None;
-    while !cursor.swept() {
-        let jobs = load_recovery_jobs(&store, account, &mut cursor).await?;
-        for job in jobs {
-            // Restart and provider loss share the same guarded native-history pass.
-            let recovery_turn = matches!(&job, RecoveryJob::Connection { snapshot, .. }
-                if snapshot.automatic_turn().is_some());
-            if recovery_turn
-                && matches!(&job, RecoveryJob::Connection { snapshot, .. }
-                if !crate::image_workspace::restart_follow_up_allowed(
-                    snapshot.record(),
-                    crate::image_workspace::IMAGE_EXECUTION_SUPPORTED,
-                ))
-            {
-                continue;
-            }
-            let mut history_id = None;
-            let job = if recovery_turn {
-                let RecoveryJob::Connection {
-                    snapshot,
-                    automatic,
-                } = job
-                else {
-                    continue;
-                };
-                let check = automatic_check_id(&snapshot, &scope);
-                let Some(snapshot) = claim_automatic_check(&store, snapshot, &check).await? else {
-                    continue;
-                };
-                history_id = Some(check);
-                RecoveryJob::Connection {
-                    snapshot,
-                    automatic,
+    let result = async {
+        while !cursor.swept() {
+            let jobs = match load_recovery_jobs(&store, account, &mut cursor).await {
+                Ok(jobs) => jobs,
+                Err(error) => {
+                    record_failure(&store, &scope, RecoveryPhase::Scan, None, None, &error).await?;
+                    match error.classify() {
+                        RecoveryFailure::Refused => continue,
+                        RecoveryFailure::Fatal(error) => return Err(error),
+                    }
                 }
-            } else {
-                job
             };
-            let snapshot = match &job {
-                RecoveryJob::Turn(snapshot)
-                    if snapshot.record()["restartRecovery"]["stage"] == "held"
-                        && !snapshot.record()["contextRepairWait"].is_null()
-                        && snapshot.eligibility().unconfirmed_start =>
-                {
-                    snapshot
-                }
-                RecoveryJob::Connection { snapshot, .. } if recovery_turn => snapshot,
-                _ => continue,
-            };
-            let agent = snapshot.record()["id"]
-                .as_str()
-                .ok_or(RecoveryError::CommitFailed)?
-                .to_owned();
-            let epoch = snapshot.record()["epoch"]
-                .as_i64()
-                .ok_or(RecoveryError::CommitFailed)?;
-            let thread = snapshot.record()["threadId"]
-                .as_str()
-                .ok_or(RecoveryError::CommitFailed)?
-                .to_owned();
-            let observation = RecoveryObservation {
-                scope: scope.clone(),
-                at: unix_seconds(),
-                supervisor: None,
-                quiet: false,
-                journal_drained: false,
-                account_reserved: true,
-                tools_refreshing: false,
-                preparation_pending: false,
-                completed_turn: None,
-            };
-            let observed_scope = scope.clone();
-            let observed_value = observation.clone();
-            let source: Arc<crate::recovery_runtime::ObservationSource> =
-                Arc::new(move |current: &ConnectionScope| {
-                    (current == &observed_scope).then(|| observed_value.clone())
-                });
-            let history_id = history_id.unwrap_or_else(|| snapshot.connection_recovery_id());
-            let mut history = HistoryPort::new(
-                session.clone(),
-                RequestActor {
-                    agent: agent.clone(),
-                    epoch,
-                },
-                history_id.clone(),
-            );
-            let mut reader =
-                RetainedRecoveryReader::new(scope.clone(), thread, &mut history, source.as_ref())?;
-            let completion: Arc<Mutex<Box<dyn CompletionWriter>>> = if recovery_turn {
-                super::connection_recovery::lifecycle_completion(
-                    &store,
-                    account,
-                    history_id,
-                    observation.at,
-                )
-                .await?
-            } else {
-                Arc::new(Mutex::new(Box::new(RestartInputCompletion::default())))
-            };
-            let task_completion: Arc<dyn TaskCompletionWriter> = Arc::new(NoTaskCompletion);
-            let mut runtime = RecoveryRuntime {
-                store: Arc::clone(&store),
-                observation: Arc::clone(&source),
-                completion,
-                task_completion,
-            };
-            let mut scan = crate::recovery_runtime::RecoveryScan::default();
-            let selected = scan
-                .take([job.clone()], std::time::Instant::now(), observation.at)
-                .ok_or(RecoveryError::EffectsUnavailable)?;
-            let outcome = runtime
-                .reconcile(&selected, scope.clone(), &mut reader)
-                .await;
-            scan.finish(&selected, std::time::Instant::now(), &outcome)?;
-            let outcome = match outcome {
-                Ok(outcome) => outcome,
-                // An unreadable turn keeps its interrupted state and its
-                // error; the user's next message still runs. Later rows proceed.
-                Err(RecoveryError::History(_) | RecoveryError::Dependency(_)) if recovery_turn => {
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            if matches!(outcome.outcome, RecoveryOutcome::Applied(_)) {
-                recovered.push((agent, epoch));
-                if let Some(streams) = outcome.stream_update {
-                    recovered_streams = Some(streams);
+            for job in jobs {
+                let agent = job.agent().record()["id"].as_str().map(str::to_owned);
+                let identity = job.agent().connection_recovery_id();
+                match reconcile_job(&store, account, &scope, &session, job).await {
+                    Ok(Some((agent, epoch, outcome))) => {
+                        if matches!(outcome.outcome, RecoveryOutcome::Applied(_)) {
+                            recovered.push((agent, epoch));
+                            if let Some(streams) = outcome.stream_update {
+                                recovered_streams = Some(streams);
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        record_failure(
+                            &store,
+                            &scope,
+                            RecoveryPhase::History,
+                            agent,
+                            Some(identity),
+                            &error,
+                        )
+                        .await?;
+                        match error.classify() {
+                            RecoveryFailure::Refused => {}
+                            RecoveryFailure::Fatal(error) => return Err(error),
+                        }
+                    }
                 }
             }
         }
+        Ok(())
     }
-    Ok(FirstPassResult {
+    .await;
+    FirstPassResult {
         ready: recovered,
         streams: recovered_streams,
-    })
+        result,
+    }
+}
+
+async fn reconcile_job(
+    store: &Arc<RuntimeStore>,
+    account: &str,
+    scope: &ConnectionScope,
+    session: &super::retained::RetainedSessionPort,
+    job: RecoveryJob,
+) -> Result<Option<(String, i64, RecoveryEffectResult)>, RecoveryError> {
+    // Restart and provider loss share the same guarded native-history pass.
+    let recovery_turn = matches!(&job, RecoveryJob::Connection { snapshot, .. }
+        if snapshot.automatic_turn().is_some());
+    if recovery_turn
+        && matches!(&job, RecoveryJob::Connection { snapshot, .. }
+        if !crate::image_workspace::restart_follow_up_allowed(
+            snapshot.record(),
+            crate::image_workspace::IMAGE_EXECUTION_SUPPORTED,
+        ))
+    {
+        return Ok(None);
+    }
+    let mut history_id = None;
+    let job = if recovery_turn {
+        let RecoveryJob::Connection {
+            snapshot,
+            automatic,
+        } = job
+        else {
+            return Ok(None);
+        };
+        let check = automatic_check_id(&snapshot, scope);
+        let Some(snapshot) = claim_automatic_check(store, snapshot, &check).await? else {
+            return Ok(None);
+        };
+        history_id = Some(check);
+        RecoveryJob::Connection {
+            snapshot,
+            automatic,
+        }
+    } else {
+        job
+    };
+    let snapshot = match &job {
+        RecoveryJob::Turn(snapshot)
+            if snapshot.record()["restartRecovery"]["stage"] == "held"
+                && !snapshot.record()["contextRepairWait"].is_null()
+                && snapshot.eligibility().unconfirmed_start =>
+        {
+            snapshot
+        }
+        RecoveryJob::Connection { snapshot, .. } if recovery_turn => snapshot,
+        RecoveryJob::Turn(_) | RecoveryJob::Connection { .. } | RecoveryJob::Task(_) => {
+            return Ok(None);
+        }
+    };
+    let agent = snapshot.record()["id"]
+        .as_str()
+        .ok_or(RecoveryError::CommitFailed)?
+        .to_owned();
+    let epoch = snapshot.record()["epoch"]
+        .as_i64()
+        .ok_or(RecoveryError::CommitFailed)?;
+    let thread = snapshot.record()["threadId"]
+        .as_str()
+        .ok_or(RecoveryError::CommitFailed)?
+        .to_owned();
+    let observation = RecoveryObservation {
+        scope: scope.clone(),
+        at: unix_seconds(),
+        supervisor: None,
+        quiet: false,
+        journal_drained: false,
+        account_reserved: true,
+        tools_refreshing: false,
+        preparation_pending: false,
+        completed_turn: None,
+    };
+    let observed_scope = scope.clone();
+    let observed_value = observation.clone();
+    let source: Arc<crate::recovery_runtime::ObservationSource> =
+        Arc::new(move |current: &ConnectionScope| {
+            (current == &observed_scope).then(|| observed_value.clone())
+        });
+    let history_id = history_id.unwrap_or_else(|| snapshot.connection_recovery_id());
+    let mut history = HistoryPort::new(
+        session.clone(),
+        RequestActor {
+            agent: agent.clone(),
+            epoch,
+        },
+        history_id.clone(),
+    );
+    let mut reader =
+        RetainedRecoveryReader::new(scope.clone(), thread, &mut history, source.as_ref())?;
+    let completion: Arc<Mutex<Box<dyn CompletionWriter>>> = if recovery_turn {
+        super::connection_recovery::lifecycle_completion(store, account, history_id, observation.at)
+            .await?
+    } else {
+        Arc::new(Mutex::new(Box::new(RestartInputCompletion::default())))
+    };
+    let task_completion: Arc<dyn TaskCompletionWriter> = Arc::new(NoTaskCompletion);
+    let mut runtime = RecoveryRuntime {
+        store: Arc::clone(store),
+        observation: Arc::clone(&source),
+        completion,
+        task_completion,
+    };
+    let mut scan = crate::recovery_runtime::RecoveryScan::default();
+    let selected = scan
+        .take([job.clone()], std::time::Instant::now(), observation.at)
+        .ok_or(RecoveryError::EffectsUnavailable)?;
+    let outcome = runtime
+        .reconcile(&selected, scope.clone(), &mut reader)
+        .await;
+    scan.finish(&selected, std::time::Instant::now(), &outcome)?;
+    let outcome = outcome?;
+    Ok(Some((agent, epoch, outcome)))
+}
+
+async fn record_failure(
+    store: &RuntimeStore,
+    scope: &ConnectionScope,
+    phase: RecoveryPhase,
+    agent_id: Option<String>,
+    recovery_id: Option<String>,
+    error: &RecoveryError,
+) -> Result<(), studio_runtime_store::StoreError> {
+    let causes = match error {
+        RecoveryError::Store(error) => crate::studio_errors::store_causes(error),
+        RecoveryError::Record(crate::recovery_policy::InvalidRecoveryRecord::Stored {
+            table,
+            id,
+        }) => vec![Cause::StoredRecord {
+            object: (*table).into(),
+            id: id.clone(),
+            pointer: None,
+        }],
+        RecoveryError::History(_)
+        | RecoveryError::Record(crate::recovery_policy::InvalidRecoveryRecord::Schema { .. })
+        | RecoveryError::Dependency(_)
+        | RecoveryError::EffectsUnavailable
+        | RecoveryError::CommitFailed => Vec::new(),
+    };
+    let kind = Kind::RecoveryFailed;
+    let detail = match error {
+        RecoveryError::History(error) => error.to_string(),
+        RecoveryError::Record(error) => error.to_string(),
+        RecoveryError::Store(_)
+        | RecoveryError::Dependency(_)
+        | RecoveryError::EffectsUnavailable
+        | RecoveryError::CommitFailed => kind.reason().into(),
+    };
+    let context = Context::Recovery {
+        account: scope.account.clone(),
+        phase,
+        agent_id: agent_id.clone(),
+    };
+    let id = format!(
+        "recovery:{}",
+        studio_runtime_store::sha256_hex(
+            json!([scope, context, recovery_id, causes])
+                .to_string()
+                .as_bytes(),
+        )
+    );
+    crate::studio_errors::record_incident(
+        store,
+        StudioError {
+            id,
+            kind,
+            reason: kind.reason().into(),
+            target: Target::Details,
+            detail,
+            subject: agent_id.unwrap_or_else(|| scope.account.clone()),
+            at: unix_seconds(),
+            monitor_id: None,
+            event_id: None,
+            diagnostics: Diagnostics {
+                context,
+                certainty: kind.certainty(),
+                causes,
+            },
+        },
+    )
+    .await
 }
 
 /// The identity of one automatic native-history check; its retained reads and
@@ -353,14 +462,14 @@ impl CompletionWriter for RestartInputCompletion {
             marker["reconciledAt"] = json!(unix_seconds());
         }
         AgentRepository::put(tx, &agent)?;
-        let native_status = turn["status"].as_str().ok_or(RecoveryError::CommitFailed)?;
-        let terminal = match native_status {
-            "completed" => Some(studio_runtime_store::AgentStatus::Completed),
-            "failed" => Some(studio_runtime_store::AgentStatus::Failed),
-            "interrupted" => Some(studio_runtime_store::AgentStatus::Interrupted),
-            _ => None,
-        };
-        if let Some(status) = terminal {
+        let terminal = CodexTurnStatus::observe(turn).and_then(|status| status.terminal());
+        if let Some(terminal) = terminal {
+            let native_status = terminal.as_str();
+            let status = match terminal {
+                TerminalTurnStatus::Completed => studio_runtime_store::AgentStatus::Completed,
+                TerminalTurnStatus::Failed => studio_runtime_store::AgentStatus::Failed,
+                TerminalTurnStatus::Interrupted => studio_runtime_store::AgentStatus::Interrupted,
+            };
             let items = turn["items"]
                 .as_array()
                 .ok_or(RecoveryError::CommitFailed)?;
@@ -370,13 +479,15 @@ impl CompletionWriter for RestartInputCompletion {
             for item in items.iter().filter(|item| item["type"] == "agentMessage") {
                 let item_native_id = item["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
                 let item_id = format!("{agent_id}:{item_native_id}");
-                let body = item["text"].as_str().unwrap_or_default();
                 let previous =
                     studio_runtime_store::NotificationDispatchRepository::transcript_item(
                         tx, agent_id, &item_id,
                     )?;
                 if previous.as_ref().is_some_and(|(record, _)| {
-                    record["streaming"] != true && record["text"].as_str() == Some(body)
+                    record["streaming"] != true
+                        && item["text"]
+                            .as_str()
+                            .is_some_and(|body| record["text"].as_str() == Some(body))
                 }) {
                     continue;
                 }
@@ -390,7 +501,7 @@ impl CompletionWriter for RestartInputCompletion {
                         item,
                         unix_seconds(),
                     )
-                    .map_err(|_| RecoveryError::CommitFailed)?;
+                    .map_err(RecoveryError::from)?;
                 if let Some(next) = next {
                     streams = next;
                 }

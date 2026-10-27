@@ -1,5 +1,7 @@
 import type { ActiveQuery, BackgroundTask } from "./bridge.ts";
 import type { BridgeParams, BridgeResult } from "./bridge-protocol.ts";
+import type { FreshToolItem } from "./session-state.ts";
+type FreshCommandItem = Extract<FreshToolItem, { type: "commandExecution" }>;
 import type {
   SDKTaskStartedMessage,
   SDKTaskUpdatedMessage,
@@ -11,6 +13,18 @@ type TaskEvent =
   | Pick<SDKTaskUpdatedMessage, "subtype" | "patch">
   | Pick<SDKTaskNotificationMessage, "subtype">
   | Pick<SDKTaskProgressMessage, "subtype">;
+
+const terminalTaskPatch = {
+  pending: false,
+  running: false,
+  completed: true,
+  failed: true,
+  killed: true,
+  paused: false,
+} satisfies Record<
+  NonNullable<SDKTaskUpdatedMessage["patch"]["status"]>,
+  boolean
+>;
 
 // Move a running Claude Bash call to the background (the Ctrl+B control).
 //
@@ -27,8 +41,13 @@ export function foregroundCommandUpdate(
   active: Pick<ActiveQuery, "tools">,
   task: BackgroundTask,
   message: TaskEvent,
-) {
-  if (task.task_type !== FOREGROUND_SHELL || !task.tool_use_id) return null;
+): FreshCommandItem | null {
+  if (
+    task.task_type !== FOREGROUND_SHELL ||
+    !("tool_use_id" in task) ||
+    !task.tool_use_id
+  )
+    return null;
   const item = active.tools.get(task.tool_use_id);
   if (item?.type !== "commandExecution" || item.status !== "inProgress")
     return null;
@@ -36,16 +55,15 @@ export function foregroundCommandUpdate(
   if (message.subtype === "task_started")
     available = message.is_backgrounded === false;
   if (
-    (message as Extract<TaskEvent, { patch: unknown }>).patch
-      ?.is_backgrounded === true
+    message.subtype === "task_updated" &&
+    message.patch.is_backgrounded === true
   )
     available = false;
   if (
     message.subtype === "task_notification" ||
-    ["completed", "failed", "killed"].includes(
-      (message as Extract<TaskEvent, { patch: unknown }>).patch
-        ?.status as string,
-    )
+    (message.subtype === "task_updated" &&
+      message.patch.status !== undefined &&
+      terminalTaskPatch[message.patch.status])
   )
     available = false;
   if (available === (item.canMoveToBackground === true)) return null;
@@ -55,16 +73,26 @@ export function foregroundCommandUpdate(
 
 // Fields for a Bash result whose command keeps running as a background task.
 // A backgrounded command has no exit code yet, so none is reported.
-export function backgroundedCommandFields(toolUseResult: unknown) {
-  const taskId = (toolUseResult as { backgroundTaskId?: unknown } | undefined)
-    ?.backgroundTaskId;
+export function backgroundedCommandFields(
+  toolUseResult: unknown,
+): Pick<
+  FreshCommandItem,
+  "canMoveToBackground" | "backgroundTaskId" | "backgroundedByUser"
+> | null {
+  if (
+    !toolUseResult ||
+    typeof toolUseResult !== "object" ||
+    !("backgroundTaskId" in toolUseResult)
+  )
+    return null;
+  const taskId = toolUseResult.backgroundTaskId;
   if (typeof taskId !== "string" || !taskId) return null;
   return {
     canMoveToBackground: false,
     backgroundTaskId: taskId,
     backgroundedByUser:
-      (toolUseResult as { backgroundedByUser?: boolean }).backgroundedByUser ===
-      true,
+      "backgroundedByUser" in toolUseResult &&
+      toolUseResult.backgroundedByUser === true,
   };
 }
 

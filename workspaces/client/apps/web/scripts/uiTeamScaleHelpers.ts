@@ -1,3 +1,4 @@
+import { providerLabel } from "../src/generated/providerKind.ts";
 import type {
   components,
   AgentEntityDto,
@@ -587,7 +588,7 @@ export async function configureNewChat<Selector>(
     await chooseSegment(
       dialog,
       `${accountLabel} provider`,
-      settings.profile.provider === "claude" ? "Claude" : "Codex",
+      providerLabel(settings.profile.provider),
     );
     const accounts = dialog.getByRole("group", {
       name: accountLabel,
@@ -617,7 +618,7 @@ export async function configureNewChat<Selector>(
     await chooseSegment(
       dialog,
       `${prefix} reasoning`,
-      settings.effort[0].toUpperCase() + settings.effort.slice(1),
+      settings.effort.charAt(0).toUpperCase() + settings.effort.slice(1),
     );
     const fast = dialog.getByRole("switch", { name: "Fast mode", exact: true });
     if (await fast.count()) await fast.setChecked(settings.profile.fastMode);

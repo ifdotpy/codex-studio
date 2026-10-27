@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { EntityFixtureState, TestStateView } from "../playwright.ts";
 import {
   test,
@@ -59,6 +60,8 @@ test("phone conversation gives the transcript its viewport budget", async ({
       });
       try {
         const view = structuredClone(snapshot);
+        assert.ok(view.runtime.desktop);
+
         view.runtime.desktop = {
           ...view.runtime.desktop!,
           diskSpace: warning
@@ -181,10 +184,12 @@ test("phone conversation gives the transcript its viewport budget", async ({
                     .toJSON() as DOMRect,
               ),
             );
-          for (let i = 1; i < footerFacts.length; i++)
-            expect(
-              footerFacts[i].left - footerFacts[i - 1].right,
-            ).toBeGreaterThanOrEqual(8);
+          for (let i = 1; i < footerFacts.length; i++) {
+            const current = footerFacts[i],
+              previous = footerFacts[i - 1];
+            assert.ok(current && previous);
+            expect(current.left - previous.right).toBeGreaterThanOrEqual(8);
+          }
         }
         if (warning) {
           const notice = page.locator(".supervisor-recovery-notice");

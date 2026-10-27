@@ -8,6 +8,7 @@ use serde_json::Map;
 use std::path::{Path, PathBuf};
 use std::{future::Future, pin::Pin};
 use studio_runtime_process::ProviderLaunchSpec;
+use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentRecord, Transaction};
 
@@ -884,11 +885,10 @@ pub(super) fn native_thread_blocked(record: &Value) -> bool {
         return false;
     };
     record["nativeThreadBlock"]["threadId"] == thread
-        || record["error"]["codexErrorInfo"] == "misalignmentPolicyViolation"
+        || is_misalignment_policy_violation(&record["error"])
         || (nonempty(&record["nativeTurnError"]["turnId"])
             && record["nativeTurnError"]["turnId"] == record["turnId"]
-            && record["nativeTurnError"]["error"]["codexErrorInfo"]
-                == "misalignmentPolicyViolation")
+            && is_misalignment_policy_violation(&record["nativeTurnError"]["error"]))
 }
 pub(super) fn context_repair_blocked(record: &Value) -> bool {
     nonempty(&record["contextRepairWait"])
@@ -980,7 +980,7 @@ fn host_worktree(
     role: thread::Role,
     lead: bool,
 ) -> Result<Option<thread::HostWorktree>, WorkerError> {
-    if record["provider"] != "claude"
+    if record["provider"] != ProviderKind::Claude.key()
         || lead
         || role != thread::Role::Implementer
         || record["parentId"].as_str().is_none()
@@ -1571,6 +1571,22 @@ mod resource_tests {
 
     #[test]
     fn native_thread_blocks_follow_the_current_thread_and_turn() {
+        for info in [
+            json!({"misalignmentPolicyViolation":{}}),
+            json!("misalignmentPolicyViolation"),
+        ] {
+            assert!(native_thread_blocked(
+                &json!({"threadId":"current","error":{"codexErrorInfo":info}})
+            ));
+        }
+        for info in [
+            json!({"misalignmentPolicyViolation":{},"futureCode":{"id":42}}),
+            json!({"futureCode":{}}),
+        ] {
+            assert!(!native_thread_blocked(
+                &json!({"threadId":"current","error":{"codexErrorInfo":info}})
+            ));
+        }
         assert!(native_thread_blocked(
             &json!({"threadId":"current","nativeThreadBlock":{"threadId":"current"}})
         ));
@@ -1741,7 +1757,9 @@ mod resource_tests {
                             thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => {
                                 attempt
                             }
-                            other => panic!("{case}: {other:?}"),
+                            other @ thread::Outcome::Ready(_)
+                            | other @ thread::Outcome::Hold(_)
+                            | other @ thread::Outcome::Refuse(_) => panic!("{case}: {other:?}"),
                         };
                         assert_eq!(
                             attempt.before_submit.set["nativeToolSource"],
@@ -2047,7 +2065,7 @@ mod workspace_fence_tests {
                         None)?;
                     let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
                         thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => attempt,
-                        other => panic!("expected thread launch, got {other:?}"),
+                        other @ thread::Outcome::Ready(_) | other @ thread::Outcome::Hold(_) | other @ thread::Outcome::Refuse(_) => panic!("expected thread launch, got {other:?}"),
                     };
                     assert_eq!(attempt.params["claude"]["permissionMode"], *mode);
                 }
@@ -2096,7 +2114,7 @@ mod workspace_fence_tests {
                         None)?;
                     let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
                         thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => attempt,
-                        other => panic!("expected thread launch, got {other:?}"),
+                        other @ thread::Outcome::Ready(_) | other @ thread::Outcome::Hold(_) | other @ thread::Outcome::Refuse(_) => panic!("expected thread launch, got {other:?}"),
                     };
                     let options = attempt.params.get("claude").unwrap_or(&Value::Null);
                     if provider == "claude" && role == "reviewer" {

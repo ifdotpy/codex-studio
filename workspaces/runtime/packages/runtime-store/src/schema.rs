@@ -87,9 +87,8 @@ pub(crate) fn verify_serving_pragmas(connection: &Connection, database: &str) ->
     Ok(())
 }
 
-pub(crate) fn ensure_analytics_limits_index(path: &Path) -> StoreResult<()> {
-    let analytics = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    if table_exists(&analytics, "analytics_limits")? {
+pub(crate) fn ensure_analytics_limits_index(analytics: &Connection) -> StoreResult<()> {
+    if table_exists(analytics, "analytics_limits")? {
         analytics.execute_batch(
             "CREATE INDEX IF NOT EXISTS analytics_limits_account_at ON analytics_limits(account, at)",
         )?;

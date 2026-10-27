@@ -27,7 +27,7 @@ function memory(pid: number | undefined) {
           pid: Number(parts[1]),
           parent: Number(parts[2]),
           bytes: Number(parts[3]) * 1024,
-          args: parts[4],
+          args: parts[4] ?? "",
         }
       );
     })
@@ -97,11 +97,11 @@ try {
   );
   const page = await desktop.firstWindow();
   page.setDefaultTimeout(15000);
-  assert.equal(
+  assert.deepEqual(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].isVisible(),
+      BrowserWindow.getAllWindows().map((window) => window.isVisible()),
     ),
-    false,
+    [false],
   );
   const pair = async (server: (typeof servers)[number]) => {
     await page.locator("body").click({ position: { x: 1, y: 1 }, force: true });
@@ -161,12 +161,13 @@ try {
       ...memory(desktop.process().pid),
     };
     assert.equal(
-      await desktop.evaluate(
-        ({ BrowserWindow }) =>
-          Object.keys(
-            BrowserWindow.getAllWindows()[0].webContents.session.serviceWorkers.getAllRunning(),
-          ).length,
-      ),
+      await desktop.evaluate(({ BrowserWindow }) => {
+        const [window] = BrowserWindow.getAllWindows();
+        if (!window) throw new Error("Expected the hidden desktop window.");
+        return Object.keys(
+          window.webContents.session.serviceWorkers.getAllRunning(),
+        ).length;
+      }),
       0,
     );
     await page.clock.fastForward(5 * 60 * 1000 + 30000);

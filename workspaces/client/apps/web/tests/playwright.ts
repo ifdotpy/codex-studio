@@ -102,6 +102,12 @@ function readFixtureEntitySchemas(): Record<string, ObjectSubtype> {
   ).components.schemas;
 }
 const fixtureEntitySchemas = readFixtureEntitySchemas();
+function fixtureEntityPropertyNames(name: string): string[] {
+  const schema = fixtureEntitySchemas[name];
+  if (!schema?.properties)
+    throw new Error(`Missing fixture entity properties for ${name}`);
+  return Object.keys(schema.properties);
+}
 const generatedApiSchema = readFileSync(
   new URL("../src/generated/apiSchema.ts", import.meta.url),
   "utf8",
@@ -220,7 +226,7 @@ function readGeneratedString(name: string) {
   const match = generatedApiSchema.match(
     new RegExp(`${name}\\s*=\\s*"([^"]+)"`),
   );
-  if (!match) throw new Error(`Generated ${name} is missing.`);
+  if (!match?.[1]) throw new Error(`Generated ${name} is missing.`);
   return match[1];
 }
 
@@ -228,7 +234,7 @@ export function readApiSchemaHash() {
   const match = generatedApiSchema.match(
     /API_SCHEMA_HASH\s*=\s*"([0-9a-f]{64})"/,
   );
-  if (!match) throw new Error("Generated API schema hash is missing.");
+  if (!match?.[1]) throw new Error("Generated API schema hash is missing.");
   return match[1];
 }
 
@@ -332,7 +338,7 @@ export function installApiSchemaFixtureHeaders(
     if (handler === undefined) {
       const result = await unregisterRoute(url);
       for (let index = wrappedHandlers.length - 1; index >= 0; index--) {
-        if (routeMatchersEqual(wrappedHandlers[index].url, url))
+        if (routeMatchersEqual(wrappedHandlers[index]!.url, url))
           wrappedHandlers.splice(index, 1);
       }
       return result;
@@ -621,18 +627,18 @@ const sharedFixtures: import("@playwright/test").Fixtures<
       } finally {
         clearInterval(memorySampler);
         sampleMemory();
-        let workerMemorySelection: Partial<
-          ReturnType<typeof parseWorkerSelection>
-        > = {};
+        let workerMemoryRunId:
+          | ReturnType<typeof parseWorkerSelection>["workerMemoryRunId"]
+          | undefined = undefined;
         try {
-          workerMemorySelection = parseWorkerSelection(
+          workerMemoryRunId = parseWorkerSelection(
             process.env.CODEX_PLAYWRIGHT_WORKER_SELECTION || "{}",
-          );
+          ).workerMemoryRunId;
         } catch {
           // A malformed inherited selector should not fail fixture cleanup.
         }
         persistWorkerMemorySample({
-          runId: workerMemorySelection.workerMemoryRunId,
+          runId: workerMemoryRunId,
           workerPid: process.pid,
           processTreePssBytes: memoryPeak.processTreePssBytes,
           processTreeBreakdown: memoryPeak.processTreeBreakdown,
@@ -1189,11 +1195,17 @@ export type EntityFixtureState = Omit<
   TestStateView,
   "token" | "threads" | "runtime"
 > & {
-  runtime: Partial<Omit<TestRuntimeView, "sessionCostsByAgent">> & {
-    sessionCostsByAgent?: Record<
-      string,
-      Partial<NonNullable<TestRuntimeView["sessionCostsByAgent"]>[string]>
-    >;
+  runtime: {
+    [Key in keyof Omit<TestRuntimeView, "sessionCostsByAgent">]?:
+      | TestRuntimeView[Key]
+      | undefined;
+  } & {
+    sessionCostsByAgent?:
+      | Record<
+          string,
+          Partial<NonNullable<TestRuntimeView["sessionCostsByAgent"]>[string]>
+        >
+      | undefined;
   };
 };
 
@@ -1629,8 +1641,8 @@ function entityValuesFromSnapshot(
         id: row.id,
         value: pickJsonKeys<AgentSummaryEntityDto, keyof AgentSummaryEntityDto>(
           row,
-          Object.keys(
-            fixtureEntitySchemas.AgentSummaryEntityDto.properties!,
+          fixtureEntityPropertyNames(
+            "AgentSummaryEntityDto",
           ) as (keyof AgentSummaryEntityDto)[],
         ),
       };
@@ -1768,8 +1780,8 @@ function entityValuesFromSnapshot(
     id: row.id,
     value: pickJsonKeys<AgentDetailEntityDto, keyof AgentDetailEntityDto>(
       row,
-      Object.keys(
-        fixtureEntitySchemas.AgentDetailEntityDto.properties!,
+      fixtureEntityPropertyNames(
+        "AgentDetailEntityDto",
       ) as (keyof AgentDetailEntityDto)[],
     ),
   }));
@@ -2202,7 +2214,7 @@ export function handleEntitySyncFixtureRequest(
               resource,
               revision: documents.at(-1)!.seq,
               entities: {
-                after: documents[0].seq - 1,
+                after: documents[0]!.seq - 1,
                 through: documents.at(-1)!.seq,
                 documents,
               },
@@ -2540,32 +2552,25 @@ export function validateSyncPullRequest(requestUrl: string | URL):
     query.getAll(key).find((value) => value !== "");
   const scope = first("scope") ?? "state:entities:v1";
 
-  const numbers: Record<string, number> = {};
-
-  const defaults: Array<[keyof typeof numbers, number]> = [
-    ["after", 0],
-    ["limit", 500],
-    ["initialHigh", 0],
-  ];
-  for (const [key, fallback] of defaults) {
+  const defaults = { after: 0, limit: 500, initialHigh: 0 };
+  let numbers = { ...defaults };
+  for (const [key] of Object.entries(defaults)) {
     const raw = first(key);
-    if (raw === undefined) {
-      numbers[key] = fallback;
-      continue;
-    }
+    if (raw === undefined) continue;
     if (!/^-?\d+$/.test(raw))
       return {
         ok: false,
         status: 400,
         body: { error: "Invalid request", location: ["query", key] },
       };
-    numbers[key] = Number(raw);
-    if (numbers[key] < 0)
+    const value = Number(raw);
+    if (value < 0)
       return {
         ok: false,
         status: 400,
         body: { error: "Invalid request", location: ["query", key] },
       };
+    numbers = { ...numbers, [key]: value };
   }
   const supportedScope =
     scope === "state:entities:v1" ||

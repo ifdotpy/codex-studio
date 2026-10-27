@@ -228,9 +228,11 @@ export function serverBinary() {
     throw new Error(
       `studio-runtime-server is not built under ${target}; run cargo build -p studio-runtime-server`,
     );
-  return candidates.sort(
+  const candidate = candidates.sort(
     (a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs,
   )[0];
+  if (!candidate) throw new Error("No server binary candidate");
+  return candidate;
 }
 
 export async function startRustBackend(
@@ -479,6 +481,7 @@ async function sendControl(
 
 async function main() {
   const [root, ...flags] = process.argv.slice(2);
+  if (root === undefined) throw new Error("Fixture root is required");
   const stateDir = fixtureStateDirectory(root);
   mkdirSync(stateDir, { recursive: true });
   const workersAt = flags.indexOf("--workers");
@@ -490,9 +493,10 @@ async function main() {
   for (const seed of (process.env.FIXTURE_SEED ?? "")
     .split(",")
     .filter(Boolean)) {
-    if (!(seed in SEEDS)) throw new Error(`Unknown FIXTURE_SEED entry ${seed}`);
+    const seedSteps = SEEDS[seed];
+    if (!seedSteps) throw new Error(`Unknown FIXTURE_SEED entry ${seed}`);
     for (const [name, steps] of Object.entries(
-      SEEDS[seed](workerName(workers - 1)),
+      seedSteps(workerName(workers - 1)),
     ))
       agentSteps[name] = [...(agentSteps[name] ?? []), ...steps];
   }
@@ -503,10 +507,16 @@ async function main() {
   // A scripted agent gets a prompt of its own, which selects its script.
   const promptOf = (name: string, prompt: string) =>
     name in agentSteps ? `${prompt} (${name})` : prompt;
-  const held = (process.env.FIXTURE_HOLD ?? "").split(",").filter(Boolean);
-  for (const name of held)
-    if (!(name in HOLD_PROMPTS))
-      throw new Error(`Unknown FIXTURE_HOLD entry ${name}`);
+  const held = (process.env.FIXTURE_HOLD ?? "")
+    .split(",")
+    .filter(Boolean)
+    .map((name) => {
+      const prompt = HOLD_PROMPTS[name];
+      const matches = HOLD_MATCHERS[name];
+      if (prompt === undefined || matches === undefined)
+        throw new Error(`Unknown FIXTURE_HOLD entry ${name}`);
+      return { prompt, matches };
+    });
   // The state directory must stay free of foreign files.
   const scratch = mkdtempSync(join(tmpdir(), "rust-ui-fixture-"));
   process.once("exit", () => rmSync(scratch, { recursive: true, force: true }));
@@ -536,13 +546,13 @@ async function main() {
               : WORKER_PROMPT,
         ),
         // A held agent keeps its turn open after its own steps.
-        steps: held.some((group) => HOLD_MATCHERS[group]({ name }))
+        steps: held.some(({ matches }) => matches({ name }))
           ? [...steps, { hold: true }]
           : steps,
       })),
       ...parseFixtureScripts(process.env.FIXTURE_SCRIPT ?? "[]"),
-      ...held.map((name) => ({
-        prompt: HOLD_PROMPTS[name],
+      ...held.map(({ prompt }) => ({
+        prompt,
         steps: [{ hold: true }],
       })),
     ]),
@@ -616,7 +626,7 @@ async function main() {
   const chatter = Object.keys(agentSteps).length > 0;
   const kinds = chatter ? WAKING_EVENT_KINDS_WITH_CHATTER : WAKING_EVENT_KINDS;
   const isHeld = (agent: AgentSummaryEntityDto) =>
-    held.some((name) => HOLD_MATCHERS[name](agent));
+    held.some(({ matches }) => matches(agent));
   await waitUntilIdle(backend.origin, isHeld, kinds);
   const hooks: Record<
     string,

@@ -32,7 +32,12 @@
           "type": "integer"
         }
       },
-      "required": ["agent", "epoch", "accountKey", "connectionId"],
+      "required": [
+        "agent",
+        "epoch",
+        "accountKey",
+        "connectionId"
+      ],
       "title": "MonitorOperationRecord",
       "type": "object"
     }
@@ -297,12 +302,17 @@
       "type": "integer"
     },
     "wakeOn": {
-      "enum": ["exit", "failure"],
+      "enum": [
+        "exit",
+        "failure"
+      ],
       "title": "Wakeon",
       "type": "string"
     }
   },
-  "required": ["id"],
+  "required": [
+    "id"
+  ],
   "title": "PersistedMonitorRecord",
   "type": "object"
 }

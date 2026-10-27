@@ -26,18 +26,18 @@ export function frontmatter(source: string) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(source);
   if (!match) return {};
   const fields: Record<string, string> = {};
-  const lines = match[1].split(/\r?\n/);
+  const lines = match[1]!.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
-    const field = /^([A-Za-z_-]+):\s*(.*)$/.exec(lines[i]);
+    const field = /^([A-Za-z_-]+):\s*(.*)$/.exec(lines[i]!);
     if (!field) continue;
-    let value = field[2];
+    let value = field[2]!;
     if (/^[>|][-+]?$/.test(value.trim())) {
       const block = [];
-      while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1]))
-        block.push(lines[++i].trim());
+      while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1]!))
+        block.push(lines[++i]!.trim());
       value = block.join(" ");
     }
-    fields[field[1]] = unquote(value);
+    fields[field[1]!] = unquote(value);
   }
   return fields;
 }
@@ -136,6 +136,7 @@ async function projectIdentity(cwd: string) {
       { timeout: 5000 },
     );
     const [root, common] = stdout.trim().split("\n");
+    if (!root || !common) throw new Error("Incomplete project identity");
     return {
       root,
       common: await fs.realpath(common),
@@ -210,7 +211,7 @@ async function pluginRoots(cwd: string, errors: DiscoveryError[]) {
       if (!matches) continue;
       roots.push({
         root: path.join(install.installPath, "skills"),
-        prefix: key.split("@")[0],
+        prefix: key.split("@")[0] ?? "",
         enabled: validSettings && enabled[key] === true,
       });
       break;

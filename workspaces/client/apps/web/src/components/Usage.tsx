@@ -1,6 +1,10 @@
 import { PassiveUsage } from "../hooks/BottomInsetBand";
 import { useSubscription } from "../sync/subscriptions";
-import { isProviderKind, providerLabel } from "../generated/providerKind.ts";
+import {
+  ProviderKind,
+  isProviderKind,
+  providerLabel,
+} from "../generated/providerKind.ts";
 import Disclosure from "./ui/Disclosure";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
@@ -768,9 +772,9 @@ export default function Usage({
                         value={
                           accountProvider(activeAccount) === provider
                             ? selectedAccountKey
-                            : usageAccounts.find(
+                            : (usageAccounts.find(
                                 (item) => accountProvider(item) === provider,
-                              )?.key
+                              )?.key ?? null)
                         }
                         onChange={(value) => {
                           if (value) setActiveAccountKey(value);
@@ -1086,7 +1090,7 @@ export default function Usage({
                           </p>
                         )}
                       </div>
-                      {activeAccount?.provider === "claude" && (
+                      {activeAccount?.provider === ProviderKind.Claude && (
                         <section
                           className="account-reset-credits"
                           aria-label="Claude free limit resets"

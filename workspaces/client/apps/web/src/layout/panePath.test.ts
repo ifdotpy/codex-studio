@@ -66,9 +66,9 @@ describe("Duo pane path", () => {
         hinge: { ...state.hinge, status: "partial" },
       });
       const [left, right] = result!.visible.map((pane) => result!.panes[pane]!);
-      expect(left.x + left.width).toBe(455.5);
-      expect(right.x).toBe(495.5);
-      expect(right.width).toBe(373.5);
+      expect(left && left.x + left.width).toBe(455.5);
+      expect(right?.x).toBe(495.5);
+      expect(right?.width).toBe(373.5);
       expect(result?.divider).toEqual({
         x: 455.5,
         y: 0,

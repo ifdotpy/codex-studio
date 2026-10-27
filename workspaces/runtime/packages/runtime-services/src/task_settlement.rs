@@ -120,10 +120,22 @@ fn valid_task(task: &Value) -> bool {
 fn write_task(tx: &Transaction<'_>, task: &Value) -> StoreResult<()> {
     crate::notification_dispatch::put_task_record(tx, task).map_err(|error| match error {
         crate::notification_dispatch::NotificationDispatchError::Store(error) => error,
-        _ => StoreError::InvalidStoredObject {
-            table: "runtime_tasks",
-            id: task["id"].as_str().unwrap_or("<missing>").into(),
-        },
+        crate::notification_dispatch::NotificationDispatchError::InvalidNotification { .. }
+        | crate::notification_dispatch::NotificationDispatchError::InvalidAccountState { .. }
+        | crate::notification_dispatch::NotificationDispatchError::StreamCapacity
+        | crate::notification_dispatch::NotificationDispatchError::InvalidStoredObject { .. }
+        | crate::notification_dispatch::NotificationDispatchError::ConflictingDelivery
+        | crate::notification_dispatch::NotificationDispatchError::ConflictingInput
+        | crate::notification_dispatch::NotificationDispatchError::UnauthorizedSubmission
+        | crate::notification_dispatch::NotificationDispatchError::Dependency(_)
+        | crate::notification_dispatch::NotificationDispatchError::Budget(_)
+        | crate::notification_dispatch::NotificationDispatchError::Move(_)
+        | crate::notification_dispatch::NotificationDispatchError::Json(_) => {
+            StoreError::InvalidStoredObject {
+                table: "runtime_tasks",
+                id: task["id"].as_str().unwrap_or("<missing>").into(),
+            }
+        }
     })
 }
 

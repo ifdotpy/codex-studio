@@ -1,3 +1,4 @@
+import { required } from "./components/componentTestFixtures.ts";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Agent } from "./types";
 const selected = vi.hoisted(() => ({
@@ -55,7 +56,7 @@ it("retries an uncertain action with its original request and server after anoth
   expect(requestA.request_id).not.toBe(requestB.request_id);
   await expect(a.submit(agent, "compact")).rejects.toThrow("Unknown outcome");
 
-  expect(postA.mock.calls[1][1]).toEqual(requestA);
+  expect(required(postA.mock.calls[1])[1]).toEqual(requestA);
   expect(postB).toHaveBeenCalledTimes(1);
   expect(b.pending(agent.id)).toEqual(requestB);
 });

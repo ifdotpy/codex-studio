@@ -6,6 +6,7 @@ use axum::{
     http::Request,
 };
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_services::account_session_runtime::{
@@ -20,6 +21,7 @@ struct Port {
     scope: ConnectionScope,
     behavior: &'static str,
     calls: Mutex<Vec<String>>,
+    pages: Mutex<VecDeque<(Option<&'static str>, Value)>>,
 }
 impl AccountSessionPort for Port {
     fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
@@ -59,6 +61,18 @@ impl AccountSessionPort for Port {
                     json!({"status":"backgrounded"})
                 }
                 "thread/backgroundTerminals/list" => {
+                    if let Some((cursor, page)) = self.pages.lock().unwrap().pop_front() {
+                        assert_eq!(request.params["cursor"].as_str(), cursor);
+                        return Ok(SessionReceipt {
+                            scope: self.scope.clone(),
+                            operation: request.operation,
+                            ticket: None,
+                            certainty,
+                            result: Some(ProviderResponse::Reply(page)),
+                            not_sent_reason: None,
+                            replayed: false,
+                        });
+                    }
                     if self.behavior == "owner_changed" {
                         self.store.transaction_with(|tx| {
                             tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',2) WHERE id='owner'",[])?;
@@ -152,6 +166,7 @@ async fn fixture(behavior: &'static str) -> (tempfile::TempDir, axum::Router, Ar
         },
         behavior,
         calls: Mutex::new(vec![]),
+        pages: Mutex::new(VecDeque::new()),
     });
     let mut state = HttpState::new(
         "fixture-token".into(),
@@ -164,6 +179,101 @@ async fn fixture(behavior: &'static str) -> (tempfile::TempDir, axum::Router, Ar
     );
     state.account_session = Some(port.clone());
     (root, router(state).unwrap(), port)
+}
+#[tokio::test]
+async fn process_stop_pagination_requires_valid_cursors_before_certifying_absence() {
+    let terminal = json!({"data":[{"itemId":"command","processId":"42"}]});
+    let mut cases = vec![
+        (
+            "missing",
+            vec![(None, json!({"data":[]}))],
+            "already_finished",
+            "completed",
+        ),
+        (
+            "null",
+            vec![(None, json!({"data":[],"nextCursor":null}))],
+            "already_finished",
+            "completed",
+        ),
+        (
+            "continuation",
+            vec![
+                (None, json!({"data":[],"nextCursor":"next"})),
+                (Some("next"), terminal),
+            ],
+            "stopped",
+            "completed",
+        ),
+        (
+            "repeated",
+            vec![
+                (None, json!({"data":[],"nextCursor":"next"})),
+                (Some("next"), json!({"data":[],"nextCursor":"next"})),
+            ],
+            "uncertain",
+            "uncertain",
+        ),
+    ];
+    for (name, cursor) in [
+        ("number", json!(42)),
+        ("object", json!({"cursor":"next"})),
+        ("empty", json!("")),
+        ("bool", json!(false)),
+        ("array", json!(["next"])),
+    ] {
+        cases.push((
+            name,
+            vec![(None, json!({"data":[],"nextCursor":cursor}))],
+            "uncertain",
+            "uncertain",
+        ));
+    }
+    for (name, pages, expected, phase) in cases {
+        let (_root, app, port) = fixture("success").await;
+        let page_count = pages.len();
+        port.pages.lock().unwrap().extend(pages);
+        let (_, list) = call(&app, "GET", "/api/processes?agent=owner", Value::Null).await;
+        let p = &list["processes"][0];
+        let body = json!({"action":"stop_selected","requestId":"stop","agent":"owner","accountKey":"default","epoch":1,
+            "process":{"key":p["key"],"generation":p["generation"],"agent":"owner","accountKey":"default","epoch":1}});
+        let (status, result) = call(&app, "POST", "/api/processes/action", body.clone()).await;
+        assert_eq!(status, 200, "{name}: {result}");
+        assert_eq!(
+            result["processes"][0]["status"], expected,
+            "{name}: {result}"
+        );
+        assert_eq!(result["status"], phase, "{name}: {result}");
+        let before = port.calls.lock().unwrap().clone();
+        assert_eq!(
+            before
+                .iter()
+                .filter(|m| m.as_str() == "thread/backgroundTerminals/list")
+                .count(),
+            page_count,
+            "{name}: {before:?}"
+        );
+        assert_eq!(
+            before
+                .iter()
+                .filter(|m| m.as_str() == "thread/backgroundTerminals/terminate")
+                .count(),
+            usize::from(expected == "stopped"),
+            "{name}: {before:?}"
+        );
+        let (status, replay) = call(&app, "POST", "/api/processes/action", body).await;
+        assert_eq!(status, 200, "{name}: {replay}");
+        assert_eq!(replay, result, "{name}");
+        assert_eq!(*port.calls.lock().unwrap(), before, "{name}");
+        let (_, receipt) = call(
+            &app,
+            "GET",
+            "/api/processes/action?requestId=stop&agent=owner&accountKey=default&epoch=1",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(receipt, json!({"found":true,"result":result}), "{name}");
+    }
 }
 #[tokio::test]
 async fn exact_process_stop_and_lost_reply_never_repeat_the_native_effect() {

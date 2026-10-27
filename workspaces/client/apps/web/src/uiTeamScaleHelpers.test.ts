@@ -1,3 +1,5 @@
+import { required } from "./components/componentTestFixtures.ts";
+import assert from "node:assert/strict";
 import type { components, AgentEntityDto } from "./generated/api.ts";
 import type {
   DialogControl,
@@ -319,8 +321,8 @@ function setupDialog({ fast = true, selectedAccount = "other" } = {}) {
         click: async () => {
           const name = /^label\[for="([^"]+)"\]$/.exec(selector as string)?.[1];
           expect(name).toBeDefined();
-
-          actions.push(name!);
+          assert.ok(name);
+          actions.push(name);
           if (
             scope === "dialog" &&
             kind === "radiogroup" &&
@@ -487,8 +489,8 @@ it("merges current summary/detail streams for owned agents and observes input ev
   );
   await pull();
   const state = feeds.get(JSON.stringify({ kind: "state" }));
-
-  state!(
+  assert.ok(state);
+  state(
     "resources",
     resourceFrame([
       upsert("agentSummary", "foreign", { rootId: "other" }),
@@ -506,8 +508,8 @@ it("merges current summary/detail streams for owned agents and observes input ev
   const lead = feeds.get(
     JSON.stringify({ kind: "agentDetail", agentId: "lead" }),
   );
-
-  lead!(
+  assert.ok(lead);
+  lead(
     "resources",
     resourceFrame([
       upsert("agentDetail", "lead", {
@@ -537,8 +539,8 @@ it("merges current summary/detail streams for owned agents and observes input ev
   const worker = feeds.get(
     JSON.stringify({ kind: "agentDetail", agentId: "worker" }),
   );
-
-  worker!(
+  assert.ok(worker);
+  worker(
     "resources",
     resourceFrame([upsert("agentDetail", "worker", { lastAnswer: "TOKEN" })]),
   );
@@ -725,7 +727,7 @@ it("stages several transfer pages until the final complete marker and rejects mi
   expect(() => receive.assertComplete()).toThrow(/incomplete/);
   receive!("entity-transfer", page(2, 2, 3, true));
   expect(accept).toHaveBeenCalledTimes(1);
-  expect(accept.mock.calls[0][0]).toHaveLength(3);
+  expect(required(accept.mock.calls[0])[0]).toHaveLength(3);
   expect(() => receive.assertComplete()).not.toThrow();
   const missing = createEntityFrameReader(vi.fn());
   missing("entity-transfer", page(0, 0, 1, false));

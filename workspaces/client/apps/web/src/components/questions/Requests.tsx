@@ -240,7 +240,7 @@ function AnswerForm({
                 : type === "array" && enumValues.length > 0
                   ? v
                   : ["object", "array"].includes(type)
-                    ? parseJson(v[0])
+                    ? parseJson(v[0] ?? "")
                     : v[0];
         }
         body = { decision: "accept", content };
@@ -618,7 +618,7 @@ export function RequestCard({
                 ref={trigger}
                 data-answer={r.id}
                 variant={open ? "subtle" : "filled"}
-                color={open ? "gray" : undefined}
+                {...(open ? { color: "gray" } : {})}
                 disabled={sending}
                 aria-expanded={open}
                 aria-controls={`answer-${r.id}`}

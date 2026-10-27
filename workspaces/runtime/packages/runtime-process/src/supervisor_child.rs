@@ -366,7 +366,8 @@ impl OwnedChild {
         }
         Ok((AppendResult::Obsolete, sequence))
     }
-    pub fn reap(&self) -> Result<()> {
+    /// Wait only for the direct child. Group close proof belongs to stop_verified.
+    pub fn reap_leader(&self) -> Result<()> {
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         let mut status = lock(&self.exit_status)?;
         while status.is_none() {
@@ -490,7 +491,7 @@ mod tests {
 
         let append_guard = child.append_lock.lock().unwrap();
         child.write(&json!({"finish":true})).unwrap();
-        child.reap().unwrap();
+        child.reap_leader().unwrap();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while child.stdout_alive.load(Ordering::Acquire)

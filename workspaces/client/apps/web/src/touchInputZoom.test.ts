@@ -134,13 +134,15 @@ test("component input font floors consume the shared owner", () => {
       ".agent-mode-limit-label input",
     ],
     ["components/questions/sign-in-card.css", ".sign-in-card-paste input"],
-  ]) {
+  ] satisfies [string, string][]) {
     const rules = declarationsFor(file).filter(
       ({ property, selectors }) =>
         property === "font-size" && selectors.includes(selector),
     );
     expect(rules, file).toHaveLength(1);
-    expect(rules[0].value).toContain("var(--studio-touch-input-min-font-size)");
+    const rule = rules[0];
+    if (!rule) throw new Error(`Missing font rule in ${file}`);
+    expect(rule.value).toContain("var(--studio-touch-input-min-font-size)");
   }
 });
 

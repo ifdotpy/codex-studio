@@ -654,7 +654,11 @@ fn login_progress(
             .get("code")
             .map(|code| match code {
                 Value::String(value) => value.clone(),
-                other => other.to_string(),
+                other @ Value::Null
+                | other @ Value::Bool(_)
+                | other @ Value::Number(_)
+                | other @ Value::Array(_)
+                | other @ Value::Object(_) => other.to_string(),
             })
             .unwrap_or_default();
         update_job(

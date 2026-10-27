@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import assert from "node:assert/strict";
 import type {
   Options,
   SDKUserMessage,
@@ -114,17 +115,19 @@ type FixtureMessage = Omit<Partial<Message>, "content" | "usage"> & {
   usage?: Partial<Message["usage"]>;
 };
 type Result = Extract<SDKMessage, { type: "result"; subtype: "success" }>;
+type FailureResult = Exclude<Extract<SDKMessage, { type: "result" }>, Result>;
 type FixtureFrame =
   | (Omit<Partial<Assistant>, "type" | "message"> & {
       type: "assistant";
       message: FixtureMessage;
     })
-  | (Omit<Partial<Result>, "type" | "subtype" | "usage"> & {
+  | (Omit<Partial<Result>, "type" | "subtype" | "usage" | "is_error"> & {
       type: "result";
       subtype: "success";
+      is_error: Result["is_error"];
       usage?: Partial<Result["usage"]>;
     })
-  | { type: "result"; subtype: "error"; errors: string[] }
+  | Pick<FailureResult, "type" | "subtype" | "is_error" | "errors">
   | (Partial<Extract<SDKMessage, { type: "system"; subtype: "init" }>> & {
       type: "system";
       subtype: "init";
@@ -295,9 +298,9 @@ export function query({
       fs.appendFileSync(
         options.cwd + "/.mcp-sets",
         JSON.stringify(
-          Object.keys(servers).map((name) => [
+          Object.entries(servers).map(([name, server]) => [
             name,
-            servers[name].tools.map((t) => t.name),
+            server.tools.map((t) => t.name),
           ]),
         ) + "\n",
       );
@@ -340,8 +343,8 @@ export function query({
         .then((result) => ({ kind: "prompt" as const, result }));
       let pendingBackground: Promise<BackgroundEvent> | null = null;
       while (!abort.signal.aborted) {
-        if (backgroundTasks.size && !pendingBackground) {
-          const [taskId] = backgroundTasks.keys();
+        for (const taskId of backgroundTasks.keys()) {
+          if (pendingBackground) break;
           pendingBackground = (async () => {
             while (
               !abort.signal.aborted &&
@@ -378,10 +381,10 @@ export function query({
         pendingPrompt = prompt
           .next()
           .then((result) => ({ kind: "prompt", result }));
+        const uuid = input.value.uuid;
         if (
-          !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(
-            input.value.uuid!,
-          )
+          uuid === undefined ||
+          !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(uuid)
         )
           throw new Error("Native input requires UUID");
         if (options.systemPrompt)
@@ -400,7 +403,7 @@ export function query({
         yield {
           type: "user",
           isReplay: true,
-          uuid: input.value.uuid,
+          uuid,
         };
         // SDK shouldQuery:false appends context for the next querying message;
         // its receipt must not generate or complete an assistant turn.
@@ -409,8 +412,9 @@ export function query({
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             num_turns: 0,
-            user_message_uuid: input.value.uuid,
+            user_message_uuid: uuid,
           };
           continue;
         }
@@ -418,16 +422,18 @@ export function query({
         transcriptPrefix = [];
         turnAbort = new AbortController();
         const turnSignal = turnAbort.signal;
+        const sessionId = options.resume || options.sessionId;
         yield {
           type: "system",
           subtype: "init",
-          session_id: options.resume || options.sessionId,
+          ...(sessionId === undefined ? {} : { session_id: sessionId }),
         };
         if (text === "steer-race") {
           await raceStarted;
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             usage: { input_tokens: 10, output_tokens: 2 },
             result: "Before steer",
           };
@@ -453,16 +459,16 @@ export function query({
             .then((result) => ({ kind: "prompt", result }));
           if (next.kind !== "prompt") throw new Error("Expected a steer input");
           const nextInput = next.result;
+          const steerUuid = nextInput.value!.uuid;
           if (
-            !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(
-              nextInput.value!.uuid!,
-            )
+            steerUuid === undefined ||
+            !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(steerUuid)
           )
             throw new Error("Native steer requires UUID");
           yield {
             type: "user",
             isReplay: true,
-            uuid: nextInput.value!.uuid,
+            uuid: steerUuid,
           };
           text = (
             (
@@ -556,7 +562,8 @@ export function query({
             throw new Error("Missing multi answer");
         }
         if (text === "tool") {
-          const tool = options.mcpServers!.studio.tools[0];
+          const tool = options.mcpServers?.studio?.tools[0];
+          assert.ok(tool, "Fixture requires a Studio tool");
           const result = await tool.call(
             { text: "hello" },
             { signal: turnSignal },
@@ -572,7 +579,8 @@ export function query({
             throw new Error("Tool result lost");
         }
         if (text === "tool-pre-aborted") {
-          const tool = options.mcpServers!.studio.tools[0];
+          const tool = options.mcpServers?.studio?.tools[0];
+          assert.ok(tool, "Fixture requires a Studio tool");
           const cancelled = new AbortController();
           cancelled.abort();
           await tool.call({ text: "hello" }, { signal: cancelled.signal });
@@ -632,6 +640,7 @@ export function query({
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             usage: { input_tokens: 1, output_tokens: 0 },
             result: "",
           };
@@ -650,7 +659,8 @@ export function query({
           };
           yield {
             type: "result",
-            subtype: "error",
+            subtype: "error_during_execution",
+            is_error: true,
             errors: [
               "Claude usage limit reached (five_hour). Resets at " +
                 new Date(resetsAt * 1000).toISOString() +
@@ -768,6 +778,7 @@ export function query({
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             usage: { input_tokens: 10, output_tokens: 2 },
             result: "First text block. Second text block.",
           };
@@ -818,6 +829,7 @@ export function query({
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             usage: { input_tokens: 3000, output_tokens: outputTotal },
             result: "Second answer",
           };
@@ -865,6 +877,7 @@ export function query({
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             usage: { input_tokens: 10, output_tokens: 2 },
             result: "First stream block. Second stream block.",
           };
@@ -898,6 +911,7 @@ export function query({
         yield {
           type: "result",
           subtype: "success",
+          is_error: false,
           usage: { input_tokens: 10, output_tokens: 2 },
           result: "Visible answer",
         };

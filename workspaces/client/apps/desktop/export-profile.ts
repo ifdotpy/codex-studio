@@ -308,7 +308,9 @@ async function main() {
     }
     await exportServerCredentials({
       profile,
-      destination: input.nativeCredentials,
+      ...(input.nativeCredentials === undefined
+        ? {}
+        : { destination: input.nativeCredentials }),
       safeStorage,
     });
     const bytes = JSON.stringify({

@@ -155,9 +155,7 @@ fn map_costs_error(error: CostsError) -> ApiError {
     match error {
         CostsError::Dependency(dependency) => cost_dependency(dependency),
         CostsError::Analytics(error) => map_analytics_error(error),
-        CostsError::Store(error) => {
-            ApiError::internal_with_cause(InternalErrorKind::from_store_error(&error))
-        }
+        CostsError::Store(error) => ApiError::stored(error),
         CostsError::Repository(_) | CostsError::Sqlite(_) => {
             ApiError::internal_with_cause(InternalErrorKind::StoreDatabase)
         }

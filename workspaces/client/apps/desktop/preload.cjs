@@ -16,13 +16,12 @@ const { contextBridge, ipcRenderer } = require("electron");
   window.addEventListener("click", capture, true);
   window.addEventListener("keydown", capture, true);
   /**
-   * @template T
-   * @param {string} method
-   * @param {unknown} [value]
+   * @type {import("./api.ts").NativeInvoke}
+   * @param {import("./api.ts").NativeCall} args
    * @param {boolean} [needsGesture]
-   * @returns {Promise<T>}
+   * @param {string} [serverId]
    */
-  const invoke = (method, value, needsGesture = true) => {
+  const invoke = ([method, value], needsGesture = true, serverId) => {
     if (needsGesture) {
       if (gesture < performance.now())
         return Promise.reject(
@@ -30,7 +29,12 @@ const { contextBridge, ipcRenderer } = require("electron");
         );
       gesture = 0;
     }
-    return ipcRenderer.invoke("codex-desktop", { method, value });
+    return ipcRenderer.invoke(
+      "codex-desktop",
+      serverId === undefined
+        ? { method, value }
+        : { method: "serverNativeAction", value: { serverId, method, value } },
+    );
   };
   if (process.isMainFrame)
     window.addEventListener("DOMContentLoaded", () => {
@@ -90,40 +94,36 @@ const { contextBridge, ipcRenderer } = require("electron");
     serverViewOrigin: process.argv
       .find((value) => value.startsWith("--studio-view-origin="))
       ?.slice("--studio-view-origin=".length),
-    serverNativeAction: (serverId, method, value) => {
+    serverNativeAction: (serverId, ...args) => {
+      const [method] = args;
       const needsGesture = !["transcribeAudio", "getBackendUpdate"].includes(
         method,
       );
       if (owner !== serverId)
         return Promise.reject(new Error("Use a button in this server view."));
-      return invoke(
-        "serverNativeAction",
-        { serverId, method, value },
-        needsGesture,
-      );
+      return invoke(args, needsGesture, serverId);
     },
     serverCredentialAction: (value) =>
       invoke(
-        "serverCredentialAction",
-        value,
+        ["serverCredentialAction", value],
         value.action === "pair" || value.action === "forget",
       ),
     onServerStream: (callback) =>
       subscribe("codex-desktop-server-stream", callback),
-    requestMicrophone: () => invoke("requestMicrophone"),
-    prepareTranscription: () => invoke("prepareTranscription"),
-    transcribeAudio: (value) => invoke("transcribeAudio", value, false),
-    cancelTranscription: (id) => invoke("cancelTranscription", id),
+    requestMicrophone: () => invoke(["requestMicrophone"]),
+    prepareTranscription: () => invoke(["prepareTranscription"]),
+    transcribeAudio: (value) => invoke(["transcribeAudio", value], false),
+    cancelTranscription: (id) => invoke(["cancelTranscription", id]),
     onTranscriptionProgress: (callback) =>
       subscribe("codex-desktop-transcription-progress", callback),
     onNavigate: (callback) => subscribe("codex-desktop-navigate", callback),
-    getBackendUpdate: () => invoke("getBackendUpdate", undefined, false),
-    pickDirectory: () => invoke("pickDirectory"),
-    pickFiles: () => invoke("pickFiles"),
-    revealPath: (value) => invoke("revealPath", value),
-    saveFile: (value) => invoke("saveFile", value),
-    fileAction: (value) => invoke("fileAction", value),
-    openExternal: (value) => invoke("openExternal", value),
+    getBackendUpdate: () => invoke(["getBackendUpdate"], false),
+    pickDirectory: () => invoke(["pickDirectory"]),
+    pickFiles: () => invoke(["pickFiles"]),
+    revealPath: (value) => invoke(["revealPath", value]),
+    saveFile: (value) => invoke(["saveFile", value]),
+    fileAction: (value) => invoke(["fileAction", value]),
+    openExternal: (value) => invoke(["openExternal", value]),
     // An approved sign-in link opens after the server answer, so the 1.2 second click
     // window can pass. It still needs a click or key press of the person in the last 30 s.
     // The desktop holds the redirect port of a sign-in on another server (openSignIn with
@@ -131,10 +131,10 @@ const { contextBridge, ipcRenderer } = require("electron");
     signInForward: true,
     openSignIn: (value) =>
       performance.now() - lastAction <= 30000
-        ? invoke("openSignIn", value, false)
+        ? invoke(["openSignIn", value], false)
         : Promise.reject(new Error("Use a desktop button or keyboard action.")),
-    showVaultKeys: (value) => invoke("showVaultKeys", value),
-    notify: (value) => invoke("notify", value, false),
+    showVaultKeys: (value) => invoke(["showVaultKeys", value]),
+    notify: (value) => invoke(["notify", value], false),
   };
   contextBridge.exposeInMainWorld("codexDesktop", Object.freeze(bridge));
 }

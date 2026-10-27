@@ -209,7 +209,13 @@ pub async fn select(
                             pointer: "/".into(),
                         }
                     }
-                    _ => TransferError::Refused("Could not cancel automatic resume"),
+                    studio_runtime_store::UsageRepositoryError::MissingFamily
+                    | studio_runtime_store::UsageRepositoryError::EventDriverRequired
+                    | studio_runtime_store::UsageRepositoryError::UnknownAgent
+                    | studio_runtime_store::UsageRepositoryError::UnknownContinuation
+                    | studio_runtime_store::UsageRepositoryError::Sqlite(_) => {
+                        TransferError::Refused("Could not cancel automatic resume")
+                    }
                 })?;
                 value["usageResume"] = resume;
             }

@@ -51,6 +51,7 @@ test("native fixture preserves identity refusal, byte replies, and draft tombsto
       Buffer.from(await result.arrayBuffer()),
       Buffer.from([97, 0, 255]),
     );
+    assert.ok(fixture.commands[0]);
     assert.equal(
       fixture.commands[0].headers["x-studio-request-id"],
       "original-http-command",

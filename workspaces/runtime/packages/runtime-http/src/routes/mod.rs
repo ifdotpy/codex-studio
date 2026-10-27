@@ -110,7 +110,7 @@ pub(super) fn accounts_response(
 }
 
 fn generated_json<T: DeserializeOwned>(value: Value) -> Result<T, crate::error::ApiError> {
-    serde_json::from_value::<T>(value).map_err(|_| crate::error::ApiError::internal())
+    serde_json::from_value::<T>(value).map_err(crate::error::ApiError::json)
 }
 
 fn registered_route_groups() -> Vec<RegisteredRouteGroup> {

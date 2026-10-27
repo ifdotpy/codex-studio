@@ -57,13 +57,15 @@ fn call(context: &CallbackContext, id: &str, name: &str, args: Value) -> Frame {
 fn reply(value: CallbackDecision) -> Reply {
     match value {
         CallbackDecision::Answer(r) => r,
-        other => panic!("expected answer, got {other:?}"),
+        other @ CallbackDecision::Pending(_)
+        | other @ CallbackDecision::Settled(_)
+        | other @ CallbackDecision::Unsupported => panic!("expected answer, got {other:?}"),
     }
 }
 fn body(reply: &Reply) -> &Value {
     match &reply.body {
         ResponseBody::Result(v) => v,
-        _ => panic!("expected result"),
+        ResponseBody::Error(_) => panic!("expected result"),
     }
 }
 fn tool_value(reply: &Reply) -> Value {

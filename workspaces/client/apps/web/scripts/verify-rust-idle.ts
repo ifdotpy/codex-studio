@@ -67,8 +67,8 @@ const MAX_ERROR_TEXT = 300;
 
 function parseArgs(argv: string[]) {
   const options: Options = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const value = argv[index];
+  const argumentsLeft = argv.values();
+  for (const value of argumentsLeft) {
     if (value === "--help" || value === "-h") {
       options.help = true;
       continue;
@@ -87,11 +87,10 @@ function parseArgs(argv: string[]) {
       ]).has(key)
     )
       throw new Error(`Unknown option: ${value}`);
-    const next = argv[index + 1];
+    const next = argumentsLeft.next().value;
     if (!next || next.startsWith("--"))
       throw new Error(`Missing value for ${value}`);
     options[key as keyof Omit<Options, "help">] = next;
-    index += 1;
   }
   return options;
 }
@@ -174,8 +173,8 @@ function processSnapshot(pid: number) {
       .trim()
       .split("\n")
       .map((line) => {
-        const [key, value] = line.split(":");
-        return [key, BigInt(value.trim())];
+        const colon = line.indexOf(":");
+        return [line.slice(0, colon), BigInt(line.slice(colon + 1).trim())];
       }),
   );
   for (const key of ["rchar", "read_bytes", "syscr"])
@@ -183,9 +182,9 @@ function processSnapshot(pid: number) {
   return {
     capturedAt: new Date().toISOString(),
     monotonicMs: performance.now(),
-    userTicks: BigInt(fields[11]),
-    systemTicks: BigInt(fields[12]),
-    startTicks: BigInt(fields[19]),
+    userTicks: BigInt(String(fields[11])),
+    systemTicks: BigInt(String(fields[12])),
+    startTicks: BigInt(String(fields[19])),
     rchar: io.get("rchar")!,
     physicalReadBytes: io.get("read_bytes")!,
     readSyscalls: io.get("syscr")!,
@@ -274,7 +273,8 @@ function recordApiRequest(observation: Observation, request: Request) {
   const path = safePath(request.url());
   const key = `${request.method()} ${path}`;
   const counts = observation.api.counts;
-  if (Object.hasOwn(counts, key)) counts[key] += 1;
+  const count = counts[key];
+  if (count !== undefined) counts[key] = count + 1;
   else if (Object.keys(counts).length < MAX_API_ENDPOINTS) counts[key] = 1;
   else observation.api.omittedEndpointCounts += 1;
   observation.api.requestCount += 1;
@@ -430,15 +430,12 @@ async function main() {
         CLEANUP_TIMEOUT_MS,
     );
 
+    const executablePath =
+      options.chromium || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;
     const run = async () => {
       context = await chromium.launchPersistentContext(profileDir, {
         headless: true,
-        ...(options.chromium || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
-          ? {
-              executablePath:
-                options.chromium || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
-            }
-          : {}),
+        ...(executablePath ? { executablePath } : {}),
         viewport: { width: 1440, height: 1000 },
         acceptDownloads: false,
         timeout: BROWSER_LAUNCH_TIMEOUT_MS,

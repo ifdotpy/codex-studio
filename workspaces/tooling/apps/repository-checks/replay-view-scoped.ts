@@ -15,7 +15,7 @@ if (!input || !output)
 const schema: {
   components: {
     schemas: Record<
-      string,
+      "AgentSummaryEntityDto" | "StateResource",
       {
         properties: Record<string, unknown>;
         "x-studio-entity-scope": { collections: string[] };

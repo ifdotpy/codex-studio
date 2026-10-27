@@ -331,7 +331,13 @@ fn provider_kind_ts() -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let mut text = format!(
-        "// {HEADER}\nexport const PROVIDER_KINDS = [{values}] as const;\nexport type ProviderKind = (typeof PROVIDER_KINDS)[number];\n\nexport const PROVIDER_LABELS: Record<ProviderKind, string> = {{\n"
+        "// {HEADER}\nexport const PROVIDER_KINDS = [{values}] as const;\nexport type ProviderKind = (typeof PROVIDER_KINDS)[number];\n\nexport const ProviderKind = {{\n"
+    );
+    for provider in crate::provider_kind::ProviderKind::ALL {
+        writeln!(text, "  {provider:?}: {},", json_string(provider.key())).expect("String write");
+    }
+    text.push_str(
+        "} as const;\n\nexport const PROVIDER_LABELS: Record<ProviderKind, string> = {\n",
     );
     for provider in crate::provider_kind::ProviderKind::ALL {
         writeln!(
@@ -342,7 +348,7 @@ fn provider_kind_ts() -> String {
         )
         .expect("String write");
     }
-    text.push_str("};\n\nexport function isProviderKind(value: unknown): value is ProviderKind {\n  return PROVIDER_KINDS.some((provider) => provider === value);\n}\n\nexport function providerLabel(value: string): string {\n  return isProviderKind(value) ? PROVIDER_LABELS[value] : value;\n}\n");
+    text.push_str("};\n\nexport function providerToString(provider: ProviderKind): ProviderKind {\n  return provider;\n}\n\nexport function isProviderKind(value: unknown): value is ProviderKind {\n  return PROVIDER_KINDS.some((provider) => provider === value);\n}\n\nexport function providerLabel(value: string): string {\n  return isProviderKind(value) ? PROVIDER_LABELS[value] : value;\n}\n");
     text
 }
 
@@ -365,6 +371,38 @@ const PROVIDER_PERSISTED_RECORDS: &[(&str, &str)] = &[
     ),
     ("persisted-transfer-agent-record", ""),
 ];
+
+const PROVIDER_NATIVE_DISCRIMINATORS: &[(&str, crate::ProviderKind)] = &[
+    ("NativeCodexAccount", crate::ProviderKind::Codex),
+    ("NativeClaudeAccount", crate::ProviderKind::Claude),
+];
+
+// These SQL predicates must keep their source bytes; generation checks their
+// identity spelling against the runtime-schema ProviderKind owner instead.
+const PROVIDER_SQL_CONSUMERS: &[&str] = &[
+    "workspaces/runtime/packages/runtime-store/src/feature_schema.rs",
+    "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/selection.rs",
+    "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
+];
+
+fn check_provider_sql_consumer(path: &str, source: &str) -> Result<(), String> {
+    let predicate = format!("provider='{}'", crate::ProviderKind::Codex.key());
+    if source.matches(&predicate).count() != 1 {
+        return Err(format!(
+            "{path} SQL predicate must match ProviderKind::Codex in runtime-schema/src/provider_kind.rs"
+        ));
+    }
+    Ok(())
+}
+
+fn check_provider_sql_parity(root: &Path) -> Result<(), String> {
+    for path in PROVIDER_SQL_CONSUMERS {
+        let source =
+            std::fs::read_to_string(root.join(path)).map_err(|error| format!("{path}: {error}"))?;
+        check_provider_sql_consumer(path, &source)?;
+    }
+    Ok(())
+}
 
 fn api_schema_ts(schema_hash: &str) -> String {
     let mut text = format!(
@@ -502,6 +540,14 @@ fn check_account_group_parity(openapi: &Value) -> Result<(), String> {
 
 /// Hold the committed OpenAPI document and persisted-state schemas to the Rust owners.
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
+    for (schema, provider) in PROVIDER_NATIVE_DISCRIMINATORS {
+        let path = format!("/components/schemas/{schema}/properties/provider/const");
+        if openapi.pointer(&path) != Some(&serde_json::json!(provider)) {
+            return Err(format!(
+                "{path} must match ProviderKind in runtime-schema/src/provider_kind.rs"
+            ));
+        }
+    }
     expect_number(
         openapi,
         "/components/schemas/StudioErrorsDismissRequest/properties/ids/maxItems",
@@ -555,6 +601,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         values::MAX_SAFE_INTEGER,
     )?;
     check_delivery_parity(openapi)?;
+    crate::complaints::check_schema_parity(openapi)?;
     let modes = serde_json::json!(crate::claude_permissions::PERMISSION_MODES);
     for path in [
         "/components/schemas/CreateAgentRequest/properties/permission_mode/enum",
@@ -571,6 +618,9 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     crate::task_results::check_schema_parity(openapi)?;
     check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
+    crate::studio_errors::check_schema_parity(openapi)?;
+    crate::queue_command::check_schema_parity(openapi)?;
+    crate::records::check_schema_parity(openapi)?;
     crate::task_gate::check_api_contract(openapi)?;
     for (suffix, value) in [
         ("minimum", values::IDLE_COMPACTION_MIN_TOKENS),
@@ -933,10 +983,19 @@ fn supervisor_handshake_schema() -> Value {
 /// Render every contract file. `with_api_types` also runs Node for web types.
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
     check_backend_kind_parity(root)?;
+    check_provider_sql_parity(root)?;
     let mut openapi = read_json(root, OPENAPI_PATH)?;
+    crate::records::refresh_openapi(&mut openapi)?;
+    for (name, schema) in crate::studio_errors::schemas()? {
+        openapi["components"]["schemas"][name] = schema;
+    }
+    openapi["components"]["schemas"]["ComplaintResponseStatus"] = crate::complaints::schema();
+    openapi["components"]["schemas"]["ComplaintBody"]["properties"]["status"] =
+        crate::complaints::status_property();
     for (name, schema) in crate::agent_progress::schemas()
         .into_iter()
         .chain(crate::desktop::schemas())
+        .chain(crate::queue_command::schemas())
     {
         *openapi
             .pointer_mut(&format!("/components/schemas/{name}"))
@@ -1067,6 +1126,14 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: linux_vm_swift(),
         },
     ];
+    let monitor_path = crate::studio_errors::MONITOR_RECORD_SCHEMA_PATH;
+    let mut monitor = read_json(root, monitor_path)?;
+    monitor["properties"]["status"]["anyOf"][0] =
+        openapi["components"]["schemas"]["MonitorState"].clone();
+    rendered.push(Rendered {
+        path: monitor_path.into(),
+        text: serde_json::to_string_pretty(&monitor).map_err(|error| error.to_string())? + "\n",
+    });
     for (name, pointer) in PROVIDER_PERSISTED_RECORDS {
         let path =
             format!("workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json");
@@ -1166,6 +1233,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         generator.subschema_for::<crate::provider_input::ToolDefinition>();
         generator.subschema_for::<crate::provider_input::ClaudeBridgeSessionWire>();
         generator.subschema_for::<crate::provider_input::ClaudeBridgeTurnWire>();
+        generator.subschema_for::<crate::provider_input::UnsupportedClaudeRateLimit>();
+        generator.subschema_for::<crate::provider_input::items::FreshItem>();
+        generator.subschema_for::<crate::provider_lifecycle::TerminalTurn>();
+        generator.subschema_for::<crate::provider_lifecycle::ThreadIdentity>();
         generator.subschema_for::<crate::idle_compaction::CacheReport>();
         let mut schemas = generator.take_definitions(true);
         for name in [
@@ -1199,6 +1270,26 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         rendered.push(Rendered {
             path: web("pricing.ts"),
             text: api_types(root, &document, "--rust-owned")?,
+        });
+    }
+    if with_api_types {
+        let schemas = crate::provider_errors::schemas()?;
+        let document = serde_json::json!({
+            "openapi":"3.1.0", "info":{"title":"Vendor error leaf and known classification","version":"1"},
+            "paths":{}, "components":{"schemas":schemas}
+        });
+        let mut text = api_types(root, &document, "--rust-owned")?;
+        text.push_str("\n// Known tags only; the vendor's future-value branch remains open.\nexport const KNOWN_CODEX_ERROR_KINDS = [\n");
+        for kind in schemas["KnownCodexErrorKind"]["enum"]
+            .as_array()
+            .ok_or("known error kinds must be an enum")?
+        {
+            writeln!(text, "  {kind},").expect("String write");
+        }
+        text.push_str("] as const;\n");
+        rendered.push(Rendered {
+            path: "workspaces/providers/apps/claude-bridge/provider-errors.generated.ts".into(),
+            text,
         });
     }
     if with_api_types {
@@ -1552,6 +1643,35 @@ process.stdout.write(JSON.stringify(JSON.parse(input).map(([method, params]) => 
         let error = check_schema_parity(&openapi, &account_transfer)
             .expect_err("a changed team limit is rejected");
         assert!(error.contains("maxAgents/maximum"), "{error}");
+    }
+
+    #[test]
+    fn provider_parity_rejects_each_native_discriminator_and_sql_drift() {
+        let root = repository_root();
+        let openapi = read_json(&root, OPENAPI_PATH).expect("OpenAPI document");
+        let transfer = read_json(&root, ACCOUNT_TRANSFER_SCHEMA_PATH).expect("transfer schema");
+        check_schema_parity(&openapi, &transfer).expect("schemas agree");
+        check_provider_sql_parity(&root).expect("SQL consumers agree");
+        for (schema, _) in PROVIDER_NATIVE_DISCRIMINATORS {
+            let path = format!("/components/schemas/{schema}/properties/provider/const");
+            let mut drifted = openapi.clone();
+            *drifted.pointer_mut(&path).expect("native discriminator") = serde_json::json!("drift");
+            let error = check_schema_parity(&drifted, &transfer).expect_err("discriminator drift");
+            assert!(
+                error.contains(&path) && error.contains("provider_kind.rs"),
+                "{error}"
+            );
+        }
+        for path in PROVIDER_SQL_CONSUMERS {
+            let source = std::fs::read_to_string(root.join(path)).expect("SQL source");
+            let predicate = format!("provider='{}'", crate::ProviderKind::Codex.key());
+            let drifted = source.replace(&predicate, "provider='drift'");
+            let error = check_provider_sql_consumer(path, &drifted).expect_err("SQL drift");
+            assert!(
+                error.contains(path) && error.contains("provider_kind.rs"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

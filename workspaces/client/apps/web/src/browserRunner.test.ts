@@ -1,3 +1,4 @@
+import { required } from "./components/componentTestFixtures.ts";
 import type { SpawnSyncOptions } from "node:child_process";
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
@@ -51,15 +52,20 @@ function observeCommand(
   args: string[],
   options: SpawnSyncOptions,
 ) {
-  if (options.env!.PLAYWRIGHT_OUTPUT_DIR)
-    runRoots.add(dirname(options.env!.PLAYWRIGHT_OUTPUT_DIR));
+  assert.ok(options.env);
+  if (options.env.PLAYWRIGHT_OUTPUT_DIR)
+    runRoots.add(dirname(options.env.PLAYWRIGHT_OUTPUT_DIR));
   return { command, args, environment: options.env };
 }
 
 function assertIsolated(environment: NodeJS.ProcessEnv | undefined) {
-  assert.notEqual(environment!.HOME!, callerHome);
-  assert.notEqual(environment!.XDG_CACHE_HOME!, callerCache);
-  assert.equal(environment!.CODEX_HOME!, join(environment!.HOME!, ".codex"));
+  assert.ok(environment);
+  assert.ok(environment.HOME);
+  assert.ok(environment.XDG_CACHE_HOME);
+  assert.ok(environment.PLAYWRIGHT_OUTPUT_DIR);
+  assert.notEqual(environment.HOME, callerHome);
+  assert.notEqual(environment.XDG_CACHE_HOME, callerCache);
+  assert.equal(environment.CODEX_HOME, join(environment.HOME, ".codex"));
   assert.equal(
     environment!.COREPACK_HOME!,
     join(callerCache, "node", "corepack"),
@@ -87,7 +93,12 @@ test("runs Playwright in an isolated home with no interpreter probe", async () =
     calls.map((call) => call.command),
     ["pnpm"],
   );
-  assert.deepEqual(calls[0].args, ["exec", "playwright", "test", "--list"]);
+  assert.deepEqual(required(calls[0]).args, [
+    "exec",
+    "playwright",
+    "test",
+    "--list",
+  ]);
   assert.equal(process.exitCode, 0);
 });
 

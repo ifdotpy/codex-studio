@@ -1,6 +1,9 @@
 //! Existing transfer rows; schema creation remains owned by store bootstrap.
 use crate::schema::{SchemaRequirements, TableRequirement};
-use crate::{JsonRecord, RecordKeyMode, RecordQueryShape, StoreError, StoreResult, Table};
+use crate::{
+    AgentId, AgentRecord, JsonRecord, RecordKeyMode, RecordQueryShape, StoreError, StoreResult,
+    Table,
+};
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -24,6 +27,9 @@ impl JsonRecord for AccountTransferRecord {
 pub const MAX_TRANSFER_RECORD_BYTES: usize = 8 * 1024 * 1024;
 pub struct AccountTransferRepository;
 impl AccountTransferRepository {
+    /// Maximum combined operation and agent JSON size in one transfer snapshot, in bytes.
+    pub const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
+
     pub fn available(db: &Connection) -> StoreResult<bool> {
         Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_account_transfers')", [], |row| row.get(0))?)
     }
@@ -35,18 +41,61 @@ impl AccountTransferRepository {
             })
             .transpose()
     }
-    pub fn ids(db: &Connection) -> StoreResult<Vec<String>> {
-        let mut statement = db
-            .prepare_cached("SELECT id FROM runtime_account_transfers ORDER BY rowid LIMIT 4097")?;
-        let ids = statement
+    /// Recover every nonterminal operation. Unknown statuses still reach the
+    /// record validator; only known terminal history is skipped.
+    pub fn recovery_ids(db: &Connection) -> StoreResult<Vec<String>> {
+        let mut statement = db.prepare_cached(
+            "SELECT id FROM runtime_account_transfers
+             WHERE json_extract(record,'$.status') IS NOT 'completed'
+             AND json_extract(record,'$.status') IS NOT 'cancelled' ORDER BY rowid",
+        )?;
+        Ok(statement
             .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        if ids.len() > 4096 {
-            return Err(StoreError::SchemaValidation(
-                "transfer operation scan exceeds resource limit".into(),
-            ));
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+    /// Request ids are global, including aliases enrolled into an active
+    /// operation. The reducer checks the saved lead, destination and scope.
+    pub fn request_operation(db: &Connection, request: &str) -> StoreResult<Option<String>> {
+        Ok(db
+            .query_row(
+                "SELECT id FROM runtime_account_transfers
+             WHERE id=?1 OR EXISTS(SELECT 1 FROM json_each(record,'$.requests') WHERE key=?1)
+             ORDER BY rowid LIMIT 1",
+                [request],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+    /// Live team records, including the lead independently of its root id.
+    /// Scope controls enrollment in the service; the lead always owns the
+    /// snapshot and summary, even for a subagent-only transfer. Unrelated rows
+    /// never enter the snapshot's schema-owned team resource limits.
+    pub fn team_agents(db: &Connection, lead: &AgentId) -> StoreResult<Vec<AgentRecord>> {
+        let mut statement = db.prepare_cached(
+            "SELECT id FROM runtime_agents WHERE id=?1 OR root_id=?1 ORDER BY rowid",
+        )?;
+        let mut rows = statement.query([lead.as_ref()])?;
+        let mut agents = Vec::new();
+        let mut bytes = 0_usize;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let Some(raw) = bounded_record(db, "runtime_agents", &id)? else {
+                continue;
+            };
+            let agent = Table::<AgentRecord>::new(db).decode_stored(&id, &raw)?;
+            if !crate::truthy(agent.extra.get("deletedAt")) {
+                bytes = bytes.saturating_add(serde_json::to_vec(&agent)?.len());
+                if agents.len() >= studio_runtime_schema::agent_limits::MAX_TRANSFER_AGENT_RECORDS
+                    || bytes > Self::MAX_SNAPSHOT_BYTES
+                {
+                    return Err(StoreError::SchemaValidation(
+                        "transfer team exceeds snapshot resource limits".into(),
+                    ));
+                }
+                agents.push(agent);
+            }
         }
-        Ok(ids)
+        Ok(agents)
     }
     pub fn put(db: &Transaction<'_>, id: &str, raw: &str) -> StoreResult<()> {
         if raw.len() > MAX_TRANSFER_RECORD_BYTES {

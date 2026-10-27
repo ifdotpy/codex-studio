@@ -6,10 +6,12 @@ type ComplaintRequest =
   paths["/api/complaints"]["post"]["requestBody"]["content"]["application/json"];
 export type UserComplaintResponse = Omit<
   ComplaintRequest,
-  "action" | "complaint_id"
+  "action" | "complaint_id" | "status" | "version"
 > & {
   action: "respond";
   complaint_id: string;
+  status: NonNullable<ComplaintRequest["status"]>;
+  version: NonNullable<ComplaintRequest["version"]>;
 };
 
 export async function submitComplaintResponse(

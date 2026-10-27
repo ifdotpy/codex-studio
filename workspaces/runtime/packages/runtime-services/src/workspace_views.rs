@@ -250,7 +250,7 @@ pub fn parse_task_cursor(
     let time = match kind {
         CursorKind::Current if parsed.created.is_none() => parsed.updated,
         CursorKind::Before if parsed.updated.is_none() => parsed.created,
-        _ => return Err(InvalidCursor),
+        CursorKind::Current | CursorKind::Before => return Err(InvalidCursor),
     }
     .ok_or(InvalidCursor)?;
     Ok(Some(TaskFeedCursor {
@@ -429,12 +429,14 @@ pub struct WorkspaceInboxData<'a> {
     pub requests: &'a [Value],
     pub complaints: &'a [Value],
     pub work: &'a [Value],
-    pub statuses: &'a BTreeMap<String, String>,
+    pub statuses: &'a BTreeMap<String, studio_runtime_store::WorkStatus>,
     pub monitors: &'a [Value],
     pub rules: &'a [Value],
 }
 
-pub fn workspace_inbox(data: WorkspaceInboxData<'_>) -> Vec<Value> {
+pub fn workspace_inbox(
+    data: WorkspaceInboxData<'_>,
+) -> studio_runtime_store::StoreResult<Vec<Value>> {
     let WorkspaceInboxData {
         agents,
         all_agents,
@@ -512,7 +514,7 @@ pub fn workspace_inbox(data: WorkspaceInboxData<'_>) -> Vec<Value> {
     for item in work.iter().filter(|item| item["status"] == "review") {
         inbox.push(json!({
             "id":item["id"],"kind":"work","agent":item["rootId"],"title":item["title"],
-            "text":"Result awaits acceptance","work":crate::work_policy::work_item_view(item, statuses),
+            "text":"Result awaits acceptance","work":crate::work_policy::work_item_view(item, statuses)?,
         }));
     }
     for agent in agents
@@ -543,7 +545,7 @@ pub fn workspace_inbox(data: WorkspaceInboxData<'_>) -> Vec<Value> {
             "id":rule["id"],"kind":"rule","agent":rule["agent"],"title":rule["name"],"text":rule["error"],
         }));
     }
-    inbox
+    Ok(inbox)
 }
 fn complaint_needs_response(complaint: &Value) -> bool {
     if matches!(complaint["status"].as_str(), Some("resolved" | "declined")) {

@@ -2183,7 +2183,9 @@ fn compact_exec_receipt(result: &ExchangeOutcome, key: &str) -> Value {
                 "outcome": value.get("outcome").cloned().unwrap_or(Value::Null),
             },
         }),
-        other => other.to_value(key),
+        other @ ExchangeOutcome::NotApplied(_)
+        | other @ ExchangeOutcome::Unknown
+        | other @ ExchangeOutcome::PreEffectWaiting => other.to_value(key),
     }
 }
 
@@ -2450,7 +2452,10 @@ fn check_project_reservation(
         crate::project_locations::check_location_admission(tx, payload, exact_legacy_reservation)
             .map_err(|error| match error {
             crate::project_locations::LocationError::Store(error) => AccessError::from(error),
-            _ => refused(
+            crate::project_locations::LocationError::InvalidStored { .. }
+            | crate::project_locations::LocationError::Refused(_)
+            | crate::project_locations::LocationError::Requires(_)
+            | crate::project_locations::LocationError::Sqlite(_) => refused(
                 409,
                 "project_location_changed",
                 "The project or caller changed before location reservation",

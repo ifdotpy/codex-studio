@@ -176,7 +176,25 @@ impl From<StoreError> for NotificationDispatchError {
             StoreError::InvalidSyncObject { scope, id } => {
                 Self::InvalidStoredObject { table: scope, id }
             }
-            error => Self::Store(error),
+            error @ StoreError::StateDirectory(_)
+            | error @ StoreError::AlreadyOwned
+            | error @ StoreError::MissingDatabase(_)
+            | error @ StoreError::Migration { .. }
+            | error @ StoreError::UnsafeStateDirectory
+            | error @ StoreError::SchemaMismatch(_)
+            | error @ StoreError::InvalidSyncObjectField { .. }
+            | error @ StoreError::InvalidStoredRecord { .. }
+            | error @ StoreError::SchemaObjectMismatch { .. }
+            | error @ StoreError::Sqlite(_)
+            | error @ StoreError::CommitOutcomeUnknown(_)
+            | error @ StoreError::Json(_)
+            | error @ StoreError::SchemaValidation(_)
+            | error @ StoreError::RecordContract(_)
+            | error @ StoreError::WriterPoisoned
+            | error @ StoreError::WriterActorInitialization(_)
+            | error @ StoreError::WriterActorControl(_)
+            | error @ StoreError::CommitActorOutcomeUnknown(_)
+            | error @ StoreError::ReadTaskFailed => Self::Store(error),
         }
     }
 }
@@ -1057,10 +1075,10 @@ impl NotificationStreamBuffer {
                 || item["type"] != "agentMessage"
                 || turn["id"].as_str().is_none_or(str::is_empty)
                 || agent["turnId"] != turn["id"]
-                || item.get("text").is_some_and(|text| !text.is_string())
             {
                 return Err(NotificationDispatchError::invalid());
             }
+            let body = recovered_message_text(item)?;
             let params = json!({"threadId":agent["threadId"],"turnId":turn["id"],"item":item});
             validate_agent(
                 agent,
@@ -1080,10 +1098,7 @@ impl NotificationStreamBuffer {
                     params: &params,
                     item_id,
                     observed_at: at,
-                    update: TextUpdate::Completed(
-                        item.get("text").and_then(Value::as_str),
-                        item.get("phase"),
-                    ),
+                    update: TextUpdate::Completed(body, item.get("phase")),
                 },
             )?;
             if has_questions(item.get("questions")) {
@@ -1095,6 +1110,15 @@ impl NotificationStreamBuffer {
         *agent = staged_agent;
         Ok((next != *self).then_some(next))
     }
+}
+
+/// Checked recovery message body; absent text retains the provider's optional-body semantics.
+pub(crate) fn recovered_message_text(
+    item: &Value,
+) -> Result<Option<&str>, NotificationDispatchError> {
+    item.get("text")
+        .map(|text| text.as_str().ok_or(NotificationDispatchError::invalid()))
+        .transpose()
 }
 
 fn command_key(
@@ -2227,7 +2251,9 @@ fn checked_outcome(outcome: DispatchOutcome) -> Result<DispatchOutcome, Notifica
         DispatchOutcome::RequiresService { service } => {
             Err(NotificationDispatchError::Dependency(service.name()))
         }
-        outcome => Ok(outcome),
+        outcome @ DispatchOutcome::Written
+        | outcome @ DispatchOutcome::Ignored { .. }
+        | outcome @ DispatchOutcome::Unhandled { .. } => Ok(outcome),
     }
 }
 
@@ -2418,7 +2444,12 @@ mod tests {
                     NotificationPostCommit::TokenRateUsage(_) => {
                         rates.publish_observation(effect).expect("rate projection")
                     }
-                    _ => {}
+                    NotificationPostCommit::AnalyticsStream { .. }
+                    | NotificationPostCommit::AnalyticsCaptured(_)
+                    | NotificationPostCommit::AnalyticsStreamCaptured(_)
+                    | NotificationPostCommit::TokenRateStream(_)
+                    | NotificationPostCommit::TokenRateAssociation(_)
+                    | NotificationPostCommit::Recovered { .. } => {}
                 }
             }
         }
@@ -2853,7 +2884,9 @@ mod tests {
         bytes.push(b'\n');
         match studio_runtime_providers::decode_journal_entry(1, 1, bytes).payload {
             studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame,
-            other => panic!("fixture must decode: {other:?}"),
+            other @ studio_runtime_providers::DecodedJournalPayload::RawStdout { .. } => {
+                panic!("fixture must decode: {other:?}")
+            }
         }
     }
 

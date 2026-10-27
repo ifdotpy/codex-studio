@@ -1,6 +1,7 @@
+import { ProviderKind } from "../generated/providerKind.ts";
 import type { UsageEligibility } from "../components/ModelLimitEligibility";
 import type { Agent, Json } from "../types";
-import { nativeErrorKind } from "../nativeErrors";
+import { knownNativeErrorKind } from "../nativeErrors";
 import { providerLimitData } from "./providerLimits";
 
 export type LimitRecovery = {
@@ -48,11 +49,8 @@ export function limitRecovered(
   now: number,
 ): boolean {
   const limitsAt = finite(limits?.at) ? limits.at : Number.NaN;
-  if (
-    !["usageLimitExceeded", "rateLimitExceeded"].includes(
-      nativeErrorKind(agent.error),
-    )
-  )
+  const kind = knownNativeErrorKind(agent.error);
+  if (kind !== "usageLimitExceeded" && kind !== "rateLimitExceeded")
     return false;
   const errorAt = finite(agent.nativeLimitErrorAt)
     ? agent.nativeLimitErrorAt
@@ -77,7 +75,7 @@ export function limitRecovery(
   limits: Json | null,
   now: number,
 ): LimitRecovery | null {
-  const kind = nativeErrorKind(agent.error);
+  const kind = knownNativeErrorKind(agent.error);
   if (limitRecovered(agent, limits, now)) return null;
   if (kind !== "usageLimitExceeded" && kind !== "rateLimitExceeded")
     return null;
@@ -93,7 +91,7 @@ export function limitRecovery(
 
   const reset =
     eligibility?.resetAt != null ? { resetAt: eligibility.resetAt } : undefined;
-  if (agent.provider === "claude") return { ...fallback, ...reset };
+  if (agent.provider !== ProviderKind.Codex) return { ...fallback, ...reset };
   let reached =
     typeof snapshot.rateLimitReachedType === "string"
       ? snapshot.rateLimitReachedType

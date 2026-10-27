@@ -276,7 +276,7 @@ try {
         rows.some(
           (row) =>
             row.type === "attachment" &&
-            row.attachment.type.startsWith("deferred_tools"),
+            row.attachment.type?.startsWith("deferred_tools"),
         ),
       );
     }
@@ -289,6 +289,7 @@ try {
           cwd: options!.dir!,
         }),
     } as Partial<ControlDependencies> as ControlDependencies;
+    assert(session.turns[0] && session.turns[1]);
     const branch = await forkAtTurn(
       session,
       { lastTurnId: session.turns[0].id },

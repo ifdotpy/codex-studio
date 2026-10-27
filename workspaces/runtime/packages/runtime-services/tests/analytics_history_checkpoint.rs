@@ -987,7 +987,6 @@ fn active_import_quota_notification_waits_for_event() {
 #[tokio::test]
 async fn terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices() {
     use studio_runtime_services::analytics_capture::{CaptureSource, PreparedCapture, capture};
-    use studio_runtime_services::analytics_history_repair::repair_terminal_errors;
     for thread in [Some("thread"), None, Some("foreign")] {
         let (root, agent) = fixture();
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
@@ -1029,6 +1028,16 @@ async fn terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices() {
                 .await
                 .expect("ambiguous second turn");
         }
+        store
+            .analytics_transaction::<_, StoreError>(|tx, _| {
+                tx.execute(
+                    "DELETE FROM analytics_meta WHERE key='terminalErrorRepairV1'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("historical source predates terminal repair checkpoint");
         drop(store);
         let store = RuntimeStore::open(Some(root.path()))
             .await
@@ -1053,7 +1062,6 @@ async fn terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices() {
                 .expect("state");
             json!({"turns":turns,"state":serde_json::from_str::<Value>(&state).expect("state JSON")})
         };
-        repair_terminal_errors(&store).await.expect("Rust repair");
         let repaired = snapshot(&store);
         let exact = thread == Some("thread");
         assert_eq!(repaired["state"]["repaired"], u64::from(exact));
@@ -1077,13 +1085,10 @@ async fn terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices() {
                 assert!(turn.get("terminalSource").is_none());
             }
         }
-        let admissions = store.writer_admissions();
-        repair_terminal_errors(&store).await.expect("second repair");
-        assert_eq!(
-            store.writer_admissions(),
-            admissions,
-            "completed repair must not enter the Canvas writer"
-        );
+        drop(store);
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("idempotent migration reopen");
         assert_eq!(snapshot(&store), repaired, "{thread:?}");
     }
 }

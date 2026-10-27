@@ -1,3 +1,4 @@
+import { isProviderKind } from "../generated/providerKind.ts";
 import { restoreSidebarFocus } from "../components/sidebar/SidebarFrame";
 import { readTerminalDockHeight } from "../layout/terminalGeometry";
 import { layoutQueries } from "../layout/layout-contract.generated";
@@ -739,7 +740,7 @@ function MultiServerShell({
       for (const row of data.accounts) {
         if (
           !row ||
-          (row.provider !== "codex" && row.provider !== "claude") ||
+          !isProviderKind(row.provider) ||
           (row.email !== null && typeof row.email !== "string") ||
           (row.plan !== null && typeof row.plan !== "string") ||
           typeof row.status !== "string" ||
@@ -1204,7 +1205,7 @@ function MultiServerShell({
                 <p role="status">Searching this server...</p>
               )}
               {searchResults[server.id]?.error && (
-                <p role="alert">{searchResults[server.id].error}</p>
+                <p role="alert">{searchResults[server.id]?.error}</p>
               )}
               {searchResults[server.id]?.results.map((result, index) => (
                 <button

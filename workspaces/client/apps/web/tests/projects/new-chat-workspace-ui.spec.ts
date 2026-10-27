@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { Page } from "@playwright/test";
 import type { PostBody } from "../../src/api.ts";
 import { fixturePostBody } from "../misc-fixture.ts";
@@ -180,7 +181,7 @@ for (const [choice, badge] of [
         .getByRole("button", { name: "Start chat", exact: true })
         .click();
       await expect.poll(() => creations.length).toBe(1);
-      expect(creations[0]).toMatchObject({
+      expect(required(creations[0])).toMatchObject({
         workspaceMode: choice === "Image" ? "image" : choice,
         model: "gpt-5.6-sol",
         effort: "high",
@@ -210,7 +211,7 @@ for (const system of ["Linux", "Windows"]) {
         .getByRole("button", { name: "Start chat", exact: true })
         .click();
       await expect.poll(() => creations.length).toBe(1);
-      expect(creations[0].workspaceMode).toBe("worktree");
+      expect(required(creations[0]).workspaceMode).toBe("worktree");
     } finally {
       await server.close();
     }
@@ -261,6 +262,7 @@ for (const width of [320, 390, 1440])
         ).toBeVisible();
         const bounds = await dialog.boundingBox();
         const viewport = page.viewportSize();
+        if (!bounds || !viewport) throw new Error("Missing workspace bounds");
 
         expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport!.width);
         const evidence = process.env.MODELS_EVIDENCE;
@@ -312,6 +314,7 @@ test("a paired server uses its own platform and catalog", async ({
   const remote = await setup("Linux", "Remote", true);
   try {
     const project = local.server.snapshot.runtime.projects[0];
+    if (!project?.path) throw new Error("Missing paired project");
 
     project.homeServerId = "local";
     project.locations = [
@@ -386,7 +389,7 @@ test("a paired server uses its own platform and catalog", async ({
       .click();
     await expect.poll(() => remote.creations.length).toBe(1);
     expect(local.creations).toHaveLength(0);
-    expect(remote.creations[0]).toMatchObject({
+    expect(required(remote.creations[0])).toMatchObject({
       workspaceMode: "worktree",
       model: "gpt-5.6-sol",
     });
@@ -434,8 +437,8 @@ test("a filtered Claude lead keeps the server's Codex worker default without inj
       .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await expect.poll(() => creations.length).toBe(1);
-    expect(creations[0].model).toBe("claude-opus-5-5");
-    expect(creations[0]).not.toHaveProperty("worker_defaults");
+    expect(required(creations[0]).model).toBe("claude-opus-5-5");
+    expect(required(creations[0])).not.toHaveProperty("worker_defaults");
   } finally {
     await server.close();
   }

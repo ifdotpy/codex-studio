@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { SidebarParityFixture } from "./sidebar-parity-fixture.ts";
 import type { Locator, Page, BrowserContext } from "playwright";
 import { test, expect } from "../playwright.ts";
@@ -231,7 +232,7 @@ test("pointer and keyboard reorder preserve source order, and chats can enter an
     // The fixture records the request before its client receipt updates the
     // revision used for the next write. Wait for the durable pending marker.
     await waitForOrderReceipt(page);
-    expect(fixture.calls.remote[0].body.groups!.unknown).toEqual([
+    expect(required(fixture.calls.remote[0]).body.groups!.unknown).toEqual([
       "unknown-saved-id",
     ]);
     const before = await member.getAttribute("data-sidebar-group");
@@ -380,7 +381,7 @@ test("peer teams retain members and allow create, edit, dissolve and shared chat
     await expect(
       sidebar.getByRole("button", { name: /Remote Team renamed/ }).first(),
     ).toBeVisible();
-    expect(fixture.calls.remote[0]!.body).toMatchObject({
+    expect(required(fixture.calls.remote[0])!.body).toMatchObject({
       action: "save",
       path: sourcePath("remote"),
       team_id: "team",
@@ -450,7 +451,7 @@ test("conversion from a peer team to a subagent keeps the owner and asks for con
       .getByRole("button", { name: "Make subagent", exact: true })
       .click();
     await expect(chat(sidebar, "Remote Team A")).toHaveCount(0);
-    expect(fixture.calls.remote[0]!.body).toMatchObject({
+    expect(required(fixture.calls.remote[0])!.body).toMatchObject({
       action: "convert",
       path: sourcePath("remote"),
       member: "member-a",
@@ -666,7 +667,7 @@ test("folder create, nested create, rename, remove and chat membership use origi
     await expect(
       sidebar.getByRole("button", { name: /Remote New nested/ }).first(),
     ).toBeVisible();
-    expect(fixture.calls.remote[0]!.body).toMatchObject({
+    expect(required(fixture.calls.remote[0])!.body).toMatchObject({
       action: "add_folder",
       path: sourcePath("remote"),
       parent_id: "parent",

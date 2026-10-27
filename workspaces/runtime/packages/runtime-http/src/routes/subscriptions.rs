@@ -87,7 +87,35 @@ async fn transcript_initial(
 ) -> Result<ResourceRevisionEntry, ApiError> {
     let tail = match &resource {
         ResourceRef::TranscriptResource(transcript) => transcript.tail,
-        _ => return Err(ApiError::internal()),
+        ResourceRef::AccountsResource(_)
+        | ResourceRef::CostsResource(_)
+        | ResourceRef::DesktopResource(_)
+        | ResourceRef::DraftsResource(_)
+        | ResourceRef::LimitsResource(_)
+        | ResourceRef::ModelsResource(_)
+        | ResourceRef::MultiServerResource(_)
+        | ResourceRef::QueueResource(_)
+        | ResourceRef::ReceiptsResource(_)
+        | ResourceRef::RoomResource(_)
+        | ResourceRef::SessionCostResource(_)
+        | ResourceRef::StateResource(_)
+        | ResourceRef::TaskResource(_)
+        | ResourceRef::TasksResource(_)
+        | ResourceRef::TerminalResource(_)
+        | ResourceRef::TerminalsResource(_)
+        | ResourceRef::TranscriptsResource(_)
+        | ResourceRef::VoiceResource(_)
+        | ResourceRef::WorkspaceResource(_)
+        | ResourceRef::AuthProgressResource(_)
+        | ResourceRef::VaultReadinessResource(_)
+        | ResourceRef::VaultJobProgressResource(_)
+        | ResourceRef::RenameProgressResource(_)
+        | ResourceRef::AgentDetailResource(_)
+        | ResourceRef::MonitorsResource(_)
+        | ResourceRef::ProcessesResource(_)
+        | ResourceRef::WorkResource(_)
+        | ResourceRef::ComplaintResource(_)
+        | ResourceRef::TerminalOutputResource(_) => return Err(ApiError::internal()),
     };
     let mut entry = super::sync_stream::transcript_initial_snapshot(state, resource, since).await?;
     if let Some(Some(page)) = entry.transcript_snapshot.take() {
@@ -194,7 +222,32 @@ async fn view_value(
             }
             Ok(json!({"terminalOutput":output,"terminalGeneration":generation}))
         }
-        _ => Err(ApiError::internal()),
+        ResourceRef::AccountsResource(_)
+        | ResourceRef::CostsResource(_)
+        | ResourceRef::DesktopResource(_)
+        | ResourceRef::DraftsResource(_)
+        | ResourceRef::LimitsResource(_)
+        | ResourceRef::ModelsResource(_)
+        | ResourceRef::MultiServerResource(_)
+        | ResourceRef::QueueResource(_)
+        | ResourceRef::ReceiptsResource(_)
+        | ResourceRef::SessionCostResource(_)
+        | ResourceRef::StateResource(_)
+        | ResourceRef::TaskResource(_)
+        | ResourceRef::TasksResource(_)
+        | ResourceRef::TerminalResource(_)
+        | ResourceRef::TerminalsResource(_)
+        | ResourceRef::TranscriptResource(_)
+        | ResourceRef::TranscriptsResource(_)
+        | ResourceRef::VoiceResource(_)
+        | ResourceRef::WorkspaceResource(_)
+        | ResourceRef::AuthProgressResource(_)
+        | ResourceRef::VaultReadinessResource(_)
+        | ResourceRef::VaultJobProgressResource(_)
+        | ResourceRef::RenameProgressResource(_)
+        | ResourceRef::AgentDetailResource(_)
+        | ResourceRef::MonitorsResource(_)
+        | ResourceRef::WorkResource(_) => Err(ApiError::internal()),
     }
 }
 
@@ -522,7 +575,22 @@ async fn content_fingerprint(state: HttpState, resource: ResourceRef) -> Option<
         ResourceRef::DesktopResource(_) | ResourceRef::TerminalsResource(_) => None,
         ResourceRef::QueueResource(_) => None,
         ResourceRef::SessionCostResource(_) | ResourceRef::CostsResource(_) => None,
-        _ => None,
+        ResourceRef::ModelsResource(_)
+        | ResourceRef::MultiServerResource(_)
+        | ResourceRef::ReceiptsResource(_)
+        | ResourceRef::RoomResource(_)
+        | ResourceRef::StateResource(_)
+        | ResourceRef::TaskResource(_)
+        | ResourceRef::TasksResource(_)
+        | ResourceRef::TerminalResource(_)
+        | ResourceRef::TranscriptsResource(_)
+        | ResourceRef::WorkspaceResource(_)
+        | ResourceRef::AgentDetailResource(_)
+        | ResourceRef::MonitorsResource(_)
+        | ResourceRef::ProcessesResource(_)
+        | ResourceRef::WorkResource(_)
+        | ResourceRef::ComplaintResource(_)
+        | ResourceRef::TerminalOutputResource(_) => None,
     }
 }
 

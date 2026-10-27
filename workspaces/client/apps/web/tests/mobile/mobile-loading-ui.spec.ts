@@ -79,6 +79,8 @@ test("mobile loading ui", async ({ browser: _browser }) => {
         target: "es2024",
       });
       const output = result.outputFiles[0];
+      assert.ok(output, "Fixture entry must compile");
+
       return output.text;
     }),
   );

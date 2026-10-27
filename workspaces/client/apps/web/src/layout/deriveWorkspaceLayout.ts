@@ -134,7 +134,7 @@ function derivePanePath(
   const frame = state.available ?? usable;
   const portrait = input.viewport.width < input.viewport.height;
   const hasPanel = !!state.panel && !state.sidebarOverride;
-  const visible: PaneName[] = hasPanel
+  let visible: [PaneName, PaneName] | [PaneName] = hasPanel
     ? ["conversation", "panel"]
     : ["sidebar", "conversation"];
   const contentMin = layoutValues.panePath.contentMin;
@@ -202,7 +202,7 @@ function derivePanePath(
       : state.panel
         ? "panel"
         : "conversation";
-    visible.splice(0, visible.length, last);
+    visible = [last];
     panes[last] = { ...frame };
   }
   // Navigation paints through Home; conversation content keeps the safe frame.

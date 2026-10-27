@@ -224,7 +224,7 @@ export function detectTextClipping({ scene, profile }: ClippingContext) {
         lineHeight: s.lineHeight,
       });
     const control = el.closest('button,label,[role="button"]');
-    if (control && ranges.length) {
+    if (control && ranges[0]) {
       const t = ranges[0],
         x = t.left + t.width / 2,
         y = t.top + t.height / 2;

@@ -49,7 +49,11 @@ fn name(value: &Value) -> Result<String, String> {
         .filter(|s| !s.is_empty() && s.len() <= 1024)
         .ok_or("Invalid file name.")?;
     let normalized = raw.replace('\\', "/");
-    let name = normalized.rsplit('/').next().unwrap();
+    // str::rsplit always yields at least one segment, including for an empty input.
+    let name = normalized
+        .rsplit('/')
+        .next()
+        .expect("split has a final segment");
     if name.is_empty() || matches!(name, "." | "..") || name.chars().any(|c| c <= '\u{1f}') {
         return Err("Invalid file name.".into());
     }
@@ -159,7 +163,11 @@ impl Transfers {
         if Some(transfer.bytes.len()) != transfer.size {
             return Err("The file transfer is incomplete.".into());
         }
-        let transfer = self.items.remove(id).unwrap();
+        // The get above found this entry, and no map mutation occurred afterward.
+        let transfer = self
+            .items
+            .remove(id)
+            .expect("validated save transfer exists");
         Ok((transfer.name, transfer.bytes))
     }
 }
@@ -216,7 +224,7 @@ pub fn write_atomic_if(path: &Path, bytes: &[u8], active: impl Fn() -> bool) -> 
     })()
     .map_err(|e: std::io::Error| e.to_string());
     if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
+        drop(std::fs::remove_file(&temporary));
     }
     result
 }

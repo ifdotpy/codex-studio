@@ -11,11 +11,14 @@ struct Patterns {
 }
 fn patterns() -> &'static Patterns {
     static PATTERNS: OnceLock<Patterns> = OnceLock::new();
+    // These fixed regular expressions are valid and have no runtime input.
     PATTERNS.get_or_init(|| Patterns {
-        scheme: Regex::new(r"(?i)^[a-z][a-z0-9+.-]*:").unwrap(),
-        relative: Regex::new(r"^[^/:?#]+\.[^/:?#]+:[0-9]+(?::[0-9]+)?(?:#.*)?$").unwrap(),
-        location: Regex::new(r":([0-9]+)(?::[0-9]+)?$").unwrap(),
-        anchor: Regex::new(r"(?i)^L?([0-9]+)(?:C[0-9]+|-L?[0-9]+)?$").unwrap(),
+        scheme: Regex::new(r"(?i)^[a-z][a-z0-9+.-]*:").expect("valid scheme pattern"),
+        relative: Regex::new(r"^[^/:?#]+\.[^/:?#]+:[0-9]+(?::[0-9]+)?(?:#.*)?$")
+            .expect("valid relative pattern"),
+        location: Regex::new(r":([0-9]+)(?::[0-9]+)?$").expect("valid location pattern"),
+        anchor: Regex::new(r"(?i)^L?([0-9]+)(?:C[0-9]+|-L?[0-9]+)?$")
+            .expect("valid anchor pattern"),
     })
 }
 fn padding(c: char) -> bool {
@@ -90,9 +93,10 @@ pub fn local(href: &str) -> Result<Value, String> {
     let decoded = decode(path)?;
     let path = decoded.trim_matches('\u{200b}');
     let location = patterns().location.captures(path);
+    // A successful regex capture always includes group zero, the complete match.
     let start = location
         .as_ref()
-        .map(|c| c.get(0).unwrap().start())
+        .map(|c| c.get(0).expect("capture includes complete match").start())
         .unwrap_or(path.len());
     let path = &path[..start];
     if path.is_empty() || path.chars().any(|c| c <= '\u{1f}') {

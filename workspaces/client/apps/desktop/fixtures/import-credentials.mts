@@ -6,7 +6,7 @@ const value: Record<
 > = JSON.parse(fs.readFileSync(0, "utf8"));
 if (
   process.argv[2] !== "--import-server-credentials" ||
-  value.servers.fixture.privateKey !== "private-fixture"
+  value.servers.fixture?.privateKey !== "private-fixture"
 )
   process.exit(2);
 fs.writeFileSync(process.argv[3] + "/proof", "received through stdin");

@@ -1,5 +1,5 @@
 import type { components } from "../generated/api";
-import type { ProviderKind } from "../generated/providerKind.ts";
+import { isProviderKind, ProviderKind } from "../generated/providerKind.ts";
 import {
   ACCOUNT_GROUP_PATTERN,
   ACCOUNT_GROUPS_MAX,
@@ -7,12 +7,14 @@ import {
   DEFAULT_CLAUDE_LEAD_MODEL,
 } from "../generated/sharedValues";
 
-/** Legacy and preference fixtures may omit fields other than the account id. */
-export type PreferenceAccount = Pick<components["schemas"]["Account"], "id"> &
+/** Account preferences require the schema identity and read only these fields. */
+export type PreferenceAccount = Pick<
+  components["schemas"]["Account"],
+  "id" | "provider"
+> &
   Partial<
     Pick<
       components["schemas"]["Account"],
-      | "provider"
       | "group"
       | "status"
       | "canAttemptNativeProof"
@@ -76,20 +78,21 @@ const rank = (group: string | null | undefined, groups: string[]) => {
   return index < 0 ? groups.length : index;
 };
 
-const providerOf = (account: PreferenceAccount) => account.provider || "codex";
+const providerOf = (account: PreferenceAccount) => account.provider;
 
 /** The provider of a model id; `null` for an unknown model. */
 export function modelProvider(model: string): ProviderKind | null {
-  if (model.startsWith("gpt-")) return "codex";
+  if (model.startsWith("gpt-")) return ProviderKind.Codex;
   if (
     model.startsWith("claude-") ||
     ["default", "sonnet", "opus", "haiku"].includes(model)
   )
-    return "claude";
+    return ProviderKind.Claude;
   return null;
 }
 
 export const canStart = (account: PreferenceAccount) =>
+  isProviderKind(account.provider) &&
   !account.disconnected &&
   !account.deleted &&
   !account.duplicateOf &&
@@ -127,8 +130,8 @@ export function newChatDefault(
     .map(({ account }) => account);
   const wanted = model
     ? modelProvider(model)
-    : candidates.some((account) => providerOf(account) === "claude")
-      ? "claude"
+    : candidates.some((account) => providerOf(account) === ProviderKind.Claude)
+      ? ProviderKind.Claude
       : null;
   const chosen =
     candidates.find((account) => !wanted || providerOf(account) === wanted)
@@ -136,7 +139,8 @@ export function newChatDefault(
     project?.accountKey ||
     defaultAccountKey;
   const claude = accounts.some(
-    (account) => account.id === chosen && providerOf(account) === "claude",
+    (account) =>
+      account.id === chosen && providerOf(account) === ProviderKind.Claude,
   );
   const defaults = !model && claude;
   return {
@@ -152,7 +156,7 @@ export function defaultChatModel(
   models: Array<{ model: string; resolvedModel?: string; isDefault?: boolean }>,
 ): string | undefined {
   if (
-    provider === "claude" &&
+    provider === ProviderKind.Claude &&
     models.some(
       (row) =>
         row.model === DEFAULT_CLAUDE_LEAD_MODEL ||

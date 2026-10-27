@@ -1,3 +1,6 @@
+# Inherited test convention owned by the root clippy.toml.
+allow-unwrap-in-tests = true
+
 # Blocking work has one entry point: `studio_runtime_store::blocking_pool::spawn_blocking`
 # (re-exported as `studio_runtime_process::blocking_pool`), which labels every call site.
 # Runtime::block_on is reserved for rare synchronous runtime entry points; banning it

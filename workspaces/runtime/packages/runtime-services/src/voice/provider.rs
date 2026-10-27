@@ -1830,7 +1830,9 @@ fn parse_rpc_id(value: &Value) -> Option<VoiceRpcId> {
     match value {
         Value::String(value) if !value.is_empty() => Some(VoiceRpcId::String(value.clone())),
         Value::Number(value) => value.as_i64().map(VoiceRpcId::Number),
-        _ => None,
+        Value::Null | Value::Bool(_) | Value::String(_) | Value::Array(_) | Value::Object(_) => {
+            None
+        }
     }
 }
 

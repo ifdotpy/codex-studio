@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import { execFileSync } from "node:child_process";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 import { createServer } from "vite";
@@ -64,6 +65,7 @@ test("Background Current Browser", async ({
               ],
               { cwd: root, encoding: "utf8" },
             );
+          return undefined;
         },
       },
     ],
@@ -259,8 +261,8 @@ test("Background Current Browser", async ({
       await page.getByText("Current activity", { exact: true }).count(),
       1,
     );
-    const activeCommand = data.runtime.tasks.find(
-      (task) => task.id === "active",
+    const activeCommand = required(
+      data.runtime.tasks.find((task) => task.id === "active"),
     );
     activeCommand!.turnId = "original-turn";
     agents[0]!.inFlight = true;
@@ -283,8 +285,8 @@ test("Background Current Browser", async ({
       .locator('[data-task="active"] .task-row-kind')
       .getByText("Background command", { exact: true })
       .waitFor();
-    delete agents[0]!.inFlight;
-    delete agents[0]!.turnId;
+    delete required(agents[0]).inFlight;
+    delete required(agents[0]).turnId;
     await render();
     await page
       .locator('[data-task="active"] .task-row-kind')
@@ -369,7 +371,7 @@ test("Background Current Browser", async ({
     await expect(pendingControl).toBeDisabled();
     assert.equal(await page.evaluate(() => window.refreshCalls), 0);
     holdAnswer = false;
-    releaseAnswer!();
+    required(releaseAnswer)();
     await expect(pendingControl).toBeEnabled({ timeout: 2000 });
     await page.waitForFunction(
       () => window.refreshCalls === 1 && !!window.rejectRefresh,

@@ -71,7 +71,7 @@ impl OrderedValue {
             Self::Object(values) => values
                 .iter()
                 .find_map(|(key, value)| (key == name).then_some(value)),
-            _ => None,
+            Self::Null | Self::Bool(_) | Self::Number(_) | Self::String(_) | Self::Array(_) => None,
         }
     }
 }
@@ -323,7 +323,10 @@ fn decide_externalize_ordered(
                 }
                 small_preview(&OrderedValue::Object(selected), 0).into_value()
             }
-            _ => Value::Null,
+            OrderedValue::Null
+            | OrderedValue::Bool(_)
+            | OrderedValue::Number(_)
+            | OrderedValue::String(_) => Value::Null,
         };
         let hash = hash_hex(&bytes);
         let reference = BlobRef {
@@ -398,7 +401,11 @@ fn decide_externalize_result_ordered(
                 .collect(),
         )
         .into_value(),
-        _ => Value::Null,
+        OrderedValue::Null
+        | OrderedValue::Bool(_)
+        | OrderedValue::Number(_)
+        | OrderedValue::String(_)
+        | OrderedValue::Object(_) => Value::Null,
     };
     let hash = hash_hex(&bytes);
     let reference = BlobRef {
@@ -607,7 +614,9 @@ fn small_preview(value: &OrderedValue, depth: usize) -> OrderedValue {
                 .map(|(key, item)| (key.clone(), small_preview(item, depth + 1)))
                 .collect(),
         ),
-        other => other.clone(),
+        other @ OrderedValue::Null
+        | other @ OrderedValue::Bool(_)
+        | other @ OrderedValue::Number(_) => other.clone(),
     }
 }
 

@@ -1,3 +1,4 @@
+import { required } from "../../componentTestFixtures";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -64,8 +65,8 @@ describe("requestCommandBackground", () => {
     ).toEqual({ kind: "backgrounded" });
     const [post] = posts(calls);
 
-    expect(post.path).toBe("/api/processes/action");
-    expect(post.value).toMatchObject({
+    expect(required(post).path).toBe("/api/processes/action");
+    expect(required(post).value).toMatchObject({
       action: "background_command",
       agent: "lead",
       accountKey: "acct",
@@ -153,7 +154,7 @@ describe("requestCommandBackground", () => {
       (c) => (c.value as { requestId: string }).requestId,
     );
     expect(sent).toHaveLength(2);
-    expect(sent[1]).toBe(sent[0]);
+    expect(required(sent[1])).toBe(required(sent[0]));
   });
 
   it("reads a saved receipt without a second write", async () => {

@@ -13,6 +13,9 @@ use crate::{
 };
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
+use studio_runtime_schema::provider_errors::{
+    KnownCodexErrorKind, known_error_kind, raw_error_kind,
+};
 use studio_runtime_store::{ContinuationRepository, ContinuationTable, Transaction};
 
 /// The exact settings copied by Python's `preparation_settings` helper.
@@ -924,14 +927,33 @@ fn capacity_failure(error: &Value) -> Option<CapacityFailure> {
     if crate::disk_space::is_disk_full_error(error) {
         return Some(CapacityFailure::DiskFull);
     }
-    match error_kind(error) {
-        "serverOverloaded" => Some(CapacityFailure::ServerOverloaded),
-        "internalServerError" => Some(CapacityFailure::InternalServerError),
-        "httpConnectionFailed" => Some(CapacityFailure::HttpConnectionFailed),
-        "responseStreamConnectionFailed" => Some(CapacityFailure::ResponseStreamConnectionFailed),
-        "responseStreamDisconnected" => Some(CapacityFailure::ResponseStreamDisconnected),
-        "responseTooManyFailedAttempts" => Some(CapacityFailure::ResponseTooManyFailedAttempts),
-        _ => None,
+    use KnownCodexErrorKind::*;
+    match known_error_kind(error) {
+        Some(ServerOverloaded) => Some(CapacityFailure::ServerOverloaded),
+        Some(InternalServerError) => Some(CapacityFailure::InternalServerError),
+        Some(HttpConnectionFailed) => Some(CapacityFailure::HttpConnectionFailed),
+        Some(ResponseStreamConnectionFailed) => {
+            Some(CapacityFailure::ResponseStreamConnectionFailed)
+        }
+        Some(ResponseStreamDisconnected) => Some(CapacityFailure::ResponseStreamDisconnected),
+        Some(ResponseTooManyFailedAttempts) => Some(CapacityFailure::ResponseTooManyFailedAttempts),
+        Some(
+            ContextWindowExceeded
+            | SessionBudgetExceeded
+            | UsageLimitExceeded
+            | RateLimitExceeded
+            | FlexUnavailable
+            | CyberPolicy
+            | MisalignmentPolicyViolation
+            | TooManyDenials
+            | Unauthorized
+            | BadRequest
+            | ThreadRollbackFailed
+            | SandboxError
+            | ActiveTurnNotSteerable
+            | Other,
+        )
+        | None => None,
     }
 }
 
@@ -941,11 +963,37 @@ pub(crate) fn classify_usage_failure(
     error: &Value,
     provider_auth: Option<&regex::Regex>,
 ) -> Option<UsageCause> {
-    match error_kind(error) {
-        "usageLimitExceeded" => Some(UsageCause::UsageLimit),
-        "rateLimitExceeded" => Some(UsageCause::RateLimit),
-        kind if kind.to_ascii_lowercase().contains("auth") => Some(UsageCause::Auth),
-        _ => {
+    use KnownCodexErrorKind::*;
+    match known_error_kind(error) {
+        Some(UsageLimitExceeded) => Some(UsageCause::UsageLimit),
+        Some(RateLimitExceeded) => Some(UsageCause::RateLimit),
+        Some(Unauthorized) => Some(UsageCause::Auth),
+        Some(
+            ContextWindowExceeded
+            | SessionBudgetExceeded
+            | FlexUnavailable
+            | ServerOverloaded
+            | CyberPolicy
+            | MisalignmentPolicyViolation
+            | TooManyDenials
+            | HttpConnectionFailed
+            | ResponseStreamConnectionFailed
+            | InternalServerError
+            | BadRequest
+            | ThreadRollbackFailed
+            | SandboxError
+            | ResponseStreamDisconnected
+            | ResponseTooManyFailedAttempts
+            | ActiveTurnNotSteerable
+            | Other,
+        )
+        | None => {
+            // External auth extensions (including recorded authExpired evidence)
+            // retain the existing classifier without widening the known domain.
+            if raw_error_kind(error).is_some_and(|kind| kind.to_ascii_lowercase().contains("auth"))
+            {
+                return Some(UsageCause::Auth);
+            }
             let message = error.get("message").and_then(Value::as_str).unwrap_or("");
             let patterns = classifier_patterns();
             let auth_evidence = patterns.0.is_match(message);
@@ -975,13 +1023,35 @@ fn usage_failure(error: &Value, agent: &Value) -> Option<UsageCause> {
         .and_then(|kind| crate::provider_adapter::adapter(kind).classify_error(error))
 }
 
-fn error_kind(error: &Value) -> &str {
-    error["codexErrorInfo"]
-        .as_str()
-        .or_else(|| {
-            error["codexErrorInfo"]
-                .as_object()
-                .and_then(|value| value.keys().next().map(String::as_str))
-        })
-        .unwrap_or("")
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn capacity_classification_never_chooses_an_ambiguous_extension_key() {
+        let error = json!({"message":"Failure", "codexErrorInfo":{"serverOverloaded":{}, "futureCode":{"id":42}}});
+        assert!(capacity_failure(&error).is_none());
+        assert_eq!(classify_usage_failure(&error, None), None);
+    }
+
+    #[test]
+    fn known_and_external_auth_evidence_keep_existing_recovery_semantics() {
+        assert!(matches!(
+            capacity_failure(
+                &json!({"codexErrorInfo":{"httpConnectionFailed":{"httpStatusCode":503}}})
+            ),
+            Some(CapacityFailure::HttpConnectionFailed)
+        ));
+        for info in ["unauthorized", "authExpired"] {
+            assert_eq!(
+                classify_usage_failure(&json!({"codexErrorInfo":info}), None),
+                Some(UsageCause::Auth)
+            );
+        }
+        let error =
+            json!({"codexErrorInfo":{"futureCode":{"opaque":[1,null]}},"message":"HTTP 401"});
+        let original = error.clone();
+        assert_eq!(classify_usage_failure(&error, None), Some(UsageCause::Auth));
+        assert_eq!(error, original);
+    }
 }

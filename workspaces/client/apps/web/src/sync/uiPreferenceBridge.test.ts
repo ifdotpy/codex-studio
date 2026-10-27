@@ -1,5 +1,5 @@
+import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PreferenceFields } from "./uiPreferenceMerge";
 import type { syncPost } from "../api";
 
 const mocks = vi.hoisted(() => ({
@@ -109,6 +109,7 @@ describe("UI preference projection bridge", () => {
     changed();
     await vi.advanceTimersByTimeAsync(0);
     expect(mocks.syncPost).toHaveBeenCalledOnce();
+    assert.ok(mocks.syncPost.mock.calls[0] != null);
     expect(mocks.syncPost.mock.calls[0][0]).toBe("/api/sync/preferences");
     expect(mocks.syncPost.mock.calls[0][2]).toHaveProperty("requestId");
     expect(mocks.transportWrite).toHaveBeenCalledOnce();
@@ -155,8 +156,8 @@ describe("UI preference projection bridge", () => {
 
   it("uses the projected server API and storage for preference writes", async () => {
     const pairedStorage = {} as Storage;
-    const pairedPost = vi.fn(
-      async (_path: string, body: { fields?: PreferenceFields }) => ({
+    const pairedPost = vi.fn<typeof syncPost<"/api/sync/preferences">>(
+      async (_path, body) => ({
         fields: body.fields ?? {},
       }),
     );

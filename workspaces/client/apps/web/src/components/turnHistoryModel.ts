@@ -16,7 +16,7 @@ export function isEmptyAssistantMessage(item: Message): boolean {
 
 export interface HistoryGroup {
   id: string;
-  items: Message[];
+  items: [Message, ...Message[]];
   outcome?: string | undefined;
   result?: Message | undefined;
   /** Native turn groups represented by this renderer-only presentation group. */
@@ -76,7 +76,11 @@ export function historyPresentationGroups(
       continue;
     }
     const turns = [...priorTurns, group];
-    const items = turns.flatMap((turn) => turn.items);
+    const items: HistoryGroup["items"] = [
+      previous.items[0],
+      ...previous.items.slice(1),
+      ...group.items,
+    ];
     result[result.length - 1] = {
       id: items[0].id,
       items,
@@ -223,7 +227,7 @@ export function incrementalHistoryGroups(
   let prefixGroups = 0;
   let prefixItems = 0;
   while (prefixGroups < prior.groups.length) {
-    const length = prior.groups[prefixGroups].items.length;
+    const length = prior.groups[prefixGroups]!.items.length;
     if (prefixItems + length > shared) break;
     prefixItems += length;
     prefixGroups++;
@@ -237,9 +241,9 @@ export function incrementalHistoryGroups(
   let oldOffset = 0;
   const suffixStart = prior.items.length - sharedSuffix;
   for (let index = 0; index < prior.groups.length; index++) {
-    oldOffset += prior.groups[index].items.length;
+    oldOffset += prior.groups[index]!.items.length;
     if (oldOffset > suffixStart) {
-      const boundary = prior.groups[index];
+      const boundary = prior.groups[index]!;
       const boundaryStart = oldOffset - boundary.items.length;
       // User rows always start a group and cannot join an adjacent group.
       suffixGroups =

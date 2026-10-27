@@ -36,7 +36,7 @@ import { ACCOUNT_SIGN_IN_HINTS } from "../components/AccountAddDialog.tsx";
 import {
   PROVIDER_KINDS,
   PROVIDER_LABELS,
-  type ProviderKind,
+  ProviderKind,
 } from "../generated/providerKind.ts";
 import type { ServerServices } from "./serverServices";
 
@@ -394,7 +394,7 @@ export default function ServerAccountsPanel({
                               <Menu.Label>{server.label}</Menu.Label>
                               {(
                                 [
-                                  ...(row.provider === "claude"
+                                  ...(row.provider === ProviderKind.Claude
                                     ? (["configure-profile"] as const)
                                     : []),
                                   "rename",
@@ -405,12 +405,10 @@ export default function ServerAccountsPanel({
                               ).map((operation) => (
                                 <Menu.Item
                                   key={operation}
-                                  color={
-                                    operation === "remove" ||
-                                    operation === "disconnect"
-                                      ? "red"
-                                      : undefined
-                                  }
+                                  {...(operation === "remove" ||
+                                  operation === "disconnect"
+                                    ? { color: "red" }
+                                    : {})}
                                   onClick={() =>
                                     accountAction(server.id, {
                                       action: "account-action",

@@ -222,7 +222,7 @@ fn agent_status_consumers_match_the_runtime_store_owner() {
                     check_enums(child, owned, count);
                 }
             }
-            _ => (),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => (),
         }
     }
     let mut count = 0;

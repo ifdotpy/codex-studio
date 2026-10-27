@@ -106,7 +106,7 @@ test("Stop preserves a rejected pre-admission receipt and permits one exact retr
   const saved = await bridge.call("thread/turns/list", {
     threadId: bridge.thread,
   });
-  assert.equal(saved.data[0].startOutcome, "not_applied");
+  assert.equal(saved.data[0]?.startOutcome, "not_applied");
   const retry = await start(bridge, "before-admission");
   assert.notEqual(retry.turn.id, original.turn.id);
   assert.equal((await completed(bridge, retry.turn.id)).status, "completed");

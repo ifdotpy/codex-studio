@@ -1,3 +1,4 @@
+import { inputText } from "./sdk-fixtures.ts";
 import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { StopActive } from "./stop-inputs.ts";
@@ -112,17 +113,14 @@ export function fixtureQuery(
   const read = async () => {
     const input = await prompt.next();
     if (!input.done) {
-      fs.appendFileSync(
-        cwd + "/.inputs",
-        input.value.message.content[0].text + "\n",
-      );
+      fs.appendFileSync(cwd + "/.inputs", inputText(input.value) + "\n");
       fs.appendFileSync(
         cwd + "/.sdk-inputs",
         JSON.stringify(input.value) + "\n",
       );
       if (
         config.history &&
-        (input.value.message.content[0].text === "pulled" ||
+        (inputText(input.value) === "pulled" ||
           config.history === "all" ||
           (config.history === "partial" && input.value.shouldQuery === false))
       ) {
@@ -144,14 +142,14 @@ export function fixtureQuery(
       process.stdout.write(
         JSON.stringify({
           method: "fixture/input",
-          params: { text: input.value.message.content[0].text },
+          params: { text: inputText(input.value) },
         }) + "\n",
       );
     }
     if (
       config.crashOnClear &&
       !input.done &&
-      input.value.message.content[0].text === "/clear"
+      inputText(input.value) === "/clear"
     ) {
       await new Promise<unknown>((resolve) =>
         process.stdout.write(
@@ -242,7 +240,7 @@ export function fixtureQuery(
       while (!abort.signal.aborted) {
         const input = await read();
         if (input.done) return;
-        const text = input.value.message.content[0].text;
+        const text = inputText(input.value);
         yield { type: "user", isReplay: true, uuid: input.value.uuid };
         if (input.value.shouldQuery === false) {
           const fail = text === "prefix-fail";
@@ -303,6 +301,12 @@ export function fixtureQuery(
           continue;
         }
         let late = null;
+        let consumed: string | undefined;
+        if (text === "consumed") consumed = (await read()).value!.uuid;
+        if (text === "consumed-partial") {
+          consumed = (await read()).value!.uuid;
+          await read();
+        }
         if (text === "ack") {
           for (;;) {
             const next = await read();
@@ -311,6 +315,7 @@ export function fixtureQuery(
             yield {
               type: "result",
               subtype: "success",
+              is_error: false,
               num_turns: 0,
               user_message_uuid: next.value!.uuid,
               usage,
@@ -324,6 +329,7 @@ export function fixtureQuery(
             yield {
               type: "result",
               subtype: "success",
+              is_error: false,
               num_turns: 0,
               user_message_uuid: prefix.value!.uuid,
               usage,
@@ -351,7 +357,14 @@ export function fixtureQuery(
             errors: ["Claude failed"],
           };
         else
-          yield { type: "result", subtype: "success", usage, result: "done" };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            usage,
+            result: "done",
+            ...(consumed ? { user_message_uuids: [consumed] } : {}),
+          };
         if (config.holdPulledTail && text === "pulled")
           await until(cwd + "/.allow-tail", abort.signal);
         idle = true;
@@ -372,6 +385,7 @@ export function fixtureQuery(
             yield {
               type: "result",
               subtype: "success",
+              is_error: false,
               usage,
               result: "continued",
             };
@@ -394,6 +408,7 @@ export function fixtureQuery(
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             usage,
             result: "continued",
           };

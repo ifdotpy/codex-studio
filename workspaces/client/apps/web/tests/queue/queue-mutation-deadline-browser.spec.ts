@@ -1,3 +1,4 @@
+import { required } from "../messages/helpers.ts";
 import type {} from "./queue-mutation-deadline-browser.fixture.tsx";
 import { createFixtureViteServer } from "../playwright.ts";
 import { requestBody } from "../messages/helpers.ts";
@@ -107,11 +108,12 @@ test("queue-mutation-deadline-browser @performance", async ({
         );
       else if (body.action === "reorder")
         view.items = body.ordered_ids.map((id) =>
-          view.items.find((item) => item.id === id)!,
+          required(view.items.find((item) => item.id === id)),
         );
       else assert.fail(`Unexpected queue action: ${body.action}`);
       view.revision += ":committed";
       // The operation commits, but its response stays pending until the deadline.
+      return undefined;
     });
     await page.goto(server.resolvedUrls!.local[0]! + "check");
     await page.evaluate(async (workspaceId) => {
@@ -155,12 +157,14 @@ test("queue-mutation-deadline-browser @performance", async ({
       await page.evaluate((action) => {
         window.outcome = "pending";
         const queue = window.queue;
+        const first = queue.items[0];
+        if (!first) throw new Error("Missing queue item");
         const operation =
           action === "edit"
-            ? queue.edit(queue.items[0], "Exact replacement")
+            ? queue.edit(first, "Exact replacement")
             : action === "reorder"
               ? queue.reorder(queue.items.map((item) => item.id).reverse())
-              : queue.cancel(queue.items[0]);
+              : queue.cancel(first);
         window.operation = operation.then(
           () => (window.outcome = "success"),
           (error: Error) => (window.outcome = error.name),
@@ -193,11 +197,13 @@ test("queue-mutation-deadline-browser @performance", async ({
         "An unknown result cannot report confirmed cancellation or editing",
       );
       assert.match(
-        (await page.evaluate<string | void>(() =>
-          window.queue
-            .cancel(window.queue.items[0])
-            .catch((error: Error) => error.message),
-        ))!,
+        (await page.evaluate<string | void>(() => {
+          const item = window.queue.items[0];
+          if (!item) throw new Error("Missing queue item");
+          return window.queue
+            .cancel(item)
+            .catch((error: Error) => error.message);
+        }))!,
         /Retry the previous queue change/,
       );
       assert.equal(posts.length, before + 1);

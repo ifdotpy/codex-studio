@@ -48,6 +48,7 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
               code: await readFile(process.env.STUDIO_HISTORY_BASELINE, "utf8"),
               map: null,
             };
+          return undefined;
         },
         configureServer(s) {
           s.middlewares.use("/audit", (_q, r) => {
@@ -59,6 +60,7 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
         },
         resolveId(id) {
           if (id === "/history-window-audit.tsx") return entry;
+          return undefined;
         },
       },
     ],

@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import type { Message, JsonValue } from "../types";
 type TranscriptFixture = Pick<Message, "id"> &
   Partial<Record<keyof Message, unknown>>;
@@ -42,10 +43,10 @@ it("retains identity for unchanged transcript items and replaces changed data", 
   );
   for (const mutate of [
     (rows: typeof previous) => {
-      rows[0].inputs[0].pending = false;
+      required(rows[0].inputs[0]).pending = false;
     },
     (rows: typeof previous) => {
-      rows[0].assets[0].id = "new-image";
+      required(rows[0].assets[0]).id = "new-image";
     },
     (rows: typeof previous) => {
       rows[1].text = "New answer";
@@ -55,7 +56,7 @@ it("retains identity for unchanged transcript items and replaces changed data", 
       rows[1].turnStatus = "completed";
     },
     (rows: typeof previous) => {
-      delete rows[1].streaming;
+      Reflect.deleteProperty(rows[1], "streaming");
     },
     (rows: typeof previous) => {
       rows[2].nativeError.metadata.retry = true;

@@ -181,29 +181,180 @@ pub(crate) fn signal_verified_group_member(
     expected_start: &str,
     signal: Signal,
 ) -> Result<bool> {
-    if start_time(pid, false)?.as_deref() != Some(expected_start) {
+    if !member_is_current(pid, pgid, sid, expected_start)? {
         return Ok(false);
     }
-    let member =
-        Pid::from_raw(i32::try_from(pid).map_err(|_| Error::Refused("Invalid child PID"))?)
-            .ok_or(Error::Refused("Invalid child PID"))?;
-    let group =
-        Pid::from_raw(i32::try_from(pgid).map_err(|_| Error::Refused("Invalid process group"))?)
-            .ok_or(Error::Refused("Invalid process group"))?;
-    let session =
-        Pid::from_raw(i32::try_from(sid).map_err(|_| Error::Refused("Invalid process session"))?)
-            .ok_or(Error::Refused("Invalid process session"))?;
-    if getpgid(Some(member)).map_err(std::io::Error::from)? != group
-        || getsid(Some(member)).map_err(std::io::Error::from)? != session
-        || start_time(pid, false)?.as_deref() != Some(expected_start)
-    {
-        return Ok(false);
-    }
-    match kill_process_group(group, signal) {
+    match kill_process_group(native_pid(pgid)?, signal) {
         Ok(()) => Ok(true),
         Err(rustix::io::Errno::SRCH) => Ok(false),
         Err(error) => Err(std::io::Error::from(error).into()),
     }
+}
+
+/// A captured group is the sole native member/PGID/SID ownership model for
+/// supervisor close and PTY teardown. It does not own escaped groups/sessions.
+#[derive(Clone)]
+pub(crate) struct GroupMember {
+    pub(crate) pid: u32,
+    pub(crate) start_time: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct VerifiedProcessGroup {
+    pub(crate) id: u32,
+    pub(crate) session: u32,
+    pub(crate) members: Vec<GroupMember>,
+}
+
+impl VerifiedProcessGroup {
+    pub(crate) fn signal(&self, signal: Signal) -> Result<bool> {
+        for member in &self.members {
+            if signal_verified_group_member(
+                member.pid,
+                self.id,
+                self.session,
+                &member.start_time,
+                signal,
+            )? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    pub(crate) fn has_live_anchor(&self) -> Result<bool> {
+        for member in &self.members {
+            if member_is_current(member.pid, self.id, self.session, &member.start_time)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+fn native_pid(value: u32) -> Result<Pid> {
+    i32::try_from(value)
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or(Error::Refused("Invalid process identity"))
+}
+
+fn member_is_current(pid: u32, pgid: u32, sid: u32, expected: &str) -> Result<bool> {
+    if start_time(pid, false)?.as_deref() != Some(expected) {
+        return Ok(false);
+    }
+    let member = native_pid(pid)?;
+    let identities = getpgid(Some(member))
+        .and_then(|group| getsid(Some(member)).map(|session| (group, session)));
+    let (group, session) = match identities {
+        Ok(ids) => ids,
+        Err(rustix::io::Errno::SRCH) => return Ok(false),
+        Err(error) => return Err(std::io::Error::from(error).into()),
+    };
+    Ok(group == native_pid(pgid)?
+        && session == native_pid(sid)?
+        && start_time(pid, false)?.as_deref() == Some(expected))
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum GroupScope {
+    Session(u32),
+    Group(u32),
+}
+
+impl GroupScope {
+    fn includes(self, group: u32, session: u32) -> bool {
+        match self {
+            Self::Session(expected) => session == expected,
+            Self::Group(expected) => group == expected,
+        }
+    }
+}
+
+/// A failed enumeration cannot prove an empty group or completed teardown.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn capture_groups(scope: GroupScope) -> Result<Vec<VerifiedProcessGroup>> {
+    let mut groups = std::collections::BTreeMap::<(u32, u32), Vec<GroupMember>>::new();
+    let boot = boot_id()?;
+    #[cfg(target_os = "linux")]
+    for entry in fs::read_dir("/proc")? {
+        let entry = entry?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let raw = match fs::read_to_string(entry.path().join("stat")) {
+            Ok(raw) => raw,
+            Err(error) if process_gone_error(&error) => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let stat = ProcStat::parse(&raw)?;
+        if stat.state != 'Z' && scope.includes(stat.process_group, stat.session) {
+            groups
+                .entry((stat.process_group, stat.session))
+                .or_default()
+                .push(GroupMember {
+                    pid,
+                    start_time: stat.start_identity(&boot),
+                });
+        }
+    }
+    #[cfg(target_os = "macos")]
+    for pid in studio_runtime_proc_sys::all_pids()? {
+        let raw = native_pid(pid)?;
+        let ids =
+            getpgid(Some(raw)).and_then(|group| getsid(Some(raw)).map(|session| (group, session)));
+        let (group, session) = match ids {
+            Ok((group, session)) => (
+                u32::try_from(group.as_raw_nonzero().get())
+                    .map_err(|_| Error::Refused("Invalid process group"))?,
+                u32::try_from(session.as_raw_nonzero().get())
+                    .map_err(|_| Error::Refused("Invalid process session"))?,
+            ),
+            Err(rustix::io::Errno::SRCH) => continue,
+            Err(error) => return Err(std::io::Error::from(error).into()),
+        };
+        if !scope.includes(group, session) {
+            continue;
+        }
+        let Some(info) = studio_runtime_proc_sys::bsd_info(pid, false)? else {
+            continue;
+        };
+        if !info.is_zombie() && info.process_group == group {
+            groups
+                .entry((group, session))
+                .or_default()
+                .push(GroupMember {
+                    pid,
+                    start_time: macos_start_identity(
+                        &boot,
+                        info.start_seconds,
+                        info.start_microseconds,
+                    ),
+                });
+        }
+    }
+    Ok(groups
+        .into_iter()
+        .map(|((id, session), mut members)| {
+            members.sort_by_key(|member| member.pid);
+            VerifiedProcessGroup {
+                id,
+                session,
+                members,
+            }
+        })
+        .collect())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn capture_groups(_scope: GroupScope) -> Result<Vec<VerifiedProcessGroup>> {
+    Err(Error::Refused(
+        "Native process group enumeration is unavailable on this device",
+    ))
 }
 
 pub(super) fn inspect_start(pid: u32, expected: &str) -> Result<(StartMatch, Option<String>)> {
@@ -219,54 +370,99 @@ pub(super) fn free_space(root: &Path, required: u64) -> Result<()> {
     }
     Ok(())
 }
+/// Completed group close proof. Journal strings are converted at the boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GroupCloseResult {
+    AlreadyExited,
+    Terminated,
+    Killed,
+}
+
+impl GroupCloseResult {
+    pub(super) fn journal_outcome(self) -> &'static str {
+        match self {
+            Self::AlreadyExited => "already-exited",
+            Self::Terminated => "terminated",
+            Self::Killed => "killed",
+        }
+    }
+}
+
+/// TERM grace before escalation, and KILL confirmation budget.
+const GROUP_TERM_GRACE: Duration = Duration::from_millis(1500);
+const GROUP_KILL_WAIT: Duration = Duration::from_secs(1);
+
 #[allow(
     clippy::disallowed_methods,
     reason = "termination runs on supervisor startup or connection blocking workers"
 )]
-pub(super) fn stop_verified(pid: u32, pgid: u32, expected: &str) -> Result<&'static str> {
+pub(super) fn stop_verified(pid: u32, pgid: u32, expected: &str) -> Result<GroupCloseResult> {
     if !is_native_start(expected) {
         return Err(Error::Refused(
             "Child identity is not a native kernel identity",
         ));
     }
+    if pid != pgid {
+        return Err(Error::Refused("Child process group identity changed"));
+    }
     match start_time(pid, false)?.as_deref() {
-        None => return Ok("already-exited"),
+        None => {
+            return if group_exit_verified(pid, pgid, expected)? {
+                Ok(GroupCloseResult::AlreadyExited)
+            } else {
+                Err(Error::Refused(
+                    "Child leader identity is unavailable while process group members remain",
+                ))
+            };
+        }
         Some(actual) if actual == expected => {}
         Some(_) => return Err(Error::Refused("Child identity changed before close")),
     }
-    let Some(process) = verify_group_for_close(pid, pgid)? else {
-        return if start_time(pid, false)?.is_none() {
-            Ok("already-exited")
+    let process = verify_group(pid, pgid)?;
+    let session = getsid(Some(process)).map_err(std::io::Error::from)?;
+    let session = u32::try_from(session.as_raw_nonzero().get())
+        .map_err(|_| Error::Refused("Invalid process session"))?;
+    let mut groups = capture_groups(GroupScope::Group(pgid))?;
+    // The leader must still pin this group while its ownership is captured.
+    if start_time(pid, true)?.as_deref() != Some(expected) {
+        return if group_exit_verified(pid, pgid, expected)? {
+            Ok(GroupCloseResult::AlreadyExited)
         } else {
             Err(Error::Refused("Child identity changed before close"))
         };
+    }
+    let Some(group) = groups.pop() else {
+        return if group_exit_verified(pid, pgid, expected)? {
+            Ok(GroupCloseResult::AlreadyExited)
+        } else {
+            Err(Error::Refused("Child process group identity changed"))
+        };
     };
+    if group.session != session || !groups.is_empty() {
+        return Err(Error::Refused("Child process session identity changed"));
+    }
     for (signal, timeout, outcome) in [
-        (Signal::TERM, Duration::from_millis(1500), "terminated"),
-        (Signal::KILL, Duration::from_secs(1), "killed"),
+        (Signal::TERM, GROUP_TERM_GRACE, GroupCloseResult::Terminated),
+        (Signal::KILL, GROUP_KILL_WAIT, GroupCloseResult::Killed),
     ] {
-        if start_time(pid, false)?.as_deref() != Some(expected) {
-            return Err(Error::Refused("Child identity changed before signal"));
-        }
-        match kill_process_group(process, signal) {
-            Ok(()) => {}
-            Err(rustix::io::Errno::SRCH) => {
-                return match start_time(pid, false)? {
-                    None => Ok("already-exited"),
-                    Some(actual) if actual == expected => Err(Error::Refused(
-                        "Verified child process group disappeared before child exit",
-                    )),
-                    Some(_) => Err(Error::Refused("Child identity changed before close")),
-                };
-            }
-            Err(e) => return Err(std::io::Error::from(e).into()),
-        }
+        let signalled = group.signal(signal)?;
         let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            match start_time(pid, false)? {
-                None => return Ok(outcome),
-                Some(actual) if actual == expected => {}
-                Some(_) => return Err(Error::Refused("Child identity changed during close")),
+        loop {
+            if group_exit_verified(pid, pgid, expected)? {
+                return Ok(outcome);
+            }
+            if !signalled || !group.has_live_anchor()? {
+                // A member can finish between the scan and identity check.
+                // Only a new empty scan can turn that race into close proof.
+                if group_exit_verified(pid, pgid, expected)? {
+                    return Ok(outcome);
+                }
+                return Err(Error::Refused(
+                    "Process group remains without a verified original member",
+                ));
+            }
+            if Instant::now() >= deadline {
+                break;
             }
             thread::sleep(RETRY);
         }
@@ -276,17 +472,19 @@ pub(super) fn stop_verified(pid: u32, pgid: u32, expected: &str) -> Result<&'sta
     ))
 }
 
-fn verify_group_for_close(pid: u32, pgid: u32) -> Result<Option<Pid>> {
-    let raw = i32::try_from(pid).map_err(|_| Error::Refused("Invalid child PID"))?;
-    let process = Pid::from_raw(raw).ok_or(Error::Refused("Invalid child PID"))?;
-    if pid != pgid {
-        return Err(Error::Refused("Child process group identity changed"));
+/// Every close completion uses the same proof: the recorded group has no
+/// live members and the recorded leader has exited. Moving out of the group
+/// never grants authority to signal the leader's new group.
+fn group_exit_verified(pid: u32, pgid: u32, expected: &str) -> Result<bool> {
+    if !capture_groups(GroupScope::Group(pgid))?.is_empty() {
+        return Ok(false);
     }
-    match getpgid(Some(process)) {
-        Ok(group) if group == process => Ok(Some(process)),
-        Ok(_) => Err(Error::Refused("Child process group identity changed")),
-        Err(rustix::io::Errno::SRCH) => Ok(None),
-        Err(error) => Err(std::io::Error::from(error).into()),
+    match inspect_start(pid, expected)?.0 {
+        StartMatch::Gone => Ok(true),
+        StartMatch::Exact => Err(Error::Refused(
+            "Recorded child remains live outside its process group",
+        )),
+        StartMatch::Different => Err(Error::Refused("Child identity changed during close")),
     }
 }
 
@@ -389,10 +587,10 @@ mod tests {
     }
 
     /// A child in its own group that blocks until the test kills it.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     struct Blocker(std::process::Child);
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     impl Blocker {
         fn start() -> (Self, u32, String) {
             use std::os::unix::process::CommandExt;
@@ -410,12 +608,44 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     impl Drop for Blocker {
         fn drop(&mut self) {
             let _kill = self.0.kill();
             let _wait = self.0.wait();
         }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn captured_group_refuses_changed_boot_start_group_or_session() {
+        let (_blocker, pid, identity) = Blocker::start();
+        let group = capture_groups(GroupScope::Group(pid))
+            .expect("capture owned group")
+            .pop()
+            .expect("live owned group");
+        let mut stale = group.clone();
+        let stale_start = identity.replacen(
+            &boot_id().expect("boot identity"),
+            "00000000-0000-0000-0000-000000000000",
+            1,
+        );
+        stale.members[0].start_time = stale_start.clone();
+        assert!(!stale.signal(Signal::KILL).expect("stale boot refused"));
+        assert!(stop_verified(pid, pid, &stale_start).is_err());
+        stale.members[0].start_time = format!("{identity}0");
+        assert!(!stale.signal(Signal::KILL).expect("stale start refused"));
+        stale = group.clone();
+        stale.id += 1;
+        assert!(!stale.signal(Signal::KILL).expect("changed group refused"));
+        stale = group;
+        stale.session += 1;
+        assert!(!stale.signal(Signal::KILL).expect("changed session refused"));
+        assert_eq!(
+            start_time(pid, false).expect("read live child").as_deref(),
+            Some(identity.as_str()),
+            "no stale ownership proof may signal the disposable child"
+        );
     }
 
     #[test]
@@ -545,7 +775,9 @@ mod tests {
         );
         assert!(matches!(
             stop_verified(pid, pid, &identity),
-            Ok("terminated" | "killed" | "already-exited")
+            Ok(GroupCloseResult::Terminated
+                | GroupCloseResult::Killed
+                | GroupCloseResult::AlreadyExited)
         ));
         drop(blocker);
     }
@@ -571,7 +803,7 @@ mod tests {
 
         assert!(matches!(
             stop_verified(pid, pid, &identity),
-            Ok("already-exited")
+            Ok(GroupCloseResult::AlreadyExited)
         ));
     }
 

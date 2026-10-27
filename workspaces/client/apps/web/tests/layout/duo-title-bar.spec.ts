@@ -26,9 +26,13 @@ for (const size of [
       async (route) => {
         const response = await route.fetch();
         const headers = response.headers();
-        headers["content-security-policy"] = headers[
-          "content-security-policy"
-        ].replace("script-src 'self'", "script-src 'self' 'wasm-unsafe-eval'");
+        const policy = headers["content-security-policy"];
+        if (!policy)
+          throw new Error("Fixture response has no Content-Security-Policy");
+        headers["content-security-policy"] = policy.replace(
+          "script-src 'self'",
+          "script-src 'self' 'wasm-unsafe-eval'",
+        );
         await route.fulfill({ response, headers });
       },
     );

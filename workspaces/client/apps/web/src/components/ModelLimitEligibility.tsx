@@ -1,3 +1,4 @@
+import { ProviderKind } from "../generated/providerKind.ts";
 import { useEffect, useState } from "react";
 import type { GetResult } from "../api";
 import { localDateTime } from "../local-time";
@@ -54,7 +55,7 @@ export default function ModelLimitEligibility({
           ),
         ].join(", ") || "Unavailable"}
       </p>
-      {eligibility.provider === "claude" && (
+      {eligibility.provider === ProviderKind.Claude && (
         <p>{labels[eligibility.overage]}</p>
       )}
       {eligibility.resetAt != null && (

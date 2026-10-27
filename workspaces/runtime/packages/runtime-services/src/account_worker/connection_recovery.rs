@@ -167,11 +167,9 @@ pub(super) async fn lifecycle_completion(
         move |tx, agent, account, generation, turn, item, timestamp| {
             let streams = super::store::current_streams(tx, account, Some(&cached))
                 .map_err(stream_store_error)?;
-            let Some(mut next) = streams
-                .recover_agent_message_in_transaction(
-                    tx, agent, account, generation, turn, item, timestamp,
-                )
-                .map_err(|_| crate::notification_dispatch::NotificationDispatchError::invalid())?
+            let Some(mut next) = streams.recover_agent_message_in_transaction(
+                tx, agent, account, generation, turn, item, timestamp,
+            )?
             else {
                 return Ok(None);
             };
@@ -210,8 +208,27 @@ fn stream_store_error(
     error: super::WorkerError,
 ) -> crate::notification_dispatch::NotificationDispatchError {
     match error {
-        super::WorkerError::Store(error) => error.into(),
-        _ => crate::notification_dispatch::NotificationDispatchError::invalid(),
+        super::WorkerError::Store(error)
+        | super::WorkerError::Recovery(RecoveryError::Store(error)) => error.into(),
+        super::WorkerError::Recovery(_) => {
+            crate::notification_dispatch::NotificationDispatchError::invalid()
+        }
+        super::WorkerError::Scheduler(_)
+        | super::WorkerError::Session(_)
+        | super::WorkerError::Notification(_)
+        | super::WorkerError::PreparationRefused(_)
+        | super::WorkerError::StaleVmActor
+        | super::WorkerError::PreparationPending(_)
+        | super::WorkerError::PreparationAwaitsAgent(_)
+        | super::WorkerError::CleanupUnconfirmed(_)
+        | super::WorkerError::AlreadyRunning
+        | super::WorkerError::Closed
+        | super::WorkerError::ShutdownTimeout
+        | super::WorkerError::TaskFailed
+        | super::WorkerError::Capacity
+        | super::WorkerError::CallbackUnknown => {
+            crate::notification_dispatch::NotificationDispatchError::invalid()
+        }
     }
 }
 

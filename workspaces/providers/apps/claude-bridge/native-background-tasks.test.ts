@@ -50,12 +50,15 @@ test.each([
       taskEvents().map((n) => [n.method, n.params.item.status]),
       Array(3).fill(["item/started", "inProgress"]),
     );
+    const progress = taskEvents()[1];
+    const update = taskEvents()[2];
+    assert.ok(progress && update);
     assert.equal(
-      (taskEvents()[1].params.item.result as FixtureToolResult).content[0].text,
+      (progress.params.item.result as FixtureToolResult).content[0]?.text,
       "Build still running",
     );
     assert.equal(
-      taskEvents()[2].params.item.arguments!.description,
+      update.params.item.arguments!.description,
       "Build almost done",
     );
     // Publish the marker only after its status is complete.
@@ -84,7 +87,7 @@ test.each([
       path.join(bridge.root, "native-1.output"),
     );
     assert.equal(
-      (terminal!.params.item.result as FixtureToolResult).content[0].text,
+      (terminal!.params.item.result as FixtureToolResult).content[0]?.text,
       "Task " + status,
     );
     assert.equal(

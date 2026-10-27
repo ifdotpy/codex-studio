@@ -309,9 +309,9 @@ async fn prepare_legacy_gap_coverage(
             for (agent, state) in states {
                 let inventory=studio_runtime_store::analytics_capture::AnalyticsCaptureRepository::usage_inventory(&db,&agent)?;
                 if inventory.truncated {continue;}
-                let gaps=inventory.rows.iter().filter(|row|row.pre_ledger).filter_map(|row|match &row.ledger.studio_usage {studio_runtime_schema::usage::UsageObservation::Gap{response_id,..}=>Some(response_id.clone()),_=>None}).collect::<std::collections::BTreeSet<_>>();
+                let gaps=inventory.rows.iter().filter(|row|row.pre_ledger).filter_map(|row|match &row.ledger.studio_usage {studio_runtime_schema::usage::UsageObservation::Gap{response_id,..}=>Some(response_id.clone()),studio_runtime_schema::usage::UsageObservation::Response { .. } | studio_runtime_schema::usage::UsageObservation::Cumulative { .. }=>None}).collect::<std::collections::BTreeSet<_>>();
                 if gaps.is_empty() {continue;}
-                let finals=inventory.rows.iter().filter_map(|row|match &row.ledger.studio_usage {studio_runtime_schema::usage::UsageObservation::Response{response_id,evidence,..} if *evidence!=studio_runtime_schema::usage::UsageEvidence::Legacy=>Some(response_id.as_str()),_=>None}).collect::<std::collections::BTreeSet<_>>();
+                let finals=inventory.rows.iter().filter_map(|row|match &row.ledger.studio_usage {studio_runtime_schema::usage::UsageObservation::Response{response_id,evidence,..} if *evidence!=studio_runtime_schema::usage::UsageEvidence::Legacy=>Some(response_id.as_str()),studio_runtime_schema::usage::UsageObservation::Response { .. } | studio_runtime_schema::usage::UsageObservation::Cumulative { .. } | studio_runtime_schema::usage::UsageObservation::Gap { .. }=>None}).collect::<std::collections::BTreeSet<_>>();
                 let pending=gaps.iter().filter(|id|!finals.contains(id.as_str())).map(|id|studio_runtime_schema::usage::ledger::response_receipt_key(&agent,id)).collect();
                 proofs.push((agent, state, pending));
             }
@@ -376,7 +376,7 @@ async fn prepare_legacy_counter_ownership(
                 } else {
                     let turn = match &observation {
                         Parsed::Cumulative { turn_id, .. } => turn_id.as_deref(),
-                        _ => None,
+                        Parsed::Response { .. } | Parsed::Gap { .. } => None,
                     };
                     studio_runtime_schema::usage::ledger::legacy_receipt_keys(
                         id,
@@ -570,7 +570,7 @@ pub async fn prepare_legacy_corrections(
                 let consistent=match &ledger.studio_usage {
                     ParsedUsage::Response { tokens,.. } => old.kind=="response" && tokens.total()==Some(old.tokens) && old.breakdown.as_ref().is_none_or(|previous|previous==tokens),
                     ParsedUsage::Gap {..} => old.kind=="notice" && old.tokens==0 && old.breakdown.is_none(),
-                    _=>false,
+                    ParsedUsage::Cumulative { .. }=>false,
                 };
                 if !consistent || ledger.usage_identity != studio_runtime_schema::usage::ledger::UsageIdentity::new(&old.agent, thread.as_deref(), &ledger.studio_usage) { continue; }
                 ledger.receipt_key = Some(old.id.clone());

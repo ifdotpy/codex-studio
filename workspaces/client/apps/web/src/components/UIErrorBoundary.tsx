@@ -27,7 +27,7 @@ export default class UIErrorBoundary extends Component<
   Props,
   { error: Error | null }
 > {
-  state: { error: Error | null } = { error: null };
+  override state: { error: Error | null } = { error: null };
 
   static getDerivedStateFromError(error: unknown) {
     return {
@@ -36,7 +36,7 @@ export default class UIErrorBoundary extends Component<
     };
   }
 
-  componentDidCatch(error: Error, info: ErrorInfo) {
+  override componentDidCatch(error: Error, info: ErrorInfo) {
     console.error(
       `Studio display error (${this.props.label})`,
       error,
@@ -44,12 +44,12 @@ export default class UIErrorBoundary extends Component<
     );
   }
 
-  componentDidUpdate(previous: Props) {
+  override componentDidUpdate(previous: Props) {
     if (this.state.error && previous.resetKey !== this.props.resetKey)
       this.setState({ error: null });
   }
 
-  render() {
+  override render() {
     if (!this.state.error) return this.props.children;
     return (
       <ErrorSurface>

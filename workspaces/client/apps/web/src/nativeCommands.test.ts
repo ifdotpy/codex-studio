@@ -3,6 +3,19 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { menuActions, renameCommand, studioCommand } from "./nativeCommands.ts";
 
+test("missing and unrecognized provider identities never select Codex commands", () => {
+  for (const provider of [
+    undefined,
+    "",
+    "future-provider",
+    "CODEX",
+    " codex",
+  ]) {
+    assert.equal(studioCommand("/review", provider), false);
+    assert.deepEqual(menuActions(provider), []);
+  }
+});
+
 test("rename command parses an exact name or requests a generated title", () => {
   assert.equal(renameCommand("/rename"), null);
   assert.equal(renameCommand("/rename  Release review  "), "Release review");
@@ -24,7 +37,7 @@ test("Codex chats run compact and review as Studio actions", () => {
   assert.equal(studioCommand("/compacting", "codex"), false);
   assert.equal(studioCommand("please /review", undefined), false);
   assert.deepEqual(menuActions("codex"), ["compact", "review"]);
-  assert.deepEqual(menuActions(undefined), ["compact", "review"]);
+  assert.deepEqual(menuActions(undefined), []);
 });
 
 test("Claude chats send compact and review to Claude", () => {

@@ -401,7 +401,7 @@ async function resolveRole(
   accounts: Schemas["AccountsResponse"]["accounts"],
   profile: ReturnType<typeof scaleProfile>,
 ) {
-  const accountKeys: string[] = scaleAccountKeys(accounts, profile);
+  const accountKeys = scaleAccountKeys(accounts, profile);
   const catalog = await api<Schemas["ModelCatalogResponse"]>(
     "GET",
     `/api/models?account_key=${encodeURIComponent(accountKeys[0])}`,
@@ -969,12 +969,11 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
 
   // Measurements.
   try {
-    const probe = browser.contexts()[0]?.pages()[0]
-      ? await browser
-          .contexts()[0]
-          .pages()[0]
-          .evaluate(() => window.__uiProbe)
-      : null;
+    const probe =
+      (await browser
+        .contexts()[0]
+        ?.pages()[0]
+        ?.evaluate(() => window.__uiProbe)) ?? null;
     const rawDiagnosticsAfter = await api<Schemas["DiagnosticsResponse"]>(
       "GET",
       "/api/diagnostics",

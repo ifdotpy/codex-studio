@@ -1,3 +1,4 @@
+import { required } from "../../componentTestFixtures";
 import type { Message } from "../../../types";
 import { describe, expect, it } from "vitest";
 import {
@@ -28,7 +29,7 @@ describe("history windows", () => {
       id: "m0",
       items: items as HistoryGroup["items"],
       outcome: "failed",
-      result: items.at(-1),
+      result: required(items.at(-1)),
     };
     const rows = windowHistoryRows([group]);
     expect(rows.every((row) => row.items.length <= HISTORY_ROW_ITEMS)).toBe(
@@ -51,11 +52,11 @@ describe("history windows", () => {
       id: "m0",
       items: items as HistoryGroup["items"],
       outcome: "failed",
-      result: items.at(-1),
+      result: required(items.at(-1)),
     };
     const initial = windowHistoryRows([group]);
     const prefix = Array.from({ length: 50 }, (_, index) => ({
-      ...items[0],
+      ...required(items[0]),
       id: `prefix${index}`,
     }));
     const prepended = windowHistoryRows(
@@ -77,7 +78,7 @@ describe("history windows", () => {
       ...items,
     ]);
     const suffix = Array.from({ length: 50 }, (_, index) => ({
-      ...items[0],
+      ...required(items[0]),
       id: `suffix${index}`,
     }));
     const appended = windowHistoryRows(
@@ -100,20 +101,22 @@ describe("history windows", () => {
     ]);
     expect(appended.filter((row) => row.result)).toEqual([appended.at(-1)]);
     const removed = items.filter(
-      (item) => item.id !== "m0" && !initial[1].items.includes(item),
+      (item) => item.id !== "m0" && !required(initial[1]).items.includes(item),
     );
     const pruned = windowHistoryRows(
       [
         {
           ...group,
-          id: removed[0].id,
+          id: required(removed[0]).id,
           items: removed as HistoryGroup["items"],
         },
       ],
       initial,
     );
-    expect(pruned[0].id).toBe("m0");
-    expect(pruned.some((row) => row.id === initial[1].id)).toBe(false);
+    expect(required(pruned[0]).id).toBe("m0");
+    expect(pruned.some((row) => row.id === required(initial[1]).id)).toBe(
+      false,
+    );
     expect(pruned.flatMap((row) => row.items)).toEqual(removed);
   });
   it("keeps the viewport range bounded, including zero-height rows", () => {

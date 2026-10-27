@@ -70,14 +70,17 @@ export function useWorkspaceLayout(options: {
         const value = Number.parseFloat(rootStyle.getPropertyValue(name));
         return Number.isFinite(value) && value >= 0 ? value : undefined;
       };
+      const hingeLeft = optionalLength("--native-hinge-left");
+      const hingeWidth = optionalLength("--native-hinge-width");
+      const hingeHeight = optionalLength("--native-hinge-height");
       const hinge: NonNullable<PanePathInput["hinge"]> = {
         status:
           status === "open" || status === "closed" || status === "partial"
             ? status
             : "unknown",
-        left: optionalLength("--native-hinge-left"),
-        width: optionalLength("--native-hinge-width"),
-        height: optionalLength("--native-hinge-height"),
+        ...(hingeLeft !== undefined ? { left: hingeLeft } : {}),
+        ...(hingeWidth !== undefined ? { width: hingeWidth } : {}),
+        ...(hingeHeight !== undefined ? { height: hingeHeight } : {}),
       };
       const next = {
         host: {
@@ -159,6 +162,7 @@ export function useWorkspaceLayout(options: {
       view.removeEventListener("studio-native-viewport", update);
     };
   }, [host]);
+  const { panePath, ...layoutOptions } = options;
   return {
     rowRef,
     row: host,
@@ -166,16 +170,18 @@ export function useWorkspaceLayout(options: {
     shortTouchLandscape: geometry.shortTouchLandscape,
     ...deriveWorkspaceLayout({
       ...geometry,
-      ...options,
-      panePath: options.panePath
+      ...layoutOptions,
+      ...(panePath
         ? {
-            ...options.panePath,
-            primaryCoarse: geometry.primaryCoarse,
-            duoDevice: geometry.duoDevice,
-            hinge: geometry.hinge,
-            available: geometry.available,
+            panePath: {
+              ...panePath,
+              primaryCoarse: geometry.primaryCoarse,
+              duoDevice: geometry.duoDevice,
+              hinge: geometry.hinge,
+              available: geometry.available,
+            },
           }
-        : undefined,
+        : {}),
       hostExcludesSafeInsets: true,
     }),
   };

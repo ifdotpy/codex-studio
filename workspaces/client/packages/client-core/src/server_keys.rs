@@ -79,10 +79,11 @@ fn key(value: &Value) -> Result<Ed25519KeyPair, String> {
 }
 fn pem(label: &str, bytes: &[u8]) -> String {
     let encoded = STANDARD.encode(bytes);
+    // Base64 is ASCII, so every byte-aligned chunk is valid UTF-8.
     let body = encoded
         .as_bytes()
         .chunks(64)
-        .map(|v| std::str::from_utf8(v).unwrap())
+        .map(|v| std::str::from_utf8(v).expect("base64 is ASCII"))
         .collect::<Vec<_>>()
         .join("\n");
     format!("-----BEGIN {label}-----\n{body}\n-----END {label}-----\n")

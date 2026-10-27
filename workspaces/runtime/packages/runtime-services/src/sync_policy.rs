@@ -203,7 +203,21 @@ impl ProjectVaultSnapshot {
             let view = crate::vault::view(&vm_state_dir, &project_id).map_err(|error| {
                 let object = match error {
                     crate::vault::VaultError::InvalidStoredRecord(object) => object,
-                    _ => "vault project id",
+                    crate::vault::VaultError::InvalidProjectId
+                    | crate::vault::VaultError::AlreadyConfigured
+                    | crate::vault::VaultError::ProjectSourceMissing
+                    | crate::vault::VaultError::InvalidPrefix
+                    | crate::vault::VaultError::InvalidSite
+                    | crate::vault::VaultError::DeskMissing
+                    | crate::vault::VaultError::InvalidConfiguration
+                    | crate::vault::VaultError::GuestFailed
+                    | crate::vault::VaultError::DeskTimedOut
+                    | crate::vault::VaultError::DeskFailed
+                    | crate::vault::VaultError::MissingRecipient
+                    | crate::vault::VaultError::InvalidProfile
+                    | crate::vault::VaultError::InvalidProfileOrRegion
+                    | crate::vault::VaultError::InvalidPullFolder
+                    | crate::vault::VaultError::NoPullTarget => "vault project id",
                 };
                 (object, project_id)
             });
@@ -1083,7 +1097,11 @@ fn publish_work_metadata(
             None => crate::work_write::current_submission_refusal(transaction, record).map_err(
                 |error| match error {
                     crate::work_write::WorkWriteError::Store(error) => error,
-                    other => StoreError::SchemaValidation(other.to_string()),
+                    other @ crate::work_write::WorkWriteError::Event(_)
+                    | other @ crate::work_write::WorkWriteError::NotImplemented(_)
+                    | other @ crate::work_write::WorkWriteError::PreparationWorker => {
+                        StoreError::SchemaValidation(other.to_string())
+                    }
                 },
             )?,
         };
@@ -2513,7 +2531,10 @@ pub async fn push_preferences(
                             SyncPolicyError::InvalidStoredObject { scope, id } => {
                                 StoreError::InvalidSyncObject { scope, id }
                             }
-                            other => StoreError::SchemaMismatch(other.to_string()),
+                            other @ SyncPolicyError::InvalidPreferences
+                            | other @ SyncPolicyError::Store(_) => {
+                                StoreError::SchemaMismatch(other.to_string())
+                            }
                         })?;
                 let now_ms = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -2544,7 +2565,26 @@ pub async fn push_preferences(
             StoreError::InvalidSyncObject { scope, id } => {
                 SyncPolicyError::InvalidStoredObject { scope, id }
             }
-            other => SyncPolicyError::Store(other),
+            other @ StoreError::StateDirectory(_)
+            | other @ StoreError::AlreadyOwned
+            | other @ StoreError::MissingDatabase(_)
+            | other @ StoreError::Migration { .. }
+            | other @ StoreError::UnsafeStateDirectory
+            | other @ StoreError::SchemaMismatch(_)
+            | other @ StoreError::InvalidSyncObjectField { .. }
+            | other @ StoreError::InvalidStoredRecord { .. }
+            | other @ StoreError::SchemaObjectMismatch { .. }
+            | other @ StoreError::Sqlite(_)
+            | other @ StoreError::CommitOutcomeUnknown(_)
+            | other @ StoreError::Json(_)
+            | other @ StoreError::InvalidStoredObject { .. }
+            | other @ StoreError::SchemaValidation(_)
+            | other @ StoreError::RecordContract(_)
+            | other @ StoreError::WriterPoisoned
+            | other @ StoreError::WriterActorInitialization(_)
+            | other @ StoreError::WriterActorControl(_)
+            | other @ StoreError::CommitActorOutcomeUnknown(_)
+            | other @ StoreError::ReadTaskFailed => SyncPolicyError::Store(other),
         })?;
     Ok(merged)
 }

@@ -39,7 +39,7 @@ impl FederationTable {
         let identity = match self {
             Self::Peer => Some("stateId"),
             Self::Room | Self::Outbox => Some("id"),
-            _ => None,
+            Self::Settings | Self::Inbox => None,
         };
         if !valid
             || identity.is_some_and(|field| value.get(field).and_then(Value::as_str) != Some(id))
@@ -69,7 +69,9 @@ impl FederationMessagingRepository {
             FederationTable::Outbox => {
                 "SELECT record FROM runtime_federation_outbox WHERE id=?1 AND peer_id=?2".to_owned()
             }
-            _ => format!("SELECT record FROM {} WHERE id=?1 AND ?2=?2", table.name()),
+            FederationTable::Settings | FederationTable::Peer | FederationTable::Room => {
+                format!("SELECT record FROM {} WHERE id=?1 AND ?2=?2", table.name())
+            }
         };
         let sql=sql.replacen("SELECT record", &format!("SELECT CASE WHEN length(CAST(record AS BLOB))<={MAX_RECORD_BYTES} THEN record ELSE NULL END"),1);
         let raw: Option<Option<String>> = db
@@ -123,7 +125,7 @@ impl FederationMessagingRepository {
             FederationTable::Outbox => {
                 tx.execute("INSERT INTO runtime_federation_outbox(id,peer_id,record) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET record=excluded.record WHERE peer_id=excluded.peer_id",params![id,peer,raw])?;
             }
-            _ => {
+            FederationTable::Settings | FederationTable::Peer | FederationTable::Room => {
                 tx.execute(&format!("INSERT INTO {}(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",table.name()),params![id,raw])?;
             }
         }
@@ -142,7 +144,9 @@ impl FederationMessagingRepository {
             FederationTable::Inbox => {
                 "SELECT message_id,CASE WHEN length(CAST(record AS BLOB))<=?3 THEN record END FROM runtime_federation_inbox WHERE peer_id=?1 AND json_extract(record,'$.ack') IN ('pending','sent') AND ?2=?2 ORDER BY json_extract(record,'$.created'),message_id LIMIT 50"
             }
-            _ => return Err(StoreError::RecordContract("federation batch table")),
+            FederationTable::Settings | FederationTable::Peer | FederationTable::Room => {
+                return Err(StoreError::RecordContract("federation batch table"));
+            }
         };
         let mut stmt = db.prepare_cached(sql)?;
         let rows = stmt

@@ -208,9 +208,17 @@ test.skipIf(!supervisorBinary)(
       const opened = record(await nextMessage());
       assert.equal(opened.requestId, 1);
       assert.equal(opened.error, undefined);
-      childPid = status(state).handles[0].pid!;
+      const [openedHandle] = status(state).handles;
+      assert.ok(
+        openedHandle?.pid,
+        "The fixture child must have an owned process.",
+      );
+      childPid = openedHandle.pid;
       assert.equal(initialHealth.handles.length, 0);
-      assert.equal(status(state).handles[0].pid, childPid);
+      assert.deepEqual(
+        status(state).handles.map((handle) => handle.pid),
+        [childPid],
+      );
 
       const files = recoveryPaths({ CODEX_AGENTS_STATE_DIR: state }, fixture);
       const registered = new Set([

@@ -60,7 +60,7 @@ async fn recover(
             studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
                 message,
             ) => ApiError::new(axum::http::StatusCode::BAD_REQUEST, message),
-            other => ApiError::new(axum::http::StatusCode::BAD_GATEWAY, other.to_string()),
+            other @ studio_runtime_services::account_session_runtime::AccountSessionError::InvalidResponse(_) | other @ studio_runtime_services::account_session_runtime::AccountSessionError::Persistence => ApiError::new(axum::http::StatusCode::BAD_GATEWAY, other.to_string()),
         })?;
     Ok(Json(result))
 }

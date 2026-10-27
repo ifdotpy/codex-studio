@@ -1,3 +1,4 @@
+import { ProviderKind } from "../generated/providerKind.ts";
 import Disclosure from "./ui/Disclosure";
 import { useServerSync } from "../servers/ServerServicesContext";
 import { localDateTime } from "../local-time";
@@ -205,9 +206,9 @@ export default function NativeRuntimeStatus({
                   (item) => item.id === provider.accountKey,
                 );
                 const label =
-                  provider.provider === "claude"
+                  provider.provider === ProviderKind.Claude
                     ? "Claude Code"
-                    : provider.provider === "codex"
+                    : provider.provider === ProviderKind.Codex
                       ? "Codex CLI"
                       : provider.provider;
                 const updateNotices = providers.warnings.filter(
