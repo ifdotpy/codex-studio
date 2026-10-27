@@ -49,6 +49,7 @@
     },
     "status": {
       "enum": [
+        "unsent",
         "pending",
         "accepted",
         "observed",
