@@ -101,6 +101,69 @@ pub struct Configuration {
     pub request_id: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum AgentMode {
+    Single,
+    Multi,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConcurrencyReply {
+    id: String,
+    concurrency: i64,
+    agent_mode: AgentMode,
+    agent_mode_revision: i64,
+    max_agents: i64,
+    #[serde(flatten)]
+    sync: MutationSync,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SettingsReply {
+    agent: Value,
+}
+
+fn next_turn_signature(request: &Conversation, request_id: &str) -> String {
+    let mut body = json!({
+        "operation":AgentMutation::NextTurn.operation(), "agent":request.id, "id":request.id,
+        "next_turn":true, "request_id":request_id,
+    });
+    for (field, value) in [
+        ("model", request.model.as_ref().map(|value| json!(value))),
+        ("effort", request.effort.as_ref().map(|value| json!(value))),
+        (
+            "fast_mode",
+            request.fast_mode.as_ref().map(|value| json!(value)),
+        ),
+        (
+            "daybreak_enabled",
+            request.daybreak_enabled.as_ref().map(|value| json!(value)),
+        ),
+        (
+            "expected_account_key",
+            request.expected_account.as_ref().map(|value| json!(value)),
+        ),
+    ] {
+        if let Some(value) = value {
+            body[field] = value;
+        }
+    }
+    crate::event_write::request_signature(&body)
+}
+
+fn permissions_signature(request: &Conversation) -> String {
+    crate::event_write::request_signature(&json!({
+        "operation":AgentMutation::Permissions.operation(), "agent":request.id,
+        "yolo":request.yolo_mode, "account":request.expected_account,
+        "cwd":request.cwd, "model":request.model,
+        "effort":[request.effort_present, request.effort],
+        "fastMode":request.fast_mode, "daybreak":request.daybreak_enabled,
+        "excluded":request.excluded,
+    }))
+}
+
 pub struct Conversation {
     pub id: String,
     pub expected_account: Option<String>,
@@ -1539,7 +1602,7 @@ pub async fn configure(
             return Err(OperationError::Invalid(CONCURRENCY_REFUSAL));
         }
         let signature = crate::event_write::request_signature(&json!({
-            "operation":"subagent_concurrency","agent":request.id,
+            "operation":AgentMutation::Concurrency.operation(),"agent":request.id,
             "concurrency":limit,"expectedRevision":revision
         }));
         let validate = std::sync::Arc::clone(&validate);
@@ -1552,17 +1615,21 @@ pub async fn configure(
             {
                 return Err(MutationError::LeadRequired.into());
             }
-            if let Some(receipt) = EventWriteRepository::receipt(tx, &request_id)? {
-                if receipt.signature != signature {
-                    return Err(MutationError::Conflict.into());
+            let admitted = match admit_agent_mutation::<ConcurrencyReply>(
+                tx,
+                &request.id,
+                &request_id,
+                AgentMutation::Concurrency,
+                &signature,
+            )? {
+                MutationAdmission::Replay(reply) => {
+                    return serde_json::to_value(reply)
+                        .map_err(StoreError::from)
+                        .map_err(Into::into);
                 }
-                return serde_json::from_str(&receipt.result)
-                    .map_err(|_| MutationError::InvalidStoredObject {
-                        table: "runtime_operation_receipts",
-                        id: request_id.to_owned(),
-                    })
-                    .map_err(OperationError::from);
-            }
+                MutationAdmission::Fresh(admitted) => admitted,
+            };
+            let before = SyncDocumentsRepository::entity_sequence(tx)?;
             mode_fields(&mut root);
             let current = root.get("concurrency").and_then(Value::as_i64).unwrap_or(0);
             let current_revision = root
@@ -1591,16 +1658,27 @@ pub async fn configure(
             if changed {
                 save_agent(tx, &root, &validate)?;
             }
-            let result = json!({"id":request.id,"concurrency":root["concurrency"],
-                "agentMode":root["agentMode"],"agentModeRevision":root["agentModeRevision"],
-                "maxAgents":root["maxAgents"]});
-            EventWriteRepository::put_receipt(
-                tx,
-                &request_id,
-                &signature,
-                &serde_json::to_string(&result).map_err(StoreError::from)?,
-            )?;
-            Ok(result)
+            let result = ConcurrencyReply {
+                id: request.id.clone(),
+                concurrency: limit,
+                agent_mode: if limit == 0 {
+                    AgentMode::Single
+                } else {
+                    AgentMode::Multi
+                },
+                agent_mode_revision: if current == limit {
+                    current_revision
+                } else {
+                    revision + 1
+                },
+                max_agents: root["maxAgents"].as_i64().ok_or(OperationError::Internal)?,
+                sync: MutationSync::read(tx, before)?,
+            };
+            crate::event_write::settle_request(tx, &admitted, Some(&request.id), &result)
+                .map_err(MutationError::from)?;
+            serde_json::to_value(result)
+                .map_err(StoreError::from)
+                .map_err(Into::into)
         })
         .await;
     }
@@ -1847,6 +1925,44 @@ pub async fn conversation(
     {
         return Err(MutationError::Stale.into());
     }
+    if let Some(request_id) = request.request_id.as_ref().and_then(Option::as_deref)
+        && (request.next_turn.flatten() == Some(true) || request.yolo_mode.is_some())
+    {
+        let (operation, signature) = if request.next_turn.flatten() == Some(true) {
+            (
+                AgentMutation::NextTurn,
+                next_turn_signature(&request, request_id),
+            )
+        } else {
+            if initial.get("isLead").and_then(Value::as_bool) != Some(true) {
+                return Err(MutationError::LeadRequired.into());
+            }
+            (AgentMutation::Permissions, permissions_signature(&request))
+        };
+        let (id, request_id) = (request.id.clone(), request_id.to_owned());
+        let read_validate = std::sync::Arc::clone(&validate);
+        let replay = context
+            .store
+            .read_async::<_, OperationError>(
+                "runtime-services/agents_create/settings-replay",
+                move |db| {
+                    load_agent_value(db, &id, &|schema, value| read_validate(schema, value))?
+                        .ok_or(MutationError::UnknownAgent)?;
+                    Ok(replay_agent_mutation::<SettingsReply>(
+                        db,
+                        &id,
+                        &request_id,
+                        operation,
+                        &signature,
+                        chrono::Utc::now().timestamp_millis(),
+                    )?)
+                },
+            )
+            .await?;
+        if let Some(reply) = replay {
+            return Ok(reply.agent);
+        }
+    }
     let cwd = request
         .cwd
         .as_deref()
@@ -1974,7 +2090,7 @@ pub async fn conversation(
         None
     };
     let next_turn = request.next_turn.flatten() == Some(true);
-    let request_id = request.request_id.flatten();
+    let request_id = request.request_id.clone().flatten();
     if next_turn {
         if request.cwd.is_some()
             || request.yolo_mode.is_some()
@@ -1991,34 +2107,7 @@ pub async fn conversation(
             .filter(|id| (1..=200).contains(&id.chars().count()))
             .ok_or(OperationError::Invalid("A settings request id is required"))?
             .to_owned();
-        let mut receipt_body = json!({
-            "operation": "next_turn_settings",
-            "agent": request.id,
-            "id": request.id,
-            "next_turn": true,
-            "request_id": request_id,
-        });
-        for (field, value) in [
-            ("model", request.model.as_ref().map(|value| json!(value))),
-            ("effort", request.effort.as_ref().map(|value| json!(value))),
-            (
-                "fast_mode",
-                request.fast_mode.as_ref().map(|value| json!(value)),
-            ),
-            (
-                "daybreak_enabled",
-                request.daybreak_enabled.as_ref().map(|value| json!(value)),
-            ),
-            (
-                "expected_account_key",
-                request.expected_account.as_ref().map(|value| json!(value)),
-            ),
-        ] {
-            if let Some(value) = value {
-                receipt_body[field] = value;
-            }
-        }
-        let signature = crate::event_write::request_signature(&receipt_body);
+        let signature = next_turn_signature(&request, &request_id);
         let validate = std::sync::Arc::clone(&validate);
         return mutate(context, move |tx| {
             let validate = |schema: &str, value: &Value| validate(schema, value);
@@ -2032,20 +2121,19 @@ pub async fn conversation(
             {
                 return Err(MutationError::IdentityChanged.into());
             }
-            if let Some(receipt) = EventWriteRepository::receipt(tx, &request_id)? {
-                if receipt.signature != signature {
-                    return Err(MutationError::Conflict.into());
-                }
-                return load_agent_value(tx, &request.id, &validate)?
-                    .ok_or(MutationError::UnknownAgent.into());
-            }
+            let admitted = match admit_agent_mutation::<SettingsReply>(tx, &request.id, &request_id, AgentMutation::NextTurn, &signature)? {
+                MutationAdmission::Replay(reply) => return Ok(reply.agent),
+                MutationAdmission::Fresh(admitted) => admitted,
+            };
+            let before = SyncDocumentsRepository::entity_sequence(tx)?;
             let resolved = settings.as_ref().ok_or(OperationError::Internal)?;
             target["pendingSettings"] = json!({"model":resolved.model,"effort":resolved.effort,
                 "nativeEffort":resolved.native_effort,"fastMode":resolved.fast_mode,
                 "daybreakEnabled":resolved.daybreak_enabled,"cyberAccessProgram":resolved.cyber_access_program});
             target["pendingSettingsAccountKey"] = json!(account);
             save_agent(tx, &target, &validate)?;
-            EventWriteRepository::put_receipt(tx, &request_id, &signature, "{\"applied\":true}")?;
+            let target = crate::sync_documents::with_entity_delta(tx, before, target)?;
+            crate::event_write::settle_request(tx, &admitted, Some(&request.id), &SettingsReply {agent:target.clone()}).map_err(MutationError::from)?;
             Ok(target)
         }).await;
     }
@@ -2077,28 +2165,24 @@ pub async fn conversation(
         }) {
             return Err(MutationError::Stale.into());
         }
-        let permission_receipt = request.yolo_mode.and(request_id.as_ref()).map(|id| {
-            (
-                id.clone(),
-                crate::event_write::request_signature(&json!({
-                    "operation":"live_permissions", "agent":request.id,
-                    "yolo":request.yolo_mode, "account":request.expected_account,
-                    "cwd":request.cwd, "model":request.model,
-                    // Explicit null resets effort; omission preserves it.
-                    "effort":[request.effort_present, request.effort],
-                    "fastMode":request.fast_mode, "daybreak":request.daybreak_enabled,
-                    "excluded":request.excluded,
-                })),
-            )
-        });
-        if let Some((id, signature)) = &permission_receipt
-            && let Some(receipt) = EventWriteRepository::receipt(tx, id)?
-        {
-            if receipt.signature != *signature {
-                return Err(MutationError::Conflict.into());
-            }
-            return Ok(sync_projection(tx, &target)?);
-        }
+        let permission_receipt = request
+            .yolo_mode
+            .and(request_id.as_ref())
+            .map(|id| (id.clone(), permissions_signature(&request)));
+        let permission_admission = match &permission_receipt {
+            Some((id, signature)) => match admit_agent_mutation::<SettingsReply>(
+                tx,
+                &request.id,
+                id,
+                AgentMutation::Permissions,
+                signature,
+            )? {
+                MutationAdmission::Replay(reply) => return Ok(reply.agent),
+                MutationAdmission::Fresh(admitted) => Some(admitted),
+            },
+            None => None,
+        };
+        let before = SyncDocumentsRepository::entity_sequence(tx)?;
         if (execution_requested || request.cwd.is_some())
             && (truthy(target.get("inFlight"))
                 || matches!(
@@ -2178,8 +2262,17 @@ pub async fn conversation(
         if let Some(yolo) = request.yolo_mode {
             update_team_yolo(tx, &request.id, yolo, &validate)?;
         }
-        if let Some((id, signature)) = permission_receipt {
-            EventWriteRepository::put_receipt(tx, &id, &signature, "{\"applied\":true}")?;
+        let projection = crate::sync_documents::with_entity_delta(tx, before, projection)?;
+        if let Some(admitted) = permission_admission {
+            crate::event_write::settle_request(
+                tx,
+                &admitted,
+                Some(&request.id),
+                &SettingsReply {
+                    agent: projection.clone(),
+                },
+            )
+            .map_err(MutationError::from)?;
         }
         Ok(projection)
     })
@@ -2262,16 +2355,14 @@ pub async fn rename_operation(
             .read_async::<_, OperationError>("runtime-services/agents_create/read", move |read| {
                 load_agent_value(read, &id, &|schema, value| validate(schema, value))?
                     .ok_or(MutationError::UnknownAgent)?;
-                if let Some(receipt) = EventWriteRepository::receipt(read, &request_id)? {
-                    if receipt.signature != signature_for_read {
-                        return Err(MutationError::Conflict.into());
-                    }
-                    let response = serde_json::from_str(&receipt.result).map_err(|_| {
-                        OperationError::Create(MutationError::InvalidStoredObject {
-                            table: "runtime_operation_receipts",
-                            id: request_id.to_owned(),
-                        })
-                    })?;
+                if let Some(reply) = replay_rename(
+                    read,
+                    &id,
+                    &request_id,
+                    &signature_for_read,
+                    chrono::Utc::now().timestamp_millis(),
+                )? {
+                    let response = serde_json::to_value(reply).map_err(StoreError::from)?;
                     return Ok(Some(RenameOperationResult {
                         response,
                         replayed: true,
@@ -2306,7 +2397,9 @@ pub async fn rename_operation(
     })
 }
 fn rename_signature(id: &str, name: Option<&str>) -> String {
-    let body = python_json(&json!({"chat": id, "name": name, "operation": "rename"}));
+    let body = python_json(
+        &json!({"chat": id, "name": name, "operation": AgentMutation::Rename.operation()}),
+    );
     data_encoding::HEXLOWER.encode(&Sha256::digest(body.as_bytes()))
 }
 
@@ -3047,6 +3140,199 @@ async fn mutate(
 mod tests {
     use super::*;
     use crate::host_worker_create::CreationCatalog as _;
+
+    #[tokio::test]
+    async fn settings_request_replays_exact_snapshot_without_catalog_or_credentials() {
+        let directory = tempfile::tempdir().expect("state");
+        let store = std::sync::Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("store"),
+        );
+        let cwd = directory.path().to_string_lossy().into_owned();
+        store
+            .transaction_with(move |tx| {
+                studio_runtime_store::receipt_schema::create(tx)?;
+                AgentRepository::put(
+                    tx,
+                    &AgentRecord::from_value(json!({
+                        "provider":"codex", "id":"lead", "rootId":"lead", "epoch":0,
+                        "status":"idle", "autoWake":true, "isLead":true, "accountKey":"default",
+                        "cwd":cwd, "model":"first", "yoloMode":true,
+                    }))
+                    .expect("record"),
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("owner");
+        let registry_path = directory.path().join("registry.json");
+        std::fs::write(
+            &registry_path,
+            json!({
+                "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
+                "defaultAccountKey":"default", "accounts":{"default":{
+                    "id":"default", "provider":"codex", "home":directory.path().join("profile"),
+                    "label":"Fixture", "source":"fixture", "status":"signedOut"
+                }}, "logins":{}, "deleteReceipts":{}
+            })
+            .to_string(),
+        )
+        .expect("registry");
+        let context = Context {
+            store: store.clone(),
+            accounts: None,
+            driver: Some(std::sync::Arc::new(
+                AccountDriver::open(&registry_path).expect("driver"),
+            )),
+            catalog: Some(std::sync::Arc::new(CatalogFixture {
+                models: std::collections::BTreeMap::from([(
+                    "default".into(),
+                    vec!["first".into(), "later".into()],
+                )]),
+            })),
+            managed_creation_environment: None,
+            validate: std::sync::Arc::new(|_, _| true),
+        };
+        let retry_context = Context {
+            store: store.clone(),
+            accounts: None,
+            driver: None,
+            catalog: None,
+            managed_creation_environment: None,
+            validate: context.validate.clone(),
+        };
+        let request = |request_id: &str, model: Option<&str>, yolo| Conversation {
+            id: "lead".into(),
+            expected_account: Some("default".into()),
+            excluded: None,
+            cwd: None,
+            yolo_mode: yolo,
+            model: model.map(str::to_owned),
+            model_present: model.is_some(),
+            effort: None,
+            effort_present: false,
+            fast_mode: None,
+            fast_mode_present: false,
+            daybreak_enabled: None,
+            daybreak_present: false,
+            next_turn: Some(Some(model.is_some())),
+            request_id: Some(Some(request_id.into())),
+            mode_settings: false,
+            mode_limit: None,
+            mode_revision: None,
+            mode_request_id: None,
+            worker_settings: false,
+            worker_defaults: None,
+            review_defaults: None,
+            non_defaults: false,
+        };
+        let settings_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let first = conversation(&context, request(&settings_id, Some("first"), None))
+            .await
+            .expect("first settings");
+        let later = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        conversation(&context, request(&later, Some("later"), None))
+            .await
+            .expect("later settings");
+        assert_eq!(
+            conversation(&retry_context, request(&settings_id, Some("first"), None))
+                .await
+                .expect("replay without dependencies"),
+            first
+        );
+        assert!(
+            conversation(&retry_context, request(&settings_id, Some("later"), None))
+                .await
+                .is_err()
+        );
+        let permissions_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let first = conversation(&context, request(&permissions_id, None, Some(false)))
+            .await
+            .expect("first permissions");
+        let later = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        conversation(&context, request(&later, None, Some(true)))
+            .await
+            .expect("later permissions");
+        assert_eq!(
+            conversation(&retry_context, request(&permissions_id, None, Some(false)))
+                .await
+                .expect("replay permissions"),
+            first
+        );
+        let live = AgentRepository::get(&store.test_reader().expect("reader"), &"lead".into())
+            .expect("read")
+            .expect("lead");
+        assert_eq!(live.extra.get("yoloMode"), Some(&json!(true)));
+        assert_eq!(live.extra["pendingSettings"]["model"], "later");
+    }
+
+    #[tokio::test]
+    async fn concurrency_request_replays_original_revision_and_rejects_expired_identity() {
+        let directory = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        store
+            .transaction_with(|tx| {
+                studio_runtime_store::receipt_schema::create(tx)?;
+                AgentRepository::put(
+                    tx,
+                    &AgentRecord::from_value(json!({
+                        "provider":"codex", "id":"lead", "rootId":"lead", "epoch":0,
+                        "status":"idle", "autoWake":true, "isLead":true, "concurrency":1,
+                        "maxAgents":8, "subagentConcurrencyVersion":2, "agentModeRevision":0
+                    }))
+                    .expect("record"),
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("owner");
+        let context = Context {
+            store: std::sync::Arc::new(store),
+            accounts: None,
+            driver: None,
+            catalog: None,
+            managed_creation_environment: None,
+            validate: std::sync::Arc::new(|_, _| true),
+        };
+        let first_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let request = |id: &str, limit, revision| Configuration {
+            id: "lead".into(),
+            concurrency: Some(limit),
+            max_agents: None,
+            expected_mode_revision: Some(revision),
+            request_id: Some(id.into()),
+        };
+        let first = configure(&context, request(&first_id, 2, 0))
+            .await
+            .expect("first");
+        let later_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        configure(&context, request(&later_id, 3, 1))
+            .await
+            .expect("later");
+        let replay = configure(&context, request(&first_id, 2, 0))
+            .await
+            .expect("replay");
+        assert_eq!(
+            first, replay,
+            "the entire original response, including sync metadata"
+        );
+        assert!(configure(&context, request(&first_id, 4, 0)).await.is_err());
+        assert!(
+            configure(&context, request("opaque-new-id", 4, 2))
+                .await
+                .is_err()
+        );
+        let saved: i64 = context
+            .store
+            .test_reader()
+            .expect("reader")
+            .query_row("SELECT COUNT(*) FROM request_results", [], |row| row.get(0))
+            .expect("request results");
+        assert_eq!(saved, 2);
+    }
 
     #[test]
     fn review_regression_agent_default_matches_runtime_mode_owner() {
