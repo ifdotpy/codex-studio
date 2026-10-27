@@ -72,6 +72,9 @@ LINUX_IDENTITY = "the native supervisor lease uses the Linux process identity of
 # Bounds only a hang of a wait for an exact condition (`GuestTests.until`). Unit: seconds.
 HANG_SECONDS = 60
 
+# Bounds the real upload worker witness without imposing a short host-speed limit. Unit: seconds.
+UPLOAD_WORKER_WITNESS_DEADLINE_SECONDS = 1800
+
 
 class GuestTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -325,7 +328,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
             source = self.root / "boundary.tar"
             source.write_bytes(archive({"file": b"data"}))
             # A tiny real installed CLI/deadline witness; checksum rejection precedes sync.
-            code, output = await production.worker("upload.py", {}, 5,
+            code, output = await production.worker("upload.py", {}, UPLOAD_WORKER_WITNESS_DEADLINE_SECONDS,
                 arguments=(str(source), str(source.parent / "expanded"), "0" * 64))
             self.assertEqual(code, 1)
             self.assertEqual(json.loads(output)["error"]["code"], "invalid_params")
