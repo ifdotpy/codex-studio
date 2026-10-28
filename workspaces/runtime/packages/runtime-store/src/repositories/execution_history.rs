@@ -160,6 +160,8 @@ impl ExecutionHistoryRepository {
         Self::record(tx, agent)?;
         if let Some(pointer) = Self::current_pointer(tx, agent)? {
             agent.extra.insert("activeExecution".into(), pointer);
+        } else {
+            agent.extra.remove("activeExecution");
         }
         Ok(())
     }
@@ -310,14 +312,48 @@ impl ExecutionHistoryRepository {
         tx: &Transaction<'_>,
         agent: &AgentRecord,
     ) -> StoreResult<Option<Value>> {
-        let Some(id) = agent
+        let pointer = if let Some(id) = agent
             .extra
             .get("startAttempt")
             .and_then(|attempt| attempt["id"].as_str())
-        else {
-            return Ok(agent.extra.get("activeExecution").cloned());
+        {
+            Self::attempt(tx, id)?.map(|attempt| json!({"runId":attempt["runId"],"attemptId":id}))
+        } else {
+            agent
+                .extra
+                .get("activeExecution")
+                .filter(|value| !value.is_null())
+                .cloned()
         };
-        Ok(Self::attempt(tx, id)?.map(|attempt| json!({"runId":attempt["runId"],"attemptId":id})))
+        let Some(pointer) = pointer else {
+            return Ok(None);
+        };
+        let run = pointer["runId"]
+            .as_str()
+            .ok_or_else(|| Self::invalid("runtime_agents", &agent.id.0))?;
+        let scope = tx
+            .query_row(
+                "SELECT agent,account,epoch FROM runtime_execution_runs WHERE id=?1",
+                [run],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| Self::invalid("runtime_execution_runs", run))?;
+        let account = agent
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        Ok(
+            (scope.0 == agent.id.0 && scope.1 == account && scope.2 == agent.epoch)
+                .then_some(pointer),
+        )
     }
     pub(crate) fn invalid(table: &str, id: &str) -> StoreError {
         StoreError::InvalidSyncObject {
@@ -697,6 +733,43 @@ inventory::submit! { crate::repositories::SchemaRegistration { repository: "exec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_execution_pointer_follows_account_and_epoch_but_preserves_source_thread() {
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);
+            CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,record TEXT);").expect("owners");
+        let run = json!({"id":"run","agent":"agent","accountKey":"default","epoch":1,"status":"completed","created":1.0,"threadId":"source","turnId":"turn","firstAttemptId":null,"rootAttemptId":null,"latestAttemptId":null});
+        db.execute(
+            "INSERT INTO runtime_execution_runs VALUES('run','agent','default',1,?1)",
+            [run.to_string()],
+        )
+        .expect("history");
+        let tx = db.transaction().expect("transaction");
+        let pointer = json!({"runId":"run","attemptId":null});
+        let mut agent=AgentRecord::from_value(json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","threadId":"destination","activeExecution":pointer})).expect("current owner");
+        ExecutionHistoryRepository::record_current(&tx, &mut agent).expect("same account/epoch");
+        assert_eq!(
+            agent.extra["activeExecution"], pointer,
+            "a repaired thread retains its source execution identity"
+        );
+        agent.epoch = 2;
+        ExecutionHistoryRepository::record_current(&tx, &mut agent).expect("epoch advances");
+        assert!(!agent.extra.contains_key("activeExecution"));
+        agent.epoch = 1;
+        agent.extra.insert("activeExecution".into(), pointer);
+        agent
+            .extra
+            .insert("accountKey".into(), json!("another-account"));
+        ExecutionHistoryRepository::record_current(&tx, &mut agent).expect("account advances");
+        assert!(!agent.extra.contains_key("activeExecution"));
+        assert_eq!(
+            tx.query_row("SELECT COUNT(*) FROM runtime_execution_runs", [], |row| row
+                .get::<_, i64>(0))
+                .expect("history retained"),
+            1
+        );
+    }
 
     #[test]
     fn attempt_replay_lives_in_request_results_and_keeps_exact_outcome() {
