@@ -1420,7 +1420,7 @@ mod local_registration_tests {
                     })
                     .to_string(),
                 )
-                .unwrap())
+                .expect("fixture reply"))
             })
         }
     }

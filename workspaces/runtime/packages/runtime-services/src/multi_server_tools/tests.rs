@@ -148,7 +148,8 @@ impl PairedTransport for LostExportReply {
     {
         Box::pin(async move {
             self.sent.lock().unwrap().push(envelope.clone());
-            Ok(ExchangeOutcome::Unknown.to_reply(envelope["requestId"].as_str().unwrap()))
+            Ok(ExchangeOutcome::Unknown
+                .to_reply(envelope["requestId"].as_str().expect("request ID")))
         })
     }
 }
@@ -225,7 +226,7 @@ impl PairedTransport for RecordingTransport {
                 .lock()
                 .unwrap()
                 .push(json!({"server": server, "envelope": envelope}));
-            Ok(serde_json::from_str(&reply(envelope).to_string()).unwrap())
+            Ok(serde_json::from_str(&reply(envelope).to_string()).expect("fixture reply"))
         })
     }
 }
@@ -1900,7 +1901,7 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
     let ExchangeOutcome::Applied(value) = outcome else {
         panic!("{outcome:?}");
     };
-    let decoded: Value = serde_json::from_str(value.value.get()).unwrap();
+    let decoded: Value = serde_json::from_str(value.value.get()).expect("command reply");
     assert_eq!(decoded["status"], "completed", "{decoded}");
     assert_eq!(decoded["stdout"], "remote");
     // A replay of the same envelope answers from the receipt.
@@ -1948,7 +1949,7 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
     let ExchangeOutcome::Applied(missing) = missing else {
         panic!("{missing:?}");
     };
-    let missing: Value = serde_json::from_str(missing.value.get()).unwrap();
+    let missing: Value = serde_json::from_str(missing.value.get()).expect("missing command reply");
     assert_eq!(missing["status"], "failed", "{missing}");
     assert_eq!(missing["error"], "No such file or directory");
 }

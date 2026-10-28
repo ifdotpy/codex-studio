@@ -192,7 +192,7 @@ impl PairedTransport for Peer {
                 &json!({"requestId":envelope["requestId"],"outcome":"applied","value":self.0})
                     .to_string(),
             )
-            .unwrap())
+            .expect("fixture reply"))
         })
     }
 }

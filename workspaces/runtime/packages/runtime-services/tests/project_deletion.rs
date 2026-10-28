@@ -367,7 +367,7 @@ async fn project_deletion_location_reservation_rechecks_the_checked_lifetime() {
             Box::pin(async move {
                 Ok(
                     studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Unknown
-                        .to_reply(envelope["requestId"].as_str().unwrap()),
+                        .to_reply(envelope["requestId"].as_str().expect("request ID")),
                 )
             })
         }
@@ -583,7 +583,7 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
             Box::pin(async move {
                 Ok(
                     studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Unknown
-                        .to_reply(envelope["requestId"].as_str().unwrap()),
+                        .to_reply(envelope["requestId"].as_str().expect("request ID")),
                 )
             })
         }
@@ -688,7 +688,7 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
         .await
         .expect("legacy completed receipt replays without admission");
     assert!(
-        matches!(replayed,studio_runtime_services::multi_server_transport::ExchangeOutcome::Applied(ref value) if serde_json::from_str::<Value>(value.value.get()).unwrap()["retained"]==true)
+        matches!(replayed,studio_runtime_services::multi_server_transport::ExchangeOutcome::Applied(ref value) if serde_json::from_str::<Value>(value.value.get()).expect("retained reply")["retained"]==true)
     );
     let mut changed = payload;
     changed["path"] = json!("/changed");
