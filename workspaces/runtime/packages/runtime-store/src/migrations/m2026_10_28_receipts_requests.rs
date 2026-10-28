@@ -20,6 +20,7 @@ pub(super) const SOURCES: &[&str] = &[
     "runtime_operation_receipts",
     "messages",
     "runtime_chat_messages",
+    "runtime_workspace_operations",
 ];
 const SOURCE: &str = "runtime_operation_receipts";
 /// Persistent count of classified completed settings markers without a replay body.
@@ -60,19 +61,13 @@ impl ReceiptFamilyMigration for Family {
         if checkpoint.status == MigrationStatus::Complete {
             return Ok(checkpoint.clone());
         }
+        if source == "runtime_workspace_operations" {
+            return move_workspace_operations(tx, checkpoint);
+        }
         if source != SOURCE {
             return move_messages(tx, source, checkpoint);
         }
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=?1 AND type='table')",
-            [source],
-            |r| r.get(0),
-        )?;
-        let rows = if exists {
-            read_receipt_batch(tx, source, checkpoint, "1")?
-        } else {
-            Vec::new()
-        };
+        let rows = read_receipt_batch(tx, source, checkpoint, "1")?;
         let mut next = checkpoint.clone();
         next.status = if rows.is_empty() {
             MigrationStatus::Complete
@@ -182,31 +177,164 @@ impl ReceiptFamilyMigration for Family {
     }
 }
 
+fn move_workspace_operations(
+    tx: &Transaction<'_>,
+    checkpoint: &MigrationCheckpoint,
+) -> Result<MigrationCheckpoint> {
+    use crate::receipt_migration_contract::BatchBudget;
+    use studio_runtime_schema::provider_call_contract::{
+        ProviderCallIntent, TransportRequest, transport_key,
+    };
+    const TABLE: &str = "runtime_workspace_operations";
+    let rows = read_source_batch(
+        tx,
+        TABLE,
+        checkpoint,
+        &ReceiptProjection {
+            id: "source.id",
+            signature: "CASE WHEN json_valid(source.record) THEN coalesce(json_extract(source.record,'$.signature'),'') ELSE '' END",
+            result: "source.record",
+        },
+        "1",
+    )?;
+    let mut next = checkpoint.clone();
+    next.status = if rows.is_empty() {
+        MigrationStatus::Complete
+    } else {
+        MigrationStatus::Running
+    };
+    let mut budget = BatchBudget::default();
+    for row in rows {
+        let invalid = || unclassifiable(TABLE, &row.id, &row.signature);
+        let mut owner: Value = row.json(TABLE)?;
+        if !schema("PersistedWorkspaceOperationRecord", &owner) || owner["id"] != row.id {
+            return Err(invalid());
+        }
+        if !matches!(owner["kind"].as_str(), Some("branch" | "restore"))
+            || owner["phase"] == "completed"
+        {
+            next.cursor = row.rowid;
+            continue;
+        }
+        if let Some(admission) = owner.get("providerAdmission") {
+            serde_json::from_value::<AdmittedRequest>(admission.clone()).map_err(|_| invalid())?;
+            next.cursor = row.rowid;
+            continue;
+        }
+        let operation = format!(
+            "{}:{}",
+            row.id,
+            if owner["kind"] == "branch" {
+                "fork"
+            } else {
+                "provider"
+            }
+        );
+        let account = owner
+            .pointer("/source/accountKey")
+            .and_then(Value::as_str)
+            .ok_or_else(invalid)?;
+        let transport_id = transport_key(account, &operation);
+        let submitted_id = format!("account-worker:{transport_id}:submitted");
+        let bytes: Option<i64> = tx
+            .query_row(
+                "SELECT length(CAST(result AS BLOB)) FROM runtime_operation_receipts WHERE id=?1",
+                [&submitted_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(bytes) = bytes else {
+            if owner["rootRequestId"].as_str().is_some_and(|root| {
+                studio_runtime_schema::persistence::RequestIdentity::new(
+                    "workspace-provider",
+                    &[],
+                    root,
+                    &[],
+                )
+                .is_ok()
+            }) {
+                next.cursor = row.rowid;
+                continue;
+            }
+            return Err(invalid());
+        };
+        let size = row
+            .result
+            .len()
+            .saturating_add(row.id.len())
+            .saturating_add(row.signature.len())
+            .saturating_add(usize::try_from(bytes).map_err(|_| invalid())?);
+        if !budget.include(size) {
+            break;
+        }
+        let raw: String = tx.query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+            [&submitted_id],
+            |r| r.get(0),
+        )?;
+        let submitted: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+        let mut call = submitted["call"].clone();
+        let fields = call.as_object_mut().ok_or_else(invalid)?;
+        fields.entry("root_request_id").or_insert(json!(""));
+        fields.entry("admitted_request").or_insert(Value::Null);
+        let call: ProviderCallIntent<String, AdmittedRequest> =
+            serde_json::from_value(call).map_err(|_| invalid())?;
+        let request: TransportRequest<String> =
+            serde_json::from_value(submitted["request"].clone()).map_err(|_| invalid())?;
+        if call.scope.account != account
+            || call.operation != operation
+            || call
+                .actor
+                .as_ref()
+                .is_none_or(|actor| owner["agent"] != actor.agent)
+            || !matches!(call.method.as_str(), "thread/start" | "thread/fork")
+        {
+            return Err(invalid());
+        }
+        if request.generation != call.scope.generation
+            || request.method != call.method
+            || request.operation != transport_id
+        {
+            return Err(invalid());
+        }
+        let signature = call.fingerprint(account, &call.method);
+        let result_id = submitted_id
+            .strip_suffix(":submitted")
+            .map(|key| format!("{key}:result"))
+            .ok_or_else(invalid)?;
+        owner["providerAdmission"] = json!(admitted_owner_token(
+            &result_id,
+            &signature,
+            checkpoint.cutover_ms
+        ));
+        if !call.root_request_id.is_empty() {
+            owner["rootRequestId"] = json!(call.root_request_id);
+        }
+        tx.execute(
+            "UPDATE runtime_workspace_operations SET record=?1 WHERE rowid=?2",
+            params![owner.to_string(), row.rowid],
+        )?;
+        next.cursor = row.rowid;
+    }
+    Ok(next)
+}
+
 fn move_messages(
     tx: &Transaction<'_>,
     source: &str,
     checkpoint: &MigrationCheckpoint,
 ) -> Result<MigrationCheckpoint> {
-    let exists: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=?1 AND type='table')",
-        [source],
-        |r| r.get(0),
+    let rows = read_source_batch(
+        tx,
+        source,
+        checkpoint,
+        &ReceiptProjection {
+            id: "source.id",
+            signature: "''",
+            result: "source.deliveries",
+        },
+        "1",
     )?;
-    let rows = if exists {
-        read_source_batch(
-            tx,
-            source,
-            checkpoint,
-            &ReceiptProjection {
-                id: "source.id",
-                signature: "''",
-                result: "source.deliveries",
-            },
-            "1",
-        )?
-    } else {
-        Vec::new()
-    };
     let mut next = checkpoint.clone();
     next.status = if rows.is_empty() {
         MigrationStatus::Complete
@@ -880,7 +1008,7 @@ mod tests {
         .expect("chat message");
         insert(&db, "input", json!({"id":"input","status":"queued"}));
         migrate(&mut db);
-        for source in &SOURCES[1..] {
+        for source in &SOURCES[1..3] {
             let (raw, text): (String, String) = db
                 .query_row(&format!("SELECT deliveries,text FROM {source}"), [], |r| {
                     Ok((r.get(0)?, r.get(1)?))
@@ -974,5 +1102,110 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn receipts_requests_workspace_pending_hydrates_exact_provider_token_without_new_root() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute_batch(
+            "CREATE TABLE runtime_workspace_operations(id TEXT PRIMARY KEY,record TEXT)",
+        )
+        .expect("workspace owners");
+        let owner = json!({"id":"branch:old","kind":"branch","agent":"agent","phase":"provider_pending","signature":"original","source":{"accountKey":"default","threadId":"thread"}});
+        db.execute(
+            "INSERT INTO runtime_workspace_operations VALUES('branch:old',?1)",
+            [owner.to_string()],
+        )
+        .expect("old owner");
+        let operation = "branch:old:fork";
+        let key =
+            studio_runtime_schema::provider_call_contract::transport_key("default", operation);
+        let call = json!({"scope":{"account":"default","connection":"connection","generation":7},"operation":operation,"actor":{"agent":"agent","epoch":3},"transfer":null,"deleted_actor_session":null,"method":"thread/fork","params":{"threadId":"thread"}});
+        let submitted = json!({"call":call,"request":{"id":1,"generation":7,"method":"thread/fork","operation":key,"thread":"thread","lightweight":true,"deadline":60000,"unknown":false,"remoteId":null}});
+        let source_id = format!("account-worker:{key}:submitted");
+        db.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)",
+            params![source_id, submitted.to_string()],
+        )
+        .expect("retained source");
+        migrate(&mut db);
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_workspace_operations", [], |r| {
+                r.get(0)
+            })
+            .expect("owner");
+        let owner: Value = serde_json::from_str(&raw).expect("owner JSON");
+        let token: AdmittedRequest =
+            serde_json::from_value(owner["providerAdmission"].clone()).expect("trusted token");
+        assert_eq!(token.id(), format!("account-worker:{key}:result"));
+        assert_eq!(token.created(), CUTOVER);
+        assert_ne!(token.signature(), "submitted");
+        assert_ne!(token.signature(), "result");
+        assert!(
+            owner.get("rootRequestId").is_none(),
+            "migration never invents a UUID"
+        );
+        assert!(
+            db.query_row(
+                "SELECT 1 FROM runtime_operation_receipts WHERE id=?1",
+                [source_id],
+                |r| r.get::<_, i64>(0)
+            )
+            .is_ok(),
+            "provider migration still owns its source"
+        );
+        migrate(&mut db);
+    }
+
+    #[test]
+    fn receipts_requests_workspace_pending_without_immutable_call_stops() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute_batch(
+            "CREATE TABLE runtime_workspace_operations(id TEXT PRIMARY KEY,record TEXT)",
+        )
+        .expect("workspace owners");
+        let owner = json!({"id":"restore:old","kind":"restore","agent":"agent","phase":"recovery_required","signature":"original","source":{"accountKey":"default"}});
+        db.execute(
+            "INSERT INTO runtime_workspace_operations VALUES('restore:old',?1)",
+            [owner.to_string()],
+        )
+        .expect("owner");
+        let tx = db.transaction().expect("transaction");
+        let checkpoint =
+            MigrationCheckpoint::begin(&tx, ID, "runtime_workspace_operations", CUTOVER)
+                .expect("checkpoint");
+        assert!(
+            matches!(Family.move_batch(&tx,"runtime_workspace_operations",&checkpoint),Err(ReceiptMigrationError::Unclassifiable{table,key,signature}) if table=="runtime_workspace_operations" && key=="restore:old" && signature=="original")
+        );
+        tx.rollback().expect("source preserved");
+    }
+
+    #[test]
+    fn receipts_requests_oversized_row_runs_alone_before_next_keyset_page() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        let mut oversized = plan();
+        oversized["text"] =
+            json!("x".repeat(crate::receipt_migration_contract::MIGRATION_BATCH_BYTES));
+        insert(&db, "plan-request:oversized", oversized);
+        insert(&db, "plan-request:next", plan());
+        let first = batch(&mut db, true);
+        assert_eq!(first.cursor, 1);
+        assert_eq!(first.status, MigrationStatus::Running);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                .get::<_, i64>(0))
+                .expect("one oversized reply"),
+            1
+        );
+        migrate(&mut db);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                .get::<_, i64>(0))
+                .expect("resumed next row"),
+            2
+        );
     }
 }

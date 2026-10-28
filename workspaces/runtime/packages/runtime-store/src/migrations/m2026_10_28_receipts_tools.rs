@@ -62,16 +62,7 @@ impl ReceiptFamilyMigration for Family {
                 });
             }
         };
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
-            [source],
-            |r| r.get(0),
-        )?;
-        let rows = if exists {
-            read_source_batch(tx, source, checkpoint, &projection, "1")?
-        } else {
-            Vec::new()
-        };
+        let rows = read_source_batch(tx, source, checkpoint, &projection, "1")?;
         let mut next = checkpoint.clone();
         next.status = if rows.is_empty() {
             MigrationStatus::Complete
@@ -81,16 +72,14 @@ impl ReceiptFamilyMigration for Family {
         let mut budget = BatchBudget::default();
         for row in rows {
             let decoded: Value = row.json(source)?;
-            let blob_bytes = decoded
-                .pointer("/_payloadBlobs/result/size")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+            let blob_bytes =
+                referenced_bytes(&decoded).saturating_add(referenced_bytes(&decoded["result"]));
             let input = row
                 .id
                 .len()
                 .saturating_add(row.signature.len())
                 .saturating_add(row.result.len())
-                .saturating_add(usize::try_from(blob_bytes).unwrap_or(usize::MAX));
+                .saturating_add(blob_bytes);
             if !budget.include(input) {
                 break;
             }
@@ -134,6 +123,7 @@ impl ReceiptFamilyMigration for Family {
                         }
                     } else {
                         classify(source, &row, &task)?;
+                        hydrate_location_arguments(tx, source, &row, &mut task)?;
                         let result = if let Some(reference) = task.pointer("/_payloadBlobs/result")
                         {
                             Some(load_blob(tx, source, &row, reference)?)
@@ -173,7 +163,7 @@ impl ReceiptFamilyMigration for Family {
                         )?;
                     }
                 }
-                _ => unreachable!("source matched before scanning"),
+                _ => return Err(unclassifiable(source, &row.id, &row.signature)),
             }
             next.cursor = row.rowid;
         }
@@ -193,6 +183,66 @@ impl ReceiptFamilyMigration for Family {
         }
         Ok(())
     }
+}
+
+fn referenced_bytes(record: &Value) -> usize {
+    record
+        .get("_payloadBlobs")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|refs| refs.values())
+        .filter_map(|reference| reference["size"].as_u64())
+        .fold(0_usize, |total, size| {
+            total.saturating_add(usize::try_from(size).unwrap_or(usize::MAX))
+        })
+}
+
+fn hydrate_location_arguments(
+    tx: &Transaction<'_>,
+    source: &str,
+    row: &SourceReceipt,
+    task: &mut Value,
+) -> Result<()> {
+    if task["tool"] != "orchestration_servers"
+        || task.get("arguments").is_some()
+        || !matches!(task["outcome"].as_str(), Some("pending" | "unknown"))
+    {
+        return Ok(());
+    }
+    let invalid = || unclassifiable(source, &row.id, &row.signature);
+    let actor = task["agent"].as_str().ok_or_else(invalid)?;
+    let id = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!("studio-cross-server:project-location:{actor}:{}", row.id).as_bytes(),
+    )
+    .to_string();
+    if !crate::receipt_migration_contract::source_exists(tx, "runtime_server_outbox")? {
+        return Ok(());
+    }
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT body FROM runtime_server_outbox WHERE id=?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(raw) = raw else {
+        return Ok(());
+    };
+    let body: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+    let args = &body["payload"]["request"];
+    if !matches!(
+        args["action"].as_str(),
+        Some("add_location" | "remove_location")
+    ) || args["project"] != body["payload"]["project"]
+        || !args["project"].is_string()
+        || !args["server"].is_string()
+        || !args["path"].is_null() && !args["path"].is_string()
+    {
+        return Err(invalid());
+    }
+    task["arguments"] = args.clone();
+    Ok(())
 }
 
 fn task(tx: &Transaction<'_>, source: &str, row: &SourceReceipt, id: &str) -> Result<Value> {
@@ -582,5 +632,39 @@ mod tests {
                 0
             );
         }
+    }
+
+    #[test]
+    fn receipts_tools_pending_location_arguments_come_from_exact_outbox_identity() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute_batch("CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,body TEXT)")
+            .expect("outboxes");
+        let task = json!({"id":"old-task","agent":"agent","tool":"orchestration_servers","signature":"signature","stage":"running","outcome":"unknown"});
+        db.execute(
+            "INSERT INTO runtime_tool_requests VALUES('old-task',?1)",
+            [task.to_string()],
+        )
+        .expect("pending task");
+        let id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            b"studio-cross-server:project-location:agent:old-task",
+        )
+        .to_string();
+        let args = json!({"action":"add_location","project":"project","server":"server","path":"/project"});
+        let body = json!({"action":"add_location","payload":{"project":"project","request":args}});
+        db.execute(
+            "INSERT INTO runtime_server_outbox VALUES(?1,?2)",
+            params![id, body.to_string()],
+        )
+        .expect("exact immutable outbox");
+        migrate(&mut db);
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_tool_requests", [], |r| r.get(0))
+            .expect("task");
+        let task: Value = serde_json::from_str(&raw).expect("task JSON");
+        assert_eq!(task["arguments"], args);
+        assert_eq!(task["outcome"], "unknown");
+        assert_eq!(task["admitted"]["id"], "old-task");
     }
 }

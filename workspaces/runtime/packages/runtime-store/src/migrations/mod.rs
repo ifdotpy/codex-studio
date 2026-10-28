@@ -928,6 +928,8 @@ mod tests {
             #[derive(serde::Deserialize, serde::Serialize)]
             struct Reply {
                 index: i64,
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                padding: Option<String>,
             }
             let rows = receipt_migration_contract::read_receipt_batch(tx, source, checkpoint, "1")?;
             let mut next = checkpoint.clone();
@@ -1111,6 +1113,75 @@ mod tests {
             .expect("source"),
             1
         );
+    }
+
+    #[test]
+    fn receipt_cutover_low_space_preserves_oversized_source_and_resumes() {
+        let root = tempfile::tempdir().expect("fixture");
+        let mut db = receipt_batch_fixture(&root.path().join("canvas.sqlite3"), 1);
+        let oversized=serde_json::json!({"index":1,"padding":"x".repeat(receipt_migration_contract::MIGRATION_BATCH_BYTES+1)}).to_string();
+        db.execute(
+            "UPDATE runtime_operation_receipts SET result=?1",
+            [&oversized],
+        )
+        .expect("oversized source");
+        let pages: i64 = db
+            .pragma_query_value(None, "page_count", |row| row.get(0))
+            .expect("pages");
+        db.pragma_update(None, "max_page_count", pages)
+            .expect("finite disk budget");
+        let family = ReceiptMigration {
+            family: &BatchWitness,
+            sources: &["runtime_operation_receipts"],
+        };
+        let error = run_receipt_family(&mut db, &family, &mut |_, _, _| Ok(()))
+            .expect_err("destination cannot fit");
+        assert!(format!("{error:?}").contains("full"), "{error:?}");
+        let source: String = db
+            .query_row("SELECT result FROM runtime_operation_receipts", [], |row| {
+                row.get(0)
+            })
+            .expect("source survives");
+        assert_eq!(source, oversized);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM request_results", [], |row| row
+                .get::<_, i64>(0))
+                .expect("results"),
+            0
+        );
+        db.pragma_update(None, "max_page_count", pages * 4)
+            .expect("space restored");
+        run_receipt_family(&mut db, &family, &mut |_, _, _| Ok(()))
+            .expect("one oversized row resumes");
+        let result: String = db
+            .query_row("SELECT result FROM request_results", [], |row| row.get(0))
+            .expect("exact result");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&result).expect("envelope")["reply"],
+            serde_json::from_str::<serde_json::Value>(&oversized).expect("source")
+        );
+    }
+
+    #[test]
+    fn receipt_cutover_startup_error_names_unclassifiable_row_in_display() {
+        let error = failure(
+            "2026-10-28-receipts-batch-witness",
+            MigrationTarget::Canvas,
+            MigrationPhase::Apply,
+            MigrationRollbackOutcome::RolledBack,
+            receipt_error(receipt_migration_contract::unclassifiable(
+                "source-table",
+                "source-key",
+                "source-signature",
+            )),
+        );
+        let shown = error.to_string();
+        for expected in ["source-table", "source-key", "source-signature"] {
+            assert!(
+                shown.contains(expected),
+                "operator startup error must name {expected}: {shown}"
+            );
+        }
     }
 
     #[tokio::test]

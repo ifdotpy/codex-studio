@@ -89,7 +89,10 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
         let valid = match phase {
             "written" => proof["written"] == true && proof["request"] == value,
             "result" => {
-                proof["outcome"] == value
+                (proof["outcome"]["result"] == value["result"]
+                    && proof["outcome"]["cursor"] == value["cursor"]
+                    && (value["committed_ack"].is_null()
+                        || proof["outcome"]["committed_ack"] == value["committed_ack"]))
                     || (proof["result"] == value["result"]
                         && proof["ack"]["cursor"] == value["cursor"])
             }
@@ -130,7 +133,16 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
     if actor.is_some() != epoch.is_some() {
         return Err(fail(row));
     }
-    call["root_request_id"] = json!("");
+    let source_root = call
+        .get("root_request_id")
+        .map(|value| value.as_str().map(str::to_owned).ok_or_else(|| fail(row)))
+        .transpose()?;
+    if let Some(root) = &source_root
+        && RequestIdentity::new("provider-call", &[], root, &[]).is_err()
+    {
+        return Err(fail(row));
+    }
+    call["root_request_id"] = json!(source_root.as_deref().unwrap_or_default());
     call["admitted_request"] = Value::Null;
     let mut typed_call: ProviderCallIntent<Method, AdmittedRequest> =
         serde_json::from_value(call.clone()).map_err(|_| fail(row))?;
@@ -159,8 +171,13 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
         }
         serde_json::from_str::<Value>(&raw).map_err(|_|fail(row))?["reply"]["call"]["root_request_id"].as_str().ok_or_else(||fail(row))?.to_owned()
     } else {
-        RequestIdentity::issue_root()
+        source_root
+            .clone()
+            .unwrap_or_else(RequestIdentity::issue_root)
     };
+    if source_root.as_ref().is_some_and(|source| source != &root) {
+        return Err(fail(row));
+    }
     if RequestIdentity::new("provider-call", &[], &root, &[]).is_err() {
         return Err(fail(row));
     }
@@ -229,7 +246,7 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
     let typed_transport: TransportRequest<Method> =
         serde_json::from_value(transport.clone()).map_err(|_| fail(row))?;
     let saved = sibling(tx, row, base, "result")?;
-    let outcome = saved
+    let mut outcome = saved
         .as_ref()
         .map(|(_, value)| {
             serde_json::from_value::<Resolution>(value.clone()).map_err(|_| fail(row))
@@ -292,17 +309,33 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
         let journal = journal
             .map(|raw| serde_json::from_str::<Value>(&raw).map_err(|_| fail(row)))
             .transpose()?;
-        outcome.cursor <= ack
+        if let Some(proof) = &outcome.committed_ack
+            && (proof.stream_id != stream
+                || proof.generation != generation
+                || proof.cursor != outcome.cursor)
+        {
+            return Err(fail(row));
+        }
+        outcome.committed_ack.is_some()
+            || outcome.cursor <= ack
             || journal.is_some_and(|value| {
                 value["committed"] == true && value["cursor"].as_u64() == Some(outcome.cursor)
             })
     } else {
         false
     };
+    if committed && let Some(outcome) = outcome.as_mut() {
+        outcome.committed_ack = Some(CommittedAck {
+            stream_id: stream.clone(),
+            generation,
+            cursor: outcome.cursor,
+        });
+    }
     if committed
         && let Some(Resolution {
             result: result @ (Outcome::Reply(_) | Outcome::Rejected(_)),
             cursor,
+            committed_ack: _,
         }) = &outcome
     {
         let reply = RetainedReply {
@@ -594,6 +627,56 @@ mod tests {
         assert!(!plan.contains("request_results"));
     }
     #[test]
+    fn receipt_provider_delivery_unknown_keeps_exact_committed_ack_after_cursor_removal() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let key = fixture(&tx, "unknown-committed", json!("Unknown"));
+        tx.execute("INSERT INTO runtime_operation_receipts VALUES('account-worker:cursor:default:7:ack','ack','19')",[]).expect("ack");
+        let cp =
+            MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).expect("checkpoint");
+        Family.move_batch(&tx, SOURCES[0], &cp).expect("move");
+        tx.execute(
+            "DELETE FROM runtime_operation_receipts WHERE id='account-worker:cursor:default:7:ack'",
+            [],
+        )
+        .expect("cursor removed");
+        let row = Outbox::get::<Value>(&tx, &key)
+            .expect("lookup")
+            .expect("held");
+        assert_eq!(row.status, OutboxStatus::Unknown);
+        assert_eq!(row.next_at, None);
+        assert_eq!(
+            row.payload["payload"]["outcome"]["committed_ack"],
+            json!({"stream_id":"default","generation":7,"cursor":12})
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM request_results", [], |r| r
+                .get::<_, i64>(0))
+                .expect("no fabricated result"),
+            0
+        );
+    }
+    #[test]
+    fn receipt_provider_delivery_not_sent_keeps_original_cursor_and_exact_proof() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let key = fixture(&tx, "not-sent-committed", json!("NotSent"));
+        tx.execute("INSERT INTO runtime_operation_receipts VALUES('account-worker:cursor:default:7:ack','ack','19')",[]).expect("ack");
+        let cp =
+            MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).expect("checkpoint");
+        Family.move_batch(&tx, SOURCES[0], &cp).expect("move");
+        let row = Outbox::get::<Value>(&tx, &key)
+            .expect("lookup")
+            .expect("pending retry");
+        assert_eq!(row.status, OutboxStatus::Pending);
+        assert_eq!(row.next_at, None);
+        assert_eq!(row.payload["payload"]["outcome"]["cursor"], 12);
+        assert_eq!(
+            row.payload["payload"]["outcome"]["committed_ack"],
+            json!({"stream_id":"default","generation":7,"cursor":12})
+        );
+    }
+    #[test]
     fn receipt_provider_delivery_migration_root_is_v7_and_stable_across_phase_resume() {
         let mut db = database();
         let tx = db.transaction().expect("transaction");
@@ -646,6 +729,44 @@ mod tests {
         assert_eq!(
             record["operation"]["providerRequest"],
             before.payload["payload"]["admitted"]
+        );
+    }
+    #[test]
+    fn receipt_provider_delivery_preserves_hydrated_source_root() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let key = fixture(&tx, "source-root", json!("Unknown"));
+        let root = RequestIdentity::issue_root();
+        tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.call.root_request_id',?1) WHERE signature='submitted'",[&root]).expect("owner hydration");
+        let cp = MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).expect("begin");
+        Family.move_batch(&tx, SOURCES[0], &cp).expect("move");
+        let call = Outbox::get::<Value>(&tx, &key)
+            .expect("lookup")
+            .expect("call");
+        assert_eq!(call.payload["payload"]["call"]["root_request_id"], root);
+    }
+    #[test]
+    fn receipt_provider_delivery_invalid_source_root_aborts_without_source_delete() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        fixture(&tx, "bad-root", json!("Unknown"));
+        tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.call.root_request_id','invalid-root') WHERE signature='submitted'",[]).expect("invalid root");
+        let cp = MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).expect("begin");
+        assert!(matches!(
+            Family.move_batch(&tx, SOURCES[0], &cp),
+            Err(ReceiptMigrationError::Unclassifiable { .. })
+        ));
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                .get::<_, i64>(0))
+                .expect("source"),
+            3
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_outbox", [], |r| r
+                .get::<_, i64>(0))
+                .expect("destination"),
+            0
         );
     }
     #[test]
