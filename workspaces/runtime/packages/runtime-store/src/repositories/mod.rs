@@ -45,7 +45,7 @@ pub mod startup_recovery;
 pub(crate) mod sync_documents;
 pub mod system_reads;
 pub(crate) mod tasks;
-pub(crate) mod terminals;
+pub mod terminals;
 pub(crate) mod transcript;
 pub(crate) mod usage;
 pub(crate) mod voice;
