@@ -1,5 +1,6 @@
 use super::*;
 use crate::CachedSql;
+pub(super) use crate::repositories::transcript::stored_truthy as truthy;
 use studio_runtime_schema::provider_errors::{KnownCodexErrorKind, known_error_kind};
 use studio_runtime_schema::shared_values::{
     PROVIDER_START_NOT_SENT_ERROR as NOT_SENT_ERROR,
@@ -3212,17 +3213,6 @@ fn parked_after_turn(agent: &mut AgentRecord) {
     }
     if agent.extra.get("autoWake") != Some(&Value::Bool(true)) {
         agent.status = AgentStatus::Parked;
-    }
-}
-
-pub(super) fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
     }
 }
 
