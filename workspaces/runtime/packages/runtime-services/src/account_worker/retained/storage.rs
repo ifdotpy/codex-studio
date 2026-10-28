@@ -55,10 +55,6 @@ impl TransportRequestExt for TransportRequest {
     }
 }
 
-/// One obligation, including every unresolved predecessor's exact provenance.
-
-/// Immutable replay needs no historical journal cursor or submitted sibling.
-
 type RetainedRow = OutboxRow<store::ProviderCall>;
 fn outbox_error(error: studio_runtime_store::outbox::OutboxError) -> WorkerError {
     match error {
@@ -653,7 +649,7 @@ pub(super) fn replay_recorded(
         if !same_replay_identity(&prior.call, call) {
             return Ok(Err(PortError::Identity));
         }
-        return replay_submitted(tx, &prior.call, prior);
+        return Ok(Ok(replay_pending(prior)));
     }
     let id = match result_id(call) {
         Ok(id) => id,
@@ -664,6 +660,9 @@ pub(super) fn replay_recorded(
         Err(studio_runtime_store::request_results::RequestResultError::Conflict { .. }) => {
             return Ok(Err(PortError::Identity));
         }
+        Err(studio_runtime_store::request_results::RequestResultError::Identity(
+            studio_runtime_schema::persistence::RequestIdentityError::Expired { .. },
+        )) => return Ok(Err(PortError::Expired)),
         Err(studio_runtime_store::request_results::RequestResultError::Identity(_)) => {
             return Ok(Err(PortError::Invalid));
         }
@@ -677,14 +676,19 @@ pub(super) fn replay_recorded(
             Ok(identity) => identity,
             Err(error) => return Ok(Err(error)),
         };
-        if identity
-            .validate(
-                now_ms(),
-                RequestResults::expired_before_ms(tx).map_err(result_error)?,
-            )
-            .is_err()
-        {
-            return Ok(Err(PortError::Invalid));
+        if let Err(error) = identity.validate(
+            now_ms(),
+            RequestResults::expired_before_ms(tx).map_err(result_error)?,
+        ) {
+            return Ok(Err(match error {
+                studio_runtime_schema::persistence::RequestIdentityError::Expired { .. } => {
+                    PortError::Expired
+                }
+                studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7
+                | studio_runtime_schema::persistence::RequestIdentityError::FutureTimestamp {
+                    ..
+                } => PortError::Invalid,
+            }));
         }
         return Ok(Ok(Replay::Ready));
     };
@@ -700,24 +704,22 @@ pub(super) fn replay_recorded(
     receipt.replayed = true;
     Ok(Ok(Replay::Return(receipt)))
 }
-pub(super) fn replay_submitted(
-    _tx: &rusqlite::Transaction<'_>,
-    prior_call: &Call,
-    prior: &RetainedCall,
-) -> Result<Result<Replay, PortError>, WorkerError> {
+fn replay_pending(prior: &RetainedCall) -> Replay {
     let Some(request) = &prior.request else {
-        return Ok(Ok(Replay::Ready));
+        return Replay::Ready;
     };
     if prior
         .outcome
         .as_ref()
         .is_some_and(|outcome| outcome.result == RequestResult::NotSent && outcome.cursor == 0)
     {
-        return Ok(Ok(Replay::Retry(request.recovered().ticket)));
+        return Replay::Retry(request.recovered().ticket);
     }
-    let mut receipt = prior_call.receipt(request.recovered().ticket, RequestResult::Unknown);
+    let mut receipt = prior
+        .call
+        .receipt(request.recovered().ticket, RequestResult::Unknown);
     receipt.replayed = true;
-    Ok(Ok(Replay::Return(receipt)))
+    Replay::Return(receipt)
 }
 
 pub(super) fn reserve(
@@ -1140,21 +1142,7 @@ impl RecordedCall {
     }
     pub(super) fn replay(&self) -> Replay {
         match self {
-            Self::Pending(value) => {
-                let Some(request) = &value.request else {
-                    return Replay::Ready;
-                };
-                if value.outcome.as_ref().is_some_and(|outcome| {
-                    outcome.result == RequestResult::NotSent && outcome.cursor == 0
-                }) {
-                    return Replay::Retry(request.recovered().ticket);
-                }
-                let mut receipt = value
-                    .call
-                    .receipt(request.recovered().ticket, RequestResult::Unknown);
-                receipt.replayed = true;
-                Replay::Return(receipt)
-            }
+            Self::Pending(value) => replay_pending(value),
             Self::Final(value) => {
                 let mut receipt = value
                     .call

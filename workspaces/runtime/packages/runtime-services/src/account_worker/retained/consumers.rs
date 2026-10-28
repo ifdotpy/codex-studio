@@ -128,7 +128,7 @@ impl ClaudeSessionPort for ClaudePort {
                 .await
                 .map_err(|e| match e {
                     PortError::Identity => ControlError::Changed,
-                    PortError::Invalid => ControlError::Request,
+                    PortError::Invalid | PortError::Expired => ControlError::Request,
                     PortError::NotSent | PortError::Capacity => ControlError::NotSent,
                     PortError::ScopeMismatch | PortError::Unknown | PortError::Deadline => {
                         ControlError::Unknown
@@ -222,9 +222,11 @@ fn history_error(error: PortError) -> HistoryError {
         PortError::Identity => HistoryError::Identity,
         PortError::Deadline => HistoryError::Deadline,
         PortError::Capacity => HistoryError::Capacity,
-        PortError::ScopeMismatch | PortError::Invalid | PortError::NotSent | PortError::Unknown => {
-            HistoryError::Unavailable
-        }
+        PortError::ScopeMismatch
+        | PortError::Invalid
+        | PortError::Expired
+        | PortError::NotSent
+        | PortError::Unknown => HistoryError::Unavailable,
     }
 }
 impl crate::recovery_runtime::RetainedHistory for HistoryPort {
