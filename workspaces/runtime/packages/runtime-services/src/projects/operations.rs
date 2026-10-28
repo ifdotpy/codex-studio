@@ -3,13 +3,7 @@ use crate::event_write::{CallerAdmission, RequestKey, begin_request};
 use std::sync::Arc;
 use studio_runtime_store::request_results::RequestResultError;
 
-/// The existing project record is extensible, with a required owner identity.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct ProjectReply {
-    id: String,
-    #[serde(flatten)]
-    fields: std::collections::BTreeMap<String, Value>,
-}
+use studio_runtime_store::ProjectLocationRecord as ProjectReply;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SidebarReply {

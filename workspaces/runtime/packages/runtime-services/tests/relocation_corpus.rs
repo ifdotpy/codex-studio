@@ -57,6 +57,22 @@ impl Fixture {
                 case["requestRoot"] = json!(root);
             }
         }
+        for case in data["cases"].as_array_mut().expect("cases") {
+            if case["family"] == "tool" {
+                let admitted = json!({"id":case["record"]["id"],"signature":"fixture-tool","created":1_000_125});
+                let arguments = case["outbox"]["body"]["payload"]["request"].clone();
+                for field in ["record", "expected/record"] {
+                    let target = if field == "record" {
+                        &mut case["record"]
+                    } else {
+                        &mut case["expected"]["record"]
+                    };
+                    target["admitted"] = admitted.clone();
+                    target["arguments"] = arguments.clone();
+                    target["aliases"] = json!([]);
+                }
+            }
+        }
         Self {
             root,
             template,
@@ -96,8 +112,16 @@ impl Fixture {
                     "id":record["agent"],"rootId":record["agent"],"epoch":record["epoch"],"status":"idle","accountKey":"default","provider":"codex"
                 })).expect("tool actor record"))?;
                 tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",params![text(record,"id"),record.to_string()])?;
-                tx.execute("INSERT INTO runtime_tool_results(id,result) VALUES(?1,?2)",params![text(record,"id"),case["previous"].to_string()])?;
-                tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,?2,?3,?4,?5)",params![text(outbox,"id"),text(outbox,"server"),outbox["body"].to_string(),text(outbox,"state"),outbox["result"].to_string()])?;
+                let parent:studio_runtime_store::request_results::AdmittedRequest=serde_json::from_value(record["admitted"].clone()).expect("owner token");
+                let location=parent.derive_result("project-location", &["location"], text(&outbox["body"]["payload"],"signature"));
+                let receipt:project_locations::LocationResult=serde_json::from_value(outbox["result"].clone()).expect("typed receipt");
+                if receipt.outcome!=project_locations::LocationOutcome::Unknown {
+                    studio_runtime_services::event_write::settle_request(tx,&location,Some(text(record,"agent")),&receipt).expect("location result");
+                }
+                if record["outcome"]!="unknown" && record["outcome"]!="pending" {
+                    let result=studio_runtime_store::ToolResultRecord::from_value(case["previous"].clone()).expect("tool result");
+                    studio_runtime_services::event_write::settle_request(tx,&parent,Some(text(record,"agent")),&result).expect("tool result");
+                }
             } else {
                 AgentMoveRepository::save(tx,&case["operation"])?;
                 AgentRepository::put(tx,&AgentRecord::from_value(case["agent"].clone()).expect("Python agent"))?;
@@ -129,7 +153,6 @@ fn snapshot(store: &RuntimeStore) -> Value {
         "runtime_agent_moves",
         "runtime_agents",
         "runtime_tool_requests",
-        "runtime_tool_results",
         "sync_entities",
         "sync_versions",
     ] {
@@ -354,13 +377,15 @@ async fn python_location_and_move_corpus_through_consumers() {
                 let stored = ProjectLocationsRepository::tool(&db, text(&record, "id"))
                     .expect("stored request")
                     .expect("exists");
-                let result = ProjectLocationsRepository::tool_result(&db, text(&record, "id"))
-                    .expect("stored result")
-                    .expect("exists");
-                assert_eq!(
-                    generated_tool_json(stored),
-                    generated_tool_json(case["expected"]["record"].clone())
-                );
+                let result =
+                    studio_runtime_services::tool_requests::saved_result(&db, text(&record, "id"))
+                        .expect("stored result")
+                        .expect("exists");
+                let mut expected = case["expected"]["record"].clone();
+                if let Some(fields) = expected.as_object_mut() {
+                    fields.remove("result");
+                }
+                assert_eq!(generated_tool_json(stored), generated_tool_json(expected));
                 assert_eq!(
                     generated_tool_json(result),
                     generated_tool_json(case["expected"]["result"].clone())
@@ -511,7 +536,7 @@ async fn location_commit_failpoints_reopen_and_apply_once() {
         ("request_results", "INSERT"),
         ("runtime_projects", "UPDATE"),
         ("sync_entities", "UPDATE"),
-        ("runtime_server_outbox", "UPDATE"),
+        ("runtime_server_outbox", "DELETE"),
     ];
     for (index, (table, verb)) in boundaries.into_iter().enumerate() {
         if !full() && ![0, 3].contains(&index) {
@@ -757,9 +782,12 @@ async fn tool_reconciliation_binds_identity_aliases_and_rolls_back() {
         );
         assert_eq!(snapshot(&store), before);
     }
-    for (index, table) in ["runtime_tool_results", "runtime_tool_requests"]
-        .into_iter()
-        .enumerate()
+    for (index, (table, verb)) in [
+        ("request_results", "INSERT"),
+        ("runtime_tool_requests", "UPDATE"),
+    ]
+    .into_iter()
+    .enumerate()
     {
         for timing in ["BEFORE", "AFTER"] {
             if !full() && timing == "BEFORE" {
@@ -767,7 +795,7 @@ async fn tool_reconciliation_binds_identity_aliases_and_rolls_back() {
             }
             let mut record = record.clone();
             let trigger = format!(
-                "CREATE TRIGGER tool_fault {timing} UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'tool fault'); END"
+                "CREATE TRIGGER tool_fault {timing} {verb} ON {table} BEGIN SELECT RAISE(ABORT,'tool fault'); END"
             );
             store
                 .transaction(move |tx| {
@@ -817,21 +845,28 @@ async fn tool_reconciliation_binds_identity_aliases_and_rolls_back() {
     let request = text(record, "id").to_owned();
     let actor_for_write = actor.clone();
     let request_for_write = request.clone();
-    let key=store.transaction_with(move |tx|{
-        tx.execute("INSERT INTO runtime_tool_request_aliases(agent,alias,request) VALUES(?1,'alias',?2)",params![actor_for_write,request_for_write])?;
-        project_locations::tool_receipt_key(tx,&actor_for_write,"alias","peer")
-    }).await.expect("alias resolves");
-    assert_eq!(key, case["outbox"]["id"]);
-    let actor_for_write = actor.clone();
-    let retired_id = identity(&["project-location", &actor, "second"]);
-    store.transaction(move |tx|{
-        tx.execute("INSERT INTO runtime_tool_request_aliases(agent,alias,request) VALUES(?1,'alias','second')",[actor_for_write])?;
-        tx.execute("INSERT INTO runtime_server_retired(id,direction,signature,server) VALUES(?1,'out','signature','peer')",[retired_id])?;Ok(())
-    }).await.expect("second durable alias receipt");
+    let receipt=store.transaction_with(move |tx|{
+        tx.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.aliases',json('[\"alias\"]')) WHERE id=?1",[request_for_write])?;
+        project_locations::tool_location_receipt(tx,&actor_for_write,"alias","peer",now)
+    }).await.expect("alias resolves").expect("receipt");
+    assert_eq!(json!(receipt.request_id), case["outbox"]["id"]);
+    let mut second = record.clone();
+    second["id"] = json!("second");
+    second["aliases"] = json!(["alias"]);
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_tool_requests(id,record) VALUES('second',?1)",
+                [second.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("second alias owner");
     assert!(
         store
-            .transaction_with(move |tx| project_locations::tool_receipt_key(
-                tx, &actor, "alias", "peer"
+            .transaction_with(move |tx| project_locations::tool_location_receipt(
+                tx, &actor, "alias", "peer", now
             ))
             .await
             .is_err()

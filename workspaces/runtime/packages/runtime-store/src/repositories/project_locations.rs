@@ -1,6 +1,7 @@
 //! Transactional location outbox and tool-receipt persistence. No delivery occurs here.
+use crate::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
-use crate::{StoreError, StoreResult};
+use crate::{StoreError, StoreResult, ToolResultRecord};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
@@ -9,39 +10,29 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     conditional_tables: &[
         ConditionalTableRequirement {
             table_exists: "runtime_server_outbox",
-            tables: &[
-                TableRequirement {
-                    name: "runtime_server_outbox",
-                    columns: &[
-                        "id",
-                        "server",
-                        "body",
-                        "state",
-                        "result",
-                        "error",
-                        "completed_at",
-                    ],
-                },
-                TableRequirement {
-                    name: "runtime_server_retired",
-                    columns: &["id", "direction", "server"],
-                },
-            ],
+            tables: &[TableRequirement {
+                name: "runtime_server_outbox",
+                columns: &[
+                    "id",
+                    "server",
+                    "body",
+                    "state",
+                    "result",
+                    "error",
+                    "completed_at",
+                ],
+            }],
         },
         ConditionalTableRequirement {
             table_exists: "runtime_tool_requests",
             tables: &[
                 TableRequirement {
                     name: "runtime_tool_requests",
-                    columns: &["id", "record"],
+                    columns: &["id", "agent", "record"],
                 },
                 TableRequirement {
-                    name: "runtime_tool_results",
-                    columns: &["id", "result"],
-                },
-                TableRequirement {
-                    name: "runtime_tool_request_aliases",
-                    columns: &["agent", "alias", "request"],
+                    name: "request_results",
+                    columns: &["id", "signature", "result", "created"],
                 },
             ],
         },
@@ -90,27 +81,27 @@ impl ProjectLocationsRepository {
         raw.map(|s| decode("runtime_tool_requests", id, &s))
             .transpose()
     }
-    pub fn tool_result(db: &Connection, id: &str) -> StoreResult<Option<Value>> {
-        let raw: Option<String> = db
-            .query_row(
-                "SELECT result FROM runtime_tool_results WHERE id=?1",
-                [id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        raw.map(|s| decode("runtime_tool_results", id, &s))
-            .transpose()
-    }
     pub fn save_tool(
         tx: &Transaction<'_>,
         id: &str,
         record: &Value,
         result: &Value,
     ) -> StoreResult<()> {
-        tx.execute(
-            "UPDATE runtime_tool_results SET result=?1 WHERE id=?2",
-            params![result.to_string(), id],
+        let admitted: AdmittedRequest = serde_json::from_value(record["admitted"].clone())?;
+        RequestResults::settle(
+            tx,
+            &admitted,
+            &ResultEnvelope {
+                actor: record["agent"].as_str().map(str::to_owned),
+                reply: ToolResultRecord::from_value(result.clone())?,
+                references: Vec::new(),
+            },
         )?;
+        let mut record = record.clone();
+        if let Some(fields) = record.as_object_mut() {
+            fields.remove("result");
+            fields.remove("_payloadBlobs");
+        }
         tx.execute(
             "UPDATE runtime_tool_requests SET record=?1 WHERE id=?2",
             params![record.to_string(), id],
@@ -118,13 +109,10 @@ impl ProjectLocationsRepository {
         Ok(())
     }
     pub fn alias_requests(db: &Connection, actor: &str, alias: &str) -> StoreResult<Vec<String>> {
-        let mut statement = db.prepare_cached("SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 LIMIT 1001")?;
+        let mut statement = db.prepare_cached("SELECT id FROM runtime_tool_requests WHERE agent=?1 AND EXISTS(SELECT 1 FROM json_each(record,'$.aliases') WHERE value=?2) LIMIT 2")?;
         Ok(statement
             .query_map(params![actor, alias], |r| r.get(0))?
             .collect::<Result<Vec<_>, _>>()?)
-    }
-    pub fn retired(db: &Connection, id: &str, server: &str) -> StoreResult<bool> {
-        Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM runtime_server_retired WHERE id=?1 AND direction='out' AND server=?2)",params![id,server],|r|r.get(0))?)
     }
 }
 fn decode(table: &'static str, id: &str, raw: &str) -> StoreResult<Value> {
