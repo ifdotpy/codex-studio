@@ -18,7 +18,7 @@
 use crate::account_session_runtime::{AccountSessionError, SessionOutcome as ReceiptOutcome};
 use crate::{
     account_session_runtime::{
-        AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
+        AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
     },
     account_worker::{WorkerError, preparation, retained::RequestActor},
     native_action_ports::{MessageNativeAdmission, NativeActionAcceptance},
@@ -656,9 +656,7 @@ impl ReviewPreparation {
 pub(crate) mod tests {
     use super::*;
     use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
-    use crate::account_session_runtime::{
-        AccountSessionError, AccountSessionFuture, SessionReceipt,
-    };
+    use crate::account_session_runtime::{AccountSessionFuture, SessionReceipt};
     use std::sync::Mutex;
     use studio_runtime_providers::{RequestId, RequestTicket};
 
