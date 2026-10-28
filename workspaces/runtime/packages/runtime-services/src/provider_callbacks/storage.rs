@@ -244,6 +244,25 @@ pub(super) fn saved_reply(
         return Ok(None);
     };
     check_origin(&owner, identity, &input.signature())?;
+    if owner.status == ToolRequestStatus::Completed {
+        let admission = owner
+            .payload
+            .admission
+            .as_ref()
+            .ok_or(CallbackError::Unknown)?;
+        let saved = RequestResults::replay(
+            tx,
+            admission.id(),
+            admission.signature(),
+            chrono::Utc::now().timestamp_millis(),
+        )?
+        .ok_or(CallbackError::Unknown)?;
+        let envelope: ResultEnvelope<CallbackResponse> = serde_json::from_str(&saved.result)?;
+        return Ok(Some(Reply {
+            identity: envelope.reply.identity,
+            body: envelope.reply.body.into(),
+        }));
+    }
     let Some(mut saved) = response(tx, identity)? else {
         return Err(CallbackError::Unknown);
     };
@@ -258,25 +277,9 @@ pub(super) fn saved_reply(
             identity: saved.payload.identity,
             body: saved.payload.body.into(),
         })),
-        OutboxStatus::Committed => {
-            let admission = owner
-                .payload
-                .admission
-                .as_ref()
-                .ok_or(CallbackError::Unknown)?;
-            let saved = RequestResults::replay(
-                tx,
-                admission.id(),
-                admission.signature(),
-                chrono::Utc::now().timestamp_millis(),
-            )?
-            .ok_or(CallbackError::Unknown)?;
-            let envelope: ResultEnvelope<CallbackResponse> = serde_json::from_str(&saved.result)?;
-            Ok(Some(Reply {
-                identity: envelope.reply.identity,
-                body: envelope.reply.body.into(),
-            }))
-        }
+        OutboxStatus::Committed => Err(CallbackError::Stored(
+            "completed callback still has a response obligation".into(),
+        )),
         OutboxStatus::Submitted | OutboxStatus::Unknown | OutboxStatus::Unrecognized => {
             Err(CallbackError::Unknown)
         }
@@ -455,7 +458,11 @@ fn delivery_in(
         super::cards::save(tx, &card)?;
     }
     put_owner(tx, &owner)?;
-    put_response(tx, &saved)?;
+    if saved.status == OutboxStatus::Committed {
+        Outbox::delete_settled(tx, &saved.id, &saved.signature)?;
+    } else {
+        put_response(tx, &saved)?;
+    }
     Ok(true)
 }
 
@@ -496,48 +503,6 @@ pub async fn bind_journal(
             Ok(())
         })
         .await
-}
-
-/// Written body retirement and its generation fence commit in this transaction.
-/// The worker invokes this only after committing its contiguous ACK.
-pub fn retire_checkpointed(
-    tx: &Transaction<'_>,
-    stream: &str,
-    generation: u64,
-) -> Result<usize, CallbackError> {
-    let generation = i64::try_from(generation).map_err(|_| CallbackError::Stale)?;
-    let checkpoint = crate::account_worker::store::checkpoint(
-        tx,
-        stream,
-        u64::try_from(generation).map_err(|_| CallbackError::Stale)?,
-    )
-    .map_err(|error| match error {
-        crate::account_worker::WorkerError::Store(error) => CallbackError::Store(error),
-        _ => CallbackError::Unknown,
-    })?;
-    let checkpoint = i64::try_from(checkpoint).map_err(|_| CallbackError::Stale)?;
-    let mut statement = tx.prepare_cached("SELECT id FROM runtime_outbox WHERE stream_id=?1 AND generation=?2 AND kind=?3 AND status=?4 AND CAST(json_extract(payload,'$.journal_cursor') AS INTEGER)<=?5 LIMIT 128")?;
-    let ids = statement
-        .query_map(
-            params![
-                stream,
-                generation,
-                OutboxKind::ProviderCallback,
-                OutboxStatus::Committed,
-                checkpoint
-            ],
-            |row| row.get::<_, String>(0),
-        )?
-        .collect::<Result<Vec<_>, _>>()?;
-    for id in &ids {
-        let saved: Response = Outbox::get(tx, id)?.ok_or(CallbackError::Unknown)?;
-        let owner = owner(tx, &saved.payload.identity)?.ok_or(CallbackError::Unknown)?;
-        if owner.status != ToolRequestStatus::Completed {
-            return Err(CallbackError::Unknown);
-        }
-        Outbox::delete_settled(tx, id, &saved.signature)?;
-    }
-    Ok(ids.len())
 }
 
 pub(super) fn saved_decision(
@@ -878,8 +843,12 @@ mod tests {
             .expect("owner")
             .expect("retained owner");
         assert_eq!(owner.status, ToolRequestStatus::Completed);
-        tx.execute("DELETE FROM request_results", [])
-            .expect("expire response body");
+        let expiry = owner.payload.admission.as_ref().unwrap().created()
+            + studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS;
+        assert_eq!(
+            RequestResults::gc(&tx, expiry).expect("expire cached response"),
+            1
+        );
         Outbox::delete_settled(&tx, &identity.key(), &input.signature()).expect("retire transport");
         assert!(matches!(
             saved_reply(&tx, &identity, &input),
@@ -902,6 +871,84 @@ mod tests {
             Err(CallbackError::Conflict)
         ));
     }
+    #[test]
+    fn late_written_callback_retires_body_after_generation_and_ack_replacement() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let (identity, input) = input();
+        let reply = Reply::new(
+            identity.clone(),
+            ResponseBody::Result(json!({"original":true})),
+        )
+        .expect("reply");
+        save_reply(&tx, &input, &reply).expect("response obligation");
+        let operation = reply.identity.operation_id();
+        assert_eq!(
+            begin_frame(&tx, "account", 4, &operation, &reply.frame()).expect("submit"),
+            FrameAdmission::Send
+        );
+        record_frame_outcome(&tx, &operation, DeliveryOutcome::Unknown).expect("lost outcome");
+        tx.execute("INSERT INTO runtime_account_state(account,next_generation,connection_generation,connection_id,journal_ack,recovery_required,streams) VALUES('account',8,8,'replacement',0,0,'null')",[]).expect("old ACK and attachment replaced");
+        record_frame_outcome(&tx, &operation, DeliveryOutcome::Written)
+            .expect("exact late written proof");
+        assert!(response(&tx, &identity).expect("retired body").is_none());
+        let owner = owner(&tx, &identity)
+            .expect("owner")
+            .expect("generation fence");
+        assert_eq!(owner.status, ToolRequestStatus::Completed);
+        let token = owner.payload.admission.unwrap();
+        assert!(
+            RequestResults::replay(
+                &tx,
+                token.id(),
+                token.signature(),
+                chrono::Utc::now().timestamp_millis()
+            )
+            .expect("exact final result")
+            .is_some()
+        );
+        assert_eq!(
+            begin_frame(&tx, "account", 4, &operation, &reply.frame()).expect("no resend"),
+            FrameAdmission::Written
+        );
+    }
+
+    #[test]
+    fn unknown_callback_body_survives_expiry_and_generation_replacement() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let (identity, input) = input();
+        let reply = Reply::new(
+            identity.clone(),
+            ResponseBody::Result(json!({"unresolved":true})),
+        )
+        .expect("reply");
+        save_reply(&tx, &input, &reply).expect("response obligation");
+        let operation = reply.identity.operation_id();
+        assert_eq!(
+            begin_frame(&tx, "account", 4, &operation, &reply.frame()).expect("submit"),
+            FrameAdmission::Send
+        );
+        record_frame_outcome(&tx, &operation, DeliveryOutcome::Unknown).expect("hold uncertainty");
+        tx.execute("INSERT INTO runtime_account_state(account,next_generation,connection_generation,connection_id,journal_ack,recovery_required,streams) VALUES('account',8,8,'replacement',0,0,'null')",[]).expect("replacement generation");
+        let owner = owner(&tx, &identity)
+            .expect("owner")
+            .expect("unknown source");
+        let expiry = owner.payload.admission.unwrap().created()
+            + studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS;
+        RequestResults::gc(&tx, expiry).expect("cache collection");
+        let retained = response(&tx, &identity)
+            .expect("outbox")
+            .expect("unknown survives");
+        assert_eq!(retained.status, OutboxStatus::Unknown);
+        assert_eq!(retained.next_at, None);
+        assert_eq!(retained.payload.body, CallbackBody::from(&reply.body));
+        assert_eq!(
+            begin_frame(&tx, "account", 4, &operation, &reply.frame()).expect("no resend"),
+            FrameAdmission::Unknown
+        );
+    }
+
     #[test]
     fn callback_pending_count_uses_status_index_and_excludes_completed_tasks() {
         #[derive(Serialize)]
@@ -1038,8 +1085,8 @@ mod tests {
         );
         let count: i64 = tx
             .query_row("SELECT count(*) FROM runtime_outbox", [], |row| row.get(0))
-            .expect("one canonical row");
-        assert_eq!(count, 1);
+            .expect("written response retired atomically");
+        assert_eq!(count, 0);
     }
 }
 
