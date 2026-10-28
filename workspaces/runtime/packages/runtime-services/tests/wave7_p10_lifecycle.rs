@@ -93,6 +93,7 @@ async fn seed(store: &RuntimeStore, records: Records) {
                 // This frozen lifecycle corpus predates explicit Codex identity.
                 if table == "runtime_agents" {
                     row["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+                    use_current_ticket_shape(&mut row);
                 }
                 if table == "runtime_events" {
                     tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,'user','input',?3,1,?4)", params![row["id"].as_str(),row["agent"].as_str(),row["status"].as_str(),row["epoch"].as_i64()])?;
@@ -107,6 +108,15 @@ async fn seed(store: &RuntimeStore, records: Records) {
         Ok(())
     }).await.expect("Python rows seed");
     projections::full_rebuild(store).await;
+}
+
+// Frozen fixtures used numeric tickets before the current agent view stored strings.
+fn use_current_ticket_shape(row: &mut Value) {
+    if let Some(ticket) = row.pointer_mut("/startAttempt/requestTicket")
+        && let Some(number) = ticket.as_i64()
+    {
+        *ticket = json!(number.to_string());
+    }
 }
 
 /// Runs the production adapter through its public async lifecycle entry point.
@@ -986,6 +996,7 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
         if table == "runtime_agents" {
             for row in expected.as_array_mut().expect("expected agent rows") {
                 row["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+                use_current_ticket_shape(row);
             }
             for rows in [&mut actual, &mut expected] {
                 if let Some(rows) = rows.as_array_mut() {
@@ -1442,6 +1453,7 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
                 if table == "runtime_agents" {
                     for row in expected.as_array_mut().expect("expected agent rows") {
                         row["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+                        use_current_ticket_shape(row);
                     }
                 }
                 assert_eq!(actual_rows, expected, "Python effect corpus rows: {table}");
@@ -1501,6 +1513,7 @@ async fn production_child_notification_matches_python_corpus() {
             if table == "runtime_agents" {
                 for row in expected.as_array_mut().expect("expected agent rows") {
                     row["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+                    use_current_ticket_shape(row);
                 }
             }
             assert_eq!(
