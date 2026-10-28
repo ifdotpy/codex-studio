@@ -3028,7 +3028,7 @@ pub(super) async fn attach_provider_stream(
         if let Some(actor)=actor {
             let agent = stored_agent(tx, &actor)?;
             if account_key(&agent) != account || agent.extra.get("executionMode").and_then(Value::as_str) != Some("vm") { return Err(invalid(&actor)); }
-            let current = studio_runtime_store::account_state::vm_provider_state(&agent)?;
+            let current = studio_runtime_store::account_state::provider_state(tx, studio_runtime_store::account_state::ProviderOwner::Agent(&agent))?;
             let previous = current.as_ref().map(|(state, _)| state.generation());
             if previous.is_some_and(|old| old > generation) { return Err(invalid(&actor)); }
             if let Some(previous) = previous && previous != generation {
@@ -3044,7 +3044,7 @@ pub(super) async fn attach_provider_stream(
             AgentRepository::put(tx, &agent)?;
         } else {
             studio_runtime_store::account_state::ensure_account(tx,&account)?;
-            let current=studio_runtime_store::account_state::host_provider_state(tx,&account)?;
+            let current=studio_runtime_store::account_state::provider_state(tx,studio_runtime_store::account_state::ProviderOwner::Account(&account))?;
             let previous=current.as_ref().map(|(state,_)|state.generation());
             let ack=current.as_ref().map_or(0,|(_,ack)|*ack);
             let generation=i64::try_from(generation).map_err(|_|invalid(&account))?;

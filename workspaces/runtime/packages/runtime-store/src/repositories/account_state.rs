@@ -150,61 +150,43 @@ fn state(generation: u64, connection: Option<String>) -> ProviderState {
     }
 }
 
-/// Read the account host generation and contiguous journal ACK together.
-pub fn host_provider_state(
-    db: &Connection,
-    account: &str,
-) -> StoreResult<Option<(ProviderState, u64)>> {
+/// Source owner for the current provider generation and journal ACK.
+pub enum ProviderOwner<'a> {
+    Account(&'a str),
+    Agent(&'a crate::AgentRecord),
+}
+
+/// Read the host account row or the VM agent's current stream exactly once.
+pub fn provider_state(db: &Connection, owner: ProviderOwner<'_>) -> StoreResult<Option<(ProviderState, u64)>> {
+    let account = match owner {
+        ProviderOwner::Account(account) => std::borrow::Cow::Borrowed(account),
+        ProviderOwner::Agent(agent) => {
+            let fields = agent_scope_fields(agent)?;
+            if matches!(fields.execution_mode, Some(ExecutionMode::Vm)) {
+                return Ok(fields.provider_stream.map(StreamFields::into_state));
+            }
+            std::borrow::Cow::Owned(fields.account_key.unwrap_or_else(|| "default".into()))
+        }
+    };
     let row: Option<(Option<i64>, Option<String>, i64)> = db.query_row(
         "SELECT connection_generation,connection_id,journal_ack FROM runtime_account_state WHERE account=?1",
-        [account], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        [account.as_ref()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     ).optional()?;
     match row {
         None | Some((None, None, _)) => Ok(None),
-        Some((None, Some(_), _)) => Err(StoreError::RecordContract(
-            "provider connection has no generation",
-        )),
+        Some((None, Some(_), _)) => Err(StoreError::RecordContract("provider connection has no generation")),
         Some((Some(generation), connection, ack)) => Ok(Some((
-            state(
-                u64::try_from(generation)
-                    .map_err(|_| StoreError::RecordContract("provider generation is negative"))?,
-                connection,
-            ),
-            u64::try_from(ack)
-                .map_err(|_| StoreError::RecordContract("provider journal ACK is negative"))?,
+            state(u64::try_from(generation).map_err(|_| StoreError::RecordContract("provider generation is negative"))?, connection),
+            u64::try_from(ack).map_err(|_| StoreError::RecordContract("provider journal ACK is negative"))?,
         ))),
     }
 }
 
-/// Read a VM actor's current provider generation and journal ACK.
-pub fn vm_provider_state(agent: &crate::AgentRecord) -> StoreResult<Option<(ProviderState, u64)>> {
-    Ok(agent_scope_fields(agent)?
-        .provider_stream
-        .map(StreamFields::into_state))
-}
-
 /// Read the current host or VM provider identity in the owner's transaction.
-pub fn current_provider_scope(
-    tx: &Transaction<'_>,
-    agent: &crate::AgentRecord,
-) -> Result<ProviderScope, ScopeError> {
-    let fields = agent_scope_fields(agent)?;
-    let current = match fields.execution_mode {
-        Some(ExecutionMode::Vm) => fields.provider_stream.map(StreamFields::into_state).map(|(state, _)| state),
-        Some(ExecutionMode::Native | ExecutionMode::Host) | None => {
-            host_provider_state(tx, fields.account_key.as_deref().unwrap_or("default"))?
-                .map(|(state, _)| state)
-        }
-    };
-    match current {
-        Some(ProviderState::Connected {
-            generation,
-            connection,
-        }) => Ok(ProviderScope {
-            generation,
-            connection,
-        }),
-        Some(ProviderState::Held { .. }) | None => Err(ScopeError::Unavailable),
+pub fn current_provider_scope(tx: &Transaction<'_>, agent: &crate::AgentRecord) -> Result<ProviderScope, ScopeError> {
+    match provider_state(tx, ProviderOwner::Agent(agent))? {
+        Some((ProviderState::Connected { generation, connection }, _)) => Ok(ProviderScope { generation, connection }),
+        Some((ProviderState::Held { .. }, _)) | None => Err(ScopeError::Unavailable),
     }
 }
 
