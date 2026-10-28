@@ -4561,11 +4561,12 @@ async fn malformed_monitor_keeps_proof_without_blocking_other_agent(case: Malfor
     peer.acknowledged(held_cursor).await;
     task.await.unwrap().unwrap();
     let mut other = durable_request(&state, &port, "other-agent-ack");
+    other.root_request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     other.actor.as_mut().unwrap().agent = "other-ack-agent".into();
     other.params["threadId"] = json!("other-ack-thread");
     let sender = port.clone();
-    let second = tokio::spawn(async move { sender.request(other).await });
-    let wire = peer.write("thread/compact/start").await;
+    let mut second = tokio::spawn(async move { sender.request(other).await });
+    let wire = monitor_write(&mut peer, &mut second, "thread/compact/start").await;
     let next_cursor = peer
         .frame(json!({"id":wire["id"],"result":{"accepted":true}}))
         .await;
