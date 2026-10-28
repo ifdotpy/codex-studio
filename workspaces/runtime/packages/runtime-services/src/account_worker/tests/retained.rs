@@ -3283,11 +3283,11 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
         epoch,
         account_key: scope.account.clone(),
         connection_id: scope.connection.clone(),
-        evidence: [
-            ("rootRequestId".into(), json!(root)),
-            ("providerGeneration".into(), json!(scope.generation)),
-        ]
-        .into(),
+        evidence: crate::monitor_policy::OperationEvidence {
+            root_request_id: Some(root.clone()),
+            provider_generation: Some(scope.generation),
+            ..Default::default()
+        },
     };
     let saved_operation = operation.clone();
     let cwd = state.record().await["cwd"].as_str().unwrap().to_owned();
