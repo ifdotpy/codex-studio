@@ -2344,10 +2344,10 @@ mod tests {
         let source = bootstrap_source(&store, &root).await;
         let old_root = RequestIdentity::issue_root();
         let old_source = bootstrap_source(&store, &old_root).await;
-        let imported: AdmittedRequest = serde_json::from_value(json!({
-            "id":"account-worker:vm-auth-bootstrap:agent-1:9:old:complete",
-            "signature":"complete", "created":chrono::Utc::now().timestamp_millis(),
-        }))
+        let imported: AdmittedRequest = serde_json::from_str(&format!(
+            r#"{{"id":"account-worker:vm-auth-bootstrap:agent-1:9:old:complete","signature":"complete","created":{}}}"#,
+            chrono::Utc::now().timestamp_millis()
+        ))
         .unwrap();
         let imported_for_save = imported.clone();
         let old_source_for_save = old_source.clone();
@@ -2425,10 +2425,10 @@ mod tests {
         let (_directory, store) = open_store().await;
         let root = RequestIdentity::issue_root();
         let source = bootstrap_source(&store, &root).await;
-        let expired: AdmittedRequest = serde_json::from_value(json!({
-            "id":"expired-bootstrap-effect", "signature":"payload",
-            "created":chrono::Utc::now().timestamp_millis() - REQUEST_RESULT_TTL_MS - 1000,
-        }))
+        let expired: AdmittedRequest = serde_json::from_str(&format!(
+            r#"{{"id":"expired-bootstrap-effect","signature":"payload","created":{}}}"#,
+            chrono::Utc::now().timestamp_millis() - REQUEST_RESULT_TTL_MS - 1000
+        ))
         .unwrap();
         let expired_for_save = expired.clone();
         let source_for_save = source.clone();
