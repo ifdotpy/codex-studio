@@ -94,6 +94,14 @@ fn prior(
         return Err(invalid());
     }
     session.epoch = actor.epoch;
+    let _root = crate::receipt_migration_contract::hydrate_source_root(
+        tx,
+        SOURCES[0],
+        &id,
+        &signature,
+        "result",
+        "$.call.root_request_id",
+    )?;
     session.admitted_request = Some(admitted_owner_token(
         &format!("{prefix}:result"),
         &call.fingerprint(&call.scope.account, call.method.as_str()),

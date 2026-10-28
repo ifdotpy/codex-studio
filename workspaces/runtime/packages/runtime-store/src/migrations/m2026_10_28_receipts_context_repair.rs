@@ -69,6 +69,7 @@ fn hydrate_agents(
             } else {
                 None
             };
+            let mut provider_root = None;
             let token = if let Some(raw) = raw {
                 let mut old: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
                 if !old["call"].is_object() {
@@ -85,6 +86,14 @@ fn hydrate_agents(
                 {
                     return Err(invalid());
                 }
+                provider_root = Some(crate::receipt_migration_contract::hydrate_source_root(
+                    tx,
+                    "runtime_operation_receipts",
+                    &format!("{key}:submitted"),
+                    "submitted",
+                    "result",
+                    "$.call.root_request_id",
+                )?);
                 Some(admitted_owner_token(
                     &format!("{key}:result"),
                     &call.fingerprint(account, call.method.as_str()),
@@ -93,11 +102,10 @@ fn hydrate_agents(
             } else {
                 None
             };
-            repair["rootRequestId"] = serde_json::json!(if token.is_some() {
-                String::new()
-            } else {
-                studio_runtime_schema::persistence::RequestIdentity::issue_root()
-            });
+            repair["rootRequestId"] =
+                serde_json::json!(provider_root.unwrap_or_else(
+                    studio_runtime_schema::persistence::RequestIdentity::issue_root
+                ));
             repair["admittedRequest"] = serde_json::json!(token);
             agent["contextRepair"] = repair;
             tx.execute(
