@@ -1099,24 +1099,6 @@ export interface paths {
     patch?: never | undefined;
     trace?: never | undefined;
   };
-  "/api/import": {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    /** Import List */
-    get: operations["import_list_api_import_get"];
-    put?: never | undefined;
-    /** Import Thread */
-    post: operations["import_thread_api_import_post"];
-    delete?: never | undefined;
-    options?: never | undefined;
-    head?: never | undefined;
-    patch?: never | undefined;
-    trace?: never | undefined;
-  };
   "/api/leads": {
     parameters: {
       query?: never | undefined;
@@ -1289,23 +1271,6 @@ export interface paths {
     get: operations["models_api_models_get"];
     put?: never | undefined;
     post?: never | undefined;
-    delete?: never | undefined;
-    options?: never | undefined;
-    head?: never | undefined;
-    patch?: never | undefined;
-    trace?: never | undefined;
-  };
-  "/api/monitor/cancel": {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    get?: never | undefined;
-    put?: never | undefined;
-    /** Cancel Monitor */
-    post: operations["cancel_monitor_api_monitor_cancel_post"];
     delete?: never | undefined;
     options?: never | undefined;
     head?: never | undefined;
@@ -1552,24 +1517,6 @@ export interface paths {
     patch?: never | undefined;
     trace?: never | undefined;
   };
-  "/api/plan": {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    /** Plan */
-    get: operations["plan_api_plan_get"];
-    put?: never | undefined;
-    /** Save Plan */
-    post: operations["save_plan_api_plan_post"];
-    delete?: never | undefined;
-    options?: never | undefined;
-    head?: never | undefined;
-    patch?: never | undefined;
-    trace?: never | undefined;
-  };
   "/api/processes": {
     parameters: {
       query?: never | undefined;
@@ -1732,23 +1679,6 @@ export interface paths {
      * @description One canvas transaction commits logical deletion, cancellation intents, room retirement, projections and a durable exact-request receipt. An identical request replays its committed reply before target existence checks. Conflicts require fresh SSE state and confirmation. No per-chat fallback or blind retry with a new identity.
      */
     post: operations["project_delete_api_projects_delete_post"];
-    delete?: never | undefined;
-    options?: never | undefined;
-    head?: never | undefined;
-    patch?: never | undefined;
-    trace?: never | undefined;
-  };
-  "/api/questions": {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    /** Questions */
-    get: operations["questions_api_questions_get"];
-    put?: never | undefined;
-    post?: never | undefined;
     delete?: never | undefined;
     options?: never | undefined;
     head?: never | undefined;
@@ -2332,23 +2262,6 @@ export interface paths {
     get: operations["tool_requests_api_tool_requests_get"];
     put?: never | undefined;
     post?: never | undefined;
-    delete?: never | undefined;
-    options?: never | undefined;
-    head?: never | undefined;
-    patch?: never | undefined;
-    trace?: never | undefined;
-  };
-  "/api/tool-requests/cancel": {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    get?: never | undefined;
-    put?: never | undefined;
-    /** Cancel Tool Request */
-    post: operations["cancel_tool_request_api_tool_requests_cancel_post"];
     delete?: never | undefined;
     options?: never | undefined;
     head?: never | undefined;
@@ -17190,23 +17103,6 @@ export interface components {
       model?: null | string | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
-    /** PlanBody */
-    PlanBody: {
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /** Text */
-      text: string;
-      /** Version */
-      version: number;
     };
     /**
      * PlanSummaryEntityDto
@@ -32667,123 +32563,6 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
-  import_list_api_import_get: {
-    parameters: {
-      query?:
-        | {
-            account_key?: string | undefined;
-            cursor?: string | undefined;
-          }
-        | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    requestBody?: never | undefined;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ImportListResponse"];
-        };
-      };
-      /** @description Bad Request */
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Not Found */
-      404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
-  import_thread_api_import_post: {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["ImportRequest"];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["AgentResponse"];
-        };
-      };
-      /** @description Bad Request */
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Not Found */
-      404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
-      408: components["responses"]["ApiError408"];
-      /** @description Conflict */
-      409: components["responses"]["ApiError409"];
-      /** @description Gone */
-      410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
-      413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
-      415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
-      426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
-      502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
   create_lead_api_leads_post: {
     parameters: {
       query?: never | undefined;
@@ -33491,69 +33270,6 @@ export interface operations {
       429: components["responses"]["ApiError429"];
       /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
-  cancel_monitor_api_monitor_cancel_post: {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["MonitorId"];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["MonitorActionResult"];
-        };
-      };
-      /** @description Bad Request */
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
-      408: components["responses"]["ApiError408"];
-      /** @description Conflict */
-      409: components["responses"]["ApiError409"];
-      /** @description Gone */
-      410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
-      413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
-      415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
-      426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
-      502: components["responses"]["ApiError502"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
@@ -35091,140 +34807,6 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
-  plan_api_plan_get: {
-    parameters: {
-      query?:
-        | {
-            agent?: string | undefined;
-          }
-        | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    requestBody?: never | undefined;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          ETag: components["headers"]["ETag"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["PlanView"];
-        };
-      };
-      /** @description Not Modified */
-      304: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          ETag: components["headers"]["ETag"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content?: never | undefined;
-      };
-      /** @description Bad Request */
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
-  save_plan_api_plan_post: {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["PlanBody"];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["PlanView"];
-        };
-      };
-      /** @description Bad Request */
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
-      408: components["responses"]["ApiError408"];
-      /** @description Conflict */
-      409: components["responses"]["ApiError409"];
-      /** @description Gone */
-      410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
-      413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
-      415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
-      426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
-      502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
   processes_api_processes_get: {
     parameters: {
       query: {
@@ -35945,55 +35527,6 @@ export interface operations {
           "application/json": components["schemas"]["ProjectDeleteErrorResponse"];
         };
       };
-    };
-  };
-  questions_api_questions_get: {
-    parameters: {
-      query?:
-        | {
-            agent?: string | undefined;
-          }
-        | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    requestBody?: never | undefined;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["QuestionHistory"];
-        };
-      };
-      /** @description Bad Request */
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
     };
   };
   defer_question_api_questions_defer_post: {
@@ -38036,71 +37569,6 @@ export interface operations {
       429: components["responses"]["ApiError429"];
       /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
-  cancel_tool_request_api_tool_requests_cancel_post: {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["ToolRequestCancelBody"];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json":
-            | components["schemas"]["RootModel_Annotated_Union_ToolRequestRecordResponse__AmbiguousToolRequestResponse__MissingToolRequestResponse__MovedToolRequestResponse___FieldInfo_annotation_NoneType__required_True__discriminator__stage____"]
-            | components["schemas"]["ToolRequestList"];
-        };
-      };
-      /** @description Bad Request */
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
-      408: components["responses"]["ApiError408"];
-      /** @description Conflict */
-      409: components["responses"]["ApiError409"];
-      /** @description Gone */
-      410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
-      413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
-      415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
-      426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
-      502: components["responses"]["ApiError502"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };

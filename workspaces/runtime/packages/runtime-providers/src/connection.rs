@@ -203,15 +203,6 @@ impl SessionState {
         Ok((state, actions))
     }
 
-    pub fn track_existing_request(
-        &mut self,
-        id: RequestId,
-        method: Method,
-        thread_id: Option<String>,
-    ) -> Result<RequestTicket, SessionError> {
-        self.track_existing_request_until(id, method, thread_id, u64::MAX)
-    }
-
     /// Restore the original deadline and uncertainty, without restarting a timer.
     pub fn restore_request(
         &mut self,

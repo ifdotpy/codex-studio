@@ -2,7 +2,7 @@ import { RequestStatus } from "../../generated/api";
 import type { components } from "../../generated/api";
 import type { Message } from "../../types";
 
-/** One row of `GET /api/questions`, owned by the server's QuestionHistory contract. */
+/** One synchronized question-history row, owned by the server's QuestionHistory contract. */
 export type QuestionHistoryEntry = components["schemas"]["AgentRequest"];
 type RequestDto = components["schemas"]["RequestEntityDto"];
 

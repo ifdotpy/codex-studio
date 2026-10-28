@@ -172,16 +172,6 @@ pub async fn prepare_safety_retry(
     pipeline::prepare_safety_retry(store, resources, request).await
 }
 
-pub async fn prepare_turn(
-    store: Arc<RuntimeStore>,
-    resources: &PreparationResources,
-    intent: &TurnIntent,
-    generation: u64,
-) -> Result<PreparedTurn, WorkerError> {
-    pipeline::prepare(store, resources, intent, Method::TurnStart, generation)
-        .await
-        .map(PreparedTurn)
-}
 /// Prepare with an identity supplied by the account-session owner. This keeps
 /// transport receipts tied to the same connection the caller will submit on.
 pub async fn prepare_turn_with_connection_id(

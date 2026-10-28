@@ -118,12 +118,6 @@ pub(crate) struct ManagedToolPortsConfig {
         Option<std::sync::Arc<crate::account_worker::preparation::PreparationResources>>,
 }
 
-/// This is deliberately pure: journal bookkeeping may call it repeatedly.
-pub fn is_callback(frame: &Frame) -> bool {
-    matches!(frame, Frame::Request(_))
-        || matches!(frame, Frame::UnknownMethod(request) if request.fields.contains_key("id"))
-}
-
 /// The caller runs this synchronous service on its blocking store bridge, and
 /// submits Answer only after this call commits. Pending never waits for a human.
 pub async fn dispatch(

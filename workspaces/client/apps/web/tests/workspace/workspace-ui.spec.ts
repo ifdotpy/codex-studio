@@ -193,14 +193,6 @@ test("workspace ui", async ({ page: testPage }) => {
         .count(),
       0,
     );
-    const legacyPlan = await post("/api/plan", {
-      agent: lead.id,
-      text: "Legacy saved plan remains in storage.",
-      version: 0,
-    });
-    await drawer.getByRole("button", { name: "Refresh workspace" }).click();
-    await drawer.getByText("This agent has not reported a plan.").waitFor();
-    assert.equal(await drawer.getByText(legacyPlan.text).count(), 0);
     let planAgent: TestAgent | undefined;
     await poll(async () => {
       planAgent = required(
@@ -224,12 +216,6 @@ test("workspace ui", async ({ page: testPage }) => {
         },
       }) + "\n",
     );
-    await poll(
-      async () =>
-        (await get("/api/plan", "?agent=" + lead.id)).native?.plan?.length ===
-        2,
-      "agent plan persisted",
-    );
     await drawer.getByRole("button", { name: "Refresh workspace" }).click();
     await drawer.getByText("Inspect evidence", { exact: true }).waitFor();
     await drawer.getByText("Accept the release", { exact: true }).waitFor();
@@ -247,9 +233,6 @@ test("workspace ui", async ({ page: testPage }) => {
         .getAttribute("data-chat"),
       lead.id,
     );
-    const unchangedPlan = await get("/api/plan", "?agent=" + lead.id);
-    assert.equal(unchangedPlan.text, legacyPlan.text);
-    assert.equal(unchangedPlan.version, legacyPlan.version);
     await page
       .getByRole("button", { name: "Chat actions", exact: true })
       .click();

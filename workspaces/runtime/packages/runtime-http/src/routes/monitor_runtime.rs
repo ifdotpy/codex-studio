@@ -21,7 +21,6 @@ use studio_runtime_services::{
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        post("/api/monitor/cancel", OperationStatus::Implemented, cancel),
         post("/api/monitor/input", OperationStatus::Implemented, input),
         post(
             "/api/monitor/restart",
@@ -77,45 +76,6 @@ async fn restart(
     .await?;
     runtime.wake_tick();
     Ok(Json(value))
-}
-
-async fn cancel(
-    State(state): State<HttpState>,
-    runtime: Option<Extension<Arc<MonitorRuntime>>>,
-    ApiJson(body): ApiJson<crate::generated::MonitorId>,
-) -> Result<Json<Value>, ApiError> {
-    if let Some(Extension(runtime)) = runtime {
-        let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let id = body.id;
-        let now = event_write::unix_time().map_err(|_| ApiError::internal())?;
-        let result = super::sync_delta::write_external_async(
-            store,
-            move || async move { runtime.cancel(&id, None, now).await },
-            error,
-        )
-        .await?;
-        return Ok(Json(result));
-    }
-    let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let result = super::sync_delta::write(
-        store,
-        move |tx| {
-            let result = monitor_runtime::cancel_in_transaction(
-                tx,
-                &body.id,
-                None,
-                event_write::unix_time()?,
-            )?;
-            serde_json::from_value::<crate::generated::MonitorActionResult>(result)
-                .and_then(serde_json::to_value)
-                .map_err(studio_runtime_store::StoreError::from)
-                .map_err(MonitorError::from)
-        },
-        error,
-    )
-    .await?;
-    state.event_wake.notify_one();
-    Ok(Json(result))
 }
 
 #[derive(serde::Deserialize)]

@@ -282,30 +282,6 @@ pub(crate) async fn execute_prepared(
         .await
 }
 
-/// Archive a worker after its accepted result has been merged and verified on
-/// main by the work acceptance service. The caller owns that repository check;
-/// this function performs the shared authorized lifecycle transaction.
-pub async fn archive_accepted_result(
-    store: std::sync::Arc<RuntimeStore>,
-    actor: &str,
-    epoch: i64,
-    target: &str,
-    now: f64,
-) -> Result<Value, ManagementError> {
-    execute(
-        std::sync::Arc::clone(&store),
-        &Action::Archive {
-            actor: actor.to_owned(),
-            epoch,
-            target: target.to_owned(),
-            reason: "Accepted task result is on main".to_owned(),
-            unassign_work: false,
-        },
-        now,
-    )
-    .await
-}
-
 pub fn execute_in_transaction(
     transaction: &Transaction<'_>,
     action: &Action,

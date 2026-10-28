@@ -1,4 +1,4 @@
-//! Atomic plan and annotation writes with durable scheduler events.
+//! Atomic annotation writes with durable scheduler events.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -53,15 +53,6 @@ pub enum EventWriteError {
 }
 
 #[derive(Clone, Debug)]
-pub struct PlanWrite {
-    pub agent_id: String,
-    pub request_id: Option<String>,
-    pub expected_version: i64,
-    pub text: String,
-    pub signature: String,
-}
-
-#[derive(Clone, Debug)]
 pub struct AnnotationWrite {
     pub agent_id: String,
     pub id: Option<String>,
@@ -76,99 +67,6 @@ pub struct AnnotationWrite {
 pub struct WriteResult {
     pub record: Value,
     pub event_inserted: bool,
-}
-
-pub fn save_plan(
-    connection: &Transaction<'_>,
-    input: PlanWrite,
-) -> Result<WriteResult, EventWriteError> {
-    let agent = checked_agent(connection, &input.agent_id)?;
-    refuse_remote(&agent)?;
-    let text = python_strip(&input.text).to_owned();
-    let requested_version = input.expected_version;
-    let version = requested_version + 1;
-    let event_id = format!("plan:{}:{version}", input.agent_id);
-    let receipt_id = input
-        .request_id
-        .as_deref()
-        .filter(|value| !value.is_empty())
-        .map(|value| format!("plan-request:{value}"))
-        .unwrap_or_else(|| event_id.clone());
-    if let Some(receipt) = EventWriteRepository::receipt(connection, &receipt_id)? {
-        if receipt.signature != input.signature {
-            return Err(EventWriteError::Conflict(
-                "This request id has different content",
-            ));
-        }
-        let saved: Value = serde_json::from_str(&receipt.result)
-            .map_err(|_| invalid_stored("runtime_operation_receipts", &receipt_id))?;
-        EventWriteRepository::validate_plan(connection, &input.agent_id, &saved)
-            .map_err(|_| invalid_stored("runtime_plans", &input.agent_id))?;
-        return Ok(WriteResult {
-            record: saved,
-            event_inserted: false,
-        });
-    }
-    if EventWriteRepository::event_exists(connection, &event_id)? {
-        return Err(EventWriteError::Conflict(
-            "The plan event identity is already in use",
-        ));
-    }
-    let mut plan = match EventWriteRepository::plan(connection, &input.agent_id)? {
-        Some(value) => {
-            if value.get("id").and_then(Value::as_str) != Some(input.agent_id.as_str()) {
-                return Err(invalid_stored("runtime_plans", &input.agent_id));
-            }
-            let actual = value
-                .get("version")
-                .and_then(Value::as_i64)
-                .filter(|value| *value >= 0)
-                .ok_or_else(|| invalid_stored("runtime_plans", &input.agent_id))?;
-            if actual != requested_version {
-                return Err(EventWriteError::Conflict(
-                    "The plan changed. Reload before saving",
-                ));
-            }
-            value
-        }
-        None if requested_version == 0 => json!({
-            "id": input.agent_id.clone(),
-            "rootId": agent.root_id.0,
-            "text": "",
-            "version": 0,
-            "updated": null,
-            "steps": []
-        }),
-        None => {
-            return Err(EventWriteError::Conflict(
-                "The plan changed. Reload before saving",
-            ));
-        }
-    };
-    let plan_object = plan
-        .as_object_mut()
-        .ok_or_else(|| invalid_stored("runtime_plans", &input.agent_id))?;
-    plan_object.insert("text".to_owned(), Value::String(text.clone()));
-    plan_object.insert("version".to_owned(), json!(version));
-    plan_object.insert("updated".to_owned(), json!(unix_time()?));
-    let record = plan;
-    let created = unix_time()?;
-    let event_text = format!("The user updated the shared plan:\n{text}");
-    let record_json = serialize(&record)?;
-    EventWriteRepository::put_plan(connection, &input.agent_id, &record)?;
-    let event_inserted = enqueue_event(
-        connection,
-        &agent,
-        event_id,
-        "plan_update",
-        event_text,
-        created,
-    )?;
-    EventWriteRepository::put_receipt(connection, &receipt_id, &input.signature, &record_json)?;
-    Ok(WriteResult {
-        record,
-        event_inserted,
-    })
 }
 
 pub fn annotate(
@@ -698,8 +596,7 @@ pub(crate) fn monotonic_ns() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnnotationWrite, EventWriteError, PlanWrite, annotate, enqueue_event,
-        enqueue_recovery_event, save_plan,
+        AnnotationWrite, EventWriteError, annotate, enqueue_event, enqueue_recovery_event,
     };
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
@@ -846,40 +743,6 @@ mod tests {
         .expect("invalid moment refused");
     }
 
-    fn plan_input(version: i64, text: &str, signature: &str) -> PlanWrite {
-        PlanWrite {
-            agent_id: "a".into(),
-            request_id: None,
-            expected_version: version,
-            text: text.into(),
-            signature: signature.into(),
-        }
-    }
-
-    #[test]
-    fn plan_write_replays_identically_and_refuses_conflicting_replay() {
-        let mut connection = database();
-        let first = with_transaction(&mut connection, |transaction| {
-            save_plan(transaction, plan_input(0, "hello", "one"))
-        })
-        .expect("plan saves");
-        let before_replay = counts(&connection);
-        let replay = with_transaction(&mut connection, |transaction| {
-            save_plan(transaction, plan_input(0, "hello", "one"))
-        })
-        .expect("same plan identity replays");
-        assert_eq!(first.record, replay.record);
-        assert!(!replay.event_inserted);
-        assert_eq!(counts(&connection), before_replay);
-        assert!(matches!(
-            with_transaction(&mut connection, |transaction| {
-                save_plan(transaction, plan_input(0, "different", "two"))
-            }),
-            Err(EventWriteError::Conflict(_))
-        ));
-        assert_eq!(counts(&connection), before_replay);
-    }
-
     #[test]
     fn recovery_pending_event_is_stored_without_queue_or_timing_metadata() {
         let mut connection = database();
@@ -920,19 +783,6 @@ mod tests {
             .expect("agent reads")
             .expect("agent exists");
         assert_eq!(persisted_agent.status, AgentStatus::Idle);
-    }
-
-    #[test]
-    fn plan_version_refusal_leaves_every_table_unchanged() {
-        let mut connection = database();
-        let before = counts(&connection);
-        assert!(matches!(
-            with_transaction(&mut connection, |transaction| {
-                save_plan(transaction, plan_input(2, "wrong version", "x"))
-            }),
-            Err(EventWriteError::Conflict(_))
-        ));
-        assert_eq!(counts(&connection), before);
     }
 
     #[test]
@@ -1026,9 +876,9 @@ mod tests {
     }
 
     #[test]
-    fn active_event_rule_does_not_block_plan_or_annotation_writes() {
-        // Python enqueues plan_update and user events through Runtime.enqueue,
-        // whose rule hook matches only the rule event names; neither kind is one.
+    fn active_event_rule_does_not_block_annotation_writes() {
+        // Python enqueues user events through Runtime.enqueue,
+        // whose rule hook matches only rule event names; user events are not one.
         let mut connection = database();
         let rule = r#"{"id":"r-event","agent":"a","status":"active","kind":"event","event":"worker_completed"}"#;
         connection
@@ -1037,11 +887,6 @@ mod tests {
                 ["r-event", rule],
             )
             .expect("event rule inserts");
-        let plan = with_transaction(&mut connection, |transaction| {
-            save_plan(transaction, plan_input(0, "allowed", "sig"))
-        })
-        .expect("an active event rule does not refuse a plan write");
-        assert!(plan.event_inserted);
         let note = with_transaction(&mut connection, |transaction| {
             annotate(transaction, annotation("rule-note"))
         })
@@ -1061,16 +906,9 @@ mod tests {
     fn invalid_typed_receipt_records_refuse_before_any_write() {
         let mut connection = database();
         connection
-            .execute_batch(
-                "INSERT INTO runtime_operation_receipts VALUES('plan:a:1','s','{}');
-                 INSERT INTO runtime_operation_receipts VALUES('n','sig','{}');",
-            )
+            .execute_batch("INSERT INTO runtime_operation_receipts VALUES('n','sig','{}');")
             .expect("invalid receipts insert");
         let before = counts(&connection);
-        assert!(matches!(
-            with_transaction(&mut connection, |tx| save_plan(tx, plan_input(0, "x", "s"))),
-            Err(EventWriteError::InvalidStoredObject { .. })
-        ));
         assert!(matches!(
             with_transaction(&mut connection, |tx| annotate(tx, annotation("n"))),
             Err(EventWriteError::InvalidStoredObject { .. })
@@ -1083,16 +921,12 @@ mod tests {
         let mut connection = database();
         connection.execute_batch("CREATE TRIGGER fail_event BEFORE INSERT ON runtime_events BEGIN SELECT RAISE(ABORT,'injected'); END;").expect("failure trigger installs");
         let before = counts(&connection);
-        assert!(
-            with_transaction(&mut connection, |tx| save_plan(tx, plan_input(0, "x", "s"))).is_err()
-        );
-        assert_eq!(counts(&connection), before);
         assert!(with_transaction(&mut connection, |tx| annotate(tx, annotation("n"))).is_err());
         assert_eq!(counts(&connection), before);
     }
 
     #[test]
-    fn remote_agent_refuses_both_writes_without_changes() {
+    fn remote_agent_refuses_annotation_without_changes() {
         let mut connection = database();
         let mut agent = AgentRepository::get(&connection, &AgentId::from("a"))
             .expect("agent read")
@@ -1103,10 +937,6 @@ mod tests {
         );
         AgentRepository::put(&connection, &agent).expect("remote fixture writes");
         let before = counts(&connection);
-        assert!(matches!(
-            with_transaction(&mut connection, |tx| save_plan(tx, plan_input(0, "x", "s"))),
-            Err(EventWriteError::RemoteEventsUnavailable)
-        ));
         assert!(matches!(
             with_transaction(&mut connection, |tx| annotate(tx, annotation("n"))),
             Err(EventWriteError::RemoteEventsUnavailable)

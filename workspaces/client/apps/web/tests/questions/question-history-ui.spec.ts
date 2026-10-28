@@ -1,13 +1,6 @@
 import { required } from "../messages/helpers.ts";
-import { responseJson } from "../messages/helpers.ts";
-import type { GetResult } from "../../src/apiTypes.ts";
 import type { Page } from "@playwright/test";
-import {
-  readTestState,
-  test,
-  spawnFixture as spawn,
-  rustUiFixture,
-} from "../playwright.ts";
+import { test, spawnFixture as spawn, rustUiFixture } from "../playwright.ts";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -36,10 +29,6 @@ test("Question history", async ({ context }) => {
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await readTestState(origin);
-    const lead = state.runtime.agents.find(
-      (agent) => agent.name === "Release lead",
-    )!;
     page = await context.newPage();
     await page.setViewportSize({ width: 1280, height: 900 });
     page.setDefaultTimeout(10000);
@@ -120,11 +109,6 @@ test("Question history", async ({ context }) => {
       false,
       "deferral removes the reminder card",
     );
-    let history = await responseJson<GetResult<"/api/questions">>(
-      await fetch(origin + "/api/questions?agent=" + lead.id),
-    );
-    assert.equal(required(history.items[0]).status, "pending");
-    assert.equal(required(history.items[0]).deferred, true);
     await page.reload();
     await selectLead();
     await deferred.locator("summary").click();
@@ -162,18 +146,6 @@ test("Question history", async ({ context }) => {
       );
     };
     await absent();
-    history = await responseJson<GetResult<"/api/questions">>(
-      await fetch(origin + "/api/questions?agent=" + lead.id),
-    );
-    assert.equal(
-      (
-        required(required(history.items[0]).answerHistory![0])
-          .answer as string[]
-      )[0],
-      "Only the runtime folder",
-    );
-    assert.equal(required(history.items[0]).answeredBy, "user");
-    assert.equal(required(history.items[0]).deferred, false);
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Other project" })

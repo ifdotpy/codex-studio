@@ -87,8 +87,6 @@ const WORK: &[TableRequirement] = &[TableRequirement {
     columns: &["id", "record"],
 }];
 
-pub type SubmittedStartRequest = (String, i64, String, String, String);
-
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[TABLES[0], TABLES[1]],
     conditional_tables: &[
