@@ -10,16 +10,18 @@ use crate::{
     request_results::ResultEnvelope,
 };
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_providers::Method;
 use studio_runtime_schema::persistence::{
     MigrationStatus, OutboxKind, OutboxStatus, OwnerKind, RequestIdentity,
 };
 use studio_runtime_schema::provider_call_contract::{
-    CommittedAck, ProviderCallIntent, RequestResult as Outcome, RetainedCall,
-    RetainedOutcome as Resolution, RetainedReply, TransportRequest, transport_key,
+    CommittedAck, ConnectionScope, ProviderCallIntent, RequestActor, RequestResult as Outcome,
+    RetainedCall, RetainedOutcome as Resolution, RetainedReply, TransferAuthorization,
+    TransportRequest, transport_key,
 };
+use studio_runtime_schema::queue_command::Field;
 
 pub(super) struct Family;
 pub(super) const SOURCES: &[&str] = &["runtime_operation_receipts"];
@@ -28,14 +30,21 @@ const SELECT: &str = "source.id GLOB 'account-worker:retained:*'";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Submitted {
-    call: Value,
-    #[serde(default, deserialize_with = "present_request")]
-    request: Option<Value>,
+    call: LegacyCall,
+    #[serde(default)]
+    request: Field<TransportRequest<Method>>,
 }
-fn present_request<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<Option<Value>, D::Error> {
-    Value::deserialize(deserializer).map(Some)
+#[derive(Deserialize)]
+struct LegacyCall {
+    #[serde(default)]
+    root_request_id: Field<String>,
+    scope: ConnectionScope,
+    operation: String,
+    actor: Option<RequestActor>,
+    transfer: Option<TransferAuthorization>,
+    deleted_actor_session: Option<String>,
+    method: Method,
+    params: Value,
 }
 
 fn fail(row: &SourceReceipt) -> ReceiptMigrationError {
@@ -46,7 +55,7 @@ fn sibling(
     row: &SourceReceipt,
     base: &str,
     phase: &str,
-) -> Result<Option<(i64, Value)>> {
+) -> Result<Option<(i64, String)>> {
     let id = format!("{base}:{phase}");
     let saved: Option<(i64, String, String)> = tx
         .query_row(
@@ -60,7 +69,7 @@ fn sibling(
             if signature != phase {
                 return Err(fail(row));
             }
-            Ok((rowid, serde_json::from_str(&raw).map_err(|_| fail(row))?))
+            Ok((rowid, raw))
         })
         .transpose()
 }
@@ -106,54 +115,53 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
         };
         return if valid { Ok(()) } else { Err(fail(row)) };
     };
-    let Submitted { mut call, request } =
-        serde_json::from_value::<Submitted>(submitted.1).map_err(|_| fail(row))?;
-    let account = call["scope"]["account"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| fail(row))?
-        .to_owned();
-    let generation = call["scope"]["generation"]
-        .as_u64()
-        .filter(|v| *v <= i64::MAX as u64)
-        .ok_or_else(|| fail(row))?;
-    let operation = call["operation"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| fail(row))?
-        .to_owned();
+    let Submitted { call, request } = serde_json::from_str(&submitted.1).map_err(|_| fail(row))?;
+    let account = call.scope.account.clone();
+    let generation = call.scope.generation;
+    let operation = call.operation.clone();
+    if account.is_empty() || operation.is_empty() || generation > i64::MAX as u64 {
+        return Err(fail(row));
+    }
+    let request = match request {
+        Field::Missing => None,
+        Field::Value(v) => Some(v),
+        Field::Null => return Err(fail(row)),
+    };
     let key = transport_key(&account, &operation);
     if base != format!("account-worker:{key}")
         || request.as_ref().is_some_and(|request| {
-            request["generation"].as_u64() != Some(generation)
-                || request["operation"] != key
-                || request["id"] != key
-                || request["method"] != call["method"]
-                || request["lightweight"].as_bool().is_none()
-                || request["deadline"].as_u64().is_none()
+            request.generation != generation
+                || request.operation != key
+                || request.id
+                    != studio_runtime_schema::provider_input::RequestId::String(key.clone())
+                || request.method != call.method
         })
-        || !call["params"].is_object()
+        || !call.params.is_object()
     {
         return Err(fail(row));
     }
-    let actor = call["actor"]["agent"].as_str().map(str::to_owned);
-    let epoch = call["actor"]["epoch"].as_i64();
-    if actor.is_some() != epoch.is_some() {
-        return Err(fail(row));
-    }
-    let source_root = call
-        .get("root_request_id")
-        .map(|value| value.as_str().map(str::to_owned).ok_or_else(|| fail(row)))
-        .transpose()?;
+    let actor = call.actor.as_ref().map(|actor| actor.agent.clone());
+    let source_root = match call.root_request_id {
+        Field::Missing => None,
+        Field::Value(v) => Some(v),
+        Field::Null => return Err(fail(row)),
+    };
     if let Some(root) = &source_root
         && RequestIdentity::new("provider-call", &[], root, &[]).is_err()
     {
         return Err(fail(row));
     }
-    call["root_request_id"] = json!(source_root.as_deref().unwrap_or_default());
-    call["admitted_request"] = Value::Null;
-    let mut typed_call: ProviderCallIntent<Method, AdmittedRequest> =
-        serde_json::from_value(call.clone()).map_err(|_| fail(row))?;
+    let mut typed_call: ProviderCallIntent<Method, AdmittedRequest> = ProviderCallIntent {
+        root_request_id: source_root.clone().unwrap_or_default(),
+        admitted_request: None,
+        scope: call.scope,
+        operation: call.operation,
+        actor: call.actor,
+        transfer: call.transfer,
+        deleted_actor_session: call.deleted_actor_session,
+        method: call.method,
+        params: call.params,
+    };
     let signature = typed_call.fingerprint(&account, typed_call.method.as_str());
     let result_id = format!("{base}:result");
     let admission = admitted_owner_token(&result_id, &signature, cutover);
@@ -195,15 +203,9 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
             tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.operation.providerRequest',json(?2),'$.operation.rootRequestId',?3) WHERE id=?1 AND json_type(record,'$.operation')='object'",params![monitor,serde_json::to_string(&admission).map_err(|_|fail(row))?,root])?;
         }
     }
-    if let Some(transfer) = call["transfer"].as_object() {
-        let id = transfer
-            .get("transfer_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| fail(row))?;
-        let member = transfer
-            .get("member")
-            .and_then(Value::as_str)
-            .ok_or_else(|| fail(row))?;
+    if let Some(transfer) = &typed_call.transfer {
+        let id = &transfer.transfer_id;
+        let member = &transfer.member;
         let raw: Option<String> = tx
             .query_row(
                 "SELECT record FROM runtime_account_transfers WHERE id=?1",
@@ -214,14 +216,23 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
         let mut value: Value =
             serde_json::from_str(&raw.ok_or_else(|| fail(row))?).map_err(|_| fail(row))?;
         let member = value["members"].get_mut(member).ok_or_else(|| fail(row))?;
-        let authority = json!({"rootRequestId":root,"admittedRequest":admission});
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Authority<'a> {
+            root_request_id: &'a str,
+            admitted_request: &'a AdmittedRequest,
+        }
+        let authority = crate::projection_value(&Authority {
+            root_request_id: &root,
+            admitted_request: &admission,
+        });
         if member["providerIntent"]["operation"] == operation
-            && member["providerIntent"]["method"] == call["method"]
-            && member["providerIntent"]["params"] == call["params"]
+            && member["providerIntent"]["method"] == typed_call.method.as_str()
+            && member["providerIntent"]["params"] == typed_call.params
         {
             member["providerAdmission"] = authority;
-        } else if member["providerReadIntents"][&operation]["method"] == call["method"]
-            && member["providerReadIntents"][&operation]["params"] == call["params"]
+        } else if member["providerReadIntents"][&operation]["method"] == typed_call.method.as_str()
+            && member["providerReadIntents"][&operation]["params"] == typed_call.params
         {
             if member["providerReadAdmissions"].is_null() {
                 member["providerReadAdmissions"] = json!({});
@@ -236,31 +247,33 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
         )?;
     }
     // The imported call carries its final token; no runtime path guesses an old key.
-    call["admitted_request"] = serde_json::to_value(&admission).map_err(|_| fail(row))?;
-    call["root_request_id"] = json!(root);
     typed_call.admitted_request = Some(admission.clone());
     typed_call.root_request_id = root;
     let written = sibling(tx, row, base, "written")?;
     let saved = sibling(tx, row, base, "result")?;
     let typed_transport: Option<TransportRequest<Method>> = match request {
         Some(request) => {
-            let transport = written.as_ref().map_or(&request, |(_, value)| value);
-            if transport["id"] != request["id"]
-                || transport["operation"] != request["operation"]
-                || transport["generation"] != request["generation"]
+            let transport = written
+                .as_ref()
+                .map(|(_, raw)| {
+                    serde_json::from_str::<TransportRequest<Method>>(raw).map_err(|_| fail(row))
+                })
+                .transpose()?
+                .unwrap_or_else(|| request.clone());
+            if transport.id != request.id
+                || transport.operation != request.operation
+                || transport.generation != request.generation
             {
                 return Err(fail(row));
             }
-            Some(serde_json::from_value(transport.clone()).map_err(|_| fail(row))?)
+            Some(transport)
         }
         None if written.is_none() && saved.is_none() => None,
         None => return Err(fail(row)),
     };
     let mut outcome = saved
         .as_ref()
-        .map(|(_, value)| {
-            serde_json::from_value::<Resolution>(value.clone()).map_err(|_| fail(row))
-        })
+        .map(|(_, raw)| serde_json::from_str::<Resolution>(raw).map_err(|_| fail(row)))
         .transpose()?;
     let vm = if let Some(agent) = &actor {
         let record: Option<String> = tx
@@ -363,12 +376,12 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
             &signature,
             &ResultEnvelope {
                 actor: actor.clone(),
-                reply,
+                reply: &reply,
                 references: vec![],
             },
             cutover,
         )?;
-        if call["method"] == "thread/start"
+        if reply.call.method == Method::ThreadStart
             && let Outcome::Reply(value) = result
             && let Some(thread) = value["thread"]["id"].as_str()
             && let Some(agent) = &actor
@@ -385,8 +398,13 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
                 if record["threadProvenance"].is_null() {
                     record["threadProvenance"] = json!({});
                 }
-                let proof =
-                    json!({"scope":call["scope"],"actor":call["actor"],"operation":operation});
+                let proof = crate::projection_value(
+                    &studio_runtime_schema::provider_call_contract::ThreadProvenance {
+                        scope: reply.call.scope.clone(),
+                        actor: reply.call.actor.clone().ok_or_else(|| fail(row))?,
+                        operation: operation.clone(),
+                    },
+                );
                 if record["threadProvenance"]
                     .get(thread)
                     .is_some_and(|old| old != &proof)
@@ -414,7 +432,12 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
             written: written.is_some(),
             outcome,
         };
-        let payload = json!({"family":"retained","payload":retained});
+        #[derive(Serialize)]
+        #[serde(tag = "family", content = "payload", rename_all = "snake_case")]
+        enum ProviderPayload {
+            Retained(RetainedCall<Method, AdmittedRequest>),
+        }
+        let payload = ProviderPayload::Retained(retained);
         Outbox::put(
             tx,
             &OutboxRow {
