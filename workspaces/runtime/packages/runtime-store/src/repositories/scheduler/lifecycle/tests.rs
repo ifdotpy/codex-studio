@@ -94,6 +94,81 @@ fn with<T>(connection: &mut Connection, change: impl FnOnce(&Transaction<'_>) ->
 }
 
 #[test]
+fn same_thread_host_and_vm_attempts_resolve_only_for_the_exact_actor() {
+    let connection = database();
+    for (id, mode) in [("host", "native"), ("guest", "vm")] {
+        put(
+            &connection,
+            json!({"id":id,"rootId":id,"status":"running","executionMode":mode,
+            "autoWake":true,"inFlight":true,"turnEpoch":0,"turnId":"turn",
+            "startAttempt":{"id":format!("attempt-{id}"),"epoch":0,"events":[],"submitted":true,
+                "accountKey":ACCOUNT,"threadId":"thread","turnId":"turn","connectionGeneration":7,"requestTicket":format!("ticket-{id}")}}),
+        );
+    }
+    assert_eq!(
+        SchedulerRepository::find_attempt_for_thread(
+            &connection,
+            ACCOUNT,
+            7,
+            "thread",
+            Some("turn")
+        )
+        .expect("unscoped lookup"),
+        (true, None)
+    );
+    for id in ["host", "guest"] {
+        let attempt = SchedulerRepository::find_attempt_for_actor(
+            &connection,
+            id,
+            ACCOUNT,
+            7,
+            "thread",
+            Some("turn"),
+        )
+        .expect("actor-scoped lookup")
+        .expect("own attempt");
+        assert_eq!(attempt.agent_id, id);
+        assert_eq!(attempt.attempt_id, format!("attempt-{id}"));
+        assert!(
+            SchedulerRepository::find_attempt_for_actor(
+                &connection,
+                id,
+                ACCOUNT,
+                8,
+                "thread",
+                Some("turn")
+            )
+            .expect("generation fence")
+            .is_none()
+        );
+        assert!(
+            SchedulerRepository::find_attempt_for_actor(
+                &connection,
+                id,
+                ACCOUNT,
+                7,
+                "thread",
+                Some("other-turn")
+            )
+            .expect("turn fence")
+            .is_none()
+        );
+    }
+    assert!(
+        SchedulerRepository::find_attempt_for_actor(
+            &connection,
+            "other",
+            ACCOUNT,
+            7,
+            "thread",
+            None
+        )
+        .expect("actor fence")
+        .is_none()
+    );
+}
+
+#[test]
 fn terminal_error_records_keep_unknown_extensions_and_only_known_policy_blocks() {
     for (info, blocked) in [
         (json!("misalignmentPolicyViolation"), true),
