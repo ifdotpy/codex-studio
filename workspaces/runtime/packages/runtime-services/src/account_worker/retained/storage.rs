@@ -1,32 +1,31 @@
+use studio_runtime_schema::provider_call_contract as contract;
+pub(in crate::account_worker) type TransportRequest = contract::TransportRequest<Method>;
+pub(in crate::account_worker) type RetainedCall =
+    contract::RetainedCall<Method, AdmittedRequest, ConnectionScope>;
+type RetainedReply = contract::RetainedReply<Method, AdmittedRequest, ConnectionScope>;
+type ThreadProvenance = contract::ThreadProvenance<ConnectionScope>;
 use super::*;
+use contract::{CommittedAck, RetainedOutcome};
 use rusqlite::OptionalExtension;
 use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
 use studio_runtime_store::{
     outbox::{Outbox, OutboxRow},
-    request_results::{AdmittedRequest, RequestResults, ResultEnvelope},
+    request_results::{Admission, AdmittedRequest, RequestResults, ResultEnvelope},
 };
 
 /// The exact prepared transport request. Method stays in the provider enum owner.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(in crate::account_worker) struct TransportRequest {
-    pub id: RequestId,
-    pub generation: u64,
-    pub method: Method,
-    pub operation: String,
-    pub thread: Option<String>,
-    pub lightweight: bool,
-    pub deadline: u64,
-    pub unknown: bool,
-    #[serde(rename = "remoteId")]
-    pub remote_id: Option<u64>,
-}
+
 impl From<&RecoveredRequest> for TransportRequest {
     fn from(request: &RecoveredRequest) -> Self {
         Self::from_request(request)
     }
 }
-impl TransportRequest {
-    pub(in crate::account_worker) fn from_request(request: &RecoveredRequest) -> Self {
+pub(in crate::account_worker) trait TransportRequestExt {
+    fn from_request(request: &RecoveredRequest) -> Self;
+    fn recovered(&self) -> RecoveredRequest;
+}
+impl TransportRequestExt for TransportRequest {
+    fn from_request(request: &RecoveredRequest) -> Self {
         Self {
             id: request.ticket.id.clone(),
             generation: request.ticket.generation,
@@ -39,7 +38,7 @@ impl TransportRequest {
             remote_id: request.remote_id,
         }
     }
-    pub(in crate::account_worker) fn recovered(&self) -> RecoveredRequest {
+    fn recovered(&self) -> RecoveredRequest {
         RecoveredRequest {
             ticket: RequestTicket {
                 id: self.id.clone(),
@@ -56,38 +55,9 @@ impl TransportRequest {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(in crate::account_worker) struct RetainedOutcome {
-    pub result: RequestResult,
-    pub cursor: u64,
-}
-
 /// One obligation, including every unresolved predecessor's exact provenance.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(in crate::account_worker) struct RetainedCall {
-    pub call: Call,
-    pub request: Option<TransportRequest>,
-    pub admitted: AdmittedRequest,
-    pub written: bool,
-    pub outcome: Option<RetainedOutcome>,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(in crate::account_worker) struct CommittedAck {
-    pub stream_id: String,
-    pub generation: u64,
-    pub cursor: u64,
-}
 
 /// Immutable replay needs no historical journal cursor or submitted sibling.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(in crate::account_worker) struct RetainedReply {
-    pub call: Call,
-    pub request: TransportRequest,
-    pub written: bool,
-    pub result: RequestResult,
-    pub ack: CommittedAck,
-}
 
 type RetainedRow = OutboxRow<store::ProviderCall>;
 fn outbox_error(error: studio_runtime_store::outbox::OutboxError) -> WorkerError {
@@ -583,13 +553,6 @@ fn authorize_deleted_voice_stop(
     }))
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(in crate::account_worker) struct ThreadProvenance {
-    pub scope: ConnectionScope,
-    pub actor: RequestActor,
-    pub operation: String,
-}
-
 fn thread_started_for_actor(
     tx: &rusqlite::Transaction<'_>,
     call: &Call,
@@ -660,11 +623,11 @@ fn same_replay_identity(prior: &Call, current: &Call) -> bool {
             .is_some_and(|id| result_id(current).as_ref() == Ok(&id))
 }
 fn result_id(call: &Call) -> Result<String, PortError> {
-    call.admitted_request
-        .as_ref()
-        .filter(|token| token.signature() == call.signature())
-        .map(|token| token.id().to_owned())
-        .ok_or(PortError::Unknown)
+    match &call.admitted_request {
+        Some(token) if token.signature() == call.signature() => Ok(token.id().to_owned()),
+        Some(_) => Err(PortError::Identity),
+        None => Ok(call.identity()?.id().to_owned()),
+    }
 }
 
 fn saved_reply(
@@ -707,7 +670,23 @@ pub(super) fn replay_recorded(
         Err(error) => return Err(result_error(error)),
     };
     let Some(saved) = saved else {
-        return Ok(Err(PortError::Unknown));
+        if call.admitted_request.is_some() {
+            return Ok(Err(PortError::Unknown));
+        }
+        let identity = match call.identity() {
+            Ok(identity) => identity,
+            Err(error) => return Ok(Err(error)),
+        };
+        if identity
+            .validate(
+                now_ms(),
+                RequestResults::expired_before_ms(tx).map_err(result_error)?,
+            )
+            .is_err()
+        {
+            return Ok(Err(PortError::Invalid));
+        }
+        return Ok(Ok(Replay::Ready));
     };
     let saved: ResultEnvelope<RetainedReply> =
         serde_json::from_str(&saved.result).map_err(StoreError::from)?;
@@ -837,8 +816,26 @@ pub(super) async fn submitted(
         if !authorize(tx, &call)? {
             return Ok(Err(PortError::Identity));
         }
-        let Some(mut row) = row(tx, &call.key())? else {
-            return Ok(Err(PortError::Unknown));
+        let mut row = if let Some(row) = row(tx, &call.key())? {
+            row
+        } else {
+            if call.admitted_request.is_some() {
+                return Ok(Err(PortError::Unknown));
+            }
+            let identity = match call.identity() {
+                Ok(identity) => identity,
+                Err(error) => return Ok(Err(error)),
+            };
+            let admitted = match RequestResults::admit(tx, &identity, &call.signature(), now_ms())
+                .map_err(result_error)?
+            {
+                Admission::Fresh(admitted) => admitted,
+                Admission::Replay(_) => return Ok(Err(PortError::Unknown)),
+            };
+            let mut reserved = call.clone();
+            reserved.admitted_request = Some(admitted.clone());
+            reserve(tx, reserved, admitted)?;
+            row(tx, &call.key())?.ok_or(WorkerError::Capacity)?
         };
         let mut prior = retained(&row)?.clone();
         if !same_replay_identity(&prior.call, &call) {

@@ -4,23 +4,10 @@ use super::*;
 use crate::recovery_history::ConnectionScope;
 use std::time::Instant;
 use studio_runtime_providers::RequestTicket;
-#[cfg(test)]
 use studio_runtime_schema::persistence::RequestIdentity;
 use studio_runtime_store::request_results::AdmittedRequest;
 use tokio::sync::oneshot;
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RequestActor {
-    pub agent: String,
-    pub epoch: i64,
-}
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct TransferAuthorization {
-    pub transfer_id: String,
-    pub member: String,
-    pub source_account: String,
-    pub thread_id: String,
-}
 #[derive(Clone)]
 pub struct SessionRequest {
     /// The owner persists this root before making the provider obligation.
@@ -53,29 +40,65 @@ pub(crate) fn has_transport_evidence(
     Ok(storage::recorded_operation(tx, &key, admitted.map(AdmittedRequest::id))?.is_some())
 }
 
+macro_rules! provider_reads {
+    ($($method:ident),+ $(,)?)=>{
+        /// The closed owner of side-effect-free provider reads.
+        #[derive(Clone,Copy,Debug,PartialEq,Eq)]
+        pub enum ProviderReadMethod {$($method),+}
+        impl ProviderReadMethod {
+            pub const ALL:&'static [Self]=&[$(Self::$method),+];
+            pub fn method(self)->Method {match self {$(Self::$method=>Method::$method),+}}
+            pub fn from_method(method:Method)->Option<Self> {Self::ALL.iter().copied().find(|read|read.method()==method)}
+        }
+    };
+}
+provider_reads! {
+    ConfigRead,
+    ClaudeDiagnostics,
+    ThreadLoadedList,
+    ModelList,
+    AccountRead,
+    AccountRateLimitsRead,
+    ThreadRead,
+    ThreadTurnsList,
+    ThreadItemsList,
+    ThreadList,
+    ThreadBackgroundTerminalsList,
+    ThreadQueueList,
+    ClaudeState,
+    ClaudeRepairReport,
+    ClaudeFileBackups,
+    ClaudeActivity,
+    ClaudeMoveVersions,
+    McpServerStatusList,
+    SkillsList,
+    OperationStatus,
+    ClaudeCommands,
+    ClaudeMoveIdentity,
+    ClaudeMovePreflight,
+    ClaudeMoveProof,
+    CurrentTimeRead,
+    ProviderList,
+    SecretsList,
+    Health,
+    Info,
+    LayrHealth,
+    Status,
+    ResponseStatus,
+    EventRead,
+    ShareStatus,
+    SyncMacHashes,
+    SyncMacHead,
+    SyncMacRead,
+    SyncMacWorktree,
+    VaultStatus
+}
 impl SessionRequest {
-    /// Configuration reads have no side effects and can be repeated after a lost
-    /// reply. Diagnostics probes are also read-only. Neither needs a durable
-    /// receipt or a wait for an unrelated journal checkpoint.
     pub(super) fn is_volatile_read(&self) -> bool {
-        self.method == Method::ConfigRead
-            || (self.operation.starts_with(DIAGNOSTICS_OPERATION_PREFIX)
-                && self.actor.is_none()
-                && self.transfer.is_none()
-                && matches!(
-                    self.method,
-                    Method::ClaudeDiagnostics | Method::ThreadLoadedList
-                ))
+        ProviderReadMethod::from_method(self.method).is_some()
     }
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum RequestResult {
-    Reply(Value),
-    Rejected(Value),
-    NotSent,
-    Unknown,
-}
 #[derive(Clone, Debug)]
 pub struct SessionReceipt {
     pub scope: ConnectionScope,
@@ -1090,19 +1113,17 @@ fn valid_voice_speech(request: &SessionRequest) -> bool {
                 && params.get("text").and_then(Value::as_str).is_some()
         })
 }
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct ProviderCallIntent {
-    pub root_request_id: String,
-    pub admitted_request: Option<AdmittedRequest>,
-    pub scope: ConnectionScope,
-    pub operation: String,
-    pub actor: Option<RequestActor>,
-    pub transfer: Option<TransferAuthorization>,
-    pub deleted_actor_session: Option<String>,
-    pub method: Method,
-    pub params: Value,
-}
+
+pub use studio_runtime_schema::provider_call_contract::{
+    RequestActor, RequestResult, TransferAuthorization,
+};
+pub type ProviderCallIntent = studio_runtime_schema::provider_call_contract::ProviderCallIntent<
+    Method,
+    AdmittedRequest,
+    ConnectionScope,
+>;
 pub(in crate::account_worker) type Call = ProviderCallIntent;
+use storage::TransportRequestExt;
 
 /// Reserve a provider obligation in the transaction admitting its owning work.
 /// Repeating this call never turns submitted or unknown work back into sendable work.
@@ -1363,24 +1384,35 @@ pub async fn monitor_request_generation(
         .await
 }
 
-impl Call {
-    fn signature(&self) -> String {
-        crate::event_write::request_signature(&json!((
-            &self.scope.account,
-            &self.operation,
-            &self.actor,
-            &self.transfer,
-            &self.deleted_actor_session,
-            &self.method,
-            &self.params
-        )))
+trait CallIdentity {
+    fn identity(&self) -> Result<RequestIdentity, PortError>;
+    fn signature(&self) -> String;
+    fn operation_key(account: &str, operation: &str) -> String;
+    fn key(&self) -> String;
+    fn receipt(&self, ticket: RequestTicket, result: RequestResult) -> SessionReceipt;
+}
+impl CallIdentity for Call {
+    fn identity(&self) -> Result<RequestIdentity, PortError> {
+        let actor = self.actor.as_ref().map_or("", |actor| actor.agent.as_str());
+        let epoch = self
+            .actor
+            .as_ref()
+            .map(|actor| actor.epoch.to_string())
+            .unwrap_or_default();
+        RequestIdentity::new(
+            "provider-call",
+            &[&self.scope.account, actor, &epoch],
+            &self.root_request_id,
+            &[&self.operation],
+        )
+        .map_err(|_| PortError::Invalid)
     }
 
+    fn signature(&self) -> String {
+        self.fingerprint(&self.scope.account, self.method.as_str())
+    }
     fn operation_key(account: &str, operation: &str) -> String {
-        format!(
-            "retained:{account}:{}",
-            studio_runtime_store::sha256_hex(operation.as_bytes())
-        )
+        studio_runtime_schema::provider_call_contract::transport_key(account, operation)
     }
     fn key(&self) -> String {
         Self::operation_key(&self.scope.account, &self.operation)
