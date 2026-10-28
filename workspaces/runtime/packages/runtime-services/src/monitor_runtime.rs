@@ -88,7 +88,9 @@ pub async fn recover_on_startup(
                     | error @ studio_runtime_store::StoreError::WriterActorInitialization(_)
                     | error @ studio_runtime_store::StoreError::WriterActorControl(_)
                     | error @ studio_runtime_store::StoreError::CommitActorOutcomeUnknown(_)
-                    | error @ studio_runtime_store::StoreError::ReadTaskFailed => {
+                    | error @ studio_runtime_store::StoreError::ReadTaskFailed
+                    | error @ studio_runtime_store::StoreError::RequestResult(_)
+                    | error @ studio_runtime_store::StoreError::Outbox(_) => {
                         return Err(MonitorError::Store(error));
                     }
                 }
