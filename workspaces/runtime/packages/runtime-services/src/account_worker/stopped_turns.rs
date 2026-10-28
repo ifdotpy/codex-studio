@@ -53,8 +53,101 @@ enum Owner {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct StopRoot {
-    root_request_id: String,
+struct StoredAdmissions {
+    admission: Option<Box<serde_json::value::RawValue>>,
+    terminals_admission: Option<Box<serde_json::value::RawValue>>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredStop {
+    start_attempt: StoredStopAttempt,
+}
+
+#[derive(serde::Deserialize)]
+struct StoredStopAttempt {
+    interrupt: StoredAdmissions,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredDisconnect {
+    disconnect_recovery: StoredDisconnectRecovery,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredDisconnectRecovery {
+    stop_interrupt: StoredAdmissions,
+}
+
+fn stored_admission(
+    raw: &str,
+    owner: &Owner,
+    field: &str,
+    agent: &str,
+) -> Result<studio_runtime_store::request_results::AdmittedRequest, studio_runtime_store::StoreError>
+{
+    let invalid = || studio_runtime_store::StoreError::InvalidStoredObject {
+        table: "runtime_agents",
+        id: agent.to_owned(),
+    };
+    let admissions = match owner {
+        Owner::Disconnect { .. } => {
+            serde_json::from_str::<StoredDisconnect>(raw)
+                .map_err(|_| invalid())?
+                .disconnect_recovery
+                .stop_interrupt
+        }
+        Owner::Stop { .. } => {
+            serde_json::from_str::<StoredStop>(raw)
+                .map_err(|_| invalid())?
+                .start_attempt
+                .interrupt
+        }
+    };
+    let saved = if field == "admission" {
+        admissions.admission
+    } else {
+        admissions.terminals_admission
+    }
+    .ok_or_else(invalid)?;
+    serde_json::from_str(saved.get()).map_err(|_| invalid())
+}
+
+#[cfg(test)]
+mod stored_admission_tests {
+    use super::*;
+
+    #[test]
+    fn reads_exact_saved_tokens_and_rejects_invalid_evidence() {
+        let stop = Owner::Stop {
+            ticket: "interrupt".into(),
+            terminals: "terminals".into(),
+        };
+        let disconnect = Owner::Disconnect {
+            signature: "scope".into(),
+        };
+        let stop_record = r#"{"startAttempt":{"interrupt":{"rootRequestId":"root","admission":{"id":"interrupt-id","signature":"interrupt-sig","created":123},"terminalsAdmission":{"id":"cleanup-id","signature":"cleanup-sig","created":124}}}}"#;
+        let disconnect_record = r#"{"disconnectRecovery":{"stopInterrupt":{"admission":{"id":"interrupt-id","signature":"interrupt-sig","created":123},"terminalsAdmission":{"id":"cleanup-id","signature":"cleanup-sig","created":124}}}}"#;
+        for (raw, owner) in [(stop_record, &stop), (disconnect_record, &disconnect)] {
+            let admission = stored_admission(raw, owner, "admission", "agent").expect("admission");
+            assert_eq!(
+                (admission.id(), admission.signature(), admission.created()),
+                ("interrupt-id", "interrupt-sig", 123)
+            );
+            let cleanup =
+                stored_admission(raw, owner, "terminalsAdmission", "agent").expect("cleanup");
+            assert_eq!(
+                (cleanup.id(), cleanup.signature(), cleanup.created()),
+                ("cleanup-id", "cleanup-sig", 124)
+            );
+            let malformed = raw.replace("\"created\":123", "\"created\":123,\"unexpected\":true");
+            assert!(
+                matches!(stored_admission(&malformed, owner, "admission", "agent"), Err(studio_runtime_store::StoreError::InvalidStoredObject { table: "runtime_agents", id }) if id == "agent")
+            );
+        }
+    }
 }
 
 impl StoppedTurn {
@@ -202,7 +295,8 @@ async fn request(
     let mut intent = super::retained::ProviderCallIntent::from(&request);
     let reserved = store
         .transaction_with(move |tx| {
-            let mut agent = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))?
+            let (mut agent, raw) = studio_runtime_store::Table::<AgentRecord>::new(tx)
+                .get_with_raw(&AgentId::from(actor.agent.as_str()))?
                 .ok_or(super::WorkerError::CallbackUnknown)?;
             if !owner_matches(&agent, &actor, intent.scope.generation) {
                 return Err(super::WorkerError::CallbackUnknown);
@@ -235,15 +329,17 @@ async fn request(
             };
             let root = match &actor.owner {
                 Owner::Disconnect { .. } => execution_root,
-                Owner::Stop { .. } => {
-                    serde_json::from_value::<StopRoot>(pointer.clone())
-                        .map_err(studio_runtime_store::StoreError::from)?
-                        .root_request_id
-                }
+                Owner::Stop { .. } => pointer
+                    .get("rootRequestId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| studio_runtime_store::StoreError::InvalidStoredObject {
+                        table: "runtime_agents",
+                        id: actor.agent.clone(),
+                    })?
+                    .to_owned(),
             };
-            let admitted = if let Some(saved) = pointer.get(field) {
-                serde_json::from_value(saved.clone())
-                    .map_err(studio_runtime_store::StoreError::from)?
+            let admitted = if pointer.get(field).is_some() {
+                stored_admission(&raw, &actor.owner, field, &actor.agent)?
             } else {
                 intent.root_request_id = root.clone();
                 let key = studio_runtime_schema::provider_call_contract::transport_key(
