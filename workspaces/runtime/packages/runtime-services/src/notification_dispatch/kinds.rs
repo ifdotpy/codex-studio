@@ -36,7 +36,28 @@ pub(super) fn apply(
         return Ok(Some(DispatchOutcome::Written));
     }
     if method == "thread/idleCompaction/updated" {
-        crate::idle_compaction::observe(tx, agent, &p["report"])?;
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct StoredEpisode {
+            idle_compaction_episode: crate::idle_compaction::Episode,
+        }
+        let previous = if agent["provider"] == studio_runtime_providers::ProviderKind::Claude.key()
+            && agent.get("idleCompactionEpisode").is_some()
+        {
+            let raw =
+                studio_runtime_store::AgentRepository::get_raw(tx, &AgentId::from(id.as_str()))?
+                    .ok_or_else(|| {
+                        StoreError::SchemaMismatch("missing idle compaction agent".into())
+                    })?;
+            Some(
+                serde_json::from_str::<StoredEpisode>(&raw)
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
+                    .idle_compaction_episode,
+            )
+        } else {
+            None
+        };
+        crate::idle_compaction::observe(tx, agent, &p["report"], previous.as_ref())?;
         persist_agent(tx, &id, agent)?;
         return Ok(Some(DispatchOutcome::Written));
     }

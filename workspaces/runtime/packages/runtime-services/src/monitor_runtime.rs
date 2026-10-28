@@ -619,11 +619,19 @@ pub fn settle_provider_call(
         Err(error) if malformed_monitor_owner(&error) => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    let Some(record) = record else {
+    let Some(_record) = record else {
         return Ok(true);
     };
-    let Ok(operation) = serde_json::from_value::<Operation>(record.value()["operation"].clone())
+    #[derive(Deserialize)]
+    struct StoredOperation {
+        operation: Operation,
+    }
+    let Some((_, raw)) =
+        Table::<studio_runtime_store::MonitorRecord>::new(tx).get_with_raw(&id.to_owned())?
     else {
+        return Ok(false);
+    };
+    let Ok(StoredOperation { operation }) = serde_json::from_str(&raw) else {
         return Ok(false);
     };
     let Some(actor) = &call.actor else {
@@ -661,21 +669,29 @@ pub fn settle_provider_call(
             return Ok(false);
         }
     }
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ExitReply {
-        exit_code: Option<i64>,
-        error: Option<String>,
-    }
     let (code, error) = match result {
         RequestResult::Reply(value) => {
-            let Ok(reply) = serde_json::from_value::<ExitReply>(value.clone()) else {
-                return Ok(false);
-            };
-            if reply.exit_code.is_none() && reply.error.as_deref().is_none_or(str::is_empty) {
+            if !value.is_object() {
                 return Ok(false);
             }
-            (reply.exit_code, reply.error)
+            let code = match value.get("exitCode") {
+                None | Some(Value::Null) => None,
+                Some(value) => match value.as_i64() {
+                    Some(code) => Some(code),
+                    None => return Ok(false),
+                },
+            };
+            let error = match value.get("error") {
+                None | Some(Value::Null) => None,
+                Some(value) => match value.as_str() {
+                    Some(error) => Some(error.to_owned()),
+                    None => return Ok(false),
+                },
+            };
+            if code.is_none() && error.as_deref().is_none_or(str::is_empty) {
+                return Ok(false);
+            }
+            (code, error)
         }
         RequestResult::Rejected(value) => (None, Some(value.to_string())),
         RequestResult::NotSent => return Ok(true),
@@ -1213,10 +1229,16 @@ pub async fn provider_request_identity(
         } else if method==Method::CommandExecTerminate {
             json!({"rootRequestId":record["cancelRootRequestId"],"providerRequest":record["cancelProviderRequest"]})
         } else if method==Method::CommandExec {
-            serde_json::to_value(&operation).map_err(studio_runtime_store::StoreError::from)?
+            studio_runtime_store::projection_value(&operation)
         } else {return Err(MonitorError::Refused("Monitor provider method has no mutation owner"));};
         let root=identity["rootRequestId"].as_str().ok_or(MonitorError::Refused("Monitor provider request identity is unavailable"))?.to_owned();
-        let admitted=identity.get("providerRequest").filter(|value| !value.is_null()).cloned().map(serde_json::from_value).transpose().map_err(studio_runtime_store::StoreError::from)?;
+        let admitted = if method == Method::CommandExec && probe_generation.is_none() {
+            operation.evidence.provider_request.clone()
+        } else if identity.get("providerRequest").is_some_and(|value| !value.is_null()) {
+            let path = if probe_generation.is_some() { "$.livenessProbe.providerRequest" } else if method == Method::CommandExecTerminate { "$.cancelProviderRequest" } else { "$.inputAttempt.providerRequest" };
+            let raw: String = tx.query_row("SELECT record -> ?2 FROM runtime_monitors WHERE id=?1", rusqlite::params![id, path], |row| row.get(0)).map_err(studio_runtime_store::StoreError::from)?;
+            Some(serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?)
+        } else { None };
         Ok((root,admitted))
     }).await
 }

@@ -79,7 +79,12 @@ fn prefix_inputs(agent: &Value) -> Value {
 
 /// Called in the dedicated cache notification transaction. Only request-local
 /// assistant usage can arm a timer; a cumulative SDK result cannot arm it.
-pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Result<(), StoreError> {
+pub fn observe(
+    connection: &Connection,
+    agent: &mut Value,
+    raw: &Value,
+    previous: Option<&Episode>,
+) -> Result<(), StoreError> {
     if agent["provider"] != ProviderKind::Claude.key() {
         return Ok(());
     }
@@ -95,9 +100,7 @@ pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Resul
         ));
     }
     agent["idleCache"] = json!(cache);
-    if let Some(previous) = agent.get("idleCompactionEpisode") {
-        let previous: Episode = serde_json::from_value(previous.clone())
-            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+    if let Some(previous) = previous {
         if previous.cache.request_id == cache.request_id
             && previous.cache.ttl == cache.ttl
             && previous.identity == identity(agent)
@@ -276,7 +279,7 @@ pub async fn release_unsubmitted(
             let saved = crate::native_actions::idle_provenance(tx, &request_id)?
                 .ok_or(NativeError::Changed)?;
             crate::native_actions::fail_pending(tx, &request_id, &message)?;
-            value["status"] = json!(saved.before.status);
+            value["status"] = Value::String(saved.before.status.as_str().to_owned());
             value["startAttempt"] = saved.before.start_attempt;
             value["turnEpoch"] = json!(saved.before.turn_epoch);
             value["inFlight"] = json!(false);
@@ -532,19 +535,21 @@ mod tests {
         let db = studio_runtime_store::test_canvas();
         let (settings, episode, mut agent, _) = fixture();
         OrchestrationSettingsRepository::set_idle_compaction(&db, &settings).expect("settings");
-        observe(&db, &mut agent, &json!(episode.cache)).expect("first observation");
+        observe(&db, &mut agent, &json!(episode.cache), None).expect("first observation");
         let root = agent["idleCompactionEpisode"]["id"].clone();
         agent["idleCompactionEpisode"]["fired"] = json!(true);
         agent["idleCompactionEpisode"]["outcome"] = json!(IdleEpisodeOutcome::Started);
         let mut disabled = settings;
         disabled.mode = Mode::Off;
         OrchestrationSettingsRepository::set_idle_compaction(&db, &disabled).expect("disable");
-        observe(&db, &mut agent, &json!(episode.cache)).expect("same episode");
+        let previous = serde_json::from_value(agent["idleCompactionEpisode"].clone()).unwrap();
+        observe(&db, &mut agent, &json!(episode.cache), Some(&previous)).expect("same episode");
         assert_eq!(agent["idleCompactionEpisode"]["id"], root);
         assert_eq!(agent["idleCompactionEpisode"]["fired"], true);
         disabled.mode = Mode::Compact;
         OrchestrationSettingsRepository::set_idle_compaction(&db, &disabled).expect("enable");
-        observe(&db, &mut agent, &json!(episode.cache)).expect("repeat");
+        let previous = serde_json::from_value(agent["idleCompactionEpisode"].clone()).unwrap();
+        observe(&db, &mut agent, &json!(episode.cache), Some(&previous)).expect("repeat");
         assert_eq!(agent["idleCompactionEpisode"]["id"], root);
         assert_eq!(agent["idleCompactionEpisode"]["fired"], true);
         let tx = db.unchecked_transaction().expect("tx");

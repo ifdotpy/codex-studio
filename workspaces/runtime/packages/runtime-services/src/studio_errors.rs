@@ -154,23 +154,28 @@ fn monitor_evidence(record: &Value) -> Result<Cause, serde_json::Error> {
         .filter(|value| !value.is_null())
         .map(|value| {
             serde_json::from_value::<crate::monitor_policy::ReattachRecovery>(value.clone()).map(
-                |recovery| MonitorRecoveryEvidence {
-                    status: recovery.status,
-                    started_at: recovery.started_at,
-                    proof: recovery.proof.map(|proof| {
-                        match serde_json::from_value::<MonitorRecoveryReason>(Value::String(
-                            proof.clone(),
-                        )) {
-                            Ok(reason) => MonitorRecoveryProof::Recognized { reason },
-                            Err(_) => MonitorRecoveryProof::Unclassified {
-                                sha256: studio_runtime_store::sha256_hex(proof.as_bytes()),
-                            },
-                        }
-                    }),
+                |recovery| {
+                    recovery
+                        .started_at
+                        .map(|started_at| MonitorRecoveryEvidence {
+                            status: recovery.status,
+                            started_at,
+                            proof: recovery.proof.map(|proof| {
+                                match serde_json::from_value::<MonitorRecoveryReason>(
+                                    Value::String(proof.clone()),
+                                ) {
+                                    Ok(reason) => MonitorRecoveryProof::Recognized { reason },
+                                    Err(_) => MonitorRecoveryProof::Unclassified {
+                                        sha256: studio_runtime_store::sha256_hex(proof.as_bytes()),
+                                    },
+                                }
+                            }),
+                        })
                 },
             )
         })
-        .transpose()?;
+        .transpose()?
+        .flatten();
     Ok(Cause::Monitor {
         status,
         operation,
@@ -1205,6 +1210,14 @@ mod tests {
             agent_kind("failed", PROVIDER_THREAD_START_UNKNOWN_ERROR),
             Some(Kind::TurnDisconnected)
         );
+    }
+
+    #[test]
+    fn monitor_evidence_omits_closed_recovery_without_start() {
+        let record = json!({"status":"lost","reattachRecovery":{"accountKey":"account","epoch":2,"status":"not_reattachable","proof":"legacy"}});
+        let encoded =
+            serde_json::to_value(monitor_evidence(&record).expect("legacy recovery")).unwrap();
+        assert!(encoded.get("recovery").is_none() || encoded["recovery"].is_null());
     }
 
     #[test]

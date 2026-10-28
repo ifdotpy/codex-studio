@@ -150,7 +150,7 @@ async fn fixture(path: &std::path::Path, mode: Mode) -> (Arc<RuntimeStore>, Epis
     let episode=store.transaction(move|tx| {
         OrchestrationSettingsRepository::set_idle_compaction(tx,&Settings { mode,min_tokens:200000 })?;
         let mut agent=json!({"id":"claude","rootId":"claude","epoch":1,"events":0,"provider":"claude","status":"idle","autoWake":true,"inFlight":false,"cwd":"/work","accountKey":"default","threadId":"thread","startAttempt":{"id":"previous"}});
-        idle::observe(tx,&mut agent,&json!({"requestId":"response","ttl":"1h","warm":true,"lastActivityAt":(idle::wall_now()-3240.0)*1000.0,"contextTokens":210000,"prefix":"prefix"}))?;
+        idle::observe(tx,&mut agent,&json!({"requestId":"response","ttl":"1h","warm":true,"lastActivityAt":(idle::wall_now()-3240.0)*1000.0,"contextTokens":210000,"prefix":"prefix"}), None)?;
         AgentRepository::put(tx,&AgentRecord::from_value(agent.clone()).unwrap())?;
         serde_json::from_value(agent["idleCompactionEpisode"].clone()).map_err(|error|StoreError::SchemaMismatch(error.to_string()))
     }).await.unwrap();

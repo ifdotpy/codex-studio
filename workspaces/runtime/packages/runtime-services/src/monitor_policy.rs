@@ -195,9 +195,14 @@ pub(crate) struct ReattachRecovery {
     account_key: String,
     epoch: i64,
     pub(crate) status: RecoveryStatus,
-    pub(crate) started_at: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) started_at: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) proof: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    finished: Option<f64>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -347,6 +352,11 @@ impl MonitorSnapshot {
         crate::monitor_matches::validate(&record).map_err(invalid)?;
         let fields: Fields =
             serde_json::from_value(record.clone()).map_err(|_| invalid("record"))?;
+        if fields.reattach_recovery.as_ref().is_some_and(|recovery| {
+            recovery.status == RecoveryStatus::Running && recovery.started_at.is_none()
+        }) {
+            return Err(invalid("reattachRecovery/startedAt"));
+        }
         let actor: Actor = serde_json::from_value(actor).map_err(|_| invalid("agent"))?;
         if fields.agent != actor.id {
             return Err(invalid("agent/id"));
@@ -433,7 +443,11 @@ impl MonitorSnapshot {
             .reattach_recovery
             .as_ref()
             .filter(|recovery| recovery.status == RecoveryStatus::Running)
-            .map(|recovery| recovery.started_at + MONITOR_REATTACH_WINDOW_SECONDS)
+            .and_then(|recovery| {
+                recovery
+                    .started_at
+                    .map(|started| started + MONITOR_REATTACH_WINDOW_SECONDS)
+            })
     }
     pub fn operation(&self) -> Option<&Operation> {
         self.fields.operation.as_ref()
@@ -1034,8 +1048,10 @@ pub fn restart_recovery(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision
         account_key: snapshot.command_account().to_owned(),
         epoch: snapshot.actor.epoch,
         status: RecoveryStatus::Running,
-        started_at: now,
+        started_at: Some(now),
         proof: None,
+        error: None,
+        finished: None,
     });
     Ok(decision)
 }
