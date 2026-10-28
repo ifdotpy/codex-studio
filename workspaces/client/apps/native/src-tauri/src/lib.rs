@@ -302,6 +302,7 @@ mod tests {
     }
 
     /// Parity check: every core method the page sends by name reaches the core.
+    /// The scanned folders hold the page's core clients; components only render.
     /// `client_request` handles `servers.*`, `profile.*` and `desktop.notify`
     /// before the connected boundary; `native/frame.ts` turns `browser.*` into
     /// shell commands.
@@ -330,8 +331,9 @@ mod tests {
         }
         let web = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/src");
         let mut files = Vec::new();
-        sources(&web.join("native"), &mut files);
-        sources(&web.join("sync"), &mut files);
+        for folder in ["native", "sync", "usage", "dictation", "servers"] {
+            sources(&web.join(folder), &mut files);
+        }
         let mut missing = Vec::new();
         for file in files {
             let text = std::fs::read_to_string(&file).expect("web source");
@@ -566,6 +568,47 @@ fn connected_method(method: &str) -> bool {
             | "drafts.import"
             | "drafts.edit"
             | "drafts.dismiss"
+            | "drafts.queue"
+            | "drafts.queued"
+            | "outbox.list"
+            | "outbox.prepare"
+            | "outbox.release"
+            | "outbox.enqueue"
+            | "outbox.deliver"
+            | "outbox.activate"
+            | "outbox.recover"
+            | "outbox.import"
+            | "outbox.stop"
+            | "outbox.change"
+            | "outbox.display"
+            | "outbox.acknowledge_many"
+            | "outbox.reconcile"
+            | "files.begin"
+            | "files.append"
+            | "files.discard"
+            | "uploads.enqueue"
+            | "uploads.deliver"
+            | "uploads.pending"
+            | "uploads.cancel"
+            | "uploads.finish"
+            | "uploads.get"
+            | "uploads.import"
+            | "uploads.status"
+            | "dictation.begin"
+            | "dictation.chunk"
+            | "dictation.create"
+            | "dictation.delete"
+            | "dictation.deleted"
+            | "dictation.import"
+            | "dictation.imported"
+            | "dictation.list"
+            | "dictation.read"
+            | "dictation.save"
+            | "dictation.update"
+            | "usage.limits.list"
+            | "usage.limits.put"
+            | "usage.sessionCosts.list"
+            | "usage.sessionCosts.put"
             | "drafts.refresh"
             | "desktop.openExternal"
             | studio_client_core::desktop::SIGN_IN_OPEN_METHOD
@@ -768,107 +811,7 @@ async fn client_request(
             error: None,
         });
     }
-<<<<<<< head
-    // Enable only the independently verified service boundary while migrating
-    // callers. Network commands also require the configured backend identity.
-    if !matches!(
-        request.method.as_str(),
-        "system.info"
-            | "preferences.raw_all"
-            | "preferences.import"
-            | "preferences.raw_set"
-            | "preferences.raw_remove"
-            | "markdown.parse"
-            | "identity.get"
-            | "sync.open"
-            | "drafts.view"
-            | "drafts.import"
-            | "drafts.edit"
-            | "drafts.dismiss"
-            | "drafts.queue"
-            | "drafts.queued"
-            | "drafts.refresh"
-            | "desktop.openExternal"
-            | studio_client_core::desktop::SIGN_IN_OPEN_METHOD
-            | studio_client_core::desktop::SIGN_IN_PREPARE_METHOD
-            | studio_client_core::desktop::SIGN_IN_CANCEL_METHOD
-            | "desktop.pickDirectory"
-            | "desktop.pickAttachments"
-            | "desktop.fileAction"
-            | "desktop.revealPath"
-            | "desktop.showVaultKeys"
-            | "desktop.requestMicrophone"
-            | "desktop.prepareTranscription"
-            | "desktop.cancelTranscription"
-            | "media.captureStart"
-            | "media.captureStop"
-            | "voice.create"
-            | "voice.answer"
-            | "voice.mute"
-            | "voice.close"
-            | "speech.uploadBegin"
-            | "speech.uploadChunk"
-            | "speech.uploadCancel"
-            | "speech.transcribe"
-            | "speech.cancel"
-            | "desktop.saveBegin"
-            | "desktop.saveChunk"
-            | "desktop.saveFinish"
-            | "desktop.saveCancel"
-            | "api.request"
-    ) && !connected_view_method(&request.method)
-    {
-||||||| base
-    // Enable only the independently verified service boundary while migrating
-    // callers. Network commands also require the configured backend identity.
-    if !matches!(
-        request.method.as_str(),
-        "system.info"
-            | "preferences.raw_all"
-            | "preferences.import"
-            | "preferences.raw_set"
-            | "preferences.raw_remove"
-            | "markdown.parse"
-            | "identity.get"
-            | "sync.open"
-            | "drafts.view"
-            | "drafts.import"
-            | "drafts.edit"
-            | "drafts.dismiss"
-            | "drafts.refresh"
-            | "desktop.openExternal"
-            | studio_client_core::desktop::SIGN_IN_OPEN_METHOD
-            | studio_client_core::desktop::SIGN_IN_PREPARE_METHOD
-            | studio_client_core::desktop::SIGN_IN_CANCEL_METHOD
-            | "desktop.pickDirectory"
-            | "desktop.pickAttachments"
-            | "desktop.fileAction"
-            | "desktop.revealPath"
-            | "desktop.showVaultKeys"
-            | "desktop.requestMicrophone"
-            | "desktop.prepareTranscription"
-            | "desktop.cancelTranscription"
-            | "media.captureStart"
-            | "media.captureStop"
-            | "voice.create"
-            | "voice.answer"
-            | "voice.mute"
-            | "voice.close"
-            | "speech.uploadBegin"
-            | "speech.uploadChunk"
-            | "speech.uploadCancel"
-            | "speech.transcribe"
-            | "speech.cancel"
-            | "desktop.saveBegin"
-            | "desktop.saveChunk"
-            | "desktop.saveFinish"
-            | "desktop.saveCancel"
-            | "api.request"
-    ) && !connected_view_method(&request.method)
-    {
-=======
     if !connected_method(&request.method) && !connected_view_method(&request.method) {
->>>>>>> origin/main
         return Err("This client service is not connected yet.".into());
     }
     if request.method == "view.subscribe"
@@ -937,7 +880,13 @@ async fn client_request(
     let origin = local_backend::origin()?;
     if matches!(
         request.method.as_str(),
-        "api.request" | "sync.open" | "drafts.refresh" | "desktop.fileAction"
+        "api.request"
+            | "sync.open"
+            | "drafts.refresh"
+            | "desktop.fileAction"
+            | "outbox.deliver"
+            | "outbox.recover"
+            | "uploads.deliver"
     ) || (request.method == studio_client_core::desktop::SIGN_IN_OPEN_METHOD
         && request.params["value"].get("forward").is_some())
         || (request.method == "view.subscribe" && request.params["topic"] == "sse")
