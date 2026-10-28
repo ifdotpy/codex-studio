@@ -253,6 +253,67 @@ mod tests {
     }
 
     #[test]
+    fn admitted_start_can_complete_after_request_result_expiry() {
+        let mut connection = database();
+        connection.execute("UPDATE runtime_agents SET record=json_set(record,'$.threadId','thread') WHERE id='agent'",[]).expect("thread owner");
+        let tx = connection.transaction().expect("transaction");
+        SchedulerRepository::claim(&tx, "agent", 4, "attempt", 10.0, 1)
+            .expect("claim")
+            .expect("input");
+        let old = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_millis() as i64
+            - studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS
+            - 1;
+        tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.admission.created',?1) WHERE id='attempt'",[old]).expect("old admitted owner");
+        assert!(
+            SchedulerRepository::mark_submitted_identity(
+                &tx,
+                "agent",
+                4,
+                "attempt",
+                "ticket",
+                "default",
+                1,
+                "connection",
+                "thread"
+            )
+            .expect("submit identity")
+        );
+        assert_eq!(
+            SchedulerRepository::settle_started_provider(
+                &tx, "agent", 4, "attempt", "ticket", "default", 1, "thread", "turn"
+            )
+            .expect("late admitted callback"),
+            Some(false)
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_millis() as i64;
+        crate::request_results::RequestResults::gc(&tx, now).expect("expire cached replies");
+        assert!(
+            crate::ExecutionHistoryRepository::start_settled(&tx, "attempt")
+                .expect("domain proof survives GC")
+        );
+        assert!(
+            !SchedulerRepository::mark_submitted_identity(
+                &tx,
+                "agent",
+                4,
+                "attempt",
+                "ticket",
+                "default",
+                1,
+                "connection",
+                "thread"
+            )
+            .expect("already submitted owner never dispatches twice")
+        );
+    }
+
+    #[test]
     fn claims_ordered_pending_events_and_updates_agent_in_one_transaction() {
         let mut connection = database();
         let transaction = connection.transaction().expect("claim transaction begins");
