@@ -1,5 +1,7 @@
 # Durable per-chat draft storage contract
 
+> Superseded: browser draft storage was removed. The current contract is in the [composer README](../../workspaces/client/apps/web/src/components/prompt-composer/README.md). This record describes the retired implementation.
+
 ## Input ownership
 
 - `useSyncedDrafts` owns the in-memory value and synchronous write boundary. A
