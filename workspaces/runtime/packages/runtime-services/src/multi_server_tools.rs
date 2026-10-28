@@ -447,7 +447,7 @@ impl ServerTools {
                 return state.map(|state|json!({"state":state,"result":null,"error":null})).ok_or_else(||Step::Refused("The request ID expired".into()));
             }
             let canonical=remote_operation_key("server-outbox",&[&server],root,&[action]);
-            let row:Option<(String,String)>=tx.query_row("SELECT id,signature FROM request_results WHERE id IN (?1,?2)",params![root,canonical],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+            let row:Option<(String,String)>=tx.query_row("SELECT id,signature FROM request_results WHERE id=?1",params![canonical],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
             if let Some((id,signature))=row && let Some(saved)=crate::event_write::replay_request::<SavedRemoteReply>(tx,&id,&signature,(now*1000.0) as i64)? {
                 if saved.reply.server.as_deref()!=Some(&server) || (action.starts_with("exec") && saved.reply.actor.as_deref()!=Some(&actor_id)) {return refuse("The receipt belongs to another actor or server");}
                 return Ok(json!({"state":ServerDeliveryState::Complete,"result":saved.reply.response,"error":null}));
@@ -489,7 +489,9 @@ impl ServerTools {
         };
         let signature_data =
             json!({"action": action, "project": project_id, "server": server, "path": path});
-        let signature = request_signature(&signature_data);
+        let signature = studio_runtime_store::sha256_hex(
+            studio_runtime_schema::json_compat::python_json_compact(&signature_data).as_bytes(),
+        );
         let actor_id = actor.record().id.0.clone();
         let epoch = actor.record().epoch;
         let local_for_write = local.to_owned();
@@ -556,13 +558,11 @@ impl ServerTools {
                     "name": project["name"],
                     "path": path,
                     "request": signature_data,
-                    "signature": signature,
                 });
                 if let Some(location) = location {
                     payload["location"] = location;
                 }
                 ProjectsRepository::put_location_request(tx,&project_id,&key_for_write,&admitted)?;
-                payload["resultId"]=json!(admitted.id());
                 payload[crate::project_locations::LOCATION_ADMISSION_FIELD]=crate::project_locations::location_admission(tx,&project_id,Some((&actor_id,epoch)))?;
                 Ok(Ok(payload))
             })
