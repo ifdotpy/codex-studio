@@ -167,7 +167,7 @@ async fn view_value(
                     })
                     .await?;
                 return Ok(
-                    json!({"legacyMessages":studio_runtime_store::projection_value(&messages).map_err(ApiError::json)?}),
+                    json!({"legacyMessages":studio_runtime_store::projection_value(&messages)}),
                 );
             }
             let mut room = serde_json::to_value(

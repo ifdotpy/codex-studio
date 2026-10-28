@@ -629,8 +629,7 @@ fn send_followup_inner(
         recipient.extra.remove("nativeFailureHold");
         capacity_reset(transaction, &mut recipient)?;
         studio_runtime_store::AgentRepository::put(transaction, &recipient)?;
-        let projection =
-            studio_runtime_store::projection_value(&recipient);
+        let projection = studio_runtime_store::projection_value(&recipient);
         crate::agents_create::publish_agent(transaction, &projection)?;
     }
     let mut metadata = Value::Object(serde_json::Map::from_iter([
@@ -1479,6 +1478,7 @@ mod tests {
                 Ok(crate::queue_write::QueueSnapshot {
                     items: vec![json!({"id":event.id.0,"kind":event.kind,"text":event.text,"created":event.created})],
                     revision: event.created.to_string(),
+                    capabilities: json!({"reorder":true,"receipts":true}),
                 })
             },
         )
