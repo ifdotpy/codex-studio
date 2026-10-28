@@ -763,7 +763,11 @@ fn agent_owners(
         } else {
             return Err(invalid());
         };
-        settings["providerRequest"] = json!(token);
+        if let Some(token) = token {
+            settings["providerRequest"] = json!(token);
+        } else if let Some(settings) = settings.as_object_mut() {
+            settings.remove("providerRequest");
+        }
         settings["rootRequestId"] = json!(root);
         value["startAttempt"]["modelSettings"] = settings;
     }
@@ -1608,29 +1612,33 @@ mod tests {
     }
     #[test]
     fn receipts_actions_completed_current_settings_do_not_require_a_retired_transport() {
-        let mut db = Connection::open_in_memory().expect("database");
-        fixture(&db);
-        db.execute("INSERT INTO runtime_agents VALUES('agent',?1)",[json!({"id":"agent","epoch":1,"startAttempt":{"actionRequestId":"native-0","modelSettings":{"operation":"attempt:settings","scope":{"account":"account","connection":"1","generation":1},"method":"thread/settings/update","params":{"threadId":"thread"},"status":"acknowledged"}}}).to_string()]).expect("positive settled settings");
-        batch(&mut db, "runtime_agents").expect("completed owner needs no transport obligation");
-        let raw: String = db
-            .query_row("SELECT record FROM runtime_agents", [], |r| r.get(0))
-            .expect("owner");
-        let owner: Value = serde_json::from_str(&raw).expect("JSON");
-        assert_eq!(
-            owner["startAttempt"]["modelSettings"]["status"],
-            "acknowledged"
-        );
-        assert!(owner["startAttempt"]["modelSettings"]["providerRequest"].is_null());
-        assert_eq!(
-            uuid::Uuid::parse_str(
-                owner["startAttempt"]["modelSettings"]["rootRequestId"]
-                    .as_str()
-                    .expect("root")
-            )
-            .expect("UUID")
-            .get_version_num(),
-            7
-        );
+        for status in ["acknowledged", "rejected", "not_sent"] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&db);
+            db.execute("INSERT INTO runtime_agents VALUES('agent',?1)",[json!({"id":"agent","epoch":1,"startAttempt":{"actionRequestId":"native-0","modelSettings":{"operation":"attempt:settings","scope":{"account":"account","connection":"1","generation":1},"method":"thread/settings/update","params":{"threadId":"thread"},"status":status}}}).to_string()]).expect("positive settled settings");
+            batch(&mut db, "runtime_agents")
+                .expect("completed owner needs no transport obligation");
+            let raw: String = db
+                .query_row("SELECT record FROM runtime_agents", [], |r| r.get(0))
+                .expect("owner");
+            let owner: Value = serde_json::from_str(&raw).expect("JSON");
+            assert_eq!(owner["startAttempt"]["modelSettings"]["status"], status);
+            assert!(
+                owner["startAttempt"]["modelSettings"]
+                    .get("providerRequest")
+                    .is_none()
+            );
+            assert_eq!(
+                uuid::Uuid::parse_str(
+                    owner["startAttempt"]["modelSettings"]["rootRequestId"]
+                        .as_str()
+                        .expect("root")
+                )
+                .expect("UUID")
+                .get_version_num(),
+                7
+            );
+        }
     }
     #[test]
     fn receipts_actions_completed_current_release_keeps_typed_authorization() {
