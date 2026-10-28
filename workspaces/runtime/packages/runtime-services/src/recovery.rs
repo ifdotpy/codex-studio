@@ -116,6 +116,9 @@ impl From<crate::notification_dispatch::NotificationDispatchError> for RecoveryE
     fn from(error: crate::notification_dispatch::NotificationDispatchError) -> Self {
         use crate::notification_dispatch::NotificationDispatchError;
         match error {
+            NotificationDispatchError::Expired => Self::Store(
+                studio_runtime_store::request_results::RequestResultError::Expired.into(),
+            ),
             NotificationDispatchError::Store(error) => Self::Store(error),
             NotificationDispatchError::InvalidNotification { check } => {
                 Self::History(HistoryError::Notification { check })
