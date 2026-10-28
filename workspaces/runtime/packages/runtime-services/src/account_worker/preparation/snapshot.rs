@@ -26,7 +26,9 @@ const VM_GUEST_SKILLS_ROOT: &str = "/opt/codex-studio/.agents/skills";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VmProviderLaunchRequest {
     pub root_request_id: String,
-    pub admitted_request: studio_runtime_store::request_results::AdmittedRequest,
+    pub source: studio_runtime_store::request_results::AdmittedRequest,
+    pub final_effect: Option<studio_runtime_store::request_results::AdmittedRequest>,
+    pub attempt_id: String,
     pub agent_id: String,
     pub epoch: i64,
     pub generation: u64,

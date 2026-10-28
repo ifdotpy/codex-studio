@@ -3053,7 +3053,9 @@ impl Worker {
         };
         let expected = preparation::VmProviderLaunchRequest {
             root_request_id: session.launch_request.root_request_id.clone(),
-            admitted_request: session.launch_request.admitted_request.clone(),
+            source: session.launch_request.source.clone(),
+            final_effect: session.launch_request.final_effect.clone(),
+            attempt_id: session.launch_request.attempt_id.clone(),
             agent_id: id,
             epoch,
             generation,

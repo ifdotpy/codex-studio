@@ -237,7 +237,9 @@ async fn vm_launch_request(
                         .unwrap_or(crate::linux_vm_provider::DEFAULT_GUEST_HOME);
                     Ok(Some(preparation::VmProviderLaunchRequest {
                         root_request_id: store::execution_admission(connection, &attempt_id)?.0,
-                        admitted_request: store::execution_admission(connection, &attempt_id)?.1,
+                        source: store::execution_admission(connection, &attempt_id)?.1,
+                        final_effect: studio_runtime_store::ExecutionHistoryRepository::vm_credential_refresh_admission(connection,&attempt_id)?,
+                        attempt_id: attempt_id.clone(),
                         agent_id: record.id.0,
                         epoch: record.epoch,
                         generation,

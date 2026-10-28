@@ -134,7 +134,12 @@ fn binding(
     Ok(Some(Binding {
         request: preparation::VmProviderLaunchRequest {
             root_request_id: super::store::execution_admission(connection, &id)?.0,
-            admitted_request: super::store::execution_admission(connection, &id)?.1,
+            source: super::store::execution_admission(connection, &id)?.1,
+            final_effect:
+                studio_runtime_store::ExecutionHistoryRepository::vm_credential_refresh_admission(
+                    connection, &id,
+                )?,
+            attempt_id: id.clone(),
             agent_id: actor.into(),
             epoch: record.epoch,
             generation,
