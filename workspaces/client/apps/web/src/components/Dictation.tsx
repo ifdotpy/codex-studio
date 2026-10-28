@@ -1,12 +1,4 @@
-<<<<<<< head
-import { hasNativeClient } from "../native/client";
-||||||| base
-import { randomUUID } from "../uuid";
-import { hasNativeClient } from "../native/client";
-=======
-import { randomUUID } from "../uuid";
 import { hasDeviceClient } from "../native/client";
->>>>>>> step8-hosted-core
 import { saveFile } from "../fileActions";
 import { useServerAudio } from "../servers/ServerServicesContext";
 import { useServerActivity } from "../servers/activity";
