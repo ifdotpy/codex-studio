@@ -816,9 +816,6 @@ pub fn settle_voice_stop(
         .map(|duration| duration.as_secs_f64())
         .unwrap_or_default();
     for row in Outbox::for_owner::<VoiceStopPayload>(tx, OwnerKind::Agent, &actor.agent, kind)? {
-        if row.payload.root_request_id != call.root_request_id {
-            continue;
-        }
         for session in &row.payload.voice_end_sessions {
             if actor.epoch == session.epoch
                 && call.scope.account == session.account_key
@@ -827,7 +824,10 @@ pub fn settle_voice_stop(
                 && call.params.get("threadId").and_then(Value::as_str)
                     == Some(session.thread_id.as_str())
                 && voice_operation_id(kind, session)? == call.operation
-                && session.admitted_request == call.admitted_request
+                && session
+                    .admitted_request
+                    .as_ref()
+                    .is_some_and(|token| call.admitted_request.as_ref() == Some(token))
             {
                 settle_voice_session(tx, &row.id, session, outcome, now)?;
             }
@@ -3029,7 +3029,8 @@ mod tests {
             Ok(intent)
         }).await.expect("deleted owner and expired ingress");
         let captured = ProviderCallIntent {
-            root_request_id: call.root_request_id,
+            // Imported final tokens retain authority without reconstructing a root.
+            root_request_id: String::new(),
             admitted_request: call.admitted_request,
             scope: crate::account_session_runtime::ConnectionScope {
                 account: call.context.account_key,

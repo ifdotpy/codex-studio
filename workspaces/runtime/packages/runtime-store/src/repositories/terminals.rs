@@ -442,6 +442,76 @@ impl TerminalsRepository {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn receipt_pivot_terminal_unknown_is_not_ttl_data_and_scope_does_not_collide() {
+        use studio_runtime_schema::persistence::{
+            OutboxKind, REQUEST_RESULT_TTL_MS, RequestIdentity,
+        };
+        let mut db = Connection::open_in_memory().expect("database");
+        crate::receipt_schema::create(&db).expect("schema");
+        db.execute_batch(
+            "CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .expect("policy");
+        let root = RequestIdentity::issue_root();
+        let now = super::now_ms().expect("clock");
+        let tx = db.transaction().expect("transaction");
+        TerminalsRepository::reserve_action(
+            &tx,
+            "terminal",
+            &root,
+            "signature",
+            "{\"delivery\":\"uncertain\"}",
+            None,
+        )
+        .expect("reserve before dispatch");
+        tx.execute("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,signature,status,payload,created) VALUES(?1,'native_action','agent','agent','other','unknown','{}',?2)",rusqlite::params![json!(["native-action",root]).to_string(),now]).expect("same external root in another family");
+        assert!(
+            crate::outbox::Outbox::pending::<serde_json::Value>(
+                &tx,
+                OutboxKind::TerminalAction,
+                i64::MAX,
+                10
+            )
+            .expect("pending")
+            .is_empty()
+        );
+        crate::request_results::RequestResults::gc(&tx, now + REQUEST_RESULT_TTL_MS + 1)
+            .expect("advance expiry");
+        assert!(
+            TerminalsRepository::action_result(&tx, &root)
+                .expect("unknown remains")
+                .is_some()
+        );
+        assert!(
+            TerminalsRepository::reserve_action(&tx, "terminal", &root, "changed", "{}", None)
+                .is_err()
+        );
+        TerminalsRepository::settle_action(&tx, &root, "{\"delivery\":\"sent\"}", None)
+            .expect("late exact native result");
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_outbox", [], |row| row
+                .get::<_, i64>(0))
+                .expect("only other family remains"),
+            1
+        );
+        assert_eq!(
+            TerminalsRepository::action_result(&tx, &root)
+                .expect("exact replay")
+                .expect("result")
+                .1
+                .response,
+            "{\"delivery\":\"sent\"}"
+        );
+        crate::request_results::RequestResults::gc(&tx, now + REQUEST_RESULT_TTL_MS + 1)
+            .expect("expire final result");
+        assert!(
+            TerminalsRepository::reserve_action(&tx, "terminal", &root, "signature", "{}", None)
+                .is_err(),
+            "expiry never permits another native write"
+        );
+    }
+
+    #[test]
     fn receipt_pivot_terminal_replays_original_reply_without_old_table() {
         let db = rusqlite::Connection::open_in_memory().expect("database");
         crate::receipt_schema::create(&db).expect("target schema");

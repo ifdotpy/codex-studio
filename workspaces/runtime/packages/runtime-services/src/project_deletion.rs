@@ -47,8 +47,6 @@ pub enum Error {
     Workspace,
     #[error("The project changed; confirm deletion again using current state")]
     Sequence,
-    #[error("This request identity has different content")]
-    RequestConflict,
     #[error("Project deletion requires one resolved owning server")]
     Remote,
     #[error("Project membership is ambiguous or malformed")]

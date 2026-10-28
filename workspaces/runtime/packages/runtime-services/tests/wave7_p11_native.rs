@@ -109,7 +109,7 @@ fn db(case: &Value) -> Connection {
     db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
     db.execute(
-        "INSERT INTO runtime_agents VALUES('lead',?1)",
+        "INSERT INTO runtime_agents(id,record) VALUES('lead',?1)",
         [case["agent"].to_string()],
     )
     .expect("Python-written agent");
@@ -758,7 +758,7 @@ fn a_worker_review_checks_lead_settings_but_accepts_lead_progress() {
         let mut db = db(&json!({"agent":parent}));
         root[field] = value;
         db.execute(
-            "INSERT INTO runtime_agents VALUES('root',?1)",
+            "INSERT INTO runtime_agents(id,record) VALUES('root',?1)",
             [root.to_string()],
         )
         .expect("lead change");
@@ -1212,7 +1212,7 @@ fn python_review_child_claim_and_review_start_match() {
         )
         .expect("scheduler table shapes");
         db.execute(
-            "INSERT INTO runtime_agents VALUES(?1,?2)",
+            "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
             [id.clone(), child.to_string()],
         )
         .expect("Python-written review child");
