@@ -842,6 +842,9 @@ impl State {
     /// The fixture state in a new folder under `base`.
     async fn new_at(base: PathBuf) -> Self {
         let root = base.join(format!("worker-{}", uuid::Uuid::new_v4()));
+        Self::new_with_root(root).await
+    }
+    async fn new_with_root(root: PathBuf) -> Self {
         let agent = FIXTURE_AGENT_ID.to_owned();
         let epoch = FIXTURE_AGENT_EPOCH;
         let store = Arc::new(seed_fixture_root(&root).await);

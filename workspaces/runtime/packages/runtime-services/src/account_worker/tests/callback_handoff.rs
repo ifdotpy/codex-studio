@@ -848,6 +848,12 @@ async fn a_late_not_sent_receipt_does_not_reopen_explicit_callback_uncertainty()
 
 #[tokio::test]
 async fn managed_saved_callback_cannot_resume_a_stopped_changed_or_deleted_actor() {
+    let template = tempfile::tempdir().unwrap();
+    let template_store = RuntimeStore::open(Some(template.path())).await.unwrap();
+    template_store.flush_wal_for_shutdown().await.unwrap();
+    let databases = ["canvas.sqlite3", "analytics.sqlite3"]
+        .map(|name| std::fs::read(template.path().join(name)).unwrap());
+    drop(template_store);
     for case in [
         "stopped",
         "epoch",
@@ -865,7 +871,15 @@ async fn managed_saved_callback_cannot_resume_a_stopped_changed_or_deleted_actor
         "lazy",
     ] {
         for captured in [false, true] {
-            let state = State::new().await;
+            let root = test_root().join(format!("worker-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            for (name, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+                .into_iter()
+                .zip(&databases)
+            {
+                std::fs::write(root.join(name), bytes).unwrap();
+            }
+            let state = State::new_with_root(root).await;
             let actor = state.agent.clone();
             let epoch = state.epoch;
             state.bridge.store.transaction(move |tx| {

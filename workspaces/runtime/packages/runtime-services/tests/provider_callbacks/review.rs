@@ -57,13 +57,25 @@ pub(super) fn canonical_response(value: &Value) -> Value {
 
 #[tokio::test]
 async fn work_commands_match_python_arguments_bounds_and_provenance() {
+    let (template_dir, template_store, context) = fixture().await;
+    template_store.flush_wal_for_shutdown().await.unwrap();
+    let databases = ["canvas.sqlite3", "analytics.sqlite3"]
+        .map(|name| std::fs::read(template_dir.path().join(name)).unwrap());
+    drop(template_store);
     for (index, case) in template().value["reviewCases"]
         .as_array()
         .unwrap()
         .iter()
         .enumerate()
     {
-        let (_dir, store, context) = fixture().await;
+        let _dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+            .into_iter()
+            .zip(&databases)
+        {
+            std::fs::write(_dir.path().join(name), bytes).unwrap();
+        }
+        let store = std::sync::Arc::new(RuntimeStore::open(Some(_dir.path())).await.unwrap());
         put_record(&store, "runtime_work", &case["before"]).await;
         let frame = call(
             &context,
