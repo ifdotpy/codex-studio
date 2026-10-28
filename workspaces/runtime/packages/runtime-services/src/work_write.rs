@@ -1221,6 +1221,16 @@ pub async fn prepare_vm_accept(
                     Error::InvalidRequest("Only the active lead can accept a layr result").into(),
                 );
             }
+            if let Some(root) = request_id.as_deref()
+                && let Some(saved) = pending_work_request(tx, &lead, root, &signature)?
+            {
+                if saved.task != task_id {
+                    return Err(Error::Conflict("This request id has different content").into());
+                }
+                if saved.archive {
+                    return Ok(VmAcceptPreparation::NotVm);
+                }
+            }
             let work = load_work(tx, &lead.root_id.0, &task_id, version)?;
             if work.status() != studio_runtime_store::WorkStatus::Review {
                 return Ok(VmAcceptPreparation::NotVm);
@@ -3798,6 +3808,36 @@ mod actor_tests {
             assert_eq!(first["archive"]["status"], "skipped");
             assert_eq!(first, replay);
         }
+    }
+
+    #[tokio::test]
+    async fn receipt_domain_vm_accept_retry_checks_archive_reservation_before_version() {
+        let dir = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(dir.path())).await.expect("store");
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let request = root.clone();
+        store.transaction_with_error(move |tx| -> Result<(), super::WorkWriteError> {
+            for agent in [
+                json!({"provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"isLead":true,"executionMode":"vm"}),
+                json!({"provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"idle","autoWake":true,"executionMode":"vm"}),
+            ] { AgentRepository::put(tx, &AgentRecord::from_value(agent).expect("agent"))?; }
+            let mut item = work("retry", Some("worker"), "review", json!([{"id":"result-1","agent":"worker","text":"done","checks":"checked","revision":"state","files":[]}]));
+            item["vmAccept"] = json!({"status":"completed","requestId":"merge","taskId":"retry","owner":"worker","revision":"state","resultId":"result-1","created":1.0});
+            WorkItemsRepository::put_work(tx, "retry", &item)?;
+            super::write(tx, "lead", Some(&request), "accept", WorkWrite::Accept(AcceptWork { task_id:"retry".into(), version:Some(2), reason:"verified".into(), override_reason:None, merged_result_id:Some("result-1".into()) }))?;
+            Ok(())
+        }).await.expect("accepted pending archive");
+        let input = AcceptWork {
+            task_id: "retry".into(),
+            version: Some(2),
+            reason: "verified".into(),
+            override_reason: None,
+            merged_result_id: None,
+        };
+        assert!(matches!(
+            super::prepare_vm_accept(&store, "lead", Some(&root), "accept", &input).await,
+            Ok(super::VmAcceptPreparation::NotVm)
+        ));
     }
 
     #[tokio::test]
