@@ -45,7 +45,7 @@ Desktop window (Tauri)          Phone (PWA) or UI-only computer
 | Part             | Owns                                                                                        | Does not own                                      |
 | ---------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------- |
 | Server           | State, commands, agents, queue, conversation, drafts, uploads, sync, links to other servers | Microphone, windows, operating system permissions |
-| Frontend         | Rendering, thin cache, unsent input buffer                                                  | Business logic                                    |
+| Frontend         | Rendering, thin cache, unsent input buffer, server keys                                     | Business logic                                    |
 | Tauri shell      | Window, microphone, dictation, file dialogs, quick look, notifications                      | State and storage                                 |
 | Peer link        | Transport between servers                                                                   | Logic                                             |
 | Provider adapter | Translation to the provider protocol, a list of capabilities                                | Queue and state                                   |
@@ -57,6 +57,9 @@ Desktop window (Tauri)          Phone (PWA) or UI-only computer
   servers, and a frontend learns the full list and gets UI access to each server from
   any server that it reaches.
 - The PWA and Web Push stay.
+- Server keys: each frontend keeps one non-extractable WebCrypto key for each server in
+  IndexedDB, as today. The PWA and the Tauri window use the same code. The Tauri shell
+  stores nothing.
 
 ### One command path
 
@@ -71,18 +74,35 @@ handler's transaction. The command is a sync entity with the state `pending`, `a
 - Stop of a turn does not pause the agent and does not clear the queue. Pause is a separate command.
 - Exactly-once applies only to the write to the provider.
 
+- `edit(turn N)` works the same for every provider: hide the items after turn N, restore
+  the files from a layr snapshot of turn N, and fork the provider thread from turn N. This
+  gives Codex an in-place rewind and replaces the Claude-only rollback.
+
 The old ledgers move to this table one at a time. Each old table is deleted after its move.
+
+### Provider adapter
+
+The adapter translates commands to the provider protocol and reports its capabilities:
+steer, rewind, fork, model change, effort, compaction, approvals. The UI shows only the
+controls in that list. The queue, the steer queue (`unappliedSteers`), and rollback move
+from the Claude bridge to the server.
 
 ### Two streams to the UI
 
 1. **Durable:** `sync_entities` with the existing `since:{workspaceId,seq}` cursors. It gives a delta after a reconnect, or a snapshot when the cursor has expired.
 2. **Live:** model deltas from account worker memory, without SQLite and without the 750 ms timer. A lost delta is harmless, because the final item comes through the durable stream.
 
-Large text (tool output, long messages) is sent as a hash and a size. The client fetches
-it once, when it opens it.
+Traffic to a remote frontend stays small:
+
+- Large text (tool output, long messages) is sent as a hash and a size. The client fetches
+  it once, when it opens it.
+- The stream is compressed (brotli or zstd).
+- A chat sends only its visible tail. Older items come on scroll.
+- Live deltas go only to the chat that is open.
 
 ### Frontend cache
 
+- The IndexedDB uses are the thin cache, the unsent input buffer, and the server keys.
 - A frontend on the same machine as its server keeps no cache.
 - A remote frontend (phone, UI-only computer) keeps one IndexedDB record for each
   subscription: its data and its cursor in one value. It writes at most every 5 seconds
@@ -96,6 +116,16 @@ fetch and SSE now. WebTransport may come later as a second binding of the same c
 event contract: for upload streams from the client, binary data, or poor mobile networks.
 It needs a `tailscale cert` certificate, an `h3` ALPN, a UDP port, and the HTTPS fallback.
 
+### Storage
+
+SQLite stays. One user and one writer actor do not need a database server, and the state
+is one file for backups and layr snapshots. The problems are in its use:
+
+- No I/O inside a write transaction. Long transactions block every writer; one took 282 s
+  (`docs/verification/2026-10-05-sqlite-owners-and-code-cells.md`).
+- An alert when a write transaction exceeds a set duration.
+- `canvas.sqlite3` has about 4 GB of free pages. Reclaim them after the copies are removed.
+
 ### One owner for each kind of data
 
 | Data                           | Copies now                                                                                                           | Single owner                                                  | The others                                                                                   |
@@ -107,6 +137,15 @@ It needs a `tailscale cert` certificate, an `h3` ALPN, a UDP port, and the HTTPS
 | Outgoing requests              | 4 outboxes (`runtime_server_outbox`, `runtime_federation_outbox`, `runtime_access_outbound`, `runtime_server_fetch`) | One outbox with `kind` and `target`                           | The same request id and exact body on each retry                                             |
 | Signatures and nonces          | 2 schemes and 2 nonce tables                                                                                         | `studio-multi-server-v1`, with federation as a principal kind | Separate trust lists stay                                                                    |
 | Drafts                         | 9 client modules, the Rust client store, and the server                                                              | The server                                                    | The device keeps only unsent input                                                           |
+
+### Removed parts
+
+- The Electron application and its Python helpers (`recover_backend.py`, `deliver_server.py`,
+  `desktop_delivery.py`, `install_update.py`). Tauri replaces them.
+- `workspaces/runtime/apps/server/`, which holds only untracked Python caches.
+- `client-wasm`, and the `client-core` stores, sync, outbox, and transport.
+- The peer update actions (`peer_updates.rs`, `peer_update_pull.rs`, about 2.5k lines)
+  move to the shared outbox and commands.
 
 ## Data-loss rules
 
@@ -127,6 +166,15 @@ It needs a `tailscale cert` certificate, an `h3` ALPN, a UDP port, and the HTTPS
 5. Move the remaining ledgers, then the agent writers (about 100 files), to command and provider handlers.
 6. One copy of the conversation, and blobs. Measure `dbstat` on an APFS clone first.
 7. WebTransport, only if a measurement requires it.
+
+## Risks
+
+- Complexity grows before it falls: old and new paths live together for months.
+- The UI depends on its server. A server restart breaks the stream for a short time.
+- Agents survive a server restart only with the supervisor, which Windows does not have.
+- Disk use grows: rewind hides items and makes snapshots.
+- The UI moves to Tauri now and to Attar later. The frontend contract must suit Attar,
+  or the rendering code is rewritten twice.
 
 ## Open questions
 
