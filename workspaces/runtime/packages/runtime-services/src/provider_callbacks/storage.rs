@@ -234,11 +234,6 @@ pub(super) fn save_reply(
         },
     )
 }
-#[cfg(test)]
-pub(crate) fn reply_key(identity: &ReplyIdentity) -> String {
-    identity.key()
-}
-
 pub(super) fn saved_reply(
     tx: &Transaction<'_>,
     identity: &ReplyIdentity,

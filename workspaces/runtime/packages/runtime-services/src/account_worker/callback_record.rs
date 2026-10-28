@@ -270,11 +270,6 @@ pub(super) async fn retire_async(store: &RuntimeStore, operation: &str) -> Resul
         .transaction_with(move |tx| retire(tx, &operation))
         .await
 }
-#[cfg(test)]
-pub(super) async fn admit(store: &RuntimeStore, operation: &str) -> Result<bool, WorkerError> {
-    admit_reply(store, operation, None).await
-}
-
 fn accepted_context(
     tx: &Transaction<'_>,
     accepted: &Accepted,
