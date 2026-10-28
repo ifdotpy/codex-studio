@@ -44,6 +44,7 @@ import {
 } from "./servers/ServerServicesContext";
 import { useServerFileDialogs } from "./servers/ServerServicesContext";
 import { onDesktopNavigate } from "./native/notifications";
+import { reserveMessageId } from "./native/outbox";
 import { writePreferenceEdit } from "./sync/uiPreferenceStore";
 import { createUiPreferenceBridge } from "./sync/uiPreferenceBridge";
 import type { UiPreferenceProjection } from "./sync/entityProjection";
@@ -856,16 +857,12 @@ export default function App({ active = true }: { active?: boolean }) {
     creationLock = useRef(false),
     renameRequests = useRef<Record<string, { text: string; id: string }>>({}),
     toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingSendKey = `studio-pending-sends:${data?.stateDir || ""}`;
   const [renameVersion, setRenameVersion] = useState(0);
   const persistRenames = () => {
     save(pendingRenameKey, renameRequests.current);
     setRenameVersion((version) => version + 1);
   };
   const pendingRenameKey = `studio-pending-renames:${data?.stateDir || ""}`;
-  useEffect(() => {
-    if (data?.stateDir) sends.current = saved(pendingSendKey, {});
-  }, [pendingSendKey, data?.stateDir]);
   useEffect(() => {
     if (data?.stateDir) renameRequests.current = saved(pendingRenameKey, {});
   }, [pendingRenameKey, data?.stateDir]);
@@ -883,7 +880,6 @@ export default function App({ active = true }: { active?: boolean }) {
     );
     return () => stops.forEach((stop) => stop());
   }, [pendingRenameKey, renameVersion, renameEvents]);
-  const persistSends = () => save(pendingSendKey, sends.current);
   useEffect(() => {
     if (!data?.stateDir) return;
     const load = () => {
@@ -1804,7 +1800,7 @@ export default function App({ active = true }: { active?: boolean }) {
             (options?.delivery || DeliveryMoment.CurrentTurn)
         )
           sends.current[id] = {
-            id: randomUUID(),
+            id: await reserveMessageId(),
             room: id,
             text,
             assets: options?.assets || [],
@@ -1812,7 +1808,6 @@ export default function App({ active = true }: { active?: boolean }) {
             delivery: options?.delivery || DeliveryMoment.CurrentTurn,
           };
         // Retain the exact request until the durable outbox owns its retry.
-        persistSends();
         request = sends.current[id];
         const entry: OutgoingMessage = {
           id: request.id,
@@ -1838,7 +1833,6 @@ export default function App({ active = true }: { active?: boolean }) {
             // including identical text, gets its own identity.
             if (sends.current[id]?.id === entry.id) {
               delete sends.current[id];
-              persistSends();
             }
             await options?.onPersist?.();
             release();
@@ -1860,7 +1854,6 @@ export default function App({ active = true }: { active?: boolean }) {
         if (result.status === "cancelled") {
           if (sends.current[id]?.id === entry.id) {
             delete sends.current[id];
-            persistSends();
           }
           throw new ApiError(
             "This message was cancelled. Send it again to resume.",
@@ -1876,7 +1869,6 @@ export default function App({ active = true }: { active?: boolean }) {
           );
         if (sends.current[id]?.id === entry.id) {
           delete sends.current[id];
-          persistSends();
         }
         if (
           result.kind === "server" &&
@@ -1918,7 +1910,6 @@ export default function App({ active = true }: { active?: boolean }) {
           !sends.current[request.room]
         )
           sends.current[request.room] = request;
-        persistSends();
         setOutgoing((old) =>
           old[key]
             ? {

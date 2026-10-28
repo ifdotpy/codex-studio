@@ -17,6 +17,17 @@ type LegacyOutbox = () => Promise<{
 }>;
 
 /**
+ * A new message identity from the core (`outbox.reserve`). The core stores the
+ * message only when `outbox.enqueue` accepts this identity, so a lost reply
+ * stores nothing and the page can ask again.
+ */
+export async function reserveMessageId(): Promise<string> {
+  const { id } = await nativeRequest<{ id: string }>("outbox.reserve", {});
+  if (!id) throw new Error("The native client returned no message identity.");
+  return id;
+}
+
+/**
  * The message queue of the local server in the native client. The core owns
  * queue states, delivery, retry, receipts, and remove and restore
  * (`client-core/src/outbox.rs`, `delivery.rs`). The page only renders entries

@@ -6,7 +6,7 @@ vi.mock("./client", () => ({
 }));
 vi.mock("./frame", () => ({ isNativeFrame: () => false }));
 import { nativeRequest } from "./client";
-import { createNativeOutbox } from "./outbox";
+import { createNativeOutbox, reserveMessageId } from "./outbox";
 
 afterEach(() => {
   vi.resetAllMocks();
@@ -82,4 +82,15 @@ it("removing a card asks the core to stop the message identity", async () => {
     "outbox.stop",
     { workspace: "w", id: "one" },
   ]);
+});
+
+it("the message identity comes from the core, not from the page", async () => {
+  vi.mocked(nativeRequest).mockResolvedValue({ id: "core-minted-id" });
+  expect(await reserveMessageId()).toBe("core-minted-id");
+  expect(vi.mocked(nativeRequest)).toHaveBeenCalledWith("outbox.reserve", {});
+});
+
+it("a reply without a message identity is refused", async () => {
+  vi.mocked(nativeRequest).mockResolvedValue({ id: "" });
+  await expect(reserveMessageId()).rejects.toThrow("message identity");
 });
