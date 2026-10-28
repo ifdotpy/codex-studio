@@ -112,19 +112,6 @@ impl CredentialFormat {
             #[serde(rename = "subscriptionType")]
             subscription: Option<Value>,
         }
-        #[derive(Deserialize)]
-        struct Codex {
-            auth_mode: Option<Value>,
-            #[serde(rename = "OPENAI_API_KEY")]
-            api_key: Option<Value>,
-            tokens: Option<Tokens>,
-        }
-        #[derive(Deserialize)]
-        struct Tokens {
-            account_id: Option<Value>,
-            access_token: Option<Value>,
-            id_token: Option<Value>,
-        }
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         match self {
             Self::ClaudeAccount => serde_json::from_slice::<Account>(bytes)
@@ -145,21 +132,17 @@ impl CredentialFormat {
                     .hash(&mut hasher);
             }
             Self::CodexAuth => {
-                let auth = serde_json::from_slice::<Codex>(bytes).ok()?;
-                let tokens = auth.tokens;
+                let auth = serde_json::from_slice::<super::CodexAuthFile>(bytes).ok()?;
+                let tokens = auth.tokens.unwrap_or_default();
                 (
-                    auth.auth_mode.map(|value| value.to_string()),
-                    auth.api_key.map(|value| value.to_string()),
+                    auth.auth_mode,
+                    auth.api_key,
+                    tokens.account_id,
                     tokens
-                        .as_ref()
-                        .and_then(|tokens| tokens.account_id.as_ref())
-                        .map(ToString::to_string),
-                    tokens
-                        .as_ref()
-                        .is_some_and(|tokens| present(&tokens.access_token)),
-                    tokens
-                        .as_ref()
-                        .is_some_and(|tokens| present(&tokens.id_token)),
+                        .access_token
+                        .filter(|value| !value.is_empty())
+                        .is_some(),
+                    tokens.id_token.filter(|value| !value.is_empty()).is_some(),
                 )
                     .hash(&mut hasher);
             }
