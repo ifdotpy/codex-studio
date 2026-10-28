@@ -230,6 +230,7 @@ import {
   moveIdentity,
   moveVersions,
   nativeFile,
+  carryNativeHistory,
   exactSession,
   exactProof,
   nativeDestination,
@@ -3375,6 +3376,10 @@ async function handle(
           (!active.turn && !active.tasks.size && !queryHasInput(active))
         ) {
           discardQuery(s.id, active);
+          if (p.cwd) {
+            await carryNativeHistory(s, p.cwd);
+            if (p.cwd !== s.cwd && s.started) s.nativeHistoryCwd = p.cwd;
+          }
           Object.assign(
             s,
             p,

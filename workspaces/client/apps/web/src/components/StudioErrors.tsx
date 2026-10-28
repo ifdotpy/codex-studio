@@ -159,7 +159,9 @@ export function StudioErrorList({
           {visible.map((row) =>
             row.type === "local" ? (
               <article className="studio-error-row" key={row.item.id}>
-                <Badge color={LEVEL_COLORS.log}>LOG</Badge>
+                <Badge color={LEVEL_COLORS[row.level]}>
+                  {row.level.toUpperCase()}
+                </Badge>
                 <Text size="sm">{row.item.title}</Text>
                 <Text size="sm">{row.item.reason}</Text>
                 {row.item.detail && (

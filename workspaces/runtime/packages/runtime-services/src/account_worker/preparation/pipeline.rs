@@ -1447,7 +1447,7 @@ fn monitor_command_settings(
     {
         permissions
     } else {
-        match yolo_mode {
+        match thread::effective_yolo_mode(role, yolo_mode) {
             Some(true) => {
                 json!({"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}})
             }
@@ -2447,6 +2447,19 @@ mod daybreak_tests {
         );
         assert_eq!(
             reviewer.ok(),
+            Some(json!({
+                "approvalPolicy":"on-request","sandboxPolicy":{"type":"readOnly"}
+            }))
+        );
+
+        let yolo_reviewer = monitor_command_settings(
+            &json!({"sandbox":"danger-full-access"}),
+            "/workspace",
+            thread::Role::Reviewer,
+            Some(true),
+        );
+        assert_eq!(
+            yolo_reviewer.ok(),
             Some(json!({
                 "approvalPolicy":"on-request","sandboxPolicy":{"type":"readOnly"}
             }))

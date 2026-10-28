@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { inputText } from "../sdk-fixtures.ts";
 import type {
   SessionFixtureTextQuery as SessionFixtureQuery,
@@ -17,7 +18,19 @@ export const forkSession = async () => ({
   sessionId: "22222222-2222-4222-8222-222222222222",
 });
 export const getSessionMessages = async () => [];
+function trace(value: unknown) {
+  if (process.env.STUDIO_SETTINGS_TRACE)
+    appendFileSync(
+      process.env.STUDIO_SETTINGS_TRACE,
+      JSON.stringify(value) + "\n",
+    );
+}
 export function query({ prompt, options }: SessionFixtureQuery) {
+  trace({
+    query: true,
+    mode: options.permissionMode,
+    persist: options.persistSession,
+  });
   const abort = new AbortController();
   return {
     supportedModels: async () => [
@@ -35,9 +48,9 @@ export function query({ prompt, options }: SessionFixtureQuery) {
     initializationResult: async () => ({ commands: [] }),
     mcpServerStatus: async () => [],
     reconnectMcpServer: async () => {},
-    setModel: async () => {},
-    setPermissionMode: async () => {},
-    applyFlagSettings: async () => {},
+    setModel: async (model: string) => trace({ model }),
+    setPermissionMode: async (mode: string) => trace({ mode }),
+    applyFlagSettings: async (flags: unknown) => trace({ flags }),
     stopTask: async () => {},
     setMcpServers: async () => ({ added: [], removed: [], errors: {} }),
     close() {
