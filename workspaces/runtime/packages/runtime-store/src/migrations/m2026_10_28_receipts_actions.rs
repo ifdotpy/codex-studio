@@ -1057,7 +1057,25 @@ fn operation_owner(
         ) {
             return Err(invalid());
         }
-        value["rootRequestId"] = json!(RequestIdentity::issue_root());
+        let admitted: AdmittedRequest = match value
+            .get("admittedRequest")
+            .filter(|value| !value.is_null())
+        {
+            Some(value) => serde_json::from_value(value.clone()).map_err(|_| invalid())?,
+            None => admitted_owner_token(&row.id, &row.signature, cutover),
+        };
+        if admitted.id().is_empty() || admitted.signature() != row.signature {
+            return Err(invalid());
+        }
+        value["admittedRequest"] = json!(admitted);
+        value["rootRequestId"] = json!(crate::receipt_migration_contract::hydrate_source_root(
+            tx,
+            table,
+            &row.id,
+            &row.signature,
+            "record",
+            "$.rootRequestId"
+        )?);
     }
     Ok(value)
 }
@@ -1688,5 +1706,111 @@ mod tests {
         let retry: Value = serde_json::from_str(&raw).expect("JSON");
         assert_eq!(retry["dispatch"], "unknown");
         assert!(retry["admittedRequest"].is_object());
+    }
+    #[test]
+    fn receipts_actions_process_owner_admission_preserves_opaque_identity_root_and_phase() {
+        let dir = tempfile::tempdir().expect("directory");
+        let path = dir.path().join("process.db");
+        let mut db = Connection::open(&path).expect("database");
+        fixture(&db);
+        db.execute_batch("CREATE TABLE runtime_process_actions(id TEXT PRIMARY KEY,signature TEXT NOT NULL,record TEXT NOT NULL)").expect("process owner");
+        let root = RequestIdentity::issue_root();
+        for phase in ["dispatching", "uncertain", "completed"] {
+            let id = format!("opaque-action:{phase}");
+            let record = json!({"requestId":id,"rootRequestId":root,"signature":"original-signature","phase":phase,"scopeAgent":"owner","scopeAccountKey":"account","scopeEpoch":3,"action":"stop_owned","responseTarget":null,"processes":[{"key":"native-process-key","generation":"generation-7"}],"created":1.0,"result":{"requestId":id,"status":"uncertain","processes":[]}});
+            db.execute("INSERT INTO runtime_process_actions(id,signature,record) VALUES(?1,'original-signature',?2)",params![id,record.to_string()]).expect("old process owner");
+        }
+        batch(&mut db, "runtime_process_actions").expect("hydrate parent capabilities");
+        let snapshot = |db: &Connection| -> Vec<(String, String, String)> {
+            db.prepare("SELECT id,signature,record FROM runtime_process_actions ORDER BY id")
+                .expect("query")
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .expect("rows")
+                .collect::<rusqlite::Result<_>>()
+                .expect("records")
+        };
+        let before = snapshot(&db);
+        for (id, signature, raw) in &before {
+            let record: Value = serde_json::from_str(raw).expect("owner");
+            let admitted: AdmittedRequest =
+                serde_json::from_value(record["admittedRequest"].clone())
+                    .expect("strict admitted owner token");
+            assert_eq!(admitted.id(), id);
+            assert_eq!(admitted.signature(), signature);
+            assert_eq!(admitted.created(), 1000);
+            assert_eq!(record["requestId"], *id);
+            assert_eq!(record["signature"], *signature);
+            assert_eq!(record["rootRequestId"], root);
+            assert_eq!(
+                record["phase"],
+                id.strip_prefix("opaque-action:").expect("phase")
+            );
+            assert_eq!(
+                record["processes"],
+                json!([{"key":"native-process-key","generation":"generation-7"}])
+            );
+            let after_ttl = 1000 + studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS + 1;
+            let final_token = admitted.derive_result(
+                "provider-call",
+                &[
+                    "account",
+                    "owner",
+                    "3",
+                    &format!("process-action:{id}:stop"),
+                ],
+                "provider-fingerprint",
+            );
+            assert_eq!(final_token.created(), admitted.created());
+            assert!(
+                final_token.created()
+                    < after_ttl - studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS
+            );
+        }
+        drop(db);
+        let mut db = Connection::open(path).expect("reopen");
+        batch(&mut db, "runtime_process_actions").expect("no token or root refresh");
+        assert_eq!(snapshot(&db), before);
+    }
+    #[test]
+    fn receipts_actions_existing_process_admission_is_strict_and_never_refreshed() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        db.execute_batch("CREATE TABLE runtime_process_actions(id TEXT PRIMARY KEY,signature TEXT NOT NULL,record TEXT NOT NULL)").expect("owner");
+        let token = admitted_owner_token("original-parent", "original-signature", 17)
+            .derive_result("process-action", &["opaque-action"], "original-signature");
+        let root = RequestIdentity::issue_root();
+        let original = json!({"requestId":"opaque-action","signature":"original-signature","phase":"uncertain","rootRequestId":root,"admittedRequest":token});
+        db.execute("INSERT INTO runtime_process_actions(id,signature,record) VALUES('opaque-action','original-signature',?1)",[original.to_string()]).expect("already admitted");
+        batch(&mut db, "runtime_process_actions").expect("preserve capability");
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_process_actions", [], |r| {
+                r.get(0)
+            })
+            .expect("owner");
+        assert_eq!(serde_json::from_str::<Value>(&raw).expect("JSON"), original);
+        let mut malformed = original.clone();
+        malformed["admittedRequest"]["unexpected"] = json!(true);
+        db.execute(
+            "UPDATE runtime_process_actions SET record=?1",
+            [malformed.to_string()],
+        )
+        .expect("malformed imported token");
+        db.execute(
+            "DELETE FROM runtime_payload_migrations WHERE name!='receipts:cutover'",
+            [],
+        )
+        .expect("new import fixture");
+        assert!(
+            matches!(batch(&mut db,"runtime_process_actions"),Err(ReceiptMigrationError::Unclassifiable{table,key,signature}) if table=="runtime_process_actions"&&key=="opaque-action"&&signature=="original-signature")
+        );
+        let after: String = db
+            .query_row("SELECT record FROM runtime_process_actions", [], |r| {
+                r.get(0)
+            })
+            .expect("unchanged source");
+        assert_eq!(
+            serde_json::from_str::<Value>(&after).expect("JSON"),
+            malformed
+        );
     }
 }
