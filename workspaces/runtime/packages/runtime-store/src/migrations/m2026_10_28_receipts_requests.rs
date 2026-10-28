@@ -238,6 +238,10 @@ impl ReceiptFamilyMigration for Family {
             if let Some(deliveries) = reply.get_mut("deliveries") {
                 *deliveries = delivery_map(source, &row, deliveries)?;
             }
+            if redundant_tool_work(tx, &row, &reply)? {
+                delete_source(tx, source, row.rowid)?;
+                continue;
+            }
             import_result(
                 tx,
                 &row.id,
@@ -267,6 +271,57 @@ impl ReceiptFamilyMigration for Family {
         }
         Ok(())
     }
+}
+
+fn redundant_tool_work(tx: &Transaction<'_>, row: &SourceReceipt, reply: &Value) -> Result<bool> {
+    if !schema("WorkItem", reply)
+        || !crate::receipt_migration_contract::source_exists(tx, "runtime_tool_requests")?
+    {
+        return Ok(false);
+    }
+    let task: Option<String> = tx
+        .query_row(
+            "SELECT record FROM runtime_tool_requests WHERE id=?1",
+            [&row.id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(task) = task else { return Ok(false) };
+    let invalid = || unclassifiable(SOURCE, &row.id, &row.signature);
+    let task: Value = serde_json::from_str(&task).map_err(|_| invalid())?;
+    if task["kind"] != "managed_tool" || task["tool"] != "orchestration_task" {
+        return Ok(false);
+    }
+    let token: AdmittedRequest =
+        serde_json::from_value(task["admitted"].clone()).map_err(|_| invalid())?;
+    let saved: Option<(String, String)> = tx
+        .query_row(
+            "SELECT signature,result FROM request_results WHERE id=?1",
+            [&row.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let (signature, result) = saved.ok_or_else(invalid)?;
+    let outer: ResultEnvelope<Value> = serde_json::from_str(&result).map_err(|_| invalid())?;
+    let work_id = reply["id"].as_str().ok_or_else(invalid)?;
+    if task["id"] != row.id
+        || task["stage"] != "completed"
+        || task["outcome"] != "applied"
+        || token.id() != row.id
+        || token.signature() != signature
+        || task["signature"] != signature
+        || outer.actor.as_deref() != task["agent"].as_str()
+        || !schema("PersistedToolResult", &outer.reply)
+        || !crate::receipt_migration_contract::source_exists(tx, "runtime_work")?
+        || !tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_work WHERE id=?1)",
+            [work_id],
+            |r| r.get::<_, bool>(0),
+        )?
+    {
+        return Err(invalid());
+    }
+    Ok(true)
 }
 
 fn move_remote_event_identities(
@@ -1256,6 +1311,84 @@ mod tests {
     }
     fn plan() -> Value {
         json!({"id":"agent","rootId":"root","text":"original","version":1,"updated":1.0})
+    }
+    #[test]
+    fn receipts_requests_redundant_tool_work_requires_outer_and_work_owner() {
+        for (outer, owner) in [(true, true), (false, true), (true, false)] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            db.execute_batch("CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL); CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL)").expect("owners");
+            let reply = json!({"id":"task","rootId":"root","title":"Task","status":"ready","created":1.0,"updated":2.0,"version":1});
+            insert(&db, "tool-id", reply);
+            let admitted = admitted_owner_token("tool-id", "outer-signature", CUTOVER);
+            let task = json!({"id":"tool-id","agent":"agent","tool":"orchestration_task","kind":"managed_tool","stage":"completed","outcome":"applied","signature":"outer-signature","admitted":admitted});
+            db.execute(
+                "INSERT INTO runtime_tool_requests VALUES('tool-id',?1)",
+                [task.to_string()],
+            )
+            .expect("task");
+            if owner {
+                db.execute("INSERT INTO runtime_work VALUES('task','{}')", [])
+                    .expect("work");
+            }
+            let outer_body =
+                json!({"actor":"agent","reply":{"success":true,"contentItems":[]},"references":[]})
+                    .to_string();
+            if outer {
+                db.execute(
+                    "INSERT INTO request_results VALUES('tool-id','outer-signature',?1,?2)",
+                    params![outer_body, CUTOVER],
+                )
+                .expect("outer");
+            }
+            let tx = db.transaction().expect("tx");
+            let checkpoint =
+                MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
+            let result = Family.move_batch(&tx, SOURCE, &checkpoint);
+            if outer && owner {
+                result.expect("redundant");
+                tx.commit().expect("commit");
+                assert_eq!(
+                    db.query_row(
+                        "SELECT result FROM request_results WHERE id='tool-id'",
+                        [],
+                        |r| r.get::<_, String>(0)
+                    )
+                    .expect("outer retained"),
+                    outer_body
+                );
+                assert_eq!(
+                    crate::request_results::RequestResults::replay(
+                        &db,
+                        "tool-id",
+                        "outer-signature",
+                        CUTOVER + 1
+                    )
+                    .expect("replay")
+                    .expect("outer result")
+                    .result,
+                    outer_body
+                );
+                assert_eq!(
+                    db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                        .get::<_, i64>(0))
+                        .expect("source"),
+                    0
+                );
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(ReceiptMigrationError::Unclassifiable { .. })
+                ));
+                tx.rollback().expect("rollback");
+                assert_eq!(
+                    db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                        .get::<_, i64>(0))
+                        .expect("source"),
+                    1
+                );
+            }
+        }
     }
     fn batch(db: &mut Connection, commit: bool) -> MigrationCheckpoint {
         batch_source(db, SOURCE, commit)
