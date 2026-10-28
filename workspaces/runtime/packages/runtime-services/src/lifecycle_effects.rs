@@ -463,7 +463,7 @@ impl ProductionLifecyclePorts {
             request_id: String,
             operation: Vec<String>,
             action: studio_runtime_schema::persistence::ServerOperationKind,
-            payload: Value,
+            payload: Box<serde_json::value::RawValue>,
         }
         let pending = self
             .store
