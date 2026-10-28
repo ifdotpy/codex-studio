@@ -69,6 +69,14 @@ pub struct AdmittedRequest {
     created: i64,
 }
 impl AdmittedRequest {
+    /// Restore a token from a previously validated persisted owner record.
+    pub fn from_persisted_fields(id: String, signature: String, created: i64) -> Self {
+        Self {
+            id,
+            signature,
+            created,
+        }
+    }
     /// A result suboperation of this persisted admitted owner token. This is
     /// completion, never ingress: preserve issuance and do not refresh its TTL.
     pub fn derive_result(&self, namespace: &str, operation: &[&str], signature: &str) -> Self {

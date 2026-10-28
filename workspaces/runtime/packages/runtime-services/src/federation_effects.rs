@@ -168,7 +168,10 @@ pub async fn handle(
         check_identity(tx,identity_for_effect.as_ref())?;
         match action {
             FederationAction::Pair => Err(Error::Invalid("action")),
-            FederationAction::Message=>receive_locked(tx,&peer_id,&body["envelope"],now),
+            FederationAction::Message=>{
+                let receipt = receive_locked(tx,&peer_id,&body["envelope"],now)?;
+                Ok(json!({"protocol":receipt.protocol,"messageId":receipt.message_id,"accepted":receipt.accepted,"room":receipt.room,"sequence":receipt.sequence.map_or(Value::Null, Value::from)}))
+            },
             FederationAction::Pull=>pull_locked(tx,&peer_id,&body,&identity_for_effect,now),
             FederationAction::Status=>Ok(json!({"protocol":PROTOCOL,"approved":state.peer.allowed(),"revoked":state.peer.revoked()})),
         }
@@ -375,14 +378,19 @@ pub async fn receive(
     peer: &str,
     envelope: &Value,
     now: f64,
-) -> Result<Value> {
+) -> Result<core::MessageReceipt> {
     let peer = peer.to_owned();
     let envelope = envelope.clone();
     store
         .transaction_with(move |tx| receive_locked(tx, &peer, &envelope, now))
         .await
 }
-fn receive_locked(tx: &Transaction<'_>, peer: &str, envelope: &Value, now: f64) -> Result<Value> {
+fn receive_locked(
+    tx: &Transaction<'_>,
+    peer: &str,
+    envelope: &Value,
+    now: f64,
+) -> Result<core::MessageReceipt> {
     let message = core::checked_envelope(envelope)?;
     let state = snapshot(tx, peer, &message.room, now)?;
     state.authorize(false)?;
@@ -409,9 +417,7 @@ fn receive_locked(tx: &Transaction<'_>, peer: &str, envelope: &Value, now: f64) 
         chrono::Utc::now().timestamp_millis(),
     )? {
         CallerAdmission::Fresh(admitted) => admitted,
-        CallerAdmission::Replay(saved) => {
-            return serde_json::to_value(saved).map_err(|error| StoreError::from(error).into());
-        }
+        CallerAdmission::Replay(saved) => return Ok(saved),
     };
     let mut decision = core::decide_receive(&state, envelope, now)?;
     if let Some(chat) = &decision.chat {
@@ -428,7 +434,7 @@ fn receive_locked(tx: &Transaction<'_>, peer: &str, envelope: &Value, now: f64) 
             return Err(Error::Conflict("chat exists without its inbox receipt"));
         }
         tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?1,?2,?3,?4,?5,'{}')",params![chat.id,chat.room,chat.sender,chat.text,chat.created]).map_err(StoreError::from)?;
-        decision.receipt["sequence"] = json!(tx.last_insert_rowid());
+        decision.receipt.sequence = Some(tx.last_insert_rowid());
         for member in &chat.recipients {
             let agent = AgentRepository::get(tx, &AgentId::from(member.as_str()))?
                 .ok_or(Error::Invalid("room.localMembers"))?;
@@ -468,9 +474,7 @@ fn receive_locked(tx: &Transaction<'_>, peer: &str, envelope: &Value, now: f64) 
             .remove("receipt");
         Repo::put(tx, Table::Inbox, &message.id, peer, inbox)?;
     }
-    let receipt: core::MessageReceipt =
-        serde_json::from_value(decision.receipt.clone()).map_err(StoreError::from)?;
-    crate::event_write::settle_request(tx, &admitted, None, &receipt)?;
+    crate::event_write::settle_request(tx, &admitted, None, &decision.receipt)?;
     Ok(decision.receipt)
 }
 
@@ -626,13 +630,56 @@ pub(crate) fn acknowledge_outbox(
         )
         .map_err(StoreError::from)?;
     }
-    let admitted: studio_runtime_store::request_results::AdmittedRequest =
-        serde_json::from_value(item["admission"].clone()).map_err(StoreError::from)?;
+    let admission = item["admission"]
+        .as_object()
+        .filter(|v| v.len() == 3)
+        .ok_or(Error::Invalid("outbox.admission"))?;
+    let admitted = studio_runtime_store::request_results::AdmittedRequest::from_persisted_fields(
+        admission
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(Error::Invalid("outbox.admission.id"))?
+            .to_owned(),
+        admission
+            .get("signature")
+            .and_then(Value::as_str)
+            .ok_or(Error::Invalid("outbox.admission.signature"))?
+            .to_owned(),
+        admission
+            .get("created")
+            .and_then(Value::as_i64)
+            .ok_or(Error::Invalid("outbox.admission.created"))?,
+    );
     let receipt = ack
         .get("receipt")
-        .map(|receipt| serde_json::from_value::<core::MessageReceipt>(receipt.clone()))
-        .transpose()
-        .map_err(StoreError::from)?;
+        .map(|value| {
+            Ok::<_, Error>(core::MessageReceipt {
+                protocol: value
+                    .get("protocol")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .ok_or(Error::Invalid("ack.receipt.protocol"))?,
+                message_id: value
+                    .get("messageId")
+                    .and_then(Value::as_str)
+                    .ok_or(Error::Invalid("ack.receipt.messageId"))?
+                    .to_owned(),
+                accepted: value
+                    .get("accepted")
+                    .and_then(Value::as_bool)
+                    .ok_or(Error::Invalid("ack.receipt.accepted"))?,
+                room: value
+                    .get("room")
+                    .and_then(Value::as_str)
+                    .ok_or(Error::Invalid("ack.receipt.room"))?
+                    .to_owned(),
+                sequence: match value.get("sequence") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.as_i64().ok_or(Error::Invalid("ack.receipt.sequence"))?),
+                },
+            })
+        })
+        .transpose()?;
     let reply = core::FederationDeliveryReply {
         ack: core::FederationAck {
             id: id.to_owned(),

@@ -295,7 +295,7 @@ async fn federation_payload_validation() {
             "{name}"
         );
         if let Ok(decision) = result {
-            assert_eq!(decision.receipt["accepted"], true, "{name}");
+            assert!(decision.receipt.accepted, "{name}");
             assert!(decision.inbox.is_some(), "{name}");
         }
         if name.starts_with("room-") {
@@ -869,7 +869,7 @@ async fn federation_user_message_uses_the_local_lead_and_stable_idempotency_key(
     )
     .await
     .expect("idempotent federated user message");
-    assert_eq!(first, replay);
+    assert_eq!(first.get(), replay.get());
     assert!(
         matches!(
             delivery::user_message(
@@ -1161,6 +1161,18 @@ impl delivery::FederationTransport for PeerTransport {
         })
     }
 }
+#[test]
+fn message_receipt_round_trips_wire_shape() {
+    let raw =
+        r#"{"protocol":1,"messageId":"message","accepted":true,"room":"room","sequence":null}"#;
+    let receipt: super::core::MessageReceipt = serde_json::from_str(raw).expect("wire receipt");
+    let encoded = serde_json::to_string(&receipt).expect("serialize receipt");
+    assert_eq!(
+        serde_json::from_str::<Value>(&encoded).expect("encoded receipt"),
+        serde_json::from_str::<Value>(raw).expect("wire JSON")
+    );
+}
+
 #[tokio::test]
 async fn lost_push_response() {
     let corpus = &Corpus::new();
@@ -1184,7 +1196,7 @@ async fn lost_push_response() {
         .await
         .expect("fixture operation");
     assert_eq!(
-        result,
+        result.get(),
         delivery::send_message(
             std::sync::Arc::clone(&sender),
             "lead",
@@ -1196,6 +1208,7 @@ async fn lost_push_response() {
         )
         .await
         .expect("fixture operation")
+        .get()
     );
     assert!(
         delivery::send_message(

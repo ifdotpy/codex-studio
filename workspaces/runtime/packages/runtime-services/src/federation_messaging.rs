@@ -44,7 +44,7 @@ fn decode<T: serde::de::DeserializeOwned>(value: Value, location: &'static str) 
 
 pub(crate) use studio_runtime_schema::persistence::FederationMessageKind as MessageKind;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageReceipt {
     pub protocol: u32,
@@ -68,7 +68,7 @@ pub struct FederationDeliveryReply {
     pub receipt: Option<MessageReceipt>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MessageSendReply {
     pub id: String,
     pub room: String,
@@ -97,6 +97,9 @@ enum PeerStatus {
     Revoked,
 }
 impl Peer {
+    pub(crate) fn awaiting_pair(&self) -> bool {
+        self.status != PeerStatus::Revoked && self.local_approved && !self.remote_approved
+    }
     pub(crate) fn allowed(&self) -> bool {
         self.status == PeerStatus::Approved && self.local_approved && self.remote_approved
     }
@@ -194,7 +197,7 @@ impl Snapshot {
 }
 
 pub struct ReceiveDecision {
-    pub(crate) receipt: Value,
+    pub(crate) receipt: MessageReceipt,
     pub(crate) room: Option<Value>,
     pub(crate) chat: Option<ChatEffect>,
     pub(crate) inbox: Option<Value>,
@@ -260,7 +263,13 @@ pub fn decide_receive(snapshot: &Snapshot, envelope: &Value, now: f64) -> Result
         return Err(FederationMessageError::Forbidden("sender identity"));
     }
     let hash = envelope_hash(envelope)?;
-    let mut receipt = json!({"protocol":PROTOCOL,"messageId":message.id,"accepted":true,"room":message.room,"sequence":null});
+    let receipt = MessageReceipt {
+        protocol: PROTOCOL as u32,
+        message_id: message.id.clone(),
+        accepted: true,
+        room: message.room.clone(),
+        sequence: None,
+    };
     let mut chat = None;
     let room = match message.kind {
         MessageKind::RoomInvite | MessageKind::RoomAccept => {
@@ -366,7 +375,6 @@ pub fn decide_receive(snapshot: &Snapshot, envelope: &Value, now: f64) -> Result
                 .ok_or(FederationMessageError::Invalid("room"))?;
             value["remoteSequence"] = json!(sequence);
             value["updated"] = json!(created.max(now));
-            receipt["sequence"] = Value::Null; // Assigned by the atomic chat insert, before the inbox write.
             value
         }
     };

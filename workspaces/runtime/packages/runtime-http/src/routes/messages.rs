@@ -179,7 +179,7 @@ pub(super) async fn post_message(
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| ApiError::internal())?
             .as_secs_f64();
-        let mut result = studio_runtime_services::federation_delivery::user_message(
+        let result = studio_runtime_services::federation_delivery::user_message(
             Arc::clone(&store),
             &body.room,
             &body.text,
@@ -189,9 +189,9 @@ pub(super) async fn post_message(
         )
         .await
         .map_err(federation_error)?;
-        result["id"] = Value::String(body.id.clone());
-        let result =
-            super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(result)?;
+        let mut result: crate::generated::StudioApiWorkModelsMessageReceipt =
+            serde_json::from_str(result.get()).map_err(|_| ApiError::internal())?;
+        result.id = body.id.clone();
         wake.notify_one();
         return Ok(Json(result));
     }

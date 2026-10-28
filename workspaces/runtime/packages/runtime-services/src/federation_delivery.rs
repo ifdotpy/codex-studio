@@ -184,6 +184,17 @@ pub async fn delivery_deadlines_by_peer(
 
 /// Complete a durable outgoing invitation pairing. The peer row already holds
 /// the invitation ID/token before any network call, so retries keep its identity.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PairingPeer {
+    #[serde(flatten)]
+    peer: core::Peer,
+    invite_id: Option<String>,
+    invite_token: Option<String>,
+    local_origin: Option<String>,
+    local_lead_name: Option<String>,
+}
+
 pub async fn pair_peer(
     store: Arc<RuntimeStore>,
     peer_id: &str,
@@ -202,7 +213,7 @@ pub async fn pair_peer(
                     |row| row.get(0),
                 )
                 .optional()?;
-            raw.map(|raw| serde_json::from_str::<Value>(&raw))
+            raw.map(|raw| serde_json::from_str::<PairingPeer>(&raw))
                 .transpose()
                 .map_err(|_| {
                     StoreError::SchemaMismatch("invalid federation peer record".to_owned())
@@ -210,24 +221,22 @@ pub async fn pair_peer(
                 .ok_or_else(|| StoreError::SchemaMismatch("unknown federation peer".to_owned()))
         })
         .await?;
-    if record["status"] == "revoked"
-        || record["localApproved"] != true
-        || record["remoteApproved"] == true
-    {
+    if !record.peer.awaiting_pair() {
         return Err(Error::Forbidden("peer is not awaiting local pairing"));
     }
-    let peer: core::Peer =
-        serde_json::from_value(record.clone()).map_err(|_| Error::Invalid("peer"))?;
-    let invite_id = record["inviteId"]
-        .as_str()
+    let invite_id = record
+        .invite_id
+        .as_deref()
         .ok_or(Error::Invalid("peer.inviteId"))?;
-    let invite_token = record["inviteToken"]
-        .as_str()
+    let invite_token = record
+        .invite_token
+        .as_deref()
         .ok_or(Error::Invalid("peer.inviteToken"))?;
-    let local_origin = record["localOrigin"]
-        .as_str()
+    let local_origin = record
+        .local_origin
+        .as_deref()
         .ok_or(Error::Invalid("peer.localOrigin"))?;
-    let lead_name = record["localLeadName"].as_str().unwrap_or("Lead");
+    let lead_name = record.local_lead_name.as_deref().unwrap_or("Lead");
     let body = json!({
         "protocol": PROTOCOL,
         "inviteId": invite_id,
@@ -247,7 +256,7 @@ pub async fn pair_peer(
         Arc::clone(&store),
         transport,
         Request {
-            peer: &peer,
+            peer: &record.peer,
             identity: &identity,
             path: "/api/federation/v1/pair",
             body,
@@ -266,7 +275,8 @@ pub async fn pair_peer(
     let peer_id = peer_id.to_owned();
     let invite_id = invite_id.to_owned();
     let invite_token = invite_token.to_owned();
-    let record = record.clone();
+    let public_key = record.peer.public_key.clone();
+    let whois_user = record.peer.whois_user.clone();
     let response = response.clone();
     let whois_status = whois_status.to_owned();
     store.transaction_with(move |tx| {
@@ -274,7 +284,7 @@ pub async fn pair_peer(
             .ok_or(Error::Conflict("pairing intent disappeared"))?;
         if latest["inviteId"] != invite_id
             || latest["inviteToken"] != invite_token
-            || latest["publicKey"] != record["publicKey"]
+            || latest["publicKey"] != public_key
         {
             return Err(Error::Conflict("pairing intent changed"));
         }
@@ -284,10 +294,7 @@ pub async fn pair_peer(
             .cloned()
             .unwrap_or(Value::Bool(false));
         updated["whoisStatus"] = json!(whois_status);
-        updated["whoisUser"] = record
-            .get("whoisUser")
-            .cloned()
-            .unwrap_or(Value::Null);
+        updated["whoisUser"] = whois_user.map_or(Value::Null, Value::String);
         if whois_status == "missing" {
             updated["localApproved"] = Value::Bool(false);
             updated["lastError"] = json!("Tailscale identity was unavailable; explicitly accept this warning to finish pairing");
@@ -569,7 +576,7 @@ pub async fn send_message(
     key: &str,
     delivery: DeliveryMoment,
     now: f64,
-) -> Result<Value> {
+) -> Result<Box<serde_json::value::RawValue>> {
     let identity = transport::load_federation_identity(&store).await?;
     let identity = Arc::new(identity);
     let sender = sender.to_owned();
@@ -592,7 +599,7 @@ pub async fn user_message(
     key: &str,
     delivery: DeliveryMoment,
     now: f64,
-) -> Result<Value> {
+) -> Result<Box<serde_json::value::RawValue>> {
     let text = crate::event_write::python_strip(text);
     if text.is_empty() || text.chars().count() > core::MAX_MESSAGE || key.len() > 4096 {
         return Err(Error::Invalid("message"));
@@ -634,7 +641,7 @@ pub fn send_message_in_transaction(
     key: &str,
     delivery: DeliveryMoment,
     now: f64,
-) -> Result<Value> {
+) -> Result<Box<serde_json::value::RawValue>> {
     let text = crate::event_write::python_strip(text);
     if text.is_empty() || text.chars().count() > core::MAX_MESSAGE || key.len() > 4096 {
         return Err(Error::Invalid("message"));
@@ -680,7 +687,8 @@ pub fn send_message_in_transaction(
     )? {
         CallerAdmission::Fresh(admitted) => admitted,
         CallerAdmission::Replay(saved) => {
-            return serde_json::to_value(saved).map_err(|error| StoreError::from(error).into());
+            return serde_json::value::to_raw_value(&saved)
+                .map_err(|error| StoreError::from(error).into());
         }
     };
     let person = room
@@ -709,9 +717,8 @@ pub fn send_message_in_transaction(
         .unwrap_or(0)
         .checked_add(1)
         .ok_or(Error::Invalid("room.sequence"))?;
-    let payload = json!({"sender":sender,"senderName":name,"text":text,"created":now,"sequence":sequence,"delivery":delivery});
-    let mut item = json!({"id":message_id,"requestId":key,"kind":core::MessageKind::ChatMessage,"room":room_id,"payload":payload,"created":now,"status":studio_runtime_schema::persistence::FederationDeliveryState::Queued,"attempts":0,"nextAt":0,"error":null});
-    let immutable = json!({"protocol":PROTOCOL,"senderServer":state_id,"id":message_id,"kind":core::MessageKind::ChatMessage,"room":room_id,"payload":item["payload"],"created":now});
+    let payload = json!({"sender":sender,"senderName":name,"text":text,"created":now,"sequence":sequence,"delivery":delivery.as_str()});
+    let immutable = json!({"protocol":PROTOCOL,"senderServer":state_id,"id":message_id,"kind":core::MessageKind::ChatMessage.as_str(),"room":room_id,"payload":payload,"created":now});
     let delivery_signature = core::envelope_hash(&immutable)?;
     let delivery_key = studio_runtime_store::multi_server_delivery::remote_result_key(
         "federation-outbox",
@@ -729,14 +736,20 @@ pub fn send_message_in_transaction(
             return Err(Error::Conflict("message delivery already settled"));
         }
     };
-    item["admission"] = serde_json::to_value(delivery_admission).map_err(StoreError::from)?;
+    let item = json!({"id":message_id,"requestId":key,"kind":core::MessageKind::ChatMessage.as_str(),"room":room_id,"payload":payload,"created":now,"status":studio_runtime_schema::persistence::FederationDeliveryState::Queued.as_str(),"attempts":0,"nextAt":0,"error":null,"admission":{"id":delivery_admission.id(),"signature":delivery_admission.signature(),"created":delivery_admission.created()}});
     let item = core::decide_queue(
         Repo::record(tx, Table::Outbox, &message_id, &peer)?.as_ref(),
         item,
         Repo::queue_size(tx, &peer)?,
     )?;
-    let deliveries = json!({format!("remote:{peer}"):{"status":studio_runtime_schema::persistence::DeliveryStatus::Queued,"error":null}});
-    tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?1,?2,?3,?4,?5,?6)", params![message_id, room_id, sender, text, now, transport::canonical_json(&deliveries)?]).map_err(StoreError::from)?;
+    let deliveries = std::collections::BTreeMap::from([(
+        format!("remote:{peer}"),
+        studio_runtime_schema::persistence::RecipientDelivery {
+            status: studio_runtime_schema::persistence::DeliveryStatus::Queued,
+            error: None,
+        },
+    )]);
+    tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?1,?2,?3,?4,?5,?6)", params![message_id, room_id, sender, text, now, serde_json::to_string(&deliveries).map_err(StoreError::from)?]).map_err(StoreError::from)?;
     let event = json!({"room":room_id,"message_id":message_id,"sender":sender,"sender_name":name,"text":text,"untrusted_remote":false,"authority":"room-data-only"});
     for member in room["localMembers"]
         .as_array()
@@ -769,11 +782,14 @@ pub fn send_message_in_transaction(
     room["sequence"] = json!(sequence);
     room["updated"] = json!(now);
     effects::save_room(tx, &peer, &room)?;
-    let result = json!({"id":message_id,"room":room_id,"deliveries":deliveries,"status":studio_runtime_schema::persistence::DeliveryStatus::Queued});
-    let reply: core::MessageSendReply =
-        serde_json::from_value(result.clone()).map_err(StoreError::from)?;
+    let reply = core::MessageSendReply {
+        id: message_id,
+        room: room_id.to_owned(),
+        deliveries,
+        status: studio_runtime_schema::persistence::DeliveryStatus::Queued,
+    };
     crate::event_write::settle_request(tx, &admitted, Some(sender), &reply)?;
-    Ok(result)
+    serde_json::value::to_raw_value(&reply).map_err(|error| StoreError::from(error).into())
 }
 
 #[cfg(test)]
