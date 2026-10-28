@@ -202,6 +202,22 @@ pub enum WorkerError {
     CallbackUnknown,
 }
 
+fn vm_bootstrap_error(error: crate::linux_vm_provider::GuestProviderError) -> WorkerError {
+    use crate::linux_vm_provider::GuestProviderError as Error;
+    match error {
+        Error::Persistence(error) => WorkerError::Store(error),
+        Error::Outbox(error) => WorkerError::Store(error.into()),
+        Error::RequestResult(error) => WorkerError::Store(error.into()),
+        Error::Json(error) => WorkerError::Store(error.into()),
+        Error::Invalid
+        | Error::Unknown
+        | Error::Refused
+        | Error::InvalidResponse
+        | Error::Guest(_)
+        | Error::Task => WorkerError::CallbackUnknown,
+    }
+}
+
 fn vm_credential_maintenance_error(error: &WorkerError) -> Option<&'static str> {
     match error {
         WorkerError::PreparationPending(_) | WorkerError::PreparationAwaitsAgent(_) => {
@@ -2800,8 +2816,7 @@ impl Worker {
             .get(&request.agent_id)
             .and_then(|session| session.bootstrap.clone());
         if let Some(payload) = bootstrap {
-            self.bootstrap_vm_provider(&request.agent_id, request.epoch, payload)
-                .await?;
+            self.bootstrap_vm_provider(&request, payload).await?;
             if let Some(session) = self.vm_sessions.get_mut(&request.agent_id) {
                 session.bootstrap = None;
             }
@@ -3068,18 +3083,35 @@ impl Worker {
     }
     async fn bootstrap_vm_provider(
         &mut self,
-        agent_id: &str,
-        epoch: i64,
+        request: &preparation::VmProviderLaunchRequest,
         payload: Value,
     ) -> Result<(), WorkerError> {
+        let agent_id = request.agent_id.as_str();
+        let epoch = request.epoch;
         let signature = studio_runtime_store::sha256_hex(payload.to_string().as_bytes());
         let operation = format!("vm-auth-bootstrap:{agent_id}:{epoch}:{}", &signature[..24]);
         let admission_operation = operation.clone();
         let admission_signature = signature.clone();
+        let admission_agent = request.agent_id.clone();
+        let admission_root = request.root_request_id.clone();
+        let admission_attempt = request.attempt_id.clone();
+        let admission_source = request.source.clone();
         if self
             .db("vm_auth_bootstrap_admission", move |store| async move {
-                store::vm_bootstrap_admission(&store, &admission_operation, &admission_signature)
-                    .await
+                crate::linux_vm_provider::vm_bootstrap_admission(
+                    &store,
+                    &admission_agent,
+                    epoch,
+                    &admission_root,
+                    crate::linux_vm_provider::VmBootstrapSource {
+                        attempt_id: &admission_attempt,
+                        admission: &admission_source,
+                    },
+                    &admission_operation,
+                    &admission_signature,
+                )
+                .await
+                .map_err(vm_bootstrap_error)
             })
             .await?
         {
@@ -3117,9 +3149,25 @@ impl Worker {
             } => {
                 let settled_operation = operation.clone();
                 let settled_signature = signature.clone();
+                let settled_agent = request.agent_id.clone();
+                let settled_root = request.root_request_id.clone();
+                let settled_attempt = request.attempt_id.clone();
+                let settled_source = request.source.clone();
                 self.db("vm_auth_bootstrap_settled", move |store| async move {
-                    store::vm_bootstrap_settled(&store, &settled_operation, &settled_signature)
-                        .await
+                    crate::linux_vm_provider::vm_bootstrap_settled(
+                        &store,
+                        &settled_agent,
+                        epoch,
+                        &settled_root,
+                        crate::linux_vm_provider::VmBootstrapSource {
+                            attempt_id: &settled_attempt,
+                            admission: &settled_source,
+                        },
+                        &settled_operation,
+                        &settled_signature,
+                    )
+                    .await
+                    .map_err(vm_bootstrap_error)
                 })
                 .await
             }
@@ -4149,7 +4197,7 @@ impl Worker {
             })
             .await?;
         self.callback_parked.clear();
-        for record in accepted {
+        for mut record in accepted {
             if free == 0 {
                 self.callback_scan = true;
                 break;
@@ -4226,9 +4274,9 @@ impl Worker {
                 }
                 continue;
             }
-            let frame = record.frame()?;
             self.managed_callback_cursors.insert(key);
-            self.start_callback(cursor, origin, frame, actor, epoch)?;
+            record.epoch = epoch;
+            self.start_callback(record)?;
             free -= 1;
         }
         Ok(())
@@ -4258,14 +4306,15 @@ impl Worker {
         Ok(!matches)
     }
     /// Run the handler of one accepted request, or queue its fixed answer.
-    fn start_callback(
-        &mut self,
-        cursor: studio_runtime_process::EventCursor,
-        origin: Generation,
-        frame: Frame,
-        actor: Option<String>,
-        actor_epoch: Option<i64>,
-    ) -> Result<(), WorkerError> {
+    fn start_callback(&mut self, record: callback_record::Accepted) -> Result<(), WorkerError> {
+        let cursor = studio_runtime_process::EventCursor(record.cursor);
+        let origin = Generation(record.generation);
+        let frame = record.frame()?;
+        let actor = record.actor;
+        let actor_epoch = record.epoch;
+        let source = record
+            .source_admission
+            .map(|token| (record.root_request_id, token));
         if let Frame::Request(request) = &frame
             && request.method.as_str() == "item/tool/call"
         {
@@ -4356,6 +4405,7 @@ impl Worker {
                     generation,
                     &frame,
                     resolver,
+                    source,
                 )
                 .await;
                 (cursor, origin, actor, actor_epoch, response.into())
