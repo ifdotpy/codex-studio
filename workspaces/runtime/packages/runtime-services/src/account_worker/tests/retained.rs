@@ -84,6 +84,7 @@ impl AccountSessionPort for ResetBrokerSession {
                 PortError::Identity
                 | PortError::ScopeMismatch
                 | PortError::Invalid
+                | PortError::Expired
                 | PortError::NotSent
                 | PortError::Deadline
                 | PortError::Capacity => {
@@ -4419,5 +4420,22 @@ async fn manual_recovery_owner_to_callback_keeps_unknown_and_exact_replay() {
     assert_eq!(record["deliveryCertainty"], "unknown");
     assert_eq!(record["result"]["success"], false);
     assert_eq!(state.event_status("input").await, "uncertain");
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn retained_expired_root_refuses_before_any_provider_write() {
+    let state = State::new().await;
+    retained_schema(&state).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let mut call = durable_request(&state, &port, "expired-call");
+    let issued = chrono::Utc::now().timestamp_millis()
+        - studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS;
+    call.root_request_id =
+        uuid::Uuid::from_u128(((issued as u128) << 80) | (7 << 76) | (2 << 62) | 1).to_string();
+    assert_eq!(port.request(call).await.unwrap_err(), PortError::Expired);
+    assert!(peer.writes.try_recv().is_err());
     worker.shutdown().await.unwrap();
 }
