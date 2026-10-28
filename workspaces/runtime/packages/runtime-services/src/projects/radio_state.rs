@@ -193,8 +193,7 @@ pub(super) fn save(
     let raw = serde_json::to_string(&*room).map_err(studio_runtime_store::StoreError::from)?;
     records::decode("runtime_rooms", room.id(), &raw)?;
     db.execute("INSERT INTO runtime_rooms(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![room.id(),raw])?;
-    let view = studio_runtime_store::projection_value(room)
-        .map_err(studio_runtime_store::StoreError::from)?;
+    let view = studio_runtime_store::projection_value(room);
     publish_room(db, &view, prepared)
 }
 fn agent_projection(
