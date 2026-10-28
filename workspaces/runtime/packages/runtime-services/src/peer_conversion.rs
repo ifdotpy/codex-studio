@@ -210,7 +210,6 @@ pub(crate) fn idle(db: &Connection, agents: &[Value]) -> Result<(), ProjectsErro
             )
             || (a["status"] == "queued" && truthy(a.get("autoWake")))
             || truthy(a.get("startAttempt"))
-            || truthy(a.get("prepareAttempt"))
         {
             return Err(ProjectsError::Invalid(
                 "Finish the active or queued turn first",
