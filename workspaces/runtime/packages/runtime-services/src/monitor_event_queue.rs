@@ -384,7 +384,7 @@ pub fn enqueue_exit_in_transaction(
     code: Option<i64>,
     error: Option<&str>,
     finished: f64,
-) -> Result<(), MonitorError> {
+) -> Result<bool, MonitorError> {
     let error = error.map(|value| {
         let mut end = value.len().min(EXIT_RECEIPT_MAX_ERROR_BYTES);
         while !value.is_char_boundary(end) {
@@ -402,7 +402,7 @@ pub fn enqueue_exit_in_transaction(
         ));
     }
     if value["streamAckCursor"].as_str() == Some(cursor) {
-        return Ok(());
+        return Ok(true);
     }
     let queue = stream_queue(&mut value)?;
     if let Some(existing) = queue.iter().find(|item| item["cursor"] == cursor) {
@@ -410,7 +410,7 @@ pub fn enqueue_exit_in_transaction(
             && existing["code"] == code.map_or(Value::Null, |v| json!(v))
             && existing["error"] == error.as_ref().map_or(Value::Null, |v| json!(v))
         {
-            return Ok(());
+            return Ok(true);
         }
         return Err(MonitorError::InvalidDeliveryIdentity(
             "conflicting monitor result",
@@ -424,7 +424,7 @@ pub fn enqueue_exit_in_transaction(
     if queue.len() >= MAX_EVENTS
         || queued_bytes.saturating_add(error_bytes) > STREAM_QUEUE_MAX_BYTES as u64
     {
-        return Err(MonitorError::Refused("Monitor output queue is full"));
+        return Ok(false);
     }
     queue.push(json!({
         "kind":"exit",
@@ -437,7 +437,7 @@ pub fn enqueue_exit_in_transaction(
     }));
     let record = MonitorRecord::from_value(value).map_err(StoreError::from)?;
     Table::<MonitorRecord>::new(tx).put(&record)?;
-    Ok(())
+    Ok(true)
 }
 
 pub async fn enqueue_exit(
@@ -455,7 +455,7 @@ pub async fn enqueue_exit(
     let error = error.map(str::to_owned);
     store
         .transaction_with(move |tx| {
-            enqueue_exit_in_transaction(
+            if enqueue_exit_in_transaction(
                 tx,
                 &id,
                 &operation,
@@ -463,7 +463,11 @@ pub async fn enqueue_exit(
                 code,
                 error.as_deref(),
                 finished,
-            )
+            )? {
+                Ok(())
+            } else {
+                Err(MonitorError::Refused("Monitor output queue is full"))
+            }
         })
         .await
 }

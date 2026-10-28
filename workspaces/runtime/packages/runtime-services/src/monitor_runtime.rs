@@ -640,11 +640,18 @@ pub fn settle_provider_call(
     if call.operation != format!("monitor:{id}") {
         return Ok(true);
     }
-    let Some(record) = MonitorsRepository::get(tx, id)? else {
+    let record = match MonitorsRepository::get(tx, id) {
+        Ok(record) => record,
+        Err(error) if malformed_monitor_owner(&error) => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let Some(record) = record else {
         return Ok(true);
     };
-    let operation: Operation = serde_json::from_value(record.value()["operation"].clone())
-        .map_err(studio_runtime_store::StoreError::from)?;
+    let Ok(operation) = serde_json::from_value::<Operation>(record.value()["operation"].clone())
+    else {
+        return Ok(false);
+    };
     let Some(actor) = &call.actor else {
         return Ok(false);
     };
@@ -665,9 +672,11 @@ pub fn settle_provider_call(
         return Ok(false);
     }
     if let Some(saved) = operation.evidence.get("providerRequest") {
-        let saved: studio_runtime_store::request_results::AdmittedRequest =
-            serde_json::from_value(saved.clone())
-                .map_err(studio_runtime_store::StoreError::from)?;
+        let Ok(saved) = serde_json::from_value::<
+            studio_runtime_store::request_results::AdmittedRequest,
+        >(saved.clone()) else {
+            return Ok(false);
+        };
         if saved != *token {
             return Ok(false);
         }
@@ -718,8 +727,24 @@ pub fn settle_provider_call(
         code,
         error.as_deref(),
         crate::event_write::unix_time()?,
-    )?;
-    Ok(true)
+    )
+}
+
+fn malformed_monitor_owner(error: &studio_runtime_store::StoreError) -> bool {
+    use studio_runtime_store::StoreError;
+    matches!(
+        error,
+        StoreError::InvalidStoredRecord { .. }
+            | StoreError::InvalidStoredObject { .. }
+            | StoreError::InvalidSyncObject { .. }
+            | StoreError::InvalidSyncObjectField { .. }
+            | StoreError::Json(_)
+            | StoreError::SchemaValidation(_)
+            | StoreError::Sqlite(
+                rusqlite::Error::FromSqlConversionFailure(..)
+                    | rusqlite::Error::InvalidColumnType(..)
+            )
+    )
 }
 
 pub struct TickPage {
@@ -1782,6 +1807,31 @@ mod recovery_selection_tests {
         assert!(
             !super::settle_provider_call(&tx, &call, &RequestResult::Reply(json!({"exitCode":0})))
                 .expect("old generation cannot settle another owner")
+        );
+        tx.execute(
+            "UPDATE runtime_monitors SET record='{' WHERE id='watch'",
+            [],
+        )
+        .expect("malformed owner");
+        assert!(
+            !super::settle_provider_call(&tx, &call, &RequestResult::Reply(json!({"exitCode":0})))
+                .expect("invalid owner holds only its call")
+        );
+        assert_eq!(
+            tx.query_row(
+                "SELECT record FROM runtime_monitors WHERE id='watch'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .expect("raw owner preserved"),
+            "{"
+        );
+        tx.execute_batch("ALTER TABLE runtime_monitors RENAME COLUMN record TO broken")
+            .expect("SQL failure boundary");
+        assert!(
+            super::settle_provider_call(&tx, &call, &RequestResult::Reply(json!({"exitCode":0})))
+                .is_err(),
+            "SQL errors remain real transaction failures"
         );
     }
 
