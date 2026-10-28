@@ -758,7 +758,7 @@ async fn recovered_publications(state: &State) -> Vec<(String, String)> {
         .run(|store| async move {
             let db = store.test_reader()?;
             let mut statement = db.prepare(
-                "SELECT json_extract(result,'$.effect.Recovered.identity'), json_extract(result,'$.effect.Recovered.observation.method') FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%:pending' AND json_extract(result,'$.effect.Recovered.identity') IS NOT NULL ORDER BY id",
+                "SELECT json_extract(payload,'$.effect.Recovered.identity'), json_extract(payload,'$.effect.Recovered.observation.method') FROM runtime_outbox WHERE account='default' AND kind='publication' AND json_extract(payload,'$.effect.Recovered.identity') IS NOT NULL ORDER BY id",
             )?;
             let rows = statement
                 .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
@@ -3403,33 +3403,25 @@ async fn deleted_voice_stop_requires_the_exact_committed_session() {
     let actor = state.agent.clone();
     let epoch = state.epoch;
     let scope = port.scope().clone();
-    let receipt_id = format!("agent-delete-voice:{actor}:{epoch}");
-    let session = json!({
-        "sessionId":"voice-session-7",
-        "agentId":actor,
-        "epoch":epoch,
-        "accountKey":scope.account,
-        "threadId":"fake-thread-0",
-        "connectionId":scope.connection,
-        "generation":scope.generation
-    });
-    let actor_for_store = actor.clone();
-    state.bridge.run(move |store| async move {
-        store.transaction_with(move |tx| {
-            tx.execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?1",
-                [&actor_for_store],
-            )?;
-            tx.execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'voice-delete',?2)",
-                rusqlite::params![receipt_id, json!({"agent":actor_for_store,"epoch":epoch,"voiceEndSessions":[session]}).to_string()],
-            )?;
-            Ok::<(), studio_runtime_store::StoreError>(())
-        }).await?;
-        Ok(())
+    let root = retained_root("voice:delete-stop:voice-session-7");
+    let fixture_scope = scope.clone();
+    let fixture_actor = actor.clone();
+    let fixture_root = root.clone();
+    let token=state.bridge.store.transaction_with(move |tx| {
+        use studio_runtime_schema::persistence::{RequestIdentity,OutboxKind,OutboxStatus,OwnerKind};
+        use studio_runtime_store::{request_results::{RequestResults,Admission},outbox::{Outbox,OutboxRow}};
+        let identity=RequestIdentity::new("voice-delete-fixture",&[&fixture_actor],&fixture_root,&[]).unwrap();
+        let owner=match RequestResults::admit(tx,&identity,"voice-delete",chrono::Utc::now().timestamp_millis()).map_err(|error|WorkerError::PreparationRefused(error.to_string()))?{Admission::Fresh(owner)=>owner,Admission::Replay(_)=>return Err(WorkerError::Capacity)};
+        let intent=crate::account_worker::retained::ProviderCallIntent {root_request_id:fixture_root.clone(),admitted_request:None,scope:fixture_scope.clone(),operation:"voice:delete-stop:voice-session-7".into(),actor:Some(RequestActor{agent:fixture_actor.clone(),epoch}),transfer:None,deleted_actor_session:Some("voice-session-7".into()),method:Method::ThreadRealtimeStop,params:json!({"threadId":"fake-thread-0"})};
+        let token=crate::account_worker::retained::reserve_provider_call(tx,&owner,intent)?;
+        let session=json!({"sessionId":"voice-session-7","agentId":fixture_actor,"epoch":epoch,"accountKey":fixture_scope.account,"threadId":"fake-thread-0","connectionId":fixture_scope.connection,"generation":fixture_scope.generation,"admittedRequest":token});
+        Outbox::put(tx,&OutboxRow {id:"voice-delete-fixture".into(),kind:OutboxKind::VoiceDelete,owner_kind:OwnerKind::Agent,owner_id:fixture_actor.clone(),request_id:Some(owner.id().into()),signature:"voice-agent-delete-v1".into(),status:OutboxStatus::Pending,account:Some(fixture_scope.account.clone()),stream_id:None,generation:None,ordinal:None,next_at:Some(0),created:owner.created(),payload:json!({"agent":fixture_actor,"epoch":epoch,"rootRequestId":fixture_root,"admission":owner,"voiceEndSessions":[session],"voiceEndHeldUncertain":[],"voiceEndResults":{}})}).map_err(|error|WorkerError::PreparationRefused(error.to_string()))?;
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?1",[&fixture_actor])?;
+        Ok::<_,WorkerError>(token)
     }).await.unwrap();
-
     let mut call = request(&state, &port, "voice:delete-stop:voice-session-7");
+    call.root_request_id = root;
+    call.admitted_request = Some(token);
     call.method = Method::ThreadRealtimeStop;
     call.params = json!({"threadId":"fake-thread-0"});
     call.expected_scope = Some(scope.clone());

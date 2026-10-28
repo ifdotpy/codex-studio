@@ -1183,7 +1183,31 @@ fn monitor_call(
         .map(serde_json::from_value::<AdmittedRequest>)
         .transpose()
         .map_err(StoreError::from)?;
-    let result_id = admitted.as_ref().map(|token| token.id().to_owned());
+    let result_id = if let Some(token) = &admitted {
+        Some(token.id().to_owned())
+    } else if let Some(root) = operation
+        .evidence
+        .get("rootRequestId")
+        .and_then(Value::as_str)
+    {
+        Some(
+            RequestIdentity::new(
+                "provider-call",
+                &[
+                    &operation.account_key,
+                    &operation.agent,
+                    &operation.epoch.to_string(),
+                ],
+                root,
+                &[&identity],
+            )
+            .map_err(|_| WorkerError::Capacity)?
+            .id()
+            .to_owned(),
+        )
+    } else {
+        None
+    };
     let Some(value) = storage::recorded_operation(tx, &key, result_id.as_deref())? else {
         return Ok(None);
     };
