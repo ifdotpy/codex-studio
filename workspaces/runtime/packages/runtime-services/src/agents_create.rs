@@ -520,19 +520,7 @@ fn create_agent_with_identity(
         ensure_project(transaction, &record)?;
     }
     AgentRepository::put(transaction, &agent)?;
-    let id = record
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))?;
-    let deleted = crate::event_write::truthy(record.get("deletedAt"));
-    let projection = sync_projection(transaction, &record)?;
-    crate::sync_policy::publish_agent_projection(
-        transaction,
-        id,
-        projection.clone(),
-        deleted,
-        &|_, _, _, _| true,
-    )?;
+    let projection = publish_agent(transaction, &record)?;
     if !draft {
         let event_id = format!("{id}:initial");
         let inserted = crate::event_write::enqueue_event(
