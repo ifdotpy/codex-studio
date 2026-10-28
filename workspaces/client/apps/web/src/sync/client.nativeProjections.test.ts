@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Snapshot } from "../types";
-import { SYNC_PROTOCOL_VERSION } from "../generated/api";
+import {
+  AgentStatus,
+  SubscriptionReplyKind,
+  SYNC_PROTOCOL_VERSION,
+} from "../generated/api";
 import type {
   ResourceChangeEvent,
   ResourceVersion,
@@ -110,7 +114,7 @@ async function page() {
         revision: seq,
         resource: { kind: "state" },
         cursor: { workspaceId, seq },
-        replyKind: "snapshot",
+        replyKind: SubscriptionReplyKind["snapshot"],
         entityChanges: {
           after: 0,
           through: seq,
@@ -125,7 +129,7 @@ async function page() {
                 rootId: "lead",
                 epoch: 1,
                 name,
-                status: "idle",
+                status: AgentStatus["idle"],
               },
             },
           ],

@@ -208,7 +208,7 @@ class NativeProjectionCollection {
       await flush();
       for (const row of accepted) {
         success.push(row);
-        for (const listener of [...this.listeners])
+        for (const listener of this.listeners)
           listener({ id: row.id, documentData: row });
       }
       return { success, error };
@@ -318,7 +318,9 @@ export function createNativeProjectionStore(request: Request = nativeRequest) {
         );
         open.set(key, collection);
       }
-      return collection as unknown as RxCollection<SyncDocument>;
+      // The class implements the RxCollection members the sync client uses.
+      const shim: object = collection;
+      return shim as RxCollection<SyncDocument>;
     },
     async pruneOtherSchemas(
       workspaceId: string,

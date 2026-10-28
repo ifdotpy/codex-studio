@@ -38,7 +38,7 @@ export function createNativeCoreFixture(pageRows = Infinity) {
         return { written: (input.rows as unknown[]).length } as T;
       case "projection.pruneRows": {
         const keep = `${input.workspace}|${input.prefix}/`;
-        for (const key of [...rows.keys()])
+        for (const key of rows.keys())
           if (key.startsWith(`${input.workspace}|`) && !key.startsWith(keep))
             rows.delete(key);
         return { removed: 0 } as T;
