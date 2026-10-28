@@ -412,7 +412,7 @@ pub fn reserve(
     agent["inFlight"] = json!(true);
     agent["turnEpoch"] = agent["epoch"].clone();
     agent["startAttempt"] = json!({"id":attempt,"epoch":agent["epoch"],"events":[],"action":request.action,
-        "submitted":false,"created":now,"actionRequestId":request.request_id,"actionIdentity":identity});
+        "submitted":false,"created":now,"actionRequestId":request.request_id,"rootRequestId":request.request_id,"actionIdentity":identity});
     if review_worker {
         // Python `codex_agent_review.claim` saves the account on the attempt.
         agent["startAttempt"]["accountKey"] = identity["accountKey"].clone();
@@ -580,7 +580,10 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
         params["idleCompaction"] = snapshot.agent["idleCompactionEpisode"]["cache"].clone();
     }
     let request = NativeRequest {
-        root_request_id: ticket.request.clone(),
+        root_request_id: snapshot.agent["startAttempt"]["rootRequestId"]
+            .as_str()
+            .ok_or(NativeError::Invalid("startAttempt.rootRequestId"))?
+            .to_owned(),
         admitted_request: snapshot.agent["startAttempt"]
             .get("providerRequest")
             .cloned()
@@ -1146,6 +1149,13 @@ pub async fn update_action_settings(
                     return Err(NativeError::Changed);
                 }
                 let saved = agent["startAttempt"].get("modelSettings").cloned();
+                let root_request_id = saved
+                    .as_ref()
+                    .and_then(|saved| saved.get("rootRequestId"))
+                    .or_else(|| agent["startAttempt"].get("rootRequestId"))
+                    .and_then(Value::as_str)
+                    .ok_or(NativeError::Invalid("modelSettings.rootRequestId"))?
+                    .to_owned();
                 let final_token = saved
                     .as_ref()
                     .and_then(|saved| saved.get("providerRequest"))
@@ -1182,7 +1192,7 @@ pub async fn update_action_settings(
                     &owner,
                     &operation_for_tx,
                     NativeRequest {
-                        root_request_id: request_id.clone(),
+                        root_request_id: root_request_id.clone(),
                         admitted_request: final_token,
                         ticket: ProviderTicket {
                             operation: operation_for_tx.clone(),
@@ -1200,6 +1210,7 @@ pub async fn update_action_settings(
                     "params": params_snapshot,
                     "status": NativeSettingsStatus::Submitted,
                     "providerRequest":prepared.admitted_request,
+                    "rootRequestId":root_request_id,
                 });
                 AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
                 Ok(Some(prepared))

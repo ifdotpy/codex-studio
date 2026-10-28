@@ -61,6 +61,9 @@ fn corpus() -> &'static Value {
             }
         }
         roots(&mut data);
+        for case in data["actions"].as_array_mut().expect("actions") {
+            case["after"]["startAttempt"]["rootRequestId"] = case["request"]["requestId"].clone();
+        }
         data
     })
 }

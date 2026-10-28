@@ -621,6 +621,107 @@ pub fn finish_in_transaction(
     apply(tx, &snapshot, &actor, &decision, now)
 }
 
+/// Preserve essential command completion before its provider obligation retires.
+/// The existing stream queue keeps this exit behind already committed output.
+/// False holds a relevant call whose exact completion proof is unavailable.
+pub fn settle_provider_call(
+    tx: &Transaction<'_>,
+    call: &crate::account_worker::retained::ProviderCallIntent,
+    result: &crate::account_worker::retained::RequestResult,
+) -> Result<bool, MonitorError> {
+    use crate::account_worker::retained::RequestResult;
+    use studio_runtime_schema::persistence::RequestIdentity;
+    if call.method != studio_runtime_providers::Method::CommandExec {
+        return Ok(true);
+    }
+    let Some(id) = call.params.get("processId").and_then(Value::as_str) else {
+        return Ok(true);
+    };
+    if call.operation != format!("monitor:{id}") {
+        return Ok(true);
+    }
+    let Some(record) = MonitorsRepository::get(tx, id)? else {
+        return Ok(true);
+    };
+    let operation: Operation = serde_json::from_value(record.value()["operation"].clone())
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let Some(actor) = &call.actor else {
+        return Ok(false);
+    };
+    let Some(token) = &call.admitted_request else {
+        return Ok(false);
+    };
+    if operation.agent != actor.agent
+        || operation.epoch != actor.epoch
+        || operation.account_key != call.scope.account
+        || operation.connection_id != call.scope.connection
+        || operation
+            .evidence
+            .get("providerGeneration")
+            .and_then(Value::as_u64)
+            != Some(call.scope.generation)
+        || token.signature() != call.fingerprint(&call.scope.account, call.method.as_str())
+    {
+        return Ok(false);
+    }
+    if let Some(saved) = operation.evidence.get("providerRequest") {
+        let saved: studio_runtime_store::request_results::AdmittedRequest =
+            serde_json::from_value(saved.clone())
+                .map_err(studio_runtime_store::StoreError::from)?;
+        if saved != *token {
+            return Ok(false);
+        }
+    } else {
+        let root = operation
+            .evidence
+            .get("rootRequestId")
+            .and_then(Value::as_str);
+        if root != Some(call.root_request_id.as_str()) {
+            return Ok(false);
+        }
+        let epoch = actor.epoch.to_string();
+        let identity = RequestIdentity::new(
+            "provider-call",
+            &[&call.scope.account, &actor.agent, &epoch],
+            &call.root_request_id,
+            &[&call.operation],
+        );
+        if !identity.is_ok_and(|identity| identity.id() == token.id()) {
+            return Ok(false);
+        }
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ExitReply {
+        exit_code: Option<i64>,
+        error: Option<String>,
+    }
+    let (code, error) = match result {
+        RequestResult::Reply(value) => {
+            let Ok(reply) = serde_json::from_value::<ExitReply>(value.clone()) else {
+                return Ok(false);
+            };
+            if reply.exit_code.is_none() && reply.error.as_deref().is_none_or(str::is_empty) {
+                return Ok(false);
+            }
+            (reply.exit_code, reply.error)
+        }
+        RequestResult::Rejected(value) => (None, Some(value.to_string())),
+        RequestResult::NotSent => return Ok(true),
+        RequestResult::Unknown => return Ok(false),
+    };
+    crate::monitor_event_queue::enqueue_exit_in_transaction(
+        tx,
+        id,
+        &operation,
+        &format!("provider-result:monitor:{id}"),
+        code,
+        error.as_deref(),
+        crate::event_write::unix_time()?,
+    )?;
+    Ok(true)
+}
+
 pub struct TickPage {
     pub effects: Vec<(String, Effect)>,
     /// Continue the ordered running-monitor scan after this ID when set.
@@ -1584,6 +1685,105 @@ pub fn bind_rule_in_transaction(
 mod recovery_selection_tests {
     use super::active_monitor_ids;
     use rusqlite::Connection;
+
+    #[test]
+    fn receipt_pivot_late_monitor_result_commits_exit_behind_output_without_replay_cache() {
+        use crate::account_worker::retained::{ProviderCallIntent, RequestResult};
+        use serde_json::json;
+        use studio_runtime_schema::persistence::{REQUEST_RESULT_TTL_MS, RequestIdentity};
+        use studio_runtime_store::request_results::{Admission, RequestResults, ResultEnvelope};
+        let mut db = Connection::open_in_memory().expect("database");
+        studio_runtime_store::receipt_schema::create(&db).expect("schema");
+        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)").expect("owners");
+        let issued = REQUEST_RESULT_TTL_MS * 2;
+        let root =
+            uuid::Uuid::from_u128(((issued as u128) << 80) | (7 << 76) | (2 << 62)).to_string();
+        let mut call = ProviderCallIntent {
+            root_request_id: root.clone(),
+            admitted_request: None,
+            scope: crate::account_session_runtime::ConnectionScope {
+                account: "account".into(),
+                connection: "connection".into(),
+                generation: 7,
+            },
+            operation: "monitor:watch".into(),
+            actor: Some(crate::account_worker::retained::RequestActor {
+                agent: "agent".into(),
+                epoch: 3,
+            }),
+            transfer: None,
+            deleted_actor_session: None,
+            method: studio_runtime_providers::Method::CommandExec,
+            params: json!({"processId":"watch"}),
+        };
+        let identity = RequestIdentity::new(
+            "provider-call",
+            &["account", "agent", "3"],
+            &root,
+            &["monitor:watch"],
+        )
+        .expect("identity");
+        let signature = call.fingerprint("account", call.method.as_str());
+        let tx = db.transaction().expect("transaction");
+        let Admission::Fresh(token) =
+            RequestResults::admit(&tx, &identity, &signature, issued).expect("admission")
+        else {
+            panic!("fresh");
+        };
+        call.admitted_request = Some(token.clone());
+        let operation = json!({"agent":"agent","epoch":3,"accountKey":"account","connectionId":"connection","providerGeneration":7,"rootRequestId":root});
+        let record = json!({"id":"watch","agent":"agent","status":"running","operation":operation,"streamQueue":[{"cursor":"output:1","operation":operation,"offset":0,"byteLength":1,"deltaBase64":"YQ=="}]});
+        tx.execute(
+            "INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
+            [record.to_string()],
+        )
+        .expect("owner and prior output");
+        RequestResults::gc(&tx, issued + REQUEST_RESULT_TTL_MS + 1).expect("expire root");
+        assert!(
+            !super::settle_provider_call(
+                &tx,
+                &call,
+                &RequestResult::Reply(json!({"processId":"watch"}))
+            )
+            .expect("invalid positive proof held")
+        );
+        let result = RequestResult::Reply(json!({"exitCode":0}));
+        assert!(super::settle_provider_call(&tx, &call, &result).expect("late exact result"));
+        assert!(super::settle_provider_call(&tx, &call, &result).expect("duplicate result"));
+        RequestResults::settle(
+            &tx,
+            &token,
+            &ResultEnvelope {
+                actor: Some("agent".into()),
+                reply: result,
+                references: vec![],
+            },
+        )
+        .expect("late response settlement allowed");
+        assert!(
+            RequestResults::replay(
+                &tx,
+                token.id(),
+                &signature,
+                issued + REQUEST_RESULT_TTL_MS + 1
+            )
+            .is_err(),
+            "transport replay already expired"
+        );
+        let saved = studio_runtime_store::MonitorsRepository::get(&tx, "watch")
+            .expect("read")
+            .expect("owner");
+        let queue = saved.value()["streamQueue"].as_array().expect("queue");
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0]["cursor"], "output:1");
+        assert_eq!(queue[1]["kind"], "exit");
+        assert_eq!(queue[1]["code"], 0);
+        call.scope.generation += 1;
+        assert!(
+            !super::settle_provider_call(&tx, &call, &RequestResult::Reply(json!({"exitCode":0})))
+                .expect("old generation cannot settle another owner")
+        );
+    }
 
     #[test]
     fn startup_monitor_selection_keeps_only_active_statuses_in_id_order() {
