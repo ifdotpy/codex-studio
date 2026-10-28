@@ -123,7 +123,7 @@ pub(super) fn read(
         ));
     }
     let id = text(&receipt, "id")?;
-    let mut result = records::get(tx, "runtime_tool_results", id)?
+    let mut result = tool_requests::saved_result(tx, id)?
         .or_else(|| receipt.get("result").cloned())
         .ok_or(CallbackError::Invalid(
             "Result is not available yet. Do not repeat the operation.",
@@ -219,7 +219,7 @@ fn native_request_alias(
 ) -> Result<Option<String>, CallbackError> {
     let aliases = tx
         .prepare_cached(
-            "SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 LIMIT 2",
+            "SELECT id FROM runtime_tool_requests WHERE agent=?1 AND EXISTS(SELECT 1 FROM json_each(record,'$.aliases') WHERE value=?2) LIMIT 2",
         )?
         .query_map([agent, call], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -531,6 +531,7 @@ mod studio_input_tests {
                 "accountKey":"default","threadId":"thread","turnId":"turn","name":id,"cwd":"/work"})
                 .to_string(),
                 &CallbackContext {
+                    stream_id: "default".into(),
                     agent: id.into(),
                     account: "default".into(),
                     connection: "connection".into(),

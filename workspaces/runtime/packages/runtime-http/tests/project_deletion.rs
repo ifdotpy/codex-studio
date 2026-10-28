@@ -38,7 +38,7 @@ impl LifecyclePorts for Ports {
         if self.fail {
             return Err(ManagementError::Unavailable(effect.kind().dependency()));
         }
-        tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'effect','{}') ON CONFLICT DO NOTHING", [format!("effect:{:?}:{}",effect.kind(),effect.before()["id"])])
+        tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES(?1,'effect','{}',1) ON CONFLICT DO NOTHING", [format!("effect:{:?}:{}",effect.kind(),effect.before()["id"])])
             .map_err(studio_runtime_store::StoreError::from)?;
         Ok(())
     }
@@ -92,7 +92,7 @@ impl Fixture {
             )
             .expect("seq");
         let workspace = SyncDocumentsRepository::workspace_id(&reader).expect("workspace");
-        let body = json!({"id":"/p","request_id":"delete-1","expected_workspace_id":workspace,"expected_project_seq":seq});
+        let body = json!({"id":"/p","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"expected_workspace_id":workspace,"expected_project_seq":seq});
         let ports = Arc::new(Ports {
             store: store.clone(),
             wakes: AtomicUsize::new(0),
@@ -246,7 +246,7 @@ async fn project_deletion_receipt_replay_changed_body_and_new_lifetime() {
     assert_eq!(status, 409, "{r}");
     assert_eq!(r["code"], "project_request_conflict");
     let mut stale = f.body.clone();
-    stale["request_id"] = json!("delete-2");
+    stale["request_id"] = json!(studio_runtime_schema::persistence::RequestIdentity::issue_root());
     let (status, r) = f.call(stale).await;
     assert_eq!(status, 409, "{r}");
     assert_eq!(r["code"], "project_sequence_conflict");
@@ -257,7 +257,7 @@ async fn project_deletion_rolls_back_every_write_boundary() {
     for trigger in [
         "CREATE TRIGGER fail BEFORE UPDATE ON runtime_agents WHEN NEW.id='z' BEGIN SELECT RAISE(ABORT,'injected second agent'); END",
         "CREATE TRIGGER fail BEFORE UPDATE ON runtime_rooms BEGIN SELECT RAISE(ABORT,'injected room'); END",
-        "CREATE TRIGGER fail BEFORE INSERT ON runtime_operation_receipts WHEN NEW.id LIKE 'project-delete:%' BEGIN SELECT RAISE(ABORT,'injected receipt'); END",
+        "CREATE TRIGGER fail BEFORE INSERT ON request_results BEGIN SELECT RAISE(ABORT,'injected receipt'); END",
         "CREATE TRIGGER fail BEFORE UPDATE ON sync_entities WHEN NEW.collection='project' AND NEW.deleted=1 BEGIN SELECT RAISE(ABORT,'injected publication'); END",
     ] {
         let f = Fixture::new(
@@ -915,12 +915,16 @@ async fn project_deletion_unknown_commit_without_receipt_retries_the_same_intent
     assert_eq!(f.agent("lead")["epoch"], 1);
     assert_eq!(abort.wakes.load(Ordering::SeqCst), 0);
     assert!(
-        ProjectsRepository::receipt(
-            &f.store.test_reader().expect("reader"),
-            "project-delete:delete-1"
-        )
-        .expect("receipt lookup")
-        .is_none()
+        f.store
+            .test_reader()
+            .expect("reader")
+            .query_row(
+                "SELECT count(*) FROM request_results WHERE signature!='effect'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .expect("result count")
+            == 0
     );
     f.store
         .transaction(|tx| {

@@ -12,10 +12,11 @@ pub(crate) use operations::set_vm_workspace_fields;
 pub use operations::*;
 
 use rusqlite::{Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, RuntimeStore,
-    StoreError, SyncDocumentsRepository, Transaction,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, RuntimeStore, StoreError,
+    SyncDocumentsRepository, Transaction,
 };
 use thiserror::Error;
 
@@ -55,21 +56,127 @@ pub enum MutationError {
     InvalidStoredObject { table: &'static str, id: String },
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error(transparent)]
+    Request(#[from] studio_runtime_store::request_results::RequestResultError),
 }
 pub type CreateError = MutationError;
 pub type RenameError = MutationError;
 pub type SettingsError = MutationError;
 
+const AGENT_MUTATION_NAMESPACE: &str = "agent-mutation";
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationOutcome {
+    Applied,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RenameReply {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<MutationOutcome>,
+    #[serde(flatten)]
+    sync: MutationSync,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct MutationSync {
+    #[serde(rename = "_syncEntities", skip_serializing_if = "Option::is_none")]
+    entities: Option<Vec<Value>>,
+    #[serde(rename = "_syncEntitiesAfter", skip_serializing_if = "Option::is_none")]
+    after: Option<i64>,
+}
+
+impl MutationSync {
+    fn read(tx: &Transaction<'_>, before: i64) -> Result<Self, MutationError> {
+        serde_json::from_value(crate::sync_documents::with_entity_delta(
+            tx,
+            before,
+            json!({}),
+        )?)
+        .map_err(StoreError::from)
+        .map_err(Into::into)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum AgentMutation {
+    Rename,
+    Concurrency,
+    NextTurn,
+    Permissions,
+}
+
+impl AgentMutation {
+    fn operation(self) -> &'static str {
+        match self {
+            Self::Rename => "rename",
+            Self::Concurrency => "subagent_concurrency",
+            Self::NextTurn => "next_turn_settings",
+            Self::Permissions => "live_permissions",
+        }
+    }
+}
+
+use crate::event_write::CallerAdmission as MutationAdmission;
+
+fn replay_agent_mutation<R: serde::de::DeserializeOwned>(
+    connection: &Connection,
+    id: &str,
+    request_id: &str,
+    operation: AgentMutation,
+    signature: &str,
+    now_ms: i64,
+) -> Result<Option<R>, MutationError> {
+    Ok(crate::event_write::saved_request(
+        connection,
+        crate::event_write::RequestKey::new(AGENT_MUTATION_NAMESPACE, &[id], request_id)
+            .operation(&[operation.operation()]),
+        signature,
+        now_ms,
+    )?)
+}
+
+/// The caller must authorize access to the agent before disclosing this reply.
+pub fn replay_rename(
+    connection: &Connection,
+    id: &str,
+    request_id: &str,
+    signature: &str,
+    now_ms: i64,
+) -> Result<Option<RenameReply>, MutationError> {
+    replay_agent_mutation(
+        connection,
+        id,
+        request_id,
+        AgentMutation::Rename,
+        signature,
+        now_ms,
+    )
+}
+
+fn admit_agent_mutation<R: serde::de::DeserializeOwned>(
+    transaction: &Transaction<'_>,
+    id: &str,
+    request_id: &str,
+    operation: AgentMutation,
+    signature: &str,
+) -> Result<MutationAdmission<R>, MutationError> {
+    Ok(crate::event_write::begin_request(
+        transaction,
+        crate::event_write::RequestKey::new(AGENT_MUTATION_NAMESPACE, &[id], request_id)
+            .operation(&[operation.operation()]),
+        signature,
+        chrono::Utc::now().timestamp_millis(),
+    )?)
+}
+
 fn new_id() -> Result<String, CreateError> {
-    let mut bytes = [0_u8; 16];
-    getrandom::fill(&mut bytes).map_err(|error| {
-        CreateError::Store(StoreError::StateDirectory(std::io::Error::other(
-            error.to_string(),
-        )))
-    })?;
-    Ok(uuid::Builder::from_random_bytes(bytes)
-        .into_uuid()
-        .to_string())
+    Ok(studio_runtime_schema::persistence::RequestIdentity::issue_root())
 }
 
 /// Normalize the persisted mode fields using the same rules as Python mode_fields.
@@ -597,20 +704,24 @@ fn rename(
 ) -> Result<Value, RenameError> {
     let mut record =
         load_agent_value(transaction, id, &validate)?.ok_or(RenameError::UnknownAgent)?;
-    if let Some(request_id) = request_id
-        && let Some(receipt) = EventWriteRepository::receipt(transaction, request_id)?
-    {
-        if receipt.signature != signature {
-            return Err(RenameError::Conflict);
-        }
-        let result: Value = serde_json::from_str(&receipt.result).map_err(|_| {
-            RenameError::InvalidStoredObject {
-                table: "runtime_operation_receipts",
-                id: request_id.to_owned(),
+    let admitted = match request_id {
+        Some(request_id) => match admit_agent_mutation::<RenameReply>(
+            transaction,
+            id,
+            request_id,
+            AgentMutation::Rename,
+            signature,
+        )? {
+            MutationAdmission::Replay(reply) => {
+                return serde_json::to_value(reply)
+                    .map_err(StoreError::from)
+                    .map_err(Into::into);
             }
-        })?;
-        return Ok(result);
-    }
+            MutationAdmission::Fresh(admitted) => Some(admitted),
+        },
+        None => None,
+    };
+    let before = SyncDocumentsRepository::entity_sequence(transaction)?;
 
     let Some(agent) = AgentRepository::get(transaction, &AgentId::from(id))? else {
         return Err(RenameError::UnknownAgent);
@@ -637,14 +748,19 @@ fn rename(
     record["needsTitle"] = json!(false);
     save_agent(transaction, &record, &validate)?;
 
-    let mut result = json!({"id": id, "name": name});
-    if let Some(request_id) = request_id {
-        result["request_id"] = Value::String(request_id.to_owned());
-        result["status"] = Value::String("applied".to_owned());
-        let result_text = serde_json::to_string(&result).map_err(StoreError::from)?;
-        EventWriteRepository::put_receipt(transaction, request_id, signature, &result_text)?;
+    let result = RenameReply {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        request_id: request_id.map(str::to_owned),
+        status: request_id.map(|_| MutationOutcome::Applied),
+        sync: MutationSync::read(transaction, before)?,
+    };
+    if let Some(admitted) = admitted {
+        crate::event_write::settle_request(transaction, &admitted, Some(id), &result)?;
     }
-    Ok(result)
+    serde_json::to_value(result)
+        .map_err(StoreError::from)
+        .map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -678,6 +794,69 @@ mod tests {
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
+    }
+
+    #[test]
+    fn rename_request_results_replay_original_after_later_mutation() {
+        let mut connection = database();
+        studio_runtime_store::receipt_schema::create(&connection).expect("receipt schema");
+        connection.execute_batch("CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY, value INTEGER NOT NULL);").expect("settings and sync metadata");
+        let tx = connection.transaction().expect("transaction");
+        let record = json!({"provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle","name":"Before","isLead":true,"autoWake":true,"cwd":"/project","serverId":"server"});
+        super::save_agent(&tx, &record, &|_, _| true).expect("agent");
+        let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let first = super::rename(
+            &tx,
+            "agent",
+            Some("First"),
+            Some(&request),
+            "first",
+            |_, _| true,
+        )
+        .expect("first rename");
+        super::rename(&tx, "agent", Some("Later"), None, "later", |_, _| true)
+            .expect("later rename");
+        assert_eq!(
+            super::rename(
+                &tx,
+                "agent",
+                Some("First"),
+                Some(&request),
+                "first",
+                |_, _| true
+            )
+            .expect("exact replay"),
+            first
+        );
+        assert!(
+            super::rename(
+                &tx,
+                "agent",
+                Some("Changed"),
+                Some(&request),
+                "different",
+                |_, _| true
+            )
+            .is_err()
+        );
+        assert_eq!(
+            tx.query_row("SELECT COUNT(*) FROM request_results", [], |row| row
+                .get::<_, i64>(0))
+                .expect("results"),
+            1
+        );
+        assert!(
+            super::rename(
+                &tx,
+                "agent",
+                Some("Invalid"),
+                Some("opaque-new-id"),
+                "invalid",
+                |_, _| true
+            )
+            .is_err()
+        );
     }
 
     #[test]

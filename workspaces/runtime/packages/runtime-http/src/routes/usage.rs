@@ -89,6 +89,8 @@ async fn cost_interest(
             studio_runtime_store::StoreError::RecordContract("unknown cost account") => {
                 ApiError::new(StatusCode::BAD_REQUEST, "Unknown cost account")
             }
+            studio_runtime_store::StoreError::RequestResult(error) => error.into(),
+            studio_runtime_store::StoreError::Outbox(error) => error.into(),
             error @ studio_runtime_store::StoreError::StateDirectory(_)
             | error @ studio_runtime_store::StoreError::AlreadyOwned
             | error @ studio_runtime_store::StoreError::MissingDatabase(_)

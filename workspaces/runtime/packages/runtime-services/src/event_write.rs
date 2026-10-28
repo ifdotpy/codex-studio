@@ -82,6 +82,89 @@ pub fn settle_request<R: serde::Serialize>(
     Ok(())
 }
 
+pub enum CallerAdmission<R> {
+    Fresh(studio_runtime_store::request_results::AdmittedRequest),
+    Replay(R),
+}
+
+pub struct RequestKey<'a> {
+    pub raw: &'a str,
+    pub namespace: &'a str,
+    pub authority: &'a [&'a str],
+    pub root: &'a str,
+    pub operation: &'a [&'a str],
+}
+impl<'a> RequestKey<'a> {
+    pub fn new(namespace: &'a str, authority: &'a [&'a str], root: &'a str) -> Self {
+        Self {
+            raw: root,
+            namespace,
+            authority,
+            root,
+            operation: &[],
+        }
+    }
+    pub fn raw(mut self, raw: &'a str) -> Self {
+        self.raw = raw;
+        self
+    }
+    pub fn operation(mut self, operation: &'a [&'a str]) -> Self {
+        self.operation = operation;
+        self
+    }
+}
+
+/// The common public-caller flow: authorized exact lookup, then UUIDv7 admission.
+pub fn begin_request<R: serde::de::DeserializeOwned>(
+    transaction: &Transaction<'_>,
+    key: RequestKey<'_>,
+    signature: &str,
+    now_ms: i64,
+) -> Result<CallerAdmission<R>, studio_runtime_store::request_results::RequestResultError> {
+    if let Some(saved) = replay_request(transaction, key.raw, signature, now_ms)? {
+        return Ok(CallerAdmission::Replay(saved.reply));
+    }
+    Ok(
+        match admit_request(
+            transaction,
+            key.namespace,
+            key.authority,
+            key.root,
+            key.operation,
+            signature,
+            now_ms,
+        )? {
+            studio_runtime_store::request_results::Admission::Fresh(admitted) => {
+                CallerAdmission::Fresh(admitted)
+            }
+            studio_runtime_store::request_results::Admission::Replay(saved) => {
+                let saved: studio_runtime_store::request_results::ResultEnvelope<R> =
+                    serde_json::from_str(&saved.result)?;
+                CallerAdmission::Replay(saved.reply)
+            }
+        },
+    )
+}
+
+/// Read-only recovery follows the same keys without admitting an operation.
+pub fn saved_request<R: serde::de::DeserializeOwned>(
+    connection: &studio_runtime_store::Connection,
+    key: RequestKey<'_>,
+    signature: &str,
+    now_ms: i64,
+) -> Result<Option<R>, studio_runtime_store::request_results::RequestResultError> {
+    use studio_runtime_schema::persistence::{RequestIdentity, RequestIdentityError};
+    if let Some(saved) = replay_request(connection, key.raw, signature, now_ms)? {
+        return Ok(Some(saved.reply));
+    }
+    let identity = RequestIdentity::new(key.namespace, key.authority, key.root, key.operation)
+        .map_err(|_| RequestIdentityError::Expired {
+            issued_ms: 0,
+            expired_before_ms: now_ms,
+        })?;
+    Ok(replay_request(connection, identity.id(), signature, now_ms)?.map(|saved| saved.reply))
+}
+
 /// Python `str.strip()` includes four ASCII separators Rust's whitespace predicate omits.
 pub fn python_strip(value: &str) -> &str {
     value.trim_matches(|character: char| {
@@ -154,43 +237,25 @@ pub fn save_plan(
         .map(|value| format!("plan-request:{value}"))
         .unwrap_or_else(|| event_id.clone());
     let now_ms = (unix_time()? * 1000.0) as i64;
-    if let Some(saved) = replay_request::<studio_runtime_store::PlanRecord>(
-        connection,
-        &receipt_id,
-        &input.signature,
-        now_ms,
-    )? {
-        return Ok(WriteResult {
-            record: saved.reply.into_value(),
-            event_inserted: false,
-        });
-    }
-    let request_id = input
+    let root = input
         .request_id
         .as_deref()
         .ok_or(EventWriteError::InvalidRequest(
             "Supply a stable UUIDv7 request id",
         ))?;
-    let admitted = match admit_request(
+    let admitted = match begin_request::<studio_runtime_store::PlanRecord>(
         connection,
-        "plan",
-        &[&input.agent_id],
-        request_id,
-        &[],
+        RequestKey::new("plan", &[&input.agent_id], root).raw(&receipt_id),
         &input.signature,
         now_ms,
     )? {
-        studio_runtime_store::request_results::Admission::Replay(saved) => {
-            let saved: studio_runtime_store::request_results::ResultEnvelope<
-                studio_runtime_store::PlanRecord,
-            > = serde_json::from_str(&saved.result)
-                .map_err(studio_runtime_store::StoreError::from)?;
+        CallerAdmission::Replay(reply) => {
             return Ok(WriteResult {
-                record: saved.reply.into_value(),
+                record: reply.into_value(),
                 event_inserted: false,
             });
         }
-        studio_runtime_store::request_results::Admission::Fresh(admitted) => admitted,
+        CallerAdmission::Fresh(admitted) => admitted,
     };
     if EventWriteRepository::event_exists(connection, &event_id)? {
         return Err(EventWriteError::Conflict(
@@ -281,37 +346,19 @@ pub fn annotate(
         .unwrap_or_else(studio_runtime_schema::persistence::RequestIdentity::issue_root);
     let event_id = format!("annotation:{id}");
     let now_ms = (created * 1000.0) as i64;
-    if let Some(saved) = replay_request::<studio_runtime_store::AnnotationRecord>(
+    let admitted = match begin_request::<studio_runtime_store::AnnotationRecord>(
         connection,
-        &id,
+        RequestKey::new("annotation", &[&input.agent_id], &id),
         &input.signature,
         now_ms,
     )? {
-        return Ok(WriteResult {
-            record: saved.reply.into_value(),
-            event_inserted: false,
-        });
-    }
-    let admitted = match admit_request(
-        connection,
-        "annotation",
-        &[&input.agent_id],
-        &id,
-        &[],
-        &input.signature,
-        now_ms,
-    )? {
-        studio_runtime_store::request_results::Admission::Replay(saved) => {
-            let saved: studio_runtime_store::request_results::ResultEnvelope<
-                studio_runtime_store::AnnotationRecord,
-            > = serde_json::from_str(&saved.result)
-                .map_err(studio_runtime_store::StoreError::from)?;
+        CallerAdmission::Replay(reply) => {
             return Ok(WriteResult {
-                record: saved.reply.into_value(),
+                record: reply.into_value(),
                 event_inserted: false,
             });
         }
-        studio_runtime_store::request_results::Admission::Fresh(admitted) => admitted,
+        CallerAdmission::Fresh(admitted) => admitted,
     };
     if EventWriteRepository::event_exists(connection, &event_id)? {
         return Err(EventWriteError::Conflict(
@@ -701,45 +748,6 @@ pub fn assert_delegation(agent: &AgentRecord) -> Result<(), EventWriteError> {
         return Err(EventWriteError::InvalidRequest(
             "Single agent mode disables new delegation. Complete the task in the lead chat or select Multi agent",
         ));
-    }
-    Ok(())
-}
-
-pub fn read_receipt(
-    transaction: &Transaction<'_>,
-    request_id: Option<&str>,
-    signature: &str,
-    object: &'static str,
-    identity: &str,
-    validate: impl Fn(&Value) -> bool,
-) -> Result<Option<Value>, EventWriteError> {
-    let Some(request_id) = request_id.filter(|id| !id.is_empty()) else {
-        return Ok(None);
-    };
-    let Some(receipt) = EventWriteRepository::receipt(transaction, request_id)? else {
-        return Ok(None);
-    };
-    if receipt.signature != signature {
-        return Err(EventWriteError::Conflict(
-            "This request id has different content",
-        ));
-    }
-    let result: Value = serde_json::from_str(&receipt.result)
-        .map_err(|_| invalid_stored("runtime_operation_receipts", request_id))?;
-    if !validate(&result) {
-        return Err(invalid_stored(object, identity));
-    }
-    Ok(Some(result))
-}
-
-pub fn save_receipt(
-    transaction: &Transaction<'_>,
-    request_id: Option<&str>,
-    signature: &str,
-    result: &Value,
-) -> Result<(), EventWriteError> {
-    if let Some(request_id) = request_id.filter(|id| !id.is_empty()) {
-        EventWriteRepository::put_receipt(transaction, request_id, signature, &serialize(result)?)?;
     }
     Ok(())
 }

@@ -6,10 +6,27 @@ use crate::event_write;
 use serde_json::{Value, json};
 use studio_runtime_schema::queue_command::QueueCommand;
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, EventWriteRepository,
-    QueueWriteRepository, SchedulerRepository, StoreError, Transaction, WorkItemsRepository,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, QueueWriteRepository,
+    SchedulerRepository, StoreError, Transaction, WorkItemsRepository,
 };
 use thiserror::Error;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+enum QueueMutationStatus {
+    #[serde(rename = "updated")]
+    Updated,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct QueueCapabilities {
+    reorder: bool,
+    receipts: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct QueueReply {
+    status: QueueMutationStatus,
+    revision: String,
+    capabilities: QueueCapabilities,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueueSnapshot {
@@ -20,6 +37,8 @@ pub struct QueueSnapshot {
 
 #[derive(Debug, Error)]
 pub enum QueueWriteError {
+    #[error(transparent)]
+    RequestResult(#[from] studio_runtime_store::request_results::RequestResultError),
     #[error("invalid request: {0}")]
     InvalidRequest(&'static str),
     #[error("{0}")]
@@ -72,23 +91,20 @@ pub fn action(
             "Supply a request ID to change queue delivery",
         ));
     }
-    let receipt_id = request_id.map(|id| format!("queue:{agent_id}:{id}"));
-    if let Some(receipt_id) = receipt_id.as_deref() {
-        let receipt = EventWriteRepository::receipt(transaction, receipt_id)?;
-        if let Some(receipt) = receipt {
-            if receipt.signature != signature {
-                return Err(QueueWriteError::Conflict(
-                    "This request id has different content",
-                ));
-            }
-            let saved: Value = serde_json::from_str(&receipt.result)
-                .map_err(|_| invalid_stored("runtime_operation_receipts", receipt_id))?;
-            if !valid_receipt(&saved) {
-                return Err(invalid_stored("runtime_operation_receipts", receipt_id));
-            }
-            return Ok(saved);
-        }
-    }
+    let request_id = request_id.ok_or(QueueWriteError::InvalidRequest(
+        "Supply a stable UUIDv7 request id",
+    ))?;
+    let receipt_id = format!("queue:{agent_id}:{request_id}");
+    let now_ms = (unix_time()? * 1000.0) as i64;
+    let admitted = match event_write::begin_request::<QueueReply>(
+        transaction,
+        event_write::RequestKey::new("queue", &[agent_id], request_id).raw(&receipt_id),
+        signature,
+        now_ms,
+    )? {
+        event_write::CallerAdmission::Replay(reply) => return Ok(serde_json::to_value(reply)?),
+        event_write::CallerAdmission::Fresh(admitted) => admitted,
+    };
 
     let current = snapshot(transaction, &agent)?;
     if !body.accepts_revision(&current.revision) {
@@ -219,10 +235,12 @@ pub fn action(
     if !valid_receipt(&result) {
         return Err(QueueWriteError::InvalidRequest("Invalid queue receipt"));
     }
-    if let Some(receipt_id) = receipt_id {
-        EventWriteRepository::put_receipt(transaction, &receipt_id, signature, &result.to_string())
-            .map_err(QueueWriteError::Store)?;
-    }
+    event_write::settle_request(
+        transaction,
+        &admitted,
+        Some(agent_id),
+        &serde_json::from_value::<QueueReply>(result.clone())?,
+    )?;
     Ok(result)
 }
 
@@ -457,6 +475,9 @@ pub fn publish_queue(
         Some(agent) => {
             let snapshot = queue_snapshot(transaction, &agent).map_err(|error| match error {
                 QueueWriteError::Store(error) => error,
+                QueueWriteError::RequestResult(error) => {
+                    StoreError::SchemaMismatch(error.to_string())
+                }
                 QueueWriteError::Json(error) => StoreError::Json(error),
                 QueueWriteError::InvalidRequest(_)
                 | QueueWriteError::Conflict(_)

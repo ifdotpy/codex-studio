@@ -7,6 +7,7 @@ use crate::{
 use rusqlite::{OptionalExtension, Transaction};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use studio_runtime_schema::persistence::{DeliveryStatus, EventStatus, RecipientDelivery};
 use studio_runtime_store::{SyncDocumentsRepository, system_reads as records};
 
 pub fn delivery_receipts(
@@ -227,37 +228,10 @@ pub fn chat_read(
                 more = true;
                 break;
             }
-            message["deliveries"] = serde_json::from_str(deliveries)
-                .map_err(|_| records::invalid("runtime_chat_messages", &id))?;
+            let deliveries = message_deliveries(connection, &id, deliveries)?;
+            message["deliveries"] =
+                serde_json::to_value(deliveries).map_err(studio_runtime_store::StoreError::from)?;
             let mut message = records::validate("runtime_chat_messages", &id, message)?;
-            let deliveries = &mut message["deliveries"];
-            if let Some(states) = deliveries.as_object_mut() {
-                for (recipient, status) in states.iter_mut() {
-                    if status.as_str() != Some("queued") {
-                        continue;
-                    }
-                    if let Some(event) = connection
-                        .query_row(
-                            "SELECT status FROM runtime_events WHERE id=?1",
-                            [format!("chat:{id}:{recipient}")],
-                            |row| row.get::<_, String>(0),
-                        )
-                        .optional()?
-                        && matches!(
-                            event.as_str(),
-                            "delivered" | "failed" | "cancelled" | "stored_only"
-                        )
-                    {
-                        let event_id = format!("chat:{id}:{recipient}");
-                        records::validate(
-                            "runtime_events",
-                            &event_id,
-                            json!({"id":event_id,"status":event}),
-                        )?;
-                        *status = Value::String(event);
-                    }
-                }
-            }
             message["senderName"] = names.get(&sender).cloned().unwrap_or(json!(sender));
             messages.push(message);
         }
@@ -317,5 +291,93 @@ pub fn delete_room(
 impl From<rusqlite::Error> for CoordinationError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Store(error.into())
+    }
+}
+
+fn message_deliveries(
+    connection: &rusqlite::Connection,
+    id: &str,
+    deliveries: &str,
+) -> Result<BTreeMap<String, RecipientDelivery>, studio_runtime_store::StoreError> {
+    let mut deliveries: BTreeMap<String, RecipientDelivery> = serde_json::from_str(deliveries)
+        .map_err(|_| records::invalid("runtime_chat_messages", &id))?;
+    for (recipient, delivery) in &mut deliveries {
+        if delivery.status != DeliveryStatus::Queued {
+            continue;
+        }
+        if let Some(event) = connection
+            .query_row(
+                "SELECT status,error FROM runtime_events WHERE id=?1",
+                [format!("chat:{id}:{recipient}")],
+                |row| {
+                    Ok((
+                        row.get::<_, EventStatus>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .optional()?
+        {
+            let status = match event.0 {
+                EventStatus::Delivered => DeliveryStatus::Delivered,
+                EventStatus::Failed => DeliveryStatus::Failed,
+                EventStatus::Cancelled => DeliveryStatus::Cancelled,
+                EventStatus::StoredOnly => DeliveryStatus::StoredOnly,
+                EventStatus::Pending
+                | EventStatus::Reserved
+                | EventStatus::Dispatching
+                | EventStatus::Uncertain => continue,
+            };
+            let event_id = format!("chat:{id}:{recipient}");
+            records::validate(
+                "runtime_events",
+                &event_id,
+                json!({"id":event_id,"status":event.0,"error":event.1}),
+            )?;
+            delivery.status = status;
+            delivery.error = event.1;
+        }
+    }
+    Ok(deliveries)
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+
+    #[test]
+    fn typed_deliveries_reconcile_terminal_errors_without_rewriting_active_events() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch(
+            "CREATE TABLE runtime_events(id TEXT,status TEXT,error TEXT);
+            INSERT INTO runtime_events VALUES('chat:m:failed','failed','provider refused'),
+            ('chat:m:active','reserved',NULL),('chat:m:done','delivered',NULL);",
+        )
+        .expect("events");
+        let saved = json!({
+            "failed":{"status":"queued","error":null},
+            "active":{"status":"queued","error":null},
+            "done":{"status":"accepted","error":"saved"}
+        });
+        let deliveries = message_deliveries(&db, "m", &saved.to_string()).expect("typed states");
+        assert_eq!(deliveries["failed"].status, DeliveryStatus::Failed);
+        assert_eq!(
+            deliveries["failed"].error.as_deref(),
+            Some("provider refused")
+        );
+        assert_eq!(deliveries["active"].status, DeliveryStatus::Queued);
+        assert_eq!(deliveries["done"].status, DeliveryStatus::Accepted);
+        assert_eq!(deliveries["done"].error.as_deref(), Some("saved"));
+    }
+
+    #[test]
+    fn delivery_reader_rejects_flat_and_unknown_states() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        for saved in [
+            json!({"a":"queued"}),
+            json!({"a":{"status":"future","error":null}}),
+        ] {
+            assert!(message_deliveries(&db, "m", &saved.to_string()).is_err());
+        }
     }
 }

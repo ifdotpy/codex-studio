@@ -82,6 +82,9 @@ inherits = "ci"
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 # Retained watcher registrations and analytics connections avoid repeated tree walks and opens.
 default-filter = '''
+    (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(/^receipts_cutover::/)) |
+    (package(=studio-runtime-server) & kind(lib) & test(direct_generation_uses_only_migrated_account_counter)) |
+    (package(=studio-runtime-services) & kind(lib) & (test(/^studio_errors::/) | test(/^voice::provider::tests::voice_outbox_/))) |
     ((package(=studio-runtime-schema) | package(=studio-runtime-store)) & kind(lib) & test(receipt_)) |
     (package(=studio-runtime-server) & kind(bin) & binary(=studio-runtime-server) & test(history_watch_)) |
     (package(=studio-runtime-services) & kind(lib) & (test(analytics_requests_reuse_the_store_reader_connection) | test(profile_invalidation_forces_one_full_discovery_scan) | test(usage_reconciliation_prefers_final_recorded_response_to_later_legacy_rows))) |
@@ -317,6 +320,9 @@ platform = 'cfg(target_os = "linux")'
 # Supervisor health witnesses: Accept the maintained protocol and preserve exact handles; reject foreign identity and blocked recovery.
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 default-filter = '''
+    (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(/^receipts_cutover::/)) |
+    (package(=studio-runtime-server) & kind(lib) & test(direct_generation_uses_only_migrated_account_counter)) |
+    (package(=studio-runtime-services) & kind(lib) & (test(/^studio_errors::/) | test(/^voice::provider::tests::voice_outbox_/))) |
     ((package(=studio-runtime-schema) | package(=studio-runtime-store)) & kind(lib) & test(receipt_)) |
     (package(=studio-runtime-server) & kind(bin) & binary(=studio-runtime-server) & test(history_watch_)) |
     (package(=studio-runtime-services) & kind(lib) & (test(analytics_requests_reuse_the_store_reader_connection) | test(profile_invalidation_forces_one_full_discovery_scan) | test(usage_reconciliation_prefers_final_recorded_response_to_later_legacy_rows))) |

@@ -150,7 +150,7 @@ impl RetainedMonitorPort {
         let receipt_wake = Arc::new(Notify::new());
         let wake = Arc::clone(&receipt_wake);
         store.add_table_change_observer(
-            studio_runtime_store::ObservedTable::OperationReceipts,
+            studio_runtime_store::ObservedTable::RuntimeOutbox,
             move || wake.notify_waiters(),
         );
         Arc::new_cyclic(|this| Self {

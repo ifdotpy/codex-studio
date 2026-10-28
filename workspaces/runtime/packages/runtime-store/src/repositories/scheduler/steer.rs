@@ -435,7 +435,6 @@ impl SchedulerRepository {
                 .to_string();
         let Admission::Fresh(admission) =
             RequestResults::admit(tx, &identity, &signature, (timestamp() * 1000.0) as i64)
-                .map_err(crate::request_results::RequestResultError::from)
                 .map_err(StoreError::from)?
         else {
             return Err(invalid_receipt(steer_id));
@@ -911,7 +910,7 @@ impl SchedulerRepository {
                 SteerStage::Submitted if !receipt.interrupt_still_queued => {
                     unconfirm(tx, &id, receipt)?;
                 }
-                _ => {}
+                SteerStage::Submitted | SteerStage::Unconfirmed => {}
             }
         }
         Ok(())
@@ -949,7 +948,7 @@ impl SchedulerRepository {
                 SteerStage::Submitted if receipt.generation.is_none_or(|g| g < current) => {
                     unconfirm(tx, &id, receipt)?
                 }
-                _ => {}
+                SteerStage::Submitted | SteerStage::Unconfirmed => {}
             }
         }
         Ok(())

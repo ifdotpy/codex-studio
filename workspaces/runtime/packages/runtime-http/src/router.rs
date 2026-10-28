@@ -1396,16 +1396,12 @@ mod tests {
         store
             .transaction(move |transaction| {
                 transaction.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                    "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,1)",
                     ("operation", "signature", "{}"),
                 )?;
                 transaction.execute(
                     "INSERT INTO runtime_native_action_receipts(id,signature,receipt,outcome) VALUES(?1,?2,?3,?4)",
                     ("native", "signature", "{}", "accepted"),
-                )?;
-                transaction.execute(
-                    "INSERT INTO runtime_access_receipts(client,request_id,hash,session,status,record) VALUES(?1,?2,?3,?4,?5,?6)",
-                    ("client", "request", "hash", "session", "complete", "{}"),
                 )?;
                 Ok(())
             })
@@ -1455,7 +1451,7 @@ mod tests {
         store
             .transaction(move |transaction| {
                 transaction.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                    "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,1)",
                     ("operation", "signature", "{}"),
                 )?;
                 transaction.execute(

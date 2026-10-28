@@ -63,6 +63,11 @@ domain!(RecoveryReceiptStatus { Unknown=>"unknown", Unconfirmed=>"unconfirmed", 
 domain!(NativeSettingsStatus { Submitted=>"submitted", Acknowledged=>"acknowledged", NotSent=>"not_sent", Unknown=>"unknown", Rejected=>"rejected" });
 domain!(SafetyRetryStage { Turns=>"turns", Items=>"items", Interrupt=>"interrupt", VerifyTurns=>"verify_turns", VerifyItems=>"verify_items", Fork=>"fork", Start=>"start", Running=>"running", Unknown=>"unknown", Failed=>"failed", Cancelled=>"cancelled" });
 domain!(SafetyRetryDispatch { Ready=>"ready", Intent=>"intent", Received=>"received", Rejected=>"rejected", Unknown=>"unknown", Cancelled=>"cancelled" });
+domain!(ResetCreditStatus { Pending=>"pending", Uncertain=>"uncertain", Completed=>"completed" });
+domain!(ResetCreditCertainty { NotSent=>"not_sent", Written=>"written", Unknown=>"unknown" });
+domain!(ResetCreditOutcome { Reset=>"reset", NothingToReset=>"nothingToReset", NoCredit=>"noCredit", AlreadyRedeemed=>"alreadyRedeemed" });
+domain!(NativeReviewThreadStatus { Submitted=>"submitted", Accepted=>"accepted", Rejected=>"rejected", NotSent=>"not_sent", Unknown=>"unknown" });
+domain!(SafetyRetryCertainty { Written=>"written", NotSent=>"not_sent", Unknown=>"unknown", Refused=>"refused" });
 domain!(WorkStatus { Ready=>"ready", Blocked=>"blocked", Running=>"running", Review=>"review", Accepted=>"accepted", Cancelled=>"cancelled" });
 domain!(OwnerKind { Agent=>"agent", Task=>"task", Account=>"account", Vm=>"vm", Project=>"project", Monitor=>"monitor", Terminal=>"terminal", Message=>"message", Request=>"request", Server=>"server" });
 domain!(OutboxKind { ProviderCall=>"provider_call", ProviderCallback=>"provider_callback", JournalEntry=>"journal_entry", Publication=>"publication", StreamFlush=>"stream_flush", FollowupEffect=>"followup_effect", Steer=>"steer", VoiceStop=>"voice_stop", VoiceDelete=>"voice_delete", WorkArchive=>"work_archive", WorkVm=>"work_vm", TitleGeneration=>"title_generation", NativeAction=>"native_action", TerminalAction=>"terminal_action", MonitorInput=>"monitor_input", McpReconnect=>"mcp_reconnect", ProjectRegistration=>"project_registration", RemoteDelivery=>"remote_delivery", ManagedTool=>"managed_tool" });
@@ -115,6 +120,11 @@ macro_rules! contracts {
     };
 }
 contracts!(
+    SafetyRetryCertainty,
+    NativeReviewThreadStatus,
+    ResetCreditStatus,
+    ResetCreditCertainty,
+    ResetCreditOutcome,
     SafetyRetryStage,
     SafetyRetryDispatch,
     NativeSettingsStatus,
@@ -262,6 +272,24 @@ impl RequestIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn receipt_recipient_delivery_schema_matches_nullable_owner() {
+        let openapi: serde_json::Value =
+            serde_json::from_str(include_str!("../../runtime-http/openapi.json")).expect("OpenAPI");
+        let document = serde_json::json!({"$ref":"#/components/schemas/RecipientDelivery","components":openapi["components"]});
+        let validator = jsonschema::validator_for(&document).expect("recipient schema");
+        let record = RecipientDelivery {
+            status: DeliveryStatus::Queued,
+            error: None,
+        };
+        assert!(
+            validator.is_valid(&serde_json::to_value(record).expect("typed recipient")),
+            "wire schema accepts owner null error"
+        );
+        assert!(!validator.is_valid(&serde_json::json!("queued")));
+        assert!(!validator.is_valid(&serde_json::json!({"status":"future","error":null})));
+        assert!(!validator.is_valid(&serde_json::json!({"status":"failed:reason","error":null})));
+    }
     #[cfg(feature = "sqlite")]
     pub(super) fn check_sql_enum<T>()
     where

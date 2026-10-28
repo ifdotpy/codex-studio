@@ -2103,6 +2103,12 @@ async fn rename(
             )
             .await
             .map_err(|error| match error {
+                studio_runtime_services::title_generation::TitleError::RequestResult(error) => {
+                    error.into()
+                }
+                studio_runtime_services::title_generation::TitleError::Outbox(error) => {
+                    error.into()
+                }
                 studio_runtime_services::title_generation::TitleError::AgentNotFound => {
                     ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent")
                 }
@@ -2188,6 +2194,10 @@ async fn rename(
 }
 fn operation_error(error: OperationError) -> ApiError {
     use agents_create::MutationError;
+    let error = match error {
+        OperationError::Create(MutationError::Request(error)) => return error.into(),
+        error => error,
+    };
     // A stale revision is rejected before any write, so the client may drop the
     // request and refresh from the canonical value.
     if matches!(error, OperationError::Create(MutationError::Stale)) {

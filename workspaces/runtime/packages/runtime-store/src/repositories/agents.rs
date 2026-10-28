@@ -168,6 +168,28 @@ mod invalid_agent_repair_tests {
     use serde_json::json;
 
     #[test]
+    fn receipt_domain_quarantine_does_not_decode_malformed_agent() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch(&format!(
+            "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT,hold_status TEXT {},hold_incident TEXT); INSERT INTO runtime_agents(id,record,hold_status) VALUES('broken','malformed','clear')",
+            studio_runtime_schema::persistence::enum_check::<HoldStatus>("hold_status")
+        )).expect("owner shape");
+        AgentRepository::hold(&db, "broken", HoldStatus::Invalid, Some("incident"))
+            .expect("independent quarantine");
+        let state: (HoldStatus, String, String) = db
+            .query_row(
+                "SELECT hold_status,hold_incident,record FROM runtime_agents WHERE id='broken'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("scalar authority");
+        assert_eq!(
+            state,
+            (HoldStatus::Invalid, "incident".into(), "malformed".into())
+        );
+    }
+
+    #[test]
     fn valid_agent_repair_clears_the_invalid_record_hold() {
         let mut connection = crate::fresh_state::test_canvas();
         let agent = AgentRecord::from_value(json!({

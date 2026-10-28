@@ -43,6 +43,8 @@ pub struct StoredResult {
 /// Persist this with the admitted owner/outbox for asynchronous settlement.
 /// Deserialization is for trusted owner state, never unauthenticated ingress.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct AdmittedRequest {
     id: String,
     signature: String,
@@ -89,6 +91,14 @@ pub enum Admission {
 
 pub struct RequestResults;
 impl RequestResults {
+    /// Completion-only lookup using the persisted owner token. Age does not
+    /// invalidate already admitted work; a miss grants no new effect/admission.
+    pub fn admitted_result(
+        tx: &Connection,
+        admitted: &AdmittedRequest,
+    ) -> Result<Option<StoredResult>> {
+        Self::stored(tx, admitted.id(), admitted.signature())
+    }
     pub fn expired_before_ms(tx: &Connection) -> Result<i64> {
         Ok(tx.query_row("SELECT coalesce(json_extract(record,'$.expired_before_ms'),0) FROM runtime_orchestration_settings WHERE id='global'", [], |row| row.get(0)).optional()?.unwrap_or(0))
     }
@@ -197,6 +207,18 @@ mod tests {
     use studio_runtime_schema::persistence::REQUEST_ID_FUTURE_SKEW_MS;
 
     #[test]
+    fn receipt_result_admitted_schema_matches_store_owner() {
+        let owner = schemars::schema_for!(AdmittedRequest).to_value();
+        let consumer = studio_runtime_schema::contracts::admitted_request_schema();
+        for field in ["properties", "required", "additionalProperties"] {
+            assert_eq!(
+                owner[field], consumer[field],
+                "AdmittedRequest schemas must match runtime-store/src/repositories/request_results.rs owner: {field}"
+            );
+        }
+    }
+
+    #[test]
     fn receipt_result_cutover_floor_preserves_imported_reply_ttl() {
         let mut db = database();
         let cutover = REQUEST_RESULT_TTL_MS * 2;
@@ -282,6 +304,29 @@ mod tests {
             },
         )
         .expect("late completion remains allowed");
+        assert!(
+            RequestResults::admitted_result(&tx, &final_result)
+                .expect("owner completion sees retained result")
+                .is_some()
+        );
+        assert!(matches!(
+            RequestResults::replay(
+                &tx,
+                final_result.id(),
+                final_result.signature(),
+                issued + REQUEST_RESULT_TTL_MS + 1
+            ),
+            Err(RequestResultError::Identity(
+                RequestIdentityError::Expired { .. }
+            ))
+        ));
+        RequestResults::gc(&tx, issued + REQUEST_RESULT_TTL_MS + 1)
+            .expect("normal expired cache GC");
+        assert!(
+            RequestResults::admitted_result(&tx, &final_result)
+                .expect("no resurrection after GC")
+                .is_none()
+        );
         let migrated = crate::receipt_migration_contract::admitted_owner_token(
             "opaque migrated pk",
             "original signature",

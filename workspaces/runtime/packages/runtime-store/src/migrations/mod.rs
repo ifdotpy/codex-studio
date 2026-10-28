@@ -12,7 +12,24 @@ mod m2026_10_26_terminal_errors;
 pub(crate) mod m2026_10_27_cost_index;
 mod m2026_10_27_retired_sqlite;
 mod m2026_10_27_scheduler_indexes;
+mod m2026_10_28_receipts_account_worker;
+mod m2026_10_28_receipts_actions;
+mod m2026_10_28_receipts_checks;
+mod m2026_10_28_receipts_context_repair;
+mod m2026_10_28_receipts_drop_old_tables;
+mod m2026_10_28_receipts_execution;
+mod m2026_10_28_receipts_incidents;
+mod m2026_10_28_receipts_owner_state;
+mod m2026_10_28_receipts_provider_callbacks;
+mod m2026_10_28_receipts_provider_delivery;
+mod m2026_10_28_receipts_remote;
+mod m2026_10_28_receipts_requests;
 mod m2026_10_28_receipts_schema;
+mod m2026_10_28_receipts_title;
+mod m2026_10_28_receipts_tools;
+mod m2026_10_28_receipts_vm_provider;
+mod m2026_10_28_receipts_voice;
+mod m2026_10_28_receipts_work;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -29,8 +46,10 @@ use studio_runtime_schema::studio_errors::{
     MigrationPhase, MigrationRollbackOutcome, MigrationTarget,
 };
 
+use crate::receipt_migration_contract::{self, MigrationCheckpoint, ReceiptFamilyMigration};
 use crate::{StoreError, StoreResult};
 use m2026_10_26_provider_identity::Accounts;
+use studio_runtime_schema::persistence::{MigrationStatus, ReceiptMigrationPhase};
 
 /// Calendar date of the format transition, never an automatic expiry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -130,6 +149,35 @@ enum Context<'a, 'db> {
 trait Migration: Sync {
     fn definition(&self) -> MigrationDefinition;
     fn apply(&self, context: &Context<'_, '_>) -> StoreResult<()>;
+    fn receipt_family(&self) -> Option<&ReceiptMigration> {
+        None
+    }
+}
+
+/// Catalog adapter for independent receipt families. Only the runner owns commits.
+struct ReceiptMigration {
+    family: &'static (dyn ReceiptFamilyMigration + Sync),
+    sources: &'static [&'static str],
+}
+
+impl Migration for ReceiptMigration {
+    fn definition(&self) -> MigrationDefinition {
+        MigrationDefinition {
+            id: self.family.id(),
+            introduced: OCTOBER_28,
+            target: MigrationTarget::Canvas,
+            supported_source: "Classified pre-cutover receipt family, bounded by rowid and input bytes",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        }
+    }
+    fn apply(&self, _context: &Context<'_, '_>) -> StoreResult<()> {
+        Err(StoreError::RecordContract(
+            "receipt families require the bounded startup runner",
+        ))
+    }
+    fn receipt_family(&self) -> Option<&ReceiptMigration> {
+        Some(self)
+    }
 }
 
 struct SqlMigration {
@@ -243,7 +291,6 @@ static CATALOG: &[&dyn Migration] = &[
         apply: |c| {
             crate::feature_schema::prepare(c.transaction)?;
             m2026_10_26_canvas::feature_columns(c.transaction)?;
-            crate::StartupRecoveryRepository::prepare_indexes(c.transaction)?;
             crate::MonitorsRepository::prepare_indexes(c.transaction)?;
             crate::AgentIndexedReads::prepare_index(c.transaction)
         },
@@ -281,8 +328,7 @@ static CATALOG: &[&dyn Migration] = &[
             m2026_10_26_canvas::release_capacity_start_attempts(
                 c.transaction,
                 m2026_10_26_canvas::unix_now(),
-            )?;
-            m2026_10_26_canvas::delete_prepared_callback_cache(c.transaction)
+            )
         },
     },
     &SqlMigration {
@@ -344,6 +390,74 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_28_receipts_schema::apply(c.transaction),
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_execution::ExecutionMigration,
+        sources: m2026_10_28_receipts_execution::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_actions::ActionsMigration,
+        sources: m2026_10_28_receipts_actions::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_context_repair::ContextRepairMigration,
+        sources: m2026_10_28_receipts_context_repair::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_voice::VoiceMigration,
+        sources: m2026_10_28_receipts_voice::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_work::Family,
+        sources: m2026_10_28_receipts_work::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_title::Family,
+        sources: m2026_10_28_receipts_title::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_owner_state::Family,
+        sources: m2026_10_28_receipts_owner_state::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_requests::Family,
+        sources: m2026_10_28_receipts_requests::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_tools::Family,
+        sources: m2026_10_28_receipts_tools::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_remote::Family,
+        sources: m2026_10_28_receipts_remote::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_provider_delivery::Family,
+        sources: m2026_10_28_receipts_provider_delivery::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_provider_callbacks::Family,
+        sources: m2026_10_28_receipts_provider_callbacks::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_vm_provider::Family,
+        sources: m2026_10_28_receipts_vm_provider::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_account_worker::Family,
+        sources: m2026_10_28_receipts_account_worker::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_incidents::Family,
+        sources: &["runtime_operation_receipts"],
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_checks::Family,
+        sources: m2026_10_28_receipts_checks::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_drop_old_tables::Family,
+        sources: &[],
     },
     &RegistryMigration,
 ];
@@ -478,7 +592,7 @@ fn apply_target(
     let mut last = first.definition().id;
     for step in CATALOG
         .iter()
-        .filter(|step| step.definition().target == target)
+        .filter(|step| step.definition().target == target && step.receipt_family().is_none())
     {
         last = step.definition().id;
         if let Err(source) = step.apply(&Context::Sql(SqlContext {
@@ -561,7 +675,192 @@ pub(crate) fn run(root: &Path) -> StoreResult<()> {
         &accounts,
         SourceDatabase::Canvas(&source_canvas),
     )?;
+    run_receipt_migrations(&mut canvas)?;
     RegistryMigration.apply(&Context::Registry(&registry))
+}
+
+/// Startup owns the state lock throughout all batches. Recovery and serving
+/// connections are created only after this function and final validation return.
+fn run_receipt_migrations(db: &mut Connection) -> StoreResult<()> {
+    for migration in CATALOG.iter().filter_map(|entry| entry.receipt_family()) {
+        run_receipt_family(db, migration, &mut |_, _, _| Ok(()))?;
+    }
+    m2026_10_28_receipts_drop_old_tables::verify_absent(db).map_err(receipt_error)?;
+    crate::schema::verify_bootstrap(db)?;
+    crate::verify_observed_tables_are_rowid(db)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommitBoundary {
+    Before,
+    After,
+}
+
+fn receipt_error(error: receipt_migration_contract::ReceiptMigrationError) -> StoreError {
+    StoreError::SchemaMismatch(error.to_string())
+}
+
+fn run_receipt_family(
+    db: &mut Connection,
+    migration: &ReceiptMigration,
+    fault: &mut impl FnMut(ReceiptMigrationPhase, CommitBoundary, i64) -> StoreResult<()>,
+) -> StoreResult<()> {
+    let id = migration.family.id();
+    let now = (m2026_10_26_canvas::unix_now() * 1000.0) as i64;
+    let prepare = receipt_migration_contract::phase_id(id, ReceiptMigrationPhase::Prepare);
+    let finish = receipt_migration_contract::phase_id(id, ReceiptMigrationPhase::Finish);
+    {
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let completed = MigrationCheckpoint::load(&tx, &finish, "")
+            .map_err(receipt_error)?
+            .is_some_and(|checkpoint| checkpoint.status == MigrationStatus::Complete);
+        if completed {
+            return Ok(());
+        }
+        let mut checkpoint =
+            MigrationCheckpoint::begin(&tx, &prepare, "", now).map_err(receipt_error)?;
+        if checkpoint.status != MigrationStatus::Complete {
+            migration
+                .family
+                .prepare(&tx, checkpoint.cutover_ms)
+                .map_err(receipt_error)?;
+            checkpoint.status = MigrationStatus::Complete;
+            checkpoint
+                .save(&tx, &prepare, "", now)
+                .map_err(receipt_error)?;
+            commit_receipt_phase(
+                tx,
+                id,
+                ReceiptMigrationPhase::Prepare,
+                checkpoint.cursor,
+                fault,
+            )?;
+        }
+    }
+    receipt_checkpoint(db)?;
+    for source in migration.sources {
+        loop {
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let checkpoint =
+                MigrationCheckpoint::begin(&tx, id, source, now).map_err(receipt_error)?;
+            if checkpoint.status == MigrationStatus::Complete {
+                break;
+            }
+            let next = match migration.family.move_batch(&tx, source, &checkpoint) {
+                Ok(next) => next,
+                Err(error) => {
+                    return Err(rolled_back(
+                        tx,
+                        id,
+                        MigrationTarget::Canvas,
+                        MigrationPhase::Apply,
+                        receipt_error(error),
+                    ));
+                }
+            };
+            if next.cutover_ms != checkpoint.cutover_ms
+                || next.cursor < checkpoint.cursor
+                || (next.cursor == checkpoint.cursor && next.status != MigrationStatus::Complete)
+            {
+                return Err(rolled_back(
+                    tx,
+                    id,
+                    MigrationTarget::Canvas,
+                    MigrationPhase::Validate,
+                    StoreError::RecordContract("receipt batch did not advance its checkpoint"),
+                ));
+            }
+            next.save(&tx, id, source, now).map_err(receipt_error)?;
+            commit_receipt_phase(tx, id, ReceiptMigrationPhase::Move, next.cursor, fault)?;
+            receipt_checkpoint(db)?;
+            if next.status == MigrationStatus::Complete {
+                break;
+            }
+        }
+    }
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    for source in migration.sources {
+        if !MigrationCheckpoint::load(&tx, id, source)
+            .map_err(receipt_error)?
+            .is_some_and(|checkpoint| checkpoint.status == MigrationStatus::Complete)
+        {
+            return Err(rolled_back(
+                tx,
+                id,
+                MigrationTarget::Canvas,
+                MigrationPhase::Validate,
+                StoreError::SchemaMismatch(format!(
+                    "incomplete receipt migration {id} source {source}"
+                )),
+            ));
+        }
+    }
+    migration.family.finish(&tx).map_err(receipt_error)?;
+    let mut checkpoint =
+        MigrationCheckpoint::begin(&tx, &finish, "", now).map_err(receipt_error)?;
+    checkpoint.status = MigrationStatus::Complete;
+    checkpoint
+        .save(&tx, &finish, "", now)
+        .map_err(receipt_error)?;
+    commit_receipt_phase(
+        tx,
+        id,
+        ReceiptMigrationPhase::Finish,
+        checkpoint.cursor,
+        fault,
+    )?;
+    receipt_checkpoint(db)
+}
+
+fn commit_receipt_phase(
+    tx: Transaction<'_>,
+    id: &'static str,
+    phase: ReceiptMigrationPhase,
+    cursor: i64,
+    fault: &mut impl FnMut(ReceiptMigrationPhase, CommitBoundary, i64) -> StoreResult<()>,
+) -> StoreResult<()> {
+    if let Err(error) = fault(phase, CommitBoundary::Before, cursor) {
+        return Err(rolled_back(
+            tx,
+            id,
+            MigrationTarget::Canvas,
+            MigrationPhase::Commit,
+            error,
+        ));
+    }
+    if let Err(error) = tx.execute_batch("COMMIT") {
+        return Err(if tx.is_autocommit() {
+            failure(
+                id,
+                MigrationTarget::Canvas,
+                MigrationPhase::Commit,
+                MigrationRollbackOutcome::Unknown,
+                error.into(),
+            )
+        } else {
+            rolled_back(
+                tx,
+                id,
+                MigrationTarget::Canvas,
+                MigrationPhase::Commit,
+                error.into(),
+            )
+        });
+    }
+    fault(phase, CommitBoundary::After, cursor)
+}
+
+fn receipt_checkpoint(db: &Connection) -> StoreResult<()> {
+    let result = crate::sqlite_durability::checkpoint(
+        db,
+        crate::sqlite_durability::CheckpointMode::Truncate,
+    )?;
+    if !result.is_complete() {
+        return Err(StoreError::SchemaMismatch(
+            "receipt migration WAL checkpoint is blocked; startup has not completed".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// The supervisor calls this under supervisor.lock, before recovery and listening.
@@ -595,23 +894,224 @@ pub(crate) fn supervisor(db: &mut Connection) -> StoreResult<()> {
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn prepare_canvas_fixture(transaction: &Transaction<'_>) -> StoreResult<()> {
     let accounts = Accounts::new();
-    for step in CATALOG
-        .iter()
-        .filter(|step| step.definition().target == MigrationTarget::Canvas)
-    {
+    for step in CATALOG.iter().filter(|step| {
+        step.definition().target == MigrationTarget::Canvas && step.receipt_family().is_none()
+    }) {
         step.apply(&Context::Sql(SqlContext {
             transaction,
             accounts: &accounts,
             source: SourceDatabase::Independent,
         }))?;
     }
-    Ok(())
+    crate::schema::prepare_receipt_owners(transaction)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    struct BatchWitness;
+    impl ReceiptFamilyMigration for BatchWitness {
+        fn id(&self) -> &'static str {
+            "2026-10-28-receipts-batch-witness"
+        }
+        fn prepare(&self, _: &Transaction<'_>, _: i64) -> receipt_migration_contract::Result<()> {
+            Ok(())
+        }
+        fn move_batch(
+            &self,
+            tx: &Transaction<'_>,
+            source: &str,
+            checkpoint: &MigrationCheckpoint,
+        ) -> receipt_migration_contract::Result<MigrationCheckpoint> {
+            #[derive(serde::Deserialize, serde::Serialize)]
+            struct Reply {
+                index: i64,
+            }
+            let rows = receipt_migration_contract::read_receipt_batch(tx, source, checkpoint, "1")?;
+            let mut next = checkpoint.clone();
+            next.status = if rows.is_empty() {
+                MigrationStatus::Complete
+            } else {
+                MigrationStatus::Running
+            };
+            for row in rows {
+                if row.signature != "known" {
+                    return Err(receipt_migration_contract::unclassifiable(
+                        source,
+                        &row.id,
+                        &row.signature,
+                    ));
+                }
+                let reply: Reply = row.json(source)?;
+                receipt_migration_contract::import_result(
+                    tx,
+                    &row.id,
+                    &row.signature,
+                    &crate::request_results::ResultEnvelope {
+                        actor: None,
+                        reply,
+                        references: vec![],
+                    },
+                    next.cutover_ms,
+                )?;
+                receipt_migration_contract::delete_source(tx, source, row.rowid)?;
+                next.cursor = row.rowid;
+            }
+            Ok(next)
+        }
+        fn finish(&self, _: &Transaction<'_>) -> receipt_migration_contract::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn receipt_batch_fixture(path: &Path, count: i64) -> Connection {
+        let mut db = Connection::open(path).expect("database");
+        crate::sqlite_durability::configure_writer(&db).expect("WAL");
+        let tx = db.transaction().expect("fixture transaction");
+        receipt_migration_contract::prepare_schema(&tx).expect("targets");
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT)").expect("source");
+        for index in 1..=count {
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,'known',?2)",
+                rusqlite::params![
+                    format!("request-{index}"),
+                    serde_json::json!({"index":index}).to_string()
+                ],
+            )
+            .expect("old row");
+        }
+        tx.commit().expect("fixture committed");
+        db
+    }
+
+    #[test]
+    fn receipt_cutover_batch_crashes_preserve_evidence_and_resume_exactly() {
+        let family = ReceiptMigration {
+            family: &BatchWitness,
+            sources: &["runtime_operation_receipts"],
+        };
+        // Prepare, four move commits (500/500/1/empty), finish: before and after each.
+        for crash in 0..12 {
+            let root = tempfile::tempdir().expect("fixture");
+            let path = root.path().join("canvas.sqlite3");
+            let mut db = receipt_batch_fixture(&path, 1001);
+            let mut boundary = 0;
+            let result = run_receipt_family(&mut db, &family, &mut |_, _, _| {
+                let at = boundary;
+                boundary += 1;
+                if at == crash {
+                    Err(StoreError::RecordContract("injected process interruption"))
+                } else {
+                    Ok(())
+                }
+            });
+            assert!(result.is_err(), "boundary {crash}");
+            let evidence:i64=db.query_row("SELECT (SELECT count(*) FROM runtime_operation_receipts)+(SELECT count(*) FROM request_results)",[],|row|row.get(0)).expect("evidence");
+            assert_eq!(
+                evidence, 1001,
+                "source deletion never outruns destination at {crash}"
+            );
+            drop(db);
+            let mut db = Connection::open(&path).expect("restart");
+            crate::sqlite_durability::configure_writer(&db).expect("WAL");
+            run_receipt_family(&mut db, &family, &mut |_, _, _| Ok(())).expect("resume");
+            let results: Vec<(String, String, String, i64)> = db
+                .prepare("SELECT id,signature,result,created FROM request_results ORDER BY id")
+                .expect("results")
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .expect("rows")
+                .collect::<rusqlite::Result<_>>()
+                .expect("read");
+            assert_eq!(results.len(), 1001);
+            assert!(results.iter().all(|row| row.3 == results[0].3));
+            let drop_migration = ReceiptMigration {
+                family: &m2026_10_28_receipts_drop_old_tables::Family,
+                sources: &[],
+            };
+            run_receipt_family(&mut db, &drop_migration, &mut |_, _, _| Ok(()))
+                .expect("drop old sources");
+            drop(db);
+            let mut db = Connection::open(&path).expect("second open");
+            run_receipt_family(&mut db, &family, &mut |_, _, _| {
+                panic!("completed family must not execute again")
+            })
+            .expect("completed");
+            let after: Vec<(String, String, String, i64)> = db
+                .prepare("SELECT id,signature,result,created FROM request_results ORDER BY id")
+                .expect("results")
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .expect("rows")
+                .collect::<rusqlite::Result<_>>()
+                .expect("read");
+            assert_eq!(after, results);
+            assert!(
+                !crate::schema::table_exists(&db, "runtime_operation_receipts").expect("schema")
+            );
+        }
+    }
+
+    #[test]
+    fn receipt_cutover_drop_crashes_are_atomic_and_never_accept_leftover_rows() {
+        for boundary in [CommitBoundary::Before, CommitBoundary::After] {
+            let root = tempfile::tempdir().expect("fixture");
+            let path = root.path().join("canvas.sqlite3");
+            let mut db = receipt_batch_fixture(&path, 0);
+            let migration = ReceiptMigration {
+                family: &m2026_10_28_receipts_drop_old_tables::Family,
+                sources: &[],
+            };
+            assert!(
+                run_receipt_family(&mut db, &migration, &mut |phase, at, _| {
+                    if phase == ReceiptMigrationPhase::Finish && at == boundary {
+                        Err(StoreError::RecordContract("drop interrupted"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .is_err()
+            );
+            assert_eq!(
+                crate::schema::table_exists(&db, "runtime_operation_receipts").expect("schema"),
+                boundary == CommitBoundary::Before
+            );
+            drop(db);
+            let mut db = Connection::open(&path).expect("restart");
+            run_receipt_family(&mut db, &migration, &mut |_, _, _| Ok(())).expect("finish drop");
+            assert!(
+                !crate::schema::table_exists(&db, "runtime_operation_receipts").expect("schema")
+            );
+        }
+        let root = tempfile::tempdir().expect("fixture");
+        let mut db = receipt_batch_fixture(&root.path().join("canvas.sqlite3"), 1);
+        let migration = ReceiptMigration {
+            family: &m2026_10_28_receipts_drop_old_tables::Family,
+            sources: &[],
+        };
+        let error = run_receipt_family(&mut db, &migration, &mut |_, _, _| Ok(()))
+            .expect_err("leftover refuses drop");
+        let error = error.to_string();
+        assert!(
+            error.contains("runtime_operation_receipts")
+                && error.contains("request-1")
+                && error.contains("known"),
+            "{error}"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM runtime_operation_receipts",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .expect("source"),
+            1
+        );
+    }
 
     #[tokio::test]
     async fn retired_sqlite_drop_fault_rolls_back_each_target() {

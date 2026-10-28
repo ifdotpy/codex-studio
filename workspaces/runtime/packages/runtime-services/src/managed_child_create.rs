@@ -1320,6 +1320,7 @@ fn map_create_error(error: crate::agents_create::CreateError) -> Error {
         | crate::agents_create::CreateError::Stale
         | crate::agents_create::CreateError::CurrentAccountExcluded
         | crate::agents_create::CreateError::InFlight
+        | crate::agents_create::CreateError::Request(_)
         | crate::agents_create::CreateError::InvalidStoredObject { .. } => Error::Refused,
     }
 }
@@ -1346,6 +1347,7 @@ fn map_recheck_error(
         | crate::agents_create::MutationError::Stale
         | crate::agents_create::MutationError::CurrentAccountExcluded
         | crate::agents_create::MutationError::InFlight
+        | crate::agents_create::MutationError::Request(_)
         | crate::agents_create::MutationError::InvalidStoredObject { .. } => {
             crate::managed_host_tools::Error::Stale
         }

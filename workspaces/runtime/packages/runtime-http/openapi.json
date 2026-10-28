@@ -3464,6 +3464,28 @@
         "title": "ActiveToolRecordResponse",
         "type": "object"
       },
+      "AdmittedRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "created": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "signature",
+          "created"
+        ],
+        "title": "AdmittedRequest",
+        "type": "object"
+      },
       "AgentActivity": {
         "additionalProperties": false,
         "properties": {
@@ -18671,7 +18693,7 @@
           },
           "deliveries": {
             "additionalProperties": {
-              "type": "string"
+              "$ref": "#/components/schemas/RecipientDelivery"
             },
             "title": "Deliveries",
             "type": "object"
@@ -23605,6 +23627,20 @@
         "title": "DeliveryMomentInput",
         "type": "string"
       },
+      "DeliveryStatus": {
+        "enum": [
+          "queued",
+          "stored_only",
+          "accepted",
+          "sent",
+          "cancelled",
+          "pending",
+          "delivered",
+          "failed",
+          "uncertain"
+        ],
+        "type": "string"
+      },
       "DesktopEntityDto": {
         "additionalProperties": false,
         "properties": {
@@ -26975,11 +27011,16 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
           }
         },
         "required": [
           "id",
-          "hash"
+          "hash",
+          "requestId"
         ],
         "title": "FederationAck",
         "type": "object"
@@ -26994,11 +27035,16 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
           }
         },
         "required": [
           "id",
-          "hash"
+          "hash",
+          "requestId"
         ],
         "title": "FederationAckResult",
         "type": "object"
@@ -29590,7 +29636,7 @@
           },
           "deliveries": {
             "additionalProperties": {
-              "type": "string"
+              "$ref": "#/components/schemas/RecipientDelivery"
             },
             "title": "Deliveries",
             "type": "object"
@@ -40274,6 +40320,25 @@
           "agentId"
         ],
         "title": "ReceiptsResource",
+        "type": "object"
+      },
+      "RecipientDelivery": {
+        "additionalProperties": false,
+        "description": "One recipient's delivery state. Error text is separate from the closed status.",
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/DeliveryStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
         "type": "object"
       },
       "RecoveryConnectionGeneration": {
@@ -64356,7 +64421,7 @@
             "anyOf": [
               {
                 "additionalProperties": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/RecipientDelivery"
                 },
                 "type": "object"
               },

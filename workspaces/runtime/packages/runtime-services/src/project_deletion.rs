@@ -5,6 +5,7 @@ use crate::{
     agent_management::{Action, ManagementError},
 };
 use rusqlite::{Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -23,6 +24,21 @@ pub struct Request {
     pub expected_workspace_id: String,
     pub expected_project_seq: i64,
 }
+#[derive(Serialize, Deserialize)]
+struct DeleteReply {
+    id: String,
+    request_id: String,
+    outcome: DeleteOutcome,
+    #[serde(rename = "deletedAgentIds")]
+    deleted_agent_ids: BTreeSet<String>,
+    #[serde(rename = "deletedRoomIds")]
+    deleted_room_ids: BTreeSet<String>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DeleteOutcome {
+    Deleted,
+}
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("The project no longer exists")]
@@ -31,8 +47,6 @@ pub enum Error {
     Workspace,
     #[error("The project changed; confirm deletion again using current state")]
     Sequence,
-    #[error("This request identity has different content")]
-    RequestConflict,
     #[error("Project deletion requires one resolved owning server")]
     Remote,
     #[error("Project membership is ambiguous or malformed")]
@@ -41,6 +55,8 @@ pub enum Error {
     Lifecycle(#[from] ManagementError),
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error(transparent)]
+    Request(#[from] studio_runtime_store::request_results::RequestResultError),
 }
 impl From<rusqlite::Error> for Error {
     fn from(error: rusqlite::Error) -> Self {
@@ -88,16 +104,20 @@ fn delete_in_transaction(
     ])
     .to_string();
     let receipt_id = format!("project-delete:{}", request.request_id);
-    if let Some((saved, result)) = ProjectsRepository::receipt(tx, &receipt_id)? {
-        return if saved == signature {
-            Ok((result, false))
-        } else {
-            Err(Error::RequestConflict)
-        };
-    }
+    let now_ms = (now * 1000.0) as i64;
     if workspace != request.expected_workspace_id {
         return Err(Error::Workspace);
     }
+    let authority = [&server[..], &workspace[..], "owner-api"];
+    let key =
+        crate::event_write::RequestKey::new("project-delete", &authority, &request.request_id)
+            .raw(&receipt_id)
+            .operation(&["delete"]);
+    let admitted =
+        match crate::event_write::begin_request::<DeleteReply>(tx, key, &signature, now_ms)? {
+            crate::event_write::CallerAdmission::Replay(reply) => return Ok((json!(reply), false)),
+            crate::event_write::CallerAdmission::Fresh(admitted) => admitted,
+        };
     let (_, project) = ProjectsRepository::get(tx, &request.id)?.ok_or(Error::NotFound)?;
     if project.get("id").and_then(Value::as_str) != Some(request.id.as_str()) {
         return Err(Error::Membership);
@@ -144,14 +164,21 @@ fn delete_in_transaction(
     }
     let rooms = retire_rooms(tx, &project_ids, &paths, &selected, now)?;
     for id in &project_ids {
-        if ProjectsRepository::remove(tx, id)? {
-            ProjectsRepository::record_destructive_removal(tx, id)?;
+        if ProjectsRepository::get(tx, id)?.is_some() {
+            ProjectsRepository::remove(tx, id)?;
+            ProjectsRepository::record_destructive_removal(tx, id, &request.request_id, now_ms)?;
         }
         prune_sidebar(tx, id, &paths, &selected)?;
     }
-    let reply = json!({"id":request.id,"request_id":request.request_id,"outcome":"deleted","deletedAgentIds":selected,"deletedRoomIds":rooms});
-    ProjectsRepository::save_receipt(tx, &receipt_id, &signature, &reply)?;
-    Ok((reply, true))
+    let reply = DeleteReply {
+        id: request.id.clone(),
+        request_id: request.request_id.clone(),
+        outcome: DeleteOutcome::Deleted,
+        deleted_agent_ids: selected,
+        deleted_room_ids: rooms,
+    };
+    crate::event_write::settle_request(tx, &admitted, None, &reply)?;
+    Ok((serde_json::to_value(reply).map_err(StoreError::from)?, true))
 }
 fn project_scope(
     tx: &Transaction<'_>,
@@ -163,7 +190,7 @@ fn project_scope(
         .and_then(Value::as_str)
         .ok_or(Error::Membership)?
         .to_owned()]);
-    let records = ProjectsRepository::list(tx)?;
+    let records = ProjectsRepository::owned(tx)?;
     let mut paths = BTreeSet::new();
     loop {
         let count = ids.len();
@@ -238,6 +265,13 @@ fn project_scope(
     Ok((ids, paths))
 }
 fn project_paths(project: &Value, server: &str) -> Result<BTreeSet<String>, Error> {
+    if project
+        .get("locationIntents")
+        .and_then(Value::as_object)
+        .is_some_and(|intents| !intents.is_empty())
+    {
+        return Err(Error::Remote);
+    }
     if project.get("homeServerId").and_then(Value::as_str) != Some(server) {
         return Err(Error::Remote);
     }

@@ -97,6 +97,8 @@ impl VoiceRequestPort for AccountSessionVoicePort {
             let receipt = session
                 .provider_request(ProviderRequest {
                     account: account_key.clone(),
+                    root_request_id: session_id.clone(),
+                    admitted_request: None,
                     operation: operation.clone(),
                     actor: None,
                     expected_scope: None,
@@ -141,13 +143,14 @@ impl VoiceRequestPort for AccountSessionVoicePort {
     fn request<'a>(
         &'a self,
         scope: VoiceConnectionScope,
-        operation_id: String,
+        operation: super::runtime::VoiceOperation,
         method: super::runtime::Method,
         params: Value,
         deadline: Instant,
     ) -> VoiceFuture<'a, VoiceRequestReceipt> {
         let session = Arc::clone(&self.session);
         Box::pin(async move {
+            let operation_id = operation.id;
             let expected_scope = ConnectionScope {
                 account: scope.account_key.clone(),
                 connection: scope.connection_id.clone(),
@@ -161,6 +164,8 @@ impl VoiceRequestPort for AccountSessionVoicePort {
             let receipt = match session
                 .provider_request(ProviderRequest {
                     account: scope.account_key,
+                    root_request_id: operation.root_request_id,
+                    admitted_request: operation.admitted_request,
                     operation: operation_id.clone(),
                     actor: Some(RequestActor {
                         agent: scope.agent_id,

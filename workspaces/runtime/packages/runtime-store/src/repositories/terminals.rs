@@ -2,18 +2,42 @@
 
 use rusqlite::{Connection, OptionalExtension, params, types::Value as SqlValue};
 
+use crate::outbox::{Outbox, OutboxRow};
 use crate::records::{JsonRecord, Table, TerminalRecord};
+use crate::request_results::{Admission, AdmittedRequest, RequestResults, ResultEnvelope};
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
+use serde::{Deserialize, Serialize};
+use studio_runtime_schema::persistence::{
+    OutboxKind, OutboxStatus, OwnerKind, RequestIdentity, TerminalActionFailure,
+};
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalActionReply {
+    /// Exact original serialized response body.
+    pub response: String,
+    pub failure: Option<TerminalActionFailure>,
+}
+#[derive(Serialize, Deserialize)]
+struct TerminalActionIntent {
+    admitted: AdmittedRequest,
+    reply: TerminalActionReply,
+}
+
+fn action_outbox_id(root: &str) -> String {
+    serde_json::json!(["terminal-action", root]).to_string()
+}
+
+fn now_ms() -> StoreResult<i64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|time| time.as_millis() as i64)
+        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
+}
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "user_terminals",
         columns: &["id", "record", "output", "offset", "output_generation"],
-    },
-    TableRequirement {
-        name: "user_terminal_receipts",
-        columns: &["id", "signature", "result"],
     },
     TableRequirement {
         name: "user_terminal_output",
@@ -180,44 +204,124 @@ impl TerminalsRepository {
         Ok(())
     }
 
-    pub fn delete_receipt(transaction: &rusqlite::Transaction<'_>, id: &str) -> StoreResult<()> {
-        transaction.execute("DELETE FROM user_terminal_receipts WHERE id=?1", [id])?;
-        Ok(())
+    pub fn action_result(
+        connection: &Connection,
+        id: &str,
+    ) -> StoreResult<Option<(String, TerminalActionReply)>> {
+        if let Some(saved) = Outbox::get::<TerminalActionIntent>(connection, &action_outbox_id(id))
+            .map_err(StoreError::from)?
+        {
+            if saved.kind != OutboxKind::TerminalAction
+                || !matches!(saved.owner_kind, OwnerKind::Terminal | OwnerKind::Request)
+            {
+                return Err(StoreError::SchemaMismatch(
+                    "terminal action owner changed".into(),
+                ));
+            }
+            return Ok(Some((saved.signature, saved.payload.reply)));
+        }
+        let identity = RequestIdentity::new("terminal-action", &[], id, &[]).ok();
+        for key in std::iter::once(id).chain(identity.as_ref().map(RequestIdentity::id)) {
+            let signature: Option<String> = connection
+                .query_row(
+                    "SELECT signature FROM request_results WHERE id=?1",
+                    [key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(signature) = signature
+                && let Some(saved) = RequestResults::replay(connection, key, &signature, now_ms()?)
+                    .map_err(StoreError::from)?
+            {
+                let saved: ResultEnvelope<TerminalActionReply> =
+                    serde_json::from_str(&saved.result)?;
+                return Ok(Some((signature, saved.reply)));
+            }
+        }
+        Ok(None)
     }
 
-    pub fn receipt(connection: &Connection, id: &str) -> StoreResult<Option<(String, String)>> {
-        connection
-            .query_row(
-                "SELECT signature,result FROM user_terminal_receipts WHERE id=?1",
-                [id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(StoreError::from)
-    }
-
-    pub fn save_receipt(
-        transaction: &rusqlite::Transaction<'_>,
+    pub fn reserve_action(
+        tx: &rusqlite::Transaction<'_>,
+        terminal: &str,
         id: &str,
         signature: &str,
-        result: &str,
+        response: &str,
+        failure: Option<TerminalActionFailure>,
     ) -> StoreResult<()> {
-        transaction.execute(
-            "INSERT INTO user_terminal_receipts(id,signature,result) VALUES (?1,?2,?3)",
-            params![id, signature, result],
-        )?;
-        Ok(())
+        let identity = RequestIdentity::new("terminal-action", &[], id, &[])
+            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+        let admitted = match RequestResults::admit(tx, &identity, signature, now_ms()?)
+            .map_err(StoreError::from)?
+        {
+            Admission::Fresh(admitted) => admitted,
+            Admission::Replay(_) => {
+                return Err(StoreError::SchemaMismatch(
+                    "terminal action already completed".into(),
+                ));
+            }
+        };
+        Outbox::put(
+            tx,
+            &OutboxRow {
+                id: action_outbox_id(id),
+                kind: OutboxKind::TerminalAction,
+                owner_kind: OwnerKind::Terminal,
+                owner_id: terminal.into(),
+                request_id: Some(admitted.id().into()),
+                signature: signature.into(),
+                status: OutboxStatus::Unknown,
+                account: None,
+                stream_id: None,
+                generation: None,
+                ordinal: None,
+                next_at: None,
+                created: admitted.created(),
+                payload: TerminalActionIntent {
+                    admitted,
+                    reply: TerminalActionReply {
+                        response: response.into(),
+                        failure,
+                    },
+                },
+            },
+        )
+        .map_err(StoreError::from)
     }
 
-    pub fn update_receipt(
-        transaction: &rusqlite::Transaction<'_>,
+    pub fn settle_action(
+        tx: &rusqlite::Transaction<'_>,
         id: &str,
-        result: &str,
+        response: &str,
+        failure: Option<TerminalActionFailure>,
     ) -> StoreResult<()> {
-        transaction.execute(
-            "UPDATE user_terminal_receipts SET result=?1 WHERE id=?2",
-            params![result, id],
-        )?;
+        let Some(mut saved) = Outbox::get::<TerminalActionIntent>(tx, &action_outbox_id(id))
+            .map_err(StoreError::from)?
+        else {
+            return Ok(());
+        };
+        RequestResults::settle(
+            tx,
+            &saved.payload.admitted,
+            &ResultEnvelope {
+                actor: None,
+                reply: TerminalActionReply {
+                    response: response.into(),
+                    failure,
+                },
+                references: vec![saved.owner_id.clone()],
+            },
+        )
+        .map_err(StoreError::from)?;
+        if failure == Some(TerminalActionFailure::Disconnected) {
+            saved.payload.reply = TerminalActionReply {
+                response: response.into(),
+                failure,
+            };
+            Outbox::put(tx, &saved).map_err(StoreError::from)?;
+        } else {
+            Outbox::delete_settled(tx, &saved.id, &saved.signature).map_err(StoreError::from)?;
+        }
         Ok(())
     }
 
@@ -337,6 +441,115 @@ impl TerminalsRepository {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn receipt_pivot_terminal_unknown_is_not_ttl_data_and_scope_does_not_collide() {
+        use studio_runtime_schema::persistence::{
+            OutboxKind, REQUEST_RESULT_TTL_MS, RequestIdentity,
+        };
+        let mut db = Connection::open_in_memory().expect("database");
+        crate::receipt_schema::create(&db).expect("schema");
+        db.execute_batch(
+            "CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .expect("policy");
+        let root = RequestIdentity::issue_root();
+        let now = super::now_ms().expect("clock");
+        let tx = db.transaction().expect("transaction");
+        TerminalsRepository::reserve_action(
+            &tx,
+            "terminal",
+            &root,
+            "signature",
+            "{\"delivery\":\"uncertain\"}",
+            None,
+        )
+        .expect("reserve before dispatch");
+        tx.execute("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,signature,status,payload,created) VALUES(?1,'native_action','agent','agent','other','unknown','{}',?2)",rusqlite::params![json!(["native-action",root]).to_string(),now]).expect("same external root in another family");
+        assert!(
+            crate::outbox::Outbox::pending::<serde_json::Value>(
+                &tx,
+                OutboxKind::TerminalAction,
+                i64::MAX,
+                10
+            )
+            .expect("pending")
+            .is_empty()
+        );
+        crate::request_results::RequestResults::gc(&tx, now + REQUEST_RESULT_TTL_MS + 1)
+            .expect("advance expiry");
+        assert!(
+            TerminalsRepository::action_result(&tx, &root)
+                .expect("unknown remains")
+                .is_some()
+        );
+        assert!(
+            TerminalsRepository::reserve_action(&tx, "terminal", &root, "changed", "{}", None)
+                .is_err()
+        );
+        TerminalsRepository::settle_action(&tx, &root, "{\"delivery\":\"sent\"}", None)
+            .expect("late exact native result");
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_outbox", [], |row| row
+                .get::<_, i64>(0))
+                .expect("only other family remains"),
+            1
+        );
+        assert_eq!(
+            TerminalsRepository::action_result(&tx, &root)
+                .expect("exact replay")
+                .expect("result")
+                .1
+                .response,
+            "{\"delivery\":\"sent\"}"
+        );
+        crate::request_results::RequestResults::gc(&tx, now + REQUEST_RESULT_TTL_MS + 1)
+            .expect("expire final result");
+        assert!(
+            TerminalsRepository::reserve_action(&tx, "terminal", &root, "signature", "{}", None)
+                .is_err(),
+            "expiry never permits another native write"
+        );
+    }
+
+    #[test]
+    fn receipt_pivot_terminal_replays_original_reply_without_old_table() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        crate::receipt_schema::create(&db).expect("target schema");
+        db.execute_batch(
+            "CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .expect("policy");
+        let reply = serde_json::json!({"ok":true,"delivery":"sent"});
+        let envelope = crate::request_results::ResultEnvelope {
+            actor: None,
+            reply: super::TerminalActionReply {
+                response: reply.to_string(),
+                failure: None,
+            },
+            references: Vec::<String>::new(),
+        };
+        db.execute(
+            "INSERT INTO request_results VALUES('imported-terminal','signature',?1,?2)",
+            rusqlite::params![
+                serde_json::to_string(&envelope).expect("envelope"),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_millis() as i64
+            ],
+        )
+        .expect("imported final response");
+        assert_eq!(
+            super::TerminalsRepository::action_result(&db, "imported-terminal").expect("replay"),
+            Some((
+                "signature".to_owned(),
+                super::TerminalActionReply {
+                    response: reply.to_string(),
+                    failure: None
+                }
+            ))
+        );
+    }
     use rusqlite::{Connection, functions::FunctionFlags};
     use serde_json::json;
 

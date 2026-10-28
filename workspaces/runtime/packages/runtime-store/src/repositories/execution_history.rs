@@ -233,8 +233,9 @@ impl ExecutionHistoryRepository {
         let Some(signature) = signature else {
             return Ok(None);
         };
-        let saved = RequestResults::replay(db, key.id(), &signature, (now() * 1000.0) as i64)
-            .map_err(StoreError::from)?;
+        let token =
+            admission.derive_result("execution-attempt-result", &[kind.as_str()], &signature);
+        let saved = RequestResults::admitted_result(db, &token).map_err(StoreError::from)?;
         saved
             .map(|saved| {
                 let envelope: ResultEnvelope<Value> = serde_json::from_str(&saved.result)?;
@@ -326,9 +327,12 @@ impl ExecutionHistoryRepository {
     }
     pub fn reject_attempt(tx: &Transaction<'_>, id: &str, error: &str) -> StoreResult<()> {
         if let Some(mut saved) = Self::attempt(tx, id)?
-            && !matches!(saved["submission"].as_str(), Some("accepted" | "observed"))
+            && !matches!(
+                serde_json::from_value::<AttemptSubmission>(saved["submission"].clone()),
+                Ok(AttemptSubmission::Accepted | AttemptSubmission::Observed)
+            )
         {
-            saved["submission"] = json!("rejected");
+            saved["submission"] = json!(AttemptSubmission::Rejected);
             saved["error"] = json!(error);
             tx.execute(
                 "UPDATE runtime_execution_attempts SET record=?1 WHERE id=?2",
@@ -397,7 +401,7 @@ impl ExecutionHistoryRepository {
             |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?.map(|(id,raw)|decode("runtime_execution_runs",&id,&raw)).transpose()?;
         let mut run = run.unwrap_or_else(||json!({"id":format!("run:{id}"),"agent":agent.id.0,"accountKey":account,
             "epoch":attempt["epoch"],"threadId":thread,"turnId":null,"created":attempt.get("created").cloned().unwrap_or_else(||json!(now())),
-            "status":"pending","firstAttemptId":null,"rootAttemptId":null,"latestAttemptId":null}));
+            "status":ExecutionStatus::Pending,"firstAttemptId":null,"rootAttemptId":null,"latestAttemptId":null}));
         if run["agent"] != agent.id.0 || run["accountKey"] != account || !run["id"].is_string() {
             return Err(invalid(run["id"].as_str().unwrap_or(id)));
         }
@@ -627,8 +631,11 @@ fn save_run(tx: &Transaction<'_>, run: &Value) -> StoreResult<()> {
 }
 fn terminal(status: &Value) -> bool {
     matches!(
-        status.as_str(),
-        Some("completed" | "failed" | "interrupted" | "cancelled")
+        serde_json::from_value::<ExecutionStatus>(status.clone()),
+        Ok(ExecutionStatus::Completed
+            | ExecutionStatus::Failed
+            | ExecutionStatus::Interrupted
+            | ExecutionStatus::Cancelled)
     )
 }
 fn invalid(id: &str) -> StoreError {

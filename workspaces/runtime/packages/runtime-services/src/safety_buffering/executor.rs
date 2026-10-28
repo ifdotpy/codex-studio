@@ -1,6 +1,6 @@
 use super::{
     SafetyBufferingError as Error, SafetyDecision, SafetyRetryStage as Stage, SafetySnapshot,
-    decide_action, public_receipt,
+    decide_action, parse_stage, public_receipt,
 };
 use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use crate::{
@@ -21,6 +21,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use studio_runtime_providers::{Method, RequestId};
+use studio_runtime_schema::persistence::{
+    RequestIdentity, SafetyRetryCertainty, SafetyRetryDispatch,
+};
+use studio_runtime_store::request_results::{Admission, AdmittedRequest, RequestResults};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, RuntimeStore, SchedulerRepository, StoreError,
 };
@@ -80,7 +84,7 @@ pub async fn execute_action(
     }
     let identity = format!("{agent_id}:{turn_id}");
     let now = unix_seconds();
-    let fresh_attempt = uuid::Uuid::new_v4().to_string();
+    let fresh_attempt = RequestIdentity::issue_root();
     let decision_agent_id = agent_id.clone();
     let decision_turn_id = turn_id.clone();
     let decision_choice = choice.clone();
@@ -104,7 +108,7 @@ pub async fn execute_action(
             let existing = read_retry(tx, &decision_identity)?;
             if let Some(mut operation) = existing {
                 let mut stage =
-                    Stage::parse(operation.get("stage").ok_or(Error::InvalidStoredState)?)?;
+                    parse_stage(operation.get("stage").ok_or(Error::InvalidStoredState)?)?;
                 if operation.get("accountKey").and_then(Value::as_str)
                     != Some(decision_account.as_str())
                     || operation.get("epoch").and_then(Value::as_i64) != Some(decision_actor.epoch)
@@ -119,7 +123,7 @@ pub async fn execute_action(
                 }
                 if operation_has_unknown_receipt(&operation, stage)? {
                     operation["stage"] = json!(Stage::Unknown.as_str());
-                    operation["dispatch"] = json!("unknown");
+                    operation["dispatch"] = json!(SafetyRetryDispatch::Unknown);
                     operation["error"] = json!("Provider request outcome is unknown");
                     operation["updated"] = json!(now);
                     save_operation(tx, &mut agent, &operation)?;
@@ -130,7 +134,7 @@ pub async fn execute_action(
                         return Err(Error::StartAlreadySubmitted);
                     }
                     operation["stage"] = json!(Stage::Cancelled.as_str());
-                    operation["dispatch"] = json!("cancelled");
+                    operation["dispatch"] = json!(SafetyRetryDispatch::Cancelled);
                     operation["error"] = Value::Null;
                     if let Some(buffering) = agent
                         .get_mut("nativeSafetyBuffering")
@@ -150,7 +154,8 @@ pub async fn execute_action(
                         stage,
                         Stage::Unknown | Stage::Running | Stage::Failed | Stage::Cancelled
                     )
-                    && operation.get("dispatch").and_then(Value::as_str) != Some("unknown")
+                    && operation.get("dispatch").and_then(Value::as_str)
+                        != Some(SafetyRetryDispatch::Unknown.as_str())
                 {
                     return Ok(ActionPlan::Drive(operation));
                 }
@@ -193,11 +198,32 @@ pub async fn execute_action(
                 }
                 SafetyDecision::BeginRetry { receipt } => {
                     let mut operation = receipt;
+                    operation["rootRequestId"] = json!(decision_attempt);
+                    let identity = RequestIdentity::new(
+                        "safety-retry",
+                        &[&decision_agent_id],
+                        &decision_attempt,
+                        &[&decision_identity],
+                    )
+                    .map_err(|_| Error::InvalidStoredState)?;
+                    let signature = operation.to_string();
+                    let Admission::Fresh(admission) = RequestResults::admit(
+                        tx,
+                        &identity,
+                        &signature,
+                        (unix_seconds() * 1000.0) as i64,
+                    )
+                    .map_err(|_| Error::Persistence)?
+                    else {
+                        return Err(Error::InvalidStoredState);
+                    };
+                    operation["admission"] =
+                        serde_json::to_value(admission).map_err(|_| Error::InvalidStoredState)?;
                     operation["scope"] =
                         serde_json::to_value(scope).map_err(|_| Error::InvalidStoredState)?;
                     operation["responses"] = json!({});
                     operation["receipts"] = json!({});
-                    operation["dispatch"] = json!("ready");
+                    operation["dispatch"] = json!(SafetyRetryDispatch::Ready);
                     save_operation(tx, &mut agent, &operation)?;
                     Ok(ActionPlan::Drive(operation))
                 }
@@ -225,7 +251,7 @@ async fn drive(
     mut operation: Value,
 ) -> Result<Value, Error> {
     loop {
-        let stage = Stage::parse(operation.get("stage").ok_or(Error::InvalidStoredState)?)?;
+        let stage = parse_stage(operation.get("stage").ok_or(Error::InvalidStoredState)?)?;
         if matches!(
             stage,
             Stage::Running | Stage::Failed | Stage::Cancelled | Stage::Unknown
@@ -255,14 +281,14 @@ async fn drive(
                 Ok(false) => return public_receipt(&operation),
                 Err(error @ (Error::ProviderRejected | Error::Inactive)) => {
                     operation["stage"] = json!(Stage::Failed.as_str());
-                    operation["dispatch"] = json!("rejected");
+                    operation["dispatch"] = json!(SafetyRetryDispatch::Rejected);
                     operation["error"] = json!("Safety retry stage was refused");
                     persist_operation(&store, &mut operation).await?;
                     return Err(error);
                 }
                 Err(Error::ProviderUnknown) => {
                     operation["stage"] = json!(Stage::Unknown.as_str());
-                    operation["dispatch"] = json!("unknown");
+                    operation["dispatch"] = json!(SafetyRetryDispatch::Unknown);
                     operation["error"] =
                         json!("Provider response did not identify the resulting thread or turn");
                     persist_operation(&store, &mut operation).await?;
@@ -292,6 +318,9 @@ async fn drive(
             return public_receipt(&operation);
         }
         let request = ProviderRequest {
+            root_request_id: required_str(&operation, "rootRequestId")?.to_owned(),
+            admitted_request: serde_json::from_value(operation["admittedRequest"].clone())
+                .map_err(|_| Error::InvalidStoredState)?,
             account: account.clone(),
             operation: operation_id.clone(),
             actor: Some(RequestActor {
@@ -319,9 +348,9 @@ async fn drive(
                         && sent_retry < NOT_SENT_RETRIES
                     {
                         sent_retry += 1;
-                        operation["dispatch"] = json!("intent");
+                        operation["dispatch"] = json!(SafetyRetryDispatch::Intent);
                         persist_operation(&store, &mut operation).await?;
-                        if Stage::parse(operation.get("stage").ok_or(Error::InvalidStoredState)?)?
+                        if parse_stage(operation.get("stage").ok_or(Error::InvalidStoredState)?)?
                             != stage
                         {
                             return public_receipt(&operation);
@@ -337,14 +366,14 @@ async fn drive(
                         &mut operation,
                         stage,
                         &operation_id,
-                        "unknown",
+                        SafetyRetryCertainty::Unknown,
                     )
                     .await?
                     {
                         return public_receipt(&operation);
                     }
                     operation["stage"] = json!(Stage::Unknown.as_str());
-                    operation["dispatch"] = json!("unknown");
+                    operation["dispatch"] = json!(SafetyRetryDispatch::Unknown);
                     operation["error"] = json!("Provider request outcome is unknown");
                     persist_operation(&store, &mut operation).await?;
                     return public_receipt(&operation);
@@ -355,7 +384,7 @@ async fn drive(
                         &mut operation,
                         stage,
                         &operation_id,
-                        "refused",
+                        SafetyRetryCertainty::Refused,
                     )
                     .await?
                     {
@@ -373,7 +402,7 @@ async fn drive(
                         return public_receipt(&operation);
                     }
                     operation["stage"] = json!(Stage::Failed.as_str());
-                    operation["dispatch"] = json!("rejected");
+                    operation["dispatch"] = json!(SafetyRetryDispatch::Rejected);
                     operation["error"] = json!("Provider request refused");
                     persist_operation(&store, &mut operation).await?;
                     return Err(Error::ProviderRejected);
@@ -384,14 +413,14 @@ async fn drive(
                         &mut operation,
                         stage,
                         &operation_id,
-                        "unknown",
+                        SafetyRetryCertainty::Unknown,
                     )
                     .await?
                     {
                         return public_receipt(&operation);
                     }
                     operation["stage"] = json!(Stage::Unknown.as_str());
-                    operation["dispatch"] = json!("unknown");
+                    operation["dispatch"] = json!(SafetyRetryDispatch::Unknown);
                     operation["error"] = json!("Provider request outcome is unknown");
                     persist_operation(&store, &mut operation).await?;
                     return public_receipt(&operation);
@@ -404,13 +433,13 @@ async fn drive(
             | ReceiptOutcome::ExpectedScopeMismatch
             | ReceiptOutcome::DeadlineExpired
             | ReceiptOutcome::NotHandedOff => {
-                operation["dispatch"] = json!("ready");
+                operation["dispatch"] = json!(SafetyRetryDispatch::Ready);
                 persist_operation(&store, &mut operation).await?;
                 return public_receipt(&operation);
             }
             ReceiptOutcome::Unknown { .. } => {
                 operation["stage"] = json!(Stage::Unknown.as_str());
-                operation["dispatch"] = json!("unknown");
+                operation["dispatch"] = json!(SafetyRetryDispatch::Unknown);
                 operation["error"] = json!("Provider request outcome is unknown");
                 persist_operation(&store, &mut operation).await?;
                 return public_receipt(&operation);
@@ -432,7 +461,7 @@ async fn drive(
                     return public_receipt(&operation);
                 }
                 operation["stage"] = json!(Stage::Failed.as_str());
-                operation["dispatch"] = json!("rejected");
+                operation["dispatch"] = json!(SafetyRetryDispatch::Rejected);
                 operation["error"] = json!("Provider rejected the safety retry request");
                 persist_operation(&store, &mut operation).await?;
                 return Err(Error::ProviderRejected);
@@ -443,20 +472,20 @@ async fn drive(
             .and_then(Value::as_object_mut)
             .ok_or(Error::InvalidStoredState)?
             .insert(stage.as_str().into(), body.clone());
-        operation["dispatch"] = json!("received");
+        operation["dispatch"] = json!(SafetyRetryDispatch::Received);
         match advance_stage(&store, &mut operation, stage, body, lifecycle.clone()).await {
             Ok(true) => (),
             Ok(false) => return public_receipt(&operation),
             Err(error @ (Error::ProviderRejected | Error::Inactive)) => {
                 operation["stage"] = json!(Stage::Failed.as_str());
-                operation["dispatch"] = json!("rejected");
+                operation["dispatch"] = json!(SafetyRetryDispatch::Rejected);
                 operation["error"] = json!("Safety retry stage was refused");
                 persist_operation(&store, &mut operation).await?;
                 return Err(error);
             }
             Err(Error::ProviderUnknown) => {
                 operation["stage"] = json!(Stage::Unknown.as_str());
-                operation["dispatch"] = json!("unknown");
+                operation["dispatch"] = json!(SafetyRetryDispatch::Unknown);
                 operation["error"] =
                     json!("Provider response did not identify the resulting thread or turn");
                 persist_operation(&store, &mut operation).await?;
@@ -464,7 +493,7 @@ async fn drive(
             }
             Err(error) => return Err(error),
         }
-        if Stage::parse(operation.get("stage").ok_or(Error::InvalidStoredState)?)? == Stage::Running
+        if parse_stage(operation.get("stage").ok_or(Error::InvalidStoredState)?)? == Stage::Running
         {
             return public_receipt(&operation);
         }
@@ -545,12 +574,13 @@ async fn persist_intent(
     params: &Value,
 ) -> Result<bool, Error> {
     operation["stage"] = json!(stage.as_str());
-    operation["dispatch"] = json!("intent");
+    operation["dispatch"] = json!(SafetyRetryDispatch::Intent);
     operation["rpcMethod"] = json!(method.as_str());
     operation["operationId"] = json!(operation_id);
     operation["requestParams"] = params.clone();
     operation["updated"] = json!(unix_seconds());
-    let pending = operation.clone();
+    let mut pending = operation.clone();
+    let reservation_params = params.clone();
     let id = required_str(&pending, "id")?.to_owned();
     let agent_id = required_str(&pending, "agent")?.to_owned();
     let result = store
@@ -561,6 +591,42 @@ async fn persist_intent(
             }
             let mut agent = read_agent(tx, &agent_id)?;
             validate_current(&agent, &pending, stage)?;
+            pending["admittedRequest"] = Value::Null;
+            if matches!(stage, Stage::Interrupt | Stage::Fork | Stage::Start) {
+                if current["operationId"] == pending["operationId"]
+                    && !current["admittedRequest"].is_null()
+                {
+                    pending["admittedRequest"] = current["admittedRequest"].clone();
+                } else {
+                    let owner: AdmittedRequest =
+                        serde_json::from_value(pending["admission"].clone())
+                            .map_err(|_| Error::InvalidStoredState)?;
+                    let admitted = crate::account_worker::retained::reserve_provider_call(
+                        tx,
+                        &owner,
+                        crate::account_worker::retained::ProviderCallIntent {
+                            root_request_id: required_str(&pending, "rootRequestId")?.into(),
+                            admitted_request: None,
+                            scope: serde_json::from_value(pending["scope"].clone())
+                                .map_err(|_| Error::InvalidStoredState)?,
+                            operation: required_str(&pending, "operationId")?.into(),
+                            actor: Some(RequestActor {
+                                agent: agent_id.clone(),
+                                epoch: pending["epoch"]
+                                    .as_i64()
+                                    .ok_or(Error::InvalidStoredState)?,
+                            }),
+                            transfer: None,
+                            deleted_actor_session: None,
+                            method,
+                            params: reservation_params,
+                        },
+                    )
+                    .map_err(|_| Error::Persistence)?;
+                    pending["admittedRequest"] =
+                        serde_json::to_value(admitted).map_err(|_| Error::InvalidStoredState)?;
+                }
+            }
             if stage == Stage::Start {
                 let attempt = json!({
                     "id":required_str(&pending,"attemptId")?,
@@ -831,7 +897,7 @@ async fn advance_stage(
                     return Err(Error::InvalidStoredState);
                 }
             }
-            operation["dispatch"] = json!("ready");
+            operation["dispatch"] = json!(SafetyRetryDispatch::Ready);
             operation["updated"] = json!(unix_seconds());
             save_operation(tx, &mut agent, &operation)?;
             Ok((operation, true, committed_interrupt))
@@ -910,7 +976,7 @@ async fn settle_start_rejected(
                 &reason,
             )?;
             current["stage"] = json!(Stage::Failed.as_str());
-            current["dispatch"] = json!("rejected");
+            current["dispatch"] = json!(SafetyRetryDispatch::Rejected);
             current["error"] = json!(reason);
             current["updated"] = json!(unix_seconds());
             let mut agent = read_agent(tx, &agent_id)?;
@@ -942,9 +1008,9 @@ async fn persist_stage_receipt(
             "method":ticket.method.as_str()
         })),
         "certainty":match receipt.certainty() {
-            RequestCertainty::Written => "written",
-            RequestCertainty::NotSent => "not_sent",
-            RequestCertainty::Unknown => "unknown"
+            RequestCertainty::Written => SafetyRetryCertainty::Written,
+            RequestCertainty::NotSent => SafetyRetryCertainty::NotSent,
+            RequestCertainty::Unknown => SafetyRetryCertainty::Unknown
         },
         "notSentReason":receipt.not_sent_reason().map(|reason| format!("{reason:?}")),
         "result":result
@@ -1001,11 +1067,11 @@ async fn persist_stage_receipt(
                 }
                 if certainty_unknown {
                     current["stage"] = json!(Stage::Unknown.as_str());
-                    current["dispatch"] = json!("unknown");
+                    current["dispatch"] = json!(SafetyRetryDispatch::Unknown);
                     current["error"] = json!("Provider request outcome is unknown");
                     still_active = false;
                 } else {
-                    current["dispatch"] = json!("received");
+                    current["dispatch"] = json!(SafetyRetryDispatch::Received);
                 }
                 current["updated"] = json!(unix_seconds());
                 let mut agent = read_agent(tx, required_str(&current, "agent")?)?;
@@ -1049,7 +1115,10 @@ fn operation_has_unknown_receipt(operation: &Value, stage: Stage) -> Result<bool
     };
     let expected = format!("{}:{}", required_str(operation, "id")?, stage.as_str());
     for receipt in receipts {
-        if receipt.get("certainty").and_then(Value::as_str) == Some("unknown") {
+        if serde_json::from_value::<SafetyRetryCertainty>(receipt["certainty"].clone())
+            .map_err(|_| Error::InvalidStoredState)?
+            == SafetyRetryCertainty::Unknown
+        {
             if receipt.get("operation").and_then(Value::as_str) != Some(expected.as_str()) {
                 return Err(Error::InvalidStoredState);
             }
@@ -1076,7 +1145,10 @@ fn recorded_written_response(
     let Some(last) = receipts.last() else {
         return Ok(None);
     };
-    if last.get("certainty").and_then(Value::as_str) != Some("written") {
+    if serde_json::from_value::<SafetyRetryCertainty>(last["certainty"].clone())
+        .map_err(|_| Error::InvalidStoredState)?
+        != SafetyRetryCertainty::Written
+    {
         return Ok(None);
     }
     if last.get("operation").and_then(Value::as_str) != Some(operation_id)
@@ -1097,11 +1169,10 @@ async fn persist_unknown_receipt(
     operation: &mut Value,
     stage: Stage,
     operation_id: &str,
-    certainty: &str,
+    certainty: SafetyRetryCertainty,
 ) -> Result<bool, Error> {
     let id = required_str(operation, "id")?.to_owned();
     let operation_id = operation_id.to_owned();
-    let certainty = certainty.to_owned();
     let (current, still_active) = store
         .transaction_with::<_, Error>(move |tx| {
             let mut current = read_retry(tx, &id)?.ok_or(Error::InvalidStoredState)?;
@@ -1117,9 +1188,9 @@ async fn persist_unknown_receipt(
             let stage_active = current.get("stage").and_then(Value::as_str) == Some(stage.as_str());
             let mut still_active = stage_active;
             if stage_active {
-                if certainty == "unknown" {
+                if certainty == SafetyRetryCertainty::Unknown {
                     current["stage"] = json!(Stage::Unknown.as_str());
-                    current["dispatch"] = json!("unknown");
+                    current["dispatch"] = json!(SafetyRetryDispatch::Unknown);
                     current["error"] = json!("Provider request outcome is unknown");
                     still_active = false;
                 }
@@ -1205,7 +1276,9 @@ fn read_agent(tx: &Transaction<'_>, id: &str) -> Result<Value, Error> {
 }
 
 fn put_agent(tx: &Transaction<'_>, value: &Value) -> Result<(), Error> {
-    let record = AgentRecord::from_value(value.clone()).map_err(|_| Error::InvalidStoredState)?;
+    let mut record =
+        AgentRecord::from_value(value.clone()).map_err(|_| Error::InvalidStoredState)?;
+    studio_runtime_store::ExecutionHistoryRepository::record_current(tx, &mut record)?;
     AgentRepository::put(tx, &record)?;
     Ok(())
 }

@@ -140,6 +140,7 @@ async fn held_response_proof(
         &operation,
         "thread/read",
         json!({"threadId":owner["threadId"],"includeTurns":false}),
+        ("", None),
     )
     .await
     .ok()?;
@@ -453,6 +454,7 @@ async fn stop_process(
                 "thread/backgroundTerminals/list"
             },
             params.clone(),
+            ("", None),
         )
         .await?;
         let items = result[if claude { "tasks" } else { "data" }]
@@ -506,6 +508,7 @@ async fn stop_process(
         } else {
             json!({"threadId":ticket.thread,"processId":pid})
         },
+        (&request_id, None),
     )
     .await?;
     if !claude {
@@ -524,6 +527,7 @@ async fn stop_process(
         &format!("{operation}:after"),
         "claude/state",
         json!({"threadId":ticket.thread}),
+        ("", None),
     )
     .await?;
     let tasks = after["tasks"]
@@ -595,6 +599,7 @@ async fn stop_response(
         &ticket.request,
         "turn/interrupt",
         params,
+        (&request_id, None),
     )
     .await?;
     Ok(ResponseOutcome::Requested)
@@ -657,6 +662,7 @@ async fn background_command(
         &ticket.request,
         "thread/commandExecution/background",
         json!({"threadId":target["threadId"],"turnId":target["turnId"],"itemId":item_id}),
+        (&request_id, None),
     )
     .await
     {

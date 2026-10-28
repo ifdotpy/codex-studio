@@ -4,6 +4,28 @@ use crate::submit_gates::{
 };
 use std::collections::BTreeMap;
 use studio_runtime_schema::delivery::DeliveryMoment;
+use studio_runtime_schema::persistence::{DeliveryStatus, RecipientDelivery};
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ChatSendReply {
+    id: String,
+    room: String,
+    deliveries: BTreeMap<String, RecipientDelivery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refused: Option<BTreeMap<String, String>>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+enum UserRecipient {
+    #[serde(rename = "user")]
+    User,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct UserSendReply {
+    id: String,
+    room: String,
+    recipient: UserRecipient,
+}
+
 use studio_runtime_store::{AgentId, AgentRepository, SyncDocumentsRepository};
 
 fn message_agents(
@@ -517,6 +539,18 @@ fn send_as_actor(
     }
     let recipients = admitted;
     let room_id = text(&room, "id")?.to_owned();
+    let signature = event_write::request_signature(args);
+    let admitted = match event_write::begin_request::<ChatSendReply>(
+        tx,
+        event_write::RequestKey::new("agent_message", &[who], id),
+        &signature,
+        (now * 1000.0) as i64,
+    )? {
+        event_write::CallerAdmission::Replay(reply) => {
+            return serde_json::to_value(reply).map_err(Into::into);
+        }
+        event_write::CallerAdmission::Fresh(admitted) => admitted,
+    };
     if let Some(mut previous) = records::get(tx, "runtime_rooms", &room_id)? {
         if studio_runtime_store::ProjectsRepository::room_retired(&previous) {
             return Err(CallbackError::Invalid(
@@ -544,7 +578,7 @@ fn send_as_actor(
     {
         SyncDocumentsRepository::put_entity(tx, "room", &room_id, view, false)?;
     }
-    let mut deliveries = serde_json::Map::new();
+    let mut deliveries: BTreeMap<String, RecipientDelivery> = BTreeMap::new();
     for recipient in recipients {
         let recipient_id = recipient
             .id
@@ -590,7 +624,14 @@ fn send_as_actor(
         }
         deliveries.insert(
             recipient_id.into(),
-            json!(if active { "queued" } else { "stored_only" }),
+            RecipientDelivery {
+                status: if active {
+                    DeliveryStatus::Queued
+                } else {
+                    DeliveryStatus::StoredOnly
+                },
+                error: None,
+            },
         );
     }
     tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?1,?2,?3,?4,?5,?6)",params![id,room_id,who,message,now,json!(deliveries).to_string()])?;
@@ -603,7 +644,12 @@ fn send_as_actor(
     if !refused.is_empty() {
         result["refused"] = Value::Object(refused);
     }
-    event_write::save_receipt(tx, Some(id), &event_write::request_signature(args), &result)?;
+    event_write::settle_request(
+        tx,
+        &admitted,
+        Some(who),
+        &serde_json::from_value::<ChatSendReply>(result.clone())?,
+    )?;
     Ok(result)
 }
 
@@ -635,16 +681,17 @@ fn send_to_user(
     }
     let signature =
         event_write::request_signature(&json!({"sender":who,"target":"user","text":text}));
-    if let Some(saved) = event_write::read_receipt(
+    let admitted = match event_write::begin_request::<UserSendReply>(
         tx,
-        Some(key),
+        event_write::RequestKey::new("user_message", &[who], key),
         &signature,
-        "runtime_operation_receipts",
-        key,
-        |saved| saved["recipient"] == "user" && saved["id"].is_string(),
+        (now * 1000.0) as i64,
     )? {
-        return Ok(saved);
-    }
+        event_write::CallerAdmission::Replay(reply) => {
+            return serde_json::to_value(reply).map_err(Into::into);
+        }
+        event_write::CallerAdmission::Fresh(admitted) => admitted,
+    };
     let message = crate::notification_dispatch::submit_user_message(tx, actor, key, text, now)
         .map_err(|error| match error {
             crate::notification_dispatch::NotificationDispatchError::Store(error) => {
@@ -675,7 +722,12 @@ fn send_to_user(
             }
         })?;
     let result = json!({"id":message["id"],"room":format!("user:{who}"),"recipient":"user"});
-    event_write::save_receipt(tx, Some(key), &signature, &result)?;
+    event_write::settle_request(
+        tx,
+        &admitted,
+        Some(who),
+        &serde_json::from_value::<UserSendReply>(result.clone())?,
+    )?;
     Ok(result)
 }
 

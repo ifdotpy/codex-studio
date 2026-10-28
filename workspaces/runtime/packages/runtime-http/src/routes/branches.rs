@@ -253,6 +253,7 @@ async fn branch(
                     let record = json!({
                         "id":operation_id,"kind":"branch","agent":agent_id,
                         "phase":"provider_pending","signature":signature,
+                        "rootRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                         "source":source_stamp,"message_id":message_id,
                         "turn_id":selected.record["turnId"],
                         "previousStatus":source.get("status"),
@@ -411,6 +412,30 @@ async fn branch(
                 .unwrap_or_else(|| json!({}));
         }
         let request = ProviderRequest {
+            root_request_id: operation
+                .as_ref()
+                .and_then(|owner| owner.get("rootRequestId"))
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    operation
+                        .as_ref()
+                        .and_then(|owner| owner.get("providerAdmission"))
+                        .map(|_| "")
+                })
+                .ok_or_else(|| {
+                    ApiError::new(
+                        StatusCode::CONFLICT,
+                        "The branch request identity is unavailable; inspect workspace recovery",
+                    )
+                })?
+                .to_owned(),
+            admitted_request: operation
+                .as_ref()
+                .and_then(|owner| owner.get("providerAdmission"))
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(ApiError::json)?,
             account: account.clone(),
             operation: format!("{operation_id}:fork"),
             actor: Some(RequestActor {
@@ -574,6 +599,8 @@ async fn provider_request(
     params: Value,
 ) -> Result<Value, ApiError> {
     let mut request = ProviderRequest {
+        root_request_id: String::new(),
+        admitted_request: None,
         account: account.to_owned(),
         operation,
         actor,

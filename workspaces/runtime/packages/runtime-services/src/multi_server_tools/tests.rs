@@ -201,6 +201,7 @@ fn context(actor: &Value) -> CallbackContext {
         agent: actor["id"].as_str().unwrap().to_owned(),
         account: "default".into(),
         connection: "connection".into(),
+        stream_id: "host".into(),
         generation: 7,
         epoch: actor["epoch"].as_u64().unwrap(),
         thread: actor["threadId"].as_str().unwrap().to_owned(),
@@ -1103,13 +1104,16 @@ impl crate::voice_runtime::VoiceRequestPort for RecordingVoice {
     fn request<'a>(
         &'a self,
         _scope: crate::voice_runtime::VoiceConnectionScope,
-        operation_id: String,
+        operation_id: crate::voice_runtime::VoiceOperation,
         _method: crate::voice_runtime::Method,
         params: Value,
         _deadline: std::time::Instant,
     ) -> crate::voice_runtime::VoiceFuture<'a, crate::voice_runtime::VoiceRequestReceipt> {
         Box::pin(async move {
-            self.requests.lock().unwrap().push((operation_id, params));
+            self.requests
+                .lock()
+                .unwrap()
+                .push((operation_id.id, params));
             crate::voice_runtime::VoiceRequestReceipt {
                 certainty: crate::voice_runtime::VoiceWriteCertainty::Written,
             }
