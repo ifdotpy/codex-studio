@@ -100,13 +100,12 @@ pub fn observe(
         ));
     }
     agent["idleCache"] = json!(cache);
-    if let Some(previous) = previous {
-        if previous.cache.request_id == cache.request_id
-            && previous.cache.ttl == cache.ttl
-            && previous.identity == identity(agent)
-        {
-            return Ok(());
-        }
+    if let Some(previous) = previous
+        && previous.cache.request_id == cache.request_id
+        && previous.cache.ttl == cache.ttl
+        && previous.identity == identity(agent)
+    {
+        return Ok(());
     }
     let settings = OrchestrationSettingsRepository::idle_compaction(connection)?;
     if cache.ttl != "1h" || settings.mode == Mode::Off {
