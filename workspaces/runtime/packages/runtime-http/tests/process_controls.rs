@@ -460,7 +460,7 @@ async fn transferred_monitor_panel_keeps_source_controls_and_guarded_stop() {
             let (status, result) = call(&app, "POST", "/api/monitor/input", input).await;
             assert_eq!(status, 200, "{result}");
         }
-        let body = json!({"action":"stop_selected","requestId":"stop-transferred","agent":"owner","accountKey":"target","epoch":1,
+        let body = json!({"action":"stop_selected","requestId":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"agent":"owner","accountKey":"target","epoch":1,
         "process":{"key":process["key"],"generation":process["generation"],"agent":"owner","accountKey":"target","epoch":1}});
         let (status, result) = call(&app, "POST", "/api/processes/action", body.clone()).await;
         assert_eq!(status, 200, "{result}");
@@ -568,7 +568,7 @@ async fn call(app: &axum::Router, method: &str, path: &str, body: Value) -> (u16
         .header("x-canvas-token", "fixture-token")
         .header(
             "x-studio-request-id",
-            studio_runtime_store::sha256_hex(body.to_string().as_bytes()),
+            studio_runtime_schema::persistence::RequestIdentity::issue_root(),
         )
         .header(
             studio_runtime_http::API_SCHEMA_HASH_HEADER,

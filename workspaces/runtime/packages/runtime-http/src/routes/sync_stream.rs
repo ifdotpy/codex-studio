@@ -2127,8 +2127,8 @@ mod tests {
         let app = crate::router::router(state.clone()).expect("routes");
         let mut changes = state.sync_changes.subscribe();
         changes.borrow_and_update();
-        let resource =
-            json!({"kind":"rename-progress", "agentId":"agent", "requestId":"rename-one"});
+        let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let resource = json!({"kind":"rename-progress", "agentId":"agent", "requestId":request_id});
         let request = axum::http::Request::builder()
             .method("POST")
             .uri("/api/rename")
@@ -2144,7 +2144,7 @@ mod tests {
                 12345,
             ))))
             .body(Body::from(
-                json!({"id":"agent", "request_id":"rename-one"}).to_string(),
+                json!({"id":"agent", "request_id":request_id}).to_string(),
             ))
             .expect("request");
         let response = tower::ServiceExt::oneshot(app, request)
@@ -2171,7 +2171,7 @@ mod tests {
         })
         .await
         .expect("failure wakes its exact stream selector");
-        let receipt = json!({"id":"agent", "request_id":"rename-one", "status":"failed", "error":"The title could not be generated. Try /rename again."});
+        let receipt = json!({"id":"agent", "request_id":request_id, "status":"failed", "error":"The title could not be generated. Try /rename again."});
         let view = ResourceChanges {
             cursor: state.sync_changes.snapshot(),
             resources: vec![resource.clone()],
@@ -2187,7 +2187,7 @@ mod tests {
         assert_eq!(frame["value"], receipt);
         assert!(frame.get("entityChanges").is_none());
         let wrong =
-            json!({"kind":"rename-progress", "agentId":"another-agent", "requestId":"rename-one"});
+            json!({"kind":"rename-progress", "agentId":"another-agent", "requestId":request_id});
         let bytes = resource_content(state, wrong)
             .await
             .expect("missing scoped receipt");

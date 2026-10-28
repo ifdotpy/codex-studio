@@ -281,12 +281,9 @@ async fn complaint_http_replays_original_signature_before_version_and_recipient_
         })
         .await
         .unwrap();
-    for (id, version, status) in [
-        ("resolved-reply", 9, "resolved"),
-        ("declined-reply", 10, "declined"),
-    ] {
+    for (version, status) in [(9, "resolved"), (10, "declined")] {
         let mut closing = body.clone();
-        closing["id"] = json!(id);
+        closing["id"] = json!(studio_runtime_schema::persistence::RequestIdentity::issue_root());
         closing["version"] = json!(version);
         closing["status"] = json!(status);
         let (code, record) = call(&app, "/api/complaints", closing, "token").await;
@@ -570,7 +567,7 @@ async fn live_permissions_codex_switch_settles_pending_once_and_ask_prompts_agai
     let (id, frame) = pending_codex_approval(&store, &context).await;
     let port = Arc::new(Port::default());
     let app = permission_app(root.path(), store.clone(), port.clone()).await;
-    let body = json!({"id":context.agent,"yolo_mode":true,"request_id":"live-full","expected_account_key":"default"});
+    let body = json!({"id":context.agent,"yolo_mode":true,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"expected_account_key":"default"});
     assert_eq!(
         call(&app, "/api/conversation", body.clone(), "wrong")
             .await
@@ -599,7 +596,7 @@ async fn live_permissions_codex_switch_settles_pending_once_and_ask_prompts_agai
             .unwrap(),
         NativeAdmission::Answer(_)
     ));
-    let ask = json!({"id":context.agent,"yolo_mode":false,"request_id":"live-ask","expected_account_key":"default"});
+    let ask = json!({"id":context.agent,"yolo_mode":false,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"expected_account_key":"default"});
     assert_eq!(call(&app, "/api/conversation", ask, "token").await.0, 200);
     // Replaying the old Full save must not override the later Ask save.
     assert_eq!(
@@ -666,7 +663,7 @@ async fn live_permissions_failed_auto_answer_stays_pending_for_the_user() {
     let port = Arc::new(Port::default());
     *port.next.lock().unwrap() = Some(ReplyOutcome::NotSent);
     let app = permission_app(root.path(), store.clone(), port.clone()).await;
-    let full = json!({"id":context.agent,"yolo_mode":true,"request_id":"pending-full","expected_account_key":"default"});
+    let full = json!({"id":context.agent,"yolo_mode":true,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"expected_account_key":"default"});
     let (status, value) = call(&app, "/api/conversation", full, "token").await;
     assert_eq!(status, 200, "{value}");
     assert_eq!(value["yoloMode"], true);
@@ -689,12 +686,12 @@ async fn live_permissions_receipt_distinguishes_omitted_effort_from_null() {
         .await
         .unwrap();
     let app = permission_app(root.path(), store, Arc::new(Port::default())).await;
-    let mut body = json!({"id":context.agent,"yolo_mode":true,"request_id":"presence"});
+    let mut body = json!({"id":context.agent,"yolo_mode":true,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
     let (status, value) = call(&app, "/api/conversation", body.clone(), "token").await;
     assert_eq!(status, 200, "{value}");
     assert_eq!(value["effort"], "high");
     body["effort"] = Value::Null;
     let (status, value) = call(&app, "/api/conversation", body, "token").await;
-    assert_eq!(status, 400, "changed content must conflict: {value}");
-    assert_eq!(value["error"], "This request id has different content");
+    assert_eq!(status, 409, "changed content must conflict: {value}");
+    assert_eq!(value["error"], "This request ID has different content");
 }

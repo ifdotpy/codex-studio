@@ -144,10 +144,10 @@ async fn send_now_recovers_proven_unsent_failed_batch_and_replays_lost_http_succ
     let mut conflicting = body;
     conflicting["message_id"] = json!("original-0");
     let (status, result) = call(&app, Some(conflicting)).await;
-    assert_eq!(status, 400, "{result}");
+    assert_eq!(status, 409, "{result}");
     assert_eq!(
         result,
-        json!({"error":"This request id has different content"})
+        json!({"error":"This request ID has different content"})
     );
     assert_eq!(snapshot(&store), state);
     assert!(
