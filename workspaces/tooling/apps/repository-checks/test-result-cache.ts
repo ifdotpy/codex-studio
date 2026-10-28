@@ -43,6 +43,10 @@ export const SHARED_INPUTS = [
  * cache, so a result made in one line reaches the lines that start from it. */
 export const RESULT_DIRECTORY = path.join("target", "studio-test-results");
 
+/** Environment variable naming an absolute folder of passing results shared by
+ * every checkout. Keys hash input content, so a result is valid in any checkout. */
+export const SHARED_RESULT_DIRECTORY_ENV = "STUDIO_TEST_RESULTS_DIR";
+
 /** Content key of a step, or undefined when the step must run. */
 export function stepKey(
   root: string,
@@ -75,7 +79,11 @@ export function stepKey(
 }
 
 const resultFile = (root: string, step: { id?: string }, key: string) =>
-  path.join(root, RESULT_DIRECTORY, `${step.id}-${key}.json`);
+  path.join(
+    process.env[SHARED_RESULT_DIRECTORY_ENV] ||
+      path.join(root, RESULT_DIRECTORY),
+    `${step.id}-${key}.json`,
+  );
 
 /** The saved passing result for this key, marked as reused. */
 export function reusedResult(
