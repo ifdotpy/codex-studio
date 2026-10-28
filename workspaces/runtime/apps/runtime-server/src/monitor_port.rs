@@ -1492,6 +1492,7 @@ impl MonitorPort for RetainedMonitorPort {
                         &self.store,snapshot.id(),operation,
                     ).await.map_err(|error|match error {
                         studio_runtime_services::account_worker::WorkerError::Store(error)=>MonitorError::Store(error),
+                        studio_runtime_services::account_worker::WorkerError::Expired=>MonitorError::Expired,
                         studio_runtime_services::account_worker::WorkerError::Recovery(_) | studio_runtime_services::account_worker::WorkerError::Scheduler(_) | studio_runtime_services::account_worker::WorkerError::Session(_) | studio_runtime_services::account_worker::WorkerError::Notification(_) | studio_runtime_services::account_worker::WorkerError::PreparationRefused(_) | studio_runtime_services::account_worker::WorkerError::StaleVmActor | studio_runtime_services::account_worker::WorkerError::PreparationPending(_) | studio_runtime_services::account_worker::WorkerError::PreparationAwaitsAgent(_) | studio_runtime_services::account_worker::WorkerError::CleanupUnconfirmed(_) | studio_runtime_services::account_worker::WorkerError::AlreadyRunning | studio_runtime_services::account_worker::WorkerError::Closed | studio_runtime_services::account_worker::WorkerError::ShutdownTimeout | studio_runtime_services::account_worker::WorkerError::TaskFailed | studio_runtime_services::account_worker::WorkerError::Capacity | studio_runtime_services::account_worker::WorkerError::CallbackUnknown=>MonitorError::Refused("Retained monitor ownership changed"),
                     })?.is_none() {
                         return Ok(ReattachOutcome::Pending);
@@ -2427,6 +2428,7 @@ mod tests {
             ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<'a, ()>
             {
                 let error = match &self.0 {
+                    AccountSessionError::Expired => AccountSessionError::Expired,
                     AccountSessionError::Unknown => AccountSessionError::Unknown,
                     AccountSessionError::Requires(_)
                     | AccountSessionError::Refused(_)

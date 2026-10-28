@@ -803,6 +803,8 @@ async fn closing_worker_does_not_invent_a_transfer_deadline_expiry() {
     let mut pending = Vec::new();
     for index in 0..=COMMAND_CAPACITY {
         let mut request = broker.transfer_request(TransferProviderRequest {
+            root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+            admitted_request: None,
             transfer_id: "closing-transfer".into(),
             member: "member".into(),
             source_account: "default".into(),
@@ -821,6 +823,8 @@ async fn closing_worker_does_not_invent_a_transfer_deadline_expiry() {
         pending.push(request);
     }
     let mut ordinary = broker.request(ProviderRequest {
+        root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+        admitted_request: None,
         account: "default".into(),
         operation: "model-list:closing-worker".into(),
         actor: None,
