@@ -550,6 +550,7 @@ pub(super) async fn recover(
         crate::provider_callbacks::expire_ended_generations(tx, &account, generation.0).map_err(
             |error| match error {
                 crate::provider_callbacks::CallbackError::Store(error) => WorkerError::Store(error),
+                crate::provider_callbacks::CallbackError::Expired => WorkerError::Expired,
                 crate::provider_callbacks::CallbackError::Invalid(_) | crate::provider_callbacks::CallbackError::InvalidResultSchema(_) | crate::provider_callbacks::CallbackError::Dependency(_) | crate::provider_callbacks::CallbackError::Stale | crate::provider_callbacks::CallbackError::Conflict | crate::provider_callbacks::CallbackError::Unknown | crate::provider_callbacks::CallbackError::Stored(_) => invalid(&account),
             },
         )?;

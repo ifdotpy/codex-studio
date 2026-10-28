@@ -5126,7 +5126,8 @@ fn invalid_agent_record_details(error: &WorkerError) -> Option<(&str, &str, &str
                 reason,
             },
         )) if scope == "runtime_agents" => Some((id.as_str(), pointer.as_str(), reason.as_str())),
-        WorkerError::Recovery(_)
+        WorkerError::Expired
+        | WorkerError::Recovery(_)
         | WorkerError::Store(_)
         | WorkerError::Scheduler(_)
         | WorkerError::Session(_)

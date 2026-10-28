@@ -288,7 +288,8 @@ fn rejected_notifications(
     if let Err(error) = selected_inputs_current(tx, intent) {
         return match error {
             WorkerError::PreparationRefused(_) => Ok(rejected),
-            error @ WorkerError::Recovery(_)
+            error @ WorkerError::Expired
+            | error @ WorkerError::Recovery(_)
             | error @ WorkerError::Store(_)
             | error @ WorkerError::Scheduler(_)
             | error @ WorkerError::Session(_)
