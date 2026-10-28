@@ -39,7 +39,7 @@ pub fn read_context_tool_receipt_rows(
     agent: &str,
 ) -> Result<ContextToolReceiptRows, CallbackError> {
     let mut rows = Vec::new();
-    for raw in records::all(connection, "runtime_tool_requests")? {
+    for raw in unknown_tools(connection, agent)? {
         if raw["agent"] != agent || raw["outcome"] != "unknown" {
             continue;
         }
@@ -52,6 +52,29 @@ pub fn read_context_tool_receipt_rows(
         rows.push((id, raw, cached_raw));
     }
     Ok(ContextToolReceiptRows(rows))
+}
+
+fn unknown_tools(db: &Connection, agent: &str) -> Result<Vec<Value>, CallbackError> {
+    use studio_runtime_schema::persistence::{ToolRequestKind, ToolRequestStatus};
+    let mut query = db.prepare_cached("SELECT id,record FROM runtime_tool_requests WHERE kind=?1 AND agent=?2 AND status IN (?3,?4,?5,?6) AND json_extract(record,'$.outcome')='unknown'")?;
+    let rows = query
+        .query_map(
+            rusqlite::params![
+                ToolRequestKind::ManagedTool,
+                agent,
+                ToolRequestStatus::Running,
+                ToolRequestStatus::Interrupted,
+                ToolRequestStatus::Unknown,
+                ToolRequestStatus::Failed
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(|(id, raw)| {
+            records::decode("runtime_tool_requests", &id, &raw).map_err(CallbackError::from)
+        })
+        .collect()
 }
 
 /// Resolve payload blobs of rows read outside a write transaction. The
@@ -127,7 +150,7 @@ pub fn revalidate_unresolved_context_tool_receipts(
     agent: &str,
     snapshot: &ContextToolReceiptSnapshot,
 ) -> Result<Vec<Value>, CallbackError> {
-    let current_requests = records::all(tx, "runtime_tool_requests")?
+    let current_requests = unknown_tools(tx, agent)?
         .into_iter()
         .filter(|record| record["agent"] == agent && record["outcome"] == "unknown")
         .map(|record| {
@@ -195,14 +218,17 @@ fn settle_abandoned(
             })
         };
         let result = super::tool_result(result, false);
-        crate::tool_requests::settle_result(tx, &id, &result)?;
         record["result"] = result;
     }
     record["updated"] = json!(now);
     if record.get("finished").is_none_or(Value::is_null) {
         record["finished"] = json!(now);
     }
-    tools::put(tx, record)
+    tools::put(tx, record)?;
+    if let Some(result) = record.get("result") {
+        crate::tool_requests::settle_result(tx, &id, result)?;
+    }
+    Ok(())
 }
 
 /// Startup owns every request: no dispatcher from an earlier process survives,
@@ -304,6 +330,7 @@ mod context_tool_receipt_snapshot_tests {
     fn externalized_request(text: char) -> (Value, Vec<crate::payload_blobs::BlobWrite>) {
         let record = json!({
             "id":"tool-request",
+            "kind":studio_runtime_schema::persistence::ToolRequestKind::ManagedTool,
             "agent":"agent",
             "outcome":"unknown",
             "stage":"running",

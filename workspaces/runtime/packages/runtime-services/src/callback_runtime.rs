@@ -146,12 +146,10 @@ impl CallbackRuntime {
         )
         .await?;
         if outcome == ReplyOutcome::Written {
-            let account = reply.identity.context.account.clone();
+            let stream = reply.identity.context.stream_id.clone();
             let generation = reply.identity.context.generation;
             self.store
-                .transaction_with(move |tx| {
-                    callbacks::retire_checkpointed(tx, &account, generation)
-                })
+                .transaction_with(move |tx| callbacks::retire_checkpointed(tx, &stream, generation))
                 .await?;
         }
         match outcome {

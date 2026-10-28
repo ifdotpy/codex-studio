@@ -247,9 +247,12 @@ pub(super) fn saved_reply(
         return Ok(None);
     };
     check_origin(&owner, identity, &input.signature())?;
-    let Some(saved) = response(tx, identity)? else {
+    let Some(mut saved) = response(tx, identity)? else {
         return Err(CallbackError::Unknown);
     };
+    if saved.status == OutboxStatus::Pending {
+        rebind_prepared(tx, &mut saved, &identity.context)?;
+    }
     if saved.signature != input.signature() || saved.payload.identity.key() != identity.key() {
         return Err(CallbackError::Conflict);
     }
@@ -348,9 +351,21 @@ fn delivery_in(
     if owner.status == ToolRequestStatus::Completed {
         return Ok(false);
     }
-    let mut saved = response(tx, identity)?.ok_or(CallbackError::Unknown)?;
+    let Some(mut saved) = response(tx, identity)? else {
+        if matches!(outcome, DeliveryOutcome::NotSent) && owner.status == ToolRequestStatus::Queued
+        {
+            return Ok(false);
+        }
+        return Err(CallbackError::Unknown);
+    };
     if saved.payload.identity != *identity {
+        if matches!(outcome, DeliveryOutcome::NotSent) && saved.status == OutboxStatus::Pending {
+            return Ok(false);
+        }
         return Err(CallbackError::Stale);
+    }
+    if matches!(outcome, DeliveryOutcome::Unknown) && saved.status == OutboxStatus::Unknown {
+        return Ok(false);
     }
     if saved.status == OutboxStatus::Committed {
         return Ok(false);
@@ -490,10 +505,16 @@ pub fn retire_checkpointed(
     generation: u64,
 ) -> Result<usize, CallbackError> {
     let generation = i64::try_from(generation).map_err(|_| CallbackError::Stale)?;
-    let checkpoint: Option<i64> = tx.query_row("SELECT journal_ack FROM runtime_account_state WHERE account=?1 AND connection_generation=?2", params![stream, generation], |row| row.get(0)).optional()?;
-    let Some(checkpoint) = checkpoint else {
-        return Ok(0);
-    };
+    let checkpoint = crate::account_worker::store::checkpoint(
+        tx,
+        stream,
+        u64::try_from(generation).map_err(|_| CallbackError::Stale)?,
+    )
+    .map_err(|error| match error {
+        crate::account_worker::WorkerError::Store(error) => CallbackError::Store(error),
+        _ => CallbackError::Unknown,
+    })?;
+    let checkpoint = i64::try_from(checkpoint).map_err(|_| CallbackError::Stale)?;
     let mut statement = tx.prepare_cached("SELECT id FROM runtime_outbox WHERE stream_id=?1 AND generation=?2 AND kind=?3 AND status=?4 AND CAST(json_extract(payload,'$.journal_cursor') AS INTEGER)<=?5 LIMIT 128")?;
     let ids = statement
         .query_map(
@@ -517,7 +538,6 @@ pub fn retire_checkpointed(
     }
     Ok(ids.len())
 }
-use rusqlite::OptionalExtension;
 
 pub(super) fn saved_decision(
     tx: &Transaction<'_>,
@@ -536,6 +556,12 @@ pub(super) fn saved_decision(
                 .reply_identity
                 .unwrap_or_else(|| identity.clone()),
         )));
+    }
+    if owner.status == ToolRequestStatus::Queued
+        && owner.payload.card.is_none()
+        && owner.payload.reply_identity.is_none()
+    {
+        return Ok(None);
     }
     if let Some(card) = owner.payload.card.as_ref()
         && response(tx, identity)?.is_none()
@@ -563,14 +589,18 @@ pub async fn prepared_replies(
                 OutboxStatus::Pending,
                 MAX_PENDING as u32,
             )?;
-            Ok(rows
-                .into_iter()
-                .filter(|row| row.payload.identity.key_context_matches(&context))
-                .map(|row| Reply {
+            let mut replies = Vec::new();
+            for mut row in rows {
+                if !row.payload.identity.key_context_matches(&context) {
+                    continue;
+                }
+                rebind_prepared(tx, &mut row, &context)?;
+                replies.push(Reply {
                     identity: row.payload.identity,
                     body: row.payload.body.into(),
-                })
-                .collect())
+                });
+            }
+            Ok(replies)
         })
         .await
 }
@@ -872,7 +902,6 @@ pub(crate) fn seed_card_owner(
     identity: &ReplyIdentity,
     card: &Value,
 ) -> Result<(), CallbackError> {
-    tx.execute_batch("ALTER TABLE runtime_tool_requests ADD COLUMN kind TEXT GENERATED ALWAYS AS (json_extract(record,'$.kind')) VIRTUAL; ALTER TABLE runtime_tool_requests ADD COLUMN origin_key TEXT GENERATED ALWAYS AS (json_extract(record,'$.originKey')) VIRTUAL;")?;
     let input = Input {
         id: identity.rpc_id.clone(),
         method: card["method"].as_str().ok_or(CallbackError::Stale)?.into(),
@@ -882,4 +911,84 @@ pub(crate) fn seed_card_owner(
     owner.payload.card = card["id"].as_str().map(str::to_owned);
     owner.payload.journal_cursor = Some(1);
     put_owner(tx, &owner)
+}
+
+/// Settle the canonical response from an accepted-callback handoff owner.
+pub fn settle_response(
+    tx: &Transaction<'_>,
+    key: &str,
+    outcome: DeliveryOutcome,
+) -> Result<(), CallbackError> {
+    let row: Response = Outbox::get(tx, key)?.ok_or(CallbackError::Unknown)?;
+    delivery_in(tx, &row.payload.identity, outcome)?;
+    Ok(())
+}
+
+/// Accepted logical callbacks still owed by this account, counted once even
+/// after their response enters the delivery outbox.
+pub fn pending_callback_count(db: &Connection, account: &str) -> Result<usize, CallbackError> {
+    let count:i64 = db.query_row("SELECT count(*) FROM runtime_tool_requests WHERE kind=?1 AND status IN (?2,?3,?4) AND json_extract(record,'$.payload.accepted.account')=?5",
+        params![studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback,ToolRequestStatus::Queued,ToolRequestStatus::Running,ToolRequestStatus::Unknown,account],|row|row.get(0))?;
+    usize::try_from(count).map_err(|_| CallbackError::Stored("callback pending count".into()))
+}
+
+/// Allocate a provider callback's Studio root exactly once, before any effect.
+pub fn admit_callback_request(
+    tx: &Transaction<'_>,
+    context: &CallbackContext,
+    frame: &Frame,
+) -> Result<String, CallbackError> {
+    let input = Input::from_frame(frame)?
+        .ok_or(CallbackError::Invalid("Expected callback request frame"))?;
+    input.check_context(context)?;
+    Ok(admit_owner(
+        tx,
+        &ReplyIdentity::new(context, &input.id),
+        &input.signature(),
+    )?
+    .id)
+}
+fn rebind_prepared(
+    tx: &Transaction<'_>,
+    row: &mut Response,
+    context: &CallbackContext,
+) -> Result<(), CallbackError> {
+    if row.payload.identity.context.connection == context.connection {
+        return Ok(());
+    }
+    if !row.payload.identity.key_context_matches(context) {
+        return Err(CallbackError::Stale);
+    }
+    if !context.agent.is_empty() {
+        snapshot(tx, context)?.active()?;
+    }
+    row.payload
+        .identity
+        .context
+        .connection
+        .clone_from(&context.connection);
+    let mut owner = owner(tx, &row.payload.identity)?.ok_or(CallbackError::Unknown)?;
+    owner.payload.reply_identity = Some(row.payload.identity.clone());
+    put_owner(tx, &owner)?;
+    put_response(tx, row)
+}
+
+/// Trusted callback task lookup; never creates admission on a missing owner.
+pub fn callback_admission(
+    db: &Connection,
+    root: &str,
+) -> Result<Option<AdmittedRequest>, CallbackError> {
+    use rusqlite::OptionalExtension;
+    let raw: Option<String> = db
+        .query_row(
+            "SELECT record FROM runtime_tool_requests WHERE id=?1 AND kind=?2",
+            params![
+                root,
+                studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let task: Option<Owner> = raw.map(|raw| serde_json::from_str(&raw)).transpose()?;
+    Ok(task.and_then(|task| task.payload.admission))
 }

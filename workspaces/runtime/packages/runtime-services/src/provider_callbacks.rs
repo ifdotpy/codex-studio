@@ -32,9 +32,10 @@ use serde_json::{Value, json};
 #[cfg(test)]
 pub(crate) use storage::reply_key;
 pub use storage::{
-    CallbackBody, CallbackOwner, CallbackResponse, DeliveryOutcome, FrameAdmission, begin_frame,
-    bind_journal, callback_origin_key, delivery, prepared_replies, record_frame_outcome,
-    response_frame, retire_checkpointed, save_frame_response, submission_ready,
+    CallbackBody, CallbackOwner, CallbackResponse, DeliveryOutcome, FrameAdmission,
+    admit_callback_request, begin_frame, bind_journal, callback_admission, callback_origin_key,
+    delivery, pending_callback_count, prepared_replies, record_frame_outcome, response_frame,
+    retire_checkpointed, save_frame_response, settle_response, submission_ready,
 };
 use studio_runtime_providers::{Frame, ResponseBody};
 use studio_runtime_store::RuntimeStore;

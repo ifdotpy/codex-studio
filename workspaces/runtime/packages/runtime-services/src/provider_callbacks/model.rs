@@ -53,7 +53,15 @@ impl From<studio_runtime_store::request_results::RequestResultError> for Callbac
             RequestResultError::Sql(error) => error.into(),
             RequestResultError::Json(_) => Self::Stored("callback result payload".into()),
             RequestResultError::Conflict { .. } => Self::Conflict,
-            RequestResultError::Identity(_) => Self::Unknown,
+            RequestResultError::Identity(
+                studio_runtime_schema::persistence::RequestIdentityError::FutureTimestamp {
+                    ..
+                },
+            ) => Self::Invalid("Request id is issued in the future"),
+            RequestResultError::Identity(
+                studio_runtime_schema::persistence::RequestIdentityError::Expired { .. }
+                | studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7(_),
+            ) => Self::Invalid("Request id expired"),
         }
     }
 }
