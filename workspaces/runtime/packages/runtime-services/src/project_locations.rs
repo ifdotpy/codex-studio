@@ -80,8 +80,11 @@ mod receipt_tests {
             r#"{"serverId":"peer","gitOrigin":"origin"}"#,
         ] {
             let parsed: LocationValue = serde_json::from_str(raw).expect("location value");
+            let actual: Value =
+                serde_json::from_str(&serde_json::to_string(&parsed).expect("serialize location"))
+                    .expect("serialized value");
             assert_eq!(
-                json!(parsed),
+                actual,
                 serde_json::from_str::<Value>(raw).expect("expected value")
             );
         }
