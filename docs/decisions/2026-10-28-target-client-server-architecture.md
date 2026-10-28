@@ -157,6 +157,44 @@ is one file for backups and layr snapshots. The problems are in its use:
 - An alert when a write transaction exceeds a set duration.
 - `canvas.sqlite3` has about 4 GB of free pages. Reclaim them after the copies are removed.
 
+### Types
+
+Invalid state must be impossible to express in Rust, TypeScript, and SQLite.
+
+- **One owner: the Rust type.** TypeScript types come from it through the generated
+  OpenAPI contract (`pnpm run contracts:generate`). SQLite constraints come from it too:
+  a generated `CHECK` for each enum column, and a parity check that fails when a column
+  and its Rust enum differ. No language keeps a hand-written copy of a value list.
+- **Enums with data instead of a status string and optional fields.** A state is one
+  variant that carries exactly the fields it needs.
+- **Few `Option`s.** `Option` only where absence is a real state of the domain, never for
+  "not loaded yet" or "old format".
+- **No free strings.** Identifiers are newtypes (`AgentId`, `TurnId`, `RequestId`) in Rust
+  and branded types in TypeScript. Closed sets are enums.
+- **Strict decoding.** Rows decode with `serde::Deserialize` straight into the type,
+  without an intermediate `serde_json::Value`. An unknown variant is an error, not a
+  default. Old data changes through a migration, not through a fallback in the decoder.
+- **Columns instead of JSON records.** A row stores typed columns. The SQLite form of an
+  enum is a variant column with a `CHECK`, plus columns that the `CHECK` requires for
+  that variant and forbids for the others.
+
+Example, the delivery state of a message:
+
+```rust
+enum Delivery {
+    Queued,
+    Submitted { turn: TurnId },
+    Applied { turn: TurnId, at: Timestamp },
+    Withdrawn { at: Timestamp },
+    Unknown { since: Timestamp },
+}
+```
+
+```sql
+delivery TEXT NOT NULL CHECK (delivery IN ('queued','submitted','applied','withdrawn','unknown')),
+turn TEXT CHECK ((delivery IN ('submitted','applied')) = (turn IS NOT NULL)),
+```
+
 ### One owner for each kind of data
 
 | Data                           | Copies now                                                                                                           | Single owner                                                  | The others                                                                                   |
