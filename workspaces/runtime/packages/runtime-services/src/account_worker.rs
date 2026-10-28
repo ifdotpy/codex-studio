@@ -48,10 +48,10 @@ pub mod retained_frame;
 mod steer;
 mod stopped_turns;
 pub(crate) mod store;
-pub use store::hold_invalid_agent_record;
-pub use store::{get_notification, put_notification};
 #[cfg(any(test, feature = "test-support"))]
 pub use store::attach_provider_stream_for_test;
+pub use store::hold_invalid_agent_record;
+pub use store::{get_notification, put_notification};
 pub use studio_runtime_schema::persistence::ProviderScope;
 pub use studio_runtime_store::account_state::{ScopeError, current_provider_scope};
 mod submission;
@@ -5037,11 +5037,16 @@ impl Worker {
     }
     async fn finish(&mut self, exit: SessionExit) -> Result<(), WorkerError> {
         self.closing = true;
+        let mut drain = Ok(());
         while let Ok(event) = self.events.try_recv() {
-            self.event(event).await?;
+            if drain.is_ok() {
+                drain = self.event(event).await;
+            }
         }
         for event in exit.undelivered {
-            self.event(event).await?;
+            if drain.is_ok() {
+                drain = self.event(event).await;
+            }
         }
         // A retained provider (a supervised process that outlives this worker)
         // keeps its generation open: the next worker attaches to it and
@@ -5057,15 +5062,20 @@ impl Worker {
                 !(provider_retained && matches!(outcome, SessionOutcome::GenerationClosed { .. }))
             })
             .collect();
-        self.event(SessionEvent {
-            journal: None,
-            outcomes,
-        })
-        .await?;
+        if drain.is_ok() {
+            drain = self
+                .event(SessionEvent {
+                    journal: None,
+                    outcomes,
+                })
+                .await;
+        }
         for (_, reply) in std::mem::take(&mut self.vm_notification_waiters) {
             let _sent = reply.send(Err(retained::PortError::Unknown));
         }
-        self.flush().await?;
+        if drain.is_ok() {
+            drain = self.flush().await;
+        }
         let account = self.account.clone();
         let generation = self.generation.0;
         let (cleanup_error, recovery, provider_result) = match exit.adapter {
@@ -5077,17 +5087,32 @@ impl Worker {
             None => (None, None, None),
         };
         let identity = format!("account={account};generation={generation}");
-        self.db_identified("finish", identity, move |store| async move {
-            if let Some(recovery) = recovery {
-                store::save_recovery(&store, &account, &recovery).await?;
-            }
-            scheduler::lifecycle_transaction(&store, move |tx| {
-                store::disconnect_provider_generation(tx, &account, generation, provider_retained)
+        let disconnect = self
+            .db_identified("finish", identity, move |store| async move {
+                if let Some(recovery) = recovery {
+                    store::save_recovery(&store, &account, &recovery).await?;
+                }
+                scheduler::lifecycle_transaction(&store, move |tx| {
+                    store::disconnect_provider_generation(
+                        tx,
+                        &account,
+                        generation,
+                        provider_retained,
+                    )
+                })
+                .await?;
+                Ok(())
             })
-            .await?;
-            Ok(())
-        })
-        .await?;
+            .await;
+        match (drain, disconnect) {
+            (Err(drain), Err(disconnect)) => {
+                return Err(WorkerError::CleanupUnconfirmed(format!(
+                    "{disconnect}; earlier drain: {drain}"
+                )));
+            }
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => return Err(error),
+            (Ok(()), Ok(())) => {}
+        }
         if let Some(error) = cleanup_error {
             return Err(WorkerError::CleanupUnconfirmed(error));
         }
