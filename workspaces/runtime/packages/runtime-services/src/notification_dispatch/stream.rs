@@ -1226,6 +1226,65 @@ mod tests {
     /// value with each entry's pending text, count and params blanked, plus a
     /// copy of every entry with pending deltas.
     #[test]
+    fn host_and_vm_lanes_keep_same_native_tuple_separate() {
+        let host_key = StreamKey {
+            agent_id: "host".into(),
+            account: "default".into(),
+            generation: 7,
+            thread: "same-thread".into(),
+            turn: Some("same-turn".into()),
+            item: "same-item".into(),
+            method: "item/agentMessage/delta".into(),
+        };
+        let mut vm_key = host_key.clone();
+        vm_key.agent_id = "vm".into();
+        let mut streams = NotificationStreamBuffer::default();
+        streams.publication_sequence = 17;
+        assert!(matches!(
+            streams.enqueue_delta(host_key.clone(), "host", &Value::Null),
+            EnqueueResult::Buffered
+        ));
+        assert!(matches!(
+            streams.enqueue_delta(vm_key.clone(), "vm", &Value::Null),
+            EnqueueResult::Buffered
+        ));
+        assert_eq!(streams.selected(None).len(), 2);
+        assert_eq!(streams.selected(Some(&vm_key)), vec![vm_key.clone()]);
+        streams.flush(&vm_key, "").expect("VM flush");
+        assert!(streams.preserve_base(&vm_key, "VM base".into()));
+        assert!(matches!(
+            streams.enqueue_delta(vm_key.clone(), "pending", &Value::Null),
+            EnqueueResult::Buffered
+        ));
+        let before = streams.clone();
+        let vm = streams.take_owner("vm");
+        assert_eq!(streams.owners(), BTreeSet::from(["host".into()]));
+        assert_eq!(vm.owners(), BTreeSet::from(["vm".into()]));
+        assert_eq!(streams.publication_sequence, 17);
+        assert_eq!(vm.publication_sequence, 0);
+        let (metadata, pending) = vm.persisted_parts().expect("VM owner state");
+        let mut restored: NotificationStreamBuffer =
+            serde_json::from_str(&metadata).expect("VM metadata");
+        restored
+            .restore_pending(pending.expect("VM flush obligation"))
+            .expect("VM pending restored");
+        streams
+            .merge_owner(restored.clone())
+            .expect("host and VM restored together");
+        assert_eq!(streams, before);
+        assert!(
+            streams.merge_owner(restored).is_err(),
+            "duplicate owner is refused"
+        );
+        assert_eq!(streams, before);
+        streams.close(&host_key);
+        streams.close(&vm_key);
+        streams.settle_turn("vm", "default", "same-thread", "same-turn");
+        assert_eq!(streams.closed.len(), 1);
+        assert_eq!(streams.closed[0].agent_id, "host");
+    }
+
+    #[test]
     fn pending_restore_preserves_current_base_and_rebuilds_counters() {
         let key = StreamKey {
             agent_id: "agent".into(),
