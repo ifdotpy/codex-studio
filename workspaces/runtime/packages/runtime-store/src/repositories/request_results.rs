@@ -43,6 +43,8 @@ pub struct StoredResult {
 /// Persist this with the admitted owner/outbox for asynchronous settlement.
 /// Deserialization is for trusted owner state, never unauthenticated ingress.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct AdmittedRequest {
     id: String,
     signature: String,
@@ -195,6 +197,18 @@ mod tests {
     use crate::{Connection, RuntimeStore, StoreError};
     use std::sync::Arc;
     use studio_runtime_schema::persistence::REQUEST_ID_FUTURE_SKEW_MS;
+
+    #[test]
+    fn receipt_result_admitted_schema_matches_store_owner() {
+        let owner = schemars::schema_for!(AdmittedRequest).to_value();
+        let consumer = studio_runtime_schema::contracts::admitted_request_schema();
+        for field in ["properties", "required", "additionalProperties"] {
+            assert_eq!(
+                owner[field], consumer[field],
+                "AdmittedRequest schemas must match runtime-store/src/repositories/request_results.rs owner: {field}"
+            );
+        }
+    }
 
     #[test]
     fn receipt_result_cutover_floor_preserves_imported_reply_ttl() {
