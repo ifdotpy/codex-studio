@@ -91,7 +91,10 @@ async fn saved_response(
             let owner: CallbackTask<crate::provider_callbacks::CallbackOwner> =
                 serde_json::from_str(&raw).expect("logical callback owner");
             let mut canonical = response.clone();
-            canonical["id"] = task.payload.accepted.request_id.clone();
+            canonical["id"] = match &task.payload.accepted.request_id {
+                studio_runtime_providers::RequestId::Number(id) => Value::from(*id),
+                studio_runtime_providers::RequestId::String(id) => Value::String(id.clone()),
+            };
             let DecodedJournalPayload::Frame(frame) = decode_journal_value(
                 task.payload.accepted.cursor,
                 task.payload.accepted.generation,
@@ -303,7 +306,10 @@ async fn record_follows_the_answer_outcome_and_survives_journal_compaction() {
         ),
         (1, GENERATION, SCOPE)
     );
-    assert_eq!(record.request_id, json!("one"));
+    assert_eq!(
+        record.request_id,
+        studio_runtime_providers::RequestId::String("one".into())
+    );
     assert_eq!(record.method, "unknown/providerMethod");
     assert!(record.frame().is_ok());
     let store = &state.bridge.store;

@@ -7,10 +7,9 @@ use crate::{
 };
 use rusqlite::{Connection, Transaction, params};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use studio_runtime_process::ProviderHandle;
 use studio_runtime_providers::{
-    DecodedJournalPayload, Frame, ResponseBody, decode_journal_entry, encode_line,
+    DecodedJournalPayload, Frame, RequestId, ResponseBody, decode_journal_entry, encode_line,
 };
 use studio_runtime_schema::persistence::{RequestIdentity, ToolRequestKind, ToolRequestStatus};
 use studio_runtime_store::RuntimeStore;
@@ -119,9 +118,7 @@ impl SavedReply {
         let Frame::Response { id, .. } = &frame else {
             return Err(WorkerError::CallbackUnknown);
         };
-        if serde_json::to_value(id).map_err(|_| WorkerError::CallbackUnknown)?
-            != accepted.request_id
-        {
+        if id != &accepted.request_id {
             return Err(WorkerError::CallbackUnknown);
         }
         Ok(frame)
@@ -144,7 +141,7 @@ pub(super) struct Accepted {
     pub journal_scope: String,
     pub generation: u64,
     pub cursor: u64,
-    pub request_id: Value,
+    pub request_id: RequestId,
     pub method: String,
     pub frame: String,
     pub actor: Option<String>,
@@ -267,7 +264,7 @@ pub(super) fn accept(
         journal_scope: scope.into(),
         generation: entry.generation.0,
         cursor: entry.cursor.0,
-        request_id: serde_json::to_value(id).map_err(|_| invalid(&operation))?,
+        request_id: id,
         method,
         frame: String::from_utf8(bytes).map_err(|_| invalid(&operation))?,
         actor: actor.map(|(id, _)| id.into()),
@@ -370,7 +367,7 @@ pub(super) async fn admit_reply(
         let accepted=&task.payload.accepted;
         if accepted.operation()!=operation || accepted.actor.is_some() { return Err(WorkerError::CallbackUnknown); }
         let frame=saved.response(accepted)?;
-        let refusal=matches!(&frame,Frame::Response{body:ResponseBody::Error(_),..}) || matches!(&frame,Frame::Response{body:ResponseBody::Result(value),..} if value.get("success")==Some(&Value::Bool(false)));
+        let refusal=matches!(&frame,Frame::Response{body:ResponseBody::Error(_),..}) || matches!(&frame,Frame::Response{body:ResponseBody::Result(value),..} if value.get("success").and_then(|value|value.as_bool())==Some(false));
         let managed=accepted.managed_frame()?;
         let authority=managed.as_ref().map(|frame|super::callback::managed_reply_authority_in(tx,&accepted.account,accepted.generation,frame)).transpose()?.flatten();
         if let Some(original)=&task.payload.submitted {
@@ -380,7 +377,8 @@ pub(super) async fn admit_reply(
             saved.authority=original.authority.clone();
             saved.response_key=original.response_key.clone();
             // Compare persisted provenance, including bytes' hash, never a freshly built body.
-            if !deduplicated || task.payload.recovery_attempted || serde_json::to_value(&saved).map_err(|_|invalid(&operation))?!=serde_json::to_value(original).map_err(|_|invalid(&operation))? {
+            saved.frame.clear();
+            if !deduplicated || task.payload.recovery_attempted || saved!=*original {
                 task.status=ToolRequestStatus::Unknown; put(tx,&task)?; return Ok(true);
             }
             let mut original=original.clone(); original.hydrate(tx)?;
@@ -575,7 +573,7 @@ pub(super) fn has_reply_demand(db: &Connection, account: &str) -> Result<bool, W
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use studio_runtime_process::{EventCursor, Generation};
     use studio_runtime_providers::{Method, RequestFrame, RequestId};
 
