@@ -50,8 +50,9 @@ impl ControlSession for UnknownState {
     fn call_scoped(
         &self,
         _: ControlScope,
-        _: ControlInvocation,
+        invocation: ControlInvocation,
     ) -> ControlFuture<'_, ControlReply> {
+        assert!(matches!(invocation, ControlInvocation::State { .. }));
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Box::pin(async { Err(ControlError::Unknown) })
     }
@@ -86,6 +87,7 @@ async fn early_unknown_does_not_finalize_the_control_request() {
         controls.execute(request()).await,
         Err(ControlError::Unknown)
     ));
+    assert_eq!(native.0.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 impl ControlSession for MalformedState {
     fn binding(&self) -> ControlBinding {

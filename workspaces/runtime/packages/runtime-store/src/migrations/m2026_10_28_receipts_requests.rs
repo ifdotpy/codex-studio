@@ -45,7 +45,6 @@ struct WorkspaceKindView {
     source: Option<WorkspaceSource>,
     provider_admission: Option<AdmittedRequest>,
     root_request_id: Option<String>,
-    control_attempt: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -477,8 +476,11 @@ fn move_workspace_operations(
         if matches!(
             view.kind,
             WorkspaceKind::ClaudeSettings | WorkspaceKind::ClaudeRollback
-        ) && view.control_attempt.is_some()
-        {
+        ) && tx.query_row(
+            "SELECT json_type(?1,'$.controlAttempt') IS NOT NULL",
+            [&row.result],
+            |row| row.get::<_, bool>(0),
+        )? {
             if !budget.include(row.result.len() + row.id.len() + row.signature.len()) {
                 break;
             }
@@ -1198,6 +1200,12 @@ mod tests {
             )
             .expect("owner");
         }
+        let null_owner = json!({"id":"null-attempt","kind":"claude_settings","agent":"agent","phase":"recovery_required","requestId":"original","controlAttempt":null});
+        db.execute(
+            "INSERT INTO runtime_workspace_operations VALUES('null-attempt',?1)",
+            [null_owner.to_string()],
+        )
+        .unwrap();
         let tx = db.transaction().expect("transaction");
         let checkpoint =
             MigrationCheckpoint::begin(&tx, ID, "runtime_workspace_operations", CUTOVER)
@@ -1205,6 +1213,19 @@ mod tests {
         Family
             .move_batch(&tx, "runtime_workspace_operations", &checkpoint)
             .expect("migration");
+        let raw: String = tx
+            .query_row(
+                "SELECT record FROM runtime_workspace_operations WHERE id='null-attempt'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            serde_json::from_str::<Value>(&raw)
+                .unwrap()
+                .get("controlAttempt")
+                .is_none()
+        );
         for kind in ["claude_settings", "claude_rollback"] {
             let raw: String = tx
                 .query_row(
