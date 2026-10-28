@@ -48,10 +48,10 @@ pub mod retained_frame;
 mod steer;
 mod stopped_turns;
 pub(crate) mod store;
-#[cfg(any(test, feature = "test-support"))]
-pub use store::attach_provider_stream_for_test;
 pub use store::hold_invalid_agent_record;
 pub use store::{get_notification, put_notification};
+#[cfg(any(test, feature = "test-support"))]
+pub use store::attach_provider_stream_for_test;
 pub use studio_runtime_schema::persistence::ProviderScope;
 pub use studio_runtime_store::account_state::{ScopeError, current_provider_scope};
 mod submission;
@@ -5037,17 +5037,6 @@ impl Worker {
     }
     async fn finish(&mut self, exit: SessionExit) -> Result<(), WorkerError> {
         self.closing = true;
-        let mut drain = Ok(());
-        while let Ok(event) = self.events.try_recv() {
-            if drain.is_ok() {
-                drain = self.event(event).await;
-            }
-        }
-        for event in exit.undelivered {
-            if drain.is_ok() {
-                drain = self.event(event).await;
-            }
-        }
         // A retained provider (a supervised process that outlives this worker)
         // keeps its generation open: the next worker attaches to it and
         // continues its turns, so this end is no provider disconnect.
@@ -5062,20 +5051,20 @@ impl Worker {
                 !(provider_retained && matches!(outcome, SessionOutcome::GenerationClosed { .. }))
             })
             .collect();
-        if drain.is_ok() {
-            drain = self
-                .event(SessionEvent {
-                    journal: None,
-                    outcomes,
-                })
-                .await;
-        }
+        let drain: Result<(), WorkerError> = async {
+            while let Ok(event) = self.events.try_recv() {
+                self.event(event).await?;
+            }
+            for event in exit.undelivered {
+                self.event(event).await?;
+            }
+            self.event(SessionEvent { journal: None, outcomes }).await?;
+            Ok(())
+        }.await;
         for (_, reply) in std::mem::take(&mut self.vm_notification_waiters) {
             let _sent = reply.send(Err(retained::PortError::Unknown));
         }
-        if drain.is_ok() {
-            drain = self.flush().await;
-        }
+        let drain = if drain.is_ok() { self.flush().await } else { drain };
         let account = self.account.clone();
         let generation = self.generation.0;
         let (cleanup_error, recovery, provider_result) = match exit.adapter {
