@@ -1157,7 +1157,8 @@ pub async fn provider_root(store: &RuntimeStore, id: &str) -> Result<String, Mon
             let mut record = snapshot.record().clone();
             record["rootRequestId"] = json!(root);
             // The root is owner state; no delivery or status transition is implied.
-            let typed = studio_runtime_store::MonitorRecord::from_value(record)?;
+            let typed = studio_runtime_store::MonitorRecord::from_value(record)
+                .map_err(studio_runtime_store::StoreError::from)?;
             studio_runtime_store::Table::new(tx).put(&typed)?;
             drop(actor);
             Ok(root)
@@ -1240,7 +1241,7 @@ pub async fn provider_request_identity(
             if record["stallProbeGeneration"].as_i64()!=Some(generation) {return Err(MonitorError::Refused("Monitor liveness generation changed"));}
             if record["livenessProbe"]["generation"].as_i64()!=Some(generation) {
                 record["livenessProbe"]=json!({"generation":generation,"rootRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
-                Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(record.clone())?)?;
+                Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(record.clone()).map_err(studio_runtime_store::StoreError::from)?)?;
             }
             record["livenessProbe"].clone()
         } else if method==Method::CommandExecWrite || method==Method::CommandExecResize {
