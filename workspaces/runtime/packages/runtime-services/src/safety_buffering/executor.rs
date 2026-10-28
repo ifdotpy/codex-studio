@@ -1240,6 +1240,7 @@ fn request_id_string(id: &RequestId) -> String {
 
 fn lifecycle_error(error: crate::agent_management::ManagementError) -> Error {
     match error {
+        crate::agent_management::ManagementError::Expired => Error::Expired,
         crate::agent_management::ManagementError::Unavailable(dependency) => {
             Error::Requires(dependency)
         }
