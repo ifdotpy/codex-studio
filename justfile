@@ -196,5 +196,8 @@ test-guest-runner-processes:
     @node --test workspaces/runtime/apps/vm-guest/run-guest-suite-processes.test.mts
 
 [doc("Manual process check: run detached host_exec startup, replacement and guest broker scenarios.")]
+test-live-handover:
+    @cargo nextest run -j 4 -p studio-runtime-server --test integration --run-ignored only --test-threads 1 -E 'test(/^live_handover::/)'
+
 test-host-exec-processes:
     @cargo nextest run -j 4 -p studio-runtime-server --test integration --run-ignored only --test-threads 1 -E 'test(/^host_exec_service::/)'
