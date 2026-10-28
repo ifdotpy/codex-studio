@@ -3491,14 +3491,13 @@ impl Worker {
             {
                 self.callback_receipt_deadlines.remove(&operation_id.0);
                 let operation = operation_id.0.clone();
-                let written = *outcome == WriteOutcome::Written;
                 let write_outcome = *outcome;
                 let identity = operation.clone();
                 self.db_identified("callback_written", identity, move |store| async move {
                     callback_record::written(&store, &operation, write_outcome).await
                 })
                 .await?;
-                if !written {
+                if write_outcome == WriteOutcome::Unknown {
                     return Err(WorkerError::CallbackUnknown);
                 }
                 self.managed_callback_cursors.remove(&(
