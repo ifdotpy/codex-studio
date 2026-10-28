@@ -107,6 +107,23 @@ pub fn vm_actor(connection: &rusqlite::Connection, agent: &str) -> Result<bool, 
 
 pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<bool, WorkerError> {
     let Some(actor) = call.actor.as_ref() else {
+        if call.transfer.is_none()
+            && call.deleted_actor_session.is_none()
+            && super::account_refresh_shape(
+                &call.scope,
+                &call.root_request_id,
+                &call.operation,
+                call.method,
+                &call.params,
+            )
+        {
+            let Some(token) = &call.admitted_request else {
+                return Ok(false);
+            };
+            let saved = recorded_operation(tx, &call.key(), Some(token.id()))?;
+            return Ok(saved.is_some_and(|record| same_replay_identity(record.call(), call)));
+        }
+
         if let Some(transfer) = call.transfer.as_ref() {
             let Some(operation) =
                 studio_runtime_store::AccountTransferRepository::get(tx, &transfer.transfer_id)?
@@ -602,6 +619,26 @@ pub(super) fn replay_in_transaction(
     tx: &rusqlite::Transaction<'_>,
     call: &Call,
 ) -> Result<Result<Replay, PortError>, WorkerError> {
+    if call.admitted_request.is_none() {
+        let identity = match call.identity() {
+            Ok(identity) => identity,
+            Err(error) => return Ok(Err(error)),
+        };
+        if let Err(error) = identity.validate(
+            now_ms(),
+            RequestResults::expired_before_ms(tx).map_err(result_error)?,
+        ) {
+            return Ok(Err(match error {
+                studio_runtime_schema::persistence::RequestIdentityError::Expired { .. } => {
+                    PortError::Expired
+                }
+                studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7
+                | studio_runtime_schema::persistence::RequestIdentityError::FutureTimestamp {
+                    ..
+                } => PortError::Invalid,
+            }));
+        }
+    }
     if !authorize(tx, call)? {
         return Ok(Err(PortError::Identity));
     }

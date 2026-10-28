@@ -315,6 +315,20 @@ impl RetainedSessionPort {
             .map_err(|_| PortError::Unknown)?
     }
 }
+fn account_refresh_shape(
+    scope: &ConnectionScope,
+    root: &str,
+    operation: &str,
+    method: Method,
+    params: &Value,
+) -> bool {
+    method == Method::AccountRead
+        && operation == format!("vm-codex-token-refresh:{}:{root}", scope.account)
+        && params.as_object().is_some_and(|params| {
+            params.len() == 1 && params.get("refreshToken") == Some(&Value::Bool(true))
+        })
+}
+
 pub(crate) fn validate(request: &SessionRequest) -> Result<(), PortError> {
     let turn_view = request.params.get("itemsView").and_then(Value::as_str);
     let turn_limit = request.params.get("limit").and_then(Value::as_u64);
@@ -331,7 +345,15 @@ pub(crate) fn validate(request: &SessionRequest) -> Result<(), PortError> {
     }
     let actorless_request = request.transfer.is_none()
         && request.actor.is_none()
-        && valid_actorless_request_shape(request.method, &request.params, &request.operation);
+        && (valid_actorless_request_shape(request.method, &request.params, &request.operation)
+            || (request.deleted_actor_session.is_none()
+                && account_refresh_shape(
+                    &request.scope,
+                    &request.root_request_id,
+                    &request.operation,
+                    request.method,
+                    &request.params,
+                )));
     let deleted_voice_stop = request
         .deleted_actor_session
         .as_ref()
