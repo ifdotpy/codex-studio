@@ -190,6 +190,7 @@ function render(
   label: unknown;
   picker: ComponentProps<typeof AgentSetupPicker>;
   triggerAgent: Agent;
+  statusModal?: ReactNode;
 };
 function render(
   agent: Agent,
@@ -200,6 +201,7 @@ function render(
   label: string;
   picker: Partial<ComponentProps<typeof AgentSetupPicker>>;
   triggerAgent: Agent;
+  statusModal?: ReactNode;
 };
 function render(
   agent = initial,
@@ -272,6 +274,9 @@ function render(
     model,
     label: trigger.props["aria-label"],
     picker: picker.props as ComponentProps<typeof AgentSetupPicker>,
+    statusModal: isValidElement(menu.props.statusModal)
+      ? menu.props.statusModal
+      : null,
     triggerAgent: (
       menu.props.trigger as ReactElement<
         ComponentProps<typeof ExecutionSummaryTrigger>
@@ -726,6 +731,46 @@ for (const role of ["implementer", "reviewer"] as const) {
     expect(render(agent).label).toContain("Agent Luna 6 High");
   });
 }
+
+test("a live change opens a modal and follows agent updates", async () => {
+  const agent: Agent = {
+    ...initial,
+    status: AgentStatus.running,
+    nextTurnSettingsSupported: true,
+  };
+  h.post.mockResolvedValue({
+    ...agent,
+    pendingSettings: { model: "gpt-6-luna", effort: "medium", fastMode: false },
+    pendingSettingsAccountKey: "default",
+  });
+  render(agent).picker.onModel("gpt-6-luna");
+  let modal = render(agent).statusModal;
+  expect(children(modal).map((node) => node.props.children)).toContain(
+    "Saving…",
+  );
+  await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+  const queued: Agent = {
+    ...agent,
+    pendingSettings: { model: "gpt-6-luna", effort: "medium", fastMode: false },
+    pendingSettingsAccountKey: "default",
+  };
+  render(queued);
+  modal = render(queued).statusModal;
+  expect(children(modal).map((node) => node.props.children)).toContain(
+    "Queued for the next turn",
+  );
+  const applied: Agent = {
+    ...agent,
+    model: "gpt-6-luna",
+    effort: "medium",
+    fastMode: false,
+  };
+  render(applied);
+  modal = render(applied).statusModal;
+  expect(children(modal).map((node) => node.props.children)).toContain(
+    "Applied",
+  );
+});
 
 test("switching picker roles keeps acknowledged worker defaults in the summary", async () => {
   h.read.mockResolvedValue({

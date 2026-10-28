@@ -1,5 +1,6 @@
 import { appendAppLog } from "../../appLog";
 import {
+  AgentStatus,
   AccountTransferScope,
   AccountTransferStatus as GeneratedAccountTransferStatus,
   TransferScope,
@@ -15,6 +16,7 @@ import { useServerApi } from "../../servers/ServerServicesContext";
 import { accountCanStart } from "../../accountName";
 import {
   Button,
+  Modal,
   Popover,
   Drawer,
   Switch,
@@ -62,6 +64,11 @@ import { useMediaQuery } from "@mantine/hooks";
 import { AgentSetupPicker, type SetupRole } from "./AgentSetupPicker";
 import "./execution-settings.css";
 import { SettingsSection } from "../ui/primitives";
+import { appendAppLog } from "../../appLog";
+import {
+  observeSettingsChange,
+  type SettingsChange,
+} from "./liveSettingsStatus";
 
 type Catalog = ReturnType<typeof useWorkerModels>;
 type ConversationBody = PostBody<"/api/conversation">;
@@ -261,6 +268,83 @@ const sameRoleSettings = (left: Agent, right: Agent, role: SetupRole) =>
         settingsFor(right, role === "worker"),
       );
 function ExecutionSettingsController(props: ControllerProps) {
+  const [changeStatus, setChangeStatus] = useState<SettingsChange | null>(null);
+  const [statusOpen, setStatusOpen] = useState(false);
+  useEffect(() => {
+    setChangeStatus((current) =>
+      current ? observeSettingsChange(current, props.agent) : null,
+    );
+  }, [props.agent, changeStatus?.phase]);
+  const loggedFailure = useRef<SettingsChange | null>(null);
+  useEffect(() => {
+    if (
+      changeStatus?.phase === "failed" &&
+      loggedFailure.current !== changeStatus
+    ) {
+      loggedFailure.current = changeStatus;
+      appendAppLog({
+        at: Date.now(),
+        title: "Execution settings change failed",
+        reason: changeStatus.error || "The settings change failed.",
+      });
+    }
+  }, [changeStatus]);
+  const statusModal = changeStatus && (
+    <Modal
+      opened={statusOpen}
+      onClose={() => setStatusOpen(false)}
+      title="Execution settings"
+      centered
+      zIndex={layerZIndex.modalAbovePopover}
+    >
+      <Stack gap="sm">
+        <Text role="status">
+          {changeStatus.phase === "saving"
+            ? "Saving…"
+            : changeStatus.phase === "queued"
+              ? "Queued for the next turn"
+              : changeStatus.phase === "applied"
+                ? "Applied"
+                : "Failed"}
+        </Text>
+        <Text size="sm">
+          {changeStatus.before.model || "Default"} →{" "}
+          {changeStatus.requested.model || "Default"} ·{" "}
+          {changeStatus.before.effort || "Default"} →{" "}
+          {changeStatus.requested.effort || "Default"} · Fast{" "}
+          {changeStatus.before.fastMode ? "on" : "off"} →{" "}
+          {changeStatus.requested.fastMode ? "on" : "off"}
+        </Text>
+        {changeStatus.phase === "queued" && (
+          <Text size="sm">
+            {props.agent.status === AgentStatus.idle ||
+            props.agent.status === AgentStatus.completed
+              ? "The change applies when this agent next runs."
+              : "The current response keeps its settings. The change applies at the next turn."}
+          </Text>
+        )}
+        {changeStatus.phase === "applied" &&
+          (props.agent.status === AgentStatus.idle ||
+            props.agent.status === AgentStatus.completed) && (
+            <Text size="sm">
+              The settings take effect when this agent next runs.
+            </Text>
+          )}
+        {changeStatus.phase === "saving" && changeStatus.error && (
+          <Text size="sm">
+            {changeStatus.error} Use Check settings save to confirm the same
+            request.
+          </Text>
+        )}
+        {changeStatus.phase === "failed" && (
+          <Text size="sm">
+            {changeStatus.error} See App errors for details.
+          </Text>
+        )}
+        <Button onClick={() => setStatusOpen(false)}>Close</Button>
+      </Stack>
+    </Modal>
+  );
   const [confirmed, setConfirmed] = useState<
     Partial<Record<SetupRole, SettingsReceipt>>
   >({});
@@ -395,6 +479,21 @@ function ExecutionSettingsController(props: ControllerProps) {
       beginSettingsSave={beginSettingsSave}
       transferOpen={transferOpen}
       setTransferOpen={setTransferOpen}
+      onSettingsChange={(change) => {
+        setChangeStatus(change);
+        setStatusOpen(true);
+      }}
+      onSettingsFailure={(message, uncertain) =>
+        setChangeStatus((current) =>
+          current
+            ? {
+                ...current,
+                phase: uncertain ? "saving" : "failed",
+                error: message,
+              }
+            : current,
+        )
+      }
       presentation={props.renderTrigger ? "panel" : props.presentation}
       agent={agent}
       inheritedUnavailable={inheritedRole && !props.lead}
@@ -411,12 +510,20 @@ function ExecutionSettingsController(props: ControllerProps) {
       setOpened={changeOpened}
     />
   );
-  if (!props.renderTrigger || props.section) return controls;
+  if (props.section) return controls;
+  if (!props.renderTrigger)
+    return (
+      <>
+        {controls}
+        {statusModal}
+      </>
+    );
   return (
     <ExecutionMenu
       opened={opened}
       setOpened={changeOpened}
-      accountModalOpen={props.accountModalOpen || transferOpen}
+      accountModalOpen={props.accountModalOpen || transferOpen || statusOpen}
+      statusModal={statusModal}
       label={settingsLabel(
         agent,
         role,
@@ -466,10 +573,14 @@ function ScopedExecutionSettings({
   beginSettingsSave,
   transferOpen,
   setTransferOpen,
+  onSettingsChange,
+  onSettingsFailure,
 }: ControllerProps & {
   transferOpen: boolean;
   setTransferOpen: (value: boolean) => void;
   beginSettingsSave: (role: SetupRole) => (agent: Agent) => boolean;
+  onSettingsChange: (change: SettingsChange) => void;
+  onSettingsFailure: (message: string, uncertain: boolean) => void;
   teamDefaults: boolean;
   readOnlyReason?: string | undefined;
   inheritedUnavailable: boolean;
@@ -815,6 +926,23 @@ function ScopedExecutionSettings({
       teamDefaults ? "worker" : "orchestrator",
     );
     request = { ...request, expected_account_key: accountOf(agent) };
+    if (!teamDefaults && !onDraftChange) {
+      onSettingsChange({
+        agentId: agent.id,
+        accountKey: accountOf(agent),
+        phase: "saving",
+        before: {
+          model: current.model,
+          effort: current.effort,
+          fastMode: current.fast_mode,
+        },
+        requested: {
+          model: request.model ?? null,
+          effort: request.effort ?? null,
+          fastMode: !!request.fast_mode,
+        },
+      });
+    }
     const previousPending = pending;
     setSaving(true);
     setError("");
@@ -896,6 +1024,8 @@ function ScopedExecutionSettings({
           if (mounted.current) setUnconfirmed(null);
         }
       }
+      if (!teamDefaults && !confirmed)
+        onSettingsFailure(errorText(failure), !!request.next_turn && !rejected);
       if (!mounted.current) return;
       setStatus(null);
       setError(
@@ -1993,6 +2123,7 @@ function ExecutionMenu({
   opened,
   setOpened,
   accountModalOpen = false,
+  statusModal,
   label,
   trigger,
   children,
@@ -2000,6 +2131,7 @@ function ExecutionMenu({
   opened: boolean;
   setOpened: (value: boolean) => void;
   accountModalOpen?: boolean | undefined;
+  statusModal?: ReactNode;
   label: string;
   trigger: ReactElement;
   children: ReactNode;
@@ -2027,6 +2159,7 @@ function ExecutionMenu({
             {children}
           </div>
         </Drawer>
+        {statusModal}
       </>
     );
   return (
@@ -2058,6 +2191,7 @@ function ExecutionMenu({
           {children}
         </Popover.Dropdown>
       </Popover>
+      {statusModal}
     </>
   );
 }
