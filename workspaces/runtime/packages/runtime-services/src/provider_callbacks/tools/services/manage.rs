@@ -275,24 +275,6 @@ struct ParkReply {
     replayed: Option<bool>,
 }
 
-#[cfg(test)]
-mod receipt_tests {
-    #[test]
-    fn event_receipts_round_trip_existing_wire_shapes() {
-        for raw in [
-            r#"{"event":"ready","count":1,"woken":["worker"]}"#,
-            r#"{"event":"ready","count":0,"woken":[],"replayed":true}"#,
-        ] {
-            let reply: super::ParkReply = serde_json::from_str(raw).unwrap();
-            let encoded = serde_json::to_string(&reply).unwrap();
-            assert_eq!(
-                serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
-                serde_json::from_str::<serde_json::Value>(raw).unwrap()
-            );
-        }
-    }
-}
-
 /// Save a changed agent row with its projection, then queue its wake input.
 fn wake(
     tx: &Transaction<'_>,
@@ -490,4 +472,22 @@ fn resume(agent: &mut Value) -> Result<(), CallbackError> {
         object.insert("status".to_owned(), json!("queued"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    #[test]
+    fn event_receipts_round_trip_existing_wire_shapes() {
+        for raw in [
+            r#"{"event":"ready","count":1,"woken":["worker"]}"#,
+            r#"{"event":"ready","count":0,"woken":[],"replayed":true}"#,
+        ] {
+            let reply: super::ParkReply = serde_json::from_str(raw).unwrap();
+            let encoded = serde_json::to_string(&reply).unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
+                serde_json::from_str::<serde_json::Value>(raw).unwrap()
+            );
+        }
+    }
 }
