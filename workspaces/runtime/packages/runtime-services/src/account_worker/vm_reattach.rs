@@ -286,6 +286,20 @@ impl Worker {
             },
         )
         .await?;
+        let stream_account = self.account.clone();
+        let stream_actor = request.agent_id.clone();
+        let stream_connection = self.connection_id.clone();
+        self.db("vm_reattach_stream", move |store| async move {
+            super::store::attach_provider_stream(
+                &store,
+                &stream_account,
+                Some(&stream_actor),
+                generation.0,
+                &stream_connection,
+            )
+            .await
+        })
+        .await?;
         self.install_vm_session(request, session, None, true)?;
         Ok(true)
     }

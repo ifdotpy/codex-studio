@@ -771,6 +771,20 @@ pub async fn start_account_worker_with_publication_sink(
     )
     .await?;
     let connection_id = uuid::Uuid::new_v4().to_string();
+    let stream_account = account.clone();
+    let stream_connection = connection_id.clone();
+    bridge
+        .worker_run("attach_stream", move |store| async move {
+            store::attach_provider_stream(
+                &store,
+                &stream_account,
+                None,
+                generation.0,
+                &stream_connection,
+            )
+            .await
+        })
+        .await?;
     let effect_account = account.clone();
     let (effects, callback_scan, streams) = bridge
         .worker_run("restore_effects_streams", move |store| async move {
@@ -2768,6 +2782,20 @@ impl Worker {
                 self.pending
                     .insert(request.ticket.id.clone(), Arc::new(context));
             }
+            let stream_account = self.account.clone();
+            let stream_actor = request.agent_id.clone();
+            let stream_connection = self.connection_id.clone();
+            self.db("vm_stream_attach", move |store| async move {
+                store::attach_provider_stream(
+                    &store,
+                    &stream_account,
+                    Some(&stream_actor),
+                    generation.0,
+                    &stream_connection,
+                )
+                .await
+            })
+            .await?;
             self.install_vm_session(request.clone(), session, resolved.bootstrap, false)?;
         }
         let mut status = self
