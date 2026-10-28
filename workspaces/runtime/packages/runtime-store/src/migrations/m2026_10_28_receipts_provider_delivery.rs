@@ -13,7 +13,9 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_providers::Method;
-use studio_runtime_schema::persistence::{MigrationStatus, OutboxKind, OutboxStatus, OwnerKind};
+use studio_runtime_schema::persistence::{
+    MigrationStatus, OutboxKind, OutboxStatus, OwnerKind, RequestIdentity,
+};
 use studio_runtime_schema::provider_call_contract::{
     CommittedAck, ProviderCallIntent, RequestResult as Outcome, RetainedCall,
     RetainedOutcome as Resolution, RetainedReply, TransportRequest, transport_key,
@@ -135,10 +137,37 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
     let signature = typed_call.fingerprint(&account, typed_call.method.as_str());
     let result_id = format!("{base}:result");
     let admission = admitted_owner_token(&result_id, &signature, cutover);
+    let previous = Outbox::get::<Value>(tx, &key).map_err(|_| fail(row))?;
+    let root = if let Some(previous) = previous {
+        if previous.signature != signature || previous.kind != OutboxKind::ProviderCall {
+            return Err(fail(row));
+        }
+        previous.payload["payload"]["call"]["root_request_id"]
+            .as_str()
+            .ok_or_else(|| fail(row))?
+            .to_owned()
+    } else if let Some((saved_signature, raw)) = tx
+        .query_row(
+            "SELECT signature,result FROM request_results WHERE id=?1",
+            [&result_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()?
+    {
+        if saved_signature != signature {
+            return Err(fail(row));
+        }
+        serde_json::from_str::<Value>(&raw).map_err(|_|fail(row))?["reply"]["call"]["root_request_id"].as_str().ok_or_else(||fail(row))?.to_owned()
+    } else {
+        RequestIdentity::issue_root()
+    };
+    if RequestIdentity::new("provider-call", &[], &root, &[]).is_err() {
+        return Err(fail(row));
+    }
     if let Some(monitor) = operation.strip_prefix("monitor:") {
         let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='runtime_monitors' AND type='table')",[],|r|r.get(0))?;
         if exists {
-            tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.operation.providerRequest',json(?2),'$.operation.rootRequestId','') WHERE id=?1 AND json_type(record,'$.operation')='object'",params![monitor,serde_json::to_string(&admission).map_err(|_|fail(row))?])?;
+            tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.operation.providerRequest',json(?2),'$.operation.rootRequestId',?3) WHERE id=?1 AND json_type(record,'$.operation')='object'",params![monitor,serde_json::to_string(&admission).map_err(|_|fail(row))?,root])?;
         }
     }
     if let Some(transfer) = call["transfer"].as_object() {
@@ -160,7 +189,7 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
         let mut value: Value =
             serde_json::from_str(&raw.ok_or_else(|| fail(row))?).map_err(|_| fail(row))?;
         let member = value["members"].get_mut(member).ok_or_else(|| fail(row))?;
-        let authority = json!({"rootRequestId":"","admittedRequest":admission});
+        let authority = json!({"rootRequestId":root,"admittedRequest":admission});
         if member["providerIntent"]["operation"] == operation
             && member["providerIntent"]["method"] == call["method"]
             && member["providerIntent"]["params"] == call["params"]
@@ -183,8 +212,9 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
     }
     // The imported call carries its final token; no runtime path guesses an old key.
     call["admitted_request"] = serde_json::to_value(&admission).map_err(|_| fail(row))?;
-    call["root_request_id"] = json!("");
+    call["root_request_id"] = json!(root);
     typed_call.admitted_request = Some(admission.clone());
+    typed_call.root_request_id = root;
     let written = sibling(tx, row, base, "written")?;
     let transport = written
         .as_ref()
@@ -509,6 +539,13 @@ mod tests {
         let result: Value = serde_json::from_str(&result).expect("envelope");
         assert_eq!(result["reply"]["ack"]["cursor"], 12);
         assert_eq!(result["reply"]["call"]["scope"]["connection"], "old");
+        let root = result["reply"]["call"]["root_request_id"]
+            .as_str()
+            .expect("root");
+        assert_eq!(
+            uuid::Uuid::parse_str(root).expect("UUID").get_version_num(),
+            7
+        );
         let owner: String = tx
             .query_row(
                 "SELECT record FROM runtime_agents WHERE id='agent'",
@@ -555,6 +592,61 @@ mod tests {
         let plan:String=tx.query_row("EXPLAIN QUERY PLAN SELECT id FROM runtime_outbox WHERE account='default' AND kind='provider_call' AND status='unknown' ORDER BY ordinal,id LIMIT 10",[],|r|r.get(3)).expect("plan");
         assert!(plan.contains("runtime_outbox_account"));
         assert!(!plan.contains("request_results"));
+    }
+    #[test]
+    fn receipt_provider_delivery_migration_root_is_v7_and_stable_across_phase_resume() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        tx.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);INSERT INTO runtime_monitors VALUES('monitor','{\"operation\":{}}')").expect("monitor");
+        let key = fixture(&tx, "monitor:monitor", json!("Unknown"));
+        let source = read_receipt_batch(
+            &tx,
+            SOURCES[0],
+            &MigrationCheckpoint {
+                cursor: 0,
+                status: MigrationStatus::Running,
+                cutover_ms: 1000,
+            },
+            SELECT,
+        )
+        .expect("source")
+        .into_iter()
+        .next()
+        .expect("submitted");
+        migrate(&tx, &source, 1000).expect("import one phase");
+        delete_source(&tx, SOURCES[0], source.rowid).expect("consume submitted");
+        let before = Outbox::get::<Value>(&tx, &key)
+            .expect("lookup")
+            .expect("call");
+        let root = before.payload["payload"]["call"]["root_request_id"]
+            .as_str()
+            .expect("root");
+        assert_eq!(
+            uuid::Uuid::parse_str(root).expect("UUID").get_version_num(),
+            7
+        );
+        let cp =
+            MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).expect("checkpoint");
+        Family
+            .move_batch(&tx, SOURCES[0], &cp)
+            .expect("remaining phases");
+        let after = Outbox::get::<Value>(&tx, &key)
+            .expect("lookup")
+            .expect("call");
+        assert_eq!(after, before);
+        let record: String = tx
+            .query_row(
+                "SELECT record FROM runtime_monitors WHERE id='monitor'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("monitor");
+        let record: Value = serde_json::from_str(&record).expect("record");
+        assert_eq!(record["operation"]["rootRequestId"], root);
+        assert_eq!(
+            record["operation"]["providerRequest"],
+            before.payload["payload"]["admitted"]
+        );
     }
     #[test]
     fn receipt_provider_delivery_crash_between_bounded_phase_groups_is_atomic() {

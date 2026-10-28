@@ -247,7 +247,7 @@ fn canonical(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<
         if response_identity.get("attempt").is_none() {
             response_identity["attempt"] = json!("");
         }
-        let payload = json!({"identity":response_identity,"body":body,"card":card_id,"tool_request":tool,"credential_refresh_admission":null,"unanswered":saved["unanswered"],"journal_cursor":cursor,"delete_requested_at":saved["deleteRequestedAt"],"frame_fingerprint":null});
+        let payload = json!({"identity":response_identity,"body":body,"card":card_id,"tool_request":tool,"unanswered":saved["unanswered"],"journal_cursor":cursor,"delete_requested_at":saved["deleteRequestedAt"],"frame_fingerprint":null});
         if status == OutboxStatus::Committed {
             import_result(
                 tx,
