@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
@@ -582,3 +582,72 @@ test("the Mac delivery entry point works under Python isolated mode", async () =
   );
   assert.ok(output.includes("--commit"));
 });
+
+for (const mode of ["slow", "exit", "restart", "timeout"] as const) {
+  test(`Linux delivery handles ${mode} startup`, (t) => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-health-"));
+    t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+    const root = path.join(fixture, "root");
+    const release = path.join(root, "releases", "fixture-commit");
+    fs.mkdirSync(path.join(release, "bin"), { recursive: true });
+    fs.writeFileSync(
+      path.join(release, "bin", "studio-runtime-server"),
+      "fixture",
+      { mode: 0o755 },
+    );
+    const scriptDir = path.join(
+      repository,
+      "workspaces/runtime/apps/runtime-server",
+    );
+    fs.copyFileSync(
+      path.join(scriptDir, "deliver.sh"),
+      path.join(fixture, "deliver.sh"),
+    );
+    fs.copyFileSync(
+      path.join(scriptDir, "service-layout.json"),
+      path.join(fixture, "service-layout.json"),
+    );
+    fs.writeFileSync(
+      path.join(fixture, ".codex-studio-delivery-test"),
+      "fixture",
+    );
+    fs.writeFileSync(
+      path.join(fixture, "bash-env"),
+      `
+    git() { case "$*" in *--show-toplevel*) echo "$PROJECT";; *--verify*) echo fixture-commit;; *) return 1;; esac; }
+    systemctl() { echo "$*" >> "$HOME/calls"; case "$*" in *NRestarts*) if [ "$MODE" = restart ] && [ "$SECONDS" -ge 5 ]; then echo 1; else echo 0; fi;; *MainPID*) echo 1234;; *is-active*) if [ "$MODE" = exit ] && [ "$SECONDS" -ge 5 ]; then return 1; fi;; esac; }
+    readlink() { if [ "$1" = -f ]; then echo "$RELEASE/bin/studio-runtime-server"; else command readlink "$@"; fi; }
+    curl() { [ "$MODE" = slow ] && [ "$SECONDS" -ge 121 ]; }
+    sleep() { SECONDS=$((SECONDS + $1)); }
+  `,
+    );
+    const output = spawnSync("/bin/bash", [path.join(fixture, "deliver.sh")], {
+      cwd: repository,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: fixture,
+        XDG_CONFIG_HOME: path.join(fixture, "config"),
+        CODEX_STUDIO_SERVER_ROOT: root,
+        CODEX_STUDIO_DELIVER_TEST_IN_PROCESS: "1",
+        BASH_ENV: path.join(fixture, "bash-env"),
+        PROJECT: repository,
+        RELEASE: release,
+        MODE: mode,
+      },
+    });
+    const calls = fs
+      .readFileSync(path.join(fixture, "calls"), "utf8")
+      .split("\n");
+    assert.equal(calls.filter((line) => line.includes(" restart ")).length, 1);
+    assert.equal(fs.readlinkSync(path.join(root, "current")), release);
+    if (mode === "slow") {
+      assert.equal(output.status, 0, output.stderr);
+      assert.match(output.stdout, /delivered fixture-commit/);
+    } else {
+      assert.equal(output.status, 1, output.stderr);
+      assert.match(output.stderr, /stopping for operator recovery/);
+      assert.equal(calls.filter((line) => line.includes(" stop ")).length, 1);
+    }
+  });
+}

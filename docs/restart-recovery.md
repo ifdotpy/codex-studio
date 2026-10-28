@@ -156,8 +156,7 @@ retry is safe. A differing existing configuration is an error; resolve ownership
 at an authorized idle boundary instead of overwriting it.
 
 On Linux, the base unit uses the shared release root's `current` binary.
-`just deliver-server` owns release selection, restart, health checks, and
-rollback. See [Linux setup](linux-server-setup.md). Do not use a manual systemd
+`just deliver-server` owns release selection, restart, health checks, and stopping an unhealthy release for operator recovery. See [Linux setup](linux-server-setup.md). Do not use a manual systemd
 binary-path edit or a second backend as a source-update mechanism.
 
 On macOS, installation writes a LaunchAgent and enables its label. It leaves

@@ -4,8 +4,8 @@
 # The release is a source snapshot of the commit (git archive) with its
 # renderer, Claude bridge dependencies and release binary, so the binary finds
 # its install root beside itself. A `current` link selects the live release;
-# a systemd drop-in starts the unit from it. A release that does not stay
-# healthy is rolled back to the previous one.
+# a systemd drop-in starts the unit from it. An unhealthy release is stopped
+# for operator recovery because it may have migrated the store.
 set -euo pipefail
 
 # Service layout has one owner, shared with the Rust operator commands.
@@ -14,7 +14,7 @@ mapfile -t layout <<<"$layout_values"
 readonly UNIT=${layout[0]}
 readonly PORT=${layout[1]}
 # Seconds to wait for the first HTTP 200 after a restart.
-readonly START_TIMEOUT_SECONDS=120
+readonly START_TIMEOUT_SECONDS=1800
 # Seconds the unit must then stay active without a restart.
 readonly STABLE_SECONDS=30
 # Release directories kept on disk, the current and previous ones included.
@@ -232,14 +232,19 @@ fi
 
 healthy() {
   local deadline=$((SECONDS + START_TIMEOUT_SECONDS)) restarts pid
+  restarts=$(systemctl --user show -p NRestarts --value "$UNIT")
+  pid=$(systemctl --user show -p MainPID --value "$UNIT")
   until curl -fsS -o /dev/null "http://127.0.0.1:$PORT/"; do
+    systemctl --user is-active --quiet "$UNIT" && [ "$pid" != 0 ] &&
+      [ "$(systemctl --user show -p MainPID --value "$UNIT")" = "$pid" ] &&
+      [ "$(systemctl --user show -p NRestarts --value "$UNIT")" = "$restarts" ] || return 1
     [ "$SECONDS" -lt "$deadline" ] || return 1
     sleep 1
   done
-  restarts=$(systemctl --user show -p NRestarts --value "$UNIT")
   sleep "$STABLE_SECONDS"
-  pid=$(systemctl --user show -p MainPID --value "$UNIT")
   systemctl --user is-active --quiet "$UNIT" &&
+    [ "$pid" != 0 ] &&
+    [ "$(systemctl --user show -p MainPID --value "$UNIT")" = "$pid" ] &&
     [ "$(systemctl --user show -p NRestarts --value "$UNIT")" = "$restarts" ] &&
     [ "$(readlink -f "/proc/$pid/exe")" = "$(readlink -f "$1/$binary")" ] &&
     curl -fsS -o /dev/null "http://127.0.0.1:$PORT/"
@@ -258,14 +263,8 @@ start() {
 previous=$(readlink "$current" || true)
 start "$release"
 if ! healthy "$release"; then
-  echo "release $commit is unhealthy; rolling back" >&2
-  if [ -n "$previous" ]; then
-    start "$previous"
-  else
-    rm -f "$current" "$dropin"
-    systemctl --user daemon-reload
-    systemctl --user restart "$UNIT"
-  fi
+  echo "release $commit is unhealthy; stopping for operator recovery (the store may have migrated)" >&2
+  systemctl --user stop "$UNIT"
   exit 1
 fi
 
