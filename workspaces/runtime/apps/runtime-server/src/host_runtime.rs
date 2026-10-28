@@ -2601,7 +2601,9 @@ mod voice_composition_tests {
                             else {
                                 continue;
                             };
-                            request_writes.fetch_add(1, Ordering::SeqCst);
+                            if method == "account/read" && message["params"]["refreshToken"] == true {
+                                request_writes.fetch_add(1, Ordering::SeqCst);
+                            }
                             if method == "thread/realtime/stop" {
                                 stop_writes.fetch_add(1, Ordering::SeqCst);
                             }
@@ -2822,6 +2824,7 @@ mod voice_composition_tests {
         });
         let (mut worker, session, callbacks) =
             start_voice_worker(directory.path(), store.clone(), Arc::clone(&factory)).await;
+        let session_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let mut state = HttpState::new(
             "token".into(),
             "workspace".into(),
@@ -2844,9 +2847,7 @@ mod voice_composition_tests {
             .header("host", "127.0.0.1:4620")
             .header("x-canvas-token", "token")
             .header("content-type", "application/json")
-            .body(Body::from(
-                r#"{"agent":"voice-composed-agent","session_id":"voice-session","sdp":"v=0\r\n"}"#,
-            ))
+            .body(Body::from(json!({"agent":"voice-composed-agent","session_id":session_id,"sdp":"v=0\r\n"}).to_string()))
             .unwrap();
         request.extensions_mut().insert(ConnectInfo(
             "127.0.0.1:32100".parse::<std::net::SocketAddr>().unwrap(),
@@ -2856,7 +2857,7 @@ mod voice_composition_tests {
         let body = to_bytes(response.into_body(), 100_000).await.unwrap();
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
         let response: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(response["session_id"], "voice-session");
+        assert_eq!(response["session_id"], session_id);
         assert_eq!(response["state"], "connecting");
         // The HTTP acceptance boundary persists the connecting session before
         // provider setup completes; wait on its existing completion barrier
@@ -2865,7 +2866,7 @@ mod voice_composition_tests {
             super::HOST_RUNTIME_SHUTDOWN_WAIT,
             studio_runtime_services::voice::provider::wait_for_start_setup(
                 "voice-composed-agent",
-                "voice-session",
+                &session_id,
             ),
         )
         .await
@@ -2874,12 +2875,12 @@ mod voice_composition_tests {
         // The deletion transaction persists stop authorization before removing
         // voice rows, matching Python's delete-before-post-commit-stop ordering.
         let delete_intent = store
-            .transaction_with_error(|transaction| -> Result<_, studio_runtime_services::voice::provider::VoiceProviderError> {
+            .transaction_with_error(move |transaction| -> Result<_, studio_runtime_services::voice::provider::VoiceProviderError> {
                 transaction.execute(
                     "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
                      SELECT 'voice-session-unknown',agent,created+1,native_thread,account_key,connection_id,state \
-                     FROM voice_sessions WHERE id='voice-session' AND agent='voice-composed-agent'",
-                    [],
+                     FROM voice_sessions WHERE id=?1 AND agent='voice-composed-agent'",
+                    [&session_id],
                 )?;
                 transaction.execute(
                     "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id='voice-composed-agent'",

@@ -1102,7 +1102,7 @@ mod tests {
             requests: Mutex::new(Vec::new()),
             scenario: ReplyScenario::Ready,
         });
-        let (_root, request_id, result) = run_title(Arc::clone(&session), "codex", 3).await;
+        let (_root, _request_id, result) = run_title(Arc::clone(&session), "codex", 3).await;
         assert_eq!(
             result,
             TitleResult::Applied {
@@ -1110,7 +1110,9 @@ mod tests {
             }
         );
         let calls = session.requests.lock().expect("fixture request list");
-        assert!(calls.iter().all(|call| call.root_request_id == request_id
+        let provider_root = &calls[0].root_request_id;
+        assert!(studio_runtime_schema::persistence::RequestIdentity::new("title", &[], provider_root, &[]).is_ok());
+        assert!(calls.iter().all(|call| &call.root_request_id == provider_root
             && (call.admitted_request.is_some() == (call.method != Method::ThreadTurnsList))));
         assert_eq!(
             calls.iter().map(|call| call.method).collect::<Vec<_>>(),
@@ -1338,7 +1340,7 @@ mod tests {
                 )?;
                 tx.execute(
                     "INSERT INTO runtime_tool_requests(id,record) VALUES('tool-a',?1)",
-                    [json!({"id":"tool-a","agent":"agent-a","kind":studio_runtime_schema::persistence::ToolRequestKind::ManagedTool,"status":studio_runtime_schema::persistence::ToolRequestStatus::Queued}).to_string()],
+                    [json!({"id":"tool-a","agent":"agent-a","kind":studio_runtime_schema::persistence::ToolRequestKind::ManagedTool,"status":studio_runtime_schema::persistence::ToolRequestStatus::Queued,"stage":"queued"}).to_string()],
                 )?;
                 Ok::<(), studio_runtime_store::StoreError>(())
             })
