@@ -1,13 +1,12 @@
 //! Pure project-location completion and receipt reconciliation, with atomic adapters.
 use crate::event_write::{python_json, truthy};
 pub use crate::relocation::RelocationError as LocationError;
-use crate::relocation::{checked, invalid, timestamp};
+use crate::relocation::{invalid, timestamp, validate};
 use rusqlite::{OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_schema::json_compat::python_json_compact as canonical_json;
 pub use studio_runtime_schema::persistence::RemoteOutcome as LocationOutcome;
-use studio_runtime_schema::persistence::ServerDeliveryState as OutboxState;
 use studio_runtime_store::sha256_hex;
 use studio_runtime_store::{
     ProjectLocationsRepository as Repository, ProjectsRepository, RuntimeStore,
@@ -25,6 +24,10 @@ pub struct LocationResult {
     pub value: Option<LocationValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+pub struct CompletionReceipt<'a> {
+    pub reply: &'a LocationResult,
+    pub encoded_len: usize,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +74,58 @@ mod receipt_tests {
     use super::*;
     use studio_runtime_schema::persistence::RequestIdentity;
     use studio_runtime_store::request_results::{Admission, RequestResults};
+
+    #[test]
+    fn outbox_size_includes_receipt() {
+        let outbox = json!({"body":"x".repeat(3 * 1024 * 1024),"result":null});
+        let mut receipt = LocationResult {
+            request_id: "request".into(),
+            outcome: LocationOutcome::NotApplied,
+            project_id: None,
+            value: None,
+            error: Some(String::new()),
+        };
+        let outbox_len = outbox.to_string().len();
+        let empty_receipt_len = serde_json::to_vec(&receipt).expect("receipt").len();
+        receipt.error = Some("x".repeat(
+            crate::relocation::MAX_RECORD_BYTES + 1 - (outbox_len - 4) - empty_receipt_len,
+        ));
+        let receipt_len = serde_json::to_vec(&receipt).expect("receipt").len();
+        assert!(
+            outbox_len < crate::relocation::MAX_RECORD_BYTES
+                && receipt_len < crate::relocation::MAX_RECORD_BYTES
+        );
+        assert_eq!(
+            outbox_len - 4 + receipt_len,
+            crate::relocation::MAX_RECORD_BYTES + 1
+        );
+        assert!(
+            matches!(validate_outbox_size(&outbox, receipt_len), Err(LocationError::InvalidStored { pointer, .. }) if pointer == "record size")
+        );
+    }
+
+    fn complete(
+        tx: &Transaction<'_>,
+        raw: &Value,
+        receipt: &Value,
+        local: &str,
+        now: f64,
+    ) -> Result<(), LocationError> {
+        let encoded = receipt.to_string();
+        let receipt = serde_json::from_str(&encoded).expect("receipt");
+        complete_snapshot_in_transaction(
+            tx,
+            raw["id"].as_str().expect("id"),
+            raw["server"].as_str().expect("server"),
+            &raw["body"].to_string(),
+            CompletionReceipt {
+                reply: &receipt,
+                encoded_len: encoded.len(),
+            },
+            local,
+            now,
+        )
+    }
 
     #[test]
     fn location_reply_preserves_missing_and_null_origin() {
@@ -133,7 +188,8 @@ mod receipt_tests {
             .as_object_mut()
             .expect("payload")
             .remove("signature");
-        CompletionSnapshot::from_records(&raw, Some(&case["project"]))
+        let outbox: Outbox = serde_json::from_str(&raw.to_string()).expect("outbox");
+        CompletionSnapshot::from_outbox(outbox, Some(&case["project"]))
             .expect("managed request has no wire signature");
     }
 
@@ -177,20 +233,13 @@ mod receipt_tests {
         .expect("transport");
         ProjectsRepository::remove(&tx, "/home-project").expect("hide");
         let unknown = json!({"requestId":key,"outcome":"unknown"});
-        complete_snapshot_in_transaction(
-            &tx,
-            &raw,
-            &unknown,
-            "local-fixture",
-            now_ms as f64 / 1000.0,
-        )
-        .expect("unknown");
+        complete(&tx, &raw, &unknown, "local-fixture", now_ms as f64 / 1000.0).expect("unknown");
         assert!(
             ProjectsRepository::location_request(&tx, "/home-project", &key)
                 .expect("intent")
                 .is_some()
         );
-        complete_snapshot_in_transaction(
+        complete(
             &tx,
             &raw,
             &case["receipt"],
@@ -223,7 +272,7 @@ mod receipt_tests {
         .expect("reply");
         assert_eq!(json!(result.reply), case["receipt"]);
         assert!(
-            complete_snapshot_in_transaction(
+            complete(
                 &tx,
                 &raw,
                 &case["receipt"],
@@ -267,8 +316,6 @@ struct Outbox {
     id: String,
     server: String,
     body: Envelope,
-    state: OutboxState,
-    result: Option<LocationResult>,
 }
 
 /// Only this constructor accepts raw persisted rows; fields remain private.
@@ -281,8 +328,7 @@ pub struct CompletionDecision {
     apply: bool,
 }
 impl CompletionSnapshot {
-    pub fn from_records(outbox: &Value, project: Option<&Value>) -> Result<Self, LocationError> {
-        let outbox: Outbox = checked("relocation/LocationOutbox", "runtime_server_outbox", outbox)?;
+    fn from_outbox(outbox: Outbox, project: Option<&Value>) -> Result<Self, LocationError> {
         if outbox.id.is_empty()
             || outbox.body.request_id.is_empty()
             || outbox.body.payload.request["project"] != outbox.body.payload.project
@@ -294,7 +340,10 @@ impl CompletionSnapshot {
             return Err(invalid("runtime_server_outbox", "body/payload/request"));
         }
         let project = project
-            .map(|row| checked::<Value>("relocation/RelocationProject", "runtime_projects", row))
+            .map(|row| {
+                validate("relocation/RelocationProject", "runtime_projects", row)?;
+                Ok::<_, LocationError>(row.clone())
+            })
             .transpose()?;
         if project
             .as_ref()
@@ -314,13 +363,6 @@ impl CompletionSnapshot {
         if receipt.request_id != self.outbox.body.request_id {
             return Err(LocationError::Refused(
                 "The paired server returned a different request identity",
-            ));
-        }
-        if matches!(self.outbox.state, OutboxState::Complete)
-            && self.outbox.result.as_ref() != Some(receipt)
-        {
-            return Err(LocationError::Refused(
-                "The completed location receipt has different content",
             ));
         }
         if receipt.outcome == LocationOutcome::Unknown {
@@ -390,31 +432,60 @@ impl CompletionSnapshot {
 /// proof, then deletes its transport row in this same writer transaction.
 pub fn complete_snapshot_in_transaction(
     tx: &Transaction<'_>,
-    raw: &Value,
-    receipt: &Value,
+    id: &str,
+    server: &str,
+    body: &str,
+    receipt: CompletionReceipt<'_>,
     local_server: &str,
     now: f64,
-) -> Result<Value, LocationError> {
-    let project_id = raw
-        .pointer("/body/payload/project")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("runtime_server_outbox", "/body/payload/project"))?;
+) -> Result<(), LocationError> {
+    let body_value: Value =
+        serde_json::from_str(body).map_err(|_| invalid("runtime_server_outbox", "/body"))?;
+    let outbox =
+        json!({"id":id,"server":server,"body":body_value,"state":"complete","result":null});
+    validate_outbox_size(&outbox, receipt.encoded_len)?;
+    validate(
+        "relocation/LocationOutbox",
+        "runtime_server_outbox",
+        &outbox,
+    )?;
+    let body: Envelope =
+        serde_json::from_str(body).map_err(|_| invalid("runtime_server_outbox", "/body"))?;
+    let project_id = &body.payload.project;
     let project = ProjectsRepository::get(tx, project_id)?;
-    let snapshot = CompletionSnapshot::from_records(raw, project.as_ref().map(|(_, value)| value))?;
-    let typed: LocationResult =
-        serde_json::from_value(receipt.clone()).map_err(studio_runtime_store::StoreError::from)?;
-    let decision = snapshot.decide(&typed, local_server, now)?;
+    let snapshot = CompletionSnapshot::from_outbox(
+        Outbox {
+            id: id.into(),
+            server: server.into(),
+            body,
+        },
+        project.as_ref().map(|(_, value)| value),
+    )?;
+    let decision = snapshot.decide(receipt.reply, local_server, now)?;
     if decision.apply {
         settle_location(
             tx,
-            project_id,
+            &snapshot.outbox.body.payload.project,
             &snapshot.outbox.body.request_id,
             &snapshot.outbox.body.payload.request,
-            &typed,
+            receipt.reply,
             decision.project,
         )?;
     }
-    Ok(receipt.clone())
+    Ok(())
+}
+
+fn validate_outbox_size(outbox: &Value, receipt_len: usize) -> Result<(), LocationError> {
+    if outbox
+        .to_string()
+        .len()
+        .saturating_sub(4)
+        .saturating_add(receipt_len)
+        > crate::relocation::MAX_RECORD_BYTES
+    {
+        return Err(invalid("runtime_server_outbox", "record size"));
+    }
+    Ok(())
 }
 
 /// Python `normalize` for a caller that holds a project row.
@@ -480,7 +551,7 @@ fn normalize(project: &mut Value, local_server: &str) -> Result<(), LocationErro
             json!([{"serverId":local_server,"path":project["path"],"projectId":project["id"]}]);
         project["locationsRevision"] = json!(0);
     }
-    checked::<Value>("relocation/RelocationProject", "runtime_projects", project)?;
+    validate("relocation/RelocationProject", "runtime_projects", project)?;
     Ok(())
 }
 

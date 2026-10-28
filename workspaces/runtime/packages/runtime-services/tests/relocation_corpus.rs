@@ -369,12 +369,24 @@ fn complete_location_in_fixture(
             "Different location envelope",
         ));
     }
-    let reply =
-        project_locations::complete_snapshot_in_transaction(tx, &raw, receipt, local_server, now)?;
+    let typed = serde_json::from_str(&receipt.to_string())
+        .map_err(studio_runtime_store::StoreError::from)?;
+    project_locations::complete_snapshot_in_transaction(
+        tx,
+        key,
+        server,
+        &envelope.to_string(),
+        project_locations::CompletionReceipt {
+            reply: &typed,
+            encoded_len: receipt.to_string().len(),
+        },
+        local_server,
+        now,
+    )?;
     if receipt["outcome"] != "unknown" {
         tx.execute("DELETE FROM runtime_server_outbox WHERE id=?1", [key])?;
     }
-    Ok(reply)
+    Ok(receipt.clone())
 }
 fn saved_location(
     store: &RuntimeStore,

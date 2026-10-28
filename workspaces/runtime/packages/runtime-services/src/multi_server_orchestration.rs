@@ -258,13 +258,36 @@ fn settle_delivery(
                     "The local server identity is unavailable",
                 )
             })?;
-            let receipt = result.to_value(root);
-            let raw = json!({"id":key,"server":saved.server,"body":envelope,"state":ServerDeliveryState::Complete,"result":receipt});
+            let receipt = crate::project_locations::LocationResult {
+                request_id: saved.response.request_id.clone(),
+                outcome: saved.response.outcome,
+                project_id: None,
+                value: saved
+                    .response
+                    .value
+                    .as_ref()
+                    .map(|value| serde_json::from_str(value.get()))
+                    .transpose()
+                    .map_err(|_| invalid_receipt())?
+                    .flatten(),
+                error: saved.response.error.clone(),
+            };
             let now = crate::event_write::unix_time().map_err(|_| {
                 refused(503, "clock_unavailable", "The system clock is unavailable")
             })?;
             crate::project_locations::complete_snapshot_in_transaction(
-                tx, &raw, &receipt, &local, now,
+                tx,
+                key,
+                saved.server.as_deref().ok_or_else(invalid_receipt)?,
+                body,
+                crate::project_locations::CompletionReceipt {
+                    reply: &receipt,
+                    encoded_len: serde_json::to_vec(&saved.response)
+                        .map_err(|_| invalid_receipt())?
+                        .len(),
+                },
+                &local,
+                now,
             )
             .map_err(|_| {
                 refused(
