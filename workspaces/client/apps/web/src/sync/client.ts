@@ -11,13 +11,7 @@ import {
   SYNC_TRANSCRIPT_STREAM_MAX_ITEMS,
 } from "../generated/sharedValues";
 
-import { createRxDatabase, addRxPlugin } from "rxdb";
-
-import { getRxStorageDexie } from "rxdb/plugins/storage-dexie";
-
-import { RxDBLeaderElectionPlugin } from "rxdb/plugins/leader-election";
-
-import { replicateRxCollection } from "rxdb/plugins/replication";
+import type { replicateRxCollection as ReplicateRxCollection } from "rxdb/plugins/replication";
 
 import type { RxCollection, RxDocumentData } from "rxdb";
 
@@ -102,7 +96,31 @@ import {
 
 export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
 
-addRxPlugin(RxDBLeaderElectionPlugin);
+/** RxDB and Dexie load on first use. The native path stores projections in the
+ * core and never loads them for that; Dexie opens a BroadcastChannel on load. */
+let loadedRxdb:
+  | Promise<{
+      createRxDatabase: typeof import("rxdb").createRxDatabase;
+      getRxStorageDexie: typeof import("rxdb/plugins/storage-dexie").getRxStorageDexie;
+      replicateRxCollection: typeof ReplicateRxCollection;
+    }>
+  | undefined;
+function loadRxdb() {
+  return (loadedRxdb ??= (async () => {
+    const [rxdb, dexie, leader, replication] = await Promise.all([
+      import("rxdb"),
+      import("rxdb/plugins/storage-dexie"),
+      import("rxdb/plugins/leader-election"),
+      import("rxdb/plugins/replication"),
+    ]);
+    rxdb.addRxPlugin(leader.RxDBLeaderElectionPlugin);
+    return {
+      createRxDatabase: rxdb.createRxDatabase,
+      getRxStorageDexie: dexie.getRxStorageDexie,
+      replicateRxCollection: replication.replicateRxCollection,
+    };
+  })());
+}
 
 export type SyncDocument = EntityRow;
 
@@ -158,6 +176,9 @@ import type { TranscriptProjectionPayload } from "../apiTypes.ts";
 export type { TranscriptProjectionPayload } from "../apiTypes.ts";
 
 import { clearTranscript } from "./transcriptCache";
+import { nativeProjectionStore } from "./nativeProjections";
+import { hasNativeClient } from "../native/client";
+type NativeProjectionStore = typeof nativeProjectionStore;
 export type SyncClientOptions = {
   api: Pick<
     import("../api").ServerApi,
@@ -181,6 +202,8 @@ export type SyncClientOptions = {
     typeof import("./transcriptCache").createTranscriptCache
   >;
   databaseSuffix: string;
+  /** The native core's projection cache. Without it the page keeps its own in IndexedDB. */
+  projectionStore?: () => NativeProjectionStore | undefined;
 };
 /** Local draft/outbox cache schema; the document sequence is a server-owned integer. */
 export const SYNC_DOCUMENT_SCHEMA = {
@@ -221,6 +244,8 @@ export function createSyncClient(options: SyncClientOptions) {
     subscribeTranscript,
   } = options.transcripts;
   const serverDatabaseSuffix = options.databaseSuffix;
+  const canSerializeProjectionWrites = () =>
+    !!options.projectionStore?.() || canSerializeEntityProjectionWrites();
 
   const DRAFT_PUSH_QUIET_WAIT_MS = DRAFT_SYNC_TIMING_MS.pushQuietWait;
 
@@ -242,7 +267,28 @@ export function createSyncClient(options: SyncClientOptions) {
 
   let pending: ReturnType<typeof open> | undefined;
 
+  /** The workspace database holds drafts and the outbox (IndexedDB until the outbox moves to the core). */
+  async function openWorkspaceDatabase(workspaceId: string) {
+    const { createRxDatabase, getRxStorageDexie } = await loadRxdb();
+    const db = await createRxDatabase<{
+      drafts: RxCollection<SyncDocument>;
+      outbox: RxCollection<SyncDocument>;
+      projections: RxCollection<SyncDocument>;
+    }>({
+      name: workspaceDatabaseName(workspaceId, serverDatabaseSuffix),
+      storage: getRxStorageDexie(),
+      multiInstance: true,
+    });
+    const draftConflicts = createDraftConflictHandler();
+    await db.addCollections({
+      drafts: { schema, conflictHandler: draftConflicts.conflictHandler },
+      outbox: { schema },
+    });
+    return { db, draftConflicts };
+  }
+
   async function open() {
+    const native = options.projectionStore?.();
     const cached = saved<string>("codex-sync-workspace", "");
     const hasCache = /^[a-f0-9]{32}$/.test(cached);
     const identify = async () => {
@@ -286,11 +332,16 @@ export function createSyncClient(options: SyncClientOptions) {
         return;
       cleanupScheduled = true;
       stopSchemaMatchCleanup();
-      deleteOtherEntityProjectionDatabases(
-        workspaceId,
-        API_SCHEMA_HASH,
-        serverDatabaseSuffix,
-      );
+      if (native)
+        void native
+          .pruneOtherSchemas(workspaceId, API_SCHEMA_HASH, serverDatabaseSuffix)
+          .catch(() => {});
+      else
+        deleteOtherEntityProjectionDatabases(
+          workspaceId,
+          API_SCHEMA_HASH,
+          serverDatabaseSuffix,
+        );
     };
     // Cached display does not authorize reads or draft writes against another computer.
     // Retain the original request after the grace period, and retry failed checks.
@@ -315,73 +366,77 @@ export function createSyncClient(options: SyncClientOptions) {
       return checking;
     };
     setWorkspace(workspaceId);
-    const db = await createRxDatabase<{
-      drafts: RxCollection<SyncDocument>;
-      outbox: RxCollection<SyncDocument>;
-      projections: RxCollection<SyncDocument>;
-    }>({
-      name: workspaceDatabaseName(workspaceId, serverDatabaseSuffix),
-      storage: getRxStorageDexie(),
-      multiInstance: true,
-    });
-    const draftConflicts = createDraftConflictHandler();
-    await db.addCollections({
-      drafts: { schema, conflictHandler: draftConflicts.conflictHandler },
-      outbox: { schema },
-    });
-    const currentProjectionDatabase = entityProjectionDatabaseName(
-      workspaceId,
-      API_SCHEMA_HASH,
-      serverDatabaseSuffix,
-    );
-    projectionDatabaseLockHeld = await holdEntityProjectionDatabaseLock(
-      currentProjectionDatabase,
-    );
-    const projectionDb = await createRxDatabase<{
-      projections: RxCollection<SyncDocument>;
-    }>({
-      name: currentProjectionDatabase,
-      storage: getRxStorageDexie(),
-      multiInstance: true,
-    });
-    const { projections } = await projectionDb.addCollections({
-      projections: {
-        // The schema-hashed database starts empty after a wire change.
-        autoMigrate: false,
-        schema: {
-          ...schema,
-          version: ENTITY_PROJECTION_CACHE_VERSION,
-          properties: {
-            ...schema.properties,
-            entity: { type: "object", additionalProperties: true },
-            evicted: { type: "boolean" },
+    let db: Awaited<ReturnType<typeof openWorkspaceDatabase>>["db"];
+    let draftConflicts: ReturnType<typeof createDraftConflictHandler>;
+    let projections: RxCollection<SyncDocument>;
+    if (native) {
+      // No IndexedDB here: the native core stores the projections, and the
+      // drafts and outbox open on demand in `outboxDatabase`.
+      projections = await native.open(
+        workspaceId,
+        API_SCHEMA_HASH,
+        serverDatabaseSuffix,
+      );
+      projectionDatabaseLockHeld = true;
+      draftConflicts = createDraftConflictHandler();
+      db = {} as typeof db;
+    } else {
+      ({ db, draftConflicts } = await openWorkspaceDatabase(workspaceId));
+      const currentProjectionDatabase = entityProjectionDatabaseName(
+        workspaceId,
+        API_SCHEMA_HASH,
+        serverDatabaseSuffix,
+      );
+      projectionDatabaseLockHeld = await holdEntityProjectionDatabaseLock(
+        currentProjectionDatabase,
+      );
+      const { createRxDatabase, getRxStorageDexie } = await loadRxdb();
+      const projectionDb = await createRxDatabase<{
+        projections: RxCollection<SyncDocument>;
+      }>({
+        name: currentProjectionDatabase,
+        storage: getRxStorageDexie(),
+        multiInstance: true,
+      });
+      ({ projections } = await projectionDb.addCollections({
+        projections: {
+          // The schema-hashed database starts empty after a wire change.
+          autoMigrate: false,
+          schema: {
+            ...schema,
+            version: ENTITY_PROJECTION_CACHE_VERSION,
+            properties: {
+              ...schema.properties,
+              entity: { type: "object", additionalProperties: true },
+              evicted: { type: "boolean" },
+            },
+          },
+          conflictHandler: {
+            isEqual: (a: SyncDocument, b: SyncDocument, context: string) =>
+              // RxDB checks the pulled master against the current local row here.
+              // A lower server sequence is already superseded, including tombstones.
+              (context === "downstream-check-if-equal-1" && a.seq < b.seq) ||
+              (a.seq === b.seq &&
+                a.payload === b.payload &&
+                a._deleted === b._deleted &&
+                a.evicted === b.evicted),
+            resolve: async ({
+              realMasterState,
+              newDocumentState,
+            }: {
+              realMasterState: SyncDocument & { _deleted: boolean };
+              newDocumentState: SyncDocument & { _deleted: boolean };
+            }) =>
+              newDocumentState.seq > realMasterState.seq ||
+              (newDocumentState.seq === realMasterState.seq &&
+                realMasterState.evicted === true &&
+                newDocumentState.evicted !== true)
+                ? newDocumentState
+                : realMasterState,
           },
         },
-        conflictHandler: {
-          isEqual: (a: SyncDocument, b: SyncDocument, context: string) =>
-            // RxDB checks the pulled master against the current local row here.
-            // A lower server sequence is already superseded, including tombstones.
-            (context === "downstream-check-if-equal-1" && a.seq < b.seq) ||
-            (a.seq === b.seq &&
-              a.payload === b.payload &&
-              a._deleted === b._deleted &&
-              a.evicted === b.evicted),
-          resolve: async ({
-            realMasterState,
-            newDocumentState,
-          }: {
-            realMasterState: SyncDocument & { _deleted: boolean };
-            newDocumentState: SyncDocument & { _deleted: boolean };
-          }) =>
-            newDocumentState.seq > realMasterState.seq ||
-            (newDocumentState.seq === realMasterState.seq &&
-              realMasterState.evicted === true &&
-              newDocumentState.evicted !== true)
-              ? newDocumentState
-              : realMasterState,
-        },
-      },
-    });
+      }));
+    }
     Object.defineProperty(db, "projections", { value: projections });
     if (isApiSchemaMismatch()) stopSchemaMatchCleanup();
     else {
@@ -406,6 +461,29 @@ export function createSyncClient(options: SyncClientOptions) {
   function syncDatabase() {
     return (pending ??= open().catch((error) => {
       pending = undefined;
+      throw error;
+    }));
+  }
+
+  let outboxPending: ReturnType<typeof openOutboxDatabase> | undefined;
+
+  async function openOutboxDatabase() {
+    const handle = await syncDatabase();
+    const { db, draftConflicts } = await openWorkspaceDatabase(
+      handle.workspaceId,
+    );
+    Object.defineProperty(db, "projections", {
+      value: handle.db.projections,
+    });
+    return { ...handle, db, draftConflicts };
+  }
+
+  /** The database of the outbox. The native core keeps the projections and the
+   * outbox stays in IndexedDB until it moves (step 3), so open it on demand. */
+  function outboxDatabase() {
+    if (!options.projectionStore?.()) return syncDatabase();
+    return (outboxPending ??= openOutboxDatabase().catch((error) => {
+      outboxPending = undefined;
       throw error;
     }));
   }
@@ -762,7 +840,7 @@ export function createSyncClient(options: SyncClientOptions) {
     interval: import("./entityTransfer").StagedEntityInterval,
     isCurrent: () => boolean,
   ) {
-    if (!canSerializeEntityProjectionWrites())
+    if (!canSerializeProjectionWrites())
       throw new Error("Entity transfer requires the projection write lock");
     const { db, workspaceId } = await syncDatabase();
     if (!isCurrent() || workspaceId !== interval.workspaceId) return;
@@ -927,7 +1005,7 @@ export function createSyncClient(options: SyncClientOptions) {
       return;
     // Older browsers keep the existing pull path. Tab-local serialization cannot
     // protect a shared projection from another tab's reset.
-    if (!canSerializeEntityProjectionWrites()) {
+    if (!canSerializeProjectionWrites()) {
       if (event.resourceVersions.some((entry) => entry.cursor))
         throw new Error(
           "Subscription cursor persistence requires the projection write lock",
@@ -2610,6 +2688,7 @@ export function createSyncClient(options: SyncClientOptions) {
     // at most one restart per minimum interval.
     // Ordinary complete draft batches enter RxDB's master stream. Their accepted
     // watermark proves continuity; RxDB owns durable checkpoints and conflicts.
+    const { replicateRxCollection } = await loadRxdb();
     const failures = new Map<"pull" | "push" | "replication", unknown>();
     let stopped = false;
     let pushFailed = false;
@@ -2617,7 +2696,7 @@ export function createSyncClient(options: SyncClientOptions) {
     let pullInFlight = false;
     let pullContinues = false;
     let replication: ReturnType<
-      typeof replicateRxCollection<SyncDocument, { seq: number }>
+      typeof ReplicateRxCollection<SyncDocument, { seq: number }>
     >;
     let replicationErrors: { unsubscribe: () => void }[] = [];
     let pullActivitySubscription: { unsubscribe: () => void } | undefined;
@@ -3163,6 +3242,7 @@ export function createSyncClient(options: SyncClientOptions) {
   }
   return {
     syncDatabase,
+    outboxDatabase,
     persistResourceEntityChanges,
     persistStagedEntityTransfer,
     readSubscriptionCursor,
@@ -3202,9 +3282,14 @@ const defaultSyncClient = createSyncClient({
     subscribeTranscript,
   },
   databaseSuffix: serverDatabaseSuffix,
+  projectionStore: () =>
+    hasNativeClient() && serverDatabaseSuffix === ""
+      ? nativeProjectionStore
+      : undefined,
 });
 export const {
   syncDatabase,
+  outboxDatabase,
   persistResourceEntityChanges,
   persistStagedEntityTransfer,
   readSubscriptionCursor,

@@ -30,6 +30,32 @@ export interface TransferStorage {
 }
 const STAGING_PREFIX = "studio-entity-transfer-";
 
+/** Staging in page memory, for a page whose projections live in the native core.
+ * An interval is applied only after it is complete, so a lost page loses nothing durable. */
+export class MemoryTransferStorage implements TransferStorage {
+  private readonly pages = new Map<string, string>();
+  put(key: string, value: string) {
+    this.pages.set(key, value);
+    return Promise.resolve();
+  }
+  putMany(values: [string, string][]) {
+    for (const [key, value] of values) this.pages.set(key, value);
+    return Promise.resolve();
+  }
+  get(key: string) {
+    return Promise.resolve(this.pages.get(key));
+  }
+  remove(prefix: string) {
+    for (const key of this.pages.keys())
+      if (key.startsWith(prefix)) this.pages.delete(key);
+    return Promise.resolve();
+  }
+  close() {
+    this.pages.clear();
+    return Promise.resolve();
+  }
+}
+
 /** Each owner has an unguessable database identity. Cancellation deletes only
  * this owner's database, never another tab's active or recovering transfer. */
 export class IndexedTransferStorage implements TransferStorage {
