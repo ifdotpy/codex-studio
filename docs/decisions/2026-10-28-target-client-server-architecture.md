@@ -96,6 +96,18 @@ fetch and SSE now. WebTransport may come later as a second binding of the same c
 event contract: for upload streams from the client, binary data, or poor mobile networks.
 It needs a `tailscale cert` certificate, an `h3` ALPN, a UDP port, and the HTTPS fallback.
 
+### One owner for each kind of data
+
+| Data                           | Copies now                                                                                                           | Single owner                                                  | The others                                                                                   |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Conversation                   | Provider file, `runtime_items`, transcript rows and cached pages in `sync_entities`                                  | `runtime_items`                                               | The provider file stays as the provider's own cache. Transcript pages are built at read time |
+| Large text                     | Inside item records and agent JSON                                                                                   | `blobs/`, addressed by hash and compressed                    | Rows keep the hash and the size                                                              |
+| Server projections on a client | Client SQLite in `client-core`, RxDB in the web client                                                               | The server                                                    | A remote frontend keeps only the thin cache                                                  |
+| Command results                | About 10 receipt tables (`runtime_operation_receipts` has 2.83M rows for 3,378 chats)                                | `runtime_commands`                                            | Old results compact to a fingerprint after the existing expiry                               |
+| Outgoing requests              | 4 outboxes (`runtime_server_outbox`, `runtime_federation_outbox`, `runtime_access_outbound`, `runtime_server_fetch`) | One outbox with `kind` and `target`                           | The same request id and exact body on each retry                                             |
+| Signatures and nonces          | 2 schemes and 2 nonce tables                                                                                         | `studio-multi-server-v1`, with federation as a principal kind | Separate trust lists stay                                                                    |
+| Drafts                         | 9 client modules, the Rust client store, and the server                                                              | The server                                                    | The device keeps only unsent input                                                           |
+
 ## Data-loss rules
 
 - Do not delete a "copy" of data before a check shows that the data exists elsewhere
