@@ -226,9 +226,7 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                 };
             }
             let preflight = async {
-                if !callback_request_matches(&store, request_id, &scope, &reply.rpc_id).await {
-                    return Err(VoiceWriteCertainty::NotSent);
-                }
+                callback_request_matches(&store, request_id, &scope, &reply.rpc_id).await?;
                 let expected_session = ConnectionScope {
                     account: scope.account_key.clone(),
                     connection: scope.connection_id.clone(),
@@ -266,6 +264,7 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                 .await
             {
                 Ok(_) => VoiceWriteCertainty::Written,
+                Err(CallbackError::Expired) => VoiceWriteCertainty::Expired,
                 Err(CallbackError::Unknown | CallbackError::Store(_)) => {
                     VoiceWriteCertainty::Unknown
                 }
@@ -276,51 +275,67 @@ impl VoiceRequestPort for AccountSessionVoicePort {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VoiceCallbackAuthority {
+    agent: String,
+    account_key: String,
+    connection_id: String,
+    epoch: i64,
+    supervisor: VoiceCallbackGeneration,
+    params: VoiceCallbackThread,
+    status: studio_runtime_schema::persistence::RequestCardStatus,
+    rpc_id: VoiceRpcId,
+}
+#[derive(serde::Deserialize)]
+struct VoiceCallbackGeneration {
+    generation: u64,
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VoiceCallbackThread {
+    thread_id: String,
+}
+
 async fn callback_request_matches(
     store: &RuntimeStore,
     id: &str,
     scope: &VoiceConnectionScope,
     rpc_id: &VoiceRpcId,
-) -> bool {
+) -> Result<(), VoiceWriteCertainty> {
+    use studio_runtime_schema::persistence::RequestCardStatus;
     let id = id.to_owned();
-    let raw = store
+    let request: VoiceCallbackAuthority = store
         .read_async(
             "runtime-services/voice/account_session",
             move |connection| {
-                connection
-                    .query_row(
-                        "SELECT record FROM runtime_requests WHERE id=?1",
-                        [id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .map_err(studio_runtime_store::StoreError::from)
+                let raw: String = connection.query_row(
+                    "SELECT record FROM runtime_requests WHERE id=?1",
+                    [id],
+                    |row| row.get(0),
+                )?;
+                serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)
             },
         )
-        .await;
-    let Ok(raw) = raw else {
-        return false;
-    };
-    let Ok(request) = serde_json::from_str::<Value>(&raw) else {
-        return false;
-    };
-    request.get("agent").and_then(Value::as_str) == Some(scope.agent_id.as_str())
-        && request.get("accountKey").and_then(Value::as_str) == Some(scope.account_key.as_str())
-        && request.get("connectionId").and_then(Value::as_str) == Some(scope.connection_id.as_str())
-        && request.get("epoch").and_then(Value::as_i64) == Some(scope.epoch)
-        && request
-            .pointer("/supervisor/generation")
-            .and_then(Value::as_u64)
-            == Some(scope.generation)
-        && request.pointer("/params/threadId").and_then(Value::as_str)
-            == Some(scope.thread_id.as_str())
-        && request.get("status").and_then(Value::as_str) == Some("pending")
-        && match (request.get("rpcId"), rpc_id) {
-            (Some(Value::Number(actual)), VoiceRpcId::Number(expected)) => {
-                actual.as_i64() == Some(*expected)
-            }
-            (Some(Value::String(actual)), VoiceRpcId::String(expected)) => actual == expected,
-            _ => false,
-        }
+        .await
+        .map_err(|_| VoiceWriteCertainty::NotSent)?;
+    if request.agent != scope.agent_id
+        || request.account_key != scope.account_key
+        || request.connection_id != scope.connection_id
+        || request.epoch != scope.epoch
+        || request.supervisor.generation != scope.generation
+        || request.params.thread_id != scope.thread_id
+        || request.rpc_id != *rpc_id
+    {
+        return Err(VoiceWriteCertainty::NotSent);
+    }
+    if request.status == RequestCardStatus::Expired {
+        Err(VoiceWriteCertainty::Expired)
+    } else if request.status == RequestCardStatus::Pending {
+        Ok(())
+    } else {
+        Err(VoiceWriteCertainty::NotSent)
+    }
 }
 
 fn account_error(error: AccountSessionError) -> VoicePrepareFailure {

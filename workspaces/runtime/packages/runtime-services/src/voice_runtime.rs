@@ -61,7 +61,8 @@ pub struct VoiceRequestReceipt {
     pub certainty: VoiceWriteCertainty,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(untagged)]
 pub enum VoiceRpcId {
     Number(i64),
     String(String),

@@ -1845,6 +1845,7 @@ async fn reserve_approval(
             if owner != &agent_id || old_speech != &speech_id || old_transcript != &transcript_id {
                 return Err(VoiceProviderError::ContextChanged);
             }
+            if status == "expired" { return Err(VoiceProviderError::Expired); }
             if status == "accepted" {
                 let value = result.as_ref().ok_or(VoiceProviderError::Operation)?;
                 return Ok(ApprovalDispatch::Replay(serde_json::from_str(value).map_err(|_| VoiceProviderError::Operation)?));
