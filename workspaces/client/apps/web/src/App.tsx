@@ -44,7 +44,7 @@ import {
 } from "./servers/ServerServicesContext";
 import { useServerFileDialogs } from "./servers/ServerServicesContext";
 import { onDesktopNavigate } from "./native/notifications";
-import { reserveMessageId } from "./native/outbox";
+import { prepareMessage, releaseMessage } from "./native/outbox";
 import { writePreferenceEdit } from "./sync/uiPreferenceStore";
 import { createUiPreferenceBridge } from "./sync/uiPreferenceBridge";
 import type { UiPreferenceProjection } from "./sync/entityProjection";
@@ -1799,14 +1799,13 @@ export default function App({ active = true }: { active?: boolean }) {
           sends.current[id]?.delivery !==
             (options?.delivery || DeliveryMoment.CurrentTurn)
         )
-          sends.current[id] = {
-            id: await reserveMessageId(),
+          // Enter delivers after the current tool call; Tab after the turn.
+          sends.current[id] = await prepareMessage({
             room: id,
             text,
             assets: options?.assets || [],
-            // Enter delivers after the current tool call; Tab after the turn.
             delivery: options?.delivery || DeliveryMoment.CurrentTurn,
-          };
+          });
         // Retain the exact request until the durable outbox owns its retry.
         request = sends.current[id];
         const entry: OutgoingMessage = {
@@ -1835,6 +1834,10 @@ export default function App({ active = true }: { active?: boolean }) {
               delete sends.current[id];
             }
             await options?.onPersist?.();
+            // The core stored the message, so its pending send can go.
+            await releaseMessage(id, entry.id).catch((error: unknown) =>
+              notify(errorText(error)),
+            );
             release();
           },
         );
@@ -1904,6 +1907,11 @@ export default function App({ active = true }: { active?: boolean }) {
           ![408, 429].includes(e.status);
         if (rejected && sends.current[request.room]?.id === key)
           delete sends.current[request.room];
+        // A refused request must not keep its identity for a later send.
+        if (rejected)
+          await releaseMessage(request.room, key).catch((error: unknown) =>
+            notify(errorText(error)),
+          );
         if (
           !rejected &&
           latestSend.current[targetKey] === attempt &&

@@ -6,7 +6,7 @@ vi.mock("./client", () => ({
 }));
 vi.mock("./frame", () => ({ isNativeFrame: () => false }));
 import { nativeRequest } from "./client";
-import { createNativeOutbox, reserveMessageId } from "./outbox";
+import { createNativeOutbox, prepareMessage, releaseMessage } from "./outbox";
 
 afterEach(() => {
   vi.resetAllMocks();
@@ -84,13 +84,42 @@ it("removing a card asks the core to stop the message identity", async () => {
   ]);
 });
 
-it("the message identity comes from the core, not from the page", async () => {
-  vi.mocked(nativeRequest).mockResolvedValue({ id: "core-minted-id" });
-  expect(await reserveMessageId()).toBe("core-minted-id");
-  expect(vi.mocked(nativeRequest)).toHaveBeenCalledWith("outbox.reserve", {});
+const message = {
+  room: "room",
+  text: "Hello",
+  assets: [],
+  delivery: "queue" as const,
+};
+
+it("the pending send comes from the core, with its identity", async () => {
+  vi.mocked(nativeRequest).mockImplementation(async (method) => {
+    if (method === "identity.get") return { workspaceId: "w" };
+    return { id: "core-id", ...message };
+  });
+  expect(await prepareMessage(message)).toEqual({ id: "core-id", ...message });
+  expect(vi.mocked(nativeRequest)).toHaveBeenCalledWith("outbox.prepare", {
+    workspace: "w",
+    ...message,
+  });
 });
 
-it("a reply without a message identity is refused", async () => {
-  vi.mocked(nativeRequest).mockResolvedValue({ id: "" });
-  await expect(reserveMessageId()).rejects.toThrow("message identity");
+it("releasing a pending send names its room and identity", async () => {
+  vi.mocked(nativeRequest).mockImplementation(async (method) => {
+    if (method === "identity.get") return { workspaceId: "w" };
+    return { released: true };
+  });
+  await releaseMessage("room", "core-id");
+  expect(vi.mocked(nativeRequest)).toHaveBeenLastCalledWith("outbox.release", {
+    workspace: "w",
+    room: "room",
+    id: "core-id",
+  });
+});
+
+it("a pending send reply without a message identity is refused", async () => {
+  vi.mocked(nativeRequest).mockImplementation(async (method) => {
+    if (method === "identity.get") return { workspaceId: "w" };
+    return { room: "room" };
+  });
+  await expect(prepareMessage(message)).rejects.toThrow("message identity");
 });

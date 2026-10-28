@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { errorText } from "../api";
+import { errorText, type PostBody } from "../api";
 import { randomUUID } from "../uuid";
 import { onResume } from "../sync/resume";
 import {
@@ -16,15 +16,49 @@ type LegacyOutbox = () => Promise<{
   };
 }>;
 
+type MessageBody = PostBody<"/api/messages">;
+
+let identity: Promise<string> | undefined;
+/** The local workspace of the core, read once until a read fails. */
+function workspaceId(): Promise<string> {
+  return (identity ??= (async () => {
+    const cached = await nativeRequest<{ workspaceId: string } | null>(
+      "identity.get",
+      {},
+    );
+    const current =
+      cached ?? (await nativeRequest<{ workspaceId: string }>("sync.open", {}));
+    return current.workspaceId;
+  })().catch((error: unknown) => {
+    identity = undefined;
+    throw error;
+  }));
+}
+
 /**
- * A new message identity from the core (`outbox.reserve`). The core stores the
- * message only when `outbox.enqueue` accepts this identity, so a lost reply
- * stores nothing and the page can ask again.
+ * The pending send of a room, stored by the core before any HTTP request. The
+ * same text returns the same identity until `releaseMessage` removes it, so a
+ * resend after a lost reply reaches `outbox.enqueue` with the stored identity.
  */
-export async function reserveMessageId(): Promise<string> {
-  const { id } = await nativeRequest<{ id: string }>("outbox.reserve", {});
-  if (!id) throw new Error("The native client returned no message identity.");
-  return id;
+export async function prepareMessage(
+  message: Omit<MessageBody, "id">,
+): Promise<MessageBody> {
+  const body = await nativeRequest<MessageBody>("outbox.prepare", {
+    workspace: await workspaceId(),
+    ...message,
+  });
+  if (!body.id)
+    throw new Error("The native client returned no message identity.");
+  return body;
+}
+
+/** Removes the pending send after the outbox owns it or it was refused. */
+export async function releaseMessage(room: string, id: string): Promise<void> {
+  await nativeRequest("outbox.release", {
+    workspace: await workspaceId(),
+    room,
+    id,
+  });
 }
 
 /**
@@ -35,21 +69,7 @@ export async function reserveMessageId(): Promise<string> {
  * retry with the same identity never sends a user message twice.
  */
 export function createNativeOutbox(legacyOutbox: LegacyOutbox): OutboxService {
-  let identity: Promise<string> | undefined;
-  const workspace = () =>
-    (identity ??= (async () => {
-      const cached = await nativeRequest<{ workspaceId: string } | null>(
-        "identity.get",
-        {},
-      );
-      const current =
-        cached ??
-        (await nativeRequest<{ workspaceId: string }>("sync.open", {}));
-      return current.workspaceId;
-    })().catch((error: unknown) => {
-      identity = undefined;
-      throw error;
-    }));
+  const workspace = workspaceId;
 
   const entry = async (workspaceId: string, id: string) =>
     (

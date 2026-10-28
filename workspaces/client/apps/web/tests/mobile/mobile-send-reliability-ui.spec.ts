@@ -340,7 +340,6 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     );
     // An old browser receipt can still refer to a message already rejected by
     // the outbox. A reload must not trap every explicit retry on that failed ID.
-    const stateDir = (await readTestState(target)).stateDir;
     const failedBody: PostBody<"/api/messages"> = {
       id: "old-failed-after-reload",
       room: required(posts[0]).room,
@@ -353,9 +352,8 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
       (agent) => agent.id === failedBody.room,
     )?.name;
     assert.ok(failedChatName, "The stored failure belongs to a fixture chat");
-    const pendingKey = `studio-pending-sends:${stateDir}`;
     await page.evaluate(
-      async ({ body, pendingKey, selected }) => {
+      async ({ body, selected }) => {
         await window.storage.db.outbox.insert({
           id: body.id,
           seq: 0,
@@ -368,10 +366,9 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
             attachments: [],
           }),
         });
-        localStorage.setItem(pendingKey, JSON.stringify({ [body.room]: body }));
         localStorage.setItem("codex-mobile-opened", selected);
       },
-      { body: failedBody, pendingKey, selected: cacheFixture(failedBody.room) },
+      { body: failedBody, selected: cacheFixture(failedBody.room) },
     );
     await page.reload();
     await input.waitFor();
@@ -385,16 +382,6 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     await input.fill(failedBody.text);
     const beforeExplicitRetry = posts.length;
     await send.click();
-    await page.waitForFunction(
-      ({ pendingKey, room }) => {
-        // The renderer wrote this pending-send map.
-        const pending: Record<string, PostBody<"/api/messages">> = JSON.parse(
-          localStorage.getItem(pendingKey) || "{}",
-        );
-        return !pending[room];
-      },
-      { pendingKey, room: failedBody.room },
-    );
     await until(() => posts.length === beforeExplicitRetry + 1);
     assert.notEqual(posts.at(-1)!.id, failedBody.id);
     assert.equal(posts.at(-1)!.text, failedBody.text);
