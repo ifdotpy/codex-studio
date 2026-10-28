@@ -575,13 +575,11 @@ export function AccountTransferStatus({
         </div>
       ) : (
         <div className="account-menu-note" role="status">
-          {error && retryStart && (
-            <div>
-              <p role="alert">{error}</p>
-              <Button onClick={retryStart} disabled={!!pending}>
-                Retry
-              </Button>
-            </div>
+          {error && <p role="alert">{error}</p>}
+          {retryStart && (
+            <Button onClick={retryStart} disabled={!!pending}>
+              Retry
+            </Button>
           )}
           <ArrowRightLeft size={14} />
           <div>
@@ -788,6 +786,7 @@ export default function Accounts({
   changeAccount,
   onError,
   onModalOpenChange,
+  onTransferStarted,
   managerOnly = false,
   renderPicker,
   externalCommand,
@@ -799,6 +798,7 @@ export default function Accounts({
   agent?: Agent;
   accountKey?: string;
   onModalOpenChange?: (opened: boolean) => void;
+  onTransferStarted?: () => void;
   managerOnly?: boolean;
   renderPicker?: (
     selectAccount: (key: string) => void,
@@ -1651,6 +1651,7 @@ export default function Accounts({
             account_key: transferChoice.target.id,
             request_id: transferChoice.requestId,
           });
+          onTransferStarted?.();
         }}
       />
       <Modal

@@ -22,3 +22,22 @@ test("evicts the oldest entries at the bounded capacity", () => {
   expect(result[0]?.title).toBe("1");
   expect(result.at(-1)?.level).toBe("log");
 });
+
+test("deduplicates blocked transfer errors across remounts", () => {
+  const entry = {
+    at: 1,
+    level: "error" as const,
+    title: "Account transfer blocked",
+    reason: "Worker: missing",
+    dedupeKey: "transfer:worker:missing",
+  };
+  appendAppLog(entry);
+  appendAppLog(entry);
+  let result: ReturnType<typeof useAppLog> = [];
+  function Read() {
+    result = useAppLog();
+    return null;
+  }
+  renderToStaticMarkup(createElement(Read));
+  expect(result).toHaveLength(1);
+});

@@ -336,6 +336,11 @@ test("execution settings canonical browser", async ({ page }) => {
       await page.evaluate(() => window.canonicalRefreshRelease!());
     });
     await check("account-default-transfer-confirmation", async () => {
+      await page.setViewportSize({ width: 1280, height: 1400 });
+      await page.evaluate(() => {
+        document.getElementById("root")!.style.marginTop = "900px";
+      });
+      page.setDefaultTimeout(5000);
       // Moving existing subagents is an explicit action of its own; the receipt
       // rules of a transfer are unchanged.
       await reset({
@@ -388,6 +393,10 @@ test("execution settings canonical browser", async ({ page }) => {
       assert.equal(await account.inputValue(), "second");
       assert.equal(await account.isDisabled(), false);
       await expect(page.getByText("2 waiting", { exact: true })).toBeVisible();
+      await page.getByText("2 waiting", { exact: true }).click();
+      await expect(
+        page.getByRole("dialog", { name: "Account transfer" }),
+      ).toBeVisible();
       // A running transfer offers no second move.
       await expect(move).toHaveCount(0);
       assert.equal(

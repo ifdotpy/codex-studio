@@ -11,6 +11,7 @@ export type AppLogEntry = {
   title: string;
   reason: string;
   detail?: string;
+  dedupeKey?: string;
 };
 let entries: AppLogEntry[] = [];
 let nextId = 0;
@@ -26,6 +27,11 @@ function publish() {
 export function appendAppLog(
   entry: Omit<AppLogEntry, "id" | "level"> & { level?: AppLogEntry["level"] },
 ) {
+  if (
+    entry.dedupeKey &&
+    entries.some((item) => item.dedupeKey === entry.dedupeKey)
+  )
+    return;
   entries = [
     ...entries,
     { ...entry, id: `app-log:${++nextId}`, level: entry.level ?? "log" },

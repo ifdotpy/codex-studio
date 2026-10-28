@@ -132,6 +132,7 @@ type SettingsProps = {
   onAccountChange?: (key: string) => void;
   accountDisabled?: boolean;
   accountModalOpen?: boolean;
+  transferOpenRequest?: number;
   onDraftChange?: (patch: Partial<ConversationBody>) => void;
 };
 const accountOf = (agent: Pick<Agent, "accountKey">) =>
@@ -342,6 +343,10 @@ function ExecutionSettingsController(props: ControllerProps) {
     props.initialRole || (props.agent.isLead ? "orchestrator" : "worker"),
   );
   const [opened, setOpened] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
+  useEffect(() => {
+    if (props.transferOpenRequest) setTransferOpen(true);
+  }, [props.transferOpenRequest]);
   const triggerRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if ((props.openRequest || 0) > 0) {
@@ -388,6 +393,8 @@ function ExecutionSettingsController(props: ControllerProps) {
       key={scope}
       {...props}
       beginSettingsSave={beginSettingsSave}
+      transferOpen={transferOpen}
+      setTransferOpen={setTransferOpen}
       presentation={props.renderTrigger ? "panel" : props.presentation}
       agent={agent}
       inheritedUnavailable={inheritedRole && !props.lead}
@@ -409,7 +416,7 @@ function ExecutionSettingsController(props: ControllerProps) {
     <ExecutionMenu
       opened={opened}
       setOpened={changeOpened}
-      accountModalOpen={props.accountModalOpen}
+      accountModalOpen={props.accountModalOpen || transferOpen}
       label={settingsLabel(
         agent,
         role,
@@ -457,7 +464,11 @@ function ScopedExecutionSettings({
   triggerRef,
   setOpened,
   beginSettingsSave,
+  transferOpen,
+  setTransferOpen,
 }: ControllerProps & {
+  transferOpen: boolean;
+  setTransferOpen: (value: boolean) => void;
   beginSettingsSave: (role: SetupRole) => (agent: Agent) => boolean;
   teamDefaults: boolean;
   readOnlyReason?: string | undefined;
@@ -513,6 +524,7 @@ function ScopedExecutionSettings({
         event.key === "Escape" &&
         !cameFromModal &&
         !accountModalOpen &&
+        !transferOpen &&
         (event.target as HTMLElement | null)?.getAttribute(
           "data-mantine-stop-propagation",
         ) !== "true"
@@ -524,7 +536,7 @@ function ScopedExecutionSettings({
     };
     document.addEventListener("keydown", close, true);
     return () => document.removeEventListener("keydown", close, true);
-  }, [accountModalOpen, opened]);
+  }, [accountModalOpen, transferOpen, opened]);
   const [saving, setSaving] = useState(false);
   const saveLock = useRef(false);
   const refreshGeneration = useRef(0);
@@ -565,14 +577,6 @@ function ScopedExecutionSettings({
     value: TransferResponse;
     baseline: string;
   } | null>(null);
-  const [transferOpen, setTransferOpen] = useState(
-    agent.accountTransfer?.status === GeneratedAccountTransferStatus.pending &&
-      (teamDefaults
-        ? agent.accountTransfer.scope === AccountTransferScope.subagents
-        : agent.accountTransfer.scope !== AccountTransferScope.subagents),
-  );
-  const seenTransfer = useRef(agent.accountTransfer?.id);
-  const reportedBlocked = useRef(new Set<string>());
   const [retryTarget, setRetryTarget] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [status, setStatus] = useState<{
@@ -1108,19 +1112,13 @@ function ScopedExecutionSettings({
       ? transfer.value
       : snapshotTransfer || transfer?.value;
   useEffect(() => {
-    if (shownTransfer?.id && shownTransfer.id !== seenTransfer.current) {
-      seenTransfer.current = shownTransfer.id;
-      if (shownTransfer.status === GeneratedAccountTransferStatus.pending)
-        setTransferOpen(true);
-    }
     for (const member of shownTransfer?.blocked ?? []) {
       const key = JSON.stringify([shownTransfer?.id, member.id, member.reason]);
-      if (reportedBlocked.current.has(key)) continue;
-      reportedBlocked.current.add(key);
       appendAppLog({
         at: Date.now(),
         level: "error",
         title: "Account transfer blocked",
+        dedupeKey: `account-transfer:${key}`,
         reason: `${member.name || "Agent"}: ${member.reason}`,
       });
     }
@@ -1971,7 +1969,7 @@ function ScopedExecutionSettings({
       <ExecutionMenu
         opened={opened}
         setOpened={setOpened}
-        accountModalOpen={accountModalOpen}
+        accountModalOpen={accountModalOpen || transferOpen}
         label={label}
         trigger={trigger}
       >

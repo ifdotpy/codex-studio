@@ -315,7 +315,7 @@ test("transfer actions retain response identity and retry the same request after
     );
     return required(status).props;
   };
-  expect(transfer()).toHaveProperty("opened", true);
+  expect(transfer()).toHaveProperty("opened", false);
   h.post.mockRejectedValueOnce(new Error("response lost"));
   transfer().onAction?.("retry");
   await vi.waitFor(() => expect(transfer().pending).toBe(false));
@@ -339,6 +339,39 @@ test("transfer actions retain response identity and retry the same request after
     request_id: operation.id,
   });
   expect(transfer().transfer).toBe(response);
+});
+
+test("a remote transfer does not open the modal", () => {
+  render(initial);
+  const agent = {
+    ...initial,
+    accountTransfer: {
+      id: "remote",
+      status: TransferStatus.pending,
+      scope: TransferScope.team,
+    },
+  };
+  render(agent);
+  const controls = render(agent).controls;
+  const modal = children(controls).find(
+    (node) => node.type === AccountTransferStatus,
+  );
+  expect(required(modal).props.opened).toBe(false);
+});
+
+test("the transfer modal shows an action failure even without a start retry", () => {
+  const modal = AccountTransferStatus({
+    transfer: { id: "transfer", status: "pending" },
+    error: "Cancel response lost",
+    onAction: () => {},
+  });
+  expect(
+    children(modal).some(
+      (node) =>
+        node.props.role === "alert" &&
+        node.props.children === "Cancel response lost",
+    ),
+  ).toBe(true);
 });
 
 test("blocked members are reported but provider mismatches are not", () => {
