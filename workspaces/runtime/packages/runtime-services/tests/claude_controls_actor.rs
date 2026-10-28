@@ -1150,11 +1150,11 @@ async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof()
         Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
         native.clone(),
     );
-    let request = || {
-        serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"quota-refusal","restore_files":true})).expect("rollback request parses")
+    let request = |id: &str| {
+        serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":id,"restore_files":true})).expect("rollback request parses")
     };
     assert!(matches!(
-        controls.execute(request()).await,
+        controls.execute(request("quota-refusal")).await,
         Err(ControlError::RewindNotApplied(_))
     ));
     let agent = AgentRepository::get(
@@ -1178,7 +1178,11 @@ async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof()
         .await
         .expect("quota retry fixture writes");
     assert!(matches!(
-        controls.execute(request()).await,
+        controls.execute(request("quota-refusal")).await,
+        Err(ControlError::RewindNotApplied(_))
+    ));
+    assert!(matches!(
+        controls.execute(request("quota-retry")).await,
         Err(ControlError::Busy)
     ));
     assert_eq!(native.attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -1191,14 +1195,14 @@ async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof()
         .expect("fresh idle proof writes");
     assert_eq!(
         controls
-            .execute(request())
+            .execute(request("quota-retry"))
             .await
             .expect("rewind retry succeeds")["filesRestored"],
         true
     );
     assert_eq!(
         controls
-            .execute(request())
+            .execute(request("quota-retry"))
             .await
             .expect("rewind replay succeeds")["filesRestored"],
         true
