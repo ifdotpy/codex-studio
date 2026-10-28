@@ -154,7 +154,7 @@ impl MultiServerToolPort for ResumeFetching {
             let key_owned = key.to_owned();
             let actor_id = actor.record().id.0.clone();
             let signature = request_signature(
-                &json!({"worker":args["agent_id"],"branch":args["branch"],"destination":resolve(field(args,"destination"))}),
+                &json!({"worker":args["agent_id"],"branch":args["branch"],"destination":super::resolve(field(args,"destination"))}),
             );
             let input = self.input.clone();
             self.store.transaction_with(move|tx|->Result<(),Step>{
