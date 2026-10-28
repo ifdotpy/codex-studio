@@ -885,7 +885,7 @@ impl SchedulerRepository {
                 SteerStage::Submitted if !receipt.interrupt_still_queued => {
                     unconfirm(tx, &id, receipt)?;
                 }
-                _ => {}
+                SteerStage::Submitted | SteerStage::Unconfirmed => {}
             }
         }
         Ok(())
@@ -923,7 +923,7 @@ impl SchedulerRepository {
                 SteerStage::Submitted if receipt.generation.is_none_or(|g| g < current) => {
                     unconfirm(tx, &id, receipt)?
                 }
-                _ => {}
+                SteerStage::Submitted | SteerStage::Unconfirmed => {}
             }
         }
         Ok(())
