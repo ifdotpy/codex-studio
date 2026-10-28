@@ -267,9 +267,7 @@ fn settle_delivery(
             crate::project_locations::complete_snapshot_in_transaction(
                 tx, &raw, &receipt, &local, now,
             )
-            .map_err(|_error| {
-                #[cfg(test)]
-                eprintln!("Project location settlement failed: {_error:?}");
+            .map_err(|_| {
                 refused(
                     409,
                     "project_location_changed",
