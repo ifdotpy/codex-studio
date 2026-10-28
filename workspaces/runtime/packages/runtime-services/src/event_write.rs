@@ -1252,11 +1252,13 @@ mod tests {
         let before = counts(&connection);
         assert!(matches!(
             with_transaction(&mut connection, |tx| save_plan(tx, plan_input(0, "x", "s"))),
-            Err(EventWriteError::InvalidStoredObject { .. })
+            Err(EventWriteError::Store(
+                studio_runtime_store::StoreError::InvalidStoredObject { .. }
+            ))
         ));
         assert!(matches!(
             with_transaction(&mut connection, |tx| annotate(tx, annotation("n"))),
-            Err(EventWriteError::InvalidStoredObject { .. })
+            Err(EventWriteError::RequestResult(RequestResultError::Json(_)))
         ));
         assert_eq!(counts(&connection), before);
     }
