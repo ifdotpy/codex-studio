@@ -86,6 +86,7 @@ their removed Python commands are not current instructions.
 | Full account-worker crash matrix, manual heavy        | `just test-crash-matrix-full`            |
 | Provider-session scheduling diagnostic, manual heavy  | `just test-rust-session-fairness`        |
 | Guest worker and suite process cleanup, manual        | `just test-guest-runner-processes`       |
+| Provider child reap timing, manual heavy              | `just test-provider-reap-timing`         |
 | Detached host_exec lifecycle and guest broker, manual | `just test-host-exec-processes`          |
 | Many-agent scenario, manual heavy                     | `just test-rust-many-agents`             |
 | Continuation corpus and store faults, manual heavy    | `just test-rust-usage-resume-corpora`    |
