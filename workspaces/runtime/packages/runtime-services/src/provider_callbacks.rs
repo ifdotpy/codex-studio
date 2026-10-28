@@ -34,8 +34,9 @@ pub(crate) use storage::reply_key;
 pub use storage::{
     CallbackBody, CallbackOwner, CallbackResponse, DeliveryOutcome, FrameAdmission,
     admit_callback_request, begin_frame, bind_journal, callback_admission, callback_origin_key,
-    delivery, pending_callback_count, prepared_replies, record_frame_outcome, response_frame,
-    retire_checkpointed, save_frame_response, settle_response, submission_ready,
+    credential_refresh_admission, delivery, pending_callback_count, prepared_replies,
+    record_frame_outcome, reserve_credential_refresh, response_frame, retire_checkpointed,
+    save_frame_response, set_credential_refresh_admission, settle_response, submission_ready,
 };
 use studio_runtime_providers::{Frame, ResponseBody};
 use studio_runtime_store::RuntimeStore;

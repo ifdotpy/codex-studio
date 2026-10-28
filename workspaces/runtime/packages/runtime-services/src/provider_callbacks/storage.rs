@@ -24,6 +24,7 @@ pub struct CallbackOwner {
     pub tool_request: Option<String>,
     pub journal_cursor: Option<u64>,
     pub admission: Option<AdmittedRequest>,
+    pub credential_refresh_admission: Option<AdmittedRequest>,
     pub reply_identity: Option<ReplyIdentity>,
     pub frame_fingerprint: Option<String>,
 }
@@ -132,6 +133,7 @@ pub(super) fn admit_owner(
             tool_request: None,
             journal_cursor: None,
             admission: Some(admission),
+            credential_refresh_admission: None,
             reply_identity: None,
             frame_fingerprint: None,
         },
@@ -763,6 +765,7 @@ pub(super) fn resolve_owner(
                 tool_request: None,
                 journal_cursor: None,
                 admission: None,
+                credential_refresh_admission: None,
                 reply_identity: None,
                 frame_fingerprint: None,
             },
@@ -946,6 +949,64 @@ mod tests {
     }
 
     #[test]
+    fn callback_credential_refresh_reuses_final_pointer_after_response_loss() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let (identity, input) = input();
+        let owner = admit_owner(&tx, &identity, &input.signature()).expect("callback owner");
+        let source = owner.payload.admission.expect("source token");
+        let intent = crate::account_worker::retained::ProviderCallIntent {
+            root_request_id: owner.id.clone(),
+            admitted_request: None,
+            scope: crate::recovery_history::ConnectionScope {
+                account: "account".into(),
+                connection: "host-attachment".into(),
+                generation: 9,
+            },
+            operation: format!("vm-codex-token-refresh:account:{}", owner.id),
+            actor: None,
+            transfer: None,
+            deleted_actor_session: None,
+            method: studio_runtime_providers::Method::AccountRead,
+            params: json!({"refreshToken":true}),
+        };
+        let final_effect = reserve_credential_refresh(&tx, &owner.id, &source, intent.clone())
+            .expect("reserve once");
+        assert_ne!(final_effect, source);
+        assert_eq!(
+            callback_admission(&tx, &owner.id).expect("source unchanged"),
+            Some(source.clone())
+        );
+        assert_eq!(
+            credential_refresh_admission(&tx, &owner.id).expect("final pointer"),
+            Some(final_effect.clone())
+        );
+        tx.execute("DELETE FROM runtime_outbox", [])
+            .expect("completed transport reply retired");
+        assert_eq!(
+            reserve_credential_refresh(&tx, &owner.id, &source, intent.clone())
+                .expect("retry saved pointer"),
+            final_effect
+        );
+        let count: i64 = tx
+            .query_row("SELECT count(*) FROM runtime_outbox", [], |row| row.get(0))
+            .expect("no new effect");
+        assert_eq!(count, 0);
+        let replacement =
+            source.derive_result("provider-call", &["replacement"], final_effect.signature());
+        assert!(matches!(
+            set_credential_refresh_admission(&tx, &owner.id, &source, &replacement),
+            Err(CallbackError::Conflict)
+        ));
+        let mut changed = intent;
+        changed.params = json!({"refreshToken":false});
+        assert!(matches!(
+            reserve_credential_refresh(&tx, &owner.id, &source, changed),
+            Err(CallbackError::Conflict)
+        ));
+    }
+
+    #[test]
     fn retained_frame_uses_callback_outbox_and_only_exact_late_proof_settles_unknown() {
         let mut db = database();
         let tx = db.transaction().expect("transaction");
@@ -1069,6 +1130,10 @@ pub fn callback_admission(
     db: &Connection,
     root: &str,
 ) -> Result<Option<AdmittedRequest>, CallbackError> {
+    Ok(owner_by_root(db, root)?.and_then(|task| task.payload.admission))
+}
+
+fn owner_by_root(db: &Connection, root: &str) -> Result<Option<Owner>, CallbackError> {
     use rusqlite::OptionalExtension;
     let raw: Option<String> = db
         .query_row(
@@ -1081,5 +1146,74 @@ pub fn callback_admission(
         )
         .optional()?;
     let task: Option<Owner> = raw.map(|raw| serde_json::from_str(&raw)).transpose()?;
-    Ok(task.and_then(|task| task.payload.admission))
+    Ok(task)
+}
+
+/// The exact final provider effect pointer, separate from the callback reply token.
+pub fn credential_refresh_admission(
+    db: &Connection,
+    root: &str,
+) -> Result<Option<AdmittedRequest>, CallbackError> {
+    Ok(owner_by_root(db, root)?.and_then(|owner| owner.payload.credential_refresh_admission))
+}
+
+/// Caller reserves the provider obligation in this same transaction. The pointer
+/// can only be written once; a retry cannot replace its admitted effect.
+pub fn set_credential_refresh_admission(
+    tx: &Transaction<'_>,
+    root: &str,
+    source: &AdmittedRequest,
+    final_effect: &AdmittedRequest,
+) -> Result<(), CallbackError> {
+    let mut owner = owner_by_root(tx, root)?.ok_or(CallbackError::Unknown)?;
+    if owner.payload.admission.as_ref() != Some(source) {
+        return Err(CallbackError::Conflict);
+    }
+    if let Some(previous) = &owner.payload.credential_refresh_admission {
+        return if previous == final_effect {
+            Ok(())
+        } else {
+            Err(CallbackError::Conflict)
+        };
+    }
+    if owner.status != ToolRequestStatus::Queued {
+        return Err(CallbackError::Unknown);
+    }
+    owner.payload.credential_refresh_admission = Some(final_effect.clone());
+    put_owner(tx, &owner)
+}
+
+/// First dispatch reserves and points at the effect atomically. Retries return
+/// the persisted final pointer and never call the reservation API again.
+pub fn reserve_credential_refresh(
+    tx: &Transaction<'_>,
+    root: &str,
+    source: &AdmittedRequest,
+    intent: crate::account_worker::retained::ProviderCallIntent,
+) -> Result<AdmittedRequest, CallbackError> {
+    let owner = owner_by_root(tx, root)?.ok_or(CallbackError::Unknown)?;
+    if owner.payload.admission.as_ref() != Some(source)
+        || intent.root_request_id != root
+        || intent.scope.account != owner.payload.identity.context.account
+    {
+        return Err(CallbackError::Conflict);
+    }
+    if let Some(final_effect) = owner.payload.credential_refresh_admission {
+        if final_effect.signature()
+            != intent.fingerprint(&intent.scope.account, intent.method.as_str())
+        {
+            return Err(CallbackError::Conflict);
+        }
+        return Ok(final_effect);
+    }
+    if owner.status != ToolRequestStatus::Queued {
+        return Err(CallbackError::Unknown);
+    }
+    let final_effect = crate::account_worker::retained::reserve_provider_call(tx, source, intent)
+        .map_err(|error| match error {
+        crate::account_worker::WorkerError::Store(error) => CallbackError::Store(error),
+        _ => CallbackError::Unknown,
+    })?;
+    set_credential_refresh_admission(tx, root, source, &final_effect)?;
+    Ok(final_effect)
 }
