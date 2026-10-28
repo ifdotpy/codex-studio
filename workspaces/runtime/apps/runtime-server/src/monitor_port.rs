@@ -631,7 +631,10 @@ impl RetainedMonitorPort {
                         &params,
                     )
                     .await
-                    .map_err(|_| AccountSessionError::Persistence)?
+                    .map_err(|error| match error {
+                        MonitorError::Expired => AccountSessionError::Expired,
+                        _ => AccountSessionError::Persistence,
+                    })?
                 };
             self.session
                 .provider_request(ProviderRequest {
@@ -1320,6 +1323,12 @@ impl MonitorNative for RetainedMonitorPort {
                 .await;
             let receipt = match result {
                 Ok(receipt) => receipt,
+                Err(AccountSessionError::Expired) => {
+                    return Submission::NotSent {
+                        reason: NotSentReason::Expired,
+                        error: AccountSessionError::Expired.to_string(),
+                    };
+                }
                 Err(AccountSessionError::Unknown) => return Submission::Unknown,
                 Err(error) => {
                     return Submission::NotSent {
