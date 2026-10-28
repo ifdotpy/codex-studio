@@ -1623,7 +1623,8 @@ pub async fn configure(
                 &signature,
             )? {
                 MutationAdmission::Replay(reply) => {
-                    return serde_json::to_value(reply)
+                    return serde_json::to_vec(&reply)
+                        .and_then(|bytes| serde_json::from_slice(&bytes))
                         .map_err(StoreError::from)
                         .map_err(Into::into);
                 }
@@ -1676,7 +1677,8 @@ pub async fn configure(
             };
             crate::event_write::settle_request(tx, &admitted, Some(&request.id), &result)
                 .map_err(MutationError::from)?;
-            serde_json::to_value(result)
+            serde_json::to_vec(&result)
+                .and_then(|bytes| serde_json::from_slice(&bytes))
                 .map_err(StoreError::from)
                 .map_err(Into::into)
         })
@@ -2332,7 +2334,7 @@ fn update_team_yolo(
     Ok(())
 }
 pub struct RenameOperationResult {
-    pub response: Value,
+    pub response: RenameReply,
     pub replayed: bool,
 }
 
@@ -2366,9 +2368,8 @@ pub async fn rename_operation(
                     &signature_for_read,
                     chrono::Utc::now().timestamp_millis(),
                 )? {
-                    let response = serde_json::to_value(reply).map_err(StoreError::from)?;
                     return Ok(Some(RenameOperationResult {
-                        response,
+                        response: reply,
                         replayed: true,
                     }));
                 }
@@ -2384,17 +2385,19 @@ pub async fn rename_operation(
     let request_id = request_id.map(str::to_owned);
     let signature = signature.clone();
     let validate = std::sync::Arc::clone(&context.validate);
-    let response = mutate(context, move |tx| {
-        Ok(rename(
-            tx,
-            &id,
-            name.as_deref(),
-            request_id.as_deref(),
-            &signature,
-            |schema, value| validate(schema, value),
-        )?)
-    })
-    .await?;
+    let response = context
+        .store
+        .transaction_with_error(move |tx| {
+            Ok::<_, OperationError>(rename(
+                tx,
+                &id,
+                name.as_deref(),
+                request_id.as_deref(),
+                &signature,
+                |schema, value| validate(schema, value),
+            )?)
+        })
+        .await?;
     Ok(RenameOperationResult {
         response,
         replayed: false,
@@ -3144,6 +3147,21 @@ async fn mutate(
 mod tests {
     use super::*;
     use crate::host_worker_create::CreationCatalog as _;
+
+    #[test]
+    fn concurrency_reply_keeps_dispatch_bytes() {
+        let reply = ConcurrencyReply {
+            id: "agent".into(),
+            concurrency: 1,
+            agent_mode: AgentMode::Multi,
+            agent_mode_revision: 2,
+            max_agents: 4,
+            sync: MutationSync::default(),
+        };
+        let bytes = serde_json::to_vec(&reply).expect("reply");
+        let response: Value = serde_json::from_slice(&bytes).expect("dispatch value");
+        assert_eq!(serde_json::to_vec(&response).expect("response"), br#"{"agentMode":"multi","agentModeRevision":2,"concurrency":1,"id":"agent","maxAgents":4}"#);
+    }
 
     #[tokio::test]
     async fn settings_request_replays_exact_snapshot_without_catalog_or_credentials() {

@@ -65,13 +65,13 @@ pub type SettingsError = MutationError;
 
 const AGENT_MUTATION_NAMESPACE: &str = "agent-mutation";
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum MutationOutcome {
     Applied,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct RenameReply {
     pub id: String,
     pub name: String,
@@ -83,7 +83,7 @@ pub struct RenameReply {
     sync: MutationSync,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 struct MutationSync {
     #[serde(rename = "_syncEntities", skip_serializing_if = "Option::is_none")]
     entities: Option<Vec<Value>>,
@@ -93,13 +93,14 @@ struct MutationSync {
 
 impl MutationSync {
     fn read(tx: &Transaction<'_>, before: i64) -> Result<Self, MutationError> {
-        serde_json::from_value(crate::sync_documents::with_entity_delta(
-            tx,
-            before,
-            json!({}),
-        )?)
-        .map_err(StoreError::from)
-        .map_err(Into::into)
+        let delta = crate::sync_documents::with_entity_delta(tx, before, json!({}))?;
+        Ok(Self {
+            entities: delta
+                .get("_syncEntities")
+                .and_then(Value::as_array)
+                .cloned(),
+            after: delta.get("_syncEntitiesAfter").and_then(Value::as_i64),
+        })
     }
 }
 
@@ -683,7 +684,7 @@ fn rename(
     request_id: Option<&str>,
     signature: &str,
     validate: impl Fn(&str, &Value) -> bool,
-) -> Result<Value, RenameError> {
+) -> Result<RenameReply, RenameError> {
     let mut record =
         load_agent_value(transaction, id, &validate)?.ok_or(RenameError::UnknownAgent)?;
     let admitted = match request_id {
@@ -694,11 +695,7 @@ fn rename(
             AgentMutation::Rename,
             signature,
         )? {
-            MutationAdmission::Replay(reply) => {
-                return serde_json::to_value(reply)
-                    .map_err(StoreError::from)
-                    .map_err(Into::into);
-            }
+            MutationAdmission::Replay(reply) => return Ok(reply),
             MutationAdmission::Fresh(admitted) => Some(admitted),
         },
         None => None,
@@ -740,9 +737,7 @@ fn rename(
     if let Some(admitted) = admitted {
         crate::event_write::settle_request(transaction, &admitted, Some(id), &result)?;
     }
-    serde_json::to_value(result)
-        .map_err(StoreError::from)
-        .map_err(Into::into)
+    Ok(result)
 }
 
 #[cfg(test)]

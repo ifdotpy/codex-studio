@@ -2191,11 +2191,7 @@ async fn rename(
     if !result.replayed {
         state.event_wake.notify_one();
     }
-    let response = super::generated_json::<generated::RenameResponse>(result.response)
-        .map(Json)
-        .map_err(|_| ApiError::internal())?
-        .into_response();
-    Ok(response)
+    Ok(Json(result.response).into_response())
 }
 fn operation_error(error: OperationError) -> ApiError {
     use agents_create::MutationError;
