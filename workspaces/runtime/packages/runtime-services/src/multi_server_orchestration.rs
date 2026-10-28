@@ -392,10 +392,6 @@ impl ExchangeOutcome {
             waiting_for,
         }
     }
-    // TEMP bridge: removed by messaging-b <commit>
-    pub fn to_value(&self, key: &str) -> Value {
-        json!(self.to_reply(key))
-    }
     fn from_reply(reply: RemoteReply, key: &str, now: i64) -> Result<Self, AccessError> {
         use studio_runtime_schema::persistence::RemoteOutcome;
         if reply.request_id != key {
