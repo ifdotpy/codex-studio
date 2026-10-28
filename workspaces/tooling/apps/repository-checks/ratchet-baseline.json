@@ -1717,15 +1717,7 @@
     },
     {
       "file": "workspaces/runtime/packages/runtime-http/src/routes/agent_management.rs",
-      "fingerprint": "9ee08ca4e2172cc0006f857b45030902acbbe7dd27bd6a71433b4adc899da233:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-http/src/routes/agent_management.rs",
       "fingerprint": "e2d94d1dde58251eceba3503d75eb591d414605d5f7e64c8b4c543a64b2e584f:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-http/src/routes/agents_create.rs",
-      "fingerprint": "1b1360bb6239aa30962a5f55ba99df8f398e695fc5fd0095e588d7ebad721c63:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-http/src/routes/agents_create.rs",
@@ -1736,20 +1728,12 @@
       "fingerprint": "844387c7a0923ce102aa0b77df7ae2bc932be4b13efdd14e92b19093ef1aa677:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-http/src/routes/catalog_agent.rs",
-      "fingerprint": "cf3e44fe7f38be8539d1a923cf6783f58843b4c24ac295b3ef853d8fd325c4cb:0"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-http/src/routes/claude_controls.rs",
       "fingerprint": "dcd842a99a519de76675bb4395eba0941bd4716a4733e616b2276ea2a81cf466:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-http/src/routes/desktop.rs",
       "fingerprint": "d8548b8f36273bf423489fa844f5e0ed0239ac52400c9c67905156b81310a9f9:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-http/src/routes/federation.rs",
-      "fingerprint": "7bdf9a61c53ea38a09a096dbd7ec1504aec25ce653abedf3b5cab221096bb663:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-http/src/routes/host_secrets.rs",
@@ -1782,10 +1766,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-http/src/routes/mac_sync.rs",
       "fingerprint": "b68cae77439ec9bea5dbb5c64ef051c290ed34f9f16e26185accdb5b78f8341a:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-http/src/routes/messages.rs",
-      "fingerprint": "7bdf9a61c53ea38a09a096dbd7ec1504aec25ce653abedf3b5cab221096bb663:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-http/src/routes/monitors.rs",
@@ -1946,18 +1926,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
       "fingerprint": "327b81f71e332185f8d9a36f4fe7f0b2c4206d9a5fe86bd56bb3aedaa531d8ae:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
-      "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
-      "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:1"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
-      "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:2"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/account_worker/tests.rs",
@@ -2200,10 +2168,6 @@
       "fingerprint": "f1cfe9752b6f98cc18156c817f5a83209a939f2d5657ef242d1d4729f525fd92:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/native_action_ports.rs",
-      "fingerprint": "2c27f0754574c7ed18b01b93bb7792d0ab4c991fac46d00c7dc7d10bb0a03e14:0"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/native_actions.rs",
       "fingerprint": "37ffccc180935a7fa8703aeeaaab0114891798f32a4c1d8b83216013de4511dd:0"
     },
@@ -2346,10 +2310,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/src/token_rate.rs",
       "fingerprint": "1a1c6b6c818b43203a784f210476d501baa0501e86d868cac70f5de352d6a881:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/tool_requests/admission.rs",
-      "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/usage_resume.rs",
@@ -2510,10 +2470,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-store/src/repositories/execution_history.rs",
       "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-store/src/repositories/execution_history.rs",
-      "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:1"
     },
     {
       "file": "workspaces/runtime/packages/runtime-store/src/repositories/reviewer_archive.rs",
@@ -2804,10 +2760,6 @@
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:1"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/account_worker/tests.rs",
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
     },
@@ -2882,14 +2834,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/src/managed_host_tools/ingress_tests/claude_permissions.rs",
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/managed_status_watch.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/managed_status_watch.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:1"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/monitor_http_input.rs",
@@ -3006,10 +2950,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/voice/provider.rs",
-      "fingerprint": "3d8c2f7b7620fb410d270d16bdf9d4f7be2c6b34fabc6143c1b982144e0aae4e:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/voice/provider.rs",
@@ -3547,10 +3487,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/src/account_worker/tests.rs",
       "fingerprint": "e6a27817be2ae1b1382dd8b1899be845ba3fded0910ebe9bed31d84fa284ff59:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/agent_management_recovery.rs",
-      "fingerprint": "55c6b92a8d22d9f09196048ddb1eaac782f9806edec9e9a22f6321e83bed8dce:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/agents_create/operations.rs",
