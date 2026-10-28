@@ -660,13 +660,14 @@ async fn retained_mcp_reconnect_binds_actor_thread_scope_and_replays_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reset_service_recovers_lost_response_through_retained_worker_once() {
+async fn reset_service_holds_lost_response_without_resending() {
     let broker_state = tempfile::tempdir().unwrap();
     let broker_root = broker_state.path().to_path_buf();
     let broker_store = studio_runtime_store::RuntimeStore::open(Some(&broker_root))
         .await
         .unwrap();
-    let bridge = test_bridge(Arc::new(broker_store)).await;
+    let reset_store = Arc::new(broker_store);
+    let bridge = test_bridge(reset_store.clone()).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(bridge).await;
     let port = worker.retained_session();
@@ -677,23 +678,13 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
         requests: requests.clone(),
         lose_response: lose_response.clone(),
     });
-    let request_id = "11000000-0000-4000-8000-000000000020";
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let body = json!({
         "account_key":"default",
         "account_id":"account-A",
         "credit_id":"credit-A",
         "request_id":request_id
     });
-
-    // Keep the reset record store separate from the worker fixture's runtime
-    // lock, then reopen it below to model the service process restarting.
-    let reset_state = tempfile::tempdir().unwrap();
-    let reset_root = reset_state.path().to_path_buf();
-    let reset_store = Arc::new(
-        studio_runtime_store::RuntimeStore::open(Some(&reset_root))
-            .await
-            .unwrap(),
-    );
     let first_session = session.clone();
     let first_body = body.clone();
     let first_store = reset_store.clone();
@@ -729,99 +720,41 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
     lose_response.notify_one();
     let uncertain = first.await.unwrap().unwrap();
     assert_eq!(uncertain["outcome"], "uncertain");
-    drop(reset_store);
-
-    // Opening the durable service store again models recovery after a process restart.
-    let reset_store = Arc::new(
-        studio_runtime_store::RuntimeStore::open(Some(&reset_root))
-            .await
-            .unwrap(),
-    );
-    let retry_session = session.clone();
-    let retry_body = body.clone();
-    let retry = tokio::spawn(async move {
-        crate::limit_reset::consume_reset(&reset_store, retry_session.as_ref(), &retry_body)
-            .await
-            .unwrap()
-    });
-    let retry_wire = peer.next_write().await;
-    assert_eq!(
-        retry_wire.value["method"],
-        "account/rateLimitResetCredit/consume"
-    );
-    assert_eq!(
-        retry_wire.value["params"]["idempotencyKey"], charge_key,
-        "the provider charge identity survives restart"
-    );
-    let new_charge = charges.insert(
-        retry_wire.value["params"]["idempotencyKey"]
-            .as_str()
-            .unwrap()
-            .to_owned(),
-    );
-    assert!(
-        !new_charge,
-        "the fake provider sees a replay of the same charge key"
-    );
-    assert!(
-        retry_wire
-            .receipt
-            .send(CommandReceipt::Written {
-                remote_id: None,
-                duplicate: false,
-            })
-            .is_ok()
-    );
-    peer.reply(&retry_wire.value, json!({"outcome":"alreadyRedeemed"}))
-        .await;
-    let recovered = retry.await.unwrap();
-    assert_eq!(recovered["outcome"], "alreadyRedeemed");
+    let saved_before: String = reset_store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT record FROM runtime_limit_reset_attempts WHERE id=?1",
+            [&request_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let saved: Value = serde_json::from_str(&saved_before).unwrap();
+    assert_eq!(saved["status"], "uncertain");
+    assert_eq!(saved["certainty"], "unknown");
+    assert_eq!(saved["transport_attempts"], 1);
+    let retry = crate::limit_reset::consume_reset(&reset_store, session.as_ref(), &body)
+        .await
+        .unwrap();
+    assert_eq!(retry["outcome"], "uncertain");
+    let saved_after: String = reset_store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT record FROM runtime_limit_reset_attempts WHERE id=?1",
+            [&request_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(saved_after, saved_before, "retry preserves the held attempt");
+    worker_barrier(&worker).await;
+    if let Ok(wire) = peer.writes.try_recv() {
+        assert_eq!(wire.value["method"], "account/rateLimitResetCredit/consume");
+        assert_eq!(wire.value["params"]["idempotencyKey"], charge_key);
+        panic!("same reset call and idempotency key was resent");
+    }
+    assert_eq!(requests.lock().unwrap().len(), 1);
     assert_eq!(charges.len(), 1, "exactly one fake provider charge");
-
-    let recorded = requests.lock().unwrap().clone();
-    assert_eq!(recorded.len(), 2);
-    assert_eq!(recorded[0].1, recorded[1].1);
-    assert_eq!(recorded[0].0, format!("limit-reset:{charge_key}:1"));
-    assert_eq!(recorded[1].0, format!("limit-reset:{charge_key}:2"));
-
-    // The first broker operation remains Unknown. Recovery used a fresh transport
-    // identity, and replaying or rebinding either identity cannot send another write.
-    let old = SessionRequest {
-        root_request_id: recorded[0].2.clone(),
-        admitted_request: recorded[0].3.clone(),
-        scope: port.scope().clone(),
-        expected_scope: None,
-        operation: recorded[0].0.clone(),
-        actor: None,
-        transfer: None,
-        deleted_actor_session: None,
-        method: Method::AccountRateLimitResetCreditConsume,
-        params: recorded[0].1.clone(),
-        deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std(),
-    };
-    assert_eq!(
-        port.request(old.clone()).await.unwrap().result,
-        RequestResult::Unknown
-    );
-    let mut changed_key = old.clone();
-    changed_key.params["idempotencyKey"] = json!("11000000-0000-4000-8000-000000000021");
-    assert_eq!(
-        port.request(changed_key).await.unwrap_err(),
-        PortError::Invalid
-    );
-    let mut changed_body = SessionRequest {
-        root_request_id: recorded[1].2.clone(),
-        admitted_request: recorded[1].3.clone(),
-        operation: recorded[1].0.clone(),
-        params: recorded[1].1.clone(),
-        ..old
-    };
-    changed_body.params["creditId"] = json!("credit-B");
-    assert_eq!(
-        port.request(changed_body).await.unwrap_err(),
-        PortError::Identity
-    );
-    assert!(peer.writes.try_recv().is_err());
     worker.shutdown().await.unwrap();
 }
 
