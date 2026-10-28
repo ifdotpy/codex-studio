@@ -172,7 +172,7 @@ async fn creation_workspace_mode(
     request: &Creation,
     lead: bool,
 ) -> Result<String, OperationError> {
-    #[derive(Deserialize)]
+    #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct SavedWorkspace {
         workspace_mode: Option<String>,
