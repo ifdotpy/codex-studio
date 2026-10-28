@@ -78,40 +78,108 @@ pub(super) struct AccountCall {
     pub restarted: bool,
 }
 
-pub(super) fn account_submission(tx: &rusqlite::Connection, operation: &str) -> Result<Option<AccountCall>, WorkerError> {
+pub(super) fn execution_admission(
+    tx: &rusqlite::Connection,
+    attempt_id: &str,
+) -> Result<
+    (
+        String,
+        studio_runtime_store::request_results::AdmittedRequest,
+    ),
+    WorkerError,
+> {
+    let attempt = studio_runtime_store::ExecutionHistoryRepository::attempt(tx, attempt_id)?
+        .ok_or_else(|| invalid(attempt_id))?;
+    let root = attempt["rootRequestId"]
+        .as_str()
+        .ok_or_else(|| invalid(attempt_id))?
+        .to_owned();
+    let admitted = studio_runtime_store::ExecutionHistoryRepository::admission(tx, attempt_id)?
+        .ok_or_else(|| invalid(attempt_id))?;
+    Ok((root, admitted))
+}
+
+pub(super) fn account_submission(
+    tx: &rusqlite::Connection,
+    operation: &str,
+) -> Result<Option<AccountCall>, WorkerError> {
     match Outbox::get::<ProviderCall>(tx, operation).map_err(outbox_error)? {
-        Some(OutboxRow { payload: ProviderCall::Account(call), .. }) => Ok(Some(call)),
+        Some(OutboxRow {
+            payload: ProviderCall::Account(call),
+            ..
+        }) => Ok(Some(call)),
         Some(_) => Err(invalid(operation)),
         None => Ok(None),
     }
 }
 
-pub(super) fn save_account_submission(tx: &studio_runtime_store::Transaction<'_>, context: &Pending, request: &RecoveredRequest) -> Result<(), WorkerError> {
-    if account_submission(tx, &context.operation)?.is_some() { return Err(invalid(&context.operation)); }
+pub(super) fn save_account_submission(
+    tx: &studio_runtime_store::Transaction<'_>,
+    context: &Pending,
+    request: &RecoveredRequest,
+) -> Result<(), WorkerError> {
+    if account_submission(tx, &context.operation)?.is_some() {
+        return Err(invalid(&context.operation));
+    }
     let vm = AgentRepository::get(tx, &AgentId::from(context.intent.agent_id.as_str()))?
-        .is_some_and(|agent| agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm"));
+        .is_some_and(|agent| {
+            agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+        });
     let account = &context.intent.account_key;
     let request = super::retained::storage::TransportRequest::from(request);
-    let signature = studio_runtime_store::sha256_hex(&serde_json::to_vec(&json!({"context":context,"request":request})).map_err(StoreError::from)?);
-    Outbox::put(tx, &OutboxRow {
-        id: context.operation.clone(), kind: OutboxKind::ProviderCall,
-        owner_kind: OwnerKind::Agent, owner_id: context.intent.agent_id.clone(), request_id:None,
-        signature, status:OutboxStatus::Unknown, account:Some(account.clone()),
-        stream_id:Some(if vm {super::vm_journal_scope(account,&context.intent.agent_id)} else {account.clone()}),
-        generation:Some(request.generation as i64), ordinal:None,next_at:None,
-        payload:ProviderCall::Account(AccountCall {context:context.clone(),request,written:None,restarted:false}),
-        created:(now()*1000.0) as i64,
-    }).map_err(outbox_error)
+    let signature = studio_runtime_store::sha256_hex(
+        &serde_json::to_vec(&json!({"context":context,"request":request}))
+            .map_err(StoreError::from)?,
+    );
+    Outbox::put(
+        tx,
+        &OutboxRow {
+            id: context.operation.clone(),
+            kind: OutboxKind::ProviderCall,
+            owner_kind: OwnerKind::Agent,
+            owner_id: context.intent.agent_id.clone(),
+            request_id: None,
+            signature,
+            status: OutboxStatus::Unknown,
+            account: Some(account.clone()),
+            stream_id: Some(if vm {
+                super::vm_journal_scope(account, &context.intent.agent_id)
+            } else {
+                account.clone()
+            }),
+            generation: Some(request.generation as i64),
+            ordinal: None,
+            next_at: None,
+            payload: ProviderCall::Account(AccountCall {
+                context: context.clone(),
+                request,
+                written: None,
+                restarted: false,
+            }),
+            created: (now() * 1000.0) as i64,
+        },
+    )
+    .map_err(outbox_error)
 }
 
-fn account_written(tx: &studio_runtime_store::Transaction<'_>, operation: &str, request: &RecoveredRequest) -> Result<(), WorkerError> {
-    let Some(mut row) = Outbox::get::<ProviderCall>(tx,operation).map_err(outbox_error)? else {return Err(invalid(operation));};
-    let ProviderCall::Account(call) = &mut row.payload else {return Err(invalid(operation));};
+fn account_written(
+    tx: &studio_runtime_store::Transaction<'_>,
+    operation: &str,
+    request: &RecoveredRequest,
+) -> Result<(), WorkerError> {
+    let Some(mut row) = Outbox::get::<ProviderCall>(tx, operation).map_err(outbox_error)? else {
+        return Err(invalid(operation));
+    };
+    let ProviderCall::Account(call) = &mut row.payload else {
+        return Err(invalid(operation));
+    };
     let written = super::retained::storage::TransportRequest::from(request);
-    if call.written.as_ref().is_some_and(|old| old != &written) {return Err(invalid(operation));}
+    if call.written.as_ref().is_some_and(|old| old != &written) {
+        return Err(invalid(operation));
+    }
     call.written = Some(written);
     row.status = OutboxStatus::Submitted;
-    Outbox::put(tx,&row).map_err(outbox_error)
+    Outbox::put(tx, &row).map_err(outbox_error)
 }
 
 fn save_journal(
@@ -167,46 +235,104 @@ fn save_journal(
     Outbox::put(tx, &row).map_err(outbox_error)
 }
 
-fn notification_scope(identity: &ProviderDeliveryIdentity) -> studio_runtime_store::StoreResult<&str> {
-    identity.provider_handle.strip_prefix("account:").ok_or(StoreError::RecordContract("notification provider handle is not an account stream"))
+fn notification_scope(
+    identity: &ProviderDeliveryIdentity,
+) -> studio_runtime_store::StoreResult<&str> {
+    identity
+        .provider_handle
+        .strip_prefix("account:")
+        .ok_or(StoreError::RecordContract(
+            "notification provider handle is not an account stream",
+        ))
 }
 
-pub(crate) fn notification_acknowledged(tx: &rusqlite::Connection, identity: &ProviderDeliveryIdentity) -> studio_runtime_store::StoreResult<bool> {
+pub(crate) fn notification_acknowledged(
+    tx: &rusqlite::Connection,
+    identity: &ProviderDeliveryIdentity,
+) -> studio_runtime_store::StoreResult<bool> {
     let scope = notification_scope(identity)?;
     checkpoint(tx, scope, identity.generation)
         .map(|cursor| identity.cursor <= cursor)
-        .map_err(|error| match error { WorkerError::Store(error) => error, _ => StoreError::RecordContract("notification checkpoint could not be read") })
+        .map_err(|error| match error {
+            WorkerError::Store(error) => error,
+            _ => StoreError::RecordContract("notification checkpoint could not be read"),
+        })
 }
 
-pub(crate) fn get_notification(tx: &rusqlite::Connection, identity: &ProviderDeliveryIdentity) -> studio_runtime_store::StoreResult<Option<crate::notification_dispatch::NotificationSettlement>> {
+pub(crate) fn get_notification(
+    tx: &rusqlite::Connection,
+    identity: &ProviderDeliveryIdentity,
+) -> studio_runtime_store::StoreResult<Option<crate::notification_dispatch::NotificationSettlement>>
+{
     let scope = notification_scope(identity)?;
-    Ok(Outbox::get::<JournalSettlement>(tx, &journal_operation(scope, identity.generation, identity.cursor))
-        .map_err(outbox_store_error)?.and_then(|row| row.payload.notification))
+    Ok(Outbox::get::<JournalSettlement>(
+        tx,
+        &journal_operation(scope, identity.generation, identity.cursor),
+    )
+    .map_err(outbox_store_error)?
+    .and_then(|row| row.payload.notification))
 }
 
-pub(crate) fn put_notification(tx: &studio_runtime_store::Transaction<'_>, identity: &ProviderDeliveryIdentity, notification: crate::notification_dispatch::NotificationSettlement) -> studio_runtime_store::StoreResult<()> {
+pub(crate) fn put_notification(
+    tx: &studio_runtime_store::Transaction<'_>,
+    identity: &ProviderDeliveryIdentity,
+    notification: crate::notification_dispatch::NotificationSettlement,
+) -> studio_runtime_store::StoreResult<()> {
     let scope = notification_scope(identity)?;
     let id = journal_operation(scope, identity.generation, identity.cursor);
-    let mut row = if let Some(row) = Outbox::get::<JournalSettlement>(tx, &id).map_err(outbox_store_error)? { row } else {
-        let (account, actor) = scope.rsplit_once(":vm:").map_or((scope,None), |(account,actor)| (account,Some(actor)));
-        OutboxRow {
-            signature: studio_runtime_store::sha256_hex(id.as_bytes()), id,
-            kind: OutboxKind::JournalEntry, owner_kind: if actor.is_some() {OwnerKind::Agent} else {OwnerKind::Account},
-            owner_id: actor.unwrap_or(account).to_owned(),request_id:None,status:OutboxStatus::Pending,
-            account:Some(account.to_owned()),stream_id:Some(scope.to_owned()),generation:Some(identity.generation as i64),ordinal:Some(identity.cursor as i64),next_at:Some(0),
-            payload: JournalSettlement {cursor:identity.cursor,digest:String::new(),ready:false,committed:false,notification:None},created:(now()*1000.0) as i64,
-        }
-    };
-    if let Some(old) = &row.payload.notification && old != &notification { return Err(StoreError::RecordContract("notification identity conflicts with its committed payload")); }
+    let mut row =
+        if let Some(row) = Outbox::get::<JournalSettlement>(tx, &id).map_err(outbox_store_error)? {
+            row
+        } else {
+            let (account, actor) = scope
+                .rsplit_once(":vm:")
+                .map_or((scope, None), |(account, actor)| (account, Some(actor)));
+            OutboxRow {
+                signature: studio_runtime_store::sha256_hex(id.as_bytes()),
+                id,
+                kind: OutboxKind::JournalEntry,
+                owner_kind: if actor.is_some() {
+                    OwnerKind::Agent
+                } else {
+                    OwnerKind::Account
+                },
+                owner_id: actor.unwrap_or(account).to_owned(),
+                request_id: None,
+                status: OutboxStatus::Pending,
+                account: Some(account.to_owned()),
+                stream_id: Some(scope.to_owned()),
+                generation: Some(identity.generation as i64),
+                ordinal: Some(identity.cursor as i64),
+                next_at: Some(0),
+                payload: JournalSettlement {
+                    cursor: identity.cursor,
+                    digest: String::new(),
+                    ready: false,
+                    committed: false,
+                    notification: None,
+                },
+                created: (now() * 1000.0) as i64,
+            }
+        };
+    if let Some(old) = &row.payload.notification
+        && old != &notification
+    {
+        return Err(StoreError::RecordContract(
+            "notification identity conflicts with its committed payload",
+        ));
+    }
     row.payload.notification = Some(notification);
-    Outbox::put(tx,&row).map_err(outbox_store_error)
+    Outbox::put(tx, &row).map_err(outbox_store_error)
 }
 
 fn outbox_store_error(error: studio_runtime_store::outbox::OutboxError) -> StoreError {
     match error {
         studio_runtime_store::outbox::OutboxError::Sql(error) => error.into(),
         studio_runtime_store::outbox::OutboxError::Json(error) => error.into(),
-        studio_runtime_store::outbox::OutboxError::Conflict(id) => StoreError::InvalidSyncObject {scope:"runtime_outbox".into(),id},
+        studio_runtime_store::outbox::OutboxError::Conflict(id) => StoreError::InvalidSyncObject {
+            scope: "runtime_outbox".into(),
+            id,
+        },
     }
 }
 
@@ -315,38 +441,33 @@ fn completed_attempt(agent: &studio_runtime_store::AgentRecord, attempt: &Value)
 /// Hold reason of an agent whose thread request outcome is unknown after a
 /// restart. The request is never sent again; a later message continues.
 pub(super) const RECEIPT_PENDING_HOLD: &str = "thread-preparation/receipt-pending";
-/// Queue event kinds that are a message to the agent. One sent after a thread
-/// request whose outcome a restart left unknown is the decision to continue
-/// without that outcome.
-const CONTINUE_MESSAGE_KINDS: [&str; 2] = ["user", "followup"];
-/// Receipt phase that marks a thread request whose outcome stayed unknown
-/// across a backend restart. Only such a request can be abandoned; one in
-/// flight on the current connection waits for its reply.
-const RESTARTED_PHASE: &str = "restarted";
-/// Unresolved thread start or resume submissions for `agent`, in any account.
-/// GLOB lets SQLite derive an indexed prefix range without manual bound arithmetic.
-macro_rules! pending_thread_requests_from {
-    () => {
-        "FROM runtime_operation_receipts r WHERE r.id GLOB ?2 AND json_extract(r.result,'$.context.intent.agent_id')=?1 AND json_extract(r.result,'$.context.method') IN ('thread/start','thread/resume') AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved')"
-    };
+/// Outstanding provider calls belonging to one account, without completed history.
+fn account_obligations(
+    connection: &rusqlite::Connection,
+    account: &str,
+) -> Result<Vec<OutboxRow<ProviderCall>>, WorkerError> {
+    let mut rows = Vec::new();
+    for status in [OutboxStatus::Submitted, OutboxStatus::Unknown] {
+        rows.extend(
+            Outbox::for_account(
+                connection,
+                account,
+                OutboxKind::ProviderCall,
+                status,
+                u32::MAX,
+            )
+            .map_err(outbox_error)?,
+        );
+    }
+    Ok(rows)
 }
-const PENDING_THREAD_START_SQL: &str = concat!(
-    "SELECT EXISTS(SELECT 1 ",
-    pending_thread_requests_from!(),
-    ")"
-);
-/// The submitted receipts that [`PENDING_THREAD_START_SQL`] finds.
-const PENDING_THREAD_REQUESTS_SQL: &str =
-    concat!("SELECT r.result ", pending_thread_requests_from!());
+
 pub(super) fn has_pending_thread_start(
     connection: &rusqlite::Connection,
     agent: &str,
-) -> rusqlite::Result<bool> {
-    connection.query_row(
-        PENDING_THREAD_START_SQL,
-        params![agent, submitted_account_receipt_pattern()],
-        |row| row.get(0),
-    )
+) -> Result<bool, WorkerError> {
+    Ok(Outbox::for_owner::<ProviderCall>(connection,OwnerKind::Agent,agent,OutboxKind::ProviderCall).map_err(outbox_error)?
+        .into_iter().any(|row| matches!(row.payload,ProviderCall::Account(call) if matches!(call.context.method,Method::ThreadStart|Method::ThreadResume))))
 }
 pub(super) fn record(request: &RecoveredRequest) -> Value {
     json!({"id":request.ticket.id,"generation":request.ticket.generation,"method":request.ticket.method.as_str(),"operation":request.operation_id.0,"thread":request.thread_id,"lightweight":request.lightweight,"deadline":request.deadline_ms,"unknown":request.unknown,"remoteId":request.remote_id})
@@ -403,15 +524,13 @@ pub(super) async fn recover(
         // receipt-pending hold and let the next generation interrupt the
         // finished agent again. Openness is read before reconciliation, which
         // can continue an interrupted turn and so close its receipt.
-        let mut statement = tx.prepare("SELECT a.id FROM runtime_agents a WHERE a.account_key=?1 AND json_extract(a.record,'$.startAttempt') IS NULL AND COALESCE(json_extract(a.record,'$.disconnectRecovery.startAttempt.connectionGeneration'),json_extract(a.record,'$.restartRecovery.startAttempt.connectionGeneration'))=?2 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h WHERE h.id=(?3 || a.id) AND h.signature=?4)")?;
+        let mut statement = tx.prepare("SELECT a.id FROM runtime_agents a WHERE a.account_key=?1 AND json_extract(a.record,'$.startAttempt') IS NULL AND COALESCE(json_extract(a.record,'$.disconnectRecovery.startAttempt.connectionGeneration'),json_extract(a.record,'$.restartRecovery.startAttempt.connectionGeneration'))=?2 AND a.hold_status='clear'")?;
         let ids = statement
             .query_map(
                 params![
                     account,
                     i64::try_from(generation.0)
                         .map_err(|_| StoreError::SchemaMismatch("generation overflow".into()))?,
-                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
                 ],
                 |row| row.get::<_, String>(0),
             )?
@@ -453,38 +572,14 @@ pub(super) async fn recover(
                 AgentRepository::put(tx, &agent)?;
             }
         }
-        let prefix = format!("account-worker:account:{account}:");
-        let mut stmt=tx.prepare("SELECT r.result FROM runtime_operation_receipts r WHERE r.id>=?1 AND r.id<?2 AND substr(r.id,-10)=':submitted' AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved') ORDER BY r.id")?;
-        let rows = stmt
-            .query_map(params![prefix, format!("{prefix}~"),], |r| {
-                r.get::<_, String>(0)
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+        let rows = account_obligations(tx,&account)?;
         let mut recovered = Vec::new();
-        for raw in rows {
-            let value: Value = serde_json::from_str(&raw).map_err(|_| invalid(&account))?;
-            let context: Pending =
-                serde_json::from_value(value["context"].clone()).map_err(|_| invalid(&account))?;
-            let held: bool = tx.query_row_cached(
-                "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts \
-                 WHERE id=?1 AND signature=?2)",
-                params![
-                    format!(
-                        "{}{}",
-                        studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                        context.intent.agent_id
-                    ),
-                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
-                ],
-                |row| row.get(0),
-            )?;
-            if held {
-                // Keep the unresolved submission and its uncertainty intact,
-                // but do not repeatedly decode the quarantined agent row.
-                continue;
-            }
-            let written = receipt(tx, &context.operation, "written")?;
-            let request = decode(written.as_ref().unwrap_or(&value["request"]))?;
+        for mut row in rows {
+            let ProviderCall::Account(call) = &mut row.payload else {continue;};
+            let context = call.context.clone();
+            let held: bool = tx.query_row_cached("SELECT hold_status!='clear' FROM runtime_agents WHERE id=?1",[&context.intent.agent_id],|r|r.get(0)).optional()?.unwrap_or(false);
+            if held {continue;}
+            let request = call.written.as_ref().unwrap_or(&call.request).recovered();
             let vm_owned =
                 AgentRepository::get(tx, &AgentId::from(context.intent.agent_id.as_str()))?
                     .is_some_and(|agent| {
@@ -500,13 +595,9 @@ pub(super) async fn recover(
                 context.method,
                 Method::ThreadStart | Method::ThreadResume
             ) {
-                if continued_after(tx, &context)? {
-                    abandon_thread_request(tx, &context)?;
-                    continue;
-                }
-                if receipt(tx, &context.operation, RESTARTED_PHASE)?.is_none() {
-                    save(tx, &context.operation, RESTARTED_PHASE, json!(true))?;
-                }
+                call.restarted = true;
+                row.status = OutboxStatus::Unknown;
+                Outbox::put(tx,&row).map_err(outbox_error)?;
                 let current =
                     AgentRepository::get(tx, &AgentId::from(context.intent.agent_id.as_str()))?;
                 if current.as_ref().is_some_and(|a| {
@@ -535,9 +626,6 @@ pub(super) async fn recover(
             }
             recovered.push((context, request));
         }
-        // Settle every old start's uncertainty before retiring its transport
-        // receipt: capacity state and parent notices belong to that same decision.
-        retire_generations(tx, &account, generation.0)?;
         Ok(recovered)
     })
     .await
@@ -563,141 +651,27 @@ pub(super) fn recover_vm_actor_requests(
     {
         return Ok(Vec::new());
     }
-    let prefix = format!("account-worker:account:{account}:");
-    let mut statement = connection.prepare(
-        "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 AND substr(id,-10)=':submitted' AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(id,1,length(id)-10)||':resolved') ORDER BY id",
-    )?;
-    let rows = statement
-        .query_map(params![prefix, format!("{prefix}~")], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
     let mut recovered = Vec::new();
-    for (receipt, raw) in rows {
-        let value: Value = serde_json::from_str(&raw).map_err(|_| invalid(&receipt))?;
-        let context: Pending =
-            serde_json::from_value(value["context"].clone()).map_err(|_| invalid(&receipt))?;
-        if context.intent.agent_id != agent {
+    for row in Outbox::for_owner::<ProviderCall>(
+        connection,
+        OwnerKind::Agent,
+        agent,
+        OutboxKind::ProviderCall,
+    )
+    .map_err(outbox_error)?
+    {
+        let ProviderCall::Account(call) = row.payload else {
+            continue;
+        };
+        if call.context.intent.account_key != account {
             continue;
         }
-        let operation = receipt
-            .strip_prefix("account-worker:")
-            .and_then(|value| value.strip_suffix(":submitted"))
-            .ok_or_else(|| invalid(&receipt))?;
-        let written_id = receipt_id(operation, "written");
-        let written = connection
-            .query_row_cached(
-                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-                [written_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        let record = match written {
-            Some(raw) => serde_json::from_str(&raw).map_err(|_| invalid(&receipt))?,
-            None => value["request"].clone(),
-        };
-        let request = decode(&record)?;
+        let request = call.written.as_ref().unwrap_or(&call.request).recovered();
         if request.ticket.generation == generation {
-            recovered.push((context, request));
+            recovered.push((call.context, request));
         }
     }
     Ok(recovered)
-}
-// Reconciliation has already held old-generation input. Transport receipts
-// from a closed generation cannot authorize replay and no longer need journals.
-fn retire_generations(
-    tx: &studio_runtime_store::Transaction<'_>,
-    account: &str,
-    current: u64,
-) -> Result<(), WorkerError> {
-    for kind in ["cursor", "journal", "callback", "recovery", "account"] {
-        let prefix = format!("account-worker:{kind}:{account}:");
-        let mut query =
-            tx.prepare("SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2")?;
-        let rows = query
-            .query_map(params![prefix, format!("{prefix}~")], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        for (id, raw) in rows {
-            let value: Value = serde_json::from_str(&raw).map_err(|_| invalid(&id))?;
-            let generation = if kind == "account" {
-                value
-                    .pointer("/request/generation")
-                    .or_else(|| value.get("generation"))
-                    .and_then(Value::as_u64)
-            } else {
-                id.strip_prefix(&prefix)
-                    .and_then(|tail| tail.split(':').next())
-                    .and_then(|number| number.parse().ok())
-            };
-            if generation.is_none_or(|generation| generation >= current) {
-                continue;
-            }
-            if kind == "cursor" {
-                // A saved retained result can only be replayed after reconnect
-                // while its submitted intent still exists. Keep that
-                // generation's checkpoint for exactly that lifetime. Submitted
-                // retained intents are durable, so each such generation pins at
-                // most one checkpoint; checkpoint count therefore never exceeds
-                // the number of retained receipts. Generations without retained
-                // requests retire their checkpoint during reconnect churn.
-                let retained_prefix = format!("account-worker:retained:{account}:");
-                let generation_number = generation
-                    .and_then(|generation| i64::try_from(generation).ok())
-                    .ok_or_else(|| invalid(&id))?;
-                let has_retained_submission: bool = tx.query_row_cached(
-                    "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 AND substr(id,-10)=':submitted' AND json_extract(result,'$.call.scope.generation')=?3)",
-                    params![
-                        retained_prefix,
-                        format!("{retained_prefix}~"),
-                        generation_number
-                    ],
-                    |row| row.get(0),
-                )?;
-                if has_retained_submission {
-                    continue;
-                }
-            }
-            if kind == "account"
-                && matches!(
-                    value
-                        .pointer("/request/method")
-                        .or_else(|| value.get("method"))
-                        .and_then(Value::as_str),
-                    Some("thread/start" | "thread/resume")
-                )
-            {
-                // An unresolved thread request may have applied in the previous
-                // child. Generation replacement is not negative delivery proof.
-                continue;
-            }
-            if kind == "account"
-                && let Some(context) = value.get("context")
-            {
-                let pending: Pending =
-                    serde_json::from_value(context.clone()).map_err(|_| invalid(&id))?;
-                if let Some(key) = effect_key(account, &Effect::Submit(pending.intent)) {
-                    delete_effect(tx, &key)?;
-                }
-                forget_request(tx, &pending.operation)?;
-            }
-            if kind == "journal"
-                && let (Some(generation), Some(cursor)) = (generation, value["cursor"].as_u64())
-            {
-                let identity = json!({"providerHandle":ProviderHandle::for_account(account).as_str(),"generation":generation,"cursor":cursor});
-                tx.execute_cached(
-                    "DELETE FROM runtime_operation_receipts WHERE id=?1",
-                    [format!(
-                        "provider-notification:{}",
-                        studio_runtime_store::sha256_hex(identity.to_string().as_bytes())
-                    )],
-                )?;
-            }
-            tx.execute_cached("DELETE FROM runtime_operation_receipts WHERE id=?1", [id])?;
-        }
-    }
-    Ok(())
 }
 
 pub(super) async fn claim(
@@ -777,10 +751,7 @@ pub(super) async fn claim(
                 )?;
                 return Ok(None);
             }
-            if has_pending_thread_start(tx, agent.as_str())?
-                && (!abandon_continued_thread_requests(tx, &agent)?
-                    || has_pending_thread_start(tx, agent.as_str())?)
-            {
+            if has_pending_thread_start(tx, agent.as_str())? {
                 return Ok(None);
             }
             let pending = record
@@ -987,7 +958,7 @@ pub(super) async fn submitted(
     let blocked_intent = context.intent.clone();
     let blocked_method = context.method;
     let result = scheduler::lifecycle_transaction_with(store, move |tx| {
-        if receipt(tx, &context.operation, "submitted")?.is_some() {
+        if account_submission(tx, &context.operation)?.is_some() {
             return Ok(false);
         }
         let i = &context.intent;
@@ -1224,12 +1195,7 @@ pub(super) async fn submitted(
             if let Some(key) = &effect {
                 delete_effect(tx, key)?;
             }
-            save(
-                tx,
-                &context.operation,
-                "submitted",
-                json!({"context":&*context,"request":record(&request)}),
-            )
+            save_account_submission(tx, &context, &request)
         })?;
         Ok(true)
     })
@@ -1433,7 +1399,7 @@ fn settle_outcome(
             ..
         } = &outcome
         {
-            save(tx, &context.operation, "written", record(request))?;
+            account_written(tx, &context.operation, request)?;
         }
         let retired = matches!(
             outcome,
@@ -1460,7 +1426,7 @@ fn settle_outcome(
             recovery: Some(request),
             ..
         } => {
-            save(tx, &context.operation, "written", record(&request))?;
+            account_written(tx, &context.operation, &request)?;
             false
         }
         SessionOutcome::Write {
@@ -1481,24 +1447,12 @@ fn settle_outcome(
             true
         }
         SessionOutcome::Write { ticket, .. } => {
-            if let Some((agent, epoch)) = retry_unknown_resume(tx, &context, session_closed)? {
-                effect = Some(Effect::Wake(agent, epoch));
-                true
-            } else {
-                uncertain(tx, &context, ticket.as_ref(), false, session_closed)?
-            }
+            uncertain(tx, &context, ticket.as_ref(), false, session_closed)?
         }
         SessionOutcome::Resolved {
             outcome: RequestOutcome::Unknown,
             ticket,
-        } => {
-            if let Some((agent, epoch)) = retry_unknown_resume(tx, &context, session_closed)? {
-                effect = Some(Effect::Wake(agent, epoch));
-                true
-            } else {
-                uncertain(tx, &context, Some(&ticket), false, session_closed)?
-            }
-        }
+        } => uncertain(tx, &context, Some(&ticket), false, session_closed)?,
         SessionOutcome::Resolved {
             ticket,
             outcome: RequestOutcome::Reply { body, .. },
@@ -1944,31 +1898,6 @@ fn session_missing(error: &Value) -> bool {
 const UNKNOWN_THREAD_RESUME_RETRY: &str =
     "Provider thread resume outcome is unknown; the input returned to the queue once.";
 
-/// Return the input of a thread/resume whose outcome is unknown while its
-/// provider session stays open, for example after its reply deadline. A thread
-/// request carries no input (only turn/start does), and resuming a thread again
-/// creates nothing, so the retry cannot repeat a message. It happens once per
-/// run; a second unknown outcome holds the input. Returns the agent to wake.
-fn retry_unknown_resume(
-    tx: &studio_runtime_store::Transaction<'_>,
-    context: &Pending,
-    session_closed: bool,
-) -> Result<Option<(String, i64)>, WorkerError> {
-    if session_closed || context.method != Method::ThreadResume {
-        return Ok(None);
-    }
-    let identity = context.intent.identity();
-    if studio_runtime_store::ExecutionHistoryRepository::start_returns(tx, &identity.attempt_id)?
-        > 0
-    {
-        return Ok(None);
-    }
-    if SchedulerRepository::return_unstarted_input(tx, &identity, UNKNOWN_THREAD_RESUME_RETRY)? {
-        return Ok(Some((identity.agent_id, identity.epoch)));
-    }
-    Ok(None)
-}
-
 /// Settle a request whose provider outcome is unknown. Returns true when the
 /// request is retired because its attempt went back to the queue.
 fn uncertain(
@@ -1978,15 +1907,6 @@ fn uncertain(
     not_sent: bool,
     session_closed: bool,
 ) -> Result<bool, WorkerError> {
-    let thread_request = !matches!(context.method, Method::TurnInterrupt | Method::TurnStart);
-    // A thread request that died with its provider process never submitted the
-    // input; the attempt retries on the next session instead of holding it.
-    if thread_request
-        && session_closed
-        && SchedulerRepository::requeue_unsubmitted_attempt(tx, &context.intent.identity())?
-    {
-        return Ok(true);
-    }
     if context.method == Method::TurnInterrupt {
         let ticket = ticket.ok_or_else(|| invalid(&context.operation))?;
         SchedulerRepository::settle_interrupt(
@@ -2629,7 +2549,17 @@ fn journal_one(
                         if !bound {
                             // The deferred entry holds the checkpoint below
                             // itself until it is journaled again.
-                            save_journal(tx, identity, entry, digest, false)?;
+                            save_journal(
+                                tx,
+                                JournalIdentity {
+                                    account,
+                                    journal_scope,
+                                    expected_vm_actor,
+                                },
+                                entry,
+                                digest,
+                                false,
+                            )?;
                             return Ok(None);
                         }
                         next = flush_notification_streams(
@@ -3260,24 +3190,6 @@ fn compact(
     Ok(())
 }
 
-/// Rename journal and publication receipts written before their numbers were
-/// zero-padded; a no-op afterwards.
-pub(super) fn pad_legacy_receipt_keys(
-    tx: &studio_runtime_store::Transaction<'_>,
-    account: &str,
-) -> Result<(), WorkerError> {
-    let prefix = format!("account-worker:notification-publication:{account}:");
-    tx.execute(
-        &format!("UPDATE runtime_operation_receipts SET id=?1||printf('%0{JOURNAL_CURSOR_DIGITS}d:%0{JOURNAL_CURSOR_DIGITS}d:pending',json_extract(result,'$.sequence'),json_extract(result,'$.index')) WHERE id>=?1 AND id<?2 AND id=?1||json_extract(result,'$.sequence')||':'||json_extract(result,'$.index')||':pending'"),
-        params![prefix, format!("{prefix}~")],
-    )?;
-    let prefix = format!("account-worker:journal:{account}:");
-    tx.execute(
-        &format!("UPDATE runtime_operation_receipts SET id=substr(id,1,length(id)-length(':'||json_extract(result,'$.cursor')||':settled'))||printf(':%0{JOURNAL_CURSOR_DIGITS}d:settled',json_extract(result,'$.cursor')) WHERE id>=?1 AND id<?2 AND signature='settled' AND substr(id,-length(':'||json_extract(result,'$.cursor')||':settled'))=':'||json_extract(result,'$.cursor')||':settled'"),
-        params![prefix, format!("{prefix}~")],
-    )?;
-    Ok(())
-}
 // Python codex_streaming.FLUSH_SECONDS is .75. The additional byte threshold
 // bounds a durable batch when producers outpace that timer; answers are uncut.
 pub(super) const STREAM_FLUSH_BYTES: usize = 64 * 1024;
@@ -4167,95 +4079,6 @@ fn hold_thread_receipt(
     }));
     AgentRepository::put(tx, &agent)?;
     Ok(())
-}
-
-/// Whether the agent got a message after the thread/resume of `context` began:
-/// the decision to continue without that request's unknown outcome. A later
-/// attempt resumes the same thread again and carries no input. A thread/start
-/// is never continued this way, since another one would create a second thread.
-fn continued_after(
-    tx: &studio_runtime_store::Transaction<'_>,
-    context: &Pending,
-) -> Result<bool, WorkerError> {
-    if context.method != Method::ThreadResume {
-        return Ok(false);
-    }
-    let agent_id = context.intent.agent_id.as_str();
-    let Some(agent) = AgentRepository::get(tx, &AgentId::from(agent_id))? else {
-        return Ok(false);
-    };
-    let Some(begun) =
-        studio_runtime_store::ExecutionHistoryRepository::attempt(tx, &context.intent.attempt_id)?
-            .and_then(|attempt| attempt["created"].as_f64())
-    else {
-        return Ok(false);
-    };
-    Ok(tx.query_row_cached(
-        "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 \
-         AND status='pending' AND kind IN (SELECT value FROM json_each(?3)) AND created>?4)",
-        params![
-            agent_id,
-            agent.epoch,
-            json!(CONTINUE_MESSAGE_KINDS).to_string(),
-            begun
-        ],
-        |row| row.get(0),
-    )?)
-}
-/// Resolve a thread request whose outcome is unknown as abandoned, and clear
-/// its receipt-pending hold. The request is never sent again, and it no longer
-/// holds a claim; a late reply settles as stale.
-fn abandon_thread_request(
-    tx: &studio_runtime_store::Transaction<'_>,
-    context: &Pending,
-) -> Result<(), WorkerError> {
-    if receipt(tx, &context.operation, "resolved")?.is_none() {
-        save(
-            tx,
-            &context.operation,
-            "resolved",
-            json!({"abandoned":"continued-by-message"}),
-        )?;
-    }
-    let agent_id = AgentId::from(context.intent.agent_id.as_str());
-    if let Some(mut agent) = AgentRepository::get(tx, &agent_id)?
-        && agent
-            .extra
-            .get("startOutcomeHold")
-            .is_some_and(|hold| hold["operationId"] == context.operation)
-    {
-        agent.extra.remove("startOutcomeHold");
-        AgentRepository::put(tx, &agent)?;
-    }
-    Ok(())
-}
-/// Abandon each of the agent's restarted thread requests that a later message
-/// continued. Returns whether one was abandoned.
-fn abandon_continued_thread_requests(
-    tx: &studio_runtime_store::Transaction<'_>,
-    agent_id: &str,
-) -> Result<bool, WorkerError> {
-    let mut statement = tx.prepare(PENDING_THREAD_REQUESTS_SQL)?;
-    let rows = statement
-        .query_map(
-            params![agent_id, submitted_account_receipt_pattern()],
-            |row| row.get::<_, String>(0),
-        )?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(statement);
-    let mut abandoned = false;
-    for raw in rows {
-        let value: Value = serde_json::from_str(&raw).map_err(|_| invalid(agent_id))?;
-        let context: Pending =
-            serde_json::from_value(value["context"].clone()).map_err(|_| invalid(agent_id))?;
-        if receipt(tx, &context.operation, RESTARTED_PHASE)?.is_some()
-            && continued_after(tx, &context)?
-        {
-            abandon_thread_request(tx, &context)?;
-            abandoned = true;
-        }
-    }
-    Ok(abandoned)
 }
 
 fn hold_before_claim(

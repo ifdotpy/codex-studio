@@ -133,6 +133,8 @@ fn binding(
     }
     Ok(Some(Binding {
         request: preparation::VmProviderLaunchRequest {
+            root_request_id: super::store::execution_admission(connection, &id)?.0,
+            admitted_request: super::store::execution_admission(connection, &id)?.1,
             agent_id: actor.into(),
             epoch: record.epoch,
             generation,

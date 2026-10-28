@@ -3052,6 +3052,8 @@ impl Worker {
             return Ok(false);
         };
         let expected = preparation::VmProviderLaunchRequest {
+            root_request_id: session.launch_request.root_request_id.clone(),
+            admitted_request: session.launch_request.admitted_request.clone(),
             agent_id: id,
             epoch,
             generation,
@@ -5122,6 +5124,11 @@ pub fn commit_prepared_turn(
     )? {
         return Ok(false);
     }
-    crate::notification_dispatch::record_start_submission(tx, &intent.agent_id, submission)?;
+    crate::notification_dispatch::record_start_submission(
+        tx,
+        &intent.agent_id,
+        &intent.attempt_id,
+        submission,
+    )?;
     Ok(true)
 }

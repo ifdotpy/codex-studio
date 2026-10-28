@@ -181,6 +181,7 @@ async fn vm_launch_request(
     generation: u64,
 ) -> Result<Option<preparation::VmProviderLaunchRequest>, WorkerError> {
     let agent_id = intent.agent_id.clone();
+    let attempt_id = intent.attempt_id.clone();
     let lookup_id = agent_id.clone();
     let intent_cwd = intent.cwd.clone();
     let account_key = intent.account_key.clone();
@@ -235,6 +236,8 @@ async fn vm_launch_request(
                         .filter(|value| value.starts_with('/'))
                         .unwrap_or(crate::linux_vm_provider::DEFAULT_GUEST_HOME);
                     Ok(Some(preparation::VmProviderLaunchRequest {
+                        root_request_id: store::execution_admission(connection, &attempt_id)?.0,
+                        admitted_request: store::execution_admission(connection, &attempt_id)?.1,
                         agent_id: record.id.0,
                         epoch: record.epoch,
                         generation,
