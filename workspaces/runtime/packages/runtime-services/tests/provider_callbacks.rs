@@ -29,6 +29,7 @@ async fn fixture() -> (
     let store = std::sync::Arc::new(store);
     let actor = &t.value["agents"][0];
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
