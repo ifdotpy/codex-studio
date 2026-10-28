@@ -82,6 +82,70 @@ pub fn settle_request<R: serde::Serialize>(
     Ok(())
 }
 
+pub enum CallerAdmission<R> {
+    Fresh(studio_runtime_store::request_results::AdmittedRequest),
+    Replay(R),
+}
+
+pub struct RequestKey<'a> {
+    pub raw: &'a str,
+    pub namespace: &'a str,
+    pub authority: &'a [&'a str],
+    pub root: &'a str,
+    pub operation: &'a [&'a str],
+}
+impl<'a> RequestKey<'a> {
+    pub fn new(namespace: &'a str, authority: &'a [&'a str], root: &'a str) -> Self {
+        Self {
+            raw: root,
+            namespace,
+            authority,
+            root,
+            operation: &[],
+        }
+    }
+    pub fn raw(mut self, raw: &'a str) -> Self {
+        self.raw = raw;
+        self
+    }
+    pub fn operation(mut self, operation: &'a [&'a str]) -> Self {
+        self.operation = operation;
+        self
+    }
+}
+
+/// The common public-caller flow: authorized exact lookup, then UUIDv7 admission.
+pub fn begin_request<R: serde::de::DeserializeOwned>(
+    transaction: &Transaction<'_>,
+    key: RequestKey<'_>,
+    signature: &str,
+    now_ms: i64,
+) -> Result<CallerAdmission<R>, studio_runtime_store::request_results::RequestResultError> {
+    if let Some(saved) = replay_request(transaction, key.raw, signature, now_ms)? {
+        return Ok(CallerAdmission::Replay(saved.reply));
+    }
+    Ok(
+        match admit_request(
+            transaction,
+            key.namespace,
+            key.authority,
+            key.root,
+            key.operation,
+            signature,
+            now_ms,
+        )? {
+            studio_runtime_store::request_results::Admission::Fresh(admitted) => {
+                CallerAdmission::Fresh(admitted)
+            }
+            studio_runtime_store::request_results::Admission::Replay(saved) => {
+                let saved: studio_runtime_store::request_results::ResultEnvelope<R> =
+                    serde_json::from_str(&saved.result)?;
+                CallerAdmission::Replay(saved.reply)
+            }
+        },
+    )
+}
+
 /// Python `str.strip()` includes four ASCII separators Rust's whitespace predicate omits.
 pub fn python_strip(value: &str) -> &str {
     value.trim_matches(|character: char| {
