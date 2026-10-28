@@ -17,6 +17,8 @@ pub fn message_text_within_limit(text: &str) -> bool {
 
 #[derive(Debug, Error)]
 pub enum CoordinationError {
+    #[error(transparent)]
+    RequestResult(#[from] studio_runtime_store::request_results::RequestResultError),
     #[error("{0}")]
     InvalidRequest(&'static str),
     #[error("{0}")]
@@ -29,6 +31,33 @@ pub enum CoordinationError {
     AdmissionDenied(String),
     #[error(transparent)]
     Store(#[from] StoreError),
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ManagedMessageReply {
+    id: String,
+    status: studio_runtime_schema::persistence::DeliveryStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(
+        default,
+        rename = "waitingFor",
+        skip_serializing_if = "Option::is_none"
+    )]
+    waiting_for: Option<Vec<Value>>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct GroupMessageReply {
+    id: String,
+    room: String,
+    author: String,
+    text: String,
+    at: f64,
+    deliveries: BTreeMap<String, studio_runtime_schema::persistence::RecipientDelivery>,
+    status: studio_runtime_schema::persistence::DeliveryStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 pub fn history(
@@ -197,15 +226,34 @@ pub(crate) fn remote_message_receipt(
         "text": text,
         "assets": [],
     }));
-    crate::event_write::read_receipt(
-        connection,
-        Some(id),
-        &signature,
-        "runtime_events",
-        id,
-        |value| valid_message_receipt(value, id),
-    )
-    .map_err(event_write_error)
+    let now_ms = (crate::event_write::unix_time().map_err(event_write_error)? * 1000.0) as i64;
+    let saved = crate::event_write::replay_request::<ManagedMessageReply>(
+        connection, id, &signature, now_ms,
+    )?;
+    let saved = if saved.is_some() {
+        saved
+    } else {
+        let identity = studio_runtime_schema::persistence::RequestIdentity::new(
+            "message",
+            &[room, "user"],
+            id,
+            &[],
+        )
+        .map_err(|_| CoordinationError::InvalidRequest("Request id expired"))?;
+        crate::event_write::replay_request::<ManagedMessageReply>(
+            connection,
+            identity.id(),
+            &signature,
+            now_ms,
+        )?
+    };
+    saved
+        .map(|saved| {
+            serde_json::to_value(saved.reply)
+                .map_err(StoreError::from)
+                .map_err(Into::into)
+        })
+        .transpose()
 }
 
 #[derive(Debug, PartialEq)]
@@ -273,78 +321,23 @@ fn post_managed_message(
         "text": text,
         "assets": input.assets,
     }));
-    if let Some(event) = QueueEventRepository::get(transaction, &QueueEventId::from(input.id))? {
-        let metadata = QueueWriteRepository::metadata(transaction, input.id)?
-            .unwrap_or_else(|| json!({"assets": [], "delivery": DeliveryMoment::CurrentTurn}));
-        let old_assets = metadata
-            .get("assets")
-            .and_then(Value::as_array)
-            .cloned()
-            .ok_or_else(|| invalid_stored("runtime_event_meta", input.id))?;
-        if event.agent.0 != input.room
-            || event.kind != "user"
-            || event.text != text
-            || old_assets != input.assets
-            || !matches_requested_delivery(&metadata, input.delivery)?
-        {
-            return Err(CoordinationError::Conflict(
-                "This message id has different content",
-            ));
-        }
-        if event.status == "stored_only"
-            && crate::event_write::truthy(agent.extra.get("remoteAnchor"))
-            && let Some(receipt) = crate::event_write::read_receipt(
-                transaction,
-                Some(input.id),
-                &signature,
-                "runtime_events",
-                input.id,
-                |value| valid_message_receipt(value, input.id),
-            )
-            .map_err(event_write_error)?
-        {
-            return Ok(PostMessageResult {
-                receipt,
-                event_inserted: false,
-            });
-        }
-        return Ok(PostMessageResult {
-            receipt: studio_runtime_store::system_reads::validate(
-                "runtime_events",
-                input.id,
-                // Python keeps accepted input pending until actual submission;
-                // Rust's reservation is only an internal claim phase.
-                json!({
-                    "id": input.id,
-                    "status": if event.status == "reserved" { "pending" } else { &event.status },
-                    "error": event.error,
-                }),
-            )?,
-            event_inserted: false,
-        });
-    }
-
-    // An orphan receipt cannot prove that this event is still durable.
-    let receipt_id = input.id.to_owned();
-    if let Some(receipt) = crate::event_write::read_receipt(
+    let now_ms = (crate::event_write::unix_time().map_err(event_write_error)? * 1000.0) as i64;
+    let admitted = match crate::event_write::begin_request::<ManagedMessageReply>(
         transaction,
-        Some(&receipt_id),
+        crate::event_write::RequestKey::new("message", &[input.room, "user"], input.id),
         &signature,
-        "runtime_events",
-        input.id,
-        |value| valid_message_receipt(value, input.id),
-    )
-    .map_err(event_write_error)?
-    {
-        if crate::event_write::truthy(agent.extra.get("remoteWorker"))
-            || crate::event_write::truthy(agent.extra.get("remoteAnchor"))
-        {
+        now_ms,
+    )? {
+        crate::event_write::CallerAdmission::Replay(reply) => {
             return Ok(PostMessageResult {
-                receipt,
+                receipt: serde_json::to_value(reply).map_err(StoreError::from)?,
                 event_inserted: false,
             });
         }
-        return Err(invalid_stored("runtime_events", input.id));
+        crate::event_write::CallerAdmission::Fresh(admitted) => admitted,
+    };
+    if QueueEventRepository::get(transaction, &QueueEventId::from(input.id))?.is_some() {
+        return Err(CoordinationError::InvalidRequest("Request id expired"));
     }
     if crate::legacy_image_workspace::is_legacy(&agent.value()) {
         return Err(CoordinationError::InvalidRequest(
@@ -394,8 +387,12 @@ fn post_managed_message(
     if !blockers.is_empty() {
         result["waitingFor"] = json!(blockers);
     }
-    crate::event_write::save_receipt(transaction, Some(input.id), &signature, &result)
-        .map_err(event_write_error)?;
+    crate::event_write::settle_request(
+        transaction,
+        &admitted,
+        Some("user"),
+        &serde_json::from_value::<ManagedMessageReply>(result.clone()).map_err(StoreError::from)?,
+    )?;
 
     if CoordinationRepository::message(transaction, input.id)?.is_none() {
         CoordinationRepository::put_message(
@@ -406,7 +403,7 @@ fn post_managed_message(
                 author: "user".to_owned(),
                 text: text.to_owned(),
                 at: created,
-                deliveries: json!({(input.room): "queued"}).to_string(),
+                deliveries: json!({(input.room): {"status":"queued","error":null}}).to_string(),
             },
         )?;
     }
@@ -809,26 +806,38 @@ pub fn post_message(
     let directory = teams(transaction)?;
     check_historical_team(transaction, input.room, &members, &directory)?;
 
-    if let Some(previous) =
-        CoordinationRepository::message(transaction, input.id).map_err(|_| {
-            CoordinationError::InvalidStored {
-                object: "messages",
-                id: input.id.to_owned(),
-            }
-        })?
-    {
-        let previous = validated_message(previous)?;
-        if previous.room != input.room || previous.author != "user" || previous.text != text {
-            return Err(CoordinationError::Conflict(
-                "The request identity already has different content.",
-            ));
+    let now_ms = (crate::event_write::unix_time().map_err(event_write_error)? * 1000.0) as i64;
+    let signature = crate::event_write::request_signature(
+        &json!({"room":input.room,"author":"user","text":text}),
+    );
+    let admitted = match crate::event_write::begin_request::<GroupMessageReply>(
+        transaction,
+        crate::event_write::RequestKey::new("group_message", &[input.room, "user"], input.id),
+        &signature,
+        now_ms,
+    )? {
+        crate::event_write::CallerAdmission::Replay(reply) => {
+            return serde_json::to_value(reply)
+                .map_err(StoreError::from)
+                .map_err(Into::into);
         }
-        return Ok(message_receipt(previous, false));
+        crate::event_write::CallerAdmission::Fresh(admitted) => admitted,
+    };
+    if CoordinationRepository::message(transaction, input.id)?.is_some() {
+        return Err(CoordinationError::InvalidRequest("Request id expired"));
     }
     let deliveries = members
         .into_iter()
         .filter(|member| member != "user")
-        .map(|member| (member, Value::String("pending".to_owned())))
+        .map(|member| {
+            (
+                member,
+                studio_runtime_schema::persistence::RecipientDelivery {
+                    status: studio_runtime_schema::persistence::DeliveryStatus::Pending,
+                    error: None,
+                },
+            )
+        })
         .collect::<BTreeMap<_, _>>();
     let message = studio_runtime_store::CanvasMessage {
         id: input.id.to_owned(),
@@ -836,12 +845,19 @@ pub fn post_message(
         author: "user".to_owned(),
         text: text.to_owned(),
         at: crate::event_write::unix_time().map_err(event_write_error)?,
-        deliveries: serde_json::to_string(&Value::Object(deliveries.into_iter().collect()))
+        deliveries: serde_json::to_string(&deliveries)
             .map_err(|_| CoordinationError::InvalidRequest("Invalid message delivery state"))?,
     };
     CoordinationRepository::put_message(transaction, &message)?;
     CoordinationRepository::chat_projection(transaction, input.room, false)?;
-    Ok(message_receipt(validated_message(message)?, true))
+    let reply = message_receipt(validated_message(message)?, true);
+    crate::event_write::settle_request(
+        transaction,
+        &admitted,
+        Some("user"),
+        &serde_json::from_value::<GroupMessageReply>(reply.clone()).map_err(StoreError::from)?,
+    )?;
+    Ok(reply)
 }
 
 struct AgentDirectory {
@@ -1061,7 +1077,7 @@ struct ValidatedMessage {
     author: String,
     text: String,
     at: f64,
-    deliveries: Value,
+    deliveries: BTreeMap<String, studio_runtime_schema::persistence::RecipientDelivery>,
 }
 
 fn validated_message(
@@ -1089,22 +1105,14 @@ fn validated_message(
     })
 }
 
-fn parse_deliveries(raw: &str, id: &str) -> Result<Value, CoordinationError> {
-    let deliveries: Value =
-        serde_json::from_str(raw).map_err(|_| CoordinationError::InvalidStored {
-            object: "messages",
-            id: id.to_owned(),
-        })?;
-    if !deliveries
-        .as_object()
-        .is_some_and(|items| items.values().all(Value::is_string))
-    {
-        return Err(CoordinationError::InvalidStored {
-            object: "messages",
-            id: id.to_owned(),
-        });
-    }
-    Ok(deliveries)
+fn parse_deliveries(
+    raw: &str,
+    id: &str,
+) -> Result<
+    BTreeMap<String, studio_runtime_schema::persistence::RecipientDelivery>,
+    CoordinationError,
+> {
+    serde_json::from_str(raw).map_err(|_| invalid_stored("messages", id))
 }
 
 fn message_json(message: ValidatedMessage) -> Value {
@@ -1112,51 +1120,46 @@ fn message_json(message: ValidatedMessage) -> Value {
 }
 
 fn message_receipt(message: ValidatedMessage, newly_queued: bool) -> Value {
-    let deliveries = message.deliveries.as_object();
-    let status = if deliveries.is_none_or(|items| items.is_empty()) {
-        "delivered"
-    } else {
-        let values = deliveries
-            .expect("deliveries was checked")
+    use studio_runtime_schema::persistence::DeliveryStatus as S;
+    let all_accepted = message.deliveries.values().all(|item| {
+        matches!(
+            item.status,
+            S::Queued | S::Delivered | S::Accepted | S::Sent
+        ) || newly_queued && item.status == S::Pending
+    });
+    let status = if all_accepted {
+        if message
+            .deliveries
             .values()
-            .collect::<Vec<_>>();
-        let accepted = if newly_queued {
-            &["queued", "pending", "delivered", "accepted", "sent"][..]
+            .any(|item| item.status == S::Queued || newly_queued && item.status == S::Pending)
+        {
+            S::Queued
         } else {
-            &["queued", "delivered", "accepted", "sent"][..]
-        };
-        if values.iter().all(|value| {
-            value
-                .as_str()
-                .is_some_and(|value| accepted.contains(&value))
-        }) {
-            if values
-                .iter()
-                .any(|value| *value == "queued" || (newly_queued && *value == "pending"))
-            {
-                "queued"
-            } else {
-                "delivered"
-            }
-        } else {
-            let failed = values
-                .iter()
-                .filter_map(|value| value.as_str())
-                .filter(|value| value.starts_with("failed:") || value.starts_with("cancelled:"))
-                .collect::<Vec<_>>();
-            if failed.len() == values.len() {
-                let mut unique = Vec::new();
-                for value in &failed {
-                    if !unique.contains(value) {
-                        unique.push(*value);
-                    }
-                }
-                return json!({"id":message.id,"room":message.room,"author":message.author,"text":message.text,"at":message.at,"deliveries":message.deliveries,"status":"failed","error":unique.join("; ")});
-            }
-            return json!({"id":message.id,"room":message.room,"author":message.author,"text":message.text,"at":message.at,"deliveries":message.deliveries,"status":"uncertain","error":"Delivery is unconfirmed for one or more recipients. Check the saved deliveries before sending again."});
+            S::Delivered
         }
+    } else if message
+        .deliveries
+        .values()
+        .all(|item| matches!(item.status, S::Failed | S::Cancelled))
+    {
+        S::Failed
+    } else {
+        S::Uncertain
     };
-    json!({"id":message.id,"room":message.room,"author":message.author,"text":message.text,"at":message.at,"deliveries":message.deliveries,"status":status})
+    let mut reply = json!({"id":message.id,"room":message.room,"author":message.author,"text":message.text,"at":message.at,"deliveries":message.deliveries,"status":status});
+    if status == S::Failed {
+        let errors = message
+            .deliveries
+            .values()
+            .filter_map(|item| item.error.as_deref())
+            .collect::<BTreeSet<_>>();
+        reply["error"] = json!(errors.into_iter().collect::<Vec<_>>().join("; "));
+    } else if status == S::Uncertain {
+        reply["error"] = json!(
+            "Delivery is unconfirmed for one or more recipients. Check the saved deliveries before sending again."
+        );
+    }
+    reply
 }
 
 fn invalid_agent(id: &str) -> CoordinationError {
@@ -1176,6 +1179,7 @@ fn invalid_stored(object: &'static str, id: &str) -> CoordinationError {
 pub(crate) fn event_write_error(error: crate::event_write::EventWriteError) -> CoordinationError {
     use crate::event_write::EventWriteError;
     match error {
+        EventWriteError::RequestResult(error) => CoordinationError::RequestResult(error),
         EventWriteError::InvalidRequest(message) | EventWriteError::Conflict(message) => {
             CoordinationError::InvalidRequest(message)
         }
@@ -1827,8 +1831,10 @@ mod tests {
         assert_eq!(first["deliveries"]["worker"], "pending");
         let replay = post(&mut connection, "Hello").expect("exact replay returns receipt");
         assert_eq!(replay["deliveries"], first["deliveries"]);
-        assert_eq!(replay["status"], "uncertain");
-        assert!(replay.get("error").is_some());
+        assert_eq!(
+            replay, first,
+            "retry must return the original acceptance reply"
+        );
         assert!(matches!(
             post(&mut connection, "Changed"),
             Err(CoordinationError::Conflict(_))

@@ -168,6 +168,9 @@ fn field<'a>(body: &'a Value, field: &str) -> Result<&'a str, ProjectsError> {
 }
 fn event_error(error: event_write::EventWriteError) -> ProjectsError {
     match error {
+        event_write::EventWriteError::RequestResult(error) => {
+            ProjectsError::Store(studio_runtime_store::StoreError::RequestResult(error))
+        }
         event_write::EventWriteError::Store(error) => ProjectsError::Store(error),
         event_write::EventWriteError::InvalidRequest(reason)
         | event_write::EventWriteError::Conflict(reason) => ProjectsError::Invalid(reason),

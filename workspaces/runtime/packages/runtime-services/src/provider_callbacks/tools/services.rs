@@ -700,6 +700,7 @@ impl From<event_write::EventWriteError> for CallbackError {
     fn from(error: event_write::EventWriteError) -> Self {
         use event_write::EventWriteError as E;
         match error {
+            E::RequestResult(error) => error.into(),
             E::InvalidResultSchema(message) => Self::InvalidResultSchema(message),
             E::Store(error) => Self::Store(error),
             E::InvalidRequest(message) | E::Conflict(message) => Self::Invalid(message),
@@ -714,6 +715,7 @@ impl From<crate::coordination::CoordinationError> for CallbackError {
     fn from(error: crate::coordination::CoordinationError) -> Self {
         use crate::coordination::CoordinationError as E;
         match error {
+            E::RequestResult(error) => error.into(),
             E::Store(error) => Self::Store(error),
             E::InvalidRequest(message) | E::Conflict(message) => Self::Invalid(message),
             E::RequiresDependency(name) => Self::Dependency(name),
