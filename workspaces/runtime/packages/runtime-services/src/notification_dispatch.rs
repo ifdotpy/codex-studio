@@ -351,12 +351,7 @@ pub(crate) fn record_acknowledged_steer_submission(
             .event_ids
             .iter()
             .map(String::as_str)
-            .collect::<Vec<_>>()
-            != submission
-                .inputs
-                .iter()
-                .map(|input| input.id.as_str())
-                .collect::<Vec<_>>()
+            .ne(submission.inputs.iter().map(|input| input.id.as_str()))
     {
         return Err(NotificationDispatchError::UnauthorizedSubmission);
     }

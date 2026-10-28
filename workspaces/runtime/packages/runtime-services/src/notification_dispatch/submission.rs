@@ -162,24 +162,26 @@ fn replay_submission(
     admission: &AdmittedRequest,
 ) -> Result<DispatchOutcome, NotificationDispatchError> {
     let now = chrono::Utc::now().timestamp_millis();
-    let saved = RequestResults::replay(tx, admission.id(), admission.signature(), now)?;
-    let Some(saved) = saved else {
+    let envelope = crate::event_write::replay_request::<DispatchOutcome>(
+        tx,
+        admission.id(),
+        admission.signature(),
+        now,
+    )?
+    .ok_or_else(|| {
         let floor = now.saturating_sub(studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS);
         if admission.created() <= floor {
-            return Err(
-                studio_runtime_store::request_results::RequestResultError::Identity(
-                    studio_runtime_schema::persistence::RequestIdentityError::Expired {
-                        issued_ms: admission.created(),
-                        expired_before_ms: floor,
-                    },
-                )
-                .into(),
-            );
+            studio_runtime_store::request_results::RequestResultError::Identity(
+                studio_runtime_schema::persistence::RequestIdentityError::Expired {
+                    issued_ms: admission.created(),
+                    expired_before_ms: floor,
+                },
+            )
+            .into()
+        } else {
+            stored("request_results", admission.id())
         }
-        return Err(stored("request_results", admission.id()));
-    };
-    let envelope: ResultEnvelope<DispatchOutcome> = serde_json::from_str(&saved.result)
-        .map_err(|_| stored("request_results", admission.id()))?;
+    })?;
     if envelope.actor.as_deref() != Some(agent) || envelope.references != [item] {
         return Err(stored("request_results", admission.id()));
     }
@@ -210,6 +212,7 @@ pub(super) fn validate_submission(
         return Err(stored("runtime_agents", agent_id));
     }
     let mut unique = std::collections::BTreeSet::new();
+    let mut expected_asset_ids = Vec::new();
     for input in &submission.inputs {
         if input.id.is_empty()
             || !unique.insert(input.id.as_str())
@@ -246,6 +249,7 @@ pub(super) fn validate_submission(
         if meta_ids != input_ids {
             return Err(stored("runtime_event_meta", &input.id));
         }
+        expected_asset_ids.extend(input_ids);
         // A stored `transcriptItemId` is not checked: it can belong to an earlier,
         // never delivered attempt (a rejected steer skips deferred input, so its first
         // event differs from the next turn's). Delivered events leave the pending set;
@@ -261,13 +265,6 @@ pub(super) fn validate_submission(
                 submission.radio_authorized,
             )?;
         }
-    }
-    let mut expected_asset_ids = Vec::new();
-    for input in &submission.inputs {
-        let Some(ids) = asset_ids(&input.assets) else {
-            return Err(NotificationDispatchError::invalid());
-        };
-        expected_asset_ids.extend(ids);
     }
     if asset_ids(&submission.assets).as_deref() != Some(expected_asset_ids.as_slice()) {
         return Err(NotificationDispatchError::invalid());

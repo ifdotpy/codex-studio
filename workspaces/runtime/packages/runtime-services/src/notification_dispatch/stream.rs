@@ -696,7 +696,7 @@ impl NotificationStreamBuffer {
             let target = self
                 .entries
                 .iter_mut()
-                .find(|target| target.key == entry.key && target.key.agent_id == entry.key.agent_id)
+                .find(|target| target.key == entry.key)
                 .ok_or(NotificationDispatchError::invalid_account())?;
             target.pending.clone_from(&entry.pending);
             target.count = entry.count;
