@@ -323,7 +323,9 @@ pub async fn accepted_archive_tick(
                 current["archiveIntent"] = serde_json::to_value(&final_intent)
                     .map_err(studio_runtime_store::StoreError::from)?;
                 WorkItemsRepository::update_work(tx, &task_id_for_settlement, &current)?;
-                if let Some(root) = final_intent.public_request_id.as_deref() {
+                if receipt_status != WorkEffectStatus::Unknown
+                    && let Some(root) = final_intent.public_request_id.as_deref()
+                {
                     let mut response = final_intent
                         .public_response
                         .ok_or_else(|| invalid("runtime_work", &task_id_for_settlement))?;
@@ -3759,6 +3761,83 @@ mod actor_tests {
                 )
             ))
         ));
+    }
+
+    #[test]
+    fn receipt_domain_skipped_archive_is_in_first_reply_and_replay() {
+        for owner in [Some("lead"), None] {
+            let mut connection = database();
+            insert_work(
+                &connection,
+                &work(
+                    "skip",
+                    owner,
+                    "review",
+                    json!([
+                        {"id":"result-1","agent":"lead","text":"done","checks":"checked","revision":"abc1234","files":[]}
+                    ]),
+                ),
+            );
+            let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+            let tx = connection.transaction().expect("transaction");
+            let accept = || {
+                WorkWrite::Accept(AcceptWork {
+                    task_id: "skip".into(),
+                    version: Some(2),
+                    reason: "verified".into(),
+                    override_reason: None,
+                    merged_result_id: None,
+                })
+            };
+            let first = super::write(&tx, "lead", Some(&root), "accept", accept())
+                .expect("accept")
+                .record;
+            let replay = super::write(&tx, "lead", Some(&root), "accept", accept())
+                .expect("replay")
+                .record;
+            assert_eq!(first["archive"]["status"], "skipped");
+            assert_eq!(first, replay);
+        }
+    }
+
+    #[tokio::test]
+    async fn receipt_domain_unknown_archive_keeps_public_reservation() {
+        let dir = tempfile::tempdir().expect("state");
+        let store = Arc::new(RuntimeStore::open(Some(dir.path())).await.expect("store"));
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let request = root.clone();
+        store.transaction_with_error(move |tx| -> Result<(), super::WorkWriteError> {
+            for agent in [
+                json!({"provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true}),
+                json!({"provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"idle","autoWake":true,"executionMode":"vm"}),
+            ] { AgentRepository::put(tx, &AgentRecord::from_value(agent).expect("fixture agent"))?; }
+            let mut item = work("unknown", Some("worker"), "review", json!([{"id":"result-1","agent":"worker","text":"done","checks":"checked","revision":"state","files":[]}]));
+            item["vmAccept"] = json!({"status":"completed","requestId":"merge","taskId":"unknown","owner":"worker","revision":"state","resultId":"result-1","created":1.0});
+            WorkItemsRepository::put_work(tx, "unknown", &item)?;
+            super::write(tx, "lead", Some(&request), "accept", WorkWrite::Accept(AcceptWork { task_id:"unknown".into(), version:Some(2), reason:"verified".into(), override_reason:None, merged_result_id:Some("result-1".into()) }))?;
+            Ok(())
+        }).await.expect("accepted");
+        super::accepted_archive_tick(Arc::clone(&store), 4_000_000_000.0)
+            .await
+            .expect("archive tick");
+        store
+            .read_async(
+                "archive-proof",
+                move |db| -> Result<(), super::WorkWriteError> {
+                    let item = WorkItemsRepository::work_record(db, "unknown")?.expect("work");
+                    assert_eq!(item.value()["archiveIntent"]["status"], "unknown");
+                    assert!(super::work_receipt_in(db, "lead", &root, "accept")?.is_none());
+                    assert!(
+                        item.value()["archiveIntent"]
+                            .get("publicAdmission")
+                            .is_some()
+                    );
+                    Ok(())
+                },
+            )
+            .await
+            .expect("pending proof");
+
     }
 
     #[test]
