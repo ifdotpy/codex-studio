@@ -369,7 +369,7 @@ pub async fn admit_python_request(
     store: &RuntimeStore,
     agent_id: &str,
     request_id: &str,
-) -> Result<(Value, bool), TitleError> {
+) -> Result<(TitleReply, bool), TitleError> {
     let agent_id = agent_id.to_owned();
     let request_id = request_id.to_owned();
     store
@@ -379,10 +379,7 @@ pub async fn admit_python_request(
                 return Err(TitleError::DeletedAgent);
             }
             if let Some(reply) = saved_reply(tx, &agent_id, &request_id)? {
-                return Ok((
-                    serde_json::to_value(reply).map_err(StoreError::from)?,
-                    false,
-                ));
+                return Ok((reply, false));
             }
             let public_identity = identity(&agent_id, &request_id)?;
             public_identity
@@ -399,10 +396,7 @@ pub async fn admit_python_request(
                 )? {
                     CallerAdmission::Fresh(admitted) => admitted,
                     CallerAdmission::Replay(reply) => {
-                        return Ok((
-                            serde_json::to_value(reply).map_err(StoreError::from)?,
-                            false,
-                        ));
+                        return Ok((reply, false));
                     }
                 };
                 let job = TitleJob {
@@ -423,11 +417,7 @@ pub async fn admit_python_request(
                 job.status,
                 TitleStatus::NotSent | TitleStatus::Scheduled | TitleStatus::Written
             );
-            Ok((
-                serde_json::to_value(job.reply(TitleStatus::Pending, None))
-                    .map_err(StoreError::from)?,
-                start,
-            ))
+            Ok((job.reply(TitleStatus::Pending, None), start))
         })
         .await
 }

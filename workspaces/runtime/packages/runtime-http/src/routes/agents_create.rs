@@ -1825,7 +1825,12 @@ mod title_http_tests {
                 .expect("rename response body"),
         )
         .expect("rename receipt JSON");
-        assert_eq!(receipt["status"], "pending");
+        assert_eq!(
+            receipt,
+            json!({
+                "id":"title-http-agent", "request_id":request_id, "status":"pending"
+            })
+        );
 
         let provider_request = tokio::time::timeout(Duration::from_secs(5), requested_rx)
             .await
@@ -2160,8 +2165,7 @@ async fn rename(
                 }
             }));
         }
-        let response =
-            Json(super::generated_json::<generated::RenameResponse>(receipt)?).into_response();
+        let response = Json(receipt).into_response();
         return Ok(response);
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;

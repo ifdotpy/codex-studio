@@ -143,8 +143,14 @@ async fn title_admission_owns_one_root_and_unresolved_outbox() {
         .await
         .expect("admit");
     assert!(start);
+    let wire = serde_json::to_string(&pending).expect("serialize pending receipt");
     assert_eq!(
-        pending,
+        serde_json::from_str::<studio_runtime_services::title_generation::TitleReply>(&wire)
+            .expect("decode pending receipt"),
+        pending
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&wire).expect("parse pending receipt"),
         json!({"id":"title-agent","request_id":id,"status":"pending"})
     );
     let job = agent(&store)["titleJob"].clone();
@@ -282,11 +288,14 @@ async fn not_sent_retry_preserves_root_and_exact_reply_after_later_changes() {
         .await
         .expect("restart");
     let no_provider = FixedPort::new(vec![]);
+    let (replayed, start) = admit_python_request(&reopened, "title-agent", &id)
+        .await
+        .expect("replay");
+    assert!(!start);
     assert_eq!(
-        admit_python_request(&reopened, "title-agent", &id)
-            .await
-            .expect("replay"),
-        (expected, false)
+        serde_json::from_str::<Value>(&serde_json::to_string(&replayed).expect("serialize replay"))
+            .expect("parse replay"),
+        expected
     );
     assert_eq!(
         generate_admitted(
