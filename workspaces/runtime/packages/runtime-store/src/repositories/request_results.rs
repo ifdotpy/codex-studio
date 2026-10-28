@@ -11,6 +11,8 @@ pub(crate) const TABLE: &str = "request_results";
 
 #[derive(Debug, thiserror::Error)]
 pub enum RequestResultError {
+    #[error("Request id expired")]
+    Expired,
     #[error(transparent)]
     Sql(#[from] rusqlite::Error),
     #[error(transparent)]
@@ -249,6 +251,16 @@ mod tests {
     use crate::{Connection, RuntimeStore, StoreError};
     use std::sync::Arc;
     use studio_runtime_schema::persistence::REQUEST_ID_FUTURE_SKEW_MS;
+
+    #[test]
+    fn receipt_result_expired_stays_typed_without_synthetic_metadata() {
+        let error: StoreError = RequestResultError::Expired.into();
+        assert!(matches!(
+            error,
+            StoreError::RequestResult(RequestResultError::Expired)
+        ));
+        assert_eq!(error.to_string(), "Request id expired");
+    }
 
     #[test]
     fn receipt_result_typed_read_exact_canonical_ttl_and_decode() {
