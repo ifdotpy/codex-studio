@@ -526,7 +526,6 @@ mod tests {
         db.execute_batch(
             "CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);
             CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,deleted INTEGER);
-            CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT);
             INSERT INTO sync_entities VALUES('project','p',17,1);",
         )
         .expect("schema");
