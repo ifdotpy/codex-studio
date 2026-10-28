@@ -30,6 +30,8 @@ pub fn fixture() -> &'static Fixture {
     })
 }
 /// Decode each typed corpus directly from the frozen fixture bytes.
+// shared test module; unused in runtime-http
+#[allow(dead_code)]
 pub fn typed_data<T: serde::de::DeserializeOwned>() -> T {
     #[derive(serde::Deserialize)]
     struct Data<T> {
