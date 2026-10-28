@@ -697,7 +697,9 @@ impl studio_runtime_services::native_actions::CommandAdmission for NativeCommand
     }
 }
 
-fn native_command_error(error: studio_runtime_services::native_actions::NativeError) -> ApiError {
+pub(super) fn native_command_error(
+    error: studio_runtime_services::native_actions::NativeError,
+) -> ApiError {
     use studio_runtime_services::native_actions::NativeError;
     match error {
         NativeError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
