@@ -68,6 +68,18 @@ async fn switching_refuses_during_a_turn_and_keeps_the_wt_record() {
 }
 
 #[tokio::test]
+async fn a_leftover_prepare_attempt_does_not_block_an_idle_chat() {
+    // prepareAttempt names the last prepare. It stays after the turn ends.
+    let mut lead = wt_lead();
+    lead["prepareAttempt"] = json!("attempt-from-an-earlier-turn");
+    let (_directory, store) = store_with(&[lead]).await;
+    let result = switch_chat_with(Arc::clone(&store), "wt-lead", fake_effects)
+        .await
+        .expect("an idle chat with a past prepare switches");
+    assert_eq!(result["workspaceMode"], "layr-native");
+}
+
+#[tokio::test]
 async fn a_switched_lead_records_layr_fields_keeps_its_thread_and_workers_inherit() {
     let (_directory, store) = store_with(&[wt_lead()]).await;
     let result = switch_chat_with(Arc::clone(&store), "wt-lead", fake_effects)
