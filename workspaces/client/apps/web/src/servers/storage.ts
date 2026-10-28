@@ -1,3 +1,4 @@
+import { preferenceStorage } from "../preferenceStorage";
 import {
   storageKeys,
   storageKeySnapshot,
@@ -93,7 +94,7 @@ export const serverStoragePrefix = (owner: string | null) =>
   owner && owner !== "local" ? `:server:${owner}:` : "";
 const prefix = serverStoragePrefix(serverViewId);
 export const serverLocalStorage = scopedStorage(
-  () => globalThis.localStorage,
+  () => preferenceStorage(),
   prefix,
   new Set(["codex-studio-preferences-v1", "mantine-color-scheme-value"]),
 );

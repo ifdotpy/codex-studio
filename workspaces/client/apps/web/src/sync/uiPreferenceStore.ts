@@ -1,3 +1,4 @@
+import { preferenceStorage } from "../preferenceStorage";
 import { setPreferenceWriteStatus } from "./uiPreferenceStatus";
 import { randomUUID } from "../uuid";
 import { serverStoragePrefix } from "../servers/storage";
@@ -24,7 +25,7 @@ import {
   type PreferenceFields,
   type PreferenceScope,
 } from "./uiPreferenceMerge";
-const userStorage = () => globalThis.localStorage;
+const userStorage = () => preferenceStorage();
 let applying = false;
 const listeners = new Set<() => void>();
 function cache(storage: Storage, scope: PreferenceScope): PreferenceFields {
@@ -234,7 +235,7 @@ export function watchPreferenceWrites(listener: () => void) {
 }
 export function preferenceStorageForServer(id: string) {
   return scopedStorage(
-    () => globalThis.localStorage,
+    () => preferenceStorage(),
     serverStoragePrefix(id),
     new Set(["codex-studio-preferences-v1", "mantine-color-scheme-value"]),
   );

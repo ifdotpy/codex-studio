@@ -1,3 +1,4 @@
+import { preferenceStorage } from "../preferenceStorage";
 /**
  * Sign-in alerts on this device through Web Push (docs/web-push.md). The home-screen web
  * app subscribes with the server's VAPID key; the server sends one encrypted push when a
@@ -10,7 +11,7 @@ const PUSH_SUBSCRIPTION_KEY = "studio-sign-in-push:";
 /** The server's subscription ID of this device, if this device subscribed. */
 export function devicePushId(publicKey: string): string | null {
   try {
-    return localStorage.getItem(PUSH_SUBSCRIPTION_KEY + publicKey);
+    return preferenceStorage().getItem(PUSH_SUBSCRIPTION_KEY + publicKey);
   } catch {
     return null;
   }
@@ -18,8 +19,8 @@ export function devicePushId(publicKey: string): string | null {
 
 export function rememberDevicePushId(publicKey: string, id: string | null) {
   try {
-    if (id) localStorage.setItem(PUSH_SUBSCRIPTION_KEY + publicKey, id);
-    else localStorage.removeItem(PUSH_SUBSCRIPTION_KEY + publicKey);
+    if (id) preferenceStorage().setItem(PUSH_SUBSCRIPTION_KEY + publicKey, id);
+    else preferenceStorage().removeItem(PUSH_SUBSCRIPTION_KEY + publicKey);
   } catch {
     // Without storage the device list still shows and stops every device.
   }

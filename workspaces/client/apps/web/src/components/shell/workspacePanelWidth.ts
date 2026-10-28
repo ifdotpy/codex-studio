@@ -1,3 +1,4 @@
+import { preferenceStorage } from "../../preferenceStorage";
 import { useCallback, useState } from "react";
 
 export function readPanelWidth(value: string | null): number | undefined {
@@ -35,8 +36,8 @@ export function useWorkspacePanelWidth(scope: string) {
       if (width !== undefined && (!Number.isFinite(width) || width <= 0))
         return;
       try {
-        if (width === undefined) localStorage.removeItem(key);
-        else localStorage.setItem(key, String(width));
+        if (width === undefined) preferenceStorage().removeItem(key);
+        else preferenceStorage().setItem(key, String(width));
       } catch {
         // The preference remains available for this session if storage is unavailable.
       }
@@ -52,7 +53,7 @@ export function useWorkspacePanelWidth(scope: string) {
 
 function readStored(key: string) {
   try {
-    return readPanelWidth(localStorage.getItem(key));
+    return readPanelWidth(preferenceStorage().getItem(key));
   } catch {
     return undefined;
   }

@@ -49,7 +49,7 @@ export async function readProjectServers(
   read: typeof get = get,
 ): Promise<ProjectServerChoice[]> {
   const snapshot = await read("/api/multi-server");
-  const connections = globalThis.localStorage ? readServers() : [];
+  const connections = readServers();
   return [
     {
       id: "local",

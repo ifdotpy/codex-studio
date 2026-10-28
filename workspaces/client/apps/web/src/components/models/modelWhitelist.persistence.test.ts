@@ -1,3 +1,4 @@
+import { installPreferenceStorage } from "../../preferenceStorage";
 import { required } from "../componentTestFixtures";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { createUiPreferenceBridge } from "../../sync/uiPreferenceBridge";
@@ -33,7 +34,7 @@ function memoryStorage(): Storage {
   };
 }
 beforeEach(() => {
-  vi.stubGlobal("localStorage", memoryStorage());
+  installPreferenceStorage(memoryStorage());
   vi.stubGlobal("window", new EventTarget());
   vi.stubGlobal("document", new EventTarget());
   vi.stubGlobal(

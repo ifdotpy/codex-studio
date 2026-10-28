@@ -1,3 +1,4 @@
+import { preferenceStorage } from "../../preferenceStorage";
 import { Drawer } from "@mantine/core";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
@@ -21,7 +22,9 @@ export const sidebarWidthStorageKey = (scope: string) =>
 function readWidth(scope: string): number | null {
   try {
     return storedSidebarWidth(
-      JSON.parse(localStorage.getItem(sidebarWidthStorageKey(scope)) || "null"),
+      JSON.parse(
+        preferenceStorage().getItem(sidebarWidthStorageKey(scope)) || "null",
+      ),
     );
   } catch {
     return null;
@@ -195,9 +198,9 @@ export function SidebarFrame(p: SidebarFrameProps) {
     setPreference({ scope: p.scope, width });
     try {
       if (width === null)
-        localStorage.removeItem(sidebarWidthStorageKey(p.scope));
+        preferenceStorage().removeItem(sidebarWidthStorageKey(p.scope));
       else
-        localStorage.setItem(
+        preferenceStorage().setItem(
           sidebarWidthStorageKey(p.scope),
           JSON.stringify(width),
         );

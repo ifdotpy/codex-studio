@@ -1,3 +1,4 @@
+import { installPreferenceStorage, memoryStorage } from "../preferenceStorage";
 import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 /// <reference lib="es2024.promise" />
@@ -49,11 +50,9 @@ test("a signed status refresh changes only the name of its registered server", a
     credentialId: "credential",
     alias: "MBP",
   };
-  const values = new Map([[SERVER_REGISTRY_KEY, JSON.stringify([server])]]);
-  vi.stubGlobal("localStorage", {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => values.set(key, value),
-  });
+  const preferences = memoryStorage();
+  preferences.setItem(SERVER_REGISTRY_KEY, JSON.stringify([server]));
+  installPreferenceStorage(preferences);
   const fetch = vi.fn(
     async (_server: unknown, _request: Request) =>
       new Response(JSON.stringify({ serverId: "remote", label: "Igor MBP" })),
@@ -84,11 +83,9 @@ test("saved server names use their own stream with zero idle status reads", asyn
     origin: "https://remote.tailnet.ts.net",
     credentialId: "credential",
   };
-  const values = new Map([[SERVER_REGISTRY_KEY, JSON.stringify([server])]]);
-  vi.stubGlobal("localStorage", {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => values.set(key, value),
-  });
+  const preferences = memoryStorage();
+  preferences.setItem(SERVER_REGISTRY_KEY, JSON.stringify([server]));
+  installPreferenceStorage(preferences);
   vi.stubGlobal("window", new EventTarget());
   const fetch = vi.fn();
   setServerCredentialAdapter({
@@ -123,7 +120,7 @@ test("saved server names use their own stream with zero idle status reads", asyn
   deliver("remote", "New");
   expect(required(readServers()[0]).label).toBe("New");
   // An old stream cannot restore a forgotten peer or overwrite a replacement.
-  values.set(
+  preferences.setItem(
     SERVER_REGISTRY_KEY,
     JSON.stringify([
       { ...server, label: "Replacement", credentialId: "replacement" },
@@ -131,12 +128,12 @@ test("saved server names use their own stream with zero idle status reads", asyn
   );
   deliver("remote", "Stale");
   expect(required(readServers()[0]).label).toBe("Replacement");
-  values.set(SERVER_REGISTRY_KEY, "[]");
+  preferences.setItem(SERVER_REGISTRY_KEY, "[]");
   deliver("remote", "Removed");
   expect(readServers()).toEqual([]);
   stop();
   expect(release).toHaveBeenCalledTimes(1);
-  values.set(SERVER_REGISTRY_KEY, JSON.stringify([server]));
+  preferences.setItem(SERVER_REGISTRY_KEY, JSON.stringify([server]));
   deliver("remote", "Stopped");
   expect(required(readServers()[0]).label).toBe("Old");
   expect(fetch).not.toHaveBeenCalled();

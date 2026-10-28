@@ -1,3 +1,4 @@
+import { preferenceStorage } from "../preferenceStorage";
 import type { ConnectionHealth } from "../sync/connectionState";
 import { randomUUID } from "../uuid";
 import { restoreSidebarFocus } from "../components/sidebar/SidebarFrame";
@@ -136,7 +137,9 @@ function MultiServerShell({
   );
   const [selected, setSelected] = useState(
     () =>
-      localStorage.getItem("studio-selected-server") || servers[0]?.id || "",
+      preferenceStorage().getItem("studio-selected-server") ||
+      servers[0]?.id ||
+      "",
   );
   const current = servers.some((server) => server.id === selected)
     ? selected
@@ -213,7 +216,7 @@ function MultiServerShell({
   const [preferences, setPreferences] = useState(() => {
     try {
       return parseStudioPreferences(
-        localStorage.getItem(studioPreferencesStorageKey) || "null",
+        preferenceStorage().getItem(studioPreferencesStorageKey) || "null",
       );
     } catch {
       return defaultStudioPreferences;
@@ -242,7 +245,7 @@ function MultiServerShell({
   };
   const select = useCallback((id: string) => {
     setSelected(id);
-    localStorage.setItem("studio-selected-server", id);
+    preferenceStorage().setItem("studio-selected-server", id);
     setMobileOpen(false);
     requestAnimationFrame(() => {
       if (currentRef.current !== id) return;
@@ -528,7 +531,7 @@ function MultiServerShell({
     const apply = () => {
       try {
         const next = parseStudioPreferences(
-          localStorage.getItem(studioPreferencesStorageKey) || "null",
+          preferenceStorage().getItem(studioPreferencesStorageKey) || "null",
         );
         setPreferences(next);
         publishPreferences(next);

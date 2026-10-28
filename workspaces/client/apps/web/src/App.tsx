@@ -1,3 +1,4 @@
+import { preferenceStorage } from "./preferenceStorage";
 import {
   AgentStatus as GeneratedApiAgentStatus,
   AgentSource as GeneratedApiAgentSource,
@@ -683,8 +684,8 @@ export default function App({ active = true }: { active?: boolean }) {
   useEffect(() => {
     if (!workspaceId) return;
     const key = `studio-server-workspace-id:${serverViewId || "local"}`;
-    if (globalThis.localStorage.getItem(key) === workspaceId) return;
-    globalThis.localStorage.setItem(key, workspaceId);
+    if (preferenceStorage().getItem(key) === workspaceId) return;
+    preferenceStorage().setItem(key, workspaceId);
     window.dispatchEvent(new Event(SERVER_REGISTRY_EVENT));
   }, [workspaceId, serverViewId]);
   const dataRef = useRef(data);
