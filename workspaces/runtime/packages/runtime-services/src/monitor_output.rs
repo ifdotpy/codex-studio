@@ -98,11 +98,7 @@ impl MonitorOutput {
         let (before, _) = store
             .transaction_with(move |tx| monitor_runtime::snapshot(tx, &id_owned))
             .await?;
-        let count = before
-            .record()
-            .get("bytes")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
+        let count = before.fields.bytes;
         if before.operation() != Some(operation) {
             return Err(MonitorError::InvalidOutputReceipt(
                 "operation identity changed",
@@ -110,12 +106,7 @@ impl MonitorOutput {
         }
         // Output that reaches a finished monitor is ignored and does not advance
         // its byte count, so every later chunk of it is ignored too, not a gap.
-        if before
-            .record()
-            .get("status")
-            .and_then(serde_json::Value::as_str)
-            != Some("running")
-        {
+        if before.fields.status != monitor_policy::MonitorStatus::Running {
             return Ok(());
         }
         if offset > count {
@@ -140,14 +131,9 @@ impl MonitorOutput {
         }
         let path = root.join(format!("{id}.log"));
         // The record can name the log through a link to the state root.
-        if !before
-            .record()
-            .get("log")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|log| {
-                studio_runtime_store::path_identity::same(std::path::Path::new(log), &path)
-            })
-        {
+        if !before.fields.log.as_deref().is_some_and(|log| {
+            studio_runtime_store::path_identity::same(std::path::Path::new(log), &path)
+        }) {
             return Err(MonitorError::InvalidOutputReceipt(
                 "log path differs from state directory",
             ));

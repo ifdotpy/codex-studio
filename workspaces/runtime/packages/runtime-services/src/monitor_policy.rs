@@ -252,12 +252,12 @@ struct InputAttempt {
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Fields {
+pub(crate) struct Fields {
     id: String,
     agent: String,
     #[serde(default)]
     epoch: Option<i64>,
-    status: MonitorStatus,
+    pub(crate) status: MonitorStatus,
     #[serde(default)]
     reattach_recovery: Option<ReattachRecovery>,
     #[serde(default)]
@@ -271,7 +271,9 @@ struct Fields {
     #[serde(default, rename = "tail")]
     _tail: String,
     #[serde(default)]
-    bytes: u64,
+    pub(crate) bytes: u64,
+    #[serde(default)]
+    pub(crate) log: Option<String>,
     #[serde(default)]
     activity_generation: i64,
     #[serde(default = "minus_one")]
@@ -323,7 +325,7 @@ fn default_account() -> String {
 #[derive(Clone)]
 pub struct MonitorSnapshot {
     record: Value,
-    fields: Fields,
+    pub(crate) fields: Fields,
     actor: Actor,
 }
 
