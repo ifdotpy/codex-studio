@@ -1201,7 +1201,8 @@ async fn legacy_image_rows_finish_without_provider_launch_or_row_loss() {
         })
         .await
         .unwrap();
-    fixture.enqueue(0, "image-workspace-refused").await;
+    let event_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    fixture.enqueue(0, &event_id).await;
     let (launcher, mut writes) = scripted();
     let mut registry = AccountRegistry::new(
         fixture.store.clone(),
@@ -1226,8 +1227,8 @@ async fn legacy_image_rows_finish_without_provider_launch_or_row_loss() {
     let db = fixture.store.test_reader().unwrap();
     let event_status: String = db
         .query_row(
-            "SELECT status FROM runtime_events WHERE id='annotation:image-workspace-refused'",
-            [],
+            "SELECT status FROM runtime_events WHERE id=?1",
+            [format!("annotation:{event_id}")],
             |row| row.get(0),
         )
         .unwrap();
@@ -1254,8 +1255,8 @@ async fn legacy_image_rows_finish_without_provider_launch_or_row_loss() {
     let db = fixture.store.test_reader().unwrap();
     let event_status: String = db
         .query_row(
-            "SELECT status FROM runtime_events WHERE id='annotation:image-workspace-refused'",
-            [],
+            "SELECT status FROM runtime_events WHERE id=?1",
+            [format!("annotation:{event_id}")],
             |row| row.get(0),
         )
         .unwrap();
@@ -1750,7 +1751,7 @@ async fn backend_shutdown_reports_both_supervisor_detach_timeouts() {
 
     tokio::time::timeout(TEST_HANG_GUARD, async {
         let fixture = Fixture::new().await;
-        fixture.enqueue(0, "detach-timeout").await;
+        fixture.enqueue(0, &studio_runtime_schema::persistence::RequestIdentity::issue_root()).await;
         let listener =
             tokio::net::UnixListener::bind(fixture._root.path().join("supervisor.sock")).unwrap();
         let (scripted, _writes) = scripted_with_unknown_writes(false);
@@ -3467,11 +3468,12 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     .unwrap();
     let app = studio_runtime_http::router(state.clone()).unwrap();
     let mut changes = state.sync_changes_handle().subscribe();
+    let message_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     assert_eq!(
         app.clone()
             .oneshot(direct_message_post(
                 &agent_id,
-                "086cc3e3-68a8-429f-9ec1-895aad72f181",
+                &message_id,
                 "split-stream"
             ))
             .await
@@ -3579,6 +3581,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         serde_json::from_str(include_str!("fixtures/claude-stream-items.json")).unwrap();
     // The input includes runtime instructions; compare its complete persisted text.
     expected[0]["text"] = transcript["items"][0]["text"].clone();
+    expected[0]["id"] = json!(message_id);
     assert_eq!(normalize_ids(rust_items, &agent_id), expected);
     // Human text and Studio instructions retain separate origins, but only
     // the final SDK message queries. The prefix's zero-turn receipt must not
@@ -3629,7 +3632,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         app.clone()
             .oneshot(direct_message_post(
                 &agent_id,
-                "af0f4452-3117-4d5a-b011-4f67d4efe18f",
+                &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 "orchestration-peers",
             ))
             .await
@@ -3639,7 +3642,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     );
     wait_for_durable_agent_status(&fixture, &agent_id, "completed").await;
     let managed_calls: i64 = fixture.store.test_reader().unwrap().query_row(
-        "SELECT count(*) FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.tool')='orchestration_peers' AND json_extract(record,'$.stage')='completed' AND json_extract(record,'$.result.success')=1",
+        "SELECT count(*) FROM runtime_tool_requests t JOIN request_results r ON r.id=json_extract(t.record,'$.admitted.id') WHERE json_extract(t.record,'$.agent')=?1 AND json_extract(t.record,'$.tool')='orchestration_peers' AND json_extract(t.record,'$.stage')='completed' AND json_extract(r.result,'$.reply.success')=1",
         [&agent_id],
         |row| row.get(0),
     ).unwrap();
@@ -3662,11 +3665,12 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         })
         .await
         .unwrap();
+    let restart_message_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     assert_eq!(
         app.clone()
             .oneshot(direct_message_post(
                 &agent_id,
-                "a19e61c8-6156-4874-b8d8-9111b0a49fc4",
+                &restart_message_id,
                 "wait",
             ))
             .await
@@ -3715,7 +3719,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
                 && record["restartRecovery"]["stage"] == "held"
                 && record["contextRepairWait"]["scope"] == "native"
                 && record["contextRepairWait"]["events"]
-                    == json!(["a19e61c8-6156-4874-b8d8-9111b0a49fc4"]);
+                    == json!([restart_message_id]);
             // A held input may also stop as interrupted without auto-wake when
             // the restart notice reaches the agent before native repair starts.
             let held_interrupted = record["status"] == "interrupted"
@@ -3754,8 +3758,8 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT status FROM runtime_events WHERE id='a19e61c8-6156-4874-b8d8-9111b0a49fc4'",
-            [],
+            "SELECT status FROM runtime_events WHERE id=?1",
+            [&restart_message_id],
             |row| row.get(0),
         )
         .unwrap();
@@ -4206,7 +4210,7 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
     .unwrap();
     let app = studio_runtime_http::router(state.clone()).unwrap();
     let agent_id = fixture.agents[0]["id"].as_str().unwrap();
-    let body = json!({"room":agent_id,"id":"a1eabc96-5d2b-4fe0-bcbc-18a93c539b17","text":"crash in flight"});
+    let body = json!({"room":agent_id,"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"text":"crash in flight"});
     let post = || {
         axum::http::Request::builder()
             .method("POST")
@@ -4481,12 +4485,12 @@ fn direct_generation(store: &RuntimeStore) -> u64 {
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT result FROM runtime_operation_receipts WHERE id='account-worker:direct-generation:default:next'",
+            "SELECT next_generation FROM runtime_account_state WHERE account='default'",
             [],
-            |row| row.get::<_, String>(0),
+            |row| row.get::<_, i64>(0),
         )
         .unwrap();
-    serde_json::from_str(&raw).unwrap()
+    u64::try_from(raw).unwrap()
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
