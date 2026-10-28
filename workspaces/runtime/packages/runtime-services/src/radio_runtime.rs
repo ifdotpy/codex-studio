@@ -337,7 +337,7 @@ pub async fn create_with(
             crate::sync_policy::publish_agent_projection(db,id,view,false, &|_, _, _, _| true)?;
         }
         let now=crate::projects::now_seconds();
-        let members = Value::Array(ids.iter().map(|id| Value::String(id.to_string())).collect());
+        let members = Value::Array(ids.iter().map(|id| Value::String(id.0.clone())).collect());
         let mut room=Room { id: room_id, radio: Radio::new(namespace.to_string(), Map::from_iter([("direct".to_owned(), Value::Bool(true))])), fields: json!({"kind":"private","members":members,"projectPath":path,"customName":name,"created":now,"userHidden":false}).as_object().cloned().unwrap_or_default() };
         save(db,&mut room,&prepared,now)?;
         let result=RadioReply { room };event_write::settle_request(db,&admitted,Some("owner-api"),&result).map_err(studio_runtime_store::StoreError::from)?;Ok(result)
