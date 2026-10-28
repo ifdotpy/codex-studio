@@ -133,6 +133,31 @@ async fn unsent(state: &State) -> Vec<callback_record::Accepted> {
         .expect("unsent records")
 }
 
+#[tokio::test]
+async fn callback_task_roundtrip_preserves_persisted_record() {
+    let state = State::new().await;
+    journal(&state, vec![entry(GENERATION, 1, &request("roundtrip"))]).await;
+    let operation = callback_record::operation(SCOPE, GENERATION, 1);
+    state.bridge.store.transaction_with(move |tx| {
+        let read_record = |tx: &studio_runtime_store::Transaction<'_>| -> Result<Value, WorkerError> {
+            let raw: String = tx.query_row(
+                "SELECT record FROM runtime_tool_requests WHERE origin_key=?1 AND kind='provider_callback'",
+                [&operation], |row| row.get(0),
+            )?;
+            serde_json::from_str(&raw).map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+        };
+        let before = read_record(tx)?;
+        let task: CallbackTask<callback_record::CallbackObligation> =
+            tool_requests::get_callback(tx, &operation)
+                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+                .expect("callback record");
+        tool_requests::put_callback(tx, &task)
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+        assert_eq!(read_record(tx)?, before);
+        Ok::<_, WorkerError>(())
+    }).await.unwrap();
+}
+
 /// A cancelled session retains the in-flight answer's final outcome outside
 /// its event lane. The final receipt must determine shutdown's result.
 #[tokio::test]
