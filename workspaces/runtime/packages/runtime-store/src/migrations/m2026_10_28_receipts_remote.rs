@@ -8,7 +8,7 @@ use studio_runtime_schema::persistence::{
 };
 
 use crate::multi_server_delivery::{
-    AccessPending, HttpAccessReply, SavedRemoteReply, federation_envelope_signature,
+    AccessPending, HttpAccessReply, RemoteReply, federation_envelope_signature,
 };
 use crate::outbox::OutboxRow;
 use crate::receipt_migration_contract::{
@@ -256,12 +256,15 @@ fn projection(source: &str) -> Result<ReceiptProjection<'static>> {
     })
 }
 
-fn decode<T: serde::de::DeserializeOwned>(
+fn domain<'a, T: strum::VariantNames>(
     source: &str,
     row: &SourceReceipt,
-    value: Value,
-) -> Result<T> {
-    serde_json::from_value(value).map_err(|_| unclassifiable(source, &row.id, &row.signature))
+    value: &'a Value,
+) -> Result<&'a str> {
+    value
+        .as_str()
+        .filter(|v| T::VARIANTS.contains(v))
+        .ok_or_else(|| unclassifiable(source, &row.id, &row.signature))
 }
 fn save(
     tx: &Transaction<'_>,
@@ -274,6 +277,15 @@ fn save(
     if !reply.is_object() {
         return Err(unclassifiable(source, &row.id, &row.signature));
     }
+    save_typed(tx, row, reply, actor, cutover)
+}
+fn save_typed<T: serde::Serialize>(
+    tx: &Transaction<'_>,
+    row: &SourceReceipt,
+    reply: T,
+    actor: Option<String>,
+    cutover: i64,
+) -> Result<()> {
     import_result(
         tx,
         &row.id,
@@ -327,30 +339,21 @@ fn access_inbound(
 ) -> Result<()> {
     let source = "runtime_access_receipts";
     let invalid = || unclassifiable(source, &row.id, &row.signature);
-    let record: Value = serde_json::from_str(wrapper["record"].as_str().ok_or_else(invalid)?)
-        .map_err(|_| invalid())?;
-    if !record.is_object() {
+    let raw = wrapper["record"].as_str().ok_or_else(invalid)?;
+    let record = serde_json::value::RawValue::from_string(raw.to_owned()).map_err(|_| invalid())?;
+    if !raw.trim_start().starts_with('{') {
         return Err(invalid());
     }
     match wrapper["status"].as_str() {
         Some("complete") => {
-            let _: HttpAccessReply = decode(source, row, record.clone())?;
-            if !record["status"]
-                .as_u64()
-                .is_some_and(|n| (100..=599).contains(&n))
-                || !record["headers"].is_array()
-                || !record["body"].is_string()
-                || !record["completed"].is_number()
-            {
+            let reply: HttpAccessReply = serde_json::from_str(raw).map_err(|_| invalid())?;
+            if !(100..=599).contains(&reply.status) {
                 return Err(invalid());
             }
-            if data_encoding::BASE64
-                .decode(record["body"].as_str().ok_or_else(invalid)?.as_bytes())
-                .is_err()
-            {
+            if data_encoding::BASE64.decode(reply.body.as_bytes()).is_err() {
                 return Err(invalid());
             }
-            save(tx, source, row, record, None, cutover)?;
+            save_typed(tx, row, record, None, cutover)?;
         }
         Some("tombstone") => deletion(
             tx,
@@ -384,10 +387,7 @@ fn access_inbound(
                         client: client.into(),
                         request_id: request.into(),
                         session: session.into(),
-                        record: serde_json::value::RawValue::from_string(
-                            wrapper["record"].as_str().ok_or_else(invalid)?.to_owned(),
-                        )
-                        .map_err(|_| invalid())?,
+                        record,
                         admission: admitted_owner_token(&row.id, &row.signature, cutover),
                     },
                     created: cutover,
@@ -406,19 +406,20 @@ fn access_outbound(
     cutover: i64,
 ) -> Result<()> {
     let source = "runtime_access_outbound";
-    let state: AccessOutboundState = decode(source, row, record["outcome"].clone())?;
-    match state {
-        AccessOutboundState::Unknown => {
+    let state = domain::<AccessOutboundState>(source, row, &record["outcome"])?.to_owned();
+    match state.as_str() {
+        s if s == AccessOutboundState::Unknown.as_str() => {
             if !record["created"].is_number() {
                 return Err(unclassifiable(source, &row.id, &row.signature));
             }
-            record["admission"] = json!(admitted_owner_token(&row.id, &row.signature, cutover));
+            record["admission"] =
+                crate::projection_value(&admitted_owner_token(&row.id, &row.signature, cutover));
             tx.execute(
                 "UPDATE runtime_access_outbound SET record=?1 WHERE rowid=?2",
                 params![record.to_string(), row.rowid],
             )?;
         }
-        AccessOutboundState::Complete => {
+        s if s == AccessOutboundState::Complete.as_str() => {
             if !record["value"].is_object() {
                 return Err(unclassifiable(source, &row.id, &row.signature));
             }
@@ -426,13 +427,13 @@ fn access_outbound(
                 tx,
                 source,
                 row,
-                json!({"outcome":state,"value":record.get("value")}),
+                json!({"outcome":state,"value":record["value"]}),
                 None,
                 cutover,
             )?;
             delete_source(tx, source, row.rowid)?;
         }
-        AccessOutboundState::Redacted => {
+        s if s == AccessOutboundState::Redacted.as_str() => {
             let key: Value = serde_json::from_str(&row.id)
                 .map_err(|_| unclassifiable(source, &row.id, &row.signature))?;
             let root = key[2]
@@ -441,6 +442,7 @@ fn access_outbound(
             deletion(tx, source, "access-outbound", row, root, cutover)?;
             delete_source(tx, source, row.rowid)?;
         }
+        _ => return Err(unclassifiable(source, &row.id, &row.signature)),
     }
     Ok(())
 }
@@ -452,7 +454,7 @@ fn server(
     wrapper: &Value,
     cutover: i64,
 ) -> Result<()> {
-    let state: ServerDeliveryState = decode(source, row, wrapper["state"].clone())?;
+    let state = domain::<ServerDeliveryState>(source, row, &wrapper["state"])?;
     let mut destination = row.clone();
     let mut wire_root = row.id.clone();
     if source == "runtime_server_outbox" {
@@ -465,7 +467,7 @@ fn server(
         let root = body["requestId"].as_str().ok_or_else(invalid)?;
         wire_root = root.to_owned();
         let action = body["action"].as_str().ok_or_else(invalid)?;
-        let _: ServerOperationKind = decode(source, row, body["action"].clone())?;
+        domain::<ServerOperationKind>(source, row, &body["action"])?;
         let mut operation = vec![action];
         if let Some(parts) = body.get("operation") {
             for part in parts.as_array().ok_or_else(invalid)? {
@@ -479,16 +481,16 @@ fn server(
             &operation,
         );
     }
-    if state == ServerDeliveryState::Complete {
-        let response: Value = wrapper["result"]
+    if state == ServerDeliveryState::Complete.as_str() {
+        let raw = wrapper["result"]
             .as_str()
-            .and_then(|s| serde_json::from_str(s).ok())
             .ok_or_else(|| unclassifiable(source, &row.id, &row.signature))?;
-        let outcome: RemoteOutcome = decode(source, row, response["outcome"].clone())?;
-        if outcome == RemoteOutcome::Unknown {
+        let response: RemoteReply = serde_json::from_str(raw)
+            .map_err(|_| unclassifiable(source, &row.id, &row.signature))?;
+        if response.outcome == RemoteOutcome::Unknown {
             return Err(unclassifiable(source, &row.id, &row.signature));
         }
-        if response["requestId"] != wire_root {
+        if response.request_id != wire_root {
             return Err(unclassifiable(source, &row.id, &row.signature));
         }
         let actor = wrapper["actor"].as_str().map(str::to_owned).or_else(|| {
@@ -497,9 +499,29 @@ fn server(
                 .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
                 .and_then(|body| body["actor"].as_str().map(str::to_owned))
         });
-        let reply = json!({"principal":wrapper.get("principal"),"server":wrapper.get("server"),"actor":actor,"body":wrapper.get("body"),"response":response});
-        let _: SavedRemoteReply = decode(source, row, reply.clone())?;
-        save(tx, source, &destination, reply, actor, cutover)?;
+        for field in ["principal", "server", "body"] {
+            if !wrapper[field].is_null() && !wrapper[field].is_string() {
+                return Err(unclassifiable(source, &row.id, &row.signature));
+            }
+        }
+        #[derive(serde::Serialize)]
+        struct Saved<'a> {
+            principal: Option<&'a str>,
+            server: Option<&'a str>,
+            actor: Option<&'a str>,
+            body: Option<&'a str>,
+            response: Box<serde_json::value::RawValue>,
+        }
+        // The complete response object is opaque and retained verbatim.
+        let reply = Saved {
+            principal: wrapper["principal"].as_str(),
+            server: wrapper["server"].as_str(),
+            actor: actor.as_deref(),
+            body: wrapper["body"].as_str(),
+            response: serde_json::value::RawValue::from_string(raw.to_owned())
+                .map_err(|_| unclassifiable(source, &row.id, &row.signature))?,
+        };
+        save_typed(tx, &destination, reply, actor.clone(), cutover)?;
         delete_source(tx, source, row.rowid)?;
     } else {
         if source == "runtime_server_outbox" {
@@ -518,7 +540,7 @@ fn server(
             {
                 return Err(unclassifiable(source, &row.id, &row.signature));
             }
-            let _: ServerOperationKind = decode(source, row, body["action"].clone())?;
+            domain::<ServerOperationKind>(source, row, &body["action"])?;
             if matches!(
                 body["action"].as_str(),
                 Some("add_location" | "remove_location")
@@ -552,12 +574,12 @@ fn server(
         tx.execute(
             &format!("UPDATE {source} SET admission=?1 WHERE rowid=?2"),
             params![
-                json!(admitted_owner_token(
+                serde_json::to_string(&admitted_owner_token(
                     &destination.id,
                     &row.signature,
                     cutover
                 ))
-                .to_string(),
+                .map_err(|_| unclassifiable(source, &row.id, &row.signature))?,
                 row.rowid
             ],
         )?;
@@ -567,18 +589,21 @@ fn server(
 
 fn fetch(tx: &Transaction<'_>, row: &SourceReceipt, wrapper: &Value, cutover: i64) -> Result<()> {
     let source = "runtime_server_fetch";
-    let state: ServerFetchState = decode(source, row, wrapper["state"].clone())?;
+    let state = domain::<ServerFetchState>(source, row, &wrapper["state"])?;
     match state {
-        ServerFetchState::Preparing | ServerFetchState::Fetching => {
+        s if s == ServerFetchState::Preparing.as_str()
+            || s == ServerFetchState::Fetching.as_str() =>
+        {
             tx.execute(
                 "UPDATE runtime_server_fetch SET admission=?1 WHERE rowid=?2",
                 params![
-                    json!(admitted_owner_token(&row.id, &row.signature, cutover)).to_string(),
+                    serde_json::to_string(&admitted_owner_token(&row.id, &row.signature, cutover))
+                        .map_err(|_| unclassifiable(source, &row.id, &row.signature))?,
                     row.rowid
                 ],
             )?;
         }
-        ServerFetchState::Complete => {
+        s if s == ServerFetchState::Complete.as_str() => {
             let reply: Value = wrapper["result"]
                 .as_str()
                 .and_then(|s| serde_json::from_str(s).ok())
@@ -593,6 +618,7 @@ fn fetch(tx: &Transaction<'_>, row: &SourceReceipt, wrapper: &Value, cutover: i6
             save(tx, source, row, reply, None, cutover)?;
             delete_source(tx, source, row.rowid)?;
         }
+        _ => return Err(unclassifiable(source, &row.id, &row.signature)),
     }
     Ok(())
 }
@@ -605,12 +631,12 @@ fn federation(
     cutover: i64,
 ) -> Result<()> {
     if source == "runtime_federation_inbox" {
-        let _: FederationAckState = decode(source, row, record["ack"].clone())?;
+        domain::<FederationAckState>(source, row, &record["ack"])?;
         if !record["created"].is_number() || !record["hash"].is_string() {
             return Err(unclassifiable(source, &row.id, &row.signature));
         }
         if !record["kind"].is_null() {
-            let _: FederationMessageKind = decode(source, row, record["kind"].clone())?;
+            domain::<FederationMessageKind>(source, row, &record["kind"])?;
         }
         let reply = record
             .as_object_mut()
@@ -620,16 +646,17 @@ fn federation(
         let key: Value = serde_json::from_str(&row.id)
             .map_err(|_| unclassifiable(source, &row.id, &row.signature))?;
         record["requestId"] = key[2].clone();
-        record["admission"] = json!(admitted_owner_token(&row.id, &row.signature, cutover));
+        record["admission"] =
+            crate::projection_value(&admitted_owner_token(&row.id, &row.signature, cutover));
         tx.execute(
             "UPDATE runtime_federation_inbox SET record=?1 WHERE rowid=?2",
             params![record.to_string(), row.rowid],
         )?;
     } else {
-        let _: FederationMessageKind = decode(source, row, record["kind"].clone())?;
-        let state: FederationDeliveryState = decode(source, row, record["status"].clone())?;
+        domain::<FederationMessageKind>(source, row, &record["kind"])?;
+        let state = domain::<FederationDeliveryState>(source, row, &record["status"])?.to_owned();
         let mut identity = row.clone();
-        if state == FederationDeliveryState::Queued
+        if state == FederationDeliveryState::Queued.as_str()
             || record.get("receipt").is_some_and(Value::is_object)
         {
             if !exists(tx, "runtime_federation_identity")? {
@@ -649,20 +676,20 @@ fn federation(
             }
             identity.signature = hash;
         }
-        match state {
-            FederationDeliveryState::Queued => {
+        match state.as_str() {
+            s if s == FederationDeliveryState::Queued.as_str() => {
                 record["requestId"] = record["id"].clone();
-                record["admission"] = json!(admitted_owner_token(
+                record["admission"] = crate::projection_value(&admitted_owner_token(
                     &identity.id,
                     &identity.signature,
-                    cutover
+                    cutover,
                 ));
                 tx.execute(
                     "UPDATE runtime_federation_outbox SET record=?1 WHERE rowid=?2",
                     params![record.to_string(), row.rowid],
                 )?;
             }
-            FederationDeliveryState::Delivered => {
+            s if s == FederationDeliveryState::Delivered.as_str() => {
                 if let Some(reply) = record.get("receipt").filter(|v| v.is_object()).cloned() {
                     let reply = json!({"ack":{"id":record["id"],"hash":identity.signature,"requestId":record["id"]},"receipt":reply});
                     save(tx, source, &identity, reply, None, cutover)?;
@@ -674,6 +701,7 @@ fn federation(
                 }
                 delete_source(tx, source, row.rowid)?;
             }
+            _ => return Err(unclassifiable(source, &row.id, &row.signature)),
         }
     }
     Ok(())
@@ -682,6 +710,7 @@ fn federation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::multi_server_delivery::SavedRemoteReply;
     use crate::receipt_migration_contract::{MIGRATION_BATCH_ROWS, prepare_schema};
     use rusqlite::Connection;
     const CUTOVER: i64 = 1_000_000;
@@ -1099,8 +1128,13 @@ mod tests {
             })
             .expect("typed queued owner");
         let owner: Value = serde_json::from_str(&raw).expect("record");
-        let token: crate::request_results::AdmittedRequest =
-            serde_json::from_value(owner["admission"].clone()).expect("token");
+        #[derive(serde::Deserialize)]
+        struct OwnerAdmission {
+            admission: crate::request_results::AdmittedRequest,
+        }
+        let token = serde_json::from_str::<OwnerAdmission>(&raw)
+            .expect("token")
+            .admission;
         let expected=federation_envelope_signature(&json!({"protocol":SOURCE_FEDERATION_PROTOCOL_VERSION,"senderServer":"sender","id":id,"kind":"chat-message","room":"room","payload":{"text":"original"},"created":1.0})).expect("shared content signature");
         assert_eq!(token.signature(), expected);
         assert_eq!(owner["requestId"], id);
