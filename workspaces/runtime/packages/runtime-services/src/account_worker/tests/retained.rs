@@ -1124,8 +1124,6 @@ async fn retained_uncheckpointed_not_sent_is_unknown_and_not_retried() {
 
 #[tokio::test]
 async fn retained_retry_intent_crash_before_transport_replays_unknown_without_sending() {
-    use crate::account_worker::retained::Call;
-
     let state = State::new().await;
     retained_schema(&state).await;
     let mut first_peer = Peer::new();

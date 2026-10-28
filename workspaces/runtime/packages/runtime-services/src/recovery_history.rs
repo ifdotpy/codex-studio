@@ -1,6 +1,5 @@
 //! Bounded read-only history port. The account worker supplies reads after its
 //! journal barrier; no recovery operation may load a thread or submit input.
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};

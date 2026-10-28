@@ -852,11 +852,19 @@ pub(super) async fn submitted(
                 Ok(identity) => identity,
                 Err(error) => return Ok(Err(error)),
             };
-            let admitted = match RequestResults::admit(tx, &identity, &call.signature(), now_ms())
-                .map_err(result_error)?
-            {
-                Admission::Fresh(admitted) => admitted,
-                Admission::Replay(_) => return Ok(Err(PortError::Unknown)),
+            let admitted = match RequestResults::admit(tx, &identity, &call.signature(), now_ms()) {
+                Ok(Admission::Fresh(admitted)) => admitted,
+                Ok(Admission::Replay(_)) => return Ok(Err(PortError::Unknown)),
+                Err(studio_runtime_store::request_results::RequestResultError::Conflict {
+                    ..
+                }) => return Ok(Err(PortError::Identity)),
+                Err(studio_runtime_store::request_results::RequestResultError::Identity(
+                    studio_runtime_schema::persistence::RequestIdentityError::Expired { .. },
+                )) => return Ok(Err(PortError::Expired)),
+                Err(studio_runtime_store::request_results::RequestResultError::Identity(_)) => {
+                    return Ok(Err(PortError::Invalid));
+                }
+                Err(error) => return Err(result_error(error)),
             };
             let mut reserved = call.clone();
             reserved.admitted_request = Some(admitted.clone());
