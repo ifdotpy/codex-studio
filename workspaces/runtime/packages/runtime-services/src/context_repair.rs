@@ -1536,8 +1536,7 @@ async fn repair_idle_with_broker_inner(
     };
     let request = crate::native_actions::NativeRequest {
         root_request_id: operation_id.clone(),
-        admitted_request: serde_json::from_value(agent["contextRepair"]["admittedRequest"].clone())
-            .map_err(|_| RepairError::ReceiptHold)?,
+        admitted_request: None,
         ticket,
         method: "thread/fork".to_owned(),
         params: fork_params,
