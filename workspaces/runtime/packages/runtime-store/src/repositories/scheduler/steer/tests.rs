@@ -32,6 +32,12 @@ const TURN: &str = "turn-1";
 
 fn database() -> Connection {
     let mut connection = Connection::open_in_memory().expect("memory database opens");
+    crate::receipt_schema::create(&connection).expect("receipt schema");
+    connection
+        .execute_batch(
+            "CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT);",
+        )
+        .expect("settings");
     connection
         .execute_batch(
             &crate::agent_columns::fixture_sql("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);
@@ -41,7 +47,6 @@ fn database() -> Connection {
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,
                created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
-             CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
              CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                PRIMARY KEY(collection,id));
@@ -141,7 +146,7 @@ fn statuses(connection: &Connection) -> Vec<String> {
 fn open_receipts(connection: &Connection) -> i64 {
     connection
         .query_row(
-            "SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature=?1",
+            "SELECT COUNT(*) FROM runtime_outbox WHERE signature=?1",
             [STEER_RECEIPT_SIGNATURE],
             |row| row.get(0),
         )
@@ -531,7 +536,7 @@ fn steer_written_after_the_reported_turn_end_returns_once() {
     submit(&mut connection, "s1");
     let submitted_at = connection
         .query_row(
-            "SELECT json_extract(result,'$.submittedAt') FROM runtime_operation_receipts",
+            "SELECT json_extract(payload,'$.submittedAt') FROM runtime_outbox",
             [],
             |row| row.get::<_, f64>(0),
         )
@@ -559,7 +564,7 @@ fn steer_unconfirmed_by_a_closed_transport_returns_when_written_after_the_end() 
     assert_eq!(statuses(&connection), UNCONFIRMED);
     let submitted_at: f64 = connection
         .query_row(
-            "SELECT json_extract(result,'$.submittedAt') FROM runtime_operation_receipts",
+            "SELECT json_extract(payload,'$.submittedAt') FROM runtime_outbox",
             [],
             |row| row.get(0),
         )
@@ -581,7 +586,7 @@ fn steer_unconfirmed_by_a_closed_transport_returns_when_written_after_the_end() 
         .expect("user change writes");
     let submitted_at: f64 = connection
         .query_row(
-            "SELECT json_extract(result,'$.submittedAt') FROM runtime_operation_receipts",
+            "SELECT json_extract(payload,'$.submittedAt') FROM runtime_outbox",
             [],
             |row| row.get(0),
         )

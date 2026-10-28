@@ -152,11 +152,11 @@ async fn delete_with_ports(
         store,
         project_deletion::Request {
             id,
-            request_id: "delete".into(),
+            request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
             expected_project_seq: seq,
             expected_workspace_id: workspace,
         },
-        2.,
+        studio_runtime_services::event_write::unix_time().expect("clock"),
         ports,
     )
     .await
@@ -298,11 +298,14 @@ async fn project_deletion_receipt_survives_store_restart() {
         store,
         project_deletion::Request {
             id,
-            request_id: "delete".into(),
+            request_id: first["request_id"]
+                .as_str()
+                .expect("original request")
+                .to_owned(),
             expected_project_seq: seq,
             expected_workspace_id: workspace,
         },
-        99.,
+        studio_runtime_services::event_write::unix_time().expect("clock"),
         Arc::new(UnavailableLifecyclePorts),
     )
     .await

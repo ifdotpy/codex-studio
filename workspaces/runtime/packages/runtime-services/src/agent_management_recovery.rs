@@ -10,9 +10,13 @@ use rusqlite::Transaction;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_providers::Method;
-use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, EventWriteRepository, RuntimeStore, truthy,
+use studio_runtime_schema::persistence::{
+    NativeReleasePhase, OutboxKind, OutboxStatus, OwnerKind, RecoveryReceiptStatus,
+    ToolRequestOutcome,
 };
+use studio_runtime_store::outbox::{Outbox, OutboxRow};
+use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
+use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, truthy};
 
 const TOOL_MEMORY_LOSS: &str = "JavaScript code cells and MCP tool memory end when the native session closes. The transcript and receipts stay. No user input is replayed.";
 /// Operation ID prefix reserved for an explicitly authorized native tool reset.
@@ -20,12 +24,53 @@ pub(crate) const MANUAL_RELEASE_PREFIX: &str = "manual-release:";
 
 /// Authority captured by one explicit lead request. The account worker checks
 /// this record again in the transaction that applies recovered state.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AuthorizedRecoveryRequest {
     pub lead: Value,
     pub target: Value,
     pub request_id: String,
     pub signature: String,
+    pub root_request_id: String,
+    pub admission: AdmittedRequest,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct ManualReply {
+    outcome: ToolRequestOutcome,
+    value: Value,
+}
+impl ManualReply {
+    fn from_receipt(receipt: &crate::recovery::RecoveryReceipt) -> Self {
+        use crate::recovery::RecoveryReceipt;
+        Self {
+            outcome: match receipt {
+                RecoveryReceipt::Applied(_) => ToolRequestOutcome::Applied,
+                RecoveryReceipt::Rejected(_) => ToolRequestOutcome::NotApplied,
+                RecoveryReceipt::Unknown(_) => ToolRequestOutcome::Unknown,
+            },
+            value: receipt.value().clone(),
+        }
+    }
+    fn into_receipt(self) -> Result<crate::recovery::RecoveryReceipt, Error> {
+        use crate::recovery::RecoveryReceipt;
+        Ok(match self.outcome {
+            ToolRequestOutcome::Applied => RecoveryReceipt::Applied(self.value),
+            ToolRequestOutcome::NotApplied => RecoveryReceipt::Rejected(self.value),
+            ToolRequestOutcome::Unknown => RecoveryReceipt::Unknown(self.value),
+            ToolRequestOutcome::Pending => return Err(Error::Stale),
+        })
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ManualManagement {
+    authorization: AuthorizedRecoveryRequest,
+    reply: ManualReply,
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as i64)
 }
 
 pub(crate) struct AuthorizedRecoveryEffects {
@@ -99,8 +144,13 @@ fn authorize(tx: &Transaction<'_>, actor: &Value, target: &str) -> Result<(Value
 
 impl AuthorizedRecoveryRequest {
     pub(crate) fn current(&self, tx: &Transaction<'_>) -> Result<bool, Error> {
-        if EventWriteRepository::receipt(tx, &self.request_id)?
-            .is_none_or(|receipt| receipt.signature != self.signature)
+        if Outbox::get::<ManualManagement>(tx, &self.request_id)
+            .map_err(studio_runtime_store::StoreError::from)?
+            .is_none_or(|row| {
+                row.kind != OutboxKind::ManagedTool
+                    || row.signature != self.signature
+                    || row.payload.authorization != *self
+            })
         {
             return Ok(false);
         }
@@ -171,12 +221,25 @@ fn blocker(tx: &Transaction<'_>, worker: &Value) -> Result<Option<&'static str>,
 /// Interpret the status of an existing durable receipt written before typed outcomes.
 pub(crate) fn decode_saved_recovery_receipt(value: Value) -> crate::recovery::RecoveryReceipt {
     use crate::recovery::RecoveryReceipt;
-    match value["status"].as_str() {
-        Some("unknown" | "unconfirmed") => RecoveryReceipt::Unknown(value),
-        Some("blocked" | "skipped" | "superseded" | "history_missing") => {
-            RecoveryReceipt::Rejected(value)
+    match serde_json::from_value::<RecoveryReceiptStatus>(value["status"].clone()) {
+        Ok(RecoveryReceiptStatus::Unknown | RecoveryReceiptStatus::Unconfirmed) | Err(_) => {
+            RecoveryReceipt::Unknown(value)
         }
-        _ => RecoveryReceipt::Applied(value),
+        Ok(
+            RecoveryReceiptStatus::Blocked
+            | RecoveryReceiptStatus::Skipped
+            | RecoveryReceiptStatus::Superseded
+            | RecoveryReceiptStatus::HistoryMissing,
+        ) => RecoveryReceipt::Rejected(value),
+        Ok(
+            RecoveryReceiptStatus::InputRestored
+            | RecoveryReceiptStatus::Held
+            | RecoveryReceiptStatus::Reconciled
+            | RecoveryReceiptStatus::Adopted
+            | RecoveryReceiptStatus::Accepted
+            | RecoveryReceiptStatus::Checked
+            | RecoveryReceiptStatus::Released,
+        ) => RecoveryReceipt::Applied(value),
     }
 }
 
@@ -208,9 +271,9 @@ enum ReleaseStatus {
 fn release_result(status: ReleaseStatus, reason: Option<&str>) -> crate::recovery::RecoveryReceipt {
     use crate::recovery::RecoveryReceipt;
     let name = match status {
-        ReleaseStatus::Released => "released",
-        ReleaseStatus::Blocked => "blocked",
-        ReleaseStatus::Unknown => "unknown",
+        ReleaseStatus::Released => NativeReleasePhase::Released.as_str(),
+        ReleaseStatus::Blocked => NativeReleasePhase::Blocked.as_str(),
+        ReleaseStatus::Unknown => NativeReleasePhase::Unknown.as_str(),
     };
     let mut value = json!({"status":name,"loss":TOOL_MEMORY_LOSS});
     if let Some(reason) = reason {
@@ -223,20 +286,81 @@ fn release_result(status: ReleaseStatus, reason: Option<&str>) -> crate::recover
     }
 }
 
-fn read_saved(tx: &Transaction<'_>, id: &str, signature: &str) -> Result<Option<Value>, Error> {
-    EventWriteRepository::receipt(tx, id)?
+fn read_saved(
+    tx: &Transaction<'_>,
+    id: &str,
+    signature: &str,
+) -> Result<Option<crate::recovery::RecoveryReceipt>, Error> {
+    if let Some(row) =
+        Outbox::get::<ManualManagement>(tx, id).map_err(studio_runtime_store::StoreError::from)?
+    {
+        if row.kind != OutboxKind::ManagedTool || row.signature != signature {
+            return Err(Error::Invalid("This request id has different content"));
+        }
+        return row.payload.reply.into_receipt().map(Some);
+    }
+    RequestResults::replay(tx, id, signature, now_ms())
+        .map_err(studio_runtime_store::StoreError::from)?
         .map(|receipt| {
             if receipt.signature != signature {
                 return Err(Error::Invalid("This request id has different content"));
             }
-            serde_json::from_str(&receipt.result)
-                .map_err(|_| Error::Invalid("Invalid manual management receipt"))
+            let envelope: ResultEnvelope<ManualReply> = serde_json::from_str(&receipt.result)
+                .map_err(|_| Error::Invalid("Invalid manual management receipt"))?;
+            envelope.reply.into_receipt()
         })
         .transpose()
 }
 
-fn save(tx: &Transaction<'_>, id: &str, signature: &str, value: &Value) -> Result<(), Error> {
-    EventWriteRepository::replace_receipt(tx, id, signature, &value.to_string())?;
+fn save(
+    tx: &Transaction<'_>,
+    auth: &AuthorizedRecoveryRequest,
+    receipt: &crate::recovery::RecoveryReceipt,
+) -> Result<(), Error> {
+    let reply = ManualReply::from_receipt(receipt);
+    if reply.outcome == ToolRequestOutcome::Unknown {
+        Outbox::put(
+            tx,
+            &OutboxRow {
+                id: auth.request_id.clone(),
+                kind: OutboxKind::ManagedTool,
+                owner_kind: OwnerKind::Agent,
+                owner_id: auth.target["id"].as_str().ok_or(Error::Stale)?.into(),
+                request_id: Some(auth.request_id.clone()),
+                signature: auth.signature.clone(),
+                status: OutboxStatus::Unknown,
+                account: Some(
+                    auth.target["accountKey"]
+                        .as_str()
+                        .unwrap_or("default")
+                        .into(),
+                ),
+                stream_id: None,
+                generation: None,
+                ordinal: None,
+                next_at: None,
+                payload: ManualManagement {
+                    authorization: auth.clone(),
+                    reply,
+                },
+                created: auth.admission.created(),
+            },
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    } else {
+        RequestResults::settle(
+            tx,
+            &auth.admission,
+            &ResultEnvelope {
+                actor: auth.lead["id"].as_str().map(str::to_owned),
+                reply,
+                references: vec![],
+            },
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+        Outbox::delete_settled(tx, &auth.request_id, &auth.signature)
+            .map_err(studio_runtime_store::StoreError::from)?;
+    }
     Ok(())
 }
 
@@ -286,16 +410,24 @@ pub(crate) async fn execute(
         actor["epoch"]
     );
     let id = receipt_id.clone();
+    let root_request_id = request_id.to_owned();
     let sig = signature.clone();
     let initial = store.transaction_with(move |tx| {
         let resolved = crate::provider_callbacks::tools::services::manage::resolved_args(tx, &actor, &args).map_err(|_| Error::Invalid("Unknown managed agent"))?;
         let target = resolved["agent_id"].as_str().ok_or(Error::Invalid("Supply agent_id"))?;
         let (lead, mut worker) = authorize(tx, &actor, target)?;
-        if let Some(saved) = read_saved(tx, &id, &sig)? { return Ok((None, decode_saved_recovery_receipt(saved))); }
-        let auth = AuthorizedRecoveryRequest { lead: stable(&lead), target: stable(&worker), request_id: id.clone(), signature: sig.clone() };
+        if let Some(saved) = read_saved(tx, &id, &sig)? { return Ok((None,saved)); }
+        let epoch=lead["epoch"].to_string();
+        let admission=match crate::event_write::begin_request::<ManualReply>(tx,crate::event_write::RequestKey::new("manual-management",&[lead["id"].as_str().ok_or(Error::Stale)?,&epoch],&root_request_id).raw(&id),&sig,now_ms()).map_err(studio_runtime_store::StoreError::from)? {
+            crate::event_write::CallerAdmission::Fresh(token)=>token,
+            crate::event_write::CallerAdmission::Replay(reply)=>return Ok((None,reply.into_receipt()?)),
+        };
+        let id=admission.id().to_owned();
+        if let Some(saved)=read_saved(tx,&id,&sig)? {return Ok((None,saved))}
+        let auth = AuthorizedRecoveryRequest { lead: stable(&lead), target: stable(&worker), request_id:id.clone(),signature:sig.clone(),root_request_id,admission };
         if recovery {
             let pending = json!({"status":"unconfirmed","next":"Inspect the worker. Do not replay input with an unknown outcome."});
-            save(tx, &id, &sig, &pending)?;
+            save(tx,&auth,&crate::recovery::RecoveryReceipt::Unknown(pending.clone()))?;
             return Ok((Some((auth, Value::Null)), crate::recovery::RecoveryReceipt::Unknown(pending)));
         }
         if worker["provider"].as_str().unwrap_or("codex") != "codex" || worker["executionMode"].as_str().is_some_and(|mode| mode != "native") {
@@ -304,20 +436,20 @@ pub(crate) async fn execute(
         let previous = &worker["nativeRelease"];
         if truthy(previous.get("resetPending")) || (previous["closedAt"].as_f64().is_none() && matches!(previous["phase"].as_str(), Some("unknown" | "unsubscribing" | "checking"))) {
             let value = release_result(ReleaseStatus::Unknown, Some("The previous release still needs exact native closure"));
-            save(tx, &id, &sig, value.value())?;
+            save(tx,&auth,&value)?;
             return Ok((None, value));
         }
         if let Some(reason) = blocker(tx, &worker)? {
             let value = release_result(ReleaseStatus::Blocked, Some(reason));
-            save(tx, &id, &sig, value.value())?;
+            save(tx,&auth,&value)?;
             return Ok((None, value));
         }
         if !worker["threadId"].as_str().is_some_and(|thread| !thread.is_empty()) { return Err(Error::Invalid("The worker has no native thread")); }
         let operation = format!("{MANUAL_RELEASE_PREFIX}{}", studio_runtime_store::sha256_hex(id.as_bytes()));
-        worker["nativeRelease"] = json!({"id":operation,"phase":"checking","at":now,"threadId":worker["threadId"],"accountKey":worker["accountKey"].as_str().unwrap_or("default"),"targetEpoch":worker["epoch"],"targetRootId":worker["rootId"],"targetParentId":worker["parentId"],"resetPending":true,"resetReason":reason,"resetBy":auth.lead["id"],"resetActorEpoch":auth.lead["epoch"],"authorization":auth});
+        worker["nativeRelease"] = json!({"id":operation,"phase":NativeReleasePhase::Checking,"at":now,"threadId":worker["threadId"],"accountKey":worker["accountKey"].as_str().unwrap_or("default"),"targetEpoch":worker["epoch"],"targetRootId":worker["rootId"],"targetParentId":worker["parentId"],"resetPending":true,"resetReason":reason,"resetBy":auth.lead["id"],"resetActorEpoch":auth.lead["epoch"],"authorization":auth});
         put(tx, worker.clone())?;
         let pending = release_result(ReleaseStatus::Unknown, Some("The manual release has not returned a result"));
-        save(tx, &id, &sig, pending.value())?;
+        save(tx,&auth,&pending)?;
         Ok((Some((auth, worker["nativeRelease"].clone())), pending))
     }).await?;
     let Some((auth, mut release)) = initial.0 else {
@@ -366,7 +498,7 @@ pub(crate) async fn execute(
                 .ok_or(Error::Stale)?
                 .value();
             if worker["nativeRelease"]["id"] != frozen["id"]
-                || worker["nativeRelease"]["phase"] != "checking"
+                || worker["nativeRelease"]["phase"] != NativeReleasePhase::Checking.as_str()
             {
                 return Err(Error::Stale);
             }
@@ -415,19 +547,44 @@ pub(crate) async fn execute(
                 .ok_or(Error::Stale)?
                 .value();
             if worker["nativeRelease"]["id"] != release_before["id"]
-                || worker["nativeRelease"]["phase"] != "checking"
+                || worker["nativeRelease"]["phase"] != NativeReleasePhase::Checking.as_str()
                 || blocker(tx, &worker)?.is_some()
             {
                 return Err(Error::Stale);
             }
-            worker["nativeRelease"]["phase"] = json!("unsubscribing");
+            worker["nativeRelease"]["phase"] = json!(NativeReleasePhase::Unsubscribing);
             worker["nativeRelease"]["submittedAt"] = json!(now);
+            let provider_admission = crate::account_worker::retained::reserve_provider_call(
+                tx,
+                &auth_before.admission,
+                crate::account_worker::retained::ProviderCallIntent {
+                    root_request_id: auth_before.root_request_id.clone(),
+                    admitted_request: None,
+                    scope: frozen_scope.clone(),
+                    operation: format!(
+                        "{}:unsubscribe",
+                        release_before["id"].as_str().ok_or(Error::Stale)?
+                    ),
+                    actor: Some(RequestActor {
+                        agent: target.into(),
+                        epoch: auth_before.target["epoch"].as_i64().ok_or(Error::Stale)?,
+                    }),
+                    transfer: None,
+                    deleted_actor_session: None,
+                    method: Method::ThreadUnsubscribe,
+                    params: json!({"threadId":release_before["threadId"]}),
+                },
+            )
+            .map_err(|_| Error::Unavailable("provider-session/request-admission"))?;
+            worker["nativeRelease"]["admittedRequest"] =
+                serde_json::to_value(&provider_admission).map_err(|_| Error::Stale)?;
             worker["nativeRelease"]["scope"] =
                 serde_json::to_value(frozen_scope).map_err(|_| Error::Stale)?;
-            put(tx, worker)
+            put(tx, worker)?;
+            Ok(provider_admission)
         })
         .await;
-    if admission.is_err() {
+    let Ok(provider_admission) = admission else {
         return finish_release(
             &store,
             &auth,
@@ -441,7 +598,9 @@ pub(crate) async fn execute(
             false,
         )
         .await;
-    }
+    };
+    release["admittedRequest"] =
+        serde_json::to_value(provider_admission).map_err(|_| Error::Stale)?;
     let outcome = request(
         session.as_ref(),
         &auth,
@@ -486,12 +645,8 @@ pub(crate) async fn finish_recovery(
             let saved = read_saved(tx, &auth.request_id, &auth.signature)?.ok_or(Error::Stale)?;
             // The account worker can finish after the callback caller disappears.
             // Its committed result, not a retry's transport state, remains the receipt.
-            if saved["manualRecoveryComplete"] == true {
-                return Ok(if &saved == receipt.value() {
-                    receipt
-                } else {
-                    decode_saved_recovery_receipt(saved)
-                });
+            if saved.value()["manualRecoveryComplete"] == true {
+                return Ok(saved);
             }
             let mut receipt = if receipt.value().is_object() {
                 receipt
@@ -499,7 +654,7 @@ pub(crate) async fn finish_recovery(
                 crate::recovery::RecoveryReceipt::Unknown(json!({"status":"unconfirmed"}))
             };
             receipt.value_mut()["manualRecoveryComplete"] = json!(true);
-            save(tx, &auth.request_id, &auth.signature, receipt.value())?;
+            save(tx, &auth, &receipt)?;
             Ok(receipt)
         })
         .await
@@ -520,6 +675,17 @@ async fn request(
     );
     let receipt = session
         .provider_request(ProviderRequest {
+            root_request_id: if method == Method::ThreadUnsubscribe {
+                auth.root_request_id.clone()
+            } else {
+                String::new()
+            },
+            admitted_request: if method == Method::ThreadUnsubscribe {
+                serde_json::from_value(release["admittedRequest"].clone())
+                    .map_err(|_| "Invalid release admission")?
+            } else {
+                None
+            },
             account: scope.account.clone(),
             operation: operation.clone(),
             actor: Some(RequestActor {
@@ -644,13 +810,15 @@ async fn finish_release(
             }
             let closed = closed && current;
             let confirmed_close = closed || worker["nativeRelease"]["closedAt"].as_f64().is_some();
-            worker["nativeRelease"]["phase"] = value.value()["status"].clone();
+            let phase: NativeReleasePhase = serde_json::from_value(value.value()["status"].clone())
+                .map_err(|_| Error::Stale)?;
+            worker["nativeRelease"]["phase"] = json!(phase);
             worker["nativeRelease"]["resetPending"] = json!(submitted && !confirmed_close);
             if closed {
                 worker["nativeRelease"]["closedAt"] = json!(now);
             }
             put(tx, worker)?;
-            save(tx, &auth.request_id, &auth.signature, value.value())?;
+            save(tx, &auth, &value)?;
             Ok(value)
         })
         .await?;
@@ -680,7 +848,7 @@ pub(crate) fn authorize_release(
         && worker["epoch"].as_i64() == Some(actor.epoch)
         && auth.current(tx)?
         && blocker(tx, &worker)?.is_none()
-        && release["phase"] == "unsubscribing"
+        && release["phase"] == NativeReleasePhase::Unsubscribing.as_str()
         && release["resetPending"] == true
         && release["scope"] == serde_json::to_value(scope).map_err(|_| Error::Stale)?
         && release["id"]
@@ -698,7 +866,36 @@ mod tests {
     use serde_json::json;
     use std::sync::Mutex;
     use studio_runtime_providers::{Method, RequestId, RequestTicket};
+    use studio_runtime_schema::persistence::RequestIdentity;
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository};
+
+    async fn execute(
+        store: Arc<RuntimeStore>,
+        session: Arc<dyn AccountSessionPort>,
+        actor: &Actor,
+        args: &Value,
+        label: &str,
+        now: f64,
+    ) -> Result<DispatchedOperation, Error> {
+        type Roots = std::collections::BTreeMap<(std::path::PathBuf, String), String>;
+        static ROOTS: std::sync::LazyLock<Mutex<Roots>> =
+            std::sync::LazyLock::new(|| Mutex::new(Roots::new()));
+        let root = ROOTS
+            .lock()
+            .expect("request roots")
+            .entry((store.state_dir().to_path_buf(), label.into()))
+            .or_insert_with(RequestIdentity::issue_root)
+            .clone();
+        super::execute(store, session, actor, args, &root, now).await
+    }
+
+    #[test]
+    fn malformed_recovery_status_never_claims_an_applied_result() {
+        assert!(matches!(
+            decode_saved_recovery_receipt(json!({"status":"invented"})),
+            crate::recovery::RecoveryReceipt::Unknown(_)
+        ));
+    }
 
     struct Session {
         store: Arc<RuntimeStore>,
@@ -770,6 +967,8 @@ mod tests {
                         scope: Self::scope(),
                         expected_scope: request.expected_scope.clone(),
                         operation: request.operation.clone(),
+                        root_request_id: request.root_request_id.clone(),
+                        admitted_request: request.admitted_request.clone(),
                         actor: request.actor.clone(),
                         transfer: None,
                         deleted_actor_session: request.deleted_actor_session.clone(),
@@ -1130,14 +1329,37 @@ mod tests {
                 let (lead, target) = authorize(tx, &actor.record().value(), "worker-00000000")?;
                 let raw = AgentRepository::get_raw(tx, &AgentId::from("worker-00000000"))?
                     .expect("raw worker");
-                save(tx, "guard-test", "test", &json!({"status":"unconfirmed"}))?;
+                let root = RequestIdentity::issue_root();
+                let crate::event_write::CallerAdmission::Fresh(admission) =
+                    crate::event_write::begin_request::<ManualReply>(
+                        tx,
+                        crate::event_write::RequestKey::new(
+                            "manual-management",
+                            &["lead-00000000", "0"],
+                            &root,
+                        ),
+                        "test",
+                        now_ms(),
+                    )
+                    .map_err(studio_runtime_store::StoreError::from)?
+                else {
+                    panic!("fresh admission")
+                };
+                let auth = AuthorizedRecoveryRequest {
+                    lead,
+                    target,
+                    request_id: admission.id().into(),
+                    signature: "test".into(),
+                    root_request_id: root,
+                    admission,
+                };
+                save(
+                    tx,
+                    &auth,
+                    &crate::recovery::RecoveryReceipt::Unknown(json!({"status":"unconfirmed"})),
+                )?;
                 Ok::<_, Error>((
-                    AuthorizedRecoveryRequest {
-                        lead,
-                        target,
-                        request_id: "guard-test".into(),
-                        signature: "test".into(),
-                    },
+                    auth,
                     RecoverySnapshot::from_record(serde_json::from_str(&raw).expect("worker JSON"))
                         .expect("snapshot"),
                 ))

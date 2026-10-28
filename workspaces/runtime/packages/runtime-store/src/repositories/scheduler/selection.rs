@@ -149,14 +149,13 @@ fn account_wake_target_filter(a: &str, held_after: &str) -> String {
     let recovery = account_wake_recovery(a);
     format!(
         "{eligibility} \
-         AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h \
-           WHERE h.id=?1 || a.id AND h.signature=?2) \
+         AND {a}hold_status=?1 \
          AND (({pending}) OR ({recovery}))"
     )
 }
 
 fn account_wake_invalid_target_query() -> String {
-    let target_filter = account_wake_target_filter("a.", "?3");
+    let target_filter = account_wake_target_filter("a.", "?2");
     format!(
         "SELECT a.id FROM runtime_agents AS a INDEXED BY {ACCOUNT_WAKE_INDEX} \
          WHERE {target_filter} \
@@ -218,8 +217,7 @@ fn validate_account_wake_targets(connection: &Connection, held_after: f64) -> St
         .query_row_cached(
             &ACCOUNT_WAKE_INVALID_TARGET_SQL,
             rusqlite::params![
-                crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                studio_runtime_schema::persistence::HoldStatus::Clear,
                 held_after
             ],
             |row| row.get::<_, String>(0),
@@ -235,35 +233,34 @@ fn validate_account_wake_targets(connection: &Connection, held_after: f64) -> St
 }
 
 fn account_wake_accounts_query() -> String {
-    let target_filter = account_wake_target_filter("a.", "?5");
+    let target_filter = account_wake_target_filter("a.", "?4");
     let account = "a.account_key";
     format!(
         "SELECT DISTINCT {account} FROM runtime_agents AS a \
          INDEXED BY {ACCOUNT_WAKE_INDEX} WHERE {target_filter} \
-         AND {account}>?3 ORDER BY {account} LIMIT ?4"
+         AND {account}>?2 ORDER BY {account} LIMIT ?3"
     )
 }
 
 fn account_wake_account_target_query() -> String {
-    let target_filter = account_wake_target_filter("a.", "?4");
+    let target_filter = account_wake_target_filter("a.", "?3");
     let account = "a.account_key";
     format!(
         "SELECT 1 FROM runtime_agents AS a INDEXED BY {ACCOUNT_WAKE_INDEX} \
-         WHERE {target_filter} AND {account}=?3 LIMIT 1"
+         WHERE {target_filter} AND {account}=?2 LIMIT 1"
     )
 }
 
 fn account_wake_pending_agents_query() -> String {
-    let pending = account_wake_pending("a.", "?6");
+    let pending = account_wake_pending("a.", "?5");
     let eligibility = account_wake_index_eligibility("a.");
     let account = "a.account_key";
     format!(
         "SELECT a.id,json_extract(a.record,'$.epoch'),json_extract(a.record,'$.workspaceMode') \
          FROM runtime_agents AS a INDEXED BY {ACCOUNT_WAKE_INDEX} \
          WHERE {eligibility} AND {account}=?1 AND a.id>?2 \
-           AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h \
-             WHERE h.id=?3 || a.id AND h.signature=?4) \
-           AND ({pending}) ORDER BY a.id LIMIT ?5"
+           AND a.hold_status=?3 \
+           AND ({pending}) ORDER BY a.id LIMIT ?4"
     )
 }
 
@@ -316,7 +313,7 @@ impl SchedulerRepository {
             .get("accountKey")
             .and_then(Value::as_str)
             .unwrap_or("default");
-        let Some(run) = ExecutionHistoryRepository::latest_run(tx, &agent.id.0)? else {
+        let Some(run) = ExecutionHistoryRepository::current_run(tx, agent)? else {
             return Ok(false);
         };
         if run["status"] != "unsent"
@@ -344,22 +341,26 @@ impl SchedulerRepository {
             || ["turnId", "observedTurnId", "nativeOperationId", "action"]
                 .iter()
                 .any(|key| saved.get(*key).is_some_and(|value| !value.is_null()))
-            || saved["receipts"].get("unknown").is_some()
+            || ExecutionHistoryRepository::receipt(tx, id, ExecutionReceiptKind::Unknown)?.is_some()
         {
             return Ok(false);
         }
-        let receipt = &saved["receipts"]["startResult"];
-        let Some(reason) = receipt["input"]["input"]["reason"]
+        let Some(receipt) =
+            ExecutionHistoryRepository::receipt(tx, id, ExecutionReceiptKind::StartResult)?
+        else {
+            return Ok(false);
+        };
+        let Some(reason) = receipt.input["input"]["reason"]
             .as_str()
             .filter(|value| !value.is_empty())
         else {
             return Ok(false);
         };
-        if receipt["result"] != true
-            || receipt["input"]["agent"] != agent.id.0
-            || receipt["input"]["epoch"] != agent.epoch
+        if receipt.result != true
+            || receipt.input["agent"] != agent.id.0
+            || receipt.input["epoch"] != agent.epoch
             || !matches!(
-                receipt["input"]["input"]["outcome"].as_str(),
+                receipt.input["input"]["outcome"].as_str(),
                 Some("held" | "pending")
             )
             || agent.extra.get("error") != Some(&json!(reason))
@@ -495,8 +496,7 @@ impl SchedulerRepository {
             account_statement
                 .query_map(
                     rusqlite::params![
-                        crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                        crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                        studio_runtime_schema::persistence::HoldStatus::Clear,
                         after,
                         account_limit as i64,
                         held_after
@@ -521,8 +521,7 @@ impl SchedulerRepository {
                         rusqlite::params![
                             account,
                             after,
-                            crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                            crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                            studio_runtime_schema::persistence::HoldStatus::Clear,
                             agent_limit as i64,
                             held_after
                         ],
@@ -555,8 +554,7 @@ impl SchedulerRepository {
         let mut result = BTreeMap::new();
         for account in accounts {
             let has_target = target_statement.exists(rusqlite::params![
-                crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                studio_runtime_schema::persistence::HoldStatus::Clear,
                 account,
                 held_after
             ])?;
@@ -568,8 +566,7 @@ impl SchedulerRepository {
                     rusqlite::params![
                         account,
                         "",
-                        crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                        crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                        studio_runtime_schema::persistence::HoldStatus::Clear,
                         agent_limit as i64,
                         held_after
                     ],
@@ -599,8 +596,7 @@ impl SchedulerRepository {
         let accounts = account_statement
             .query_map(
                 rusqlite::params![
-                    crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                    studio_runtime_schema::persistence::HoldStatus::Clear,
                     after_account,
                     account_limit as i64,
                     held_after
@@ -620,8 +616,7 @@ impl SchedulerRepository {
                         rusqlite::params![
                             account,
                             after,
-                            crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                            crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                            studio_runtime_schema::persistence::HoldStatus::Clear,
                             agent_limit as i64,
                             held_after
                         ],
@@ -656,8 +651,7 @@ impl SchedulerRepository {
                 rusqlite::params![
                     account,
                     after_agent,
-                    crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                    studio_runtime_schema::persistence::HoldStatus::Clear,
                     agent_limit as i64,
                     held_after
                 ],
@@ -1267,24 +1261,30 @@ pub(super) fn replay_claim(
     };
     let original: AgentRecord = serde_json::from_value(saved["claimResult"]["agent"].clone())
         .map_err(|_| receipt_error())?;
-    let preparation = &saved["receipts"]["threadPrepared"];
-    let prepared_scope = preparation["result"] == true
-        && preparation["input"]["agent"] == agent.id.0
-        && preparation["input"]["epoch"] == epoch
-        && preparation["input"]["account"]
-            == agent
-                .extra
-                .get("accountKey")
-                .cloned()
-                .unwrap_or(json!("default"))
-        && preparation["input"]["previousThread"]
-            == original
-                .extra
-                .get("threadId")
-                .cloned()
-                .unwrap_or(Value::Null)
-        && preparation["input"]["thread"]
-            == agent.extra.get("threadId").cloned().unwrap_or(Value::Null);
+    let preparation = crate::ExecutionHistoryRepository::receipt(
+        tx,
+        saved["id"].as_str().ok_or_else(receipt_error)?,
+        ExecutionReceiptKind::ThreadPrepared,
+    )?;
+    let prepared_scope = preparation.as_ref().is_some_and(|preparation| {
+        preparation.result == true
+            && preparation.input["agent"] == agent.id.0
+            && preparation.input["epoch"] == epoch
+            && preparation.input["account"]
+                == agent
+                    .extra
+                    .get("accountKey")
+                    .cloned()
+                    .unwrap_or(json!("default"))
+            && preparation.input["previousThread"]
+                == original
+                    .extra
+                    .get("threadId")
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            && preparation.input["thread"]
+                == agent.extra.get("threadId").cloned().unwrap_or(Value::Null)
+    });
     if original.id != agent.id
         || original.epoch != epoch
         || !(same_native_scope(&original, &agent) || prepared_scope)
@@ -2303,8 +2303,7 @@ mod account_wake_index_tests {
             .expect("candidate query prepares against its partial index")
             .query_map(
                 rusqlite::params![
-                    crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                    studio_runtime_schema::persistence::HoldStatus::Clear,
                     "",
                     4_i64,
                     0.0

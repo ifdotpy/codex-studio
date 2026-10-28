@@ -88,7 +88,9 @@ pub async fn recover_on_startup(
                     | error @ studio_runtime_store::StoreError::WriterActorInitialization(_)
                     | error @ studio_runtime_store::StoreError::WriterActorControl(_)
                     | error @ studio_runtime_store::StoreError::CommitActorOutcomeUnknown(_)
-                    | error @ studio_runtime_store::StoreError::ReadTaskFailed => {
+                    | error @ studio_runtime_store::StoreError::ReadTaskFailed
+                    | error @ studio_runtime_store::StoreError::RequestResult(_)
+                    | error @ studio_runtime_store::StoreError::Outbox(_) => {
                         return Err(MonitorError::Store(error));
                     }
                 }
@@ -567,7 +569,12 @@ pub async fn reserve_input(
     store
         .transaction_with(move |tx| {
             let (snapshot, actor) = snapshot(tx, &id)?;
-            let decision = policy::begin_input(&snapshot, &operation, &attempt_id, &input, now)?;
+            let mut decision =
+                policy::begin_input(&snapshot, &operation, &attempt_id, &input, now)?;
+            initialize_input_identity(
+                &mut decision,
+                &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+            );
             let effect = decision
                 .effects
                 .first()
@@ -992,6 +999,46 @@ pub struct PreparedStart {
     pub params: Value,
 }
 
+/// Persist the root before preparation can perform any provider operation.
+/// A committed operation always keeps its captured identity, including imports.
+pub async fn provider_root(store: &RuntimeStore, id: &str) -> Result<String, MonitorError> {
+    let id = id.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let (snapshot, actor) = snapshot(tx, &id)?;
+            if let Some(operation) = snapshot.operation() {
+                return operation
+                    .evidence
+                    .get("rootRequestId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or(MonitorError::Refused(
+                        "Monitor provider request identity is unavailable",
+                    ));
+            }
+            if let Some(root) = snapshot.record().get("rootRequestId") {
+                return root
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or(MonitorError::Refused(
+                        "Monitor provider request identity is invalid",
+                    ));
+            }
+            if !snapshot.active_owner() {
+                return Err(MonitorError::Refused("Monitor owner is no longer active"));
+            }
+            let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+            let mut record = snapshot.record().clone();
+            record["rootRequestId"] = json!(root);
+            // The root is owner state; no delivery or status transition is implied.
+            let typed = studio_runtime_store::MonitorRecord::from_value(record)?;
+            studio_runtime_store::Table::new(tx).put(&typed)?;
+            drop(actor);
+            Ok(root)
+        })
+        .await
+}
+
 pub async fn reserve_start(
     store: &RuntimeStore,
     id: &str,
@@ -1029,6 +1076,61 @@ pub async fn reserve_start(
             Ok(effect)
         })
         .await
+}
+
+pub(crate) fn initialize_input_identity(decision: &mut Decision, root: &str) {
+    decision.record["inputAttempt"]["rootRequestId"] = json!(root);
+    if let Some(attempt) = decision.record["inputAttempt"].as_object_mut() {
+        attempt.remove("providerRequest");
+    }
+}
+
+/// Resolve a provider mutation from its current owner; a retry never allocates another root.
+pub async fn provider_request_identity(
+    store: &RuntimeStore,
+    id: &str,
+    probe_generation: Option<i64>,
+    operation: &Operation,
+    request_operation: &str,
+    method: studio_runtime_providers::Method,
+    params: &Value,
+) -> Result<
+    (
+        String,
+        Option<studio_runtime_store::request_results::AdmittedRequest>,
+    ),
+    MonitorError,
+> {
+    use studio_runtime_providers::Method;
+    let id = id.to_owned();
+    let operation = operation.clone();
+    let request_operation = request_operation.to_owned();
+    let params = params.clone();
+    store.transaction_with(move |tx| {
+        let (snapshot,_)=snapshot(tx,&id)?;
+        if snapshot.operation().is_some_and(|saved| saved!=&operation) {return Err(MonitorError::Refused("Monitor provider operation changed"));}
+        let mut record=snapshot.record().clone();
+        let identity = if let Some(generation)=probe_generation {
+            if record["stallProbeGeneration"].as_i64()!=Some(generation) {return Err(MonitorError::Refused("Monitor liveness generation changed"));}
+            if record["livenessProbe"]["generation"].as_i64()!=Some(generation) {
+                record["livenessProbe"]=json!({"generation":generation,"rootRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
+                Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(record.clone())?)?;
+            }
+            record["livenessProbe"].clone()
+        } else if method==Method::CommandExecWrite || method==Method::CommandExecResize {
+            let ticket=policy::input_effect_ticket(&id,&request_operation).ok_or(MonitorError::Refused("Monitor input provider identity changed"))?;
+            let attempt=&record["inputAttempt"];
+            if attempt["id"]!=ticket || attempt["params"]!=params || attempt["method"]!=method.as_str() {return Err(MonitorError::Refused("Monitor input provider identity changed"));}
+            attempt.clone()
+        } else if method==Method::CommandExecTerminate {
+            json!({"rootRequestId":record["cancelRootRequestId"],"providerRequest":record["cancelProviderRequest"]})
+        } else if method==Method::CommandExec {
+            serde_json::to_value(&operation).map_err(studio_runtime_store::StoreError::from)?
+        } else {return Err(MonitorError::Refused("Monitor provider method has no mutation owner"));};
+        let root=identity["rootRequestId"].as_str().ok_or(MonitorError::Refused("Monitor provider request identity is unavailable"))?.to_owned();
+        let admitted=identity.get("providerRequest").filter(|value| !value.is_null()).cloned().map(serde_json::from_value).transpose().map_err(studio_runtime_store::StoreError::from)?;
+        Ok((root,admitted))
+    }).await
 }
 
 /// Unknown submission and backend restart share the same durable reconciliation.
