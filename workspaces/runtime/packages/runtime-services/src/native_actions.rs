@@ -55,6 +55,8 @@ pub enum NativeError {
     Changed,
     #[error("Native action awaits its exact native receipt")]
     Unknown,
+    #[error("Request id expired")]
+    Expired,
     #[error("Not implemented: requires {0}")]
     Unavailable(&'static str),
     #[error(transparent)]
@@ -861,10 +863,13 @@ pub async fn execute_provider_prepared(
             Some(scope) => scope,
             // The account worker exits after its idle deadline. Start it again, as the
             // other account-scoped routes do, instead of refusing the action.
-            None => port
-                .ensure_session(&account)
-                .await
-                .map_err(|_| NativeError::Unavailable("provider-session/native-request"))?,
+            None => port.ensure_session(&account).await.map_err(|error| {
+                if matches!(error, AccountSessionError::Expired) {
+                    NativeError::Expired
+                } else {
+                    NativeError::Unavailable("provider-session/native-request")
+                }
+            })?,
         };
         if scope.account != account {
             return Err(NativeError::Changed);
@@ -1145,6 +1150,7 @@ pub fn settle_provider(
                 ReceiptOutcome::Unknown { .. } => Delivery::Unknown,
             }
         }
+        Err(AccountSessionError::Expired) => return Err(NativeError::Expired),
         Err(_) => Delivery::Unknown,
     };
     settle(tx, id, &TransportReceipt { ticket, delivery }, effects)
@@ -1308,6 +1314,7 @@ pub async fn update_action_settings(
                     ReceiptOutcome::Unknown { .. } => NativeSettingsStatus::Unknown,
                 }
             }
+            Err(AccountSessionError::Expired) => return Err(NativeError::Expired),
             Err(_) => NativeSettingsStatus::Unknown,
         };
         let action_id = request.request_id.clone();
@@ -1538,6 +1545,7 @@ fn located(error: NativeError, table: &'static str, id: &str) -> NativeError {
         | other @ NativeError::Conflict
         | other @ NativeError::Changed
         | other @ NativeError::Unknown
+        | other @ NativeError::Expired
         | other @ NativeError::Unavailable(_)
         | other @ NativeError::Store(_)
         | other @ NativeError::Json(_)
