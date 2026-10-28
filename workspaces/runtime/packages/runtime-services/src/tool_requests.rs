@@ -6,7 +6,7 @@ pub(crate) mod prepared;
 use crate::event_write::truthy;
 pub use callback_storage::{CallbackTask, delete_callback, get_callback, put_callback};
 use lifecycle::terminal;
-use rusqlite::{Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_schema::persistence::{ExecutionEffectKind, ExecutionEffectStatus};
 use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
@@ -266,8 +266,53 @@ pub fn resolve(
     actor: &str,
     id: &str,
 ) -> Result<Option<Value>, ToolRequestError> {
-    if let Some(record) = records::get(tx, TABLE, id)?.filter(|r| r["agent"] == actor) {
-        return Ok(Some(record));
+    match resolve_raw(tx, actor, id)? {
+        Selection::Found(key, raw) => Ok(Some(records::decode(TABLE, &key, &raw)?)),
+        Selection::Missing => Ok(None),
+        Selection::Ambiguous => Ok(Some(
+            json!({"id":id,"stage":"ambiguous","outcome":"unknown","message":"Use the canonical request id from list; this short id names several requests."}),
+        )),
+    }
+}
+
+pub fn resolve_admission(
+    tx: &studio_runtime_store::Connection,
+    actor: &str,
+    id: &str,
+) -> Result<Option<AdmittedRequest>, ToolRequestError> {
+    #[derive(serde::Deserialize)]
+    struct Admission {
+        admitted: AdmittedRequest,
+    }
+    match resolve_raw(tx, actor, id)? {
+        Selection::Found(_, raw) => Ok(Some(
+            serde_json::from_str::<Admission>(&raw)
+                .map_err(StoreError::from)?
+                .admitted,
+        )),
+        Selection::Missing => Ok(None),
+        Selection::Ambiguous => Err(ToolRequestError::InvalidRequest("Ambiguous tool request")),
+    }
+}
+
+enum Selection {
+    Found(String, String),
+    Missing,
+    Ambiguous,
+}
+fn resolve_raw(
+    tx: &studio_runtime_store::Connection,
+    actor: &str,
+    id: &str,
+) -> Result<Selection, ToolRequestError> {
+    if !records::exists(tx, TABLE)? {
+        return Ok(Selection::Missing);
+    }
+    let get = |key: &str| -> Result<Option<String>, ToolRequestError> {
+        Ok(tx.query_row("SELECT record FROM runtime_tool_requests WHERE id=?1 AND json_extract(record,'$.agent')=?2", params![key, actor], |row| row.get(0)).optional()?)
+    };
+    if let Some(raw) = get(id)? {
+        return Ok(Selection::Found(id.to_owned(), raw));
     }
     let mut statement = tx.prepare_cached(
         "SELECT id FROM runtime_tool_requests WHERE agent=?1 AND EXISTS(SELECT 1 FROM json_each(record,'$.aliases') WHERE value=?2) LIMIT 2",
@@ -276,16 +321,14 @@ pub fn resolve(
         .query_map(params![actor, id], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     if aliases.len() > 1 {
-        return Ok(Some(
-            json!({"id":id,"stage":"ambiguous","outcome":"unknown","message":"Use the canonical request id from list; this short id names several requests."}),
-        ));
+        return Ok(Selection::Ambiguous);
     }
-    aliases
-        .first()
-        .map(|id| records::get(tx, TABLE, id).map(|r| r.filter(|r| r["agent"] == actor)))
-        .transpose()
-        .map(Option::flatten)
-        .map_err(Into::into)
+    match aliases.first() {
+        Some(key) => {
+            Ok(get(key)?.map_or(Selection::Missing, |raw| Selection::Found(key.clone(), raw)))
+        }
+        None => Ok(Selection::Missing),
+    }
 }
 
 fn refresh(
@@ -612,5 +655,58 @@ pub fn expire(result: &mut Value, now: f64) {
         .is_some_and(|expiry| now >= expiry)
     {
         *result = json!({"success":true,"contentItems":[{"type":"inputText","text":json!({"outcome":"unknown","expired":true,"detail":"The command output has expired. Do not run the command again."}).to_string()}]});
+    }
+}
+
+#[cfg(test)]
+mod admission_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn direct_and_alias_lookup_preserve_ownership_and_ambiguity() {
+        let db = studio_runtime_store::Connection::open_in_memory().unwrap();
+        assert!(
+            resolve_admission(&db, "agent", "missing")
+                .unwrap()
+                .is_none()
+        );
+        db.execute_batch(
+            "CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY, agent TEXT, record TEXT)",
+        )
+        .unwrap();
+        for (id, agent, aliases) in [
+            ("one", "agent", "[\"shared\",\"unique\"]"),
+            ("two", "agent", "[\"shared\",\"one\"]"),
+            ("other", "other", "[\"unique\"]"),
+        ] {
+            let raw = format!(
+                r#"{{"id":"{id}","agent":"{agent}","aliases":{aliases},"admitted":{{"id":"admitted-{id}","signature":"sig","created":1}}}}"#
+            );
+            db.execute(
+                "INSERT INTO runtime_tool_requests VALUES(?1,?2,?3)",
+                params![id, agent, raw],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            resolve_admission(&db, "agent", "one")
+                .unwrap()
+                .unwrap()
+                .id(),
+            "admitted-one"
+        );
+        assert_eq!(
+            resolve_admission(&db, "agent", "unique")
+                .unwrap()
+                .unwrap()
+                .id(),
+            "admitted-one"
+        );
+        assert!(resolve_admission(&db, "agent", "other").unwrap().is_none());
+        assert!(resolve_admission(&db, "agent", "shared").is_err());
+        assert_eq!(
+            resolve(&db, "agent", "shared").unwrap().unwrap()["stage"],
+            "ambiguous"
+        );
     }
 }
