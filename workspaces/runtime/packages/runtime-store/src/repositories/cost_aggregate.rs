@@ -177,6 +177,61 @@ pub struct CostGroup {
     pub count: u64,
 }
 
+/// Revision and changed SQLite group identities; absent groups are tombstones.
+pub type CostGroupChanges = (i64, Vec<(i64, Option<CostGroup>)>);
+
+/// Read current cost groups or only group identities changed since `revision`.
+/// A missing group denotes deletion or movement to another root.
+pub fn cost_group_changes(
+    db: &Connection,
+    root: &str,
+    revision: Option<i64>,
+) -> StoreResult<CostGroupChanges> {
+    let current: i64 = db.query_row(
+        "SELECT revision FROM analytics_usage_revision_clock",
+        [],
+        |row| row.get(0),
+    )?;
+    let sql = if revision.is_some() {
+        "SELECT v.id,g.root,g.model,g.account,g.input,g.cached,g.cache_write,g.output,g.uncached,g.count,g.cache_write_1h
+         FROM analytics_cost_group_revisions v LEFT JOIN analytics_cost_groups g ON g.rowid=v.id
+         WHERE v.revision>?1 AND v.revision<=?2"
+    } else {
+        "SELECT rowid,root,model,account,input,cached,cache_write,output,uncached,count,cache_write_1h
+         FROM analytics_cost_groups WHERE root=?3"
+    };
+    let mut statement = db.prepare_cached(sql)?;
+    let mut rows = if let Some(revision) = revision {
+        statement.query(params![revision, current])?
+    } else {
+        statement.query(params![rusqlite::types::Null, rusqlite::types::Null, root])?
+    };
+    let mut result = Vec::new();
+    while let Some(row) = rows.next()? {
+        let id = row.get(0)?;
+        let row_root: Option<String> = row.get(1)?;
+        let group = if row_root.as_deref() == Some(root) && row.get::<_, i64>(9)? > 0 {
+            Some(CostGroup {
+                model: row.get(2)?,
+                account_key: row.get(3)?,
+                tokens: CostTokens {
+                    input_tokens: row.get(4)?,
+                    cached_input_tokens: row.get(5)?,
+                    cache_write_input_tokens: row.get(6)?,
+                    output_tokens: row.get(7)?,
+                    cache_write_input_1h_tokens: row.get(10)?,
+                },
+                input_uncached: row.get(8)?,
+                count: row.get::<_, i64>(9)? as u64,
+            })
+        } else {
+            None
+        };
+        result.push((id, group));
+    }
+    Ok((current, result))
+}
+
 /// A Claude log response that replaces the analytics row of the same
 /// (account key, Studio thread, response id).
 pub type CostReceipt = (String, String, String);
@@ -522,36 +577,6 @@ pub fn reconciliation_usage_window(
         }
     }
     Ok(window)
-}
-
-/// Preserve final live/recovered responses in the selected members' current/history scopes;
-/// only missing or legacy evidence accepts journal recovery. Read members in the same transaction.
-pub fn partition_journal_receipts(
-    db: &Connection,
-    receipts: &BTreeSet<CostReceipt>,
-    members: &[(String, CostMember)],
-) -> StoreResult<JournalPartition> {
-    let mut result = JournalPartition {
-        accepted: receipts.clone(),
-        superseded: BTreeSet::new(),
-    };
-    if receipts.is_empty() {
-        return Ok(result);
-    }
-    let scopes = receipt_scopes(members);
-    let encoded = serde_json::to_string(receipts)?;
-    let scopes = serde_json::to_string(&scopes)?;
-    let mut statement = db.prepare_cached(JOURNAL_RECEIPT_SQL)?;
-    let mut rows = statement.query(params![encoded, scopes])?;
-    while let Some(row) = rows.next()? {
-        let raw = row.get_ref(3)?.as_str().map_err(rusqlite::Error::from)?;
-        if final_receipt(raw)? {
-            let receipt = (row.get(0)?, row.get(1)?, row.get(2)?);
-            result.accepted.remove(&receipt);
-            result.superseded.insert(receipt);
-        }
-    }
-    Ok(result)
 }
 
 /// Group identity; field order is the summation order of a priced total.
@@ -1205,6 +1230,13 @@ pub fn cost_groups(
 
 #[cfg(test)]
 mod tests {
+    fn partition_journal_receipts(
+        db: &rusqlite::Connection,
+        receipts: &std::collections::BTreeSet<super::CostReceipt>,
+        members: &[(String, super::CostMember)],
+    ) -> crate::StoreResult<super::JournalPartition> {
+        super::partition_journal_receipts_cached(db, receipts, members, &mut Default::default())
+    }
     #[tokio::test]
     async fn provider_identity_orphan_legacy_cost_is_invalid_but_typed_fact_is_preserved() {
         use serde_json::json;
@@ -1402,7 +1434,7 @@ mod tests {
             }))?;
             let receipts = ["final", "missing"].map(|id| ("acct".to_owned(), "thread".to_owned(), id.to_owned())).into();
             let members = [("agent".to_owned(), serde_json::from_value(member)?)];
-            let partition = super::partition_journal_receipts(tx, &receipts, &members)?;
+            let partition = partition_journal_receipts(tx, &receipts, &members)?;
             assert_eq!(partition.accepted.len(), 1);
             assert_eq!(partition.superseded.len(), 1, "historical account scope preserves final authority");
             Ok(())
@@ -1732,30 +1764,30 @@ mod tests {
                     "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":2}}});
             AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &record)?;
             let receipts = [("acct".into(), "thread".into(), "response".into())].into();
-            assert_eq!(super::partition_journal_receipts(tx, &receipts, &receipt_members())?.superseded.len(), 1);
+            assert_eq!(partition_journal_receipts(tx, &receipts, &receipt_members())?.superseded.len(), 1);
             let observation = serde_json::from_value(record["studioUsage"].clone())?;
             let ledger = UsageLedgerRow::capture("agent", Some("thread"), observation);
             record.as_object_mut().expect("row").extend(serde_json::to_value(ledger)?.as_object().expect("ledger").clone());
             tx.execute("UPDATE analytics_usage SET record=?1 WHERE id='receipt'", [record.to_string()])?;
-            assert_eq!(super::partition_journal_receipts(tx, &receipts, &receipt_members())?.superseded.len(), 1);
+            assert_eq!(partition_journal_receipts(tx, &receipts, &receipt_members())?.superseded.len(), 1);
             for pointer in ["/receiptKey", "/usageIdentity/agent", "/usageIdentity/responseId", "/studioUsage/tokens/output"] {
                 for invalid in [json!(null), json!(""), json!({})] {
                     let mut malformed = record.clone();
                     *malformed.pointer_mut(pointer).expect("field") = invalid;
                     tx.execute("UPDATE analytics_usage SET record=?1 WHERE id='receipt'", [malformed.to_string()])?;
-                    assert!(super::partition_journal_receipts(tx, &receipts, &receipt_members()).is_err(), "{pointer}: {malformed}");
+                    assert!(partition_journal_receipts(tx, &receipts, &receipt_members()).is_err(), "{pointer}: {malformed}");
                 }
             }
             record.as_object_mut().expect("row").remove("usageIdentity");
             tx.execute("UPDATE analytics_usage SET record=?1 WHERE id='receipt'", [record.to_string()])?;
-            assert!(super::partition_journal_receipts(tx, &receipts, &receipt_members()).is_err(), "receipt metadata requires its persisted identity");
+            assert!(partition_journal_receipts(tx, &receipts, &receipt_members()).is_err(), "receipt metadata requires its persisted identity");
             record.as_object_mut().expect("row").remove("receiptKey");
             record["studioUsage"]["evidence"] = json!("legacy");
             tx.execute("UPDATE analytics_usage SET record=?1 WHERE id='receipt'", [record.to_string()])?;
-            assert_eq!(super::partition_journal_receipts(tx, &receipts, &receipt_members())?.accepted, receipts);
+            assert_eq!(partition_journal_receipts(tx, &receipts, &receipt_members())?.accepted, receipts);
             record.as_object_mut().expect("row").remove("studioUsage");
             tx.execute("UPDATE analytics_usage SET record=?1 WHERE id='receipt'", [record.to_string()])?;
-            assert_eq!(super::partition_journal_receipts(tx, &receipts, &receipt_members())?.accepted, receipts);
+            assert_eq!(partition_journal_receipts(tx, &receipts, &receipt_members())?.accepted, receipts);
             Ok(())
         }).await.expect("typed receipt identity");
     }
@@ -1903,12 +1935,41 @@ mod tests {
                 &mut cache,
             )
             .expect("cached");
-            let fresh = super::partition_journal_receipts(&db, &receipts, &receipt_members())
-                .expect("fresh");
+            let fresh =
+                partition_journal_receipts(&db, &receipts, &receipt_members()).expect("fresh");
             assert_eq!(cached.accepted, fresh.accepted);
             assert_eq!(cached.superseded, fresh.superseded);
             assert_eq!(!cached.superseded.is_empty(), remaining);
         }
+    }
+
+    #[tokio::test]
+    async fn typed_usage_group_revision_tracks_changes_and_deletions() {
+        let temp = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &json!({"id":"receipt","agentId":"agent","rootId":"root","threadId":"thread","at":1,
+                "responseId":"response","accountKey":"acct","last":{},"total":{},
+                "studioUsage":{"kind":"response","responseId":"response","model":"m","evidence":"live",
+                    "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":2}}}))?;
+            let (id, first): (i64, i64) = tx.query_row("SELECT id,revision FROM analytics_cost_group_revisions", [], |row| Ok((row.get(0)?,row.get(1)?)))?;
+            let (snapshot, rows) = super::cost_group_changes(tx, "root", None)?;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].1.as_ref().expect("group").count, 1);
+            tx.execute("UPDATE analytics_cost_groups SET count=count+1 WHERE rowid=?1", [id])?;
+            let second: i64 = tx.query_row("SELECT revision FROM analytics_cost_group_revisions WHERE id=?1", [id], |row| row.get(0))?;
+            assert!(second > first, "in-place count changes advance the revision");
+            let (changed, rows) = super::cost_group_changes(tx, "root", Some(snapshot))?;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].1.as_ref().expect("updated group").count, 2);
+            tx.execute("DELETE FROM analytics_cost_groups WHERE rowid=?1", [id])?;
+            let third: i64 = tx.query_row("SELECT revision FROM analytics_cost_group_revisions WHERE id=?1", [id], |row| row.get(0))?;
+            assert!(third > second, "deletions retain a newer tombstone");
+            let (_, rows) = super::cost_group_changes(tx, "root", Some(changed))?;
+            assert_eq!(rows.len(), 1);
+            assert!(rows[0].1.is_none());
+            Ok(())
+        }).await.expect("group revision tracking");
     }
 
     #[tokio::test]
@@ -1931,7 +1992,9 @@ mod tests {
         drop(store);
         let db = rusqlite::Connection::open(temp.path().join("analytics.sqlite3"))
             .expect("old database");
-        db.execute_batch("DROP TRIGGER analytics_usage_revision_insert; DROP TRIGGER analytics_usage_revision_update;
+        db.execute_batch("DROP TRIGGER analytics_cost_group_revision_insert; DROP TRIGGER analytics_cost_group_revision_update;
+            DROP TRIGGER analytics_cost_group_revision_delete; DROP TABLE analytics_cost_group_revisions;
+            DROP TRIGGER analytics_usage_revision_insert; DROP TRIGGER analytics_usage_revision_update;
             DROP TRIGGER analytics_usage_revision_delete; DROP TABLE analytics_usage_revisions;
             DROP TABLE analytics_usage_revision_clock;").expect("restore old schema");
         drop(db);
@@ -1944,6 +2007,15 @@ mod tests {
         assert_eq!(
             super::cost_groups(&db, "root", &Default::default()).expect("groups after migration"),
             before
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM analytics_cost_group_revisions",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .expect("group revisions"),
+            0
         );
         assert_eq!(
             db.query_row(
@@ -2181,7 +2253,7 @@ mod tests {
             assert_eq!(rows[0].tokens.as_ref().expect("known tokens").output(), 2);
             assert_eq!(super::recorded_responses(tx, &agents)?.len(), 2);
             let receipts = ["legacy", "final", "missing"].map(|id| ("acct".to_owned(), "thread".to_owned(), id.to_owned())).into();
-            let partition = super::partition_journal_receipts(tx, &receipts, &receipt_members())?;
+            let partition = partition_journal_receipts(tx, &receipts, &receipt_members())?;
             assert_eq!(partition.accepted.len(), 2);
             assert_eq!(partition.superseded.len(), 1);
             assert!(partition.superseded.contains(&("acct".to_owned(),"thread".to_owned(),"final".to_owned())));
@@ -2245,7 +2317,7 @@ mod tests {
                     PARTITIONS.set(PARTITIONS.get() + 1);
                 }
             }));
-            let partition = super::partition_journal_receipts(tx, &receipts, &receipt_members())?;
+            let partition = partition_journal_receipts(tx, &receipts, &receipt_members())?;
             let groups = super::cost_groups(tx, "root", &partition)?;
             tx.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
             assert_eq!(PARTITIONS.get(), 1, "one receipt partition supplies both journal filtering and grouped costs");

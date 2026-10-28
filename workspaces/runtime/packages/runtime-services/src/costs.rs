@@ -4,7 +4,7 @@ use studio_runtime_schema::provider_kind::ProviderKind;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_store::cost_aggregate::{
-    CostMember, CostReceipt, CostTokens, DEFAULT_ACCOUNT, JournalReceiptCache, cost_groups,
+    CostGroup, CostMember, CostReceipt, CostTokens, DEFAULT_ACCOUNT, JournalReceiptCache,
+    cost_groups,
 };
 use studio_runtime_store::{AnalyticsStoreError, RuntimeStore, StoreError, analytics};
 use thiserror::Error;
@@ -22,10 +23,268 @@ use crate::pricing::TokenUsage;
 
 thread_local! {
     static RECEIPT_CACHES: RefCell<BTreeMap<String, JournalReceiptCache>> = const { RefCell::new(BTreeMap::new()) };
+    static PRICE_CACHES: RefCell<BTreeMap<String, GroupPriceCache>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 /// Number of session roots whose validated journal matches one reader retains.
 const RECEIPT_CACHE_ROOTS: usize = 128;
+/// Approximate retained priced group rows before a new root clears the cache.
+const PRICE_CACHE_GROUPS: usize = 500_000;
+/// Changed priced group identities per root before recomputing its totals.
+const PRICE_REBUILD_UPDATES: usize = 10_000;
+
+#[derive(Clone)]
+struct GroupPrice {
+    model: String,
+    provider: Option<&'static str>,
+    amount: Option<f64>,
+    count: u64,
+    tier: bool,
+}
+
+#[derive(Default)]
+struct GroupPriceCache {
+    revision: Option<i64>,
+    catalog: Option<std::sync::Arc<crate::pricing::LoadedPricing>>,
+    providers: BTreeMap<String, &'static str>,
+    groups: std::collections::HashMap<i64, GroupPrice>,
+    total: f64,
+    priced_count: u128,
+    tiers: usize,
+    models: BTreeMap<String, (f64, usize)>,
+    provider_totals: BTreeMap<&'static str, (f64, usize)>,
+    unknown: BTreeMap<String, usize>,
+    updates: usize,
+}
+
+impl GroupPriceCache {
+    fn apply(&mut self, price: &GroupPrice, add: bool) {
+        let Some(amount) = price.amount else {
+            let count = self.unknown.entry(price.model.clone()).or_default();
+            if add {
+                *count += 1;
+            } else {
+                *count -= 1;
+                if *count == 0 {
+                    self.unknown.remove(&price.model);
+                }
+            }
+            return;
+        };
+        let delta = if add { amount } else { -amount };
+        self.total += delta;
+        if add {
+            self.priced_count += u128::from(price.count);
+        } else {
+            self.priced_count -= u128::from(price.count);
+        }
+        if price.tier {
+            if add {
+                self.tiers += 1;
+            } else {
+                self.tiers -= 1;
+            }
+        }
+        let model = self.models.entry(price.model.clone()).or_default();
+        model.0 += delta;
+        if add {
+            model.1 += 1;
+        } else {
+            model.1 -= 1;
+            if model.1 == 0 {
+                self.models.remove(&price.model);
+            }
+        }
+        if let Some(provider) = price.provider {
+            let total = self.provider_totals.entry(provider).or_default();
+            total.0 += delta;
+            if add {
+                total.1 += 1;
+            } else {
+                total.1 -= 1;
+                if total.1 == 0 {
+                    self.provider_totals.remove(provider);
+                }
+            }
+        }
+    }
+
+    fn summary(&self) -> GroupPriceSummary {
+        GroupPriceSummary {
+            total: self.total,
+            priced_count: u64::try_from(self.priced_count).unwrap_or(u64::MAX),
+            tier: self.tiers != 0,
+            models: self
+                .models
+                .iter()
+                .map(|(key, (value, _))| (key.clone(), *value))
+                .collect(),
+            providers: self
+                .provider_totals
+                .iter()
+                .map(|(key, (value, _))| (*key, *value))
+                .collect(),
+            unknown: self.unknown.keys().cloned().collect(),
+        }
+    }
+}
+
+fn price_group(
+    group: &CostGroup,
+    catalog: &crate::pricing::PricingCatalog,
+    providers: &BTreeMap<&str, &'static str>,
+    provider_override: Option<&'static str>,
+) -> Option<GroupPrice> {
+    let model = group.model.as_deref().unwrap_or("Unknown model");
+    if model == "<synthetic>" {
+        return None;
+    }
+    let provider = provider_override
+        .or_else(|| provider_for(model))
+        .or_else(|| providers.get(group.account_key.as_str()).copied());
+    let tokens = group.tokens;
+    let context = tokens.input_tokens.map(|input| {
+        if group.input_uncached {
+            input
+                + tokens.cached_input_tokens.unwrap_or(0.0)
+                + tokens.cache_write_input_tokens.unwrap_or(0.0)
+        } else {
+            input
+        }
+    });
+    let price = provider.map(|provider| {
+        catalog.price_usage(
+            provider,
+            model,
+            TokenUsage {
+                input_tokens: tokens.input_tokens,
+                cached_input_tokens: tokens.cached_input_tokens,
+                cache_write_input_tokens: tokens.cache_write_input_tokens,
+                cache_write_input_1h_tokens: tokens.cache_write_input_1h_tokens,
+                output_tokens: tokens.output_tokens,
+            },
+            context,
+            group.input_uncached,
+        )
+    });
+    let amount = price
+        .and_then(|price| price.amount_usd)
+        .filter(|amount| amount.is_finite())
+        .map(|amount| amount * group.count as f64);
+    Some(GroupPrice {
+        model: model.to_owned(),
+        provider,
+        amount,
+        count: group.count,
+        tier: price.is_some_and(|price| price.context_tier_used),
+    })
+}
+
+#[derive(Default)]
+struct GroupPriceSummary {
+    total: f64,
+    priced_count: u64,
+    tier: bool,
+    models: BTreeMap<String, f64>,
+    providers: BTreeMap<&'static str, f64>,
+    unknown: BTreeSet<String>,
+}
+
+/// Incremental f64 totals; drift is reset by a full recompute at startup and every
+/// 10,000 updates per root. Target precision: 2 decimal places (tested on the
+/// live-data copy); not an unconditional mathematical guarantee.
+/// Owner decision 2026-10-28.
+fn group_prices_incremental(
+    db: &rusqlite::Connection,
+    root: &str,
+    loaded: &std::sync::Arc<crate::pricing::LoadedPricing>,
+    providers: &BTreeMap<&str, &'static str>,
+) -> Result<GroupPriceSummary, CostsError> {
+    PRICE_CACHES.with_borrow_mut(|caches| {
+        if !caches.contains_key(root)
+            && caches
+                .values()
+                .map(|cache| cache.groups.len())
+                .sum::<usize>()
+                >= PRICE_CACHE_GROUPS
+        {
+            caches.clear();
+        }
+        let cache = caches.entry(root.to_owned()).or_default();
+        let owned_providers = providers
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), *value))
+            .collect::<BTreeMap<_, _>>();
+        let current: i64 = db.query_row(
+            "SELECT revision FROM analytics_usage_revision_clock",
+            [],
+            |row| row.get(0),
+        )?;
+        if cache.revision.is_some_and(|revision| revision > current)
+            || cache
+                .catalog
+                .as_ref()
+                .is_none_or(|old| !std::sync::Arc::ptr_eq(old, loaded))
+            || cache.providers != owned_providers
+        {
+            *cache = GroupPriceCache::default();
+        }
+        let (mut revision, mut changes) =
+            studio_runtime_store::cost_aggregate::cost_group_changes(db, root, cache.revision)?;
+        if cache.revision.is_some() {
+            cache.updates = cache.updates.saturating_add(
+                changes
+                    .iter()
+                    .filter(|(id, group)| group.is_some() || cache.groups.contains_key(id))
+                    .count(),
+            );
+            if cache.updates >= PRICE_REBUILD_UPDATES {
+                *cache = GroupPriceCache::default();
+                (revision, changes) =
+                    studio_runtime_store::cost_aggregate::cost_group_changes(db, root, None)?;
+            }
+        }
+        if cache.revision.is_none() {
+            let bits =
+                |number: Option<f64>| number.map(|n| if n == 0.0 { 0.0_f64 } else { n }.to_bits());
+            changes.sort_by_cached_key(|(_, group)| {
+                group.as_ref().map(|group| {
+                    (
+                        group.model.clone(),
+                        group.account_key.clone(),
+                        bits(group.tokens.input_tokens),
+                        bits(group.tokens.cached_input_tokens),
+                        bits(group.tokens.cache_write_input_tokens),
+                        bits(group.tokens.cache_write_input_1h_tokens),
+                        bits(group.tokens.output_tokens),
+                        group.input_uncached,
+                    )
+                })
+            });
+        }
+        let catalog = loaded.catalog.as_ref().ok_or(CostsError::InvalidPricing)?;
+        for (id, group) in changes {
+            if let Some(old) = cache.groups.remove(&id) {
+                cache.apply(&old, false);
+            }
+            if let Some(price) = group
+                .as_ref()
+                .and_then(|group| price_group(group, catalog, providers, None))
+            {
+                cache.apply(&price, true);
+                cache.groups.insert(id, price);
+            }
+        }
+        cache.revision = Some(revision);
+        cache.catalog = Some(loaded.clone());
+        cache.providers = owned_providers;
+        if !cache.total.is_finite() {
+            *cache = GroupPriceCache::default();
+            return Err(CostsError::Computation);
+        }
+        Ok(cache.summary())
+    })
+}
 
 #[derive(Debug, Error)]
 pub enum CostsError {
@@ -136,92 +395,46 @@ fn session_cost_on_reader(
             row.usage.id.clone(),
         ))
     });
-    let groups = cost_groups(&tx, &root, &partition)?;
-    tx.commit()?;
-
     let loaded = crate::pricing::load_pricing(state_root)
         .ok_or(CostsError::Dependency("costs/pricing-refresh"))?;
     let catalog = loaded.catalog.as_ref().ok_or(CostsError::InvalidPricing)?;
 
-    let mut provider_totals = BTreeMap::<&str, f64>::new();
-    let mut model_totals = BTreeMap::<&str, f64>::new();
-    let mut unknown = BTreeSet::<&str>::new();
-    let mut priced_count = 0_u64;
-    let mut total = 0.0;
-    let mut tier_used = false;
-    let priced = groups
-        .iter()
-        .map(|group| {
-            (
-                group.model.as_deref().unwrap_or("Unknown model"),
-                Some(group.account_key.as_str()),
-                group.tokens,
-                group.input_uncached,
-                group.count,
-            )
-        })
-        .chain(local_claude.iter().map(|row| {
-            (
-                row.usage.model.as_str(),
-                None,
-                row.usage.tokens,
-                row.usage.tokens.input_tokens.is_some(),
-                1,
-            )
-        }));
-    for (model, account_key, tokens, uncached, count) in priced {
-        if model == "<synthetic>" {
-            continue;
+    let summary = if partition.accepted.is_empty() {
+        group_prices_incremental(&tx, &root, &loaded, &providers_by_account)?
+    } else {
+        let mut totals = GroupPriceCache::default();
+        for group in cost_groups(&tx, &root, &partition)? {
+            if let Some(price) = price_group(&group, catalog, &providers_by_account, None) {
+                totals.apply(&price, true);
+            }
         }
-        // Analytics rows fall back to their account's provider; Claude log rows are Anthropic.
-        let provider = match account_key {
-            Some(account_key) => {
-                provider_for(model).or_else(|| providers_by_account.get(account_key).copied())
+        for row in local_claude {
+            let group = CostGroup {
+                model: Some(row.usage.model),
+                account_key: String::new(),
+                tokens: row.usage.tokens,
+                input_uncached: row.usage.tokens.input_tokens.is_some(),
+                count: 1,
+            };
+            if let Some(price) =
+                price_group(&group, catalog, &providers_by_account, Some("anthropic"))
+            {
+                totals.apply(&price, true);
             }
-            None => Some("anthropic"),
-        };
-        let Some(provider) = provider else {
-            unknown.insert(model);
-            continue;
-        };
-        let usage = TokenUsage {
-            input_tokens: tokens.input_tokens,
-            cached_input_tokens: tokens.cached_input_tokens,
-            cache_write_input_tokens: tokens.cache_write_input_tokens,
-            cache_write_input_1h_tokens: tokens.cache_write_input_1h_tokens,
-            output_tokens: tokens.output_tokens,
-        };
-        let context = tokens.input_tokens.map(|input| {
-            if uncached {
-                input
-                    + tokens.cached_input_tokens.unwrap_or(0.0)
-                    + tokens.cache_write_input_tokens.unwrap_or(0.0)
-            } else {
-                input
-            }
-        });
-        let price = catalog.price_usage(provider, model, usage, context, uncached);
-        let Some(amount) = price.amount_usd.filter(|amount| amount.is_finite()) else {
-            unknown.insert(model);
-            continue;
-        };
-        let subtotal = amount * count as f64;
-        total += subtotal;
-        priced_count = priced_count.saturating_add(count);
-        *provider_totals.entry(provider).or_default() += subtotal;
-        *model_totals.entry(model).or_default() += subtotal;
-        tier_used |= price.context_tier_used;
-    }
-    if !total.is_finite() {
+        }
+        totals.summary()
+    };
+    tx.commit()?;
+    if !summary.total.is_finite() {
         return Err(CostsError::Computation);
     }
     Ok(json!({
         "rootId": root,
         "generation": generation,
-        "totalUSD": if priced_count == 0 { Value::Null } else { json!(total) },
-        "pricedSamples": priced_count,
-        "breakdown": {"providers": provider_totals, "models": model_totals},
-        "unknownModels": unknown,
+        "totalUSD": if summary.priced_count == 0 { Value::Null } else { json!(summary.total) },
+        "pricedSamples": summary.priced_count,
+        "breakdown": {"providers": summary.providers, "models": summary.models},
+        "unknownModels": summary.unknown,
         "estimated": true,
         "pricingState": "ready",
         "cacheAgeSeconds": 0,
@@ -229,7 +442,7 @@ fn session_cost_on_reader(
         "claudeHistoryIncomplete": has_claude_history,
         "method": format!("API prices from models.dev; cached input rates are applied when reported.{}{}",
             if has_claude_history { " Earlier Claude totals can be incomplete because earlier responses may not have separate saved usage rows." } else { "" },
-            if tier_used { " Published context tier applied where request size matched its threshold." }
+            if summary.tier { " Published context tier applied where request size matched its threshold." }
             else { " Base rates used when request size was unavailable or below the published threshold." }),
     }))
 }
@@ -752,8 +965,152 @@ struct LocalClaudeUsage {
     usage: LogUsage,
 }
 
-/// Usage rows per session log, parsed again only after the log changed.
-static CLAUDE_LOGS: LazyLock<FileDerived<Vec<LogUsage>>> = LazyLock::new(FileDerived::default);
+/// Maximum bytes checked at the previous journal end before accepting an append.
+const JOURNAL_BOUNDARY_BYTES: u64 = 4096;
+/// Number of journal files retained by the cost reader.
+const JOURNAL_CACHE_FILES: usize = 4096;
+
+#[derive(Default)]
+struct ClaudeLogState {
+    identity: Option<(u64, u64)>,
+    modified: Option<std::time::SystemTime>,
+    length: u64,
+    complete: u64,
+    boundary: String,
+    rows: std::sync::Arc<Vec<LogUsage>>,
+    seen: BTreeMap<String, usize>,
+    result: Option<std::sync::Arc<Vec<LogUsage>>>,
+}
+
+#[derive(Default)]
+struct ClaudeLogCache(std::sync::Mutex<std::collections::HashMap<PathBuf, ClaudeLogState>>);
+
+fn journal_identity(metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((metadata.dev(), metadata.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
+fn journal_boundary(file: &mut File, end: u64) -> Option<String> {
+    let size = end.min(JOURNAL_BOUNDARY_BYTES);
+    file.seek(SeekFrom::Start(end - size)).ok()?;
+    let mut bytes = vec![0; size as usize];
+    file.read_exact(&mut bytes).ok()?;
+    #[cfg(test)]
+    JOURNAL_BYTES_READ.update(|read| read + size);
+    Some(studio_runtime_store::sha256_hex(&bytes))
+}
+
+fn merge_journal_rows(
+    rows: &mut Vec<LogUsage>,
+    seen: &mut BTreeMap<String, usize>,
+    added: Vec<LogUsage>,
+) {
+    for usage in added {
+        if let Some(&index) = seen.get(&usage.id) {
+            rows[index].conflicting_usage |= usage.conflicting_usage
+                || rows[index].model != usage.model
+                || rows[index].tokens != usage.tokens;
+        } else {
+            seen.insert(usage.id.clone(), rows.len());
+            rows.push(usage);
+        }
+    }
+}
+
+impl ClaudeLogCache {
+    fn get(&self, path: &Path) -> Option<std::sync::Arc<Vec<LogUsage>>> {
+        let mut file = File::open(path).ok()?;
+        let metadata = file.metadata().ok()?;
+        let identity = journal_identity(&metadata);
+        let modified = metadata.modified().ok();
+        let length = metadata.len();
+        let mut entries = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !entries.contains_key(path) && entries.len() >= JOURNAL_CACHE_FILES {
+            entries.clear();
+        }
+        let state = entries.entry(path.to_owned()).or_default();
+        if state.result.is_some()
+            && state.identity == identity
+            && state.length == length
+            && state.modified == modified
+        {
+            return state.result.clone();
+        }
+        // The provider journal is append-only between replacement or truncation;
+        // the previous final 4 KiB guard also detects rewrites near the old end.
+        let append = state.result.is_some()
+            && identity.is_some()
+            && state.identity == identity
+            && length > state.length
+            && journal_boundary(&mut file, state.length).as_deref() == Some(&state.boundary);
+        let start = if append { state.complete } else { 0 };
+        file.seek(SeekFrom::Start(start)).ok()?;
+        let mut reader = BufReader::new((&mut file).take(length - start));
+        let mut line = Vec::new();
+        let mut complete = 0_u64;
+        let mut added = Vec::new();
+        let mut added_seen = BTreeMap::new();
+        let mut tail = Vec::new();
+        loop {
+            line.clear();
+            let read = reader.read_until(b'\n', &mut line).ok()?;
+            if read == 0 {
+                break;
+            }
+            #[cfg(test)]
+            JOURNAL_BYTES_READ.update(|bytes| bytes + read as u64);
+            if line.last() != Some(&b'\n') {
+                tail = line.clone();
+                break;
+            }
+            complete += read as u64;
+            let (parsed, _) = parse_claude_log_reader(std::io::Cursor::new(&line));
+            merge_journal_rows(&mut added, &mut added_seen, parsed);
+        }
+        drop(reader);
+        let boundary = journal_boundary(&mut file, length)?;
+        // Drop the previous result before extending the shared complete prefix.
+        state.result = None;
+        if !append {
+            std::sync::Arc::make_mut(&mut state.rows).clear();
+            state.seen.clear();
+        }
+        merge_journal_rows(
+            std::sync::Arc::make_mut(&mut state.rows),
+            &mut state.seen,
+            added,
+        );
+        let result = if tail.is_empty() {
+            state.rows.clone()
+        } else {
+            let mut result = state.rows.as_ref().clone();
+            let mut seen = state.seen.clone();
+            let (parsed, _) = parse_claude_log_reader(std::io::Cursor::new(&tail));
+            merge_journal_rows(&mut result, &mut seen, parsed);
+            std::sync::Arc::new(result)
+        };
+        state.identity = identity;
+        state.modified = modified;
+        state.length = length;
+        state.complete = start + complete;
+        state.boundary = boundary;
+        state.result = Some(result.clone());
+        Some(result)
+    }
+}
+
+static CLAUDE_LOGS: LazyLock<ClaudeLogCache> = LazyLock::new(ClaudeLogCache::default);
 /// Native session ids per Studio session state file, read again only after it changed.
 static SESSION_NATIVE_IDS: LazyLock<FileDerived<Result<Vec<String>, ()>>> =
     LazyLock::new(FileDerived::default);
@@ -1149,7 +1506,7 @@ fn read_local_claude_usage_inner(
                     };
                     std::sync::Arc::new(rows.clone())
                 } else {
-                    let Some(log) = CLAUDE_LOGS.get_or_load(&path, parse_claude_log) else {
+                    let Some(log) = CLAUDE_LOGS.get(&path) else {
                         continue;
                     };
                     log
@@ -1366,9 +1723,15 @@ pub fn claude_log_lines_skipped() -> u64 {
 }
 
 /// The first usage row of every response id in one session log, in file order.
+#[cfg(test)]
 fn parse_claude_log(path: &Path) -> Option<Vec<LogUsage>> {
     let file = File::open(path).ok()?;
     Some(parse_claude_log_reader(BufReader::new(file)).0)
+}
+
+#[cfg(test)]
+thread_local! {
+    static JOURNAL_BYTES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 fn parse_claude_log_reader(reader: impl BufRead) -> (Vec<LogUsage>, bool) {
@@ -1542,6 +1905,77 @@ mod tests {
     /// threads. Tests that assert on it hold this lock, so they cannot count each other.
     static SKIPPED_LINE_COUNTER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[test]
+    fn typed_usage_ledger_journal_growth_reads_only_the_new_tail() {
+        use std::io::Write;
+        let dir = tempdir().expect("journal directory");
+        let path = dir.path().join("thread.jsonl");
+        let line = json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z","message":{"id":"r","model":"claude-test","usage":{"input_tokens":2,"output_tokens":4}}}).to_string();
+        let initial = format!("{line}\n").repeat(1000);
+        fs::write(&path, &initial).expect("initial journal");
+        super::CLAUDE_LOGS.get(&path).expect("initial parse");
+        super::JOURNAL_BYTES_READ.take();
+        writeln!(
+            fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("journal"),
+            "{line}"
+        )
+        .expect("append");
+        super::CLAUDE_LOGS.get(&path).expect("appended parse");
+        assert!(
+            super::JOURNAL_BYTES_READ.take() < initial.len() as u64 / 2,
+            "append must not reread the historical journal"
+        );
+    }
+
+    #[test]
+    fn typed_usage_ledger_journal_cache_handles_partial_lines_rewrites_and_replacement() {
+        use std::io::Write;
+        let dir = tempdir().expect("journal directory");
+        let path = dir.path().join("thread.jsonl");
+        let first = json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z","message":{"id":"r","model":"claude-test","usage":{"input_tokens":2,"output_tokens":4}}}).to_string();
+        let different = json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z","message":{"id":"r","model":"claude-test","usage":{"input_tokens":3,"output_tokens":4}}}).to_string();
+        fs::write(&path, &first).expect("partial line");
+        assert_eq!(super::CLAUDE_LOGS.get(&path).expect("partial").len(), 1);
+        write!(
+            fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("journal"),
+            "\n{different}\n"
+        )
+        .expect("append");
+        let rows = super::CLAUDE_LOGS.get(&path).expect("duplicates");
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].conflicting_usage);
+        fs::write(&path, format!("{different}\n")).expect("truncate");
+        let rows = super::CLAUDE_LOGS.get(&path).expect("truncated");
+        assert!(!rows[0].conflicting_usage);
+        assert_eq!(rows[0].tokens.input_tokens, Some(3.0));
+        let replacement = dir.path().join("replacement");
+        fs::write(&replacement, format!("{first}\n")).expect("replacement");
+        fs::rename(&replacement, &path).expect("replace inode");
+        assert_eq!(
+            super::CLAUDE_LOGS.get(&path).expect("replaced")[0]
+                .tokens
+                .input_tokens,
+            Some(2.0)
+        );
+        let mut bytes = fs::read(&path).expect("journal");
+        let position = bytes
+            .windows(16)
+            .position(|window| window == b"\"input_tokens\":2")
+            .expect("token");
+        bytes[position + 15] = b'3';
+        bytes.extend_from_slice(format!("{different}\n").as_bytes());
+        fs::write(&path, bytes).expect("rewrite and grow");
+        let rows = super::CLAUDE_LOGS.get(&path).expect("changed boundary");
+        assert_eq!(rows[0].tokens.input_tokens, Some(3.0));
+        assert!(!rows[0].conflicting_usage);
+    }
+
     fn hold_skipped_line_counter() -> std::sync::MutexGuard<'static, ()> {
         SKIPPED_LINE_COUNTER
             .lock()
@@ -1569,7 +2003,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn usage_reconciliation_cache_write_1h_saved_run_session_cost() {
+    async fn typed_usage_ledger_journal_incremental_group_prices() {
         let temp = tempdir().expect("state");
         let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
         let runs: Value = serde_json::from_str(include_str!(
@@ -1605,6 +2039,83 @@ mod tests {
                 - 0.00515774)
                 .abs()
                 < 1e-12
+        );
+        let repeated = session_cost_with_account_profiles(&store, "agent", &Default::default())
+            .expect("repeated session cost");
+        assert_eq!(cost, repeated);
+        let response = runs[0]["responses"][0].clone();
+        store.analytics_transaction::<_,StoreError>(move |tx,_| {
+            let raw = &response["rawUsage"];
+            AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&json!({"id":response["responseId"],"agentId":"agent","rootId":"agent","at":1,"accountKey":"claude","last":{},"total":{},
+                "studioUsage":{"kind":"response","responseId":response["responseId"],"model":response["model"],"evidence":"live","tokens":{
+                    "uncachedInput":raw["input_tokens"],"cacheReadInput":raw["cache_read_input_tokens"],"cacheWriteInput":raw["cache_creation_input_tokens"],"cacheWriteInput1h":raw["cache_creation"]["ephemeral_1h_input_tokens"],"output":12345}}}))?;
+            Ok(())
+        }).await.expect("replace response");
+        let changed = session_cost_with_account_profiles(&store, "agent", &Default::default())
+            .expect("updated session cost");
+        let root = temp.path().to_owned();
+        let full = store
+            .with_cost_reader(
+                move |db| -> Result<f64, studio_runtime_store::analytics::AnalyticsStoreError> {
+                    let groups = studio_runtime_store::cost_aggregate::cost_groups(
+                        db,
+                        "agent",
+                        &Default::default(),
+                    )
+                    .map_err(|error| {
+                        studio_runtime_store::analytics::AnalyticsStoreError::StoredText(
+                            error.to_string(),
+                        )
+                    })?;
+                    let loaded = crate::pricing::load_pricing(&root).expect("pricing");
+                    let providers = BTreeMap::from([("claude", "anthropic")]);
+                    Ok(groups
+                        .iter()
+                        .filter_map(|group| {
+                            super::price_group(
+                                group,
+                                loaded.catalog.as_ref().expect("catalog"),
+                                &providers,
+                                None,
+                            )
+                            .and_then(|price| price.amount)
+                        })
+                        .sum())
+                },
+            )
+            .expect("full recompute");
+        assert!(
+            (changed["totalUSD"].as_f64().expect("price") - full).abs() < 0.005,
+            "incremental and full prices agree within half a cent"
+        );
+        store
+            .with_cost_reader(
+                |_| -> Result<(), studio_runtime_store::analytics::AnalyticsStoreError> {
+                    super::PRICE_CACHES.with_borrow_mut(|caches| {
+                        caches.get_mut("agent").expect("cached root").updates =
+                            super::PRICE_REBUILD_UPDATES - 1
+                    });
+                    Ok(())
+                },
+            )
+            .expect("prepare rebuild threshold");
+        store.analytics_transaction::<_,StoreError>(|tx,_| {
+            tx.execute("UPDATE analytics_cost_groups SET count=count+1 WHERE rowid=(SELECT min(rowid) FROM analytics_cost_groups WHERE root='agent')", [])?;
+            Ok(())
+        }).await.expect("change group");
+        session_cost_with_account_profiles(&store, "agent", &Default::default())
+            .expect("rebuild totals");
+        let updates = store
+            .with_cost_reader(
+                |_| -> Result<usize, studio_runtime_store::analytics::AnalyticsStoreError> {
+                    Ok(super::PRICE_CACHES
+                        .with_borrow(|caches| caches.get("agent").expect("cached root").updates))
+                },
+            )
+            .expect("read rebuild count");
+        assert_eq!(
+            updates, 0,
+            "the update threshold causes a full recomputation"
         );
     }
 

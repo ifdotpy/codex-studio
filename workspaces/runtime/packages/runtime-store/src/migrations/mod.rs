@@ -12,6 +12,7 @@ mod m2026_10_26_terminal_errors;
 pub(crate) mod m2026_10_27_cost_index;
 mod m2026_10_27_retired_sqlite;
 mod m2026_10_27_scheduler_indexes;
+mod m2026_10_28_group_revision;
 mod m2026_10_28_receipts_account_worker;
 mod m2026_10_28_receipts_actions;
 mod m2026_10_28_receipts_checks;
@@ -391,6 +392,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_28_usage_revision::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-28-group-revision",
+            introduced: OCTOBER_28,
+            target: MigrationTarget::Analytics,
+            supported_source: "Cost groups without revisions",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_28_group_revision::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {
