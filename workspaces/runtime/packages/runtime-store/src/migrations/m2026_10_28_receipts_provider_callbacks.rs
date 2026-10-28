@@ -273,11 +273,6 @@ fn canonical(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<
         .cloned()
         .or_else(|| saved.get("card").cloned())
         .unwrap_or(Value::Null);
-    let cursor = saved
-        .get("journalCursor")
-        .cloned()
-        .or_else(|| card.as_ref().and_then(|v| v.get("journalCursor")).cloned())
-        .unwrap_or(Value::Null);
     let tool = saved
         .get("tool_request")
         .cloned()
@@ -285,7 +280,7 @@ fn canonical(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<
         .unwrap_or(Value::Null);
     let mut origin = response_identity.clone();
     origin["attempt"] = json!("");
-    let mut owner = json!({"id":id,"kind":ToolRequestKind::ProviderCallback,"originKey":key,"status":status,"updated":cutover,"payload":{"identity":origin,"signature":signature,"card":card_id,"tool_request":tool,"credential_refresh_admission":null,"journal_cursor":cursor,"admission":admission,"reply_identity":if reply.is_some(){response_identity.clone()}else{Value::Null},"frame_fingerprint":null}});
+    let mut owner = json!({"id":id,"kind":ToolRequestKind::ProviderCallback,"originKey":key,"status":status,"updated":cutover,"payload":{"identity":origin,"signature":signature,"card":card_id,"tool_request":tool,"credential_refresh_admission":null,"admission":admission,"reply_identity":if reply.is_some(){response_identity.clone()}else{Value::Null},"frame_fingerprint":null}});
     if let Some(previous) = &previous
         && (previous["payload"]["signature"] != signature
             || previous["payload"]["identity"] != owner["payload"]["identity"]
@@ -589,7 +584,7 @@ fn unanswered(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result
     );
     let mut owner=task(tx,&key)?.unwrap_or_else(|| {
         let id=RequestIdentity::issue_root();
-        json!({"id":id,"kind":ToolRequestKind::ProviderCallback,"originKey":key,"status":state,"updated":cutover,"payload":{"identity":{"context":context,"rpc_id":accepted["requestId"],"attempt":""},"signature":signature,"card":null,"tool_request":null,"credential_refresh_admission":null,"journal_cursor":cursor,"admission":admitted_owner_token(&format!("{base}:accepted"),&signature,cutover),"reply_identity":null,"frame_fingerprint":null}})
+        json!({"id":id,"kind":ToolRequestKind::ProviderCallback,"originKey":key,"status":state,"updated":cutover,"payload":{"identity":{"context":context,"rpc_id":accepted["requestId"],"attempt":""},"signature":signature,"card":null,"tool_request":null,"credential_refresh_admission":null,"admission":admitted_owner_token(&format!("{base}:accepted"),&signature,cutover),"reply_identity":null,"frame_fingerprint":null}})
     });
     let canonical_id = owner["id"].as_str().ok_or_else(|| fail(row))?.to_owned();
     if owner["status"] == json!(ToolRequestStatus::Completed) {
@@ -1008,7 +1003,7 @@ mod tests {
         assert_eq!(rows[0].next_at, None);
         assert!(rows[0].payload.get("journal_cursor").is_none());
         let before: Value = task(&tx, &rows[0].id).expect("task").expect("owner");
-        assert_eq!(before["payload"]["journal_cursor"], 9);
+        assert!(before["payload"].get("journal_cursor").is_none());
         let after = Family
             .move_batch(&tx, "callbacks", &cp)
             .expect("second open");
@@ -1115,6 +1110,7 @@ mod tests {
             .expect("obligation");
         assert_eq!(task["status"], json!(ToolRequestStatus::Unknown));
         assert_eq!(task["payload"]["recovery_authorized"], true);
+        assert_eq!(task["payload"]["accepted"]["cursor"], 9);
         assert_eq!(task["payload"]["recovery_attempted"], true);
         assert_eq!(task["payload"]["submitted"]["frame"], Value::Null);
         assert_eq!(
