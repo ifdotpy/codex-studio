@@ -109,7 +109,7 @@ pub async fn manage(store: Arc<RuntimeStore>, body: &Value) -> Result<RadioReply
         prepared.recheck(db)?;
         let id = format!("radio:{team}");
         let now = crate::projects::now_seconds();
-        let raw: Option<String> = db.query_row("SELECT record FROM runtime_rooms WHERE id=?1", [&id], |r| r.get(0)).optional()?;
+        let raw: Option<String> = if records::exists(db,"runtime_rooms")? { db.query_row("SELECT record FROM runtime_rooms WHERE id=?1", [&id], |r| r.get(0)).optional()? } else { None };
         let mut room = if let Some(raw) = raw { Room::checked(&id, &raw)? } else {
             if action != "open" { return Err(ProjectsError::Invalid("Open the shared chat first")); }
             let project = ProjectsRepository::get(db,&path)?.ok_or(ProjectsError::Invalid("Select a team with exactly two chats in this project"))?.1;

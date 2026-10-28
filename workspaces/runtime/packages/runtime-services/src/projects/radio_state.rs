@@ -197,6 +197,64 @@ pub(super) fn save(
         .map_err(studio_runtime_store::StoreError::from)?;
     publish_room(db, &view, prepared)
 }
+fn agent_projection(
+    value: &Value,
+) -> Result<crate::submit_gates::AgentAuthorityRow, ProjectsError> {
+    use crate::submit_gates::{AgentAuthorityRow, Deletion, StoredField};
+    let invalid = || ProjectsError::InvalidStored {
+        table: "runtime_agents",
+        id: value["id"].as_str().unwrap_or_default().to_owned(),
+    };
+    let string = |key: &str| match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text.clone())),
+        _ => Err(invalid()),
+    };
+    let deleted_at = match value.get("deletedAt") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(value)) => Some(Deletion::Bool(*value)),
+        Some(Value::Number(value)) => Some(Deletion::Number(value.as_f64().ok_or_else(invalid)?)),
+        _ => return Err(invalid()),
+    };
+    let is_lead = match value.get("isLead") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(value)) => Some(*value),
+        _ => return Err(invalid()),
+    };
+    let name = match value.get("name") {
+        None => StoredField::Missing,
+        Some(Value::Null) => StoredField::Null,
+        Some(Value::String(name)) => StoredField::Value(name.clone()),
+        _ => return Err(invalid()),
+    };
+    Ok(AgentAuthorityRow {
+        id: string("id")?,
+        root_id: string("rootId")?,
+        parent_id: string("parentId")?,
+        is_lead,
+        deleted_at,
+        cwd: string("cwd")?,
+        name,
+        shared_room_id: string("sharedRoomId")?,
+        execution_mode: string("executionMode")?,
+    })
+}
+fn team_projection(value: &Value) -> Result<crate::submit_gates::PeerTeamRow, ProjectsError> {
+    let invalid = || ProjectsError::InvalidStored {
+        table: "runtime_projects",
+        id: value["id"].as_str().unwrap_or_default().to_owned(),
+    };
+    Ok(crate::submit_gates::PeerTeamRow {
+        id: value["id"].as_str().ok_or_else(invalid)?.to_owned(),
+        name: value["name"].as_str().ok_or_else(invalid)?.to_owned(),
+        members: value["members"]
+            .as_array()
+            .ok_or_else(invalid)?
+            .iter()
+            .map(|v| v.as_str().map(str::to_owned).ok_or_else(invalid))
+            .collect::<Result<_, _>>()?,
+    })
+}
 pub(super) fn publish_room(
     db: &Transaction<'_>,
     value: &Value,
@@ -218,14 +276,12 @@ pub(super) fn publish_room(
     let last = db.query_row("SELECT seq,text,created,sender FROM runtime_chat_messages WHERE room=?1 ORDER BY seq DESC LIMIT 1",[id],|r| Ok(json!({"seq":r.get::<_,i64>(0)?,"text":r.get::<_,String>(1)?.chars().take(180).collect::<String>(),"created":r.get::<_,f64>(2)?,"sender":r.get::<_,String>(3)?}))).optional()?;
     let agents = all_agents
         .into_values()
-        .map(serde::Deserialize::deserialize)
-        .collect::<Result<_, _>>()
-        .map_err(studio_runtime_store::StoreError::from)?;
+        .map(|value| agent_projection(&value))
+        .collect::<Result<_, _>>()?;
     let teams = teams
         .into_iter()
-        .map(serde::Deserialize::deserialize)
-        .collect::<Result<_, _>>()
-        .map_err(studio_runtime_store::StoreError::from)?;
+        .map(|value| team_projection(&value))
+        .collect::<Result<_, _>>()?;
     let mut context = RoomViewContext::new(agents, teams);
     context.last_message = last;
     let view = room_entity_view(value, &context);
@@ -310,4 +366,32 @@ pub(super) fn unsent_cancelled(db: &Connection, active: &Active) -> Result<bool,
 pub(super) fn cancel_pending(db: &Transaction<'_>, active: &Active) -> Result<bool, ProjectsError> {
     db.execute("UPDATE runtime_events SET status='cancelled',error='Shared chat stopped' WHERE id=?1 AND status='pending'",[&active.event_id])?;
     unsent_cancelled(db, active)
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    #[test]
+    fn projection_rows_match_typed_decoding_and_reject_invalid_fields() {
+        for raw in [
+            r#"{"id":"a","name":null,"deletedAt":0,"cwd":"/p"}"#,
+            r#"{"id":"b","name":"B","isLead":true,"deletedAt":false}"#,
+        ] {
+            let value: Value = serde_json::from_str(raw).expect("projection JSON");
+            let expected: crate::submit_gates::AgentAuthorityRow =
+                serde_json::from_str(raw).expect("typed agent");
+            assert_eq!(
+                agent_projection(&value).expect("agent projection"),
+                expected
+            );
+        }
+        assert!(agent_projection(&json!({"id":"a","isLead":"yes"})).is_err());
+        let raw = r#"{"id":"t","name":"Team","members":["a","b"]}"#;
+        let value: Value = serde_json::from_str(raw).expect("projection JSON");
+        let expected: crate::submit_gates::PeerTeamRow =
+            serde_json::from_str(raw).expect("typed team");
+        assert_eq!(team_projection(&value).expect("team projection"), expected);
+        assert!(team_projection(&json!({"id":"t","name":"T","members":[null]})).is_err());
+    }
 }
