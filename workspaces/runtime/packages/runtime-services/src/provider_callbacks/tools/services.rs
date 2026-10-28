@@ -899,6 +899,12 @@ pub(super) fn execute(
             .into(),
         );
     }
+    if matches!(kind, ToolKind::ChatRead) {
+        return Ok(crate::managed_host_tools::OperationResult::raw(reads::chat(
+            tx, snapshot, args,
+        )?)
+        .into());
+    }
     if matches!(kind, ToolKind::Read) {
         let value = reads::read(
             tx,
@@ -960,7 +966,7 @@ pub(super) fn execute(
             .execute(tx, &snapshot.context().agent, request_action(args)?, now)?),
         ToolKind::Task => work::execute(tx, snapshot, args, id),
         ToolKind::Message => Err(CallbackError::Invalid("Message dispatch was not handled")),
-        ToolKind::ChatRead => reads::chat(tx, snapshot, args),
+        ToolKind::ChatRead => Err(CallbackError::Invalid("Chat read dispatch was not handled")),
         ToolKind::Peers => messages::peers(tx, snapshot, args),
         ToolKind::Read => Err(CallbackError::Invalid("Read dispatch was not handled")),
         ToolKind::Status
