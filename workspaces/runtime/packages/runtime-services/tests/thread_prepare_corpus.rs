@@ -416,3 +416,30 @@ fn only_a_claude_worker_turns_user_mcp_servers_off() {
         assert_eq!(turn.get("model"), Some(&Value::Null));
     }
 }
+
+#[test]
+fn codex_reviewer_under_yolo_is_read_only_on_start_resume_and_turn() {
+    let mut s = snapshot(&baseline());
+    s.settings.role = Role::Reviewer;
+    s.settings.is_lead = false;
+    s.settings.yolo_mode = Some(true);
+    for resume in [false, true] {
+        if resume {
+            s.actor.thread_id = Some("thread".into());
+            s.catalog.source = CatalogSource::Legacy;
+        }
+        let prepared = attempt(plan(&s, "attempt", "ticket"));
+        assert_eq!(prepared.params["sandbox"], "read-only");
+        assert_eq!(prepared.params["approvalPolicy"], "on-request");
+        let turn = turn_params(&s, &TurnInput::default()).expect("turn params");
+        assert_eq!(turn["sandboxPolicy"], json!({"type":"readOnly"}));
+        assert_eq!(turn["approvalPolicy"], "on-request");
+    }
+    s.settings.role = Role::Implementer;
+    let prepared = attempt(plan(&s, "attempt", "ticket"));
+    assert_eq!(prepared.params["sandbox"], "danger-full-access");
+    assert_eq!(
+        turn_params(&s, &TurnInput::default()).expect("turn params")["sandboxPolicy"],
+        json!({"type":"dangerFullAccess"})
+    );
+}
