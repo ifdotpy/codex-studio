@@ -285,8 +285,7 @@ pub fn chat_read(
                 break;
             }
             let deliveries = message_deliveries(connection, &id, &deliveries)?;
-            if seq < 1
-                || seq > studio_runtime_schema::shared_values::MAX_SAFE_INTEGER
+            if !(1..=studio_runtime_schema::shared_values::MAX_SAFE_INTEGER).contains(&seq)
                 || !created.is_finite()
             {
                 return Err(records::invalid("runtime_chat_messages", &id).into());
