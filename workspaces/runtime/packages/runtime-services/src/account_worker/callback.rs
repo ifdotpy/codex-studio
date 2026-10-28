@@ -853,6 +853,8 @@ mod vm_auth_tests {
             actor_id: String,
             actor_epoch: i64,
             generation: u64,
+            _root_request_id: String,
+            _source: studio_runtime_store::request_results::AdmittedRequest,
         ) -> VmProviderAuthFuture<'_> {
             let calls = Arc::clone(&self.calls);
             Box::pin(async move {
@@ -870,6 +872,25 @@ mod vm_auth_tests {
                 }))
             })
         }
+    }
+
+    fn source() -> Option<(
+        String,
+        studio_runtime_store::request_results::AdmittedRequest,
+    )> {
+        use studio_runtime_schema::persistence::RequestIdentity;
+        use studio_runtime_store::request_results::{Admission, RequestResults};
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        studio_runtime_store::receipt_schema::create(&db).unwrap();
+        let tx = db.transaction().unwrap();
+        let root = RequestIdentity::issue_root();
+        let identity = RequestIdentity::new("callback", &["account-key"], &root, &[]).unwrap();
+        let Admission::Fresh(admitted) =
+            RequestResults::admit(&tx, &identity, "refresh", identity.issued_ms()).unwrap()
+        else {
+            panic!("fresh callback");
+        };
+        Some((root, admitted))
     }
 
     fn refresh_request() -> Frame {
@@ -897,6 +918,7 @@ mod vm_auth_tests {
             7,
             &refresh_request(),
             Some(resolver),
+            source(),
         )
         .await
         .expect("refresh response");
@@ -930,6 +952,7 @@ mod vm_auth_tests {
             7,
             &refresh_request(),
             Some(resolver),
+            source(),
         )
         .await
         .expect("failure response");
@@ -959,6 +982,7 @@ mod vm_auth_tests {
             7,
             &refresh_request(),
             Some(resolver),
+            source(),
         )
         .await
         .expect("failed response for stale actor");
