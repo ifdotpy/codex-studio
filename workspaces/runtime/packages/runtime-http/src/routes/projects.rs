@@ -565,6 +565,11 @@ async fn local_project_registration(
     let first_signature = operation_signature.clone();
     let root = request_id.to_owned();
     let admitted = store.transaction_with_error(move |tx| -> Result<LocationAdmission, ApiError> {
+        if let Some((_, project)) = studio_runtime_store::ProjectsRepository::get(tx, &first_project_id)?
+            && project["registration"]["signature"].as_str().is_some_and(|saved| saved != registration_signature)
+        {
+            return Err(ApiError::new(StatusCode::CONFLICT, "This request ID has different content"));
+        }
         let admission = admit_location(tx, LocationRequest { raw_key: &raw_key, root: &root, signature: &first_signature, server: &first_local_server, project: &first_project_id }, now * 1000)?;
         if matches!(admission, LocationAdmission::Replay(_)) { return Ok(admission); }
         if studio_runtime_store::ProjectsRepository::get(tx, &first_project_id)?.is_none() {
@@ -870,8 +875,28 @@ async fn remote_project_write(
     let scope_server = local_server.clone();
     let scope_project = project_id.clone();
     let request_signature = signature.clone();
+    let registration_signature = creation_signature
+        .as_ref()
+        .map(|registration| {
+            studio_runtime_services::remote_transport::canonical_json(registration)
+                .map(|value| studio_runtime_store::sha256_hex(value.as_bytes()))
+        })
+        .transpose()
+        .map_err(|_| ApiError::internal())?;
     let admitted = admission_store
         .transaction_with_error(move |tx| {
+            if let Some(signature) = &registration_signature
+                && let Some((_, project)) =
+                    studio_runtime_store::ProjectsRepository::get(tx, &scope_project)?
+                && project["registration"]["signature"]
+                    .as_str()
+                    .is_some_and(|saved| saved != signature)
+            {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "This request ID has different content",
+                ));
+            }
             admit_location(
                 tx,
                 LocationRequest {
