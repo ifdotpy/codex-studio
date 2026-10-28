@@ -31,6 +31,10 @@
       ],
       "title": "Kind"
     },
+    "requestId": {
+      "format": "uuid",
+      "type": "string"
+    },
     "room": {
       "anyOf": [
         {
@@ -44,7 +48,7 @@
       "title": "Room"
     }
   },
-  "required": ["hash", "ack", "created"],
+  "required": ["hash", "ack", "created", "requestId"],
   "title": "PersistedFederationInbox",
   "type": "object"
 }
