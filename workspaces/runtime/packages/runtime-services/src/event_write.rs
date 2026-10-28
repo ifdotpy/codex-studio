@@ -39,31 +39,6 @@ pub fn replay_request<R: serde::de::DeserializeOwned>(
     .transpose()
 }
 
-/// A replay miss never authorizes an opaque or expired identity.
-pub fn admit_request(
-    transaction: &Transaction<'_>,
-    namespace: &str,
-    authority: &[&str],
-    root_request_id: &str,
-    operation: &[&str],
-    signature: &str,
-    now_ms: i64,
-) -> Result<
-    studio_runtime_store::request_results::Admission,
-    studio_runtime_store::request_results::RequestResultError,
-> {
-    use studio_runtime_schema::persistence::{RequestIdentity, RequestIdentityError};
-    use studio_runtime_store::request_results::RequestResults;
-    let identity =
-        RequestIdentity::new(namespace, authority, root_request_id, operation).map_err(|_| {
-            RequestIdentityError::Expired {
-                issued_ms: 0,
-                expired_before_ms: now_ms,
-            }
-        })?;
-    RequestResults::admit(transaction, &identity, signature, now_ms)
-}
-
 pub fn settle_request<R: serde::Serialize>(
     transaction: &Transaction<'_>,
     admitted: &studio_runtime_store::request_results::AdmittedRequest,
@@ -125,12 +100,9 @@ pub fn begin_request<R: serde::de::DeserializeOwned>(
         return Ok(CallerAdmission::Replay(saved.reply));
     }
     Ok(
-        match admit_request(
+        match studio_runtime_store::request_results::RequestResults::admit(
             transaction,
-            key.namespace,
-            key.authority,
-            key.root,
-            key.operation,
+            &request_identity(&key, now_ms)?,
             signature,
             now_ms,
         )? {
@@ -153,16 +125,27 @@ pub fn saved_request<R: serde::de::DeserializeOwned>(
     signature: &str,
     now_ms: i64,
 ) -> Result<Option<R>, studio_runtime_store::request_results::RequestResultError> {
-    use studio_runtime_schema::persistence::{RequestIdentity, RequestIdentityError};
     if let Some(saved) = replay_request(connection, key.raw, signature, now_ms)? {
         return Ok(Some(saved.reply));
     }
-    let identity = RequestIdentity::new(key.namespace, key.authority, key.root, key.operation)
-        .map_err(|_| RequestIdentityError::Expired {
+    let identity = request_identity(&key, now_ms)?;
+    Ok(replay_request(connection, identity.id(), signature, now_ms)?.map(|saved| saved.reply))
+}
+
+fn request_identity(
+    key: &RequestKey<'_>,
+    now_ms: i64,
+) -> Result<
+    studio_runtime_schema::persistence::RequestIdentity,
+    studio_runtime_schema::persistence::RequestIdentityError,
+> {
+    use studio_runtime_schema::persistence::{RequestIdentity, RequestIdentityError};
+    RequestIdentity::new(key.namespace, key.authority, key.root, key.operation).map_err(|_| {
+        RequestIdentityError::Expired {
             issued_ms: 0,
             expired_before_ms: now_ms,
-        })?;
-    Ok(replay_request(connection, identity.id(), signature, now_ms)?.map(|saved| saved.reply))
+        }
+    })
 }
 
 /// Python `str.strip()` includes four ASCII separators Rust's whitespace predicate omits.
@@ -796,12 +779,6 @@ pub fn recovery_pending(agent: &AgentRecord) -> bool {
         && !truthy(extra.get("deletedAt"))
         && (root || disconnect);
     recovery || truthy(extra.get("moveImportPending"))
-}
-
-fn serialize(value: &Value) -> Result<String, EventWriteError> {
-    serde_json::to_string(value)
-        .map_err(studio_runtime_store::StoreError::from)
-        .map_err(EventWriteError::from)
 }
 
 fn invalid_stored(object: &'static str, id: &str) -> EventWriteError {

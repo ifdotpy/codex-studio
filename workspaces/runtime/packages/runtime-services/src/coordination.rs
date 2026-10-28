@@ -622,14 +622,6 @@ fn send_followup_inner(
     })
 }
 
-fn valid_message_receipt(value: &Value, id: &str) -> bool {
-    value.get("id").and_then(Value::as_str) == Some(id)
-        && value.get("status").and_then(Value::as_str).is_some()
-        && value
-            .get("error")
-            .is_none_or(|error| error.is_null() || error.is_string())
-}
-
 fn safety_retry_active(agent: &studio_runtime_store::AgentRecord) -> bool {
     const ACTIVE: &[&str] = &[
         "turns",
@@ -1437,7 +1429,7 @@ mod tests {
                 Ok(crate::queue_write::QueueSnapshot {
                     items: vec![json!({"id":event.id.0,"kind":event.kind,"text":event.text,"created":event.created})],
                     revision: event.created.to_string(),
-                    capabilities: json!({}),
+                    capabilities: json!({"reorder":true,"receipts":true}),
                 })
             },
         )
