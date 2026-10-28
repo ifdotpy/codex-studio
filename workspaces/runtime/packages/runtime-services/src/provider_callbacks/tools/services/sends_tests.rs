@@ -1038,7 +1038,7 @@ async fn a_broadcast_names_a_member_that_cannot_be_checked_and_reaches_the_other
             .unwrap(),
         sent_deliveries
     );
-    let identity = RequestIdentity::new("agent_message", &[lead_id], &request_id, &[]).unwrap();
+    let identity = RequestIdentity::new("agent_message", &[lead_id], request_id, &[]).unwrap();
     let signature = event_write::request_signature(
         &json!({"target":"broadcast","text":"dispatch input","delivery":null}),
     );
