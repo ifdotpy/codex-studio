@@ -238,6 +238,10 @@ fn save(connection: &Connection, entry: &Entry, in_flight: bool) -> Result<(), S
 }
 
 fn apply(connection: &Connection, method: &str, params: &Value) -> Result<Value, String> {
+    // A message identity is minted here and stored only by `outbox.enqueue`.
+    if method == "outbox.reserve" {
+        return Ok(json!({"id":crate::server_keys::random_id()?}));
+    }
     let workspace = text(params, "workspace")?;
     if method == "outbox.list" {
         return serde_json::to_value(list(connection, workspace)?).map_err(|e| e.to_string());
@@ -767,6 +771,35 @@ mod tests {
         let entry = list(&db, "w").unwrap().remove(0);
         assert_eq!(entry.receipt.unwrap()["status"], "delivered");
         assert!(!entry.display_pending);
+    }
+
+    #[test]
+    fn reserved_message_identities_are_core_minted_and_unique() {
+        let mut db = database();
+        let mut reserve = || {
+            command(&mut db, "outbox.reserve", json!({}))
+                .result
+                .unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let first = reserve();
+        let second = reserve();
+        assert_ne!(first, second);
+        assert_eq!(uuid::Uuid::parse_str(&first).unwrap().get_version_num(), 4);
+        assert!(
+            list(&db, "w").unwrap().is_empty(),
+            "a reservation stores nothing"
+        );
+        // The reserved identity is the one the enqueue stores.
+        let enqueued = command(
+            &mut db,
+            "outbox.enqueue",
+            json!({"workspace":"w","body":{"id":first,"room":"r","text":"one"}}),
+        );
+        assert!(enqueued.error.is_none());
+        assert_eq!(list(&db, "w").unwrap()[0].id, first);
     }
 
     #[test]
