@@ -475,6 +475,82 @@ pub(super) fn has_pending_thread_start(
     Ok(Outbox::for_owner::<ProviderCall>(connection,OwnerKind::Agent,agent,OutboxKind::ProviderCall).map_err(outbox_error)?
         .into_iter().any(|row| matches!(row.payload,ProviderCall::Account(call) if matches!(call.context.method,Method::ThreadStart|Method::ThreadResume))))
 }
+
+#[derive(serde::Deserialize)]
+struct AttemptCreated {
+    created: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct ThreadHold {
+    #[serde(rename = "operationId")]
+    operation_id: String,
+}
+
+#[derive(serde::Serialize)]
+enum LateProviderReply<'a> {
+    Result(&'a Value),
+    Error(&'a Value),
+}
+
+fn continued_thread_call(
+    tx: &studio_runtime_store::Transaction<'_>,
+    context: &Pending,
+) -> Result<bool, WorkerError> {
+    let agent = stored_agent(tx, &context.intent.agent_id)?;
+    let attempt =
+        studio_runtime_store::ExecutionHistoryRepository::attempt(tx, &context.intent.attempt_id)?
+            .ok_or_else(|| invalid(&context.intent.agent_id))?;
+    let begun = serde_json::from_value::<AttemptCreated>(attempt)
+        .map_err(StoreError::from)?
+        .created;
+    Ok(tx.query_row_cached(
+        "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending' AND kind IN (?3,?4) AND created>?5)",
+        params![context.intent.agent_id, agent.epoch, studio_runtime_schema::persistence::EventKind::User, studio_runtime_schema::persistence::EventKind::Followup, begun], |row| row.get(0),
+    )?)
+}
+
+/// A later user message explicitly supersedes a restarted, uncertain thread call.
+fn supersede_thread_calls(
+    tx: &studio_runtime_store::Transaction<'_>,
+    agent_id: &str,
+) -> Result<bool, WorkerError> {
+    let rows =
+        Outbox::for_owner::<ProviderCall>(tx, OwnerKind::Agent, agent_id, OutboxKind::ProviderCall)
+            .map_err(outbox_error)?;
+    let mut superseded = false;
+    for row in rows {
+        let ProviderCall::Account(call) = &row.payload else {
+            continue;
+        };
+        let context = &call.context;
+        if !matches!(context.method, Method::ThreadStart | Method::ThreadResume) {
+            continue;
+        }
+        if row.status != OutboxStatus::Unknown
+            || !call.restarted
+            || !continued_thread_call(tx, context)?
+        {
+            return Ok(false);
+        }
+        studio_runtime_store::request_results::RequestResults::settle_abandoned(tx, &row)?;
+        let mut agent = stored_agent(tx, agent_id)?;
+        if let Some(hold) = agent
+            .extra
+            .get("startOutcomeHold")
+            .filter(|hold| !hold.is_null())
+        {
+            let hold: ThreadHold =
+                serde_json::from_value(hold.clone()).map_err(StoreError::from)?;
+            if hold.operation_id == context.operation {
+                agent.extra.remove("startOutcomeHold");
+                AgentRepository::put(tx, &agent)?;
+            }
+        }
+        superseded = true;
+    }
+    Ok(superseded)
+}
 /// The stored agent `id`; a row that vanished inside the transaction is invalid.
 fn stored_agent(
     tx: &studio_runtime_store::Transaction<'_>,
@@ -585,7 +661,7 @@ pub(super) async fn recover(
                 Outbox::put(tx,&row).map_err(outbox_error)?;
                 let current =
                     AgentRepository::get(tx, &AgentId::from(context.intent.agent_id.as_str()))?;
-                if current.as_ref().is_some_and(|a| {
+                if !continued_thread_call(tx, &context)? && current.as_ref().is_some_and(|a| {
                     a.epoch == context.intent.epoch
                         && account_key(a) == account
                         && a.extra.get("startAttempt").is_none_or(|attempt| {
@@ -736,80 +812,104 @@ pub(super) async fn claim(
                 )?;
                 return Ok(None);
             }
-            if has_pending_thread_start(tx, agent.as_str())? {
-                return Ok(None);
+            let guarding = has_pending_thread_start(tx, agent.as_str())?;
+            if guarding {
+                tx.execute_batch("SAVEPOINT supersede_thread")?;
             }
-            let pending = record
-                .as_ref()
-                .and_then(|a| a.extra.get("startAttempt"))
-                .filter(|a| {
-                    a["submitted"] == false
-                        && matches!(
-                            a["prepareError"].as_str(),
-                            Some("workspace-readiness/pending" | "model-catalog/refresh-pending")
-                        )
-                });
-            let attempt = pending.and_then(|a| a["id"].as_str()).unwrap_or(&attempt);
-            if let Some(prepared) = &prepared {
-                prepared
-                    .recheck(tx)
-                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
-                let mut statement = tx.prepare(
+            let claim = (|| -> Result<Option<TurnIntent>, WorkerError> {
+                if guarding
+                    && (!supersede_thread_calls(tx, &agent)?
+                        || has_pending_thread_start(tx, &agent)?)
+                {
+                    return Ok(None);
+                }
+                let pending = record
+                    .as_ref()
+                    .and_then(|a| a.extra.get("startAttempt"))
+                    .filter(|a| {
+                        a["submitted"] == false
+                            && matches!(
+                                a["prepareError"].as_str(),
+                                Some(
+                                    "workspace-readiness/pending" | "model-catalog/refresh-pending"
+                                )
+                            )
+                    });
+                let attempt = if guarding {
+                    &attempt
+                } else {
+                    pending.and_then(|a| a["id"].as_str()).unwrap_or(&attempt)
+                };
+                if let Some(prepared) = &prepared {
+                    prepared
+                        .recheck(tx)
+                        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                    let mut statement = tx.prepare(
                 "SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events \
                  WHERE agent=?1 AND epoch=?2 AND status='pending' ORDER BY created,rowid",
             )?;
-                let events = statement
-                    .query_map(rusqlite::params![agent.as_str(), epoch], |row| {
-                        Ok(studio_runtime_store::QueueEvent {
-                            id: studio_runtime_store::QueueEventId(row.get(0)?),
-                            agent: studio_runtime_store::AgentId(row.get(1)?),
-                            kind: row.get(2)?,
-                            text: row.get(3)?,
-                            status: row.get(4)?,
-                            created: row.get(5)?,
-                            epoch: row.get(6)?,
-                            turn_id: row.get(7)?,
-                            error: row.get(8)?,
-                        })
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-                drop(statement);
-                let selected = crate::radio_runtime::select_pending(
-                    tx,
-                    prepared,
-                    &record.as_ref().ok_or(WorkerError::Closed)?.value(),
-                    &events,
-                    now(),
-                )
-                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
-                // `select_pending` owns the radio rule: one radio turn, the exact
-                // answer to the live turn, or all ordinary rows. Nothing selected
-                // means the live turn holds the floor: wait without a hold; the
-                // agent is claimable again once that turn ends.
-                if selected.is_empty() {
-                    return Ok(None);
-                }
-                let ordinary = events.iter().filter(|e| e.kind != "radio_turn").count();
-                if selected.len() < ordinary || selected[0].kind == "radio_turn" {
-                    return scheduler::claim_selected_event_in_transaction(
+                    let events = statement
+                        .query_map(rusqlite::params![agent.as_str(), epoch], |row| {
+                            Ok(studio_runtime_store::QueueEvent {
+                                id: studio_runtime_store::QueueEventId(row.get(0)?),
+                                agent: studio_runtime_store::AgentId(row.get(1)?),
+                                kind: row.get(2)?,
+                                text: row.get(3)?,
+                                status: row.get(4)?,
+                                created: row.get(5)?,
+                                epoch: row.get(6)?,
+                                turn_id: row.get(7)?,
+                                error: row.get(8)?,
+                            })
+                        })?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    drop(statement);
+                    let selected = crate::radio_runtime::select_pending(
                         tx,
-                        &agent,
-                        epoch,
-                        attempt,
+                        prepared,
+                        &record.as_ref().ok_or(WorkerError::Closed)?.value(),
+                        &events,
                         now(),
-                        &selected[0].id.0,
                     )
-                    .map_err(Into::into);
+                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                    // `select_pending` owns the radio rule: one radio turn, the exact
+                    // answer to the live turn, or all ordinary rows. Nothing selected
+                    // means the live turn holds the floor: wait without a hold; the
+                    // agent is claimable again once that turn ends.
+                    if selected.is_empty() {
+                        return Ok(None);
+                    }
+                    let ordinary = events.iter().filter(|e| e.kind != "radio_turn").count();
+                    if selected.len() < ordinary || selected[0].kind == "radio_turn" {
+                        return scheduler::claim_selected_event_in_transaction(
+                            tx,
+                            &agent,
+                            epoch,
+                            attempt,
+                            now(),
+                            &selected[0].id.0,
+                        )
+                        .map_err(Into::into);
+                    }
+                }
+                match scheduler::claim_preparation_in_transaction(tx, &agent, epoch, attempt, now())
+                {
+                    Ok(intent) => Ok(intent),
+                    Err(scheduler::SchedulerError::PolicyRefused(reason)) => {
+                        hold_before_claim(tx, &agent, &reason)?;
+                        Ok(None)
+                    }
+                    Err(error) => Err(error.into()),
+                }
+            })();
+            if guarding {
+                if matches!(claim, Ok(Some(_))) {
+                    tx.execute_batch("RELEASE supersede_thread")?;
+                } else {
+                    tx.execute_batch("ROLLBACK TO supersede_thread; RELEASE supersede_thread")?;
                 }
             }
-            match scheduler::claim_preparation_in_transaction(tx, &agent, epoch, attempt, now()) {
-                Ok(intent) => Ok(intent),
-                Err(scheduler::SchedulerError::PolicyRefused(reason)) => {
-                    hold_before_claim(tx, &agent, &reason)?;
-                    Ok(None)
-                }
-                Err(error) => Err(error.into()),
-            }
+            claim
         },
     )
     .await
@@ -1369,6 +1469,48 @@ fn settle_outcome(
         session_closed,
     } = step;
     let i = &context.intent;
+    if let SessionOutcome::Resolved {
+        outcome: RequestOutcome::Reply { body, .. },
+        ..
+    } = &outcome
+        && matches!(context.method, Method::ThreadStart | Method::ThreadResume)
+        && account_submission(tx, &context.operation)?.is_none()
+    {
+        let (_, source) = execution_admission(tx, &i.attempt_id)?;
+        let abandoned: Option<String> = tx
+            .query_row(
+                "SELECT result FROM request_results WHERE id=?1",
+                [&context.operation],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(abandoned) = abandoned {
+            let _: studio_runtime_store::request_results::ResultEnvelope<
+                studio_runtime_store::request_results::AbandonedResult,
+            > = serde_json::from_str(&abandoned).map_err(StoreError::from)?;
+            let reply = match body {
+                ResponseBody::Result(value) => LateProviderReply::Result(value),
+                ResponseBody::Error(value) => LateProviderReply::Error(value),
+            };
+            let signature = serde_json::to_string(&reply).map_err(StoreError::from)?;
+            let token =
+                source.derive_result("account-call-late", &[&context.operation], &signature);
+            studio_runtime_store::request_results::RequestResults::settle(
+                tx,
+                &token,
+                &studio_runtime_store::request_results::ResultEnvelope {
+                    actor: Some(i.agent_id.clone()),
+                    reply,
+                    references: vec![i.attempt_id.clone()],
+                },
+            )
+            .map_err(StoreError::from)?;
+            return Ok(SettledOutcome {
+                retired: true,
+                ..SettledOutcome::default()
+            });
+        }
+    }
     if context.method == Method::TurnSteer {
         let wake = steer::outcome(tx, &context, &outcome)?;
         if let SessionOutcome::Write {
@@ -2305,7 +2447,8 @@ fn journal_one(
     {
         return Err(WorkerError::StaleVmActor);
     }
-    if entry.cursor.0 <= checkpoint(tx, journal_scope, entry.generation.0)? {
+    let stream_generation = current_stream_generation(tx, journal_scope, entry.generation.0)?;
+    if entry.cursor.0 <= checkpoint(tx, journal_scope, stream_generation)? {
         return Ok(Some((streams.clone(), None)));
     }
     if let Some(old) = Outbox::get::<JournalSettlement>(tx, &operation).map_err(outbox_error)? {
@@ -2981,6 +3124,49 @@ pub(crate) fn checkpoint(
     studio_runtime_store::account_state::provider_checkpoint(tx, journal_scope, generation)
 }
 
+#[derive(serde::Deserialize)]
+struct StreamGeneration {
+    generation: u64,
+}
+
+fn current_stream_generation(
+    tx: &rusqlite::Connection,
+    scope: &str,
+    origin: u64,
+) -> Result<u64, WorkerError> {
+    let generation = if let Some((account, actor)) = scope.rsplit_once(":vm:") {
+        AgentRepository::get(tx, &AgentId::from(actor))?
+            .filter(|agent| account_key(agent) == account)
+            .and_then(|agent| {
+                agent
+                    .extra
+                    .get("providerStream")
+                    .filter(|stream| !stream.is_null())
+                    .cloned()
+            })
+            .map(serde_json::from_value::<StreamGeneration>)
+            .transpose()
+            .map_err(StoreError::from)?
+            .map(|stream| stream.generation)
+    } else {
+        tx.query_row(
+            "SELECT connection_generation FROM runtime_account_state WHERE account=?1",
+            [scope],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .optional()?
+        .flatten()
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| invalid(scope))?
+    }
+    .unwrap_or(origin);
+    if generation < origin {
+        return Err(invalid(scope));
+    }
+    Ok(generation)
+}
+
 fn set_checkpoint(
     tx: &studio_runtime_store::Transaction<'_>,
     scope: &str,
@@ -3103,7 +3289,8 @@ fn compact(
         )?
         .collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
-    let before = checkpoint(tx, journal_scope, generation)?;
+    let stream_generation = current_stream_generation(tx, journal_scope, generation)?;
+    let before = checkpoint(tx, journal_scope, stream_generation)?;
     let mut cursor = before;
     let mut covered = Vec::new();
     for (id, raw) in rows {
@@ -3121,7 +3308,7 @@ fn compact(
     }
     if cursor > before {
         super::retained::storage::checkpoint_covered(tx, journal_scope, generation, cursor)?;
-        set_checkpoint(tx, journal_scope, generation, cursor)?;
+        set_checkpoint(tx, journal_scope, stream_generation, cursor)?;
     }
     for id in covered {
         tx.execute_cached(
