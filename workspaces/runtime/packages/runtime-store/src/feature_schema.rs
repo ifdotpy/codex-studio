@@ -19,7 +19,6 @@ const FEATURE_SCHEMA: &str = r#"
                 WHERE json_extract(record,'$.archiveIntent.status')='pending';
             CREATE TABLE IF NOT EXISTS runtime_plans (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_annotations (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_operation_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_analytics_projection (seq INTEGER PRIMARY KEY AUTOINCREMENT, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_event_meta (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_item_fulltext (id TEXT PRIMARY KEY, body TEXT NOT NULL);
@@ -42,9 +41,6 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_tool_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_tool_request_actor
                 ON runtime_tool_requests(json_extract(record,'$.agent'), json_extract(record,'$.updated') DESC);
-            CREATE TABLE IF NOT EXISTS runtime_tool_request_aliases
-                (agent TEXT NOT NULL, alias TEXT NOT NULL, request TEXT NOT NULL, PRIMARY KEY(agent,alias,request));
-            CREATE TABLE IF NOT EXISTS runtime_tool_results (id TEXT PRIMARY KEY, result TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_rules (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_rule_ready_tick
                 ON runtime_rules(json_extract(record,'$.status'))
@@ -126,7 +122,6 @@ const FEATURE_SCHEMA: &str = r#"
                 id TEXT PRIMARY KEY, session TEXT NOT NULL, record_id TEXT NOT NULL,
                 state TEXT NOT NULL, error TEXT);
             CREATE TABLE IF NOT EXISTS user_terminals (id TEXT PRIMARY KEY, record TEXT NOT NULL, output TEXT NOT NULL, offset INTEGER NOT NULL, output_generation INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS user_terminal_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS user_terminal_output (terminal TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, text TEXT NOT NULL, PRIMARY KEY (terminal,start));
             CREATE INDEX IF NOT EXISTS user_terminal_output_end ON user_terminal_output (terminal,end);
             CREATE TABLE IF NOT EXISTS user_terminal_event_cursor (terminal TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
@@ -142,14 +137,9 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_access_nonces (
           client TEXT NOT NULL, nonce TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(client,nonce));
             CREATE INDEX IF NOT EXISTS runtime_access_nonce_age ON runtime_access_nonces(created);
-            CREATE TABLE IF NOT EXISTS runtime_access_receipts (
-          client TEXT NOT NULL, request_id TEXT NOT NULL, hash TEXT NOT NULL, session TEXT NOT NULL,
-          status TEXT NOT NULL, record TEXT NOT NULL, PRIMARY KEY(client,request_id));
             CREATE TABLE IF NOT EXISTS runtime_access_outbound (
           server TEXT NOT NULL, request_id TEXT NOT NULL, hash TEXT NOT NULL,
           record TEXT NOT NULL, PRIMARY KEY(server,request_id));
-            CREATE INDEX IF NOT EXISTS runtime_access_receipt_age
-          ON runtime_access_receipts(json_extract(record,'$.completed')) WHERE status='complete';
             CREATE INDEX IF NOT EXISTS runtime_access_outbound_age
           ON runtime_access_outbound(json_extract(record,'$.completed'))
           WHERE json_extract(record,'$.outcome')='complete';
@@ -172,9 +162,7 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE INDEX IF NOT EXISTS runtime_agent_unsettled_legacy ON runtime_agents(id) WHERE legacy_unsettled=1;
             CREATE INDEX IF NOT EXISTS runtime_idle_compaction_deadline ON runtime_agents(idle_episode_type,idle_episode_fire_at,id,idle_episode_id) WHERE idle_episode_type='object';
             CREATE TABLE IF NOT EXISTS runtime_process_actions (id TEXT PRIMARY KEY, signature TEXT NOT NULL, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_native_action_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, receipt TEXT NOT NULL, outcome TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_safety_retries (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_context_terminal_receipts (id TEXT PRIMARY KEY, agent TEXT NOT NULL, operation TEXT NOT NULL, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_account_transfers(id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_account_transfer_status ON runtime_account_transfers(json_extract(record,'$.status'));
             CREATE TABLE IF NOT EXISTS runtime_capacity_retries(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);

@@ -5,6 +5,7 @@ pub mod blocking_pool;
 mod bootstrap;
 mod cached_sql;
 pub mod entity_publication;
+pub mod error_incidents;
 pub mod migrations;
 pub use cached_sql::{CachedSql, STATEMENT_CACHE_CAPACITY};
 pub use entity_publication::{EntityPublisher, PendingEntities, StudioErrorSources};
@@ -95,7 +96,7 @@ pub use records::{
     GraphAgentRecord, JsonRecord, MessageRepository, MonitorRecord, PlanRecord, QueueEvent,
     QueueEventId, QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate,
     RecordQueryShape, RequestRecord, RuleRecord, Table, TaskId, TaskRecord, TaskRepository,
-    TerminalRecord, TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId,
+    TerminalRecord, ToolResultRecord, TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId,
     TranscriptItemRecord, UnknownAgentStatus, UsageResumeRecord, WorkItemRecord, WorkStatus,
     WorkspaceOperationRecord, decode_agent_value,
 };
@@ -189,7 +190,7 @@ pub enum ObservedTable {
     Events,
     EventMeta,
     Rooms,
-    OperationReceipts,
+    RequestResults,
     Work,
     Monitors,
     Rules,
@@ -201,13 +202,14 @@ pub enum ObservedTable {
     FederationInvites,
     FederationRooms,
     FederationOutbox,
-    NativeActionReceipts,
-    AccessReceipts,
+    RuntimeOutbox,
+    ErrorIncidents,
     AccountTransfers,
     OrchestrationSettings,
     RuntimeRequests,
     RuntimeToolRequests,
     AnalyticsProjection,
+    AccountState,
 }
 
 /// Maximum rowid occurrences recorded per observed table for one writer transaction.
@@ -252,7 +254,7 @@ type TableChangeObserverRegistry = Mutex<HashMap<ObservedTable, Vec<TableChangeO
 struct ChangedRowHints {
     /// Tables whose rowids are recorded for the whole transaction.
     complete: u32,
-    rows: [Vec<i64>; OBSERVED_TABLES.len()],
+    rows: [Vec<i64>; u32::BITS as usize],
 }
 
 thread_local! {
@@ -285,7 +287,7 @@ impl ObservedTable {
             Self::Events => "runtime_events",
             Self::EventMeta => "runtime_event_meta",
             Self::Rooms => "runtime_rooms",
-            Self::OperationReceipts => "runtime_operation_receipts",
+            Self::RequestResults => "request_results",
             Self::Work => "runtime_work",
             Self::Monitors => "runtime_monitors",
             Self::Rules => "runtime_rules",
@@ -297,13 +299,14 @@ impl ObservedTable {
             Self::FederationInvites => "runtime_federation_invites",
             Self::FederationRooms => "runtime_federation_rooms",
             Self::FederationOutbox => "runtime_federation_outbox",
-            Self::NativeActionReceipts => "runtime_native_action_receipts",
-            Self::AccessReceipts => "runtime_access_receipts",
+            Self::RuntimeOutbox => "runtime_outbox",
+            Self::ErrorIncidents => "runtime_error_incidents",
             Self::AccountTransfers => "runtime_account_transfers",
             Self::OrchestrationSettings => "runtime_orchestration_settings",
             Self::RuntimeRequests => "runtime_requests",
             Self::RuntimeToolRequests => "runtime_tool_requests",
             Self::AnalyticsProjection => "runtime_analytics_projection",
+            Self::AccountState => "runtime_account_state",
         }
     }
 
@@ -315,7 +318,7 @@ impl ObservedTable {
             Self::Events => 1 << 3,
             Self::EventMeta => 1 << 19,
             Self::Rooms => 1 << 4,
-            Self::OperationReceipts => 1 << 5,
+            Self::RequestResults => 1 << 5,
             Self::Work => 1 << 6,
             Self::Monitors => 1 << 7,
             Self::Rules => 1 << 8,
@@ -327,32 +330,30 @@ impl ObservedTable {
             Self::FederationInvites => 1 << 14,
             Self::FederationRooms => 1 << 15,
             Self::FederationOutbox => 1 << 16,
-            Self::NativeActionReceipts => 1 << 17,
-            Self::AccessReceipts => 1 << 18,
+            Self::RuntimeOutbox => 1 << 17,
+            Self::ErrorIncidents => 1 << 18,
             Self::AccountTransfers => 1 << 22,
             Self::OrchestrationSettings => 1 << 23,
             Self::RuntimeRequests => 1 << 24,
             Self::RuntimeToolRequests => 1 << 25,
             Self::AnalyticsProjection => 1 << 26,
+            Self::AccountState => 1 << 27,
         }
     }
 
     const fn suppressible_resource_receipt(self) -> bool {
-        matches!(
-            self,
-            Self::OperationReceipts | Self::NativeActionReceipts | Self::AccessReceipts
-        )
+        matches!(self, Self::RequestResults | Self::RuntimeOutbox)
     }
 }
 
-const OBSERVED_TABLES: [ObservedTable; 25] = [
+const OBSERVED_TABLES: [ObservedTable; 26] = [
     ObservedTable::AccessClients,
     ObservedTable::UsageResumes,
     ObservedTable::Agents,
     ObservedTable::Events,
     ObservedTable::EventMeta,
     ObservedTable::Rooms,
-    ObservedTable::OperationReceipts,
+    ObservedTable::RequestResults,
     ObservedTable::Work,
     ObservedTable::Monitors,
     ObservedTable::Rules,
@@ -364,13 +365,14 @@ const OBSERVED_TABLES: [ObservedTable; 25] = [
     ObservedTable::FederationInvites,
     ObservedTable::FederationRooms,
     ObservedTable::FederationOutbox,
-    ObservedTable::NativeActionReceipts,
-    ObservedTable::AccessReceipts,
+    ObservedTable::RuntimeOutbox,
+    ObservedTable::ErrorIncidents,
     ObservedTable::AccountTransfers,
     ObservedTable::OrchestrationSettings,
     ObservedTable::RuntimeRequests,
     ObservedTable::RuntimeToolRequests,
     ObservedTable::AnalyticsProjection,
+    ObservedTable::AccountState,
 ];
 
 /// Value-free observations emitted by the optional diagnostics callback.
@@ -3309,9 +3311,9 @@ mod commit_notification_tests {
         for table in [
             ObservedTable::AccessClients.name(),
             ObservedTable::EventMeta.name(),
-            ObservedTable::OperationReceipts.name(),
-            ObservedTable::NativeActionReceipts.name(),
-            ObservedTable::AccessReceipts.name(),
+            ObservedTable::RequestResults.name(),
+            ObservedTable::RuntimeOutbox.name(),
+            ObservedTable::ErrorIncidents.name(),
             ENTITY_RESOURCE_TABLES[0],
             ENTITY_RESOURCE_TABLES[1],
         ] {
@@ -3382,7 +3384,7 @@ mod commit_notification_tests {
                 ("runtime_events", 0),
                 ("runtime_event_meta", 0),
                 ("runtime_rooms", 0),
-                ("runtime_operation_receipts", 1),
+                ("request_results", 1),
                 ("runtime_work", 0),
                 ("runtime_monitors", 0),
                 ("runtime_rules", 0),
@@ -3394,8 +3396,8 @@ mod commit_notification_tests {
                 ("runtime_federation_invites", 0),
                 ("runtime_federation_rooms", 0),
                 ("runtime_federation_outbox", 0),
-                ("runtime_native_action_receipts", 1),
-                ("runtime_access_receipts", 1),
+                ("runtime_outbox", 1),
+                ("runtime_error_incidents", 1),
                 ("runtime_account_transfers", 0),
                 ("runtime_orchestration_settings", 0),
                 ("runtime_requests", 0),

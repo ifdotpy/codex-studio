@@ -166,13 +166,6 @@
         "type": "index"
       },
       {
-        "create_order": 287,
-        "name": "runtime_accepted_archive_due",
-        "sql": "CREATE INDEX runtime_accepted_archive_due ON runtime_operation_receipts(COALESCE(json_extract(result,'$.nextAttemptAt'),0),id) WHERE signature='accepted-archive-v1' AND json_extract(result,'$.status') IN ('pending','retryable','unknown')",
-        "table": "runtime_operation_receipts",
-        "type": "index"
-      },
-      {
         "create_order": 54,
         "name": "runtime_access_nonce_age",
         "sql": "CREATE INDEX runtime_access_nonce_age ON runtime_access_nonces(created)",
@@ -184,13 +177,6 @@
         "name": "runtime_access_outbound_age",
         "sql": "CREATE INDEX runtime_access_outbound_age\n          ON runtime_access_outbound(json_extract(record,'$.completed'))\n          WHERE json_extract(record,'$.outcome')='complete'",
         "table": "runtime_access_outbound",
-        "type": "index"
-      },
-      {
-        "create_order": 59,
-        "name": "runtime_access_receipt_age",
-        "sql": "CREATE INDEX runtime_access_receipt_age\n          ON runtime_access_receipts(json_extract(record,'$.completed')) WHERE status='complete'",
-        "table": "runtime_access_receipts",
         "type": "index"
       },
       {
@@ -810,13 +796,6 @@
         "type": "table"
       },
       {
-        "create_order": 55,
-        "name": "runtime_access_receipts",
-        "sql": "CREATE TABLE runtime_access_receipts (\n          client TEXT NOT NULL, request_id TEXT NOT NULL, hash TEXT NOT NULL, session TEXT NOT NULL,\n          status TEXT NOT NULL, record TEXT NOT NULL, PRIMARY KEY(client,request_id))",
-        "table": "runtime_access_receipts",
-        "type": "table"
-      },
-      {
         "create_order": 281,
         "name": "runtime_account_transfers",
         "sql": "CREATE TABLE runtime_account_transfers(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
@@ -1055,13 +1034,6 @@
         "type": "table"
       },
       {
-        "create_order": 210,
-        "name": "runtime_operation_receipts",
-        "sql": "CREATE TABLE runtime_operation_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL)",
-        "table": "runtime_operation_receipts",
-        "type": "table"
-      },
-      {
         "create_order": 206,
         "name": "runtime_plans",
         "sql": "CREATE TABLE runtime_plans (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
@@ -1188,24 +1160,10 @@
         "type": "table"
       },
       {
-        "create_order": 249,
-        "name": "runtime_tool_request_aliases",
-        "sql": "CREATE TABLE runtime_tool_request_aliases\n                (agent TEXT NOT NULL, alias TEXT NOT NULL, request TEXT NOT NULL, PRIMARY KEY(agent,alias,request))",
-        "table": "runtime_tool_request_aliases",
-        "type": "table"
-      },
-      {
         "create_order": 234,
         "name": "runtime_tool_requests",
         "sql": "CREATE TABLE runtime_tool_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
         "table": "runtime_tool_requests",
-        "type": "table"
-      },
-      {
-        "create_order": 125,
-        "name": "runtime_tool_results",
-        "sql": "CREATE TABLE runtime_tool_results (id TEXT PRIMARY KEY, result TEXT NOT NULL)",
-        "table": "runtime_tool_results",
         "type": "table"
       },
       {

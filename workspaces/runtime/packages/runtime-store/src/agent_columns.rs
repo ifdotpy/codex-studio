@@ -333,7 +333,13 @@ pub(crate) fn table_sql(name: &str) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "CREATE TABLE IF NOT EXISTS \"{name}\"(id TEXT PRIMARY KEY,{columns},record TEXT NOT NULL)"
+        "CREATE TABLE IF NOT EXISTS \"{name}\"(id TEXT PRIMARY KEY,{columns},record TEXT NOT NULL,{})",
+        crate::schema::receipt_owner_columns()
+            .into_iter()
+            .filter(|(table, _, _)| *table == AGENT_TABLE)
+            .map(|(_, name, definition)| format!("{name} {definition}"))
+            .collect::<Vec<_>>()
+            .join(",")
     )
 }
 
@@ -352,7 +358,16 @@ pub(crate) fn has_columns(transaction: &Transaction<'_>) -> StoreResult<bool> {
     let expected = std::iter::once("id")
         .chain(AGENT_COLUMNS.iter().map(|column| column.name))
         .chain(std::iter::once("record"));
-    Ok(names.iter().map(String::as_str).eq(expected))
+    let receipt_names: Vec<_> = crate::schema::receipt_owner_columns()
+        .into_iter()
+        .filter(|(table, _, _)| *table == AGENT_TABLE)
+        .map(|(_, name, _)| name)
+        .collect();
+    Ok(names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !receipt_names.contains(name))
+        .eq(expected))
 }
 
 /// `batch` with its `CREATE TABLE runtime_agents(...)` statement replaced by
