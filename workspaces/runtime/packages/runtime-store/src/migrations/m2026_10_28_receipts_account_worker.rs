@@ -1032,6 +1032,71 @@ mod tests {
         );
     }
     #[test]
+    fn receipt_account_worker_mixed_old_key_formats_keep_numeric_journal_and_publication_order() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        for key in ["2".to_owned(), format!("{:020}", 2), format!("{:020}", 10)] {
+            let cursor = key.parse::<u64>().expect("cursor");
+            let payload = json!({"cursor":cursor,"digest":format!("digest-{cursor}"),"committed":true,"ready":true});
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,'settled',?2)",
+                params![
+                    format!("account-worker:journal:default:7:{key}:settled"),
+                    payload.to_string()
+                ],
+            )
+            .expect("journal source");
+        }
+        for (key, index) in [("5:10".to_owned(), 10), (format!("{:020}:{:020}", 5, 2), 2)] {
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,'pending',?2)",
+                params![
+                    format!("account-worker:notification-publication:default:{key}:pending"),
+                    json!({"account":"default","sequence":5,"index":index,"publicationOverflow":1})
+                        .to_string()
+                ],
+            )
+            .expect("publication source");
+        }
+        move_source(&tx, "journal");
+        move_source(&tx, "effects");
+        let journal = Outbox::for_stream::<Value>(&tx, "default", 7, 10).expect("journal");
+        assert_eq!(journal.len(), 2);
+        assert_eq!(
+            journal
+                .iter()
+                .map(|row| row.ordinal.expect("cursor"))
+                .collect::<Vec<_>>(),
+            vec![2, 10]
+        );
+        assert_eq!(journal[0].id, "journal:default:7:00000000000000000002");
+        let publications = Outbox::for_account::<Value>(
+            &tx,
+            "default",
+            OutboxKind::Publication,
+            OutboxStatus::Pending,
+            10,
+        )
+        .expect("publications");
+        assert_eq!(
+            publications
+                .iter()
+                .map(|row| row.payload["index"].as_u64().expect("index"))
+                .collect::<Vec<_>>(),
+            vec![2, 10]
+        );
+        assert_eq!(
+            publications[0].id,
+            "notification-publication:default:00000000000000000005:00000000000000000002"
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                .get::<_, i64>(0))
+                .expect("source consumed"),
+            0
+        );
+    }
+    #[test]
     fn receipt_account_worker_submitted_only_stays_unknown() {
         let mut db = database();
         let tx = db.transaction().expect("transaction");
