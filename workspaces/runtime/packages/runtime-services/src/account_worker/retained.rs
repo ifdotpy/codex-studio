@@ -1466,6 +1466,8 @@ mod runtime;
 pub(in crate::account_worker) mod storage;
 pub(super) use storage::recover;
 pub use storage::vm_actor;
+#[cfg(feature = "test-support")]
+pub use storage::{checkpoint_covered, record_outcome, submitted};
 #[cfg(test)]
 pub(super) async fn test_submitted(
     store: &RuntimeStore,

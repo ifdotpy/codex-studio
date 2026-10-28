@@ -821,7 +821,7 @@ pub(super) fn discard_unsent(
     Ok(())
 }
 
-pub(super) async fn submitted(
+pub async fn submitted(
     s: &RuntimeStore,
     call: &Call,
     request: &RecoveredRequest,
@@ -890,7 +890,7 @@ pub(super) async fn submitted(
 }
 
 /// Called in the journal-prefix transaction before its cursor evidence retires.
-pub(in crate::account_worker) fn checkpoint_covered(
+pub fn checkpoint_covered(
     tx: &rusqlite::Transaction<'_>,
     stream: &str,
     generation: u64,
@@ -1056,7 +1056,7 @@ fn proven_not_sent(payload: &RetainedCall) -> bool {
     })
 }
 
-pub(in crate::account_worker) fn record_outcome(
+pub fn record_outcome(
     tx: &rusqlite::Transaction<'_>,
     key: &str,
     written: Option<RecoveredRequest>,
