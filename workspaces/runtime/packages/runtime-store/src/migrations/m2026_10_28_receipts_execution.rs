@@ -133,8 +133,6 @@ impl ReceiptFamilyMigration for ExecutionMigration {
                     record["admission"] = serde_json::to_value(admission).map_err(|_| invalid())?;
                 }
                 "runtime_execution_effects" => {
-                    let _: ExecutionEffectStatus =
-                        classify(&record["status"], source, &id, "status")?;
                     let kind: String = tx.query_row(
                         "SELECT kind FROM runtime_execution_effects WHERE id=?1",
                         [&id],
@@ -144,6 +142,22 @@ impl ReceiptFamilyMigration for ExecutionMigration {
                     if record["kind"] != kind {
                         return Err(invalid());
                     }
+                    if kind == "task_submit" && record["status"] == "submitted" {
+                        let optional_fields_valid = ["attemptId", "revision"]
+                            .iter()
+                            .all(|field| record[*field].is_null() || record[*field].is_string());
+                        let matched = match (record["taskId"].as_str(), record["referenceId"].as_str(), record["runId"].as_str()) {
+                            _ if !optional_fields_valid => false,
+                            (Some(task), Some(reference), Some(run)) => tx.query_row(
+                                "SELECT EXISTS(SELECT 1 FROM runtime_work w, json_each(CASE WHEN json_valid(w.record) THEN w.record ELSE '{}' END, '$.results') r WHERE w.id=?1 AND json_type(CASE WHEN json_valid(w.record) THEN w.record ELSE '{}' END, '$.results')='array' AND r.type='object' AND json_extract(r.value,'$.id')=?2 AND json_extract(r.value,'$.runId')=?3 AND (?4 IS NULL OR json_extract(r.value,'$.attemptId')=?4) AND (?5 IS NULL OR json_extract(r.value,'$.revision')=?5))",
+                                params![task, reference, run, record["attemptId"].as_str(), record["revision"].as_str()], |r| r.get::<_, bool>(0),
+                            )?,
+                            _ => false,
+                        };
+                        record["status"] = json!(if matched { "completed" } else { "unknown" });
+                    }
+                    let _: ExecutionEffectStatus =
+                        classify(&record["status"], source, &id, "status")?;
                 }
                 "runtime_execution_nodes" => {
                     if !record["status"].is_null() {
@@ -222,6 +236,41 @@ mod tests {
         next.save(&tx, ExecutionMigration.id(), source, 1000)?;
         tx.commit()?;
         Ok(next)
+    }
+    #[test]
+    fn task_submit_requires_matching_work_result() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        db.execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .expect("work table");
+        db.execute("INSERT INTO runtime_work VALUES('task', ?1)", [json!({"id":"task","results":[{"id":"result","runId":"run","attemptId":"attempt","revision":"rev","text":"done"}]}).to_string()]).expect("work");
+        for (id, task, run) in [
+            ("matched", "task", "run"),
+            ("missing", "missing", "run"),
+            ("wrong-run", "task", "other"),
+        ] {
+            let effect = json!({"id":id,"kind":"task_submit","status":"submitted","taskId":task,"referenceId":"result","runId":run,"attemptId":"attempt","revision":"rev","resultReference":"/synthetic/result.md"});
+            db.execute("INSERT INTO runtime_execution_effects(id,run,kind,reference,record) VALUES(?1,?2,'task_submit','result',?3)", params![id,run,effect.to_string()]).expect("effect");
+        }
+        batch(&mut db, "runtime_execution_effects").expect("classify historical effects");
+        for (id, status) in [
+            ("matched", "completed"),
+            ("missing", "unknown"),
+            ("wrong-run", "unknown"),
+        ] {
+            let raw: String = db
+                .query_row(
+                    "SELECT record FROM runtime_execution_effects WHERE id=?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .expect("effect retained");
+            let record: Value = serde_json::from_str(&raw).expect("effect JSON");
+            assert_eq!(record["status"], status);
+            assert_eq!(record["kind"], "task_submit");
+            assert_eq!(record["referenceId"], "result");
+            assert_eq!(record["resultReference"], "/synthetic/result.md");
+        }
     }
     #[test]
     fn receipts_execution_fixture_reopen_preserves_unknown_and_exact_reply() {
