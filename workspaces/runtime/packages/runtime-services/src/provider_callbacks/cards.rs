@@ -624,7 +624,8 @@ fn provider_context(tx: &Transaction<'_>, card: &Value) -> Result<CallbackContex
         CallbackError::Stored(_) | CallbackError::Stale => {
             CallbackError::Dependency("provider-session/question-answer")
         }
-        error @ CallbackError::Invalid(_)
+        error @ CallbackError::Expired
+        | error @ CallbackError::Invalid(_)
         | error @ CallbackError::InvalidResultSchema(_)
         | error @ CallbackError::Dependency(_)
         | error @ CallbackError::Conflict
