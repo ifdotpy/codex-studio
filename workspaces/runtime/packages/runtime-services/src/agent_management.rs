@@ -1192,7 +1192,7 @@ fn stop(
                 .get("remoteWorker")
                 .is_some_and(Value::is_object)
         {
-            let request_id = remote_stop_request_id(agent.id(), epoch);
+            let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
             object.insert("remoteStopRequest".to_owned(), json!(request_id));
             object.insert("remoteControlEpoch".to_owned(), json!(epoch));
             required
@@ -1246,16 +1246,6 @@ fn stop(
         }
     }
     Ok(decision)
-}
-
-fn remote_stop_request_id(agent_id: &str, control_epoch: i64) -> String {
-    // Match Python identity(agent_id, "stop", str(control_epoch)) in
-    // codex_multi_server_orchestration.py:60 and :782-784.
-    uuid::Uuid::new_v5(
-        &uuid::Uuid::NAMESPACE_URL,
-        format!("studio-cross-server:{agent_id}:stop:{control_epoch}").as_bytes(),
-    )
-    .to_string()
 }
 
 fn archive(
