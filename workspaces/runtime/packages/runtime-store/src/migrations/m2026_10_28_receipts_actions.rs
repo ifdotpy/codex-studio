@@ -504,13 +504,15 @@ fn manual(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value, cutover: i64
         .next()
         .filter(|v| !v.is_empty())
         .ok_or_else(invalid)?;
-    let epoch = identity
-        .next()
-        .and_then(|v| v.parse::<i64>().ok())
-        .ok_or_else(invalid)?;
-    if identity.next().is_none_or(str::is_empty) {
+    let epoch_text = identity.next().ok_or_else(invalid)?;
+    let epoch = epoch_text.parse::<i64>().map_err(|_| invalid())?;
+    if epoch < 0 || epoch.to_string() != epoch_text {
         return Err(invalid());
     }
+    let public_id = identity
+        .next()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(invalid)?;
     let status: RecoveryReceiptStatus =
         serde_json::from_value(value["status"].clone()).map_err(|_| invalid())?;
     let outcome = match status {
@@ -533,7 +535,7 @@ fn manual(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value, cutover: i64
     if outcome != ToolRequestOutcome::Unknown {
         return import_result(
             tx,
-            &row.id,
+            public_id,
             &row.signature,
             &ResultEnvelope {
                 actor: Some(lead.into()),
@@ -562,15 +564,23 @@ fn manual(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value, cutover: i64
     {
         return Err(invalid());
     }
+    let identity = RequestIdentity::new("manual-management", &[lead, epoch_text], public_id, &[])
+        .map_err(|_| invalid())?;
+    let mut destination = row.clone();
+    destination.id = identity.id().to_owned();
     let account = string(&authorization["target"], "accountKey", table, row)?.to_owned();
-    authorization["root_request_id"] = json!(RequestIdentity::issue_root());
-    authorization["admission"] =
-        serde_json::to_value(admitted_owner_token(&row.id, &row.signature, cutover))
-            .map_err(|_| invalid())?;
+    authorization["request_id"] = json!(destination.id);
+    authorization["root_request_id"] = json!(public_id);
+    authorization["admission"] = serde_json::to_value(admitted_owner_token(
+        &destination.id,
+        &row.signature,
+        cutover,
+    ))
+    .map_err(|_| invalid())?;
     tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.nativeRelease.authorization',json(?1)) WHERE id=?2",params![authorization.to_string(),target])?;
     obligation(
         tx,
-        row,
+        &destination,
         cutover,
         (None, OutboxKind::ManagedTool, (OwnerKind::Agent, target)),
         OutboxStatus::Unknown,
@@ -1422,7 +1432,47 @@ mod tests {
         );
     }
     #[test]
-    fn receipts_actions_manual_known_reply_and_unknown_authorization_are_preserved() {
+    fn receipts_actions_manual_final_replays_by_public_id() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        let body = json!({"status":"released","detail":"original"});
+        db.execute("INSERT INTO runtime_operation_receipts VALUES('manual-management:lead:1:public-id','sig',?1)",[body.to_string()]).expect("final reply");
+        batch(&mut db, SOURCES[0]).expect("migrate");
+        let saved = crate::request_results::RequestResults::replay(&db, "public-id", "sig", 1001)
+            .expect("replay")
+            .expect("result");
+        let expected = serde_json::to_string(&ResultEnvelope {
+            actor: Some("lead".into()),
+            reply: ManualReply {
+                outcome: studio_runtime_schema::persistence::ToolRequestOutcome::Applied,
+                value: &body,
+            },
+            references: vec![],
+        })
+        .expect("expected exact envelope");
+        assert_eq!(saved.result, expected);
+    }
+    #[test]
+    fn receipts_actions_manual_final_collision_stops_without_deleting_source() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        let tx = db.transaction().expect("transaction");
+        prepare_schema(&tx).expect("schema");
+        tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES('public-id','sig',?1,1000)", [json!({"actor":"lead","reply":{"outcome":"applied","value":{"status":"different"}},"references":[]}).to_string()]).expect("conflict");
+        tx.commit().expect("commit");
+        db.execute("INSERT INTO runtime_operation_receipts VALUES('manual-management:lead:1:public-id','sig',?1)", [json!({"status":"released"}).to_string()]).expect("source");
+        assert!(
+            matches!(batch(&mut db,SOURCES[0]),Err(ReceiptMigrationError::Unclassifiable{table,key,..}) if table=="request_results" && key=="public-id")
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                .get::<_, i64>(0))
+                .expect("source"),
+            1
+        );
+    }
+    #[test]
+    fn receipts_actions_manual_unknown_without_v7_stops_and_preserves_source() {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&db);
         let id = "manual-management:lead:1:request";
@@ -1431,34 +1481,56 @@ mod tests {
             "INSERT INTO runtime_agents VALUES('worker',?1)",
             [json!({"nativeRelease":{"authorization":auth}}).to_string()],
         )
-        .expect("captured authorization");
+        .expect("owner");
         db.execute(
             "INSERT INTO runtime_operation_receipts VALUES(?1,'sig',?2)",
-            params![
-                id,
-                json!({"status":"unknown","manualRecoveryComplete":true}).to_string()
-            ],
+            params![id, json!({"status":"unknown"}).to_string()],
         )
         .expect("unknown");
-        db.execute("INSERT INTO runtime_operation_receipts VALUES('manual-management:lead:1:final','sig',?1)",[json!({"status":"released"}).to_string()]).expect("final reply");
+        assert!(
+            matches!(batch(&mut db,SOURCES[0]),Err(ReceiptMigrationError::Unclassifiable{table,key,..}) if table==SOURCES[0] && key==id)
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM runtime_operation_receipts WHERE id=?1",
+                [id],
+                |r| r.get::<_, i64>(0)
+            )
+            .expect("source"),
+            1
+        );
+    }
+    #[test]
+    fn receipts_actions_manual_unknown_v7_rekeys_and_holds() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        let root = RequestIdentity::issue_root();
+        let id = format!("manual-management:lead:1:{root}");
+        let auth = json!({"lead":{"id":"lead","epoch":1},"target":{"id":"worker","epoch":2,"accountKey":"account"},"request_id":id,"signature":"sig"});
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('worker',?1)",
+            [json!({"nativeRelease":{"authorization":auth}}).to_string()],
+        )
+        .expect("owner");
+        db.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,'sig',?2)",
+            params![id, json!({"status":"unknown"}).to_string()],
+        )
+        .expect("unknown");
         batch(&mut db, SOURCES[0]).expect("migrate");
-        let row: OutboxRow<Value> = Outbox::get(&db, id)
+        let canonical = RequestIdentity::new("manual-management", &["lead", "1"], &root, &[])
+            .expect("identity");
+        let row: OutboxRow<Value> = Outbox::get(&db, canonical.id())
             .expect("read")
             .expect("unknown retained");
         assert_eq!(row.status, OutboxStatus::Unknown);
-        assert_eq!(row.payload["authorization"]["admission"]["id"], id);
-        assert_eq!(row.payload["reply"]["outcome"], "unknown");
-        let reply: String = db
-            .query_row(
-                "SELECT result FROM request_results WHERE id='manual-management:lead:1:final'",
-                [],
-                |r| r.get(0),
-            )
-            .expect("final");
+        assert_eq!(row.next_at, None);
         assert_eq!(
-            serde_json::from_str::<Value>(&reply).expect("JSON")["reply"]["value"],
-            json!({"status":"released"})
+            row.payload["authorization"]["admission"]["id"],
+            canonical.id()
         );
+        assert_eq!(row.payload["authorization"]["root_request_id"], root);
+        assert_eq!(row.payload["reply"]["outcome"], "unknown");
     }
     fn call_fixture(db: &Connection, operation: &str, method: &str) -> (Call, String) {
         let call:Call=serde_json::from_value(json!({"root_request_id":"","admitted_request":null,"scope":{"account":"account","connection":"1","generation":1},"operation":operation,"actor":{"agent":"agent","epoch":1},"transfer":null,"deleted_actor_session":null,"method":method,"params":{"threadId":"thread"}})).expect("call");
