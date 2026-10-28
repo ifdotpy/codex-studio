@@ -92,12 +92,6 @@ impl SteerState {
             _ => None,
         }
     }
-    fn sent_mut(&mut self) -> Option<&mut SubmittedSteer> {
-        match self {
-            Self::Submitted(sent) | Self::Unconfirmed(sent) => Some(sent),
-            _ => None,
-        }
-    }
 }
 
 /// Prefix of the durable per-steer receipt: `claude-steer:{agent}:{steer}`.
@@ -802,7 +796,8 @@ impl SchedulerRepository {
             {
                 continue;
             }
-            let Some(sent) = receipt.stage.sent_mut() else {
+            let (SteerState::Submitted(sent) | SteerState::Unconfirmed(sent)) = &mut receipt.stage
+            else {
                 continue;
             };
             if sent.generation != generation {
