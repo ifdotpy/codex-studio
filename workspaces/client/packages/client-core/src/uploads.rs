@@ -14,18 +14,32 @@ pub const LIMIT: usize = 20 * 1024 * 1024;
 pub const PART_LIMIT: usize = 1024 * 1024;
 const STAGE_COUNT_LIMIT: i64 = 100;
 const STAGE_TOTAL_LIMIT: i64 = 256 * 1024 * 1024;
+/// Age after which a staged file that no upload references is removed on core start, in milliseconds.
+pub const STAGE_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1000;
 
 pub fn initialize(db: &Connection) -> rusqlite::Result<()> {
+    let now = now_millis().unwrap_or(0) as i64;
     let legacy: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='client_file_sources')",
         [],
         |row| row.get(0),
     )?;
-    db.execute_batch("CREATE TABLE IF NOT EXISTS client_file_stages(id TEXT PRIMARY KEY,name TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS client_file_parts(id TEXT NOT NULL,position INTEGER NOT NULL,bytes BLOB NOT NULL,PRIMARY KEY(id,position)); CREATE TABLE IF NOT EXISTS client_uploads(id TEXT PRIMARY KEY,workspace TEXT NOT NULL,state_dir TEXT NOT NULL,agent TEXT NOT NULL,document TEXT NOT NULL,bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS client_upload_tombstones(id TEXT PRIMARY KEY,cancelled INTEGER NOT NULL);")?;
+    db.execute_batch("CREATE TABLE IF NOT EXISTS client_file_stages(id TEXT PRIMARY KEY,name TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,created INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS client_file_parts(id TEXT NOT NULL,position INTEGER NOT NULL,bytes BLOB NOT NULL,PRIMARY KEY(id,position)); CREATE TABLE IF NOT EXISTS client_uploads(id TEXT PRIMARY KEY,workspace TEXT NOT NULL,state_dir TEXT NOT NULL,agent TEXT NOT NULL,document TEXT NOT NULL,bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS client_upload_tombstones(id TEXT PRIMARY KEY,cancelled INTEGER NOT NULL);")?;
     if legacy {
         // One-time move of whole-file staging rows from the previous layout.
-        db.execute_batch("BEGIN; INSERT INTO client_file_stages SELECT id,name,mime,length(bytes) FROM client_file_sources; INSERT INTO client_file_parts SELECT id,0,bytes FROM client_file_sources; DROP TABLE client_file_sources; COMMIT;")?;
+        db.execute_batch(&format!("BEGIN; INSERT INTO client_file_stages SELECT id,name,mime,length(bytes),{now} FROM client_file_sources; INSERT INTO client_file_parts SELECT id,0,bytes FROM client_file_sources; DROP TABLE client_file_sources; COMMIT;"))?;
     }
+    // Abandoned stages block the cap. Queued uploads are rows of client_uploads and never match.
+    let cutoff = now - STAGE_MAX_AGE_MS as i64;
+    let stale = "SELECT id FROM client_file_stages WHERE created < ?1 AND NOT EXISTS (SELECT 1 FROM client_uploads u WHERE u.id = client_file_stages.id)";
+    db.execute(
+        &format!("DELETE FROM client_file_parts WHERE id IN ({stale})"),
+        [cutoff],
+    )?;
+    db.execute(
+        &format!("DELETE FROM client_file_stages WHERE id IN ({stale})"),
+        [cutoff],
+    )?;
     Ok(())
 }
 fn text<'a>(p: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -95,8 +109,8 @@ fn begin(db: &Connection, name: &str, mime: &str, size: usize) -> Result<Value, 
     }
     let id = crate::platform::new_identity()?;
     db.execute(
-        "INSERT INTO client_file_stages VALUES(?1,?2,?3,?4)",
-        params![id, name, mime, size as i64],
+        "INSERT INTO client_file_stages VALUES(?1,?2,?3,?4,?5)",
+        params![id, name, mime, size as i64, now_millis()? as i64],
     )
     .map_err(|e| e.to_string())?;
     Ok(json!({"nativeHandle":id,"name":name,"type":mime,"size":size}))
@@ -222,6 +236,11 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
             begin(db, &name, &mime, size)
         }
         "files.append" => append(db, p),
+        // The page drops a staged file it will not queue. A queued file has no stage left.
+        "files.discard" => {
+            discard(db, text(p, "nativeHandle")?)?;
+            Ok(Value::Null)
+        }
         "files.stage_many" => {
             let files = p["files"]
                 .as_array()
@@ -838,5 +857,141 @@ mod tests {
                 .result,
             Some(Value::Null)
         );
+    }
+    #[test]
+    fn abandoned_stages_do_not_block_the_cap_after_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("client.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        for index in 0..99 {
+            stage(&mut store, &format!("old-{index}"), "abandoned.txt", 1);
+        }
+        let fresh = stage(&mut store, "fresh", "fresh.txt", 1);
+        let fresh_handle = fresh["nativeHandle"].as_str().unwrap().to_owned();
+        assert!(
+            append(&mut store, "fresh-part", &fresh_handle, 0, b"x")
+                .error
+                .is_none()
+        );
+        assert!(
+            store
+                .dispatch(command(
+                    "full",
+                    "files.begin",
+                    json!({"name":"late.txt","size":1})
+                ))
+                .error
+                .is_some(),
+            "100 staged files reach the cap"
+        );
+        let stale = now_millis().unwrap() as i64 - STAGE_MAX_AGE_MS as i64 - 1;
+        store
+            .connection
+            .execute(
+                "UPDATE client_file_stages SET created=?1 WHERE name='abandoned.txt'",
+                [stale],
+            )
+            .unwrap();
+        drop(store);
+        // Core start removes the stale stages. The fresh one stays and still queues.
+        let mut store = Store::open(&path).unwrap();
+        let remaining: i64 = store
+            .connection
+            .query_row("SELECT count(*) FROM client_file_stages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 1);
+        assert!(
+            store
+                .dispatch(command(
+                    "after",
+                    "files.begin",
+                    json!({"name":"late.txt","size":1})
+                ))
+                .error
+                .is_none()
+        );
+        assert!(
+            queue_one(&mut store, "queue", &fresh_handle)
+                .error
+                .is_none()
+        );
+    }
+    #[test]
+    fn a_queued_upload_is_never_removed_by_discard_or_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("client.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        let file = stage(&mut store, "begin", "kept.txt", 4);
+        let handle = file["nativeHandle"].as_str().unwrap().to_owned();
+        assert!(
+            append(&mut store, "part", &handle, 0, b"keep")
+                .error
+                .is_none()
+        );
+        let rows = queue_one(&mut store, "queue", &handle).result.unwrap();
+        let id = rows[0]["id"].as_str().unwrap().to_owned();
+        // The queued file no longer has a stage, so discarding its handle changes nothing.
+        assert_eq!(
+            store
+                .dispatch(command(
+                    "discard",
+                    "files.discard",
+                    json!({"nativeHandle":handle})
+                ))
+                .result,
+            Some(Value::Null)
+        );
+        let stale = now_millis().unwrap() as i64 - STAGE_MAX_AGE_MS as i64 - 1;
+        store
+            .connection
+            .execute("UPDATE client_file_stages SET created=?1", [stale])
+            .unwrap();
+        drop(store);
+        let mut store = Store::open(&path).unwrap();
+        assert_eq!(
+            store
+                .dispatch(command("get", "uploads.get", json!({"id":id})))
+                .result
+                .unwrap()["name"],
+            "kept.txt"
+        );
+        let bytes = store
+            .dispatch(command("bytes", "uploads.content", json!({"id":id})))
+            .result
+            .unwrap();
+        assert_eq!(STANDARD.decode(bytes.as_str().unwrap()).unwrap(), b"keep");
+    }
+    #[test]
+    fn discard_removes_an_unqueued_stage_and_ignores_unknown_handles() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&temp.path().join("client.sqlite3")).unwrap();
+        let file = stage(&mut store, "begin", "gone.txt", 2);
+        let handle = file["nativeHandle"].as_str().unwrap().to_owned();
+        assert!(
+            append(&mut store, "part", &handle, 0, b"ab")
+                .error
+                .is_none()
+        );
+        let discard = |store: &mut Store, id: &str, handle: &str| {
+            store.dispatch(command(id, "files.discard", json!({"nativeHandle":handle})))
+        };
+        assert_eq!(
+            discard(&mut store, "first", &handle).result,
+            Some(Value::Null)
+        );
+        assert_eq!(
+            discard(&mut store, "again", &handle).result,
+            Some(Value::Null)
+        );
+        assert_eq!(
+            discard(&mut store, "unknown", "missing").result,
+            Some(Value::Null)
+        );
+        assert!(append(&mut store, "late", &handle, 2, b"c").error.is_some());
+        let parts: i64 = store
+            .connection
+            .query_row("SELECT count(*) FROM client_file_parts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(parts, 0);
     }
 }

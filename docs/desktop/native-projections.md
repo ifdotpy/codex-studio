@@ -69,6 +69,10 @@ the core. The page sends commands and renders the state.
   `dictation.begin` replay their first reply for the same request identity. An
   append repeats at the same offset. A lost reply therefore does not create a
   second upload, recording or transcription attempt.
+- Cleanup: a failed queue sends `files.discard` for its unqueued handles. On
+  core start, a staged file older than `STAGE_MAX_AGE_MS` (24 hours, in
+  milliseconds) that no upload row matches is removed. A queued file has no
+  stage left, so discard and cleanup never touch an upload.
 - Cancel: `uploads.cancel` leaves a tombstone. A late `uploads.deliver` reply
   never creates an attachment.
 - Dictation: `dictation.*` stores recordings and PCM chunks. The core assigns

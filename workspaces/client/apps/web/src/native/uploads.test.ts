@@ -170,3 +170,33 @@ it("the part size equals the core owner", () => {
     .reduce((product, factor) => product * Number(factor), 1);
   expect(UPLOAD_PART_BYTES).toBe(bytes);
 });
+
+it("a failed staging discards the parts it already sent", async () => {
+  const file = new File([new Uint8Array(2 * MiB)], "big.bin", {
+    type: "application/octet-stream",
+  });
+  const core = fakeCore({
+    "files.begin": () => ({ nativeHandle: "h1" }),
+    "files.append": (params) => {
+      if (params.offset === MiB) throw new Error("Storage is full.");
+      return null;
+    },
+    "files.discard": () => null,
+  });
+  await expect(
+    createNativeUploads(core.request, noLegacy).queueUploads(
+      "/state",
+      "lead",
+      [file],
+      workspace,
+    ),
+  ).rejects.toThrow("Storage is full.");
+  expect(
+    core.calls.find((call) => call.method === "files.discard")?.params,
+  ).toEqual({
+    nativeHandle: "h1",
+  });
+  expect(core.calls.some((call) => call.method === "uploads.enqueue")).toBe(
+    false,
+  );
+});

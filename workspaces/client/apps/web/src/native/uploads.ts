@@ -54,31 +54,45 @@ export function createNativeUploads(
         "Wait for this workspace to finish loading before attaching files.",
       );
     const handles: { nativeHandle: string }[] = [];
-    for (const file of files) {
-      const { nativeHandle } = await retriedRequest<{ nativeHandle: string }>(
-        request,
-        "files.begin",
-        { name: file.name, mime: file.type, size: file.size },
-      );
-      for (let offset = 0; offset < file.size; offset += UPLOAD_PART_BYTES) {
-        const part = new Uint8Array(
-          await file.slice(offset, offset + UPLOAD_PART_BYTES).arrayBuffer(),
+    // Staged handles that are not queued yet. A failure discards them.
+    const unqueued: string[] = [];
+    try {
+      for (const file of files) {
+        const { nativeHandle } = await retriedRequest<{ nativeHandle: string }>(
+          request,
+          "files.begin",
+          { name: file.name, mime: file.type, size: file.size },
         );
-        await retriedRequest(request, "files.append", {
-          nativeHandle,
-          offset,
-          base64: encodeBase64(part),
-        });
+        unqueued.push(nativeHandle);
+        for (let offset = 0; offset < file.size; offset += UPLOAD_PART_BYTES) {
+          const part = new Uint8Array(
+            await file.slice(offset, offset + UPLOAD_PART_BYTES).arrayBuffer(),
+          );
+          await retriedRequest(request, "files.append", {
+            nativeHandle,
+            offset,
+            base64: encodeBase64(part),
+          });
+        }
+        handles.push({ nativeHandle });
       }
-      handles.push({ nativeHandle });
+      const rows = await retriedRequest<PendingUpload[]>(
+        request,
+        "uploads.enqueue",
+        { workspace: expectedWorkspace, stateDir, agent, files: handles },
+      );
+      unqueued.length = 0;
+      uploadsChanged();
+      return rows;
+    } catch (error) {
+      // A lost enqueue reply may have queued the files. The core ignores a discard of a queued file.
+      await Promise.all(
+        unqueued.map((nativeHandle) =>
+          request("files.discard", { nativeHandle }).catch(() => null),
+        ),
+      );
+      throw error;
     }
-    const rows = await retriedRequest<PendingUpload[]>(
-      request,
-      "uploads.enqueue",
-      { workspace: expectedWorkspace, stateDir, agent, files: handles },
-    );
-    uploadsChanged();
-    return rows;
   }
   async function pendingUploads(stateDir: string, expectedWorkspace?: string) {
     await ready();
