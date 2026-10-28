@@ -318,7 +318,14 @@ impl SupervisorJournal {
             Ok((closed == 1, None))
         })
     }
-    pub fn opened(&self, handle: &str, signature: &str, pid: u32, start: &str, generation: Option<u64>) -> Result<u64> {
+    pub fn opened(
+        &self,
+        handle: &str,
+        signature: &str,
+        pid: u32,
+        start: &str,
+        generation: Option<u64>,
+    ) -> Result<u64> {
         self.transaction(|tx, _buffered| {
             let generation = generation.map(|value| i64::try_from(value).map_err(|_| Refusal("Invalid generation"))).transpose()?;
             tx.execute("UPDATE handles SET pid=?,signature=?,rpc_sequence=0,generation=COALESCE(?,generation+1),init_result=NULL,closed_at=NULL,closed_reason=NULL WHERE id=?",params![pid,signature,generation,handle])?;

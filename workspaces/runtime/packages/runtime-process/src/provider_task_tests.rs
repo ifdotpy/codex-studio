@@ -330,10 +330,15 @@ async fn attachment_with_supervisor_peers() -> (
     let factory = SupervisorProviderTaskFactory::new(BackendIdentity {
         backend_id: BackendId("detach-barrier".into()),
         state_dir: root.path().into(),
-    }).with_account_store({
+    })
+    .with_account_store({
         let path = root.path().join("account-state");
         std::fs::create_dir(&path).unwrap();
-        Arc::new(studio_runtime_store::RuntimeStore::open(Some(&path)).await.unwrap())
+        Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(&path))
+                .await
+                .unwrap(),
+        )
     });
     let attachment = factory
         .open(
@@ -377,8 +382,7 @@ async fn attachment_with_supervisor_peers() -> (
 
 #[tokio::test]
 async fn shutdown_waits_for_supervisor_detach_on_both_connections() {
-    let (_root, mut attachment, mut control, mut events) =
-        attachment_with_supervisor_peers().await;
+    let (_root, mut attachment, mut control, mut events) = attachment_with_supervisor_peers().await;
     tokio::time::timeout(RPC_TIMEOUT, async {
         let mut shutdown = Box::pin(attachment.shutdown());
         assert!(
@@ -888,17 +892,32 @@ pub(super) fn panic_on_open_write(bytes: &[u8]) {
 
 #[tokio::test]
 async fn panic_during_uncertain_open_closes_socket_and_preserves_handle_recovery() {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let root = std::env::temp_dir().join(format!("panic-open-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup { fn drop(&mut self) { let _ignored = std::fs::remove_dir_all(&self.0); } }
-        let _cleanup = Cleanup(root.clone());
-        let listener = tokio::net::UnixListener::bind(root.join("supervisor.sock")).unwrap();
-        let identity = BackendIdentity { backend_id: BackendId("panic-test".into()), state_dir: root.clone() };
-        let account_path = root.join("account-state");
-        std::fs::create_dir(&account_path).unwrap();
-        let store = Arc::new(studio_runtime_store::RuntimeStore::open(Some(&account_path)).await.unwrap());
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "panic-open-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&root).unwrap();
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ignored = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+    let listener = tokio::net::UnixListener::bind(root.join("supervisor.sock")).unwrap();
+    let identity = BackendIdentity {
+        backend_id: BackendId("panic-test".into()),
+        state_dir: root.clone(),
+    };
+    let account_path = root.join("account-state");
+    std::fs::create_dir(&account_path).unwrap();
+    let store = Arc::new(
+        studio_runtime_store::RuntimeStore::open(Some(&account_path))
+            .await
+            .unwrap(),
+    );
     tokio::time::timeout(Duration::from_secs(15), async {
         let factory = SupervisorProviderTaskFactory::new(identity).with_account_store(store);
         let handle = ProviderHandle::for_account("panic-open");

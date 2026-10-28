@@ -276,7 +276,9 @@ impl Supervisor {
                             ));
                         }
                     }
-                    if let Some(generation) = generation && *generation <= saved.snapshot.generation() {
+                    if let Some(generation) = generation
+                        && *generation <= saved.snapshot.generation()
+                    {
                         return Err(Error::Refused("Account host generation is not newer"));
                     }
                 }

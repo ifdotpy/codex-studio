@@ -43,7 +43,7 @@ fn blocked_write_on_one_handle_does_not_block_another_handle() {
         supervisor
             .handle(
                 Command::Open {
-                generation: None,
+                    generation: None,
                     handle: handle.to_owned(),
                     command: vec![
                         "/bin/sh".into(),

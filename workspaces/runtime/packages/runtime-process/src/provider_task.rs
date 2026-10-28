@@ -558,12 +558,21 @@ impl AdapterTask {
             return Err(AdapterError::UnverifiableChild);
         }
         if let Some(account) = self.handle.as_str().strip_prefix("account:")
-            && prior.as_ref().is_none_or(|status| status.return_code.is_some())
+            && prior
+                .as_ref()
+                .is_none_or(|status| status.return_code.is_some())
         {
-            let store = self.account_store.as_ref().ok_or(AdapterError::InvalidConfiguration)?;
+            let store = self
+                .account_store
+                .as_ref()
+                .ok_or(AdapterError::InvalidConfiguration)?;
             let account = account.to_owned();
-            let generation = store.transaction(move |tx| studio_runtime_store::account_state::allocate_next_generation(tx, &account))
-                .await.map_err(|_| AdapterError::TaskFailed)?;
+            let generation = store
+                .transaction(move |tx| {
+                    studio_runtime_store::account_state::allocate_next_generation(tx, &account)
+                })
+                .await
+                .map_err(|_| AdapterError::TaskFailed)?;
             self.open.generation = Some(Generation(generation));
         }
         self.open_attempted = true;
@@ -589,7 +598,11 @@ impl AdapterTask {
             acknowledged: EventCursor(opened.acknowledged),
             resumed: opened.resumed,
         });
-        if !opened.resumed && self.open.generation.is_some_and(|generation| generation != opened.generation)
+        if !opened.resumed
+            && self
+                .open
+                .generation
+                .is_some_and(|generation| generation != opened.generation)
             || opened.resumed && prior.as_ref().is_none_or(|prior| prior.pid != opened.pid)
             || self
                 .expected_generation

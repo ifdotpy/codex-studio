@@ -48,8 +48,8 @@ pub mod retained_frame;
 mod steer;
 mod stopped_turns;
 pub(crate) mod store;
-pub use store::{get_notification, put_notification};
 pub use store::hold_invalid_agent_record;
+pub use store::{get_notification, put_notification};
 mod submission;
 mod turn_preparation;
 mod vm_reattach;
@@ -4420,8 +4420,7 @@ impl Worker {
             let store = Arc::clone(&self.bridge.store);
             self.managed_callbacks.spawn(async move {
                 let handled =
-                    callback::native_response(&store, &account, generation, &frame, now)
-                        .await;
+                    callback::native_response(&store, &account, generation, &frame, now).await;
                 (cursor, origin, actor, actor_epoch, handled)
             });
         } else if callback::is_vm_codex_refresh_request(&frame) {

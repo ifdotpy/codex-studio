@@ -181,8 +181,10 @@ fn write(operation: &str, value: Value) -> (AdapterCommand, Receipt) {
 async fn open_peer(state: &DisposableState) -> (ProviderAttachment, Peer) {
     let listener = UnixListener::bind(state.socket()).unwrap();
     let identity = state.identity();
-    let factory: Arc<dyn ProviderTaskFactory> =
-        Arc::new(SupervisorProviderTaskFactory::new(identity.clone()).with_account_store(account_store(state).await));
+    let factory: Arc<dyn ProviderTaskFactory> = Arc::new(
+        SupervisorProviderTaskFactory::new(identity.clone())
+            .with_account_store(account_store(state).await),
+    );
     let attachment = factory
         .open(
             ProviderHandle::for_account("test"),
@@ -217,7 +219,8 @@ async fn invalid_launch_refused_before_socket_open() {
     watchdog(async {
         let state = DisposableState::new();
         let listener = UnixListener::bind(state.socket()).unwrap();
-        let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
+        let factory = SupervisorProviderTaskFactory::new(state.identity())
+            .with_account_store(account_store(&state).await);
         let mut invalid = options(&state);
         invalid.launch.command = vec!["x".repeat(MAX_SUPERVISOR_FRAME_BYTES)];
         assert!(matches!(
@@ -246,7 +249,8 @@ async fn shutdown_interrupts_handshake_and_closes_socket() {
     watchdog(async {
         let state = DisposableState::new();
         let listener = UnixListener::bind(state.socket()).unwrap();
-        let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
+        let factory = SupervisorProviderTaskFactory::new(state.identity())
+            .with_account_store(account_store(&state).await);
         let mut attachment = factory
             .open(
                 ProviderHandle::for_account("test"),
@@ -515,7 +519,8 @@ async fn failed_status_probe_is_not_absence_and_never_opens_child() {
     watchdog(async {
         let state = DisposableState::new();
         let listener = UnixListener::bind(state.socket()).unwrap();
-        let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
+        let factory = SupervisorProviderTaskFactory::new(state.identity())
+            .with_account_store(account_store(&state).await);
         let mut attachment = factory
             .open(
                 ProviderHandle::for_account("test"),
@@ -1056,7 +1061,8 @@ async fn non_linux_reattach_refuses_even_an_exited_child_before_open() {
     watchdog(async {
         let state = DisposableState::new();
         let listener = UnixListener::bind(state.socket()).unwrap();
-        let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
+        let factory = SupervisorProviderTaskFactory::new(state.identity())
+            .with_account_store(account_store(&state).await);
         let mut attachment = factory
             .open(
                 ProviderHandle::for_account("test"),
@@ -1089,7 +1095,8 @@ async fn v1_handshake_is_rejected_without_provider_command_fallback() {
     watchdog(async {
         let state = DisposableState::new();
         let listener = UnixListener::bind(state.socket()).unwrap();
-        let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
+        let factory = SupervisorProviderTaskFactory::new(state.identity())
+            .with_account_store(account_store(&state).await);
         let mut attachment = factory
             .open(
                 ProviderHandle::for_account("legacy-v1"),
@@ -1197,7 +1204,8 @@ done
             support::child_environment(&state.0),
             state.0.clone(),
         );
-        let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
+        let factory = SupervisorProviderTaskFactory::new(state.identity())
+            .with_account_store(account_store(&state).await);
         let mut attachment = factory
             .open(
                 ProviderHandle::for_account("write-once"),
@@ -1275,7 +1283,8 @@ done
             support::child_environment(&state.0),
             state.0.clone(),
         );
-        let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
+        let factory = SupervisorProviderTaskFactory::new(state.identity())
+            .with_account_store(account_store(&state).await);
         let handle = ProviderHandle::for_account("generation");
         let opts = || OpenOptions {
             clock: SessionClock::default(),

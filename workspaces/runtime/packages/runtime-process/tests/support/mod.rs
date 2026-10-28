@@ -50,9 +50,19 @@ impl DisposableState {
     }
 }
 
-pub(crate) async fn account_store(state: &DisposableState) -> std::sync::Arc<studio_runtime_store::RuntimeStore> {
-    let path = tempfile::Builder::new().prefix("account-state-").tempdir_in(&state.0).unwrap().keep();
-    std::sync::Arc::new(studio_runtime_store::RuntimeStore::open(Some(&path)).await.unwrap())
+pub(crate) async fn account_store(
+    state: &DisposableState,
+) -> std::sync::Arc<studio_runtime_store::RuntimeStore> {
+    let path = tempfile::Builder::new()
+        .prefix("account-state-")
+        .tempdir_in(&state.0)
+        .unwrap()
+        .keep();
+    std::sync::Arc::new(
+        studio_runtime_store::RuntimeStore::open(Some(&path))
+            .await
+            .unwrap(),
+    )
 }
 
 pub(crate) fn assert_socket_path_fits(socket: &Path) {
@@ -241,7 +251,9 @@ pub(crate) fn safe_socket_path(state: &DisposableState) -> PathBuf {
 pub(crate) fn open_request(handle: &str, command: Vec<String>, cwd: &Path) -> OpenRequest {
     OpenRequest {
         handle: SupervisorHandle(handle.to_owned()),
-        generation: handle.starts_with("account:").then_some(studio_runtime_process::Generation(1)),
+        generation: handle
+            .starts_with("account:")
+            .then_some(studio_runtime_process::Generation(1)),
         command,
         env: child_environment(cwd),
         cwd: cwd.to_string_lossy().into_owned(),

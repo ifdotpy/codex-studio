@@ -4495,7 +4495,9 @@ async fn manual_recovery_owner_to_callback_keeps_unknown_and_exact_replay() {
         .unwrap()
         .unwrap();
     assert_eq!(record["deliveryCertainty"], "unknown");
-    let result = crate::tool_requests::saved_result(&db, &id).unwrap().unwrap();
+    let result = crate::tool_requests::saved_result(&db, &id)
+        .unwrap()
+        .unwrap();
     assert_eq!(result["success"], false);
     assert_eq!(state.event_status("input").await, "uncertain");
     worker.shutdown().await.unwrap();

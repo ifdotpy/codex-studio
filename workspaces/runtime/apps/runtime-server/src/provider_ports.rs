@@ -1111,9 +1111,22 @@ mod tests {
         );
         let calls = session.requests.lock().expect("fixture request list");
         let provider_root = &calls[0].root_request_id;
-        assert!(studio_runtime_schema::persistence::RequestIdentity::new("title", &[], provider_root, &[]).is_ok());
-        assert!(calls.iter().all(|call| &call.root_request_id == provider_root
-            && (call.admitted_request.is_some() == (call.method != Method::ThreadTurnsList))));
+        assert!(
+            studio_runtime_schema::persistence::RequestIdentity::new(
+                "title",
+                &[],
+                provider_root,
+                &[]
+            )
+            .is_ok()
+        );
+        assert!(
+            calls
+                .iter()
+                .all(|call| &call.root_request_id == provider_root
+                    && (call.admitted_request.is_some()
+                        == (call.method != Method::ThreadTurnsList)))
+        );
         assert_eq!(
             calls.iter().map(|call| call.method).collect::<Vec<_>>(),
             [

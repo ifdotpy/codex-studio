@@ -2601,7 +2601,8 @@ mod voice_composition_tests {
                             else {
                                 continue;
                             };
-                            if method == "account/read" && message["params"]["refreshToken"] == true {
+                            if method == "account/read" && message["params"]["refreshToken"] == true
+                            {
                                 request_writes.fetch_add(1, Ordering::SeqCst);
                             }
                             if method == "thread/realtime/stop" {
@@ -2847,7 +2848,10 @@ mod voice_composition_tests {
             .header("host", "127.0.0.1:4620")
             .header("x-canvas-token", "token")
             .header("content-type", "application/json")
-            .body(Body::from(json!({"agent":"voice-composed-agent","session_id":session_id,"sdp":"v=0\r\n"}).to_string()))
+            .body(Body::from(
+                json!({"agent":"voice-composed-agent","session_id":session_id,"sdp":"v=0\r\n"})
+                    .to_string(),
+            ))
             .unwrap();
         request.extensions_mut().insert(ConnectInfo(
             "127.0.0.1:32100".parse::<std::net::SocketAddr>().unwrap(),
