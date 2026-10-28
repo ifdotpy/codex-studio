@@ -404,31 +404,25 @@ fn expectations() -> Value {
     .unwrap()
 }
 
-async fn send(
-    sender_index: usize,
-    target: &str,
-    id: &str,
-) -> (tempfile::TempDir, RuntimeStore, Value) {
-    let (directory, store, result) = try_send(sender_index, target, id).await;
+async fn send(sender_index: usize, target: &str) -> (tempfile::TempDir, RuntimeStore, Value) {
+    let (directory, store, result) = try_send(sender_index, target).await;
     (directory, store, result.unwrap())
 }
 
 async fn try_send(
     sender_index: usize,
     target: &str,
-    id: &str,
 ) -> (
     tempfile::TempDir,
     RuntimeStore,
     Result<Value, crate::managed_host_tools::Error>,
 ) {
-    try_send_with(sender_index, target, id, Vec::new()).await
+    try_send_with(sender_index, target, Vec::new()).await
 }
 
 async fn try_send_with(
     sender_index: usize,
     target: &str,
-    id: &str,
     extra_agents: Vec<Value>,
 ) -> (
     tempfile::TempDir,
@@ -438,7 +432,6 @@ async fn try_send_with(
     try_send_args_with(
         sender_index,
         json!({"agent_id":target,"text":"dispatch input"}),
-        id,
         extra_agents,
     )
     .await
@@ -447,19 +440,17 @@ async fn try_send_with(
 async fn try_send_args(
     sender_index: usize,
     args: Value,
-    id: &str,
 ) -> (
     tempfile::TempDir,
     RuntimeStore,
     Result<Value, crate::managed_host_tools::Error>,
 ) {
-    try_send_args_with(sender_index, args, id, Vec::new()).await
+    try_send_args_with(sender_index, args, Vec::new()).await
 }
 
 async fn try_send_args_with(
     sender_index: usize,
     args: Value,
-    id: &str,
     extra_agents: Vec<Value>,
 ) -> (
     tempfile::TempDir,
@@ -521,7 +512,7 @@ async fn try_send_args_with(
         context.epoch,
     )
     .unwrap();
-    let id = id.to_owned();
+    let id = RequestIdentity::issue_root();
     let result = store
         .transaction_with(move |tx| ports.send(tx, &actor, &args, &id, request_time()))
         .await
@@ -713,7 +704,7 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
     let child = oracle["agents"][1]["id"].as_str().unwrap();
     let lead = oracle["agents"][0]["id"].as_str().unwrap();
 
-    let (_root, store, value) = send(0, child, &RequestIdentity::issue_root()).await;
+    let (_root, store, value) = send(0, child).await;
     assert_eq!(value["status"], "queued");
     let reader = store.test_reader().unwrap();
     let event: (String, String, String) = reader
@@ -729,7 +720,7 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
     );
     drop(reader);
 
-    let (_root, store, value) = send(1, lead, &RequestIdentity::issue_root()).await;
+    let (_root, store, value) = send(1, lead).await;
     let mut member_ids = [lead, child];
     member_ids.sort_unstable();
     assert_eq!(
@@ -754,7 +745,7 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
     assert_eq!((event_count, chat_count), (0, 1));
     drop(reader);
 
-    let (_root, store, value) = send(1, "broadcast", &RequestIdentity::issue_root()).await;
+    let (_root, store, value) = send(1, "broadcast").await;
     assert!(value["room"].as_str().unwrap().starts_with("broadcast:"));
     let reader = store.test_reader().unwrap();
     let chat_count: i64 = reader
@@ -773,14 +764,13 @@ async fn send_preserves_explicit_next_turn_for_followup_and_chat() {
     let oracle = expectations();
     for (sender, target_index, event_prefix) in [(0, 1, ""), (1, 0, "chat:")] {
         let target = oracle["agents"][target_index]["id"].as_str().unwrap();
-        let id = RequestIdentity::issue_root();
         let (_root, store, result) = try_send_args(
             sender,
             json!({"agent_id":target,"text":"wait for the active turn","delivery":DeliveryMoment::NextTurn}),
-            &id,
         )
         .await;
-        result.unwrap();
+        let result = result.unwrap();
+        let id = result["id"].as_str().unwrap().to_owned();
         let event_id = if event_prefix.is_empty() {
             id
         } else {
@@ -910,7 +900,7 @@ async fn send_resolves_a_unique_visible_prefix_and_names_a_refused_id() {
     let oracle = expectations();
     let child = oracle["agents"][1]["id"].as_str().unwrap();
 
-    let (_root, store, value) = send(0, &child[..8], &RequestIdentity::issue_root()).await;
+    let (_root, store, value) = send(0, &child[..8]).await;
     assert_eq!(value["status"], "queued");
     let agent: String = store
         .test_reader()
@@ -923,7 +913,7 @@ async fn send_resolves_a_unique_visible_prefix_and_names_a_refused_id() {
         .unwrap();
     assert_eq!(agent, child);
 
-    let (_root, _store, refused) = try_send(0, "0000000f", "send-unknown-prefix").await;
+    let (_root, _store, refused) = try_send(0, "0000000f").await;
     assert!(
         matches!(
             refused,
@@ -933,7 +923,7 @@ async fn send_resolves_a_unique_visible_prefix_and_names_a_refused_id() {
         ),
         "{refused:?}"
     );
-    let (_root, _store, refused) = try_send(0, &child[..7], "send-short-prefix").await;
+    let (_root, _store, refused) = try_send(0, &child[..7]).await;
     assert!(
         matches!(
             refused,
@@ -974,12 +964,10 @@ async fn an_unusual_record_of_another_team_does_not_refuse_sends() {
         ]
     };
     for target in [child, &child[..8]] {
-        let (_root, _store, sent) =
-            try_send_with(0, target, &RequestIdentity::issue_root(), others()).await;
+        let (_root, _store, sent) = try_send_with(0, target, others()).await;
         assert_eq!(sent.unwrap()["status"], "queued", "{target}");
     }
-    let (_root, store, refused) =
-        try_send_with(0, "bbbbbbbb-relative-cwd", "send-hidden", others()).await;
+    let (_root, store, refused) = try_send_with(0, "bbbbbbbb-relative-cwd", others()).await;
     store
         .transaction(|tx| {
             let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
@@ -1025,9 +1013,9 @@ async fn a_broadcast_names_a_member_that_cannot_be_checked_and_reaches_the_other
     member["isLead"] = json!(false);
     member["threadId"] = json!(format!("thread-{bad}"));
     member["cwd"] = json!("relative/cwd");
-    let request_id = RequestIdentity::issue_root();
-    let (_root, store, sent) = try_send_with(0, "broadcast", &request_id, vec![member]).await;
+    let (_root, store, sent) = try_send_with(0, "broadcast", vec![member]).await;
     let sent = sent.expect("one bad member does not refuse the broadcast");
+    let request_id = sent["id"].as_str().unwrap();
     let sent_deliveries: std::collections::BTreeMap<String, RecipientDelivery> =
         serde_json::from_value(sent["deliveries"].clone()).unwrap();
     assert!(sent_deliveries.contains_key(child), "{sent}");
@@ -1105,18 +1093,15 @@ async fn a_broadcast_with_no_member_that_can_be_checked_is_refused_by_location()
         })
         .collect::<Vec<_>>();
     assert!(!members.is_empty(), "the fixture team has a member");
-    let request_id = RequestIdentity::issue_root();
-    let (_root, store, sent) = try_send_with(0, "broadcast", &request_id, broken).await;
+    let (_root, store, sent) = try_send_with(0, "broadcast", broken).await;
     let refusal = sent.expect_err("no member can be checked").to_string();
     assert!(members.contains(&refusal), "{refusal}");
     let messages: i64 = store
         .test_reader()
         .unwrap()
-        .query_row(
-            "SELECT count(*) FROM runtime_chat_messages WHERE id=?1",
-            [&request_id],
-            |row| row.get(0),
-        )
+        .query_row("SELECT count(*) FROM runtime_chat_messages", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(messages, 0);
 }
@@ -1395,9 +1380,14 @@ async fn callback_blob_case(race: BlobRace) {
         };
         let record: Value =
             serde_json::from_str(body["contentItems"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(body["success"] == true, "request read failed: {record}");
         if matches!(race, BlobRace::Cached) {
+            assert_eq!(record["truncated"], true);
+            assert_eq!(record["summary"]["id"], saved_id);
             assert_eq!(
-                record["result"], result,
+                crate::tool_requests::saved_result(&store.test_reader().unwrap(), &saved_id)
+                    .unwrap(),
+                Some(result),
                 "the exact completed body needs no blob file"
             );
         } else {
