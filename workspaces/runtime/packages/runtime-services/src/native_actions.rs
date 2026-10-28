@@ -6,6 +6,7 @@ use crate::account_session_runtime::{
     SessionReceipt,
 };
 use crate::account_worker::retained::RequestActor;
+use crate::event_write::settle_request;
 use crate::workspace_operations::ProviderTicket;
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
@@ -23,7 +24,7 @@ use studio_runtime_schema::persistence::{
 };
 use studio_runtime_store::outbox::{Outbox, OutboxRow};
 use studio_runtime_store::request_results::{
-    Admission as RequestAdmission, AdmittedRequest, RequestResults, ResultEnvelope,
+    Admission as RequestAdmission, AdmittedRequest, RequestResults,
 };
 use studio_runtime_store::{
     AgentRecord, AgentRepository, ContextRepairRepository, RuntimeStore, StoreError,
@@ -1500,15 +1501,7 @@ fn write_outcome(tx: &Transaction<'_>, id: &str, outcome: &Outcome) -> Result<()
                     _ => None,
                 },
             };
-            RequestResults::settle(
-                tx,
-                &row.payload.admitted,
-                &ResultEnvelope {
-                    actor: Some(row.owner_id.clone()),
-                    reply,
-                    references: vec![row.owner_id.clone()],
-                },
-            )?;
+            settle_request(tx, &row.payload.admitted, Some(&row.owner_id), &reply)?;
             Outbox::delete_settled(tx, &row.id, &row.signature)?;
         }
     }
@@ -1736,7 +1729,7 @@ pub fn command_input(
     text: &str,
     admission: &impl CommandAdmission,
 ) -> Result<Value> {
-    use crate::event_write::{CallerAdmission, RequestKey, begin_request, settle_request};
+    use crate::event_write::{CallerAdmission, RequestKey, begin_request};
     let signature = json!({"task":snapshot.task["id"],"action":"input","text":text}).to_string();
     let admitted = match begin_request::<Value>(
         tx,
@@ -1881,16 +1874,13 @@ pub fn command_cancel_settle(tx: &Transaction<'_>, receipt: &TransportReceipt) -
         return Err(NativeError::Unknown);
     }
     bounded(result, "command.result")?;
-    RequestResults::settle(
+    settle_request(
         tx,
         &saved.payload.admitted,
-        &ResultEnvelope {
-            actor: Some(request.ticket.agent.clone()),
-            reply: CommandCancelReply {
-                request: request.clone(),
-                result: result.clone(),
-            },
-            references: vec![saved.owner_id.clone()],
+        Some(&request.ticket.agent),
+        &CommandCancelReply {
+            request: request.clone(),
+            result: result.clone(),
         },
     )?;
     Outbox::delete_settled(tx, &id, &saved.signature)?;

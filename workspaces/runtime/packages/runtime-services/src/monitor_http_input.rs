@@ -5,13 +5,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, MonitorsRepository, StoreError};
 
+use crate::event_write::settle_request;
 use crate::monitor_policy::{self, Effect, Input, InputOutcome, MonitorError, Operation};
 use crate::monitor_runtime;
 use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind, RequestIdentity};
 use studio_runtime_store::outbox::{Outbox, OutboxRow};
-use studio_runtime_store::request_results::{
-    Admission, AdmittedRequest, RequestResults, ResultEnvelope,
-};
+use studio_runtime_store::request_results::{Admission, AdmittedRequest, RequestResults};
 
 const PREFIX: &str = "monitor-http-input:";
 const TICKET_PREFIX: &str = "http:";
@@ -228,15 +227,7 @@ fn put_receipt(
         status,
         Status::Acknowledged | Status::Rejected | Status::Expired
     ) {
-        RequestResults::settle(
-            tx,
-            &admitted,
-            &ResultEnvelope {
-                actor: Some(receipt.operation.agent.clone()),
-                reply: receipt,
-                references: vec![context.snapshot.id().into()],
-            },
-        )?;
+        settle_request(tx, &admitted, Some(&receipt.operation.agent), &receipt)?;
     } else {
         Outbox::put(
             tx,
@@ -345,14 +336,11 @@ pub(crate) fn settle(
         receipt.status,
         Status::Acknowledged | Status::Rejected | Status::Expired
     ) {
-        RequestResults::settle(
+        settle_request(
             tx,
             &saved.payload.admitted,
-            &ResultEnvelope {
-                actor: Some(receipt.operation.agent.clone()),
-                reply: receipt,
-                references: vec![id.into()],
-            },
+            Some(&receipt.operation.agent),
+            &receipt,
         )?;
         Outbox::delete_settled(tx, &key, &saved.signature)?;
     } else {
