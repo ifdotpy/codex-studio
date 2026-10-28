@@ -710,6 +710,10 @@ async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
         .store
         .transaction(move |db| {
             for (table, rows) in snapshot.as_object().unwrap() {
+                // Historical ingress receipts are already retired in a current store.
+                if table == "operation_receipts" {
+                    continue;
+                }
                 let table_name = match table.as_str() {
                     "sync_entities" => "sync_entities".to_owned(),
                     "sidebar_order" => "runtime_sidebar_order".to_owned(),
@@ -1415,7 +1419,8 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
     .unwrap();
     let stop = Shutdown::default();
     let task = tokio::spawn(registry.run(wake, Arc::new(Notify::new()), stop.clone()));
-    let body = json!({"room":fixture.agents[0]["id"],"id":"b2ba3b37-4ef4-467d-b215-155c09c088e6","text":"committed through HTTP"});
+    let message_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let body = json!({"room":fixture.agents[0]["id"],"id":message_id,"text":"committed through HTTP"});
     for _ in 0..2 {
         let request = Request::builder()
             .method("POST")
@@ -1445,7 +1450,7 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
     assert_eq!(request["method"], "turn/start");
     wait_for_durable_event_status(
         &fixture,
-        "b2ba3b37-4ef4-467d-b215-155c09c088e6",
+        &message_id,
         "delivered",
     )
     .await;
@@ -3036,6 +3041,10 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
         return;
     }
     let fixture = Fixture::new().await;
+    fixture.store.transaction(|tx| {
+        tx.execute_batch("CREATE TABLE publication_audit(id TEXT PRIMARY KEY,payload TEXT NOT NULL); CREATE TRIGGER capture_publication AFTER INSERT ON runtime_outbox WHEN NEW.kind='publication' BEGIN INSERT OR REPLACE INTO publication_audit VALUES(NEW.id,NEW.payload); END;")?;
+        Ok(())
+    }).await.unwrap();
     let (accounts, home) = account_driver(fixture._root.path());
     std::fs::write(
         home.join("auth.json"),
@@ -3093,9 +3102,9 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
     )
     .await;
     assert!(wire_read(&mut peer).await["error"].is_null());
-    wire_send(&mut peer,json!({"requestId":1,"action":"open","handle":"account:default","command":launch.command,"env":launch.environment,"cwd":launch.cwd})).await;
+    wire_send(&mut peer,json!({"requestId":1,"action":"open","handle":"account:default","generation":1,"command":launch.command,"env":launch.environment,"cwd":launch.cwd})).await;
     let opened = wire_read(&mut peer).await;
-    assert!(opened["error"].is_null(), "supervisor fixture open failed");
+    assert!(opened["error"].is_null(), "supervisor fixture open failed: {opened}");
     let pid = opened["result"]["pid"].as_u64().unwrap() as u32;
     let generation = opened["result"]["generation"].as_u64().unwrap();
     supervisor.native.push(pid);
@@ -3124,7 +3133,7 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
     .await
     .unwrap();
     let app = studio_runtime_http::router(state.clone()).unwrap();
-    let body = json!({"room":fixture.agents[0]["id"],"id":"65f07ce1-42b9-42a3-b42e-8710a0c54617","text":"host composition cutover"});
+    let body = json!({"room":fixture.agents[0]["id"],"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"text":"host composition cutover"});
     let initial_revision = state.sync_changes_handle().snapshot().revision;
     let mut changes = state.sync_changes_handle().subscribe();
     let request = axum::http::Request::builder()
@@ -3194,7 +3203,7 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
         .test_reader()
         .unwrap()
         .prepare(
-            "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%:pending' ORDER BY id",
+            "SELECT payload FROM publication_audit ORDER BY id",
         )
         .unwrap()
         .query_map([], |row| row.get(0))
@@ -3871,7 +3880,7 @@ async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
     .unwrap();
     let app = studio_runtime_http::router(state.clone()).unwrap();
     let agent_id = fixture.agents[0]["id"].as_str().unwrap();
-    let body = json!({"room":agent_id,"id":"65f07ce1-42b9-42a3-b42e-8710a0c54618","text":"direct mode turn"});
+    let body = json!({"room":agent_id,"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"text":"direct mode turn"});
     let mut changes = state.sync_changes_handle().subscribe();
     let post = || {
         axum::http::Request::builder()
@@ -4023,10 +4032,10 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
         .store
         .transaction_with(|tx| {
             tx.execute_batch(
-                "CREATE TABLE direct_journal_audit(id TEXT PRIMARY KEY,result TEXT NOT NULL);
-                 CREATE TRIGGER capture_direct_journal AFTER INSERT ON runtime_operation_receipts
-                 WHEN NEW.id LIKE 'account-worker:journal:default:%'
-                 BEGIN INSERT OR REPLACE INTO direct_journal_audit VALUES(NEW.id,NEW.result); END;",
+                "CREATE TABLE direct_journal_audit(id TEXT PRIMARY KEY,generation INTEGER NOT NULL,result TEXT NOT NULL);
+                 CREATE TRIGGER capture_direct_journal AFTER INSERT ON runtime_outbox
+                 WHEN NEW.kind='journal_entry' AND NEW.stream_id='default'
+                 BEGIN INSERT OR REPLACE INTO direct_journal_audit VALUES(NEW.id,NEW.generation,NEW.payload); END;",
             )?;
             Ok::<(), StoreError>(())
         })
@@ -4080,7 +4089,7 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
         app.clone()
             .oneshot(direct_message_post(
                 agent_id,
-                "9e63d185-cf3f-4938-8205-064d1bd02411",
+                &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 "first backend generation",
             ))
             .await
@@ -4118,7 +4127,7 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
         app.clone()
             .oneshot(direct_message_post(
                 second_agent_id,
-                "9e63d185-cf3f-4938-8205-064d1bd02412",
+                &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 "restarted backend generation",
             ))
             .await
@@ -4379,7 +4388,7 @@ async fn direct_child_crash_before_turn_write_retries_queued_input_once() {
     .with_account_driver(accounts.clone());
     let app = studio_runtime_http::router(state.clone()).unwrap();
     let agent_id = fixture.agents[0]["id"].as_str().unwrap();
-    let body = json!({"room":agent_id,"id":"50ba7350-4055-437d-946f-9a44d87caa38","text":"queued before provider ready"});
+    let body = json!({"room":agent_id,"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"text":"queued before provider ready"});
     let post = || {
         axum::http::Request::builder()
             .method("POST")
@@ -4489,7 +4498,7 @@ fn direct_generation(store: &RuntimeStore) -> u64 {
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT next_generation FROM runtime_account_state WHERE account='default'",
+            "SELECT connection_generation FROM runtime_account_state WHERE account='default'",
             [],
             |row| row.get::<_, i64>(0),
         )
@@ -4560,13 +4569,11 @@ fn direct_agent_debug(store: &RuntimeStore, agent_id: &str) -> String {
 #[cfg(target_os = "linux")]
 fn direct_journal_rows(store: &RuntimeStore, generation: u64) -> Vec<(String, String)> {
     let db = store.test_reader().unwrap();
-    let prefix = format!("account-worker:journal:default:{generation}:");
-    let upper = format!("{prefix}~");
     let mut query = db
-        .prepare("SELECT id,result FROM direct_journal_audit WHERE id>=?1 AND id<?2 ORDER BY id")
+        .prepare("SELECT id,result FROM direct_journal_audit WHERE generation=?1 ORDER BY id")
         .unwrap();
     query
-        .query_map((prefix.as_str(), upper.as_str()), |row| {
+        .query_map([i64::try_from(generation).unwrap()], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .unwrap()
