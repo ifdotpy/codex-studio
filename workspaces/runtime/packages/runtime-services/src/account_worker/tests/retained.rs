@@ -81,10 +81,10 @@ impl AccountSessionPort for ResetBrokerSession {
             }
             .map_err(|error| match error {
                 PortError::Unknown => AccountSessionError::Unknown,
+                PortError::Expired => AccountSessionError::Expired,
                 PortError::Identity
                 | PortError::ScopeMismatch
                 | PortError::Invalid
-                | PortError::Expired
                 | PortError::NotSent
                 | PortError::Deadline
                 | PortError::Capacity => {
