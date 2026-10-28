@@ -937,9 +937,23 @@ async fn retained_reply_replays_without_resending_and_rejects_changed_payload() 
         assert_eq!(final_results,1,"the exact response owns committed ACK provenance");
         Ok(())
     }).await.unwrap();
+    state
+        .bridge
+        .store
+        .transaction(|tx| {
+            studio_runtime_store::receipt_migration_contract::seed_expired_before_ms(
+                tx,
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .expect("advance only the fresh-admission watermark");
+            Ok(())
+        })
+        .await
+        .unwrap();
     assert_eq!(
         port.request(call.clone()).await.unwrap().result,
-        receipt.result
+        receipt.result,
+        "a retained reply uses its created TTL after the ingress watermark advances"
     );
     let mut altered = call;
     altered.params["limit"] = json!(2);
