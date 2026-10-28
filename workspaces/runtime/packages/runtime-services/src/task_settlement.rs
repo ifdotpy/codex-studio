@@ -107,11 +107,6 @@ fn running_tasks(tx: &rusqlite::Connection, agent: &str) -> StoreResult<Vec<Valu
 
 fn write_task(tx: &Transaction<'_>, task: &Value) -> StoreResult<()> {
     crate::notification_dispatch::put_task_record(tx, task).map_err(|error| match error {
-        crate::notification_dispatch::NotificationDispatchError::Expired => {
-            StoreError::RequestResult(
-                studio_runtime_store::request_results::RequestResultError::Expired,
-            )
-        }
         crate::notification_dispatch::NotificationDispatchError::Store(error) => error,
         crate::notification_dispatch::NotificationDispatchError::RequestResult(error) => {
             StoreError::RequestResult(error)

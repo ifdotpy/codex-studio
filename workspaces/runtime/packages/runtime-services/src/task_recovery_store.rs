@@ -293,7 +293,6 @@ impl TaskCompletionWriter for RuntimeTaskCompletionWriter {
                     return Ok(false);
                 }
                 (write_task)(tx, agent, task, &item, current.at).map_err(|error| match error {
-                    crate::notification_dispatch::NotificationDispatchError::Expired => RecoveryError::Store(studio_runtime_store::request_results::RequestResultError::Expired.into()),
                     crate::notification_dispatch::NotificationDispatchError::RequestResult(error) => RecoveryError::Store(error.into()),
                     crate::notification_dispatch::NotificationDispatchError::Store(error) => {
                         RecoveryError::Store(error)
