@@ -80,6 +80,9 @@ pub fn remote_operation_key(
     root: &str,
     operation: &[&str],
 ) -> String {
+    if let Ok(identity) = RequestIdentity::new(namespace, authority, root, operation) {
+        return identity.id().to_owned();
+    }
     serde_json::to_string(&(namespace, authority, root, operation))
         .expect("string tuple serializes")
 }

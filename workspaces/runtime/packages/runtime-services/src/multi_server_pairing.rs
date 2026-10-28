@@ -643,10 +643,10 @@ fn apply_pair(
     now: f64,
 ) -> Result<Value, AccessError> {
     let fingerprint = request.fingerprint();
+    use crate::event_write::{CallerAdmission, RequestKey, begin_request};
     use studio_runtime_store::multi_server_delivery::{
         AccessPending, HttpAccessReply, remote_result_key,
     };
-    use studio_runtime_store::request_results::{Admission, ResultEnvelope};
     let id = remote_result_key("access", &[request.client_id()], request.request_id());
     let now_ms = chrono::Utc::now().timestamp_millis();
     if let Some(saved) =
@@ -677,29 +677,16 @@ fn apply_pair(
             "The operation outcome is unknown. Recover its existing receipt",
         ));
     }
-    let admitted = match crate::event_write::admit_request(
+    let admitted = match begin_request::<HttpAccessReply>(
         tx,
-        "access",
-        &[request.client_id()],
-        request.request_id(),
-        &[],
+        RequestKey::new("access", &[request.client_id()], request.request_id()).raw(&id),
         &fingerprint,
         now_ms,
     )
     .map_err(crate::multi_server_orchestration::replay_error)?
     {
-        Admission::Fresh(admitted) => admitted,
-        Admission::Replay(saved) => {
-            let saved: ResultEnvelope<HttpAccessReply> = serde_json::from_str(&saved.result)
-                .map_err(|_| {
-                    refused(
-                        503,
-                        "receipt_invalid",
-                        "The saved pairing response is invalid",
-                    )
-                })?;
-            return pairing_reply(&saved.reply, request.client_id());
-        }
+        CallerAdmission::Fresh(admitted) => admitted,
+        CallerAdmission::Replay(saved) => return pairing_reply(&saved, request.client_id()),
     };
     let body = request.body();
     let mut result = identity.clone();

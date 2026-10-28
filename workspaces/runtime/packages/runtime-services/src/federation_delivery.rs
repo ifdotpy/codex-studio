@@ -672,7 +672,6 @@ pub fn send_message_in_transaction(
         "sender":sender,"room":room_id,"text":text,"delivery":delivery,
     }));
     use crate::event_write::{CallerAdmission, RequestKey, begin_request};
-    use studio_runtime_store::request_results::Admission;
     let admitted = match begin_request::<core::MessageSendReply>(
         tx,
         RequestKey::new("federation-send", &[sender], key).raw(&message_id),
@@ -714,17 +713,21 @@ pub fn send_message_in_transaction(
     let mut item = json!({"id":message_id,"requestId":key,"kind":core::MessageKind::ChatMessage,"room":room_id,"payload":payload,"created":now,"status":studio_runtime_schema::persistence::FederationDeliveryState::Queued,"attempts":0,"nextAt":0,"error":null});
     let immutable = json!({"protocol":PROTOCOL,"senderServer":state_id,"id":message_id,"kind":core::MessageKind::ChatMessage,"room":room_id,"payload":item["payload"],"created":now});
     let delivery_signature = core::envelope_hash(&immutable)?;
-    let delivery_admission = match crate::event_write::admit_request(
-        tx,
+    let delivery_key = studio_runtime_store::multi_server_delivery::remote_result_key(
         "federation-outbox",
         &[&peer],
         key,
-        &[],
+    );
+    let delivery_admission = match begin_request::<core::FederationDeliveryReply>(
+        tx,
+        RequestKey::new("federation-outbox", &[&peer], key).raw(&delivery_key),
         &delivery_signature,
         chrono::Utc::now().timestamp_millis(),
     )? {
-        Admission::Fresh(admitted) => admitted,
-        Admission::Replay(_) => return Err(Error::Conflict("message delivery already settled")),
+        CallerAdmission::Fresh(admitted) => admitted,
+        CallerAdmission::Replay(_) => {
+            return Err(Error::Conflict("message delivery already settled"));
+        }
     };
     item["admission"] = serde_json::to_value(delivery_admission).map_err(StoreError::from)?;
     let item = core::decide_queue(
