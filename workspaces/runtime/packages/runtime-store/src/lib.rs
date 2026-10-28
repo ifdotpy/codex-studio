@@ -4863,10 +4863,13 @@ mod wal_flush_tests {
 
 /// The only typed→Value conversion: feeds existing Value-only projections
 /// (sync views, SSE, entity/room/subscription views). Not for storage or logic.
-pub fn projection_value<T: serde::Serialize>(
-    value: &T,
-) -> Result<serde_json::Value, serde_json::Error> {
-    serde_json::to_value(value)
+///
+/// Panics if T's Serialize fails (custom serializer error or non-string map keys).
+/// Use only with derived projection types; the reply and record types passed
+/// here are derived with string keys.
+#[allow(clippy::expect_used)]
+pub fn projection_value<T: serde::Serialize>(value: &T) -> serde_json::Value {
+    serde_json::to_value(value).expect("projection serialization failed")
 }
 
 #[cfg(test)]
@@ -4881,8 +4884,7 @@ mod projection_adapter_tests {
         let projected = super::projection_value(&Sample {
             name: "sample",
             count: 3,
-        })
-        .expect("projection");
+        });
         assert_eq!(projected, serde_json::json!({"name":"sample", "count":3}));
     }
 }
