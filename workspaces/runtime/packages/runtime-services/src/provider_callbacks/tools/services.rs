@@ -386,9 +386,6 @@ impl crate::managed_host_tools::ComplaintPort for ProductionPorts {
             crate::notification_dispatch::NotificationDispatchError::RequestResult(error) => {
                 crate::managed_host_tools::Error::Store(error.into())
             }
-            crate::notification_dispatch::NotificationDispatchError::Expired => {
-                crate::managed_host_tools::Error::Expired
-            }
             crate::notification_dispatch::NotificationDispatchError::ConflictingInput => {
                 crate::managed_host_tools::Error::Invalid(if args["action"] == "submit" {
                     "This complaint id has different content"
