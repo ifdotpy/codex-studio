@@ -2148,7 +2148,6 @@ mod tests {
             studio_runtime_store::receipt_schema::create(tx)?;
             let agent=json!({"provider":"codex","id":"agent","rootId":"agent","epoch":2,"status":"idle","isLead":true,"threadId":"thread","accountKey":"account"});
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",[agent.to_string()])?;
-            tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,provider_scope,state) VALUES('session','agent',1,'thread','account','voice-connection',?1,'ready')",[json!({"generation":7,"connection":"voice-connection"}).to_string()])?;
             Ok(())
         }).await.expect("seed voice");
         crate::account_worker::store::attach_provider_stream_for_test(
@@ -2160,6 +2159,12 @@ mod tests {
         )
         .await
         .expect("attach provider");
+        store.transaction(|tx| {
+            let agent = AgentRepository::get(tx, &AgentId::from("agent"))?.expect("agent");
+            let scope = studio_runtime_store::account_state::current_provider_scope(tx, &agent).expect("attached scope");
+            tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,provider_scope,state) VALUES('session','agent',1,'thread','account',?1,?2,'ready')", rusqlite::params![scope.connection,serde_json::to_string(&scope).expect("scope")])?;
+            Ok(())
+        }).await.expect("seed voice session");
         (directory, Arc::new(store))
     }
 
@@ -2230,6 +2235,17 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn voice_outbox_capture_ignores_null_state_sessions() {
+        let (_directory, store) = voice_outbox_fixture().await;
+        store.transaction_with_error(|tx| -> Result<(), VoiceProviderError> {
+            tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES('empty','agent',2,'thread','account','voice-connection',NULL)", [])?;
+            let captured = capture_delete_sessions(tx, "agent")?;
+            assert_eq!(captured.len(), 1);
+            assert_eq!(captured[0].session_id, "session");
+            Ok(())
+        }).await.expect("capture");
+    }
     #[tokio::test]
     async fn voice_outbox_late_not_sent_after_agent_removal_is_abandoned() {
         use studio_runtime_store::request_results::{

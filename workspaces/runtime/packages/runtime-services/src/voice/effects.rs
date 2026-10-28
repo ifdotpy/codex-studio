@@ -98,7 +98,7 @@ pub fn capture_delete_sessions(
     let Some(thread) = identity.thread_id else {
         return Ok(Vec::new());
     };
-    let mut query = connection.prepare("SELECT id,account_key,native_thread,connection_id FROM voice_sessions WHERE agent=?1 AND ended IS NULL AND account_key=?2 AND native_thread=?3 ORDER BY created,id")?;
+    let mut query = connection.prepare("SELECT id,account_key,native_thread,connection_id FROM voice_sessions WHERE agent=?1 AND ended IS NULL AND state IS NOT NULL AND account_key=?2 AND native_thread=?3 ORDER BY created,id")?;
     let rows = query
         .query_map(
             rusqlite::params![agent_id, identity.account_key, thread],
