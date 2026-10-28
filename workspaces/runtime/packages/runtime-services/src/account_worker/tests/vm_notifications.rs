@@ -82,16 +82,15 @@ async fn fixture(provider: &'static str) -> (State, String) {
                 .transaction_with(move |tx| {
                     let mut record = AgentRepository::get(tx, &AgentId::from(primary.as_str()))?
                         .expect("primary actor");
+                    record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     for (key, value) in [
-                        ("executionMode", json!("vm")),
+
                         ("workspaceMode", json!("layr")),
                         ("layrReady", json!(true)),
                         ("provider", json!(provider)),
                         ("cwd", json!("/home/studio/project")),
                         ("threadId", Value::Null),
-                    ] {
-                        record.extra.insert(key.into(), value);
-                    }
+                    ] { record.extra.insert(key.into(), value); }
                     AgentRepository::put(tx, &record)?;
                     record.id = AgentId::from(sibling_id.as_str());
                     record.root_id = record.id.clone();
@@ -240,7 +239,7 @@ fn running(tx: &rusqlite::Transaction<'_>, actor: &str, native: bool) -> Result<
     record.extra.insert("turnId".into(), json!("turn"));
     record.in_flight = Some(true);
     if native {
-        record.extra.insert("executionMode".into(), json!("host"));
+        record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Host);
     }
     AgentRepository::put(tx, &record)
 }

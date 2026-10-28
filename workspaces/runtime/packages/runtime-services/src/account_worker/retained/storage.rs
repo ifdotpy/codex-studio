@@ -110,7 +110,7 @@ fn monitor_account_sql(agent_param: usize) -> String {
 pub fn vm_actor(connection: &rusqlite::Connection, agent: &str) -> Result<bool, WorkerError> {
     let record = AgentRepository::get(connection, &AgentId::from(agent))?;
     Ok(record.is_some_and(|record| {
-        record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+        record.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
     }))
 }
 
@@ -279,7 +279,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
             Method::TurnInterrupt | Method::ThreadBackgroundTerminalsClean
         )
         && actor.epoch.checked_add(1) == Some(agent_record.epoch)
-        && agent_record.extra.get("autoWake") == Some(&json!(false));
+        && agent_record.auto_wake == Some(false);
     let thread_matches = call.params["threadId"].as_str().is_some_and(|thread| {
         agent_record.extra.get("threadId").and_then(Value::as_str) == Some(thread)
     });
@@ -462,7 +462,7 @@ fn authorize_retained_monitor_control(
         .iter()
         .all(|field| attempt.get(*field) == record["operation"].get(*field));
     Ok(current.epoch == actor.epoch
-        && current.extra.get("autoWake") == Some(&json!(true))
+        && current.auto_wake == Some(true)
         && !studio_runtime_store::truthy(current.extra.get("deletedAt"))
         && current.extra.get("deleted") != Some(&json!(true))
         && record["interactive"] == true
@@ -484,7 +484,7 @@ fn authorize_recovered_monitor_cancel(
     current: &studio_runtime_store::AgentRecord,
 ) -> Result<bool, WorkerError> {
     let inactive = current.epoch != actor.epoch
-        || current.extra.get("autoWake") != Some(&json!(true))
+        || current.auto_wake != Some(true)
         || studio_runtime_store::truthy(current.extra.get("deletedAt"))
         || current.extra.get("deleted") == Some(&json!(true));
     if call.method != Method::CommandExecTerminate || !inactive {

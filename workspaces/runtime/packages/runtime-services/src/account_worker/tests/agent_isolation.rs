@@ -653,7 +653,7 @@ async fn held_agent_keeps_its_unsent_input_and_a_message_starts_it_once() {
             scheduler::lifecycle_transaction_with(&store, move |tx| {
                 let mut agent =
                     AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
-                agent.extra.insert("autoWake".into(), json!(true));
+                agent.auto_wake = Some(true);
                 agent.extra.insert("error".into(), Value::Null);
                 agent.extra.remove("nativeFailureHold");
                 AgentRepository::put(tx, &agent)?;

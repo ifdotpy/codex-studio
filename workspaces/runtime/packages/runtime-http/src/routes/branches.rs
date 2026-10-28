@@ -703,7 +703,7 @@ async fn settle_failure(
             )? {
                 if unknown {
                     actor.extra.insert("status".into(), json!("interrupted"));
-                    actor.extra.insert("autoWake".into(), json!(false));
+                    actor.auto_wake = Some(false);
                     actor.extra.insert("error".into(), json!(error.clone()));
                 } else {
                     actor.extra.remove("workspaceReservationId");
@@ -922,7 +922,7 @@ async fn copy_branch_history(
         child.extra.insert("profileId".into(), provider.get("activePermissionProfile").cloned().or_else(|| current.extra.get("profileId").cloned()).unwrap_or(Value::Null));
         child.extra.insert("threadId".into(),provider["thread"]["id"].clone());
         child.extra.insert("forkedFrom".into(),json!(source)); child.extra.insert("sourceMessage".into(),json!(selected.id));
-        child.extra.insert("status".into(),json!("idle")); child.extra.insert("autoWake".into(),json!(true)); child.extra.insert("needsTitle".into(),json!(false));
+        child.extra.insert("status".into(),json!("idle")); child.auto_wake = Some(true); child.extra.insert("needsTitle".into(),json!(false));
         child.extra.remove("quickCreate"); child.extra.remove("quickCreateRequest");
         let mut stmt=tx.prepare_cached("SELECT id,record,created FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.afterRestore') IS NULL ORDER BY created,id")?;
         let rows=stmt.query_map([source.as_str()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,f64>(2)?)))?.collect::<Result<Vec<_>,_>>()?;

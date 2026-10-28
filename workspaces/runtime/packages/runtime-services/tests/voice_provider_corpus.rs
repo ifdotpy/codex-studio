@@ -404,6 +404,9 @@ async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
                 let id = studio_runtime_store::AgentId::from(agent);
                 let record = studio_runtime_store::AgentRecord {
                     in_flight: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
         title_job: None,
                     start_outcome_hold: None,
                     fired_events: Default::default(),

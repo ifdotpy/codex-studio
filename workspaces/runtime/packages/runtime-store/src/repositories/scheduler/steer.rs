@@ -347,11 +347,11 @@ fn steer_turn(agent: &AgentRecord) -> Option<(String, String)> {
     let thread = text("threadId").filter(|thread| !thread.is_empty())?;
     let attempt = agent.start_attempt().ok().flatten()?;
     let eligible = agent.status == AgentStatus::Running
-        && agent.extra.get("autoWake") == Some(&json!(true))
+        && agent.auto_wake == Some(true)
         && agent.in_flight == Some(true)
         && !flag("remoteWorker")
         && !flag("remoteAnchor")
-        && text("executionMode") != Some("vm")
+        && agent.execution_mode != Some(crate::AgentExecutionMode::Vm)
         && continuation_allowed(agent)
         && text("steerRejectedTurnId") != Some(turn)
         && attempt.turn_id.as_deref() == Some(turn)
@@ -445,7 +445,7 @@ fn release(tx: &Transaction<'_>, id: &str, receipt: &SteerPayload) -> StoreResul
     )?;
     let requeue = returned > 0
         && agent.as_ref().is_some_and(|agent| {
-            agent.extra.get("autoWake") == Some(&json!(true))
+            agent.auto_wake == Some(true)
                 && agent.in_flight != Some(true)
                 && !matches!(
                     agent.status,

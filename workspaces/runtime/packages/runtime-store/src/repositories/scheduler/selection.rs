@@ -313,7 +313,7 @@ impl SchedulerRepository {
         target: &str,
     ) -> StoreResult<bool> {
         if agent.status != AgentStatus::Failed
-            || agent.extra.get("autoWake") != Some(&json!(true))
+            || agent.auto_wake != Some(true)
             || agent.in_flight != Some(false)
             || !continuation_allowed(agent)
             || agent.start_outcome_hold.is_some()
@@ -421,12 +421,12 @@ impl SchedulerRepository {
             || original.root_id != agent.root_id
             || original.epoch != agent.epoch
             || !same_native_scope(&original, agent)
+            || original.execution_mode != agent.execution_mode
             || [
                 "provider",
                 "parentId",
                 "isLead",
                 "role",
-                "executionMode",
                 "workspaceMode",
                 "cwd",
                 "realCwd",
@@ -880,7 +880,7 @@ impl SchedulerRepository {
             || agent.epoch != epoch
             || agent.status != AgentStatus::Queued
             || !continuation_allowed(&agent)
-            || agent.extra.get("autoWake").and_then(Value::as_bool) != Some(true)
+            || agent.auto_wake != Some(true)
             || agent.in_flight == Some(true)
             || agent.extra.get("nativeFailureHold").is_some_and(truthy)
             || agent.extra.get("remoteWorker").is_some_and(truthy)
@@ -1114,7 +1114,7 @@ impl SchedulerRepository {
             .remove(studio_runtime_schema::agent_progress::START_WAIT_FIELD);
         agent.in_flight = Some(true);
         agent.extra.insert("turnId".to_owned(), Value::Null);
-        agent.extra.insert("turnEpoch".to_owned(), json!(epoch));
+        agent.turn_epoch = Some(epoch);
         agent.extra.insert(
             "startAttempt".to_owned(),
             json!({

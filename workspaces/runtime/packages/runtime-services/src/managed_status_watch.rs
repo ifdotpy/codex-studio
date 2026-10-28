@@ -1097,7 +1097,7 @@ pub async fn rules(
                         json!({"deleted": key})
                     } else {
                         if action == "resume"
-                            && actor.extra.get("autoWake") != Some(&Value::Bool(true))
+                            && actor.auto_wake != Some(true)
                         {
                             return Err(RulesServiceError::Invalid(
                                 "Resume the agent before its rules",
@@ -1369,7 +1369,7 @@ fn save_rule(
         "fileGeneration": prior.and_then(|value| value.get("fileGeneration")).cloned().unwrap_or(json!(0)),
         "stallWakeGeneration": prior.and_then(|value| value.get("stallWakeGeneration")).cloned().unwrap_or(json!(-1)),
         "text": text_value,
-        "status": if actor.extra.get("autoWake") == Some(&Value::Bool(true)) { "active" } else { "paused" },
+        "status": if actor.auto_wake == Some(true) { "active" } else { "paused" },
         "created": prior.and_then(|value| value.get("created")).cloned().unwrap_or(json!(now)),
         "inFlight": false,
         "checks": prior.and_then(|value| value.get("checks")).cloned().unwrap_or(json!(0)),
@@ -1567,7 +1567,7 @@ mod tests {
         store
             .transaction_with(|tx| {
                 let mut agent = AgentRepository::get(tx, &"queued".into())?.expect("queued agent");
-                agent.extra.insert("autoWake".into(), json!(true));
+                agent.auto_wake = Some(true);
                 AgentRepository::put(tx, &agent)
             })
             .await
@@ -1640,7 +1640,7 @@ mod tests {
             store
                 .transaction_with(move |tx| {
                     let mut agent = AgentRepository::get(tx, &"queued".into())?.expect("agent");
-                    agent.extra.insert("autoWake".into(), json!(true));
+                    agent.auto_wake = Some(true);
                     agent.extra.insert("startWait".into(), saved);
                     AgentRepository::put(tx, &agent)
                 })

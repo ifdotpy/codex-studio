@@ -420,7 +420,7 @@ fn stopped_turn(agent: &AgentRecord, generation: u64) -> Option<StoppedTurn> {
         Some("accepted" | "rejected" | "unknown")
     ) || staged(&receipt["startAttempt"])
         || extra.get("startAttempt").is_some_and(staged);
-    let stopped = extra.get("autoWake") == Some(&json!(false))
+    let stopped = agent.auto_wake == Some(false)
         && agent.in_flight != Some(true)
         && epoch.checked_add(1) == Some(agent.epoch);
     if ended
@@ -478,7 +478,7 @@ fn unsettled_stop(agent: &AgentRecord, generation: u64) -> Option<StoppedTurn> {
         || interrupt["generation"].as_u64() != Some(generation)
         || attempt["connectionGeneration"].as_u64() != Some(generation)
         || attempt["epoch"].as_i64() != Some(epoch)
-        || extra.get("autoWake") != Some(&json!(false))
+        || agent.auto_wake != Some(false)
         // A delete tombstone clears the turn id; the epoch still names the stop.
         || extra
             .get("turnId")

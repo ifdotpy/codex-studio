@@ -1607,7 +1607,7 @@ async fn seed_restart_input(state: &State, fail_terminal_settlement: bool) {
                 });
                 agent.status = studio_runtime_store::AgentStatus::Queued;
                 agent.extra.insert("threadId".into(), json!("fake-thread-0"));
-                agent.extra.insert("autoWake".into(), json!(true));
+                agent.auto_wake = Some(true);
                 agent.in_flight = Some(false);
                 agent.extra.insert("error".into(), json!("Context repair waits for a confirmed input receipt: annotation:input"));
                 agent.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":attempt}));
@@ -2136,9 +2136,9 @@ async fn seed_transport_turn(state: &State) {
             agent.status = studio_runtime_store::AgentStatus::Running;
             agent.extra.insert("threadId".into(), json!("fake-thread-0"));
             agent.extra.insert("turnId".into(), json!("old-turn"));
-            agent.extra.insert("turnEpoch".into(), json!(agent.epoch));
+            agent.turn_epoch = Some(agent.epoch);
             agent.in_flight = Some(true);
-            agent.extra.insert("autoWake".into(), json!(true));
+            agent.auto_wake = Some(true);
             agent.extra.remove("contextRepairWait");
             agent.extra.remove("restartRecovery");
             agent.extra.insert("startAttempt".into(), json!({
@@ -2185,8 +2185,8 @@ async fn seed_restart_turn(state: &State) {
                     agent.status = studio_runtime_store::AgentStatus::Interrupted;
                     agent.extra.insert("threadId".into(), json!("fake-thread-0"));
                     agent.extra.insert("turnId".into(), json!("old-turn"));
-                    agent.extra.insert("turnEpoch".into(), json!(epoch));
-                    agent.extra.insert("autoWake".into(), json!(false));
+                    agent.turn_epoch = Some(epoch);
+                    agent.auto_wake = Some(false);
                     agent.in_flight = Some(false);
                     agent.extra.insert(
                         "error".into(),
@@ -2512,8 +2512,8 @@ async fn seed_adopted_turn_checked_while_running(state: &State) {
                     agent.status = studio_runtime_store::AgentStatus::Running;
                     agent.extra.insert("threadId".into(), json!("fake-thread-0"));
                     agent.extra.insert("turnId".into(), json!("old-turn"));
-                    agent.extra.insert("turnEpoch".into(), json!(epoch));
-                    agent.extra.insert("autoWake".into(), json!(true));
+                    agent.turn_epoch = Some(epoch);
+                    agent.auto_wake = Some(true);
                     agent.in_flight = Some(false);
                     agent.extra.insert("error".into(), Value::Null);
                     agent.extra.insert("startAttempt".into(), attempt);
@@ -2605,7 +2605,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
                 });
                 agent.status = studio_runtime_store::AgentStatus::Queued;
                 agent.extra.insert("threadId".into(), json!("fake-thread-0"));
-                agent.extra.insert("autoWake".into(), json!(true));
+                agent.auto_wake = Some(true);
                 agent.in_flight = Some(false);
                 agent.extra.insert("error".into(), json!("held"));
                 agent.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":attempt}));
@@ -4673,7 +4673,7 @@ async fn retained_vm_thread_start_provenance_survives_next_generation_attach() {
         .transaction_with(move |tx| {
             let mut agent =
                 AgentRepository::get(tx, &AgentId::from(fixture_actor.as_str()))?.unwrap();
-            agent.extra.insert("executionMode".into(), json!("vm"));
+            agent.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
             agent.extra.insert(
                 "providerStream".into(),
                 json!({"generation":7,"connection":"old-vm-connection","ack":12,"streams":null}),

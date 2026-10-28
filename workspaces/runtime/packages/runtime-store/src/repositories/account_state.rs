@@ -105,15 +105,7 @@ impl ProviderState {
 #[serde(rename_all = "camelCase")]
 struct AgentScopeFields {
     account_key: Option<String>,
-    execution_mode: Option<ExecutionMode>,
     provider_stream: Option<StreamFields>,
-}
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum ExecutionMode {
-    Native,
-    Host,
-    Vm,
 }
 #[derive(serde::Deserialize)]
 struct StreamFields {
@@ -173,7 +165,7 @@ pub fn provider_state(
         ProviderOwner::Account(account) => std::borrow::Cow::Borrowed(account),
         ProviderOwner::Agent(agent) => {
             let fields = agent_scope_fields(agent)?;
-            if matches!(fields.execution_mode, Some(ExecutionMode::Vm)) {
+            if matches!(agent.execution_mode, Some(crate::AgentExecutionMode::Vm)) {
                 return fields
                     .provider_stream
                     .map(StreamFields::into_state)

@@ -35,24 +35,17 @@ fn database() -> Connection {
         .expect("volatile agent table creates");
     let mut extra = BTreeMap::new();
     extra.insert("provider".to_owned(), json!("codex"));
-    extra.insert("autoWake".to_owned(), json!(true));
     AgentRepository::put(
         &connection,
         &AgentRecord {
             in_flight: Some(false),
-            title_job: None,
-            start_outcome_hold: None,
-            fired_events: Default::default(),
-            native_review_thread: None,
-            vm_launch: None,
-            credential_copy: None,
-            vm_auth_bootstrap: None,
-            native_release: None,
+            auto_wake: Some(true),
             id: AgentId::from("agent"),
             root_id: AgentId::from("agent"),
             epoch: 4,
             status: AgentStatus::Queued,
             extra,
+            ..AgentRecord::test_defaults()
         },
     )
     .expect("agent fixture writes");

@@ -1409,7 +1409,7 @@ async fn a_vm_actor_record_waits_for_reattach_and_a_stale_epoch_retires() {
                 .transaction(move |tx| {
                     let mut record =
                         AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
-                    record.extra.insert("executionMode".into(), json!("vm"));
+                    record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     AgentRepository::put(tx, &record)
                 })
                 .await?;

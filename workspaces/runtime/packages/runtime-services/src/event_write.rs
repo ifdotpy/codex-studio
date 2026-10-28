@@ -638,10 +638,7 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<(), 
 }
 
 fn agent_auto_wake(agent: &AgentRecord) -> Result<bool, EventWriteError> {
-    agent
-        .extra
-        .get("autoWake")
-        .and_then(Value::as_bool)
+    agent.auto_wake
         .ok_or_else(|| invalid_stored("runtime_agents", &agent.id.0))
 }
 
@@ -785,6 +782,9 @@ mod tests {
         connection.execute_batch("DROP TABLE request_results; CREATE TABLE request_results(id TEXT PRIMARY KEY,signature TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'applied',ref_kind TEXT,ref_id TEXT,ref_rev INTEGER,result TEXT,created INTEGER NOT NULL); CREATE INDEX request_results_created ON request_results(created,id);").expect("reference receipt fixture");
         let agent = AgentRecord {
             in_flight: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
             title_job: None,
             start_outcome_hold: None,
             fired_events: Default::default(),

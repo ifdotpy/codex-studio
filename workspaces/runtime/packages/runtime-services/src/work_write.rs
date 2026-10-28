@@ -1238,7 +1238,7 @@ pub async fn prepare_vm_submission(
         text(&input.checks, false)?;
         let revision = python_bounded_text(&input.revision, 200)?;
         validate_submission_files(&owner, &input.files, input.prepared_files.as_ref())?;
-        if owner.extra.get("executionMode").and_then(Value::as_str) != Some("vm") && owner.extra.get("workspaceMode").and_then(Value::as_str) != Some("layr-native") {
+        if owner.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm) && owner.extra.get("workspaceMode").and_then(Value::as_str) != Some("layr-native") {
             return Ok(VmSubmissionPreparation::NotVm);
         }
         let rpc_id = format!("layr-evidence:{owner_id}:{revision}");
@@ -1369,7 +1369,7 @@ pub enum VmAcceptPreparation {
 /// (codex_vm_agents.result_needs_merge).
 fn vm_result_needs_merge(lead_id: &str, owner: &AgentRecord) -> bool {
     owner.id.0 != lead_id
-        && (owner.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+        && (owner.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
             || owner.extra.get("workspaceMode").and_then(Value::as_str) == Some("layr-native"))
         && owner.extra.get("role").and_then(Value::as_str) != Some("reviewer")
 }
@@ -1391,7 +1391,7 @@ pub async fn prepare_vm_accept(
     store
         .transaction_with_error(move |tx| {
             let lead = event_write::checked_agent(tx, &agent_id)?;
-            if lead.extra.get("executionMode").and_then(Value::as_str) != Some("vm")
+            if lead.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm)
                 && lead.extra.get("workspaceMode").and_then(Value::as_str) != Some("layr-native")
             {
                 return Ok(VmAcceptPreparation::NotVm);
@@ -1972,7 +1972,7 @@ fn write_internal(
         if actor.root_id != agent.root_id {
             return Err(Error::InvalidRequest("Actor belongs to another team").into());
         }
-        if !event_write::truthy(actor.extra.get("autoWake")) {
+        if actor.auto_wake != Some(true) {
             return Err(Error::InvalidRequest("The caller is stopped").into());
         }
         Some(actor)
@@ -2423,10 +2423,7 @@ pub fn release_failed_work(
 }
 
 fn continuation_work_pending(agent: &AgentRecord) -> bool {
-    if !agent
-        .extra
-        .get("autoWake")
-        .is_some_and(|value| event_write::truthy(Some(value)))
+    if agent.auto_wake != Some(true)
         || agent
             .extra
             .get("deletedAt")
@@ -3067,7 +3064,7 @@ fn submit(
         );
     }
     validate_submission_files(&submitter, &input.files, input.prepared_files.as_ref())?;
-    if submitter.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+    if submitter.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
         || submitter.extra.get("workspaceMode").and_then(Value::as_str) == Some("layr-native")
     {
         let Some(request_id) = input.vm_evidence_request_id.as_deref() else {

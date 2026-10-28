@@ -227,6 +227,14 @@ stored_string_enum!(AgentStatus {
     CapacityRetry => "capacity-retry",
 });
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentExecutionMode {
+    Native,
+    Host,
+    Vm,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRecord {
@@ -236,6 +244,12 @@ pub struct AgentRecord {
     pub status: AgentStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_flight: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_wake: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<AgentExecutionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_epoch: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_job: Option<StoredTitleJob>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -522,6 +536,29 @@ macro_rules! start_attempt_setters {
 }
 
 impl AgentRecord {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_defaults() -> Self {
+        Self {
+            id: AgentId::from(""),
+            root_id: AgentId::from(""),
+            epoch: 0,
+            status: AgentStatus::Unknown,
+            in_flight: None,
+            auto_wake: None,
+            execution_mode: None,
+            turn_epoch: None,
+            title_job: None,
+            start_outcome_hold: None,
+            fired_events: BTreeSet::new(),
+            native_review_thread: None,
+            vm_launch: None,
+            credential_copy: None,
+            vm_auth_bootstrap: None,
+            native_release: None,
+            extra: BTreeMap::new(),
+        }
+    }
+
     pub fn active_execution(&self) -> Result<Option<ActiveExecutionView>, serde_json::Error> {
         self.extra
             .get("activeExecution")
@@ -599,39 +636,7 @@ impl AgentRecord {
     }
 
     pub fn value(&self) -> Value {
-        let mut value = Value::Object(self.extra.clone().into_iter().collect());
-        value["id"] = Value::String(self.id.0.clone());
-        value["rootId"] = Value::String(self.root_id.0.clone());
-        value["epoch"] = Value::from(self.epoch);
-        value["status"] = Value::String(self.status.as_str().to_owned());
-        if let Some(in_flight) = self.in_flight {
-            value["inFlight"] = Value::Bool(in_flight);
-        }
-        if let Some(job) = &self.title_job {
-            value["titleJob"] = crate::projection_value(job);
-        }
-        if let Some(hold) = &self.start_outcome_hold {
-            value["startOutcomeHold"] = crate::projection_value(hold);
-        }
-        if !self.fired_events.is_empty() {
-            value["firedEvents"] = crate::projection_value(&self.fired_events);
-        }
-        if let Some(field) = &self.native_review_thread {
-            value["nativeReviewThread"] = crate::projection_value(field);
-        }
-        if let Some(field) = &self.vm_launch {
-            value["vmLaunch"] = crate::projection_value(field);
-        }
-        if let Some(field) = &self.credential_copy {
-            value["credentialCopy"] = crate::projection_value(field);
-        }
-        if let Some(field) = &self.vm_auth_bootstrap {
-            value["vmAuthBootstrap"] = crate::projection_value(field);
-        }
-        if let Some(field) = &self.native_release {
-            value["nativeRelease"] = crate::projection_value(field);
-        }
-        value
+        self.clone().into_value()
     }
 
     /// Consume the typed record while moving its fields into a JSON object.
@@ -643,6 +648,15 @@ impl AgentRecord {
         value["status"] = Value::String(self.status.as_str().to_owned());
         if let Some(in_flight) = self.in_flight {
             value["inFlight"] = Value::Bool(in_flight);
+        }
+        if let Some(auto_wake) = self.auto_wake {
+            value["autoWake"] = Value::Bool(auto_wake);
+        }
+        if let Some(mode) = self.execution_mode {
+            value["executionMode"] = crate::projection_value(&mode);
+        }
+        if let Some(epoch) = self.turn_epoch {
+            value["turnEpoch"] = Value::from(epoch);
         }
         if let Some(job) = &self.title_job {
             value["titleJob"] = crate::projection_value(job);
@@ -2250,25 +2264,6 @@ mod tests {
         assert!(diagnostic.contains("value type array"));
         assert!(diagnostic.contains("length 1 items"));
         assert!(!diagnostic.contains("private user text"));
-        let mut invalid = agent(
-            json!({"id":"write","provider":"codex","rootId":"write","epoch":0,"status":"idle"}),
-        );
-        invalid
-            .extra
-            .insert("autoWake".into(), json!("private user text"));
-        let before = connection.total_changes();
-        let error = table
-            .put(&invalid)
-            .expect_err("invalid typed write is rejected");
-        assert!(
-            matches!(error, StoreError::InvalidStoredObject { table: "runtime_agents", ref id } if id == "write")
-        );
-        assert!(!error.to_string().contains("private user text"));
-        assert_eq!(
-            connection.total_changes(),
-            before,
-            "invalid write changes no rows"
-        );
     }
 
     #[test]

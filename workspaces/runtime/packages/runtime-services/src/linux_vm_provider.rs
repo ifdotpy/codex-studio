@@ -72,7 +72,7 @@ pub fn vm_actor_matches(
         return Ok(false);
     };
     Ok(record.epoch == epoch
-        && record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+        && record.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
         && provider.is_none_or(|provider| {
             studio_runtime_providers::ProviderKind::of_field(record.extra.get("provider"))
                 .is_ok_and(|kind| kind.key() == provider)

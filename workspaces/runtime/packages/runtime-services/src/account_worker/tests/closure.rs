@@ -1185,7 +1185,7 @@ pub(super) async fn scenario_workspace_retry_wakes_after_restart() {
                     let mut owner = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
                     owner.id = AgentId::from("workspace-owner");
                     owner.status = studio_runtime_store::AgentStatus::Waiting;
-                    owner.extra.insert("autoWake".into(), json!(false));
+                    owner.auto_wake = Some(false);
                     owner
                         .extra
                         .insert("workspaceOperation".into(), json!("capture"));
@@ -1306,7 +1306,7 @@ async fn workspace_pending_wakes_when_the_blocking_owner_commits() {
                     let mut owner = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
                     owner.id = AgentId::from("workspace-owner");
                     owner.status = studio_runtime_store::AgentStatus::Waiting;
-                    owner.extra.insert("autoWake".into(), json!(false));
+                    owner.auto_wake = Some(false);
                     owner
                         .extra
                         .insert("workspaceOperation".into(), json!("capture"));

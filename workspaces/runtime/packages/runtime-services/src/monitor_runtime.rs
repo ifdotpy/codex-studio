@@ -429,7 +429,7 @@ pub async fn answer_approval(
             if request.get("status").and_then(Value::as_str) != Some("pending")
                 || snapshot.record()["status"] != "approval"
                 || snapshot.record()["epoch"].as_i64() != Some(actor.epoch)
-                || actor.extra.get("autoWake") != Some(&json!(true))
+                || actor.auto_wake != Some(true)
                 || event_write::truthy(actor.extra.get("deletedAt"))
             {
                 return Err(MonitorError::Refused("Command watch was stopped"));
@@ -1519,7 +1519,7 @@ pub fn create_in_transaction(
         }
         return Ok(previous.value().clone());
     }
-    if actor.epoch != epoch || actor.extra.get("autoWake") != Some(&json!(true)) {
+    if actor.epoch != epoch || actor.auto_wake != Some(true) {
         return Err(MonitorError::Refused(
             studio_runtime_schema::shared_values::MONITOR_OWNER_STOPPED_ERROR,
         ));

@@ -12,6 +12,7 @@ mod m2026_10_26_terminal_errors;
 pub(crate) mod m2026_10_27_cost_index;
 mod m2026_10_27_retired_sqlite;
 mod m2026_10_27_scheduler_indexes;
+mod m2026_10_28_agent_fields;
 mod m2026_10_28_group_revision;
 mod m2026_10_28_receipts_account_worker;
 mod m2026_10_28_receipts_actions;
@@ -323,6 +324,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_27_scheduler_indexes::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-28-agent-fields",
+            introduced: OCTOBER_28,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent execution fields before typed decoding",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_28_agent_fields::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {

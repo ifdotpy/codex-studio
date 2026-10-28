@@ -389,7 +389,7 @@ fn post_managed_message(
     let blockers = admission.workspace(transaction, &agent)?;
 
     // A manual send wakes a stopped agent in the same transaction as the event.
-    agent.extra.insert("autoWake".to_owned(), Value::Bool(true));
+    agent.auto_wake = Some(true);
     agent.extra.insert("error".to_owned(), Value::Null);
     agent.extra.insert("complaintMisses".to_owned(), json!(0));
     agent.extra.remove("nativeFailureHold");
@@ -558,8 +558,7 @@ fn send_followup_inner(
     if let Some((sender_id, sender_epoch)) = sender_identity {
         let sender =
             crate::event_write::checked_agent(transaction, sender_id).map_err(event_write_error)?;
-        if sender.epoch != sender_epoch || !crate::event_write::truthy(sender.extra.get("autoWake"))
-        {
+        if sender.epoch != sender_epoch || sender.auto_wake != Some(true) {
             return Err(CoordinationError::InvalidRequest("Sender was stopped"));
         }
         if recipient.root_id != sender.root_id {
@@ -567,7 +566,7 @@ fn send_followup_inner(
                 "This record belongs to another team",
             ));
         }
-    } else if !crate::event_write::truthy(recipient.extra.get("autoWake")) {
+    } else if recipient.auto_wake != Some(true) {
         return Err(CoordinationError::InvalidRequest(
             "Agent is stopped; no message was queued",
         ));
@@ -623,7 +622,7 @@ fn send_followup_inner(
         });
     }
     if sender_identity.is_some() {
-        recipient.extra.insert("autoWake".into(), Value::Bool(true));
+        recipient.auto_wake = Some(true);
         recipient.extra.insert("error".into(), Value::Null);
         recipient.extra.insert("complaintMisses".into(), json!(0));
         recipient.extra.remove("nativeFailureHold");
@@ -1391,7 +1390,7 @@ mod tests {
         )
         .expect("lead lookup succeeds")
         .expect("lead exists");
-        lead.extra.insert("autoWake".into(), json!(true));
+        lead.auto_wake = Some(true);
         lead.extra.insert("profileId".into(), json!("profile-1"));
         lead.extra.insert(
             "profileInstructions".into(),
@@ -1520,7 +1519,7 @@ mod tests {
         lead.extra.insert("workspaceMode".into(), json!("image"));
         lead.extra
             .insert("legacyWorkspaceFinished".into(), json!(true));
-        lead.extra.insert("autoWake".into(), json!(false));
+        lead.auto_wake = Some(false);
         studio_runtime_store::AgentRepository::put(&connection, &lead)
             .expect("fixture operation succeeds");
         let tx = connection
@@ -1556,7 +1555,7 @@ mod tests {
         )
         .expect("fixture operation succeeds")
         .expect("fixture operation succeeds");
-        assert_eq!(saved.extra["autoWake"], false);
+        assert_eq!(saved.auto_wake, Some(false));
     }
 
     struct AllowAdmission;
@@ -1583,7 +1582,7 @@ mod tests {
         .expect("lead lookup succeeds")
         .expect("lead exists");
         lead.status = studio_runtime_store::AgentStatus::Running;
-        lead.extra.insert("autoWake".into(), json!(true));
+        lead.auto_wake = Some(true);
         lead.in_flight = Some(true);
         studio_runtime_store::AgentRepository::put(&connection, &lead)
             .expect("recipient becomes an active lead");

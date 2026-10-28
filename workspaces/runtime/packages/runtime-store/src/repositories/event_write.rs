@@ -259,14 +259,12 @@ impl EventWriteRepository {
             if let Some(agent) = &agent {
                 value.insert("epoch".to_owned(), Value::from(agent.epoch));
                 for key in [
-                    "turnEpoch",
                     "error",
                     "nativeFailureHold",
                     "activity",
                     "activeTools",
                     "startAttempt",
                     "turnId",
-                    "autoWake",
                     "capacityRetry",
                     "lastCompletedTurn",
                     "lastCompletedTurnStatus",
@@ -292,6 +290,16 @@ impl EventWriteRepository {
                     value.insert("inFlight".to_owned(), Value::Bool(in_flight));
                 } else {
                     value.remove("inFlight");
+                }
+                for (key, field) in [
+                    ("turnEpoch", agent.turn_epoch.map(Value::from)),
+                    ("autoWake", agent.auto_wake.map(Value::Bool)),
+                ] {
+                    if let Some(field) = field {
+                        value.insert(key.to_owned(), field);
+                    } else {
+                        value.remove(key);
+                    }
                 }
                 if let Some(hold) = &agent.start_outcome_hold {
                     value.insert("startOutcomeHold".to_owned(), crate::projection_value(hold));

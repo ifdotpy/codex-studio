@@ -27,11 +27,12 @@ async fn queue_review_child(state: &State) {
                 )?;
                 row.extra.insert("parentId".into(), json!("review-lead"));
                 row.in_flight = Some(false);
+row.auto_wake = Some(true);
 for (key, value) in [
                     ("threadId", Value::Null),
                     ("turnId", Value::Null),
                     ("status", json!("queued")),
-                    ("autoWake", json!(true)),
+
 
                     ("role", json!("reviewer")),
                     ("yoloMode", json!(false)),
@@ -194,13 +195,15 @@ async fn an_unbound_interrupted_review_completion_settles_instead_of_holding_the
                     "connectionGeneration":1,"connectionId":"connection","threadId":"review-thread",
                     "requestTicket":"retained:default:review","created":1.0});
                 row.in_flight = Some(false);
+row.auto_wake = Some(false);
+row.turn_epoch = Some(epoch);
 for (key, value) in [
                     ("threadId", json!("review-thread")),
                     ("turnId", json!("review-turn")),
                     ("status", json!("interrupted")),
-                    ("autoWake", json!(false)),
 
-                    ("turnEpoch", json!(epoch)),
+
+
                     ("error", json!(studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR)),
                     ("startAttempt", attempt.clone()),
                     (

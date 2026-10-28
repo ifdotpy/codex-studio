@@ -2969,7 +2969,7 @@ impl Worker {
                         &request.account_key,
                         Some("claude"),
                     )? || row.status != studio_runtime_store::AgentStatus::Starting
-                        || fields.get("autoWake") != Some(&json!(true))
+                        || row.auto_wake != Some(true)
                         || fields.get("nativeFailureHold") == Some(&json!(true))
                         || [
                             "executionMove",

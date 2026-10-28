@@ -228,7 +228,7 @@ async fn a_replacement_waits_for_its_own_recovery_before_the_health_turn() {
             let mut owner = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.expect("original actor");
             owner.status = studio_runtime_store::AgentStatus::Queued;
             owner.in_flight = Some(false);
-            owner.extra.insert("autoWake".into(), json!(true));
+            owner.auto_wake = Some(true);
             owner.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":{
                 "id":"matrix-held-start","epoch":epoch,"accountKey":"default","threadId":"fake-thread-0",
                 "events":["annotation:input"],"submitted":true,"executionOutcome":"unknown",

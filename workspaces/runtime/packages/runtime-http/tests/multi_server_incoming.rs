@@ -823,6 +823,9 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
     let (root, store) = common::store().await;
     let mut parent = AgentRecord {
         in_flight: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -840,9 +843,7 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
             serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
     };
-    parent
-        .extra
-        .insert("autoWake".into(), serde_json::json!(true));
+    parent.auto_wake = Some(true);
     parent
         .extra
         .insert("moveImportPending".into(), serde_json::json!(true));

@@ -1380,7 +1380,7 @@ mod child_turn_parent_tests {
         )
         .expect("child reads")
         .expect("child exists");
-        assert_eq!(child.extra["autoWake"], false, "disconnect clears autoWake");
+        assert_eq!(child.auto_wake, Some(false), "disconnect clears autoWake");
     }
 
     async fn recover(store: &RuntimeStore, recovered: &Value, status: &str) {

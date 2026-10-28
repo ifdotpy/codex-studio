@@ -373,7 +373,7 @@ async fn restart_keeps_a_scoped_receipt_without_replaying_events() {
     assert_eq!(record.status, AgentStatus::Interrupted);
     assert_eq!(record.extra["restartRecovery"]["turnId"], "known");
     assert_eq!(record.in_flight, Some(false));
-    assert_eq!(record.extra["autoWake"], false);
+    assert_eq!(record.auto_wake, Some(false));
     let counts:(i64,i64)=reader.query_row("SELECT SUM(status='delivered'),SUM(status='pending') FROM runtime_events WHERE agent=?1",[&agent],|r|Ok((r.get(0)?,r.get(1)?))).expect("events");
     assert_eq!(counts, (3, 0));
 }
@@ -475,7 +475,7 @@ async fn late_acceptance_preserves_a_stopped_agent_and_delivers_exact_input() {
                 AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.expect("agent");
             record.epoch += 1;
             record.status = AgentStatus::Paused;
-            record.extra.insert("autoWake".into(), json!(false));
+            record.auto_wake = Some(false);
             AgentRepository::put(tx, &record)
         })
         .await

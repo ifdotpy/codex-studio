@@ -1136,7 +1136,7 @@ async fn reserve_approval(
             || !method.is_some_and(|method| super::APPROVAL_METHODS.contains(&method))
             || metadata.get("fingerprint").and_then(Value::as_str) != Some(fingerprint.as_str())
             || current.get("epoch").and_then(Value::as_i64) != Some(actor.epoch)
-            || actor.extra.get("autoWake").and_then(Value::as_bool) != Some(true)
+            || actor.auto_wake != Some(true)
         {
             return Err(VoiceProviderError::ContextChanged);
         }
@@ -1886,10 +1886,8 @@ async fn create_session(
             decision @ StartDecision::Replay(_) => Ok(decision),
             StartDecision::Create { created, .. } => {
                 let mut agent = agent;
-                agent.extra.insert("autoWake".into(), Value::Bool(true));
-                agent
-                    .extra
-                    .insert("turnEpoch".into(), Value::from(agent.epoch));
+                agent.auto_wake = Some(true);
+                agent.turn_epoch = Some(agent.epoch);
                 AgentRepository::put(transaction, &agent)?;
                 transaction.execute(
                     "INSERT INTO voice_sessions(id,agent,created,sdp,native_thread,account_key,connection_id,state) \
@@ -2757,6 +2755,9 @@ mod tests {
         extra.insert("isLead".into(), json!(true));
         let agent = AgentRecord {
             in_flight: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
             title_job: None,
             start_outcome_hold: None,
             fired_events: Default::default(),

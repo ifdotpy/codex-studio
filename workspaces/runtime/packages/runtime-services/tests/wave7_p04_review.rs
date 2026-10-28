@@ -651,8 +651,9 @@ async fn non_radio_async_answer_is_steered_and_acknowledged() {
         let mut record = AgentRepository::get(tx, &AgentId::from(agent_for_setup.as_str()))?.unwrap();
         record.status = studio_runtime_store::AgentStatus::Running;
         record.in_flight = Some(true);
+        record.auto_wake = Some(true);
         for (key, value) in [
-            ("isLead", json!(true)), ("autoWake", json!(true)),
+            ("isLead", json!(true)),
             ("threadId", json!("thread-0")), ("turnId", json!("turn-0")),
             ("startAttempt", json!({"id":"start","epoch":3,"submitted":true,"turnId":"turn-0","threadId":"thread-0","accountKey":"default","events":["initial"],"connectionGeneration":7})),
         ] { record.extra.insert(key.into(), value); }

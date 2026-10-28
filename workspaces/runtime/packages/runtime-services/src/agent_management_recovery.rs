@@ -1125,7 +1125,7 @@ mod tests {
                                 AgentRepository::get(tx, &AgentId::from("lead-00000000"))?
                                     .expect("lead");
                             lead.epoch += 1;
-                            lead.extra.insert("autoWake".into(), json!(false));
+                            lead.auto_wake = Some(false);
                             AgentRepository::put(tx, &lead)
                         })
                         .await
@@ -1507,7 +1507,7 @@ mod tests {
                 let mut lead =
                     AgentRepository::get(tx, &AgentId::from("lead-00000000"))?.expect("lead");
                 lead.epoch += 1;
-                lead.extra.insert("autoWake".into(), json!(false));
+                lead.auto_wake = Some(false);
                 AgentRepository::put(tx, &lead)
             })
             .await
@@ -1769,7 +1769,7 @@ mod tests {
                     let mut worker = AgentRepository::get(tx, &AgentId::from("worker-00000000"))?
                         .expect("worker");
                     worker.extra.insert("provider".into(), json!(provider));
-                    worker.extra.insert("executionMode".into(), json!(mode));
+                    worker.execution_mode = Some(if mode == "vm" { studio_runtime_store::AgentExecutionMode::Vm } else { studio_runtime_store::AgentExecutionMode::Native });
                     AgentRepository::put(tx, &worker)
                 })
                 .await

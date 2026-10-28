@@ -217,8 +217,6 @@ fn running() -> AgentRecord {
         ("accountKey", json!("acct")),
         ("threadId", json!("thread")),
         ("turnId", json!(TURN)),
-        ("turnEpoch", json!(4)),
-        ("autoWake", json!(true)),
         (
             "startAttempt",
             json!({"id":"start","epoch":4,"submitted":true,"turnId":TURN,"threadId":"thread",
@@ -229,19 +227,14 @@ fn running() -> AgentRecord {
     }
     AgentRecord {
         in_flight: Some(true),
-        title_job: None,
-        start_outcome_hold: None,
-        fired_events: Default::default(),
-        native_review_thread: None,
-        vm_launch: None,
-        credential_copy: None,
-        vm_auth_bootstrap: None,
-        native_release: None,
+        auto_wake: Some(true),
+        turn_epoch: Some(4),
         id: AgentId::from(AGENT),
         root_id: AgentId::from(AGENT),
         epoch: 4,
         status: AgentStatus::Running,
         extra,
+        ..AgentRecord::test_defaults()
     }
 }
 
@@ -384,7 +377,7 @@ fn claim_refuses_every_ineligible_agent_state() {
             a.extra.insert("steerRejectedTurnId".into(), json!(TURN));
         }),
         ("vm", |a| {
-            a.extra.insert("executionMode".into(), json!("vm"));
+            a.execution_mode = Some(crate::AgentExecutionMode::Vm);
         }),
         ("unbound-turn", |a| {
             a.extra.get_mut("startAttempt").expect("attempt")["turnId"] = Value::Null;
@@ -399,7 +392,7 @@ fn claim_refuses_every_ineligible_agent_state() {
             a.extra.insert("nativeFailureHold".into(), json!(true));
         }),
         ("stopped", |a| {
-            a.extra.insert("autoWake".into(), json!(false));
+            a.auto_wake = Some(false);
         }),
     ];
     for (name, change) in cases {
@@ -759,7 +752,7 @@ fn stop_before_turn_end_cancels_unread_input() {
     let mut stopped = agent(&connection);
     stopped.epoch = 5;
     stopped.status = AgentStatus::Paused;
-    stopped.extra.insert("autoWake".into(), json!(false));
+    stopped.auto_wake = Some(false);
     put_agent(&connection, stopped);
     terminal(&mut connection, &["u1"]);
     assert_eq!(status(&connection, "u1").0, "cancelled");

@@ -76,7 +76,7 @@ pub(super) fn native_action_provider(
     >,
     configured_guest: Option<Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>>,
 ) -> Result<NativeActionPorts, ApiError> {
-    if agent.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+    if agent.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm) {
         return host_port
             .map(|port| (port, configured_guest))
             .ok_or_else(|| {
@@ -483,7 +483,7 @@ impl NativeActionPreparationRun {
         &self,
         agent: &AgentRecord,
     ) -> native_actions::Result<Option<std::path::PathBuf>> {
-        if agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
+        if agent.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm) {
             return Ok(None);
         }
         let account = agent

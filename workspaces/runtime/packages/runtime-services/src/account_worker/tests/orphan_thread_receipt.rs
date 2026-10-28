@@ -44,7 +44,7 @@ async fn send_message(state: &State, id: &str, kind: &'static str) {
             scheduler::lifecycle_transaction_with(&store, move |tx| {
                 let mut agent =
                     AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
-                agent.extra.insert("autoWake".into(), json!(true));
+                agent.auto_wake = Some(true);
                 agent.extra.insert("error".into(), Value::Null);
                 agent.extra.remove("nativeFailureHold");
                 AgentRepository::put(tx, &agent)?;

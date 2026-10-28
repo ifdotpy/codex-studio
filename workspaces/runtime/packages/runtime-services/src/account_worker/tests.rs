@@ -4296,7 +4296,7 @@ async fn scenario_workspace_refusal_retains_queue() {
                 .transaction(move |tx| {
                     let mut record =
                         AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
-                    record.extra.insert("executionMode".into(), json!("vm"));
+                    record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     AgentRepository::put(tx, &record)
                 })
                 .await?;
@@ -4772,14 +4772,14 @@ async fn vm_actor_turn_with_host_mcp(child: bool) {
                         parent.id = AgentId::from("vm-parent");
                         parent.root_id = parent.id.clone();
                         parent.status = studio_runtime_store::AgentStatus::Completed;
-                        parent.extra.insert("autoWake".into(), json!(false));
+                        parent.auto_wake = Some(false);
                         AgentRepository::put(tx, &parent)?;
                         record.root_id = parent.id.clone();
                         record.extra.insert("parentId".into(), json!(parent.id.0));
                         record.extra.insert("isLead".into(), json!(false));
                         record.extra.insert("role".into(), json!("implementer"));
                     }
-                    record.extra.insert("executionMode".into(), json!("vm"));
+                    record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record
                         .extra
@@ -4897,7 +4897,7 @@ async fn vm_session_identity_refusal_holds_one_actor_and_keeps_sibling_usable() 
                     let mut primary =
                         AgentRepository::get(tx, &AgentId::from(primary_id.as_str()))?
                             .expect("fixture agent");
-                    primary.extra.insert("executionMode".into(), json!("vm"));
+                    primary.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     primary.extra.insert("layrReady".into(), json!(true));
                     primary
                         .extra
@@ -4911,7 +4911,7 @@ async fn vm_session_identity_refusal_holds_one_actor_and_keeps_sibling_usable() 
                     sibling_record.root_id = sibling_record.id.clone();
                     sibling_record.status = studio_runtime_store::AgentStatus::Queued;
                     sibling_record.extra.insert("threadId".into(), Value::Null);
-                    sibling_record.extra.insert("autoWake".into(), json!(true));
+                    sibling_record.auto_wake = Some(true);
                     sibling_record.in_flight = Some(false);
                     sibling_record.extra.insert("error".into(), Value::Null);
                     sibling_record.extra.remove("startAttempt");
@@ -5064,7 +5064,7 @@ async fn vm_adapter_exit_recovers_only_its_actor_and_keeps_sibling_usable() {
                     let mut primary =
                         AgentRepository::get(tx, &AgentId::from(primary_id.as_str()))?
                             .expect("fixture agent");
-                    primary.extra.insert("executionMode".into(), json!("vm"));
+                    primary.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     primary.extra.insert("layrReady".into(), json!(true));
                     primary
                         .extra
@@ -5078,7 +5078,7 @@ async fn vm_adapter_exit_recovers_only_its_actor_and_keeps_sibling_usable() {
                     sibling_record.root_id = sibling_record.id.clone();
                     sibling_record.status = studio_runtime_store::AgentStatus::Queued;
                     sibling_record.extra.insert("threadId".into(), Value::Null);
-                    sibling_record.extra.insert("autoWake".into(), json!(true));
+                    sibling_record.auto_wake = Some(true);
                     sibling_record.in_flight = Some(false);
                     sibling_record.extra.insert("error".into(), Value::Null);
                     sibling_record.extra.remove("startAttempt");
@@ -5280,7 +5280,7 @@ async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
                 .transaction(move |tx| {
                     let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                         .expect("fixture agent");
-                    record.extra.insert("executionMode".into(), json!("vm"));
+                    record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("provider".into(), json!("claude"));
                     record.extra.insert("layrReady".into(), json!(true));
                     record
@@ -5568,7 +5568,7 @@ async fn retained_vm_notification_is_epoch_fenced_and_committed_before_delivery(
                 .transaction(move |tx| {
                     let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                         .expect("fixture agent");
-                    record.extra.insert("executionMode".into(), json!("vm"));
+                    record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record
                         .extra
@@ -5655,7 +5655,7 @@ async fn retained_vm_auth_callback_replies_through_the_account_session() {
                 .transaction(move |tx| {
                     let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                         .expect("fixture agent");
-                    record.extra.insert("executionMode".into(), json!("vm"));
+                    record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record
                         .extra
@@ -5732,7 +5732,7 @@ async fn retained_vm_reply_uses_its_actor_cursor_when_host_cursor_is_zero() {
                 .transaction(move |tx| {
                     let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                         .expect("fixture agent");
-                    record.extra.insert("executionMode".into(), json!("vm"));
+                    record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record
                         .extra
@@ -5837,7 +5837,7 @@ async fn retained_unknown_replay_precedes_changed_vm_session_fence() {
                 .transaction(move |tx| {
                     let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                         .expect("fixture agent");
-                    record.extra.insert("executionMode".into(), json!("vm"));
+                    record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record
                         .extra
@@ -5994,7 +5994,7 @@ async fn vm_auth_callback_is_not_sent_after_account_reconnect_at_final_fence() {
                 .transaction(move |tx| {
                     let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                         .expect("fixture agent");
-                    record.extra.insert("executionMode".into(), json!("vm"));
+                    record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record
                         .extra
@@ -6078,7 +6078,7 @@ async fn vm_auth_callback_shutdown_waits_for_final_generation_fence() {
                 .transaction(move |tx| {
                     let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                         .expect("fixture agent");
-                    record.extra.insert("executionMode".into(), json!("vm"));
+                    record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record
                         .extra
@@ -6164,7 +6164,7 @@ async fn vm_worker_restart_reconciles_uncertain_provider_start_without_resending
                 .transaction(move |tx| {
                     let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                         .expect("fixture agent");
-                    record.extra.insert("executionMode".into(), json!("vm"));
+                    record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record
                         .extra
@@ -6403,7 +6403,7 @@ async fn scenario_workspace_pending_reuses_reserved_attempt() {
                         AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
                     row.id = AgentId::from("workspace-owner");
                     row.status = studio_runtime_store::AgentStatus::Waiting;
-                    row.extra.insert("autoWake".into(), json!(false));
+                    row.auto_wake = Some(false);
                     row.extra
                         .insert("workspaceOperation".into(), json!("capture"));
                     AgentRepository::put(tx, &row)
@@ -6488,7 +6488,7 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
                     let mut row = AgentRepository::get(tx, &AgentId::from(mutation_agent.as_str()))?.unwrap();
                     row.status = studio_runtime_store::AgentStatus::Interrupted;
                     row.epoch += 1;
-                    row.extra.insert("autoWake".into(), json!(false));
+                    row.auto_wake = Some(false);
                     AgentRepository::put(tx, &row)?;
                 } else {
                     let mut row = AgentRepository::get(tx, &AgentId::from(mutation_agent.as_str()))?.unwrap();
