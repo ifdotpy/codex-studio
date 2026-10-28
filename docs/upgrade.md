@@ -20,7 +20,7 @@ registry. An older binary must support the resulting format or refuse to open it
    publication commit. See [testing](testing.md) for evidence boundaries.
 3. On this Linux host, use only `just deliver-server <commit>` for the live server.
    It owns release snapshots, the current link, service restart, health checks,
-   and rollback. Never edit systemd drop-ins or the binary path by hand.
+   and stopping an unhealthy release for operator recovery. Never edit systemd drop-ins or the binary path by hand.
 4. Confirm the resulting build identity, preserved state-directory path, and
    health through diagnostics. A failed or unknown check remains a failed upgrade.
 

@@ -15,7 +15,10 @@ existing backend, state directory, recovery configuration, and app signature.
 It runs the upgrade canary before it submits one staged update to the existing
 recovery owner. It does not stop agents, monitors, or the process supervisor.
 Completion requires the matching install receipt, bundle, backend, and retained
-provider process identifiers (PIDs) and generations. A timeout leaves the result unknown.
+provider process identifiers (PIDs) and generations. A timeout leaves the result unknown
+and does not stop a starting backend or roll back the installed app. The receipts
+migration took about six minutes on the live data in the 2026-10-28 incident;
+duration depends on the store size and device.
 
 For an existing package, use:
 
@@ -175,7 +178,7 @@ Installation writes and enables the matching user configuration. It does not
 start, restart, or stop a service or create runtime state. A changed existing
 configuration is an error; resolve it at an idle boundary. Linux services use
 the shared release root's `current` binary. Only `just deliver-server` selects
-and restarts the live Linux release, with health checks and rollback.
+and restarts the live Linux release, with health checks and operator recovery on failure.
 On macOS the command writes and enables a LaunchAgent label; bootstrap it
 explicitly at an idle boundary after preparing its release.
 

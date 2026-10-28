@@ -28,15 +28,23 @@ release root. The base unit starts the binary under its `current` release.
 
 Only `just deliver-server` changes this host's live Linux server release.
 It builds a commit snapshot, selects it through `current`, restarts the backend,
-checks health, and rolls back an unhealthy release. Keep the state directory
+checks health, and stops an unhealthy release for operator recovery. The new
+process may have migrated the store, so delivery does not restart an older binary.
+Startup can take up to 30 minutes while the same process remains active without
+restarting; inspect the delivery journal and store before choosing recovery. Keep the state directory
 identity and never start a second backend against it. Do not interrupt active
 agents, commands, monitors, or terminals for a source update.
+
+The receipts migration took about six minutes on the live data in the
+2026-10-28 incident; duration depends on the store size and device. An
+interrupted migration resumes from its committed checkpoints on the newer
+binary. Delivery does not automatically roll back after startup.
 
 Delivery requires systemd 254 or newer and a working systemd user manager.
 The minimum version in [deliver.sh](../workspaces/runtime/apps/runtime-server/deliver.sh)
 ensures literal command arguments are supported; older versions fail before
 a delivery starts. The entire
-build, restart, health check, rollback, and pruning run in a separate transient
+build, restart, health check, and pruning run in a separate transient
 user service, outside the backend's cgroup. The caller prints its unit name and
 a `journalctl --user --unit=... --no-pager` command before handing off. Output
 goes directly to the unit journal; a surviving caller receives the output replay

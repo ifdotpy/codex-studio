@@ -773,7 +773,7 @@ fn delivery_and_service_install_share_the_same_escaped_release_command() {
 
 #[test]
 #[cfg(target_os = "linux")]
-fn delivery_test_mode_rolls_back_without_launching_a_unit() {
+fn delivery_test_mode_stops_unhealthy_release_without_launching_a_unit() {
     for has_previous in [false, true] {
         let fixture = DeliveryFixture::new();
         let previous = fixture.release_root.join("releases/previous");
@@ -795,31 +795,24 @@ if [ -f "$HOME/first-probe" ]; then exit 1; fi
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(1));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("rolling back"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("stopping for operator recovery"));
         assert!(!fixture.root.path().join("run-args").exists());
+        let calls = fixture.read("calls");
         assert_eq!(
-            fixture
-                .read("calls")
+            calls
                 .lines()
                 .filter(|line| line.contains(" restart "))
                 .count(),
-            2
+            1
         );
-        if has_previous {
-            assert_eq!(
-                fs::read_link(fixture.release_root.join("current")).unwrap(),
-                previous
-            );
-        } else {
-            assert!(!fixture.release_root.join("current").exists());
-            assert!(
-                !fixture
-                    .root
-                    .path()
-                    .join("config/systemd/user/codex-studio.service.d/zz-delivery.conf")
-                    .exists()
-            );
-        }
+        assert_eq!(
+            calls.lines().filter(|line| line.contains(" stop ")).count(),
+            1
+        );
+        assert_eq!(
+            fs::read_link(fixture.release_root.join("current")).unwrap(),
+            fixture.release
+        );
     }
 }
 
