@@ -1,6 +1,6 @@
 // Hidden product-renderer measurement. Test keys never enter the OS key store.
 import assert from "node:assert/strict";
-import { requestId } from "../../../providers/apps/claude-bridge/request-id.ts";
+import { requestId } from "studio-claude-bridge/request-id";
 import type { ElectronApplication } from "playwright-core";
 import { _electron as electron } from "playwright-core";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
