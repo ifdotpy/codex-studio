@@ -1,11 +1,36 @@
 import type { DeepReadonly } from "rxdb";
 import { randomUUID } from "../uuid";
-import type { DraftJournal } from "./draftJournal";
 
 import type { DraftView } from "./host";
 export type { DraftView } from "./host";
 type Invoke = <T>(method: string, params: unknown, id?: string) => Promise<T>;
 type Edit = { id: string; changes: Record<string, string> };
+// Unsent edits survive a restart. The core stores them until it commits each one.
+export type DraftQueue = {
+  load(): Promise<Edit[]>;
+  save(edit: Edit): Promise<void>;
+};
+
+export function nativeDraftQueue(
+  workspace: string,
+  invoke: Invoke,
+): DraftQueue {
+  return {
+    async load() {
+      const { edits } = await invoke<{ edits: Edit[] }>("drafts.queued", {
+        workspace,
+      });
+      return edits;
+    },
+    async save(edit) {
+      await invoke(
+        "drafts.queue",
+        { workspace, changes: edit.changes },
+        edit.id,
+      );
+    },
+  };
+}
 
 // TODO(attar-sync): When this renderer moves to Attar, restore synchronous
 // core.commit("drafts.edit"/"drafts.dismiss") after the SQLite transaction commits.
@@ -26,8 +51,8 @@ export class NativeDraftState {
 
   declare readonly workspace: string;
   declare private invoke: Invoke;
-  declare private journal: DraftJournal | undefined;
-  constructor(workspace: string, invoke: Invoke, journal?: DraftJournal) {
+  declare private journal: DraftQueue | undefined;
+  constructor(workspace: string, invoke: Invoke, journal?: DraftQueue) {
     this.workspace = workspace;
     this.invoke = invoke;
     this.journal = journal;
@@ -40,7 +65,12 @@ export class NativeDraftState {
       error: "",
     };
     this.snapshot = { ...this.committed, pending: false, localError: "" };
-    this.queue = journal?.load() ?? [];
+    this.publish();
+  }
+  /** Load the edits queued before this start. Call once, before the first edit. */
+  async restore() {
+    if (!this.journal) return;
+    this.queue = await this.journal.load();
     this.publish();
   }
   getSnapshot = () => this.snapshot;
@@ -81,18 +111,13 @@ export class NativeDraftState {
         changes[key] = next[key] ?? "";
     }
     if (!Object.keys(changes).length) return;
-    // The head may already be committed, so its content is immutable. Only
-    // coalesce the unsent tail to bound typing backlog while IPC is delayed.
+    // With a queue, every edit keeps its own identity. Without one, coalesce the
+    // unsent tail to bound typing backlog while IPC is delayed.
     const [, pending] = this.queue;
     const edit =
       pending && !this.journal ? pending : { id: randomUUID(), changes };
     if (edit === pending) Object.assign(edit.changes, changes);
     else this.queue.push(edit);
-    try {
-      this.journal?.save(edit);
-    } catch (error) {
-      this.failure = error instanceof Error ? error.message : String(error);
-    }
     this.publish();
     if (!this.failure) void this.flush();
   }
@@ -128,7 +153,7 @@ export class NativeDraftState {
     this.saving = true;
     try {
       for (let edit = this.queue[0]; edit; edit = this.queue[0]) {
-        this.journal?.save(edit);
+        if (this.journal) await this.journal.save(edit);
         const view = await this.invoke<DraftView>(
           "drafts.edit",
           {
@@ -140,7 +165,6 @@ export class NativeDraftState {
         if (view.workspaceId !== this.workspace)
           throw new Error("The draft acknowledgement has another workspace.");
         // Drop only the acknowledged command; later edits remain overlaid.
-        this.journal?.acknowledge(edit);
         this.queue.shift();
         if (view.revision >= this.committed.revision) this.committed = view;
         this.failure = "";

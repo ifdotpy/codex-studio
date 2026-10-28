@@ -1,5 +1,4 @@
 import { importLegacyDrafts } from "./legacyDrafts";
-import { nativeDraftJournal } from "./draftJournal";
 import {
   useCallback,
   useEffect,
@@ -7,7 +6,7 @@ import {
   useState,
   type SetStateAction,
 } from "react";
-import type { DraftVersion } from "../sync/drafts";
+import type { DraftVersion } from "../generated/rustOwned";
 import { onResume } from "../sync/resume";
 import {
   watchResourceChanges,
@@ -15,7 +14,11 @@ import {
 } from "../sync/subscriptions/events";
 import { nativeRequest } from "./client";
 import { guardNativeClose } from "./closeState";
-import { NativeDraftState, type DraftView } from "./draftState";
+import {
+  NativeDraftState,
+  nativeDraftQueue,
+  type DraftView,
+} from "./draftState";
 
 type Drafts = Record<string, string>;
 export function useNativeDrafts() {
@@ -111,8 +114,10 @@ export function useNativeDrafts() {
           const state = new NativeDraftState(
             identity.workspaceId,
             nativeRequest,
-            nativeDraftJournal(identity.workspaceId),
+            nativeDraftQueue(identity.workspaceId, nativeRequest),
           );
+          await state.restore();
+          if (stopped) return;
           const view = await nativeRequest<DraftView>("drafts.view", {
             workspace: identity.workspaceId,
           });

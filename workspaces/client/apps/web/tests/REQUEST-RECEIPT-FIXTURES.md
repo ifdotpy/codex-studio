@@ -9,7 +9,6 @@ or stored receipt using a request body field such as `id`, `request_id`, or
 - `accounts/accounts-ui-smoke.spec.ts`
 - `claude/claude-login-ui.spec.ts`
 - `drafts/dialog-drafts-ui.spec.ts`
-- `drafts/draft-push-coalescing-browser.spec.ts`
 - `files/upload-recovery-browser.spec.ts`
 - `messages/message-delivery-ui.spec.ts`
 - `messages/mobile-send-reliability-browser.spec.ts`

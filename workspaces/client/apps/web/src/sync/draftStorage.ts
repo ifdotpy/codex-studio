@@ -1,5 +1,5 @@
-import { serverLocalStorage as localStorage } from "../servers/storage";
-
+// Read-only access to browser draft records written before the core owned drafts.
+// Only the one-time legacy import reads them. Nothing writes them any more.
 export type LocalDraftRecord = {
   version: 1;
   workspace: string;
@@ -9,8 +9,6 @@ export type LocalDraftRecord = {
   source: "local" | "remote";
   updated?: number;
 };
-
-export type DraftMap = Record<string, string>;
 
 const localPrefix = "codex-chat-draft:";
 
@@ -62,117 +60,14 @@ function parseRecord(
       : {}),
   };
 }
-export function createDraftStorage(localStorage: Storage) {
-  function readLocalDraftRecord(scope: string, session: string) {
-    const raw = localStorage.getItem(localDraftKey(scope, session));
-    return raw === null
-      ? null
-      : parseRecord(JSON.parse(raw), workspaceOf(scope), session);
-  }
 
-  function readLocalDrafts(
-    scope: string,
-    onCorrupt: () => void = () => {},
-  ): DraftMap {
-    const drafts: DraftMap = {};
-    const workspace = workspaceOf(scope);
-    const prefix = `${localPrefix}${workspace}:`;
-    for (let index = 0; index < localStorage.length; index++) {
-      const key = localStorage.key(index)!;
-      if (!key.startsWith(prefix)) continue;
-      try {
-        const session = decodeURIComponent(key.slice(prefix.length));
-        const record = parseRecord(
-          JSON.parse(localStorage.getItem(key)!),
-          workspace,
-          session,
-        );
-        if (!record.deleted) drafts[session] = record.text;
-      } catch {
-        onCorrupt();
-      }
-    }
-    return drafts;
-  }
-
-  function writeLocalDraftRecord(
-    scope: string,
-    session: string,
-    text: string | null,
-    source: LocalDraftRecord["source"] = "local",
-    metadata: Pick<LocalDraftRecord, "updated"> = {},
-  ) {
-    const key = localDraftKey(scope, session);
-    const previousRaw = localStorage.getItem(key);
-    const previous = previousRaw
-      ? (() => {
-          const raw: unknown = JSON.parse(previousRaw);
-          const parsed = parseRecord(raw, workspaceOf(scope), session);
-          return {
-            ...Object.fromEntries(
-              Object.entries(raw as Record<string, unknown>).filter(
-                ([field]) => !field.startsWith("legacy"),
-              ),
-            ),
-            ...parsed,
-          };
-        })()
-      : null;
-    const record: LocalDraftRecord = {
-      ...previous,
-      version: 1,
-      workspace: workspaceOf(scope),
-      session,
-      text: text ?? "",
-      deleted: text === null,
-      source,
-      ...metadata,
-    };
-    localStorage.setItem(key, JSON.stringify(record));
-  }
-
-  function copyLocalDraftScope(
-    from: string,
-    to: string,
-    onCorrupt: () => void = () => {},
-  ) {
-    const sourceWorkspace = workspaceOf(from);
-    const destinationWorkspace = workspaceOf(to);
-    const prefix = `${localPrefix}${sourceWorkspace}:`;
-    for (let index = 0; index < localStorage.length; index++) {
-      const key = localStorage.key(index)!;
-      if (!key.startsWith(prefix)) continue;
-      let session: string;
-      let record: LocalDraftRecord;
-      try {
-        session = decodeURIComponent(key.slice(prefix.length));
-        record = parseRecord(
-          JSON.parse(localStorage.getItem(key)!),
-          sourceWorkspace,
-          session,
-        );
-      } catch {
-        onCorrupt();
-        continue;
-      }
-      const destination = localDraftKey(to, session);
-      if (localStorage.getItem(destination) !== null) continue;
-      localStorage.setItem(
-        destination,
-        JSON.stringify({ ...record, workspace: destinationWorkspace }),
-      );
-    }
-  }
-  return {
-    readLocalDraftRecord,
-    readLocalDrafts,
-    writeLocalDraftRecord,
-    copyLocalDraftScope,
-  };
+export function readLocalDraftRecord(
+  storage: Storage,
+  scope: string,
+  session: string,
+): LocalDraftRecord | null {
+  const raw = storage.getItem(localDraftKey(scope, session));
+  return raw === null
+    ? null
+    : parseRecord(JSON.parse(raw), workspaceOf(scope), session);
 }
-export const {
-  readLocalDraftRecord,
-  readLocalDrafts,
-  writeLocalDraftRecord,
-  copyLocalDraftScope,
-} = createDraftStorage(localStorage);

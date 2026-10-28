@@ -116,6 +116,8 @@ export function bindNativeFrames(
         "drafts.import",
         "drafts.edit",
         "drafts.dismiss",
+        "drafts.queue",
+        "drafts.queued",
         "drafts.refresh",
       ].includes(method);
     const saveMethod = [

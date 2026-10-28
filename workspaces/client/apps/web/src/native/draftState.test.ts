@@ -1,6 +1,10 @@
 import { required } from "../components/componentTestFixtures.ts";
 import { expect, it, vi } from "vitest";
-import { NativeDraftState, type DraftView } from "./draftState";
+import {
+  NativeDraftState,
+  nativeDraftQueue,
+  type DraftView,
+} from "./draftState";
 const view = (text: string, revision: number): DraftView => ({
   drafts: { room: text },
   conflicts: [],
@@ -179,3 +183,100 @@ function snapshotTypeAssertions(state: NativeDraftState) {
   return [missingWorkspace, missingRevision, missingError];
 }
 void snapshotTypeAssertions;
+
+function memoryQueue(
+  initial: { id: string; changes: Record<string, string> }[] = [],
+) {
+  const entries = new Map(initial.map((edit) => [edit.id, edit]));
+  return {
+    entries,
+    queue: {
+      load: vi.fn(async () => [...entries.values()]),
+      save: vi.fn(
+        async (edit: { id: string; changes: Record<string, string> }) => {
+          entries.set(edit.id, edit);
+        },
+      ),
+    },
+  };
+}
+
+it("saves each edit in the core queue before its commit", async () => {
+  const log: string[] = [];
+  const { queue } = memoryQueue();
+  queue.save.mockImplementation(async (edit) => {
+    log.push(`queue:${edit.id}`);
+  });
+  const invoke = vi
+    .fn()
+    .mockImplementation(
+      async (method: string, _params: unknown, id?: string) => {
+        log.push(`${method}:${id}`);
+        return view("first", 1);
+      },
+    );
+  const state = new NativeDraftState("workspace", invoke, queue);
+  state.accept(view("", 0));
+  state.edit({ room: "first" });
+  await vi.waitFor(() => expect(state.getSnapshot().pending).toBe(false));
+  const id = required(queue.save.mock.calls[0])[0].id;
+  expect(log).toEqual([`queue:${id}`, `drafts.edit:${id}`]);
+  expect(required(queue.save.mock.calls[0])[0].changes).toEqual({
+    room: "first",
+  });
+});
+
+it("restores edits queued before a restart and sends them again", async () => {
+  const { queue } = memoryQueue([{ id: "old", changes: { room: "unsent" } }]);
+  const invoke = vi.fn().mockResolvedValue(view("unsent", 1));
+  const state = new NativeDraftState("workspace", invoke, queue);
+  await state.restore();
+  expect(state.getSnapshot()).toMatchObject({
+    pending: true,
+    drafts: { room: "unsent" },
+  });
+  await state.retry();
+  expect(invoke).toHaveBeenCalledWith(
+    "drafts.edit",
+    { workspace: "workspace", changes: { room: "unsent" } },
+    "old",
+  );
+  expect(state.getSnapshot().pending).toBe(false);
+});
+
+it("keeps a failed core queue write visible and retries the same identity", async () => {
+  const { queue } = memoryQueue();
+  queue.save.mockRejectedValueOnce(new Error("reply lost"));
+  const invoke = vi.fn().mockResolvedValue(view("keep", 1));
+  const state = new NativeDraftState("workspace", invoke, queue);
+  state.accept(view("", 0));
+  state.edit({ room: "keep" });
+  await vi.waitFor(() =>
+    expect(state.getSnapshot().localError).toBe("reply lost"),
+  );
+  expect(invoke).not.toHaveBeenCalled();
+  await state.retry();
+  const first = required(queue.save.mock.calls[0])[0];
+  expect(queue.save.mock.calls[1]).toEqual([first]);
+  expect(invoke).toHaveBeenCalledOnce();
+  expect(state.getSnapshot()).toMatchObject({ pending: false, localError: "" });
+});
+
+it("stores queued edits in the core under the request identity", async () => {
+  const invoke = vi
+    .fn()
+    .mockResolvedValueOnce({})
+    .mockResolvedValueOnce({ edits: [{ id: "a", changes: { room: "x" } }] });
+  const queue = nativeDraftQueue("workspace", invoke);
+  await queue.save({ id: "a", changes: { room: "x" } });
+  expect(invoke).toHaveBeenNthCalledWith(
+    1,
+    "drafts.queue",
+    { workspace: "workspace", changes: { room: "x" } },
+    "a",
+  );
+  expect(await queue.load()).toEqual([{ id: "a", changes: { room: "x" } }]);
+  expect(invoke).toHaveBeenNthCalledWith(2, "drafts.queued", {
+    workspace: "workspace",
+  });
+});

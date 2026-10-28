@@ -17,7 +17,8 @@ pub fn initialize(db: &Connection) -> rusqlite::Result<()> {
         CREATE TABLE IF NOT EXISTS client_draft_branches (workspace TEXT NOT NULL,id TEXT NOT NULL,document TEXT NOT NULL,master TEXT,dirty INTEGER NOT NULL,PRIMARY KEY(workspace,id));
         CREATE TABLE IF NOT EXISTS client_draft_scopes (workspace TEXT PRIMARY KEY,revision INTEGER NOT NULL DEFAULT 0,checkpoint INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS client_draft_sync (workspace TEXT PRIMARY KEY,error TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS client_draft_dismissed (workspace TEXT NOT NULL,id TEXT NOT NULL,text TEXT NOT NULL,PRIMARY KEY(workspace,id,text));")
+        CREATE TABLE IF NOT EXISTS client_draft_dismissed (workspace TEXT NOT NULL,id TEXT NOT NULL,text TEXT NOT NULL,PRIMARY KEY(workspace,id,text));
+        CREATE TABLE IF NOT EXISTS client_draft_queue (workspace TEXT NOT NULL,id TEXT NOT NULL,changes TEXT NOT NULL,PRIMARY KEY(workspace,id));")
 }
 
 fn sql<T>(value: rusqlite::Result<T>) -> Result<T, String> {
@@ -223,8 +224,67 @@ fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
                     .and_then(|(_, master, _)| master.as_ref());
                 save(db, workspace, &document(&version), master, true)?;
             }
+            // The commit and the removal of its queued request are one transaction.
+            sql(db.execute(
+                "DELETE FROM client_draft_queue WHERE workspace=?1 AND id=?2",
+                params![workspace, request.id],
+            ))?;
             revision(db, workspace)?;
             view(db, workspace).map(DraftResult::Snapshot)
+        }
+        "drafts.queue" => {
+            let changes = p["changes"]
+                .as_object()
+                .ok_or("Draft changes are required.")?;
+            if !changes.values().all(|text| {
+                text.as_str()
+                    .is_some_and(|text| text.chars().count() <= 2_000_000)
+            }) {
+                return Err("Invalid draft text.".into());
+            }
+            let stored = sql(db
+                .query_row(
+                    "SELECT changes FROM client_draft_queue WHERE workspace=?1 AND id=?2",
+                    params![workspace, request.id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional())?;
+            match stored {
+                Some(saved) => {
+                    let saved: Value = serde_json::from_str(&saved).map_err(|e| e.to_string())?;
+                    if saved != Value::Object(changes.clone()) {
+                        return Err("A saved draft request has different content.".into());
+                    }
+                }
+                None => {
+                    sql(db.execute(
+                        "INSERT INTO client_draft_queue VALUES(?1,?2,?3)",
+                        params![
+                            workspace,
+                            request.id,
+                            Value::Object(changes.clone()).to_string()
+                        ],
+                    ))?;
+                }
+            }
+            Ok(DraftResult::Pending(json!({})))
+        }
+        "drafts.queued" => {
+            let mut query = sql(db.prepare(
+                "SELECT id,changes FROM client_draft_queue WHERE workspace=?1 ORDER BY rowid",
+            ))?;
+            let rows = sql(query.query_map([workspace], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            }))?;
+            let edits = rows
+                .map(|row| {
+                    let (id, changes) = sql(row)?;
+                    let changes: Value =
+                        serde_json::from_str(&changes).map_err(|e| e.to_string())?;
+                    Ok(json!({"id":id,"changes":changes}))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(DraftResult::Pending(json!({"edits":edits})))
         }
         "drafts.dismiss" => {
             let version = &p["version"];
@@ -497,6 +557,46 @@ mod tests {
                 .is_none()
         );
     }
+    #[test]
+    fn queued_edits_survive_restart_until_their_commit() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let queue = |id: &str, text: &str| Request {
+            id: id.into(),
+            method: "drafts.queue".into(),
+            params: json!({"workspace":"a".repeat(32),"changes":{"room":text}}),
+        };
+        let mut store = crate::store::Store::open(&path).unwrap();
+        for (id, text) in [("first", "one"), ("second", "two")] {
+            let response = store.dispatch(queue(id, text));
+            assert!(response.error.is_none(), "{:?}", response.error);
+        }
+        // A retry with the same request identity is idempotent. Different content is refused.
+        assert!(store.dispatch(queue("first", "one")).error.is_none());
+        assert!(store.dispatch(queue("first", "changed")).error.is_some());
+        drop(store);
+        let mut store = crate::store::Store::open(&path).unwrap();
+        assert_eq!(
+            command(&mut store, "list", "drafts.queued", json!({}))["edits"],
+            json!([
+                {"id":"first","changes":{"room":"one"}},
+                {"id":"second","changes":{"room":"two"}}
+            ])
+        );
+        command(
+            &mut store,
+            "first",
+            "drafts.edit",
+            json!({"changes":{"room":"one"}}),
+        );
+        drop(store);
+        let mut store = crate::store::Store::open(&path).unwrap();
+        assert_eq!(
+            command(&mut store, "list", "drafts.queued", json!({}))["edits"],
+            json!([{"id":"second","changes":{"room":"two"}}])
+        );
+    }
+
     #[test]
     fn late_push_ack_and_replayed_edit_cannot_erase_newer_text_after_restart() {
         let directory = tempfile::tempdir().unwrap();

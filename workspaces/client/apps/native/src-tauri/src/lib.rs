@@ -456,6 +456,8 @@ async fn client_request(
             | "drafts.import"
             | "drafts.edit"
             | "drafts.dismiss"
+            | "drafts.queue"
+            | "drafts.queued"
             | "drafts.refresh"
             | "desktop.openExternal"
             | studio_client_core::desktop::SIGN_IN_OPEN_METHOD

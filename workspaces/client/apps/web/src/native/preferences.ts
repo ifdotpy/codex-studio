@@ -1,6 +1,6 @@
 import { importBrowserProfile } from "./importBrowserProfile.ts";
 import { combineBrowserProfiles } from "./combineBrowserProfiles.ts";
-import { setNativeJournalStorage } from "./draftJournal";
+import { setLegacyDraftStorage } from "./legacyDrafts";
 import { hasNativeClient, nativeRequest } from "./client";
 import { isNativeFrame } from "./frame";
 import { serverViewId } from "../servers/environment";
@@ -49,8 +49,14 @@ export async function initializeNativePreferences() {
             : { owner: chunk.owner || "root", sha256: chunk.sha256 },
         ),
     );
+<<<<<<< head
   // The draft recovery journal stays in WebView storage until step 6 moves it.
   setNativeJournalStorage(globalThis.localStorage);
+||||||| base
+  setNativeJournalStorage(window.localStorage);
+=======
+  setLegacyDraftStorage(window.localStorage);
+>>>>>>> step6-drafts
   const invoke = isNativeFrame()
     ? <T>(method: string, params: unknown, id?: string) =>
         nativeRequest<T>("browser.preferences", { method, params }, id)

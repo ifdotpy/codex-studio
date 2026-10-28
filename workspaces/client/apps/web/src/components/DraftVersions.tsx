@@ -2,7 +2,7 @@ import { localDateTime } from "../local-time";
 import { ActionIcon, Button, Popover } from "@mantine/core";
 import { Files } from "lucide-react";
 import { useState } from "react";
-import type { DraftVersion } from "../sync/drafts";
+import type { DraftVersion } from "../generated/rustOwned";
 
 export default function DraftVersions(p: {
   versions: DraftVersion[];
