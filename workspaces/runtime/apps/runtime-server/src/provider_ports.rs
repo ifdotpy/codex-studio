@@ -282,7 +282,7 @@ async fn provider_read(
     }
     let receipt = session
         .provider_request(ProviderRequest {
-            root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+            root_request_id: String::new(),
             admitted_request: None,
             account: scope.account.clone(),
             operation: operation.clone(),
@@ -646,8 +646,8 @@ impl ProviderTitleRequestPort {
         let title = title.clone();
         let root_request_id = title.root_request_id.clone();
         let admitted_request =
-            if studio_runtime_services::account_worker::retained::ProviderReadMethod::from_method(
-                method,
+            if studio_runtime_services::account_worker::retained::ProviderReadMethod::from_request(
+                method, &params,
             )
             .is_some()
             {
