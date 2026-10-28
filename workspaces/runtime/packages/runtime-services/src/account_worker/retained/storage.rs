@@ -1019,8 +1019,7 @@ fn settle(
                 scope: payload.call.scope.clone(),
                 actor: actor.clone(),
                 operation: payload.call.operation.clone(),
-            })
-            .map_err(StoreError::from)?,
+            }),
         );
         AgentRepository::put(tx, &agent)?;
     }
