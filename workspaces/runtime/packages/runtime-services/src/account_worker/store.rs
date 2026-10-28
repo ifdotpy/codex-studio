@@ -3014,7 +3014,7 @@ fn set_checkpoint(
 }
 
 /// A proved attachment replaces only current stream provenance, never uncertain calls.
-pub(crate) async fn attach_provider_stream(
+pub(super) async fn attach_provider_stream(
     store: &RuntimeStore,
     account: &str,
     actor: Option<&str>,
@@ -3055,6 +3055,17 @@ pub(crate) async fn attach_provider_stream(
         }
         Ok(())
     }).await
+}
+
+#[cfg(test)]
+pub(crate) async fn attach_provider_stream_for_test(
+    store: &RuntimeStore,
+    account: &str,
+    actor: Option<&str>,
+    generation: u64,
+    connection: &str,
+) -> Result<(), WorkerError> {
+    attach_provider_stream(store, account, actor, generation, connection).await
 }
 pub(super) fn journal_committed(
     tx: &studio_runtime_store::Transaction<'_>,

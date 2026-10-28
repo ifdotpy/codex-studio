@@ -18,7 +18,7 @@ async fn current_provider_scope_reads_host_and_vm_owners() {
         }
         Ok(())
     }).await.unwrap();
-    store::attach_provider_stream(&store, "default", None, 4, "host-connection")
+    store::attach_provider_stream_for_test(&store, "default", None, 4, "host-connection")
         .await
         .unwrap();
     store::attach_provider_stream(&store, "default", Some("vm"), 7, "vm-connection")
