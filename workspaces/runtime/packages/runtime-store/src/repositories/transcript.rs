@@ -124,7 +124,7 @@ impl TranscriptRepository {
         let actor = Self::agent(transaction, agent)?;
         let deleted = actor
             .as_ref()
-            .is_none_or(|record| stored_truthy(record.get("deletedAt")));
+            .is_none_or(|record| record.get("deletedAt").is_some_and(stored_truthy));
         if let Some(actor) = actor.as_ref()
             && matches!(
                 actor.get("status").and_then(Value::as_str),
@@ -631,14 +631,14 @@ fn visible(record: &Value) -> bool {
         .is_none_or(|after_restore| after_restore.is_null())
 }
 
-fn stored_truthy(value: Option<&Value>) -> bool {
+pub(super) fn stored_truthy(value: &Value) -> bool {
     match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value.as_f64().is_some_and(|number| number != 0.0),
-        Some(Value::String(value)) => !value.is_empty(),
-        Some(Value::Array(value)) => !value.is_empty(),
-        Some(Value::Object(value)) => !value.is_empty(),
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
+        Value::String(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
     }
 }
 
