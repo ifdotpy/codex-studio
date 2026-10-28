@@ -94,6 +94,18 @@ impl AccountSessionPort for ResetBrokerSession {
     }
 }
 
+async fn retained_schema(state: &State) {
+    state
+        .bridge
+        .store
+        .transaction(|tx| {
+            studio_runtime_store::receipt_schema::create(tx)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
 fn retained_root(operation: &str) -> String {
     static ROOTS: std::sync::OnceLock<Mutex<std::collections::HashMap<String, String>>> =
         std::sync::OnceLock::new();
@@ -167,6 +179,7 @@ async fn manual_start_authorization(
 #[tokio::test]
 async fn manual_recovery_absence_never_makes_the_original_input_schedulable() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
@@ -211,6 +224,7 @@ async fn manual_recovery_absence_never_makes_the_original_input_schedulable() {
 
 async fn manual_active_start_case(restart: bool) {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
@@ -271,6 +285,7 @@ async fn manual_active_start_case(restart: bool) {
 #[tokio::test]
 async fn manual_recovery_reads_new_native_history_for_a_new_request_identity() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
@@ -328,6 +343,7 @@ async fn manual_recovery_accepts_a_live_exact_start_and_tracks_its_terminal_noti
 #[tokio::test]
 async fn manual_recovery_accepts_a_restart_exact_start_and_tracks_its_terminal_notice() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
@@ -515,6 +531,7 @@ async fn manual_restart_settlement_evidence(state: &State) -> Value {
 #[tokio::test]
 async fn retained_mcp_reconnect_binds_actor_thread_scope_and_replays_once() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -797,15 +814,8 @@ impl crate::notification_runtime_effects::NotificationPostCommitSink
 #[tokio::test]
 async fn retained_reply_replays_without_resending_and_rejects_changed_payload() {
     let state = State::new().await;
-    state
-        .bridge
-        .store
-        .transaction(|tx| {
-            studio_runtime_store::receipt_schema::create(tx)?;
-            Ok(())
-        })
-        .await
-        .unwrap();
+    retained_schema(&state).await;
+
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -835,6 +845,14 @@ async fn retained_reply_replays_without_resending_and_rejects_changed_payload() 
         receipt.result,
         RequestResult::Reply(json!({"thread":{"id":"fake-thread-0"}}))
     );
+    worker_barrier(&worker).await;
+    state.bridge.store.transaction(|tx| {
+        let outstanding:i64=tx.query_row("SELECT count(*) FROM runtime_outbox WHERE kind='provider_call' AND id LIKE 'retained:%'",[],|row|row.get(0))?;
+        let final_results:i64=tx.query_row("SELECT count(*) FROM request_results WHERE json_extract(result,'$.reply.call.operation')='history-1' AND json_extract(result,'$.reply.ack.stream_id')='default'",[],|row|row.get(0))?;
+        assert_eq!(outstanding,0,"a final call retires its transport payload");
+        assert_eq!(final_results,1,"the exact response owns committed ACK provenance");
+        Ok(())
+    }).await.unwrap();
     assert_eq!(
         port.request(call.clone()).await.unwrap().result,
         receipt.result
@@ -852,6 +870,7 @@ async fn retained_reply_replays_without_resending_and_rejects_changed_payload() 
 #[tokio::test]
 async fn concurrent_retained_operation_conflict_does_not_kill_worker() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -921,6 +940,7 @@ async fn concurrent_retained_operation_conflict_does_not_kill_worker() {
 #[tokio::test]
 async fn concurrent_exact_retained_requests_keep_uncertainty_and_replay_once() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -984,6 +1004,7 @@ async fn concurrent_exact_retained_requests_keep_uncertainty_and_replay_once() {
 #[tokio::test]
 async fn retained_checkpointed_not_sent_retries_with_the_same_ticket_once() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -1023,6 +1044,7 @@ async fn retained_checkpointed_not_sent_retries_with_the_same_ticket_once() {
 #[tokio::test]
 async fn retained_retry_lost_response_replays_unknown_without_another_send() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -1061,6 +1083,7 @@ async fn retained_retry_lost_response_replays_unknown_without_another_send() {
 #[tokio::test]
 async fn retained_uncheckpointed_not_sent_is_unknown_and_not_retried() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -1095,6 +1118,7 @@ async fn retained_retry_intent_crash_before_transport_replays_unknown_without_se
     use crate::account_worker::retained::Call;
 
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut first_peer = Peer::new();
     let mut first_worker = first_peer.worker(state.bridge.clone()).await;
     let first_port = first_worker.retained_session();
@@ -1158,6 +1182,7 @@ async fn retained_retry_intent_crash_before_transport_replays_unknown_without_se
 #[tokio::test]
 async fn retained_written_receipt_replays_after_reconnect_without_sending() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut first_peer = Peer::identity("default", 1, None);
     let mut first_worker = first_peer.worker(state.bridge.clone()).await;
     let first_port = first_worker.retained_session();
@@ -1225,6 +1250,7 @@ async fn retained_written_receipt_replays_after_reconnect_without_sending() {
 #[tokio::test]
 async fn reconnect_churn_keeps_checkpoints_bounded_by_retained_generations() {
     let state = State::new().await;
+    retained_schema(&state).await;
     for generation in 1..=8 {
         let mut peer = Peer::identity("default", generation, None);
         let mut worker = peer.worker(state.bridge.clone()).await;
@@ -1269,6 +1295,7 @@ async fn reconnect_churn_keeps_checkpoints_bounded_by_retained_generations() {
 #[tokio::test]
 async fn retained_actor_request_answer_after_same_generation_restart_is_recorded_once() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut first_peer = Peer::identity("default", 1, None);
     let mut first_worker = first_peer.worker(state.bridge.clone()).await;
     let first_port = first_worker.retained_session();
@@ -1305,6 +1332,7 @@ async fn retained_actor_request_answer_after_same_generation_restart_is_recorded
 #[tokio::test]
 async fn retained_unknown_receipt_stays_unknown_after_reconnect_without_sending() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut first_peer = Peer::identity("default", 1, None);
     let mut first_worker = first_peer.worker(state.bridge.clone()).await;
     let first_port = first_worker.retained_session();
@@ -1334,6 +1362,7 @@ async fn retained_unknown_receipt_stays_unknown_after_reconnect_without_sending(
 #[tokio::test]
 async fn crash_before_checkpoint_replays_unknown_without_resending_durable_reply() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -1400,6 +1429,7 @@ async fn crash_before_checkpoint_replays_unknown_without_resending_durable_reply
 #[tokio::test]
 async fn retained_request_rejects_a_stale_expected_connection_before_dispatch() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -1418,6 +1448,7 @@ async fn retained_request_rejects_a_stale_expected_connection_before_dispatch() 
 #[tokio::test]
 async fn actorless_account_read_only_allows_non_refreshing_voice_shape() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -1469,6 +1500,7 @@ async fn diagnostics_probe_of_each_provider_replies_without_a_receipt() {
     use crate::provider_adapter::adapter;
     use studio_runtime_providers::ProviderKind;
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -1540,6 +1572,7 @@ async fn seed_restart_input(state: &State, fail_terminal_settlement: bool) {
 
 async fn restart_history_case(outcome: &str) {
     let state = State::new().await;
+    retained_schema(&state).await;
     seed_restart_input(&state, outcome == "terminal_failure").await;
 
     let mut peer = Peer::new();
@@ -1744,6 +1777,7 @@ async fn seed_empty_recovered_message(state: &State) {
 
 async fn connection_completion_failure(case: ConnectionCompletionFailure) {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::identity("default", 2, None);
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
@@ -1836,6 +1870,7 @@ enum RestartRefusal {
 async fn restart_isolation_case(refusal: RestartRefusal) {
     let invalid_scan = matches!(refusal, RestartRefusal::Scan);
     let state = State::new().await;
+    retained_schema(&state).await;
     seed_restart_input(&state, false).await;
     if matches!(refusal, RestartRefusal::HistoryText) {
         seed_empty_recovered_message(&state).await;
@@ -1975,6 +2010,7 @@ async fn restart_isolation_case(refusal: RestartRefusal) {
 #[tokio::test]
 async fn startup_first_pass_reports_fatal_store_failure() {
     let state = State::new().await;
+    retained_schema(&state).await;
     seed_restart_input(&state, false).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
@@ -2150,6 +2186,7 @@ async fn startup_first_pass_continues_restart_with_missing_message_text() {
 
 async fn restart_turn_text_compatibility(text: Option<&str>) {
     let state = State::new().await;
+    retained_schema(&state).await;
     seed_restart_turn(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
@@ -2336,6 +2373,7 @@ async fn seed_idle_agents_before(state: &State, count: usize) {
 #[tokio::test]
 async fn startup_first_pass_reaches_a_restart_turn_after_the_first_scan_page() {
     let state = State::new().await;
+    retained_schema(&state).await;
     seed_idle_agents_before(&state, crate::recovery_runtime::MAX_SCAN_JOBS + 8).await;
     seed_restart_turn(&state).await;
     let mut peer = Peer::new();
@@ -2363,6 +2401,7 @@ async fn startup_first_pass_reaches_a_restart_turn_after_the_first_scan_page() {
 #[tokio::test]
 async fn startup_first_pass_finishes_a_completed_restart_turn_without_new_input() {
     let state = State::new().await;
+    retained_schema(&state).await;
     seed_restart_turn(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
@@ -2450,6 +2489,7 @@ async fn seed_adopted_turn_checked_while_running(state: &State) {
 #[tokio::test]
 async fn a_new_connection_rechecks_an_adopted_turn_that_its_one_check_saw_running() {
     let state = State::new().await;
+    retained_schema(&state).await;
     seed_adopted_turn_checked_while_running(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
@@ -2489,6 +2529,7 @@ async fn a_new_connection_rechecks_an_adopted_turn_that_its_one_check_saw_runnin
 #[tokio::test]
 async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let agent_id = state.agent.clone();
     let epoch = state.epoch;
     state
@@ -2658,6 +2699,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
 #[tokio::test]
 async fn retained_lost_waiter_preserves_unknown_until_exact_late_reply() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -2685,6 +2727,7 @@ async fn retained_lost_waiter_preserves_unknown_until_exact_late_reply() {
 #[tokio::test]
 async fn retained_stale_scope_settles_unknown_and_epoch_expiry_refuses_before_write() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -2703,6 +2746,7 @@ async fn retained_stale_scope_settles_unknown_and_epoch_expiry_refuses_before_wr
 #[tokio::test]
 async fn stale_retained_request_after_restart_settles_unknown_without_resend() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let old_peer = Peer::new();
     let mut old_worker = old_peer.worker(state.bridge.clone()).await;
     let old_port = old_worker.retained_session();
@@ -2729,6 +2773,7 @@ async fn stale_retained_request_after_restart_settles_unknown_without_resend() {
 #[tokio::test]
 async fn retained_authorization_refuses_deleted_agent() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -2835,6 +2880,7 @@ async fn config_read_fixture(state: &State, port: &RetainedSessionPort) -> Sessi
 #[tokio::test]
 async fn monitor_completion_config_read_finishes_before_an_unrelated_journal_checkpoint() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -2910,6 +2956,7 @@ async fn monitor_completion_config_read_finishes_before_an_unrelated_journal_che
 #[tokio::test]
 async fn monitor_completion_config_read_retries_legacy_unknown_and_lost_reply() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -3002,6 +3049,7 @@ async fn monitor_completion_config_read_retries_legacy_unknown_and_lost_reply() 
 #[tokio::test]
 async fn monitor_completion_config_read_preserves_the_command_unknown_receipt() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -3041,6 +3089,7 @@ async fn monitor_completion_config_read_preserves_the_command_unknown_receipt() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_monitor_on_a_non_default_account_reaches_its_provider() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let agent = state.agent.clone();
     let epoch = state.epoch;
     let cwd = state.record().await["cwd"].as_str().unwrap().to_owned();
@@ -3146,6 +3195,7 @@ async fn tool_monitor_on_a_non_default_account_reaches_its_provider() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_exit() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -3403,6 +3453,7 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
 #[tokio::test]
 async fn deleted_voice_stop_requires_the_exact_committed_session() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -3473,6 +3524,7 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
     };
 
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let retained = worker.retained_session();
@@ -3484,6 +3536,7 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
             epoch: state.epoch,
         },
         "history-read-test".into(),
+        retained_root("history-fixture"),
     );
     let first_deadline =
         (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
@@ -3557,6 +3610,7 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
 #[tokio::test]
 async fn retained_barrier_waits_for_committed_journal_without_owning_bridge() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -3593,6 +3647,7 @@ async fn connection_recovery_history_receipt_survives_worker_restart_without_res
     };
 
     let state = State::new().await;
+    retained_schema(&state).await;
     let before = state.record().await;
     let recovery_id = crate::recovery_policy::connection_recovery_id(&before);
     crate::account_worker::connection_recovery::begin_request(
@@ -3617,6 +3672,7 @@ async fn connection_recovery_history_receipt_survives_worker_restart_without_res
             epoch: state.epoch,
         },
         recovery_id.clone(),
+        retained_root("history-fixture"),
     );
     let deadline = (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
     let first_params = params.clone();
@@ -3646,6 +3702,7 @@ async fn connection_recovery_history_receipt_survives_worker_restart_without_res
             epoch: state.epoch,
         },
         recovery_id.clone(),
+        retained_root("history-fixture"),
     );
     let deadline = (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
     let mut second_history = second_history;
@@ -3668,6 +3725,7 @@ async fn connection_recovery_history_receipt_survives_worker_restart_without_res
 #[tokio::test]
 async fn connection_recovery_repeated_request_returns_saved_status_without_history_read() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let before = state.record().await;
     let recovery_id = crate::recovery_policy::connection_recovery_id(&before);
     let agent_id = state.agent.clone();
@@ -3768,6 +3826,7 @@ async fn recovery_reconcile_wait_does_not_hold_store_bridge_permit() {
     }
 
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
@@ -3804,6 +3863,7 @@ async fn recovery_reconcile_wait_does_not_hold_store_bridge_permit() {
         session,
         actor,
         "recovery-runtime-test".into(),
+        retained_root("history-fixture"),
     );
     let reconcile = tokio::spawn(async move {
         let observation: Arc<crate::recovery_runtime::ObservationSource> =
@@ -3867,6 +3927,7 @@ async fn recovery_reconcile_wait_does_not_hold_store_bridge_permit() {
 #[tokio::test]
 async fn retained_reply_failure_cannot_publish_a_positive_receipt() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -3905,6 +3966,7 @@ async fn retained_reply_failure_cannot_publish_a_positive_receipt() {
 #[tokio::test]
 async fn retained_committed_callback_keeps_exact_response_and_sends_once() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -3913,17 +3975,28 @@ async fn retained_committed_callback_keeps_exact_response_and_sends_once() {
         body: ResponseBody::Result(json!({"answer":"approved"})),
         fields: Default::default(),
     };
+    let callback_context = crate::provider_callbacks::CallbackContext {
+        agent: state.agent.clone(),
+        account: port.scope().account.clone(),
+        stream_id: port.scope().account.clone(),
+        connection: port.scope().connection.clone(),
+        generation: port.scope().generation,
+        epoch: state.epoch,
+        thread: "fake-thread-0".into(),
+        turn: "turn".into(),
+    };
+    let response = frame.clone();
+    let operation=state.bridge.store.transaction_with(move |tx| {
+        let input=Frame::Request(studio_runtime_providers::RequestFrame{id:RequestId::String("native-callback".into()),method:Method::ItemToolCall,params:Some(json!({"threadId":"fake-thread-0","turnId":"turn","tool":"test","arguments":{}})),fields:Default::default()});
+        crate::provider_callbacks::save_frame_response(tx,&callback_context,&input,&response).map(|identity|identity.operation_id())
+    }).await.unwrap();
+    let first_operation = operation.clone();
     let deadline = (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
     let sender = port.clone();
     let first = frame.clone();
     let task = tokio::spawn(async move {
         sender
-            .submit_committed_frame(
-                sender.scope(),
-                "canonical-operation".into(),
-                first,
-                deadline,
-            )
+            .submit_committed_frame(sender.scope(), first_operation, first, deadline)
             .await
     });
     let wire = peer.next_write().await;
@@ -3939,7 +4012,7 @@ async fn retained_committed_callback_keeps_exact_response_and_sends_once() {
     );
     assert_eq!(task.await.unwrap().unwrap(), WriteOutcome::Written);
     assert_eq!(
-        port.submit_committed_frame(port.scope(), "canonical-operation".into(), frame, deadline)
+        port.submit_committed_frame(port.scope(), operation, frame, deadline)
             .await
             .unwrap(),
         WriteOutcome::Written
@@ -3951,6 +4024,7 @@ async fn retained_committed_callback_keeps_exact_response_and_sends_once() {
 #[tokio::test]
 async fn retained_deadline_during_intent_never_writes_after_expiry() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -4004,6 +4078,7 @@ async fn retained_deadline_during_intent_never_writes_after_expiry() {
 #[tokio::test]
 async fn retained_response_before_write_receipt_stays_positive() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -4046,6 +4121,7 @@ async fn claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop() {
         ControlInvocation, ControlReply, ControlScope, ControlSession,
     };
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let session = std::sync::Arc::new(worker.claude_session().unwrap());
@@ -4100,6 +4176,7 @@ async fn claude_adapter_distinguishes_not_sent_from_unknown() {
         ("unknown", CommandReceipt::Unknown, "unknown"),
     ] {
         let state = State::new().await;
+        retained_schema(&state).await;
         let mut peer = Peer::new();
         peer.wire = studio_runtime_providers::ProviderKind::Claude.wire();
         let mut resources = test_resources().unwrap();
@@ -4156,6 +4233,7 @@ async fn claude_rewind_negative_proof_requires_both_original_identities() {
         ("original", "other", false),
     ] {
         let state = State::new().await;
+        retained_schema(&state).await;
         let mut peer = Peer::new();
         let mut worker = peer.worker(state.bridge.clone()).await;
         let session = worker.claude_session().unwrap();
@@ -4198,6 +4276,7 @@ async fn claude_rewind_negative_proof_requires_both_original_identities() {
 #[tokio::test]
 async fn retained_claude_mutation_waits_while_lightweight_read_can_progress() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     peer.wire = studio_runtime_providers::ProviderKind::Claude.wire();
     let mut resources = test_resources().unwrap();
@@ -4273,6 +4352,7 @@ async fn manual_recovery_owner_to_callback_keeps_unknown_and_exact_replay() {
     };
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
