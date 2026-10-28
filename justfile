@@ -138,6 +138,10 @@ test-crash-matrix-full *args:
 test-rust-session-fairness:
     @cargo nextest run -p studio-runtime-services --run-ignored only -E 'test(replenished_journal_and_settlement_lanes_allow_command_and_receipt_progress)'
 
+[doc("Manual heavy check: a provider child must exit within the 1-second reap grace on an idle machine.")]
+test-provider-reap-timing:
+    @cargo nextest run -p studio-runtime-process --test integration --run-ignored only -E 'test(provider_stdio::explicit_cancel_stops_and_reaps_child)'
+
 [doc("Run the 200-agent single-account two-exchange scenario for both providers (manual heavy tier).")]
 test-rust-many-agents:
     @cargo nextest run -p studio-runtime-services --lib --run-ignored only -E 'test(two_hundred_agents_complete_two_exchanges)'

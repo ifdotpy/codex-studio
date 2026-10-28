@@ -198,6 +198,8 @@ fn transport_environment_in_store(
 mod import;
 mod inventory;
 pub mod migration;
+mod switch;
+pub use switch::switch_chat;
 
 #[cfg(test)]
 mod receipt_tests {
