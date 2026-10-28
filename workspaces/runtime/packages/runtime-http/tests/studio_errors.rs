@@ -803,7 +803,7 @@ async fn malformed_and_unclassified_source_failures_remain_visible_without_priva
     let (_root, store, app) = batch_fixture().await;
     store.transaction(|tx| {
         tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.log',123) WHERE id='one'", [])?;
-        tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,error) VALUES('unknown-input','owner','user_message','private input','failed',?1,0,'unclassified password=unknown-canary')", [studio_runtime_services::event_write::unix_time().expect("time")])?;
+        tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,error) VALUES('unknown-input','owner','user','private input','failed',?1,0,'unclassified password=unknown-canary')", [studio_runtime_services::event_write::unix_time().expect("time")])?;
         Ok(())
     }).await.unwrap();
     let (_, body) = call(&app, "GET", "/api/studio-errors", None).await;
@@ -913,7 +913,8 @@ async fn malformed_receipts_agents_and_owners_do_not_poison_startup_or_following
         }
         tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.agent','bad-owner') WHERE id='one'",[])?;
         for (id,encoded) in [("http:bad-json","{"),("http:bad-shape","{\"private\":\"receipt-private-canary\"}"),("http:bad-identity","{\"id\":\"wrong-id\",\"kind\":\"http_failure\",\"reason\":\"private\",\"action\":\"details\",\"detail\":\"\",\"subject\":\"\",\"at\":1,\"diagnostics\":{\"context\":{\"source\":\"http\",\"route\":\"GET /api/example\",\"requestId\":null,\"status\":500,\"class\":\"store_data\"},\"certainty\":\"unknown\",\"causes\":[]}}") ] {
-            tx.execute("INSERT INTO runtime_error_incidents(id,kind,owner_kind,owner_id,created,last_seen,payload) VALUES(?1,'http_failure','request',?1,1000,1000,?2)",rusqlite::params![id,encoded])?;
+            let now = (studio_runtime_services::event_write::unix_time().expect("time") * 1000.0) as i64;
+            tx.execute("INSERT INTO runtime_error_incidents(id,kind,owner_kind,owner_id,created,last_seen,payload) VALUES(?1,'http_failure','request',?1,?2,?2,?3)",rusqlite::params![id,now,encoded])?;
         }
         Ok(())
     }).await.unwrap();
@@ -1062,7 +1063,7 @@ async fn a_submitted_provider_rejection_cannot_spoof_not_sent_certainty_with_err
     store.transaction(move|tx| {
         AgentRepository::put(tx,&AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":0,"status":"starting","autoWake":true,"inFlight":true,"turnEpoch":0,"error":null,"provider":"codex","name":"Worker","accountKey":"default","threadId":"thread","startAttempt":{"id":"start","epoch":0,"submitted":true,"activeAtReservation":false,"accountKey":"default","threadId":"thread","events":["submitted-input"],"connectionGeneration":1,"requestTicket":"ticket","created":now}}))?)?;
         tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('submitted-input','owner','user','Exact input','dispatching',?1,0)",[now])?;
-        tx.execute("INSERT INTO runtime_execution_attempts(id,run,record) VALUES('start','run',?1)",[json!({"id":"start","epoch":0,"runId":"run","events":["submitted-input"],"submission":"submitted"}).to_string()])?;
+        tx.execute("INSERT INTO runtime_execution_attempts(id,run,record) VALUES('start','run',?1)",[json!({"id":"start","epoch":0,"runId":"run","events":["submitted-input"],"submission":"accepted"}).to_string()])?;
         assert!(studio_runtime_store::SchedulerRepository::settle_start_rejected_provider(tx,"owner",0,"start","ticket","default",1,"thread",json!({"message":studio_runtime_schema::shared_values::PROVIDER_START_NOT_SENT_ERROR}))?);
         Ok(())
     }).await.unwrap();

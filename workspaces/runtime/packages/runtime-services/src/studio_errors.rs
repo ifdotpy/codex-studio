@@ -499,7 +499,9 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
         };
         group.failures.retain(|failure| {
             succeeded_at.is_none_or(|success| failure.created >= success)
-                && dismissed_at.is_none_or(|dismissed| failure.at > dismissed)
+                && dismissed_at.is_none_or(|dismissed| {
+                    error_incidents::timestamp_ms(failure.at).is_ok_and(|at| at > dismissed)
+                })
         });
         group.failures.sort_by(|a, b| {
             a.at.total_cmp(&b.at)
@@ -1068,7 +1070,7 @@ fn published_source_missing(tx: &Transaction<'_>) -> Result<bool, StoreError> {
              (e.id LIKE 'monitor:%' AND NOT EXISTS(SELECT 1 FROM runtime_monitors m WHERE m.id=substr(e.id,9))) OR \
              (e.id LIKE 'event:%' AND NOT EXISTS(SELECT 1 FROM runtime_events v WHERE v.id=substr(e.id,7))) OR \
              (e.id LIKE 'stored:runtime_agents:%' AND NOT EXISTS(SELECT 1 FROM runtime_agents a WHERE a.id=json_extract(e.payload,'$.value.diagnostics.context.id'))) OR \
-             ((e.id LIKE 'http:%' OR e.id LIKE 'recovery:%') AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id='studio-errors:incident:'||e.id)) OR \
+             ((e.id LIKE 'http:%' OR e.id LIKE 'recovery:%') AND NOT EXISTS(SELECT 1 FROM runtime_error_incidents r WHERE r.id=e.id AND r.payload!='null')) OR \
              (json_extract(e.payload,'$.value.action')!='details' AND NOT EXISTS(SELECT 1 FROM runtime_agents a WHERE a.id=json_extract(e.payload,'$.value.agentId')))))",
         )?
         .query_row([], |row| row.get(0))?)
@@ -1114,13 +1116,13 @@ fn last_rule_success(
 }
 
 /// Dismissed row ids, each with the Unix seconds of its latest dismissal.
-fn dismissed(tx: &Transaction<'_>) -> Result<std::collections::BTreeMap<String, f64>, StoreError> {
+fn dismissed(tx: &Transaction<'_>) -> Result<std::collections::BTreeMap<String, i64>, StoreError> {
     let mut statement = tx.prepare_cached(
-        "SELECT id,dismissed_at/1000.0 FROM runtime_error_incidents WHERE dismissed_at IS NOT NULL",
+        "SELECT id,dismissed_at FROM runtime_error_incidents WHERE dismissed_at IS NOT NULL",
     )?;
     let ids = statement
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?
         .collect::<Result<_, _>>()?;
     Ok(ids)

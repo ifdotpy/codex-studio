@@ -1233,13 +1233,13 @@ async fn a_write_that_cannot_change_studio_errors_does_not_rebuild_them() {
     .await;
     write(
         &store,
-        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'fixture','{}')",
+        "INSERT INTO request_results(id,signature,result,created) VALUES(?1,'fixture','{\"actor\":null,\"reply\":{},\"references\":[]}',1)",
         vec!["fixture:receipt".into()],
     )
     .await;
     write(
         &store,
-        "DELETE FROM runtime_operation_receipts WHERE id=?1",
+        "DELETE FROM request_results WHERE id=?1",
         vec!["fixture:receipt".into()],
     )
     .await;
@@ -1336,8 +1336,8 @@ async fn every_studio_error_change_still_publishes_with_its_source_write() {
     );
     write(
         &store,
-        "DELETE FROM runtime_operation_receipts WHERE id=?1",
-        vec![format!("studio-errors:dismissed:{lost_a}")],
+        "DELETE FROM runtime_error_incidents WHERE id=?1",
+        vec![lost_a.clone()],
     )
     .await;
     assert!(

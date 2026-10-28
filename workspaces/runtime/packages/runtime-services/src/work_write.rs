@@ -625,7 +625,7 @@ pub async fn next_archive_retry_at(
         .read_async("runtime-services/work_write", move |connection| {
             let accepted: Option<f64> = connection
                 .query_row(
-                    "SELECT archive_next_at FROM runtime_work WHERE archive_status IN ('pending','retryable','unknown') AND json_type(record,'$.archiveIntent.nextAttemptAt') IN ('integer','real') AND CAST(archive_next_at AS REAL)>?1 ORDER BY archive_next_at,id LIMIT 1",
+                    "SELECT archive_next_at FROM runtime_work WHERE archive_status IN ('pending','retryable','unknown') AND json_type(record,'$.archiveIntent.nextAttemptAt') IN ('integer','real') AND archive_next_at>?1 ORDER BY archive_next_at,id LIMIT 1",
                     [now],
                     |row| row.get(0),
                 )
@@ -825,7 +825,7 @@ fn accepted_archive_due_records(
 ) -> Result<Vec<(String, String)>, WorkWriteError> {
     let mut statement = connection
         .prepare(
-            "SELECT id,json_extract(record,'$.archiveIntent') FROM runtime_work WHERE archive_status IN ('pending','retryable','unknown') AND COALESCE(archive_next_at,0)<=?1 ORDER BY archive_next_at,id LIMIT ?2",
+            "SELECT id,json_extract(record,'$.archiveIntent') FROM runtime_work WHERE archive_status IN ('pending','retryable','unknown') AND archive_next_at<=?1 ORDER BY archive_next_at,id LIMIT ?2",
         )
         .map_err(studio_runtime_store::StoreError::from)?;
     Ok(statement
