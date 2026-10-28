@@ -1889,9 +1889,9 @@ test("STUDIO_RETEST=1 switches only the Rust workspace step", () => {
     )!;
   };
   try {
-    assert.equal(rust().commands![0][0], "cargo");
+    assert.equal(rust().commands![0]![0], "cargo");
     assert.equal(rust().crateReuse, true);
-    assert.equal(rust("0").commands![0][0], "cargo");
+    assert.equal(rust("0").commands![0]![0], "cargo");
     const retest = rust("1");
     assert.deepEqual(retest.commands![0], [
       "layr-retest",
