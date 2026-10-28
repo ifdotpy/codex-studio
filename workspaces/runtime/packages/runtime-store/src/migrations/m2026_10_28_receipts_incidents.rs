@@ -91,6 +91,9 @@ impl ReceiptFamilyMigration for Family {
         Ok(next)
     }
     fn finish(&self, tx: &Transaction<'_>) -> Result<()> {
+        if !crate::receipt_migration_contract::source_exists(tx, SOURCE)? {
+            return Ok(());
+        }
         let remaining: bool = tx.query_row(
             &format!("SELECT EXISTS(SELECT 1 FROM {SOURCE} WHERE {PREDICATE})"),
             [],
