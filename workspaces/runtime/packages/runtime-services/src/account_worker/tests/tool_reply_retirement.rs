@@ -1,8 +1,13 @@
-//! A managed tool call keeps no reply row: its durable tool result rebuilds
-//! the answer. No row can leak on any write outcome, and no count of rows can
-//! turn a committed tool call into a reported failure.
+//! Tool results and callback identity fences survive transport retirement.
+//! Written responses retire from the outbox; uncertain responses stay held.
+//! Outstanding response bodies never turn a committed tool into a refusal.
 #![cfg(unix)]
 use super::*;
+use crate::tool_requests::{self, CallbackTask};
+use studio_runtime_schema::persistence::{
+    OutboxKind, OutboxStatus, ToolRequestKind, ToolRequestStatus,
+};
+use studio_runtime_store::outbox::Outbox;
 
 /// The former per-account reply cap (deleted with B1); a call past it must
 /// still succeed.
@@ -44,24 +49,27 @@ impl crate::provider_callbacks::tools::StatusWatchPort for ImmediateStatus {
     }
 }
 
-/// All provider callback rows and callback reply links.
-async fn reply_rows(state: &State) -> (i64, i64) {
+/// Canonical response obligations and accepted callbacks still owing delivery.
+async fn delivery_rows(state: &State) -> (i64, i64) {
+    state.bridge.run(|store|async move {
+        let db=store.test_reader()?;
+        Ok((db.query_row("SELECT count(*) FROM runtime_outbox WHERE kind=?1",[OutboxKind::ProviderCallback],|row|row.get(0))?,
+            db.query_row("SELECT count(*) FROM runtime_tool_requests WHERE kind=?1 AND status IN (?2,?3,?4) AND json_type(record,'$.payload.accepted')='object'",rusqlite::params![ToolRequestKind::ProviderCallback,ToolRequestStatus::Queued,ToolRequestStatus::Running,ToolRequestStatus::Unknown],|row|row.get(0))?))
+    }).await.expect("canonical callback obligations")
+}
+async fn delivery_states(state: &State) -> Vec<OutboxStatus> {
     state
         .bridge
         .run(|store| async move {
-            let connection = store.test_reader()?;
-            let count = |sql: &str| connection.query_row(sql, [], |row| row.get::<_, i64>(0));
-            Ok((
-                count(
-                    "SELECT count(*) FROM runtime_operation_receipts WHERE signature='provider-callback'",
-                )?,
-                count(
-                    "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:callback:%:reply'",
-                )?,
-            ))
+            let db = store.test_reader()?;
+            let mut query =
+                db.prepare("SELECT status FROM runtime_outbox WHERE kind=?1 ORDER BY id")?;
+            Ok(query
+                .query_map([OutboxKind::ProviderCallback], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?)
         })
         .await
-        .expect("reply row counts")
+        .expect("delivery states")
 }
 
 pub(super) async fn running_tool_turn(
@@ -179,15 +187,15 @@ async fn scenario_prepared_replies_of_the_live_turn_do_not_fail_a_tool_call(
                             rpc_id: studio_runtime_providers::RequestId::Number(index as u64),
                             attempt: format!("attempt-{index}"),
                         };
-                        let value = json!({
-                            "identity":identity, "signature":"signature",
-                            "body":{"result":{"success":true,"contentItems":[]}},
-                            "delivery":"prepared", "toolRequest":format!("leaked-{index}"),
-                        });
-                        tx.execute(
-                            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'provider-callback',?2)",
-                            [crate::provider_callbacks::reply_key(&identity), value.to_string()],
-                        )?;
+                        let input=json!({"id":index,"method":"item/tool/call","params":{"threadId":"fake-thread-0","turnId":"turn","callId":format!("leaked-{index}"),"tool":"orchestration_status","arguments":{}}});
+                        let response=json!({"id":index,"result":{"success":true,"contentItems":[]}});
+                        let studio_runtime_providers::DecodedJournalPayload::Frame(input)=studio_runtime_providers::decode_journal_value(1,1,&input).payload else { panic!("input frame") };
+                        let studio_runtime_providers::DecodedJournalPayload::Frame(response)=studio_runtime_providers::decode_journal_value(1,1,&response).payload else { panic!("response frame") };
+                        let reply=crate::provider_callbacks::save_frame_response(tx,&identity.context,&input,&response).map_err(|error|StoreError::SchemaMismatch(error.to_string()))?;
+                        let key=crate::provider_callbacks::callback_origin_key(&reply.context,&reply.rpc_id);
+                        let mut obligation=Outbox::get::<crate::provider_callbacks::CallbackResponse>(tx,&key)?.expect("prepared response");
+                        obligation.payload.tool_request=Some(format!("leaked-{index}"));
+                        Outbox::put(tx,&obligation)?;
                     }
                     Ok(())
                 })
@@ -198,47 +206,132 @@ async fn scenario_prepared_replies_of_the_live_turn_do_not_fail_a_tool_call(
         .expect("seed prepared replies of the live turn");
     answered_tool_call(&state, &mut peer, FORMER_REPLY_CAP).await;
     assert_eq!(
-        reply_rows(&state).await,
+        delivery_rows(&state).await,
         (FORMER_REPLY_CAP as i64, 0),
-        "tool calls add no reply row or link"
+        "the written tool response retires; existing pending obligations remain"
     );
     worker.shutdown().await.expect("worker shutdown");
 }
 
-/// No write outcome (written, unknown, not sent, closed connection) leaves a
-/// reply row behind: none is ever created.
-async fn scenario_no_write_outcome_leaves_a_reply_row(
+/// A written answer retires its obligation. Unknown and lost outcomes remain
+/// held; a proven NotSent permits only a new delivery of the saved tool result.
+async fn scenario_callback_delivery_preserves_uncertainty(
     provider: studio_runtime_providers::ProviderKind,
 ) {
-    for outcome in ["written", "unknown", "not-sent", "closed"] {
+    for outcome in [
+        Some(WriteOutcome::Written),
+        Some(WriteOutcome::Unknown),
+        Some(WriteOutcome::NotSent),
+        None,
+    ] {
         let state = State::new().await;
         let mut peer = Peer::new();
         let mut worker = running_tool_turn(&state, &mut peer, provider).await;
-        let (_cursor, callback) = tool_call(&mut peer, 0).await;
+        let (cursor, callback) = tool_call(&mut peer, 0).await;
+        let original = callback.value.clone();
         assert_eq!(
-            reply_rows(&state).await,
-            (0, 0),
-            "{outcome}: before the receipt"
+            delivery_rows(&state).await,
+            (1, 1),
+            "{outcome:?}: one canonical response before its receipt"
         );
+        assert_eq!(delivery_states(&state).await, [OutboxStatus::Submitted]);
         match outcome {
-            "written" => drop(callback.receipt.send(CommandReceipt::Written {
+            Some(WriteOutcome::Written) => drop(callback.receipt.send(CommandReceipt::Written {
                 remote_id: None,
                 duplicate: false,
             })),
-            "unknown" => drop(callback.receipt.send(CommandReceipt::Unknown)),
-            "not-sent" => drop(callback.receipt.send(CommandReceipt::NotSent)),
-            _ => drop(callback.receipt),
+            Some(WriteOutcome::Unknown) => drop(callback.receipt.send(CommandReceipt::Unknown)),
+            Some(WriteOutcome::NotSent) => {
+                drop(callback.receipt.send(CommandReceipt::NotSent));
+                let retry = peer.next_write().await;
+                assert_eq!(
+                    retry.value, original,
+                    "NotSent reuses the exact completed tool result"
+                );
+                drop(retry.receipt.send(CommandReceipt::Written {
+                    remote_id: None,
+                    duplicate: false,
+                }));
+            }
+            None => drop(callback.receipt),
         }
-        // An uncertain callback write ends the worker with that error.
         let shutdown = worker.shutdown().await;
-        if outcome == "written" {
-            shutdown.expect("worker shutdown");
+        if matches!(outcome, Some(WriteOutcome::Written | WriteOutcome::NotSent)) {
+            shutdown.expect("written callback shutdown");
+            assert_eq!(
+                delivery_rows(&state).await,
+                (0, 0),
+                "written response body retires"
+            );
+        } else {
+            assert!(
+                matches!(shutdown, Err(WorkerError::CallbackUnknown)),
+                "{outcome:?}: {shutdown:?}"
+            );
+            assert_eq!(
+                delivery_rows(&state).await,
+                (1, 1),
+                "{outcome:?}: uncertainty is retained"
+            );
+            assert_eq!(delivery_states(&state).await, [OutboxStatus::Unknown]);
         }
+        let task = tool_requests::get_callback::<
+            crate::account_worker::callback_record::CallbackObligation,
+        >(
+            &state.bridge.store.test_reader().unwrap(),
+            &format!("callback:default:1:{cursor}"),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(
-            reply_rows(&state).await,
-            (0, 0),
-            "{outcome}: after the receipt"
+            task.status,
+            if matches!(outcome, Some(WriteOutcome::Written | WriteOutcome::NotSent)) {
+                ToolRequestStatus::Completed
+            } else {
+                ToolRequestStatus::Unknown
+            }
         );
+        let db = state.bridge.store.test_reader().unwrap();
+        let raw: String = db
+            .query_row(
+                "SELECT record FROM runtime_tool_requests WHERE id=?1",
+                [&task.payload.root_request_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let owner: CallbackTask<crate::provider_callbacks::CallbackOwner> =
+            serde_json::from_str(&raw).unwrap();
+        let token = owner.payload.admission.as_ref().unwrap();
+        let saved = studio_runtime_store::request_results::RequestResults::replay(
+            &db,
+            token.id(),
+            token.signature(),
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .unwrap();
+        if matches!(outcome, Some(WriteOutcome::Written | WriteOutcome::NotSent)) {
+            assert_eq!(
+                owner.status,
+                ToolRequestStatus::Completed,
+                "the generation fence survives response retirement"
+            );
+            let exact: studio_runtime_store::request_results::ResultEnvelope<
+                crate::provider_callbacks::CallbackResponse,
+            > = serde_json::from_str(&saved.expect("exact written response").result).unwrap();
+            let crate::provider_callbacks::CallbackBody::Result(value) = exact.reply.body else {
+                panic!("successful tool body")
+            };
+            assert_eq!(
+                value, original["result"],
+                "the replay store owns the exact original response"
+            );
+        } else {
+            assert_eq!(owner.status, ToolRequestStatus::Unknown);
+            assert!(
+                saved.is_none(),
+                "uncertain delivery has no fabricated completed response"
+            );
+        }
     }
 }
 
@@ -259,15 +352,17 @@ async fn claude_prepared_replies_of_the_live_turn_do_not_fail_a_tool_call() {
 }
 
 #[tokio::test]
-async fn codex_no_write_outcome_leaves_a_reply_row() {
-    scenario_no_write_outcome_leaves_a_reply_row(studio_runtime_providers::ProviderKind::Codex)
+async fn codex_callback_delivery_preserves_uncertainty() {
+    scenario_callback_delivery_preserves_uncertainty(studio_runtime_providers::ProviderKind::Codex)
         .await;
 }
 
 #[tokio::test]
-async fn claude_no_write_outcome_leaves_a_reply_row() {
-    scenario_no_write_outcome_leaves_a_reply_row(studio_runtime_providers::ProviderKind::Claude)
-        .await;
+async fn claude_callback_delivery_preserves_uncertainty() {
+    scenario_callback_delivery_preserves_uncertainty(
+        studio_runtime_providers::ProviderKind::Claude,
+    )
+    .await;
 }
 
 /// With no reply row, only the callback record stops a second send: a replay
@@ -316,23 +411,23 @@ async fn scenario_replay_after_an_unknown_write_never_sends_the_reply_again(
         sent.iter().all(|write| write["id"] != "tool-call-0"),
         "the reply is never written twice: {sent:?}"
     );
-    assert_eq!(reply_rows(&state).await, (0, 0));
-    let record = state
-        .bridge
-        .run(move |store| async move {
-            store
-                .transaction_with(move |tx| {
-                    Ok(["accepted", "submitted", "unknown"].map(|phase| {
-                        store::receipt(tx, &format!("callback:default:1:{cursor}"), phase)
-                            .expect("callback phase")
-                            .is_some()
-                    }))
-                })
-                .await
-        })
-        .await
-        .unwrap();
-    assert_eq!(record, [true; 3], "the uncertain record stays held");
+    assert_eq!(delivery_rows(&state).await, (1, 1));
+    assert_eq!(delivery_states(&state).await, [OutboxStatus::Unknown]);
+    let db = state.bridge.store.test_reader().unwrap();
+    let task = tool_requests::get_callback::<
+        crate::account_worker::callback_record::CallbackObligation,
+    >(&db, &format!("callback:default:1:{cursor}"))
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        task.status,
+        ToolRequestStatus::Unknown,
+        "the uncertain obligation stays held"
+    );
+    assert!(
+        task.payload.submitted.is_some(),
+        "the exact response provenance stays with its owner"
+    );
 }
 
 #[tokio::test]
