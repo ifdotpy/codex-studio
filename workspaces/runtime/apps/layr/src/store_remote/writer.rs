@@ -1060,10 +1060,29 @@ mod tests {
                 std::fs::write(project.state_path(&id).join("payload"), format!("version {}\n", if n == 3 { 1 } else { n }))
                     .unwrap();
                 std::fs::write(project.state_path(&id).join("stable"), b"unchanged parent content\n").unwrap();
-                let state: StateRec = serde_json::from_value(serde_json::json!({"id":id,"kind":"commit",
-                    "subvol":crate::ids::new_id(),"author":{"name":"Test","email":"test@example.test"},
-                    "parents":parents,"time":crate::ids::now_ms()}))
-                .unwrap();
+                let state = StateRec {
+                    id: id.clone(),
+                    kind: crate::model::StateKind::Commit,
+                    change_id: None,
+                    derived_from: None,
+                    context: None,
+                    parents: parents.clone(),
+                    line: None,
+                    subvol: crate::ids::new_id(),
+                    author: crate::model::Author {
+                        name: "Test".into(),
+                        email: "test@example.test".into(),
+                        ..Default::default()
+                    },
+                    message: String::new(),
+                    time: crate::ids::now_ms(),
+                    running: false,
+                    conflicts: vec![],
+                    caches: Default::default(),
+                    cache_by: None,
+                    cache_shared: false,
+                    cache_platform: None,
+                };
                 let mut record = Record::new("state");
                 record.states.push(state);
                 project.append(record, &ctx.actor()).unwrap();

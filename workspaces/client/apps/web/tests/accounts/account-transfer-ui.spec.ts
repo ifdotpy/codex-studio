@@ -499,9 +499,15 @@ test("Account Transfer Ui", async ({
         .getByRole("button", { name: "Main agent settings", exact: true })
         .click();
     await agentSettings.waitFor();
-    const transferStatus = agentSettings.locator(
+    const transferDialog = page.getByRole("dialog", {
+      name: "Account transfer",
+    });
+    const transferStatus = transferDialog.locator(
       ".account-menu-note[role=status]",
     );
+    await expect(
+      agentSettings.locator(".account-menu-note[role=status]"),
+    ).toHaveCount(0);
     await transferStatus.waitFor();
     assert.equal(
       bodies.filter((b) => b.path === "/api/agents/account-transfer").length,
@@ -533,6 +539,7 @@ test("Account Transfer Ui", async ({
     const firstRequestId = bodies.find(
       (b) => b.path === "/api/agents/account-transfer",
     )!.body.request_id;
+    await transferDialog.getByRole("button", { name: "Close" }).click();
     await accountTileButton(page, "Main agent account", "Work").click();
     const extension = page.getByRole("dialog", {
       name: "Add agents to this transfer",
@@ -584,6 +591,7 @@ test("Account Transfer Ui", async ({
     await chatSettings
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();
+    await page.getByRole("button", { name: "View transfer status" }).click();
     const cancelResponse = page.waitForResponse(
       (response) =>
         response.url().endsWith("/api/agents/account-transfer") &&
@@ -627,8 +635,9 @@ test("Account Transfer Ui", async ({
       .getByRole("dialog", { name: "Chat settings", exact: true })
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();
+    await page.getByRole("button", { name: "View transfer status" }).click();
     const failedTransferStatus = page
-      .locator(".execution-dropdown")
+      .getByRole("dialog", { name: "Account transfer" })
       .locator(".account-menu-note[role=status]")
       .filter({ hasText: "Native receipt unavailable" })
       .first();
@@ -681,7 +690,7 @@ test("Account Transfer Ui", async ({
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();
     await page
-      .locator(".execution-dropdown")
+      .getByRole("dialog", { name: "Account transfer" })
       .locator(".account-menu-note[role=status]")
       .filter({ hasText: "Source rollout is missing" })
       .first()
@@ -697,7 +706,7 @@ test("Account Transfer Ui", async ({
         ).body.request_id === "blocked-lead-transfer",
     );
     await page
-      .locator(".execution-dropdown")
+      .getByRole("dialog", { name: "Account transfer" })
       .locator(".account-menu-note[role=status]")
       .filter({ hasText: "Source rollout is missing" })
       .getByRole("button", { name: "Retry", exact: true })
@@ -734,7 +743,7 @@ test("Account Transfer Ui", async ({
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();
     await page
-      .locator(".execution-dropdown")
+      .getByRole("dialog", { name: "Account transfer" })
       .locator(".account-menu-note[role=status]")
       .filter({ hasText: "The source account is offline" })
       .getByRole("button", { name: "Retry", exact: true })
@@ -770,7 +779,7 @@ test("Account Transfer Ui", async ({
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();
     const historyProgress = page
-      .locator(".execution-dropdown")
+      .getByRole("dialog", { name: "Account transfer" })
       .locator(".account-menu-note[role=status]")
       .getByText("History transfer in progress: 1 remaining.", { exact: true })
       .first();
@@ -824,8 +833,9 @@ test("Account Transfer Ui", async ({
       .getByRole("dialog", { name: "Chat settings", exact: true })
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();
+    await page.getByRole("button", { name: "View transfer status" }).click();
     const completedTransferStatus = page
-      .locator(".execution-dropdown")
+      .getByRole("dialog", { name: "Account transfer" })
       .locator(".account-menu-note[role=status]")
       .filter({ hasText: "Claude worker left on source" })
       .first();

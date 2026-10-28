@@ -195,7 +195,8 @@ fn put(db: &Transaction<'_>, table: &'static str, value: &Value) -> Result<(), P
     )?;
     Ok(())
 }
-fn idle(db: &Connection, agents: &[Value]) -> Result<(), ProjectsError> {
+/// Shared idle gate for user actions that change a chat's owner or workspace.
+pub(crate) fn idle(db: &Connection, agents: &[Value]) -> Result<(), ProjectsError> {
     let ids = agents
         .iter()
         .filter_map(|a| a["id"].as_str())
@@ -212,31 +213,27 @@ fn idle(db: &Connection, agents: &[Value]) -> Result<(), ProjectsError> {
             || truthy(a.get("prepareAttempt"))
         {
             return Err(ProjectsError::Invalid(
-                "Finish the active or queued turn before moving",
+                "Finish the active or queued turn first",
             ));
         }
         if truthy(a.get("workspaceOperation")) {
             return Err(ProjectsError::Invalid(
-                "Finish the pending workspace operation before moving",
+                "Finish the pending workspace operation first",
             ));
         }
         if truthy(a.get("accountTransferId"))
             || truthy(a.get("lazyAccountTransfer"))
             || a["accountTransfer"]["status"] == "pending"
         {
-            return Err(ProjectsError::Invalid(
-                "Finish the account transfer before moving",
-            ));
+            return Err(ProjectsError::Invalid("Finish the account transfer first"));
         }
         if matches!(
             a["nativeRelease"]["phase"].as_str(),
             Some("pending" | "checking" | "releasing")
         ) {
-            return Err(ProjectsError::Invalid(
-                "Finish the native release before moving",
-            ));
+            return Err(ProjectsError::Invalid("Finish the native release first"));
         }
-        if db.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND status IN ('pending','reserved','dispatching','uncertain'))",[a["id"].as_str().unwrap_or_default()],|r|r.get::<_,bool>(0))? {return Err(ProjectsError::Invalid("Finish pending input before moving these chats"));}
+        if db.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND status IN ('pending','reserved','dispatching','uncertain'))",[a["id"].as_str().unwrap_or_default()],|r|r.get::<_,bool>(0))? {return Err(ProjectsError::Invalid("Finish pending input first"));}
     }
     for table in [
         "runtime_tasks",
@@ -288,9 +285,7 @@ fn idle(db: &Connection, agents: &[Value]) -> Result<(), ProjectsError> {
                 _ => false,
             };
             if busy {
-                return Err(ProjectsError::Invalid(
-                    "Finish pending operations before moving these chats",
-                ));
+                return Err(ProjectsError::Invalid("Finish pending operations first"));
             }
         }
     }
