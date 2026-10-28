@@ -64,7 +64,7 @@ impl ClaudeSessionPort for ClaudePort {
                 return Err(ControlError::Conflict);
             }
             let request = call.identity.scope.request_id.clone().unwrap_or_default();
-            if ProviderReadMethod::from_method(call.identity.method).is_none()
+            if ProviderReadMethod::from_request(call.identity.method, &params).is_none()
                 && uuid::Uuid::parse_str(&request)
                     .ok()
                     .is_none_or(|root| root.get_version_num() != 7)
