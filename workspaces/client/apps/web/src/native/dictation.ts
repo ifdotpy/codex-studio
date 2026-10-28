@@ -3,6 +3,7 @@ import type { NativeEvent } from "./host";
 import type { DesktopBridge } from "../desktop";
 import { hasNativeClient, listenNativeEvents, nativeRequest } from "./client";
 import { isNativeFrame } from "./frame";
+import { encodeBase64 } from "./base64";
 
 type SpeechBridge = Pick<
   DesktopBridge,
@@ -12,12 +13,6 @@ type SpeechBridge = Pick<
   | "cancelTranscription"
   | "onTranscriptionProgress"
 >;
-function encoded(bytes: Uint8Array) {
-  const parts: string[] = [];
-  for (let offset = 0; offset < bytes.length; offset += 16384)
-    parts.push(String.fromCharCode(...bytes.subarray(offset, offset + 16384)));
-  return btoa(parts.join(""));
-}
 export function createNativeDictation(
   request: typeof nativeRequest = nativeRequest,
   listen: typeof listenNativeEvents = listenNativeEvents,
@@ -52,7 +47,7 @@ export function createNativeDictation(
           await request("speech.uploadChunk", {
             transfer,
             offset,
-            base64: encoded(bytes.subarray(offset, offset + 256 * 1024)),
+            base64: encodeBase64(bytes.subarray(offset, offset + 256 * 1024)),
           });
         }
         check();

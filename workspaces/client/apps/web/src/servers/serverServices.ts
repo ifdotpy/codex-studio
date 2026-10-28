@@ -1,6 +1,8 @@
 import { watchServerName } from "./serverNames";
 import { createSessionCostCache } from "../usage/sessionCostCache";
 import { createUploads, UPLOAD_DATABASE_NAME } from "../sync/uploads";
+import { createNativeUploads } from "../native/uploads";
+import { createNativeRecordings } from "../native/recordings";
 import { createServerAudio } from "../native/serverAudio";
 import {
   createRecordingStorage,
@@ -120,18 +122,21 @@ export function createServerServices(server: StudioServer) {
     storage,
     storageNameForServer(transport.owner.id, LOCAL_DRAFT_DATABASE_NAME),
   );
-  const uploads = createUploads({
-    databaseName: storageNameForServer(
-      transport.owner.id,
-      UPLOAD_DATABASE_NAME,
-    ),
-    storage,
-    syncGet: api.syncGet,
-    syncPost: api.syncPost,
-    refreshSession: api.refreshSession,
-    writeLocalDraft: localDrafts.writeLocalDraft,
-    syncDatabase: () => synchronization().sync.syncDatabase(),
-  });
+  // The native core owns uploads and recordings of the local server. Other servers keep the page stores.
+  const uploads = localNativeClient()
+    ? createNativeUploads(nativeRequest)
+    : createUploads({
+        databaseName: storageNameForServer(
+          transport.owner.id,
+          UPLOAD_DATABASE_NAME,
+        ),
+        storage,
+        syncGet: api.syncGet,
+        syncPost: api.syncPost,
+        refreshSession: api.refreshSession,
+        writeLocalDraft: localDrafts.writeLocalDraft,
+        syncDatabase: () => synchronization().sync.syncDatabase(),
+      });
   let initialization: Promise<void> | undefined;
   async function ready() {
     if (!initialization) {
@@ -154,9 +159,11 @@ export function createServerServices(server: StudioServer) {
     audio,
     sessionCosts,
     chatCreations: createChatCreationStore(storage),
-    recordings: createRecordingStorage(
-      storageNameForServer(transport.owner.id, DICTATION_DATABASE_NAME),
-    ),
+    recordings: localNativeClient()
+      ? createNativeRecordings(nativeRequest)
+      : createRecordingStorage(
+          storageNameForServer(transport.owner.id, DICTATION_DATABASE_NAME),
+        ),
     localDrafts,
     uploads,
     storageEventKey: createStorageEventKey(

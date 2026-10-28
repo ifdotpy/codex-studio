@@ -1,4 +1,3 @@
-import { randomUUID } from "../uuid";
 import { hasNativeClient } from "../native/client";
 import { saveFile } from "../fileActions";
 import { useServerAudio } from "../servers/ServerServicesContext";
@@ -49,11 +48,11 @@ function NativeDictation({
   disabled?: boolean;
 }) {
   const {
+    createRecording,
     deleteRecording,
     listRecordings,
     recordingAudio,
     saveChunk,
-    saveRecording,
     updateRecording,
     beginTranscription,
     trashRecording,
@@ -191,15 +190,8 @@ function NativeDictation({
         );
       if (desktop?.requestMicrophone) await desktop.requestMicrophone();
       if (!mounted.current || scope.current !== owner) return;
-      const row: Recording = {
-        id: randomUUID(),
-        chatId: owner,
-        created: Date.now(),
-        sampleRate: 16000,
-        samples: 0,
-        state: "recording",
-      };
-      await saveRecording(row);
+      // The storage creates the recording identity and saves the row.
+      const row = await createRecording(owner);
       if (!mounted.current || scope.current !== owner) {
         await deleteRecording(row.id);
         return;
@@ -251,12 +243,11 @@ function NativeDictation({
     row: Recording,
     reservation?: ReturnType<typeof prepare>,
   ) => {
-    const owner = chatId,
-      attempt = randomUUID();
+    const owner = chatId;
+    let attempt = "";
     setBusy(row.id);
     setError("");
     setProgress("Preparing audio…");
-    attemptRef.current = attempt;
     try {
       // Reserve the native gesture synchronously, then claim this saved recording.
       const prepared =
@@ -272,8 +263,10 @@ function NativeDictation({
                 "Transcription is unavailable in this app. Use an updated desktop app with transcription support. Your recording is saved.",
               ),
             }));
-      if (!(await beginTranscription(row, attempt)))
-        throw Error("The recording was deleted.");
+      // The storage claims this saved recording and returns the attempt it owns.
+      attempt = (await beginTranscription(row)) ?? "";
+      if (!attempt) throw Error("The recording was deleted.");
+      attemptRef.current = attempt;
       const authorization = await prepared;
       if (authorization.error) throw authorization.error;
       if (cancelledAttempt.current === attempt)
@@ -301,15 +294,16 @@ function NativeDictation({
         attempt,
       );
     } catch (e) {
-      await updateRecording(
-        {
-          ...row,
-          transcriptionAttempt: attempt,
-          state: "ready",
-          error: errorDetails(e),
-        },
-        attempt,
-      ).catch(() => {});
+      if (attempt)
+        await updateRecording(
+          {
+            ...row,
+            transcriptionAttempt: attempt,
+            state: "ready",
+            error: errorDetails(e),
+          },
+          attempt,
+        ).catch(() => {});
     } finally {
       if (mounted.current && scope.current === owner) {
         setBusy("");
