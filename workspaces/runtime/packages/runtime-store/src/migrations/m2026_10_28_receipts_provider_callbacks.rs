@@ -45,6 +45,10 @@ struct LegacyIdentity {
     context: LegacyContext,
     rpc_id: LegacyRpc,
 }
+#[derive(Deserialize)]
+struct LegacyIdentityRecord {
+    identity: LegacyIdentity,
+}
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 enum LegacyRpc {
@@ -55,9 +59,9 @@ fn identity(
     tx: &Transaction<'_>,
     row: &SourceReceipt,
     mut identity: Value,
+    legacy: LegacyIdentity,
 ) -> Result<(String, Value)> {
-    let LegacyIdentity { context: c, rpc_id } =
-        LegacyIdentity::deserialize(&identity).map_err(|_| fail(row))?;
+    let LegacyIdentity { context: c, rpc_id } = legacy;
     if c.account.is_empty() || c.agent.is_empty() {
         return Err(fail(row));
     }
@@ -157,9 +161,16 @@ fn settle_written(
         } else {
             return Err(fail(row));
         };
+        let rpc_id = &payload["identity"]["rpc_id"];
+        let id = if let Some(value) = rpc_id.as_str() {
+            RequestId::String(value.into())
+        } else if let Some(value) = rpc_id.as_u64() {
+            RequestId::Number(value)
+        } else {
+            return Err(fail(row));
+        };
         let frame = studio_runtime_providers::Frame::Response {
-            id: serde_json::from_value(payload["identity"]["rpc_id"].clone())
-                .map_err(|_| fail(row))?,
+            id,
             body,
             fields: Default::default(),
         };
@@ -221,7 +232,21 @@ fn canonical(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<
         }
     }
     let signature = saved["signature"].as_str().ok_or_else(|| fail(row))?;
-    let (key, mut response_identity) = identity(tx, row, saved["identity"].clone())?;
+    let saved_id = if reply.is_some() {
+        base.to_owned()
+    } else if card.is_some() {
+        format!("{base}:card")
+    } else {
+        format!("{base}:resolved")
+    };
+    let raw: String = tx.query_row(
+        "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+        [&saved_id],
+        |r| r.get(0),
+    )?;
+    let legacy: LegacyIdentityRecord = serde_json::from_str(&raw).map_err(|_| fail(row))?;
+    let (key, mut response_identity) =
+        identity(tx, row, saved["identity"].clone(), legacy.identity)?;
     let admission = admitted_owner_token(base, signature, cutover);
     let previous = task(tx, &key)?;
     if reply.is_none()
@@ -343,7 +368,13 @@ fn frame(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> 
     let saved = saved.ok_or_else(|| fail(row))?;
     let operation = saved["operation"].as_str().ok_or_else(|| fail(row))?;
     let (old_origin, attempt) = operation.rsplit_once(':').ok_or_else(|| fail(row))?;
-    let scope = ConnectionScope::deserialize(&saved["scope"]).map_err(|_| fail(row))?;
+    #[derive(Deserialize)]
+    struct LegacyFrame {
+        scope: ConnectionScope,
+    }
+    let scope = serde_json::from_str::<LegacyFrame>(&row.result)
+        .map_err(|_| fail(row))?
+        .scope;
     let account = &scope.account;
     if base
         != format!(
@@ -355,7 +386,13 @@ fn frame(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> 
     }
     let bytes = saved["frame"].as_str().ok_or_else(|| fail(row))?;
     let encoded: Value = serde_json::from_str(bytes).map_err(|_| fail(row))?;
-    let _: RequestId = RequestId::deserialize(&encoded["id"]).map_err(|_| fail(row))?;
+    #[derive(Deserialize)]
+    struct EncodedFrame {
+        id: RequestId,
+    }
+    let _: RequestId = serde_json::from_str::<EncodedFrame>(bytes)
+        .map_err(|_| fail(row))?
+        .id;
     if encoded.get("result").is_some() == encoded.get("error").is_some() {
         return Err(fail(row));
     }
@@ -390,7 +427,14 @@ fn frame(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> 
             .optional()?
             .ok_or_else(|| fail(row))?;
         let envelope: ResultEnvelope<Value> = serde_json::from_str(&raw).map_err(|_| fail(row))?;
-        let (key, _identity) = identity(tx, row, envelope.reply["identity"].clone())?;
+        let legacy: ResultEnvelope<LegacyIdentityRecord> =
+            serde_json::from_str(&raw).map_err(|_| fail(row))?;
+        let (key, _identity) = identity(
+            tx,
+            row,
+            envelope.reply["identity"].clone(),
+            legacy.reply.identity,
+        )?;
         let owner = task(tx, &key)?.ok_or_else(|| fail(row))?;
         if owner["status"] != json!(ToolRequestStatus::Completed) {
             return Err(fail(row));
@@ -863,7 +907,7 @@ mod tests {
         ] {
             let value = json!({"context":{"account":"a\\\"","agent":"b\n","generation":7,"epoch":3,"thread":"t","turn":"u","connection":"c"},"rpc_id":rpc});
             let LegacyIdentity { context: c, rpc_id } =
-                LegacyIdentity::deserialize(&value).unwrap();
+                serde_json::from_str(&value.to_string()).unwrap();
             let bytes = serde_json::to_vec(&(
                 &c.account,
                 c.generation,
