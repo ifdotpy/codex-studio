@@ -1229,6 +1229,7 @@ async fn read_vm_codex_bootstrap(
                         .map_err(|error| match error {
                             studio_runtime_services::provider_callbacks::CallbackError::Store(error) => WorkerError::Store(error),
                             studio_runtime_services::provider_callbacks::CallbackError::Unknown => WorkerError::CallbackUnknown,
+                            studio_runtime_services::provider_callbacks::CallbackError::Expired => WorkerError::Expired,
                             studio_runtime_services::provider_callbacks::CallbackError::Invalid(_)
                             | studio_runtime_services::provider_callbacks::CallbackError::InvalidResultSchema(_)
                             | studio_runtime_services::provider_callbacks::CallbackError::Dependency(_)
