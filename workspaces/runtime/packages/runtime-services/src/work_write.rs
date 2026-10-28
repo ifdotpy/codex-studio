@@ -3882,6 +3882,47 @@ mod actor_tests {
         assert!(super::validate_submission_manifest(&[path]).is_err());
     }
 
+    #[tokio::test]
+    async fn receipt_domain_vm_positive_proof_survives_a_late_unknown_reply() {
+        let root = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store.transaction(|tx| {
+            let mut item = work("vm-known", Some("worker"), "running", json!([]));
+            item["vmSubmit"] = json!({"status":"completed","requestId":"evidence","taskId":"vm-known","owner":"worker","revision":"state","version":2,"created":1.0,"evidence":{"layrStateId":"state"}});
+            item["vmAccept"] = json!({"status":"completed","requestId":"merge","taskId":"vm-known","owner":"worker","revision":"state","resultId":"result","created":1.0});
+            WorkItemsRepository::put_work(tx,"vm-known",&item)?;
+            Ok(())
+        }).await.expect("positive owner proof");
+        assert_eq!(
+            super::finish_vm_submission(&store, "vm-known", "evidence", Err(true))
+                .await
+                .expect("late reply"),
+            Some(json!({"layrStateId":"state"}))
+        );
+        assert!(
+            super::finish_vm_submission(
+                &store,
+                "vm-known",
+                "evidence",
+                Ok(json!({"layrStateId":"different"}))
+            )
+            .await
+            .is_err()
+        );
+        super::finish_vm_accept(&store, "vm-known", "merge", Some(true))
+            .await
+            .expect("late merge reply");
+        let owner = store
+            .read_async("vm-proof", |db| {
+                WorkItemsRepository::work_record(db, "vm-known")
+            })
+            .await
+            .expect("read")
+            .expect("task");
+        assert_eq!(owner.value()["vmSubmit"]["status"], "completed");
+        assert_eq!(owner.value()["vmAccept"]["status"], "completed");
+    }
+
     #[cfg(not(unix))]
     #[test]
     fn submit_refuses_before_database_access_without_directory_relative_operations() {
