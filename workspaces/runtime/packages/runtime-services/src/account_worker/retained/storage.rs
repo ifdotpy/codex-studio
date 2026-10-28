@@ -345,31 +345,29 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 agent.as_deref() == Some(actor.agent.as_str())
                     && epoch == Some(actor.epoch)
                     && account.as_deref().unwrap_or("default") == call.scope.account
-                    && match call.method {
-                        Method::CommandExec => {
-                            let regular = call.operation == format!("monitor:{monitor_id}")
-                                && process_id == Some(monitor_id)
-                                && matches!(status.as_deref(), Some("starting" | "running"));
-                            let liveness = liveness_generation.is_some_and(|generation| {
-                                !generation.is_empty()
-                                    && process_id == Some(call.operation.as_str())
-                                    && status.as_deref() == Some("running")
-                            });
-                            (regular || liveness)
-                                && call.params.get("cwd").and_then(Value::as_str) == cwd.as_deref()
-                        }
-                        Method::CommandExecWrite | Method::CommandExecResize => {
-                            call.operation
-                                .starts_with(&format!("monitor-input:{monitor_id}:"))
-                                && call.operation.len()
-                                    > format!("monitor-input:{monitor_id}:").len()
+                    && if call.method == Method::CommandExec {
+                        let regular = call.operation == format!("monitor:{monitor_id}")
+                            && process_id == Some(monitor_id)
+                            && matches!(status.as_deref(), Some("starting" | "running"));
+                        let liveness = liveness_generation.is_some_and(|generation| {
+                            !generation.is_empty()
+                                && process_id == Some(call.operation.as_str())
                                 && status.as_deref() == Some("running")
-                        }
-                        Method::CommandExecTerminate => {
-                            call.operation == format!("monitor-cancel:{monitor_id}")
-                                && status.as_deref() == Some("running")
-                        }
-                        _ => false,
+                        });
+                        (regular || liveness)
+                            && call.params.get("cwd").and_then(Value::as_str) == cwd.as_deref()
+                    } else if matches!(
+                        call.method,
+                        Method::CommandExecWrite | Method::CommandExecResize
+                    ) {
+                        call.operation
+                            .starts_with(&format!("monitor-input:{monitor_id}:"))
+                            && call.operation.len() > format!("monitor-input:{monitor_id}:").len()
+                            && status.as_deref() == Some("running")
+                    } else {
+                        call.method == Method::CommandExecTerminate
+                            && call.operation == format!("monitor-cancel:{monitor_id}")
+                            && status.as_deref() == Some("running")
                     }
             })
         } else {
@@ -1088,22 +1086,22 @@ pub(in crate::account_worker) fn record_outcome(
         payload.request = Some(TransportRequest::from(&written));
         payload.written = true;
     }
-    if let Some(value) = value {
-        if !payload.outcome.as_ref().is_some_and(|old| {
+    if let Some(value) = value
+        && !payload.outcome.as_ref().is_some_and(|old| {
             matches!(
                 old.result,
                 RequestResult::Reply(_) | RequestResult::Rejected(_)
             )
-        }) {
-            if matches!(value, RequestResult::Reply(_) | RequestResult::Rejected(_)) {
-                payload.written = true;
-            }
-            payload.outcome = Some(RetainedOutcome {
-                result: value,
-                cursor,
-                committed_ack: None,
-            });
+        })
+    {
+        if matches!(value, RequestResult::Reply(_) | RequestResult::Rejected(_)) {
+            payload.written = true;
         }
+        payload.outcome = Some(RetainedOutcome {
+            result: value,
+            cursor,
+            committed_ack: None,
+        });
     }
     let accepted = payload
         .outcome
