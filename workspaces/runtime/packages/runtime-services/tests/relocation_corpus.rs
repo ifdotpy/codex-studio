@@ -3,8 +3,8 @@ use studio_runtime_schema::provider_kind::ProviderKind;
 
 use rusqlite::params;
 use serde_json::{Value, json};
-use std::{fs, path::PathBuf, process::Command};
-use studio_runtime_services::{agent_move, project_locations, relocation::identity};
+use std::{fs, path::PathBuf, process::Command, sync::Arc};
+use studio_runtime_services::{agent_move, project_locations};
 use studio_runtime_store::{
     AgentId, AgentMoveRepository, AgentRecord, AgentRepository, ProjectLocationsRepository,
     ProjectsRepository, RuntimeStore,
@@ -154,6 +154,74 @@ fn text<'a>(row: &'a Value, key: &str) -> &'a str {
 fn full() -> bool {
     std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some()
 }
+
+use studio_runtime_services::multi_server_transport::{
+    AccessError, OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
+};
+struct Peer(Value);
+impl PairedTransport for Peer {
+    fn exchange<'a>(
+        &'a self,
+        _: &'a str,
+        envelope: &'a Value,
+        _: std::time::Duration,
+    ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        Box::pin(async move {
+            Ok(json!({"requestId":envelope["requestId"],"outcome":"applied","value":self.0}))
+        })
+    }
+}
+#[tokio::test]
+async fn move_release_uses_settled_status_delivery() {
+    let fixture = Fixture::new();
+    let case = fixture.data["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["name"] == "release-waiting-not-started")
+        .unwrap();
+    let (_, store) = fixture.store("settled-move-status").await;
+    fixture.seed(&store, case).await;
+    store.transaction(|tx| {tx.execute("INSERT INTO runtime_access_clients(id,record) VALUES('peer',?1)",[json!({"id":"peer","clientId":"client","kind":"server","label":"Peer","created":1,"publicKey":"fixture-key","status":"paired"}).to_string()])?;Ok(())}).await.unwrap();
+    let store = Arc::new(store);
+    let driver = OrchestrationDriver::new(
+        store.clone(),
+        Arc::new(Peer(case["targetReceipt"].clone())),
+        Arc::new(RuntimeOrchestrationEffects::new(store.clone())),
+    );
+    let key = text(&case["operation"], "id");
+    let generation = agent_move::MoveSnapshot::from_record(&case["operation"])
+        .unwrap()
+        .reconciliation_generation();
+    let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let now = chrono::Utc::now().timestamp();
+    driver
+        .exchange(
+            "peer",
+            "move_status",
+            &json!({"move":key,"reconciliationGeneration":generation}),
+            &root,
+            now,
+        )
+        .await
+        .expect("settled status");
+    assert_eq!(
+        store
+            .test_reader()
+            .unwrap()
+            .query_row("SELECT count(*) FROM runtime_server_outbox", [], |row| row
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+        0
+    );
+    assert!(
+        agent_move::release_untransferred(&store, key, &root, now as f64)
+            .await
+            .expect("release settled status")
+    );
+}
 fn snapshot(store: &RuntimeStore) -> Value {
     let db = store.test_reader().expect("read state");
     let mut result = serde_json::Map::new();
@@ -215,29 +283,28 @@ async fn apply_move_case(
 }
 
 async fn save_status_ticket(
-    store: &RuntimeStore,
+    store: &Arc<RuntimeStore>,
     move_id: &str,
     ticket: &str,
     generation: Value,
     target_receipt: &Value,
 ) {
-    let ticket = ticket.to_owned();
-    let move_id = move_id.to_owned();
-    let target_receipt = target_receipt.clone();
-    store
-        .transaction(move |tx| {
-            tx.execute(
-                "INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,'peer',?2,'complete',?3)",
-                params![
-                    ticket,
-                    json!({"requestId":ticket,"action":"move_status","payload":{"move":move_id,"reconciliationGeneration":generation}}).to_string(),
-                    json!({"requestId":ticket,"outcome":"applied","value":target_receipt}).to_string()
-                ],
-            )?;
-            Ok(())
-        })
+    store.transaction(|tx| {tx.execute("INSERT OR IGNORE INTO runtime_access_clients(id,record) VALUES('peer',?1)",[json!({"id":"peer","clientId":"client","kind":"server","label":"Peer","created":1,"publicKey":"fixture-key","status":"paired"}).to_string()])?;Ok(())}).await.expect("peer");
+    let driver = OrchestrationDriver::new(
+        store.clone(),
+        Arc::new(Peer(target_receipt.clone())),
+        Arc::new(RuntimeOrchestrationEffects::new(store.clone())),
+    );
+    driver
+        .exchange(
+            "peer",
+            "move_status",
+            &json!({"move":move_id,"reconciliationGeneration":generation}),
+            ticket,
+            chrono::Utc::now().timestamp(),
+        )
         .await
-        .expect("save durable status ticket");
+        .expect("settle status ticket");
 }
 
 async fn complete_location(
@@ -337,6 +404,7 @@ async fn python_location_and_move_corpus_through_consumers() {
         }
         let (path, store) = fixture.store(text(case, "name")).await;
         fixture.seed(&store, case).await;
+        let store = Arc::new(store);
         let family = text(case, "family");
         let before = snapshot(&store);
         match family {
@@ -464,12 +532,18 @@ async fn python_location_and_move_corpus_through_consumers() {
             "release" => {
                 let operation = &case["operation"];
                 let key = text(operation, "id");
-                let ticket = identity(&[key, "status", "50"]);
-                let ticket_for_write = ticket.to_owned();
-                let key_for_write = key.to_owned();
-                let operation_for_write = operation.clone();
-                let target_receipt = case["targetReceipt"].clone();
-                store.transaction(move |tx|{tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,'peer',?2,'complete',?3)",params![ticket_for_write,json!({"requestId":ticket_for_write,"action":"move_status","payload":{"move":key_for_write,"reconciliationGeneration":agent_move::MoveSnapshot::from_record(&operation_for_write).expect("checked source").reconciliation_generation()}}).to_string(),json!({"requestId":ticket_for_write,"outcome":"applied","value":target_receipt}).to_string()])?;Ok(())}).await.expect("saved status proof");
+                let ticket = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+                let generation = agent_move::MoveSnapshot::from_record(operation)
+                    .expect("checked source")
+                    .reconciliation_generation();
+                save_status_ticket(
+                    &store,
+                    key,
+                    &ticket,
+                    json!(generation),
+                    &case["targetReceipt"],
+                )
+                .await;
                 assert_eq!(
                     agent_move::release_untransferred(&store, key, &ticket, now)
                         .await
@@ -1169,15 +1243,17 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
         .expect("release case");
     let (path, store) = fixture.store("status-generation").await;
     fixture.seed(&store, case).await;
+    let store = Arc::new(store);
     let now = fixture.data["now"].as_f64().expect("clock");
     let key = text(&case["operation"], "id");
     let old_generation = agent_move::MoveSnapshot::from_record(&case["operation"])
         .expect("Python-written source")
         .reconciliation_generation();
+    let old_ticket = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     save_status_ticket(
         &store,
         key,
-        "old-ticket",
+        &old_ticket,
         json!(old_generation),
         &case["targetReceipt"],
     )
@@ -1193,17 +1269,19 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
         .expect("advance source status");
     let before = snapshot(&store);
     assert!(
-        agent_move::release_untransferred(&store, key, "old-ticket", now)
+        agent_move::release_untransferred(&store, key, &old_ticket, now)
             .await
             .is_err()
     );
     assert_eq!(snapshot(&store), before);
     drop(store);
-    let store = RuntimeStore::open(Some(&path))
-        .await
-        .expect("restart preserves source generation");
+    let store = Arc::new(
+        RuntimeStore::open(Some(&path))
+            .await
+            .expect("restart preserves source generation"),
+    );
     assert!(
-        agent_move::release_untransferred(&store, key, "old-ticket", now)
+        agent_move::release_untransferred(&store, key, &old_ticket, now)
             .await
             .is_err()
     );
@@ -1212,11 +1290,8 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
         .expect("current snapshot")
         .reconciliation_generation();
     assert_ne!(generation, old_generation);
-    for (index, malformed) in [Value::Null, json!(true), json!(0), json!({})]
-        .into_iter()
-        .enumerate()
-    {
-        let ticket = format!("malformed-{index}");
+    for malformed in [Value::Null, json!(true), json!(0), json!({})].into_iter() {
+        let ticket = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         save_status_ticket(&store, key, &ticket, malformed, &case["targetReceipt"]).await;
         let before = snapshot(&store);
         assert!(
@@ -1226,16 +1301,17 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
         );
         assert_eq!(snapshot(&store), before);
     }
+    let current_ticket = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     save_status_ticket(
         &store,
         key,
-        "current-ticket",
+        &current_ticket,
         json!(generation),
         &case["targetReceipt"],
     )
     .await;
     assert!(
-        agent_move::release_untransferred(&store, key, "current-ticket", now)
+        agent_move::release_untransferred(&store, key, &current_ticket, now)
             .await
             .expect("fresh proof releases")
     );
@@ -1245,7 +1321,7 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
         .await
         .expect("restart after release");
     assert!(
-        agent_move::release_untransferred(&store, key, "current-ticket", now + 1.0)
+        agent_move::release_untransferred(&store, key, &current_ticket, now + 1.0)
             .await
             .is_err()
     );

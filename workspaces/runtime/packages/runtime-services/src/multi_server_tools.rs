@@ -487,8 +487,13 @@ impl ServerTools {
         } else {
             None
         };
-        let signature_data =
-            json!({"action": action, "project": project_id, "server": server, "path": path});
+        let signature_data = crate::project_locations::normalized_location_request(
+            action,
+            &project_id,
+            &server,
+            path.as_deref(),
+            local,
+        );
         let signature = studio_runtime_store::sha256_hex(
             studio_runtime_schema::json_compat::python_json_compact(&signature_data).as_bytes(),
         );

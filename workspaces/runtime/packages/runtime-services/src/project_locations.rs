@@ -493,6 +493,16 @@ struct LocationArguments {
     server: String,
     path: Option<String>,
 }
+pub(crate) fn normalized_location_request(
+    action: &str,
+    project: &str,
+    server: &str,
+    path: Option<&str>,
+    local: &str,
+) -> Value {
+    let server = server.trim();
+    json!({"action":action,"project":project.trim(),"server":if server == "local" { local } else { server },"path":path.map(str::trim)})
+}
 fn task_location_request(
     tx: &Transaction<'_>,
     task: &Value,
@@ -513,24 +523,29 @@ fn task_location_request(
     }
     let args: LocationArguments = serde_json::from_value(task["arguments"].clone())
         .map_err(studio_runtime_store::StoreError::from)?;
-    let server = if args.server == "local" {
+    let local = if args.server.trim() == "local" {
         RuntimeStore::transaction_local_server_id(tx)?.ok_or(LocationError::Refused(
             "The local server identity is unavailable",
         ))?
     } else {
-        args.server
+        String::new()
     };
     let path = if args.action == Action::AddLocation {
-        args.path
+        args.path.as_deref()
     } else {
         None
     };
-    let signature = sha256_hex(
-        canonical_json(
-            &json!({"action":args.action,"project":args.project,"server":server,"path":path}),
-        )
-        .as_bytes(),
-    );
+    let action = if args.action == Action::AddLocation {
+        "add_location"
+    } else {
+        "remove_location"
+    };
+    let normalized = normalized_location_request(action, &args.project, &args.server, path, &local);
+    let server = normalized["server"]
+        .as_str()
+        .expect("normalized server")
+        .to_owned();
+    let signature = sha256_hex(canonical_json(&normalized).as_bytes());
     let parent: studio_runtime_store::request_results::AdmittedRequest =
         serde_json::from_value(task["admitted"].clone())
             .map_err(studio_runtime_store::StoreError::from)?;
