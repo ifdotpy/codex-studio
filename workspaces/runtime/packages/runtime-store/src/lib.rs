@@ -30,6 +30,7 @@ pub mod receipt_schema;
 mod records;
 mod repositories;
 pub use repositories::multi_server_delivery;
+pub use repositories::terminals;
 pub use repositories::{outbox, request_results};
 mod schema;
 mod sqlite_actor;
@@ -759,6 +760,10 @@ fn identity_registry() -> &'static Mutex<HashMap<PathBuf, IdentityEntry>> {
 
 #[derive(Debug, Error)]
 pub enum StoreError {
+    #[error(transparent)]
+    RequestResult(#[from] request_results::RequestResultError),
+    #[error(transparent)]
+    Outbox(#[from] outbox::OutboxError),
     #[error("state directory is unavailable: {0}")]
     StateDirectory(#[from] std::io::Error),
     #[error("another runtime owns the state directory")]

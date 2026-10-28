@@ -21432,8 +21432,46 @@ export interface components {
     };
     /** ServerOperationRequest */
     ServerOperationRequest: {
-      /** Action */
-      action: string;
+      /** @enum {string} */
+      action:
+        | "event"
+        | "input"
+        | "message"
+        | "move_send"
+        | "location_info"
+        | "location_matches"
+        | "stop"
+        | "exec_event"
+        | "projects"
+        | "folders"
+        | "git"
+        | "export"
+        | "chunk"
+        | "exec_read"
+        | "exec_input"
+        | "exec_cancel"
+        | "release"
+        | "update.offer"
+        | "update.export"
+        | "update.chunk"
+        | "update.release"
+        | "task"
+        | "complaint"
+        | "context"
+        | "directory"
+        | "chat_read"
+        | "move_manage"
+        | "move_interrupt"
+        | "move_spawn"
+        | "exec"
+        | "exec_receipt"
+        | "browser_callback"
+        | "add_location"
+        | "remove_location"
+        | "move_validate"
+        | "move_begin";
+      /** @description Scoped suboperation tuple; empty for a single-step request. */
+      operation: string[];
       /**
        * Payload
        * @description The cross-server service validates the action-specific payload.
@@ -21693,6 +21731,11 @@ export interface components {
        * @constant
        */
       protocol: 1;
+      /**
+       * Format: uuid
+       * @description UUIDv7 mutation root, issued once and retained across delivery retries.
+       */
+      requestId: string;
       /** Room */
       room: string;
       /** Senderserver */

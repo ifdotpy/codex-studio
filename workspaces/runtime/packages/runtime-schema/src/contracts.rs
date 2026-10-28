@@ -59,6 +59,7 @@ fn persistence_ts(root: &Path) -> Result<String, String> {
         )
         .expect("String write");
     }
+    text.push_str("export type { RecipientDelivery } from \"./rustOwned\";\n");
     run_node(
         root,
         "node_modules/oxfmt/bin/oxfmt",
@@ -1180,6 +1181,8 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             serde_json::json!({"$ref":format!("#/components/schemas/{owner}")});
     }
     crate::records::refresh_openapi(&mut openapi)?;
+    crate::multi_server_protocol::refresh_openapi(&mut openapi);
+    openapi["components"]["schemas"]["ServerOperationRequest"]["properties"]["action"] = serde_json::json!({"type":"string","enum":crate::persistence::ServerOperationKind::VARIANTS});
     crate::task_command::apply_api_contract(&mut openapi);
     for (name, schema) in crate::studio_errors::schemas()? {
         openapi["components"]["schemas"][name] = schema;
@@ -1604,6 +1607,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .with(|settings| settings.definitions_path = "/components/schemas".into())
             .into_generator();
         generator.subschema_for::<crate::supervisor_contract::HealthResult>();
+        generator.subschema_for::<crate::persistence::RecipientDelivery>();
         generator.subschema_for::<crate::provider_diagnostics::StdinTimingDiagnostic>();
         generator.subschema_for::<crate::provider_diagnostics::ReplyTimingDiagnostic>();
         generator.subschema_for::<studio_client_domain::protocol::Request>();

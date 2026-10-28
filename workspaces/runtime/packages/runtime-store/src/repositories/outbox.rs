@@ -147,6 +147,18 @@ impl Outbox {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Filter heterogeneous request effects before decoding the family's payload.
+    pub fn for_request_kind<P: DeserializeOwned>(
+        tx: &Connection,
+        request: &str,
+        kind: OutboxKind,
+    ) -> Result<Vec<OutboxRow<P>>> {
+        let mut query=tx.prepare_cached("SELECT id,kind,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,payload,created FROM runtime_outbox WHERE request_id=?1 AND kind=?2 ORDER BY id")?;
+        Ok(query
+            .query_map(params![request, kind], Self::decode)?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Call only in the transaction committing delivery/settlement evidence to the owner.
     pub fn delete_settled(tx: &Transaction<'_>, id: &str, signature: &str) -> Result<bool> {
         Ok(tx.execute(

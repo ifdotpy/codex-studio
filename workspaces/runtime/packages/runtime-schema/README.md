@@ -36,9 +36,17 @@ and request-age constants from this module.
 `RequestIdentity::new(namespace, authority, root_request_id, operation)` creates
 a canonical tuple key from an explicit UUIDv7 root. `issue_root()` generates a
 root once; retries retain it. `validate(now_ms, expired_before_ms)` applies the
-30-day TTL and 120-second future skew. All policy timestamps use Unix
+30-day TTL, admission watermark and 120-second future skew to fresh ingress.
+Cached replay and GC use the creation-time TTL independently of the watermark,
+preserving imported replies' 30-day grace. All policy timestamps use Unix
 milliseconds. Migrated result IDs remain ordinary stored strings; the store
 checks their saved creation time without parsing the key.
+
+`AdmittedRequest::derive_result(namespace, operation, signature)` derives a
+completion token from persisted owner admission, preserving its original
+creation time. Only classified startup migrations can construct a token from
+an opaque old owner ID. Cutover seeds the admission watermark atomically; a
+future-dated UUIDv7 on a lossy completed row stops startup.
 
 The W0 slice exports target DDL and transaction-scoped repositories from
 `runtime-store`; it performs no family cutover or production caller conversion.
