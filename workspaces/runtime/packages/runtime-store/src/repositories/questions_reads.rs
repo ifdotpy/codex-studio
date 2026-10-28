@@ -1,14 +1,9 @@
 //! Persisted questions, complaints, and workspace checkpoint records.
 
 use crate::StoreResult;
-use crate::records::{
-    AgentId, AgentRecord, CheckpointRecord, ComplaintRecord, RecordOrder, RecordPredicate,
-    RequestRecord, Table,
-};
+use crate::records::{AgentRecord, CheckpointRecord, ComplaintRecord, RequestRecord, Table};
 use crate::schema::{SchemaRequirements, TableRequirement};
 use rusqlite::Connection;
-
-const AGENT_FAMILY_SQL: &str = "SELECT id,record FROM runtime_agents WHERE root_id=?1 ORDER BY id";
 
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
@@ -42,93 +37,9 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 
 #[cfg(test)]
 mod tests {
-    use super::{AGENT_FAMILY_SQL, QuestionsReadsRepository, REQUIREMENTS};
+    use super::{QuestionsReadsRepository, REQUIREMENTS};
     use rusqlite::Connection;
     use serde_json::json;
-
-    /// The indexed family and request reads return what the old read-everything path
-    /// returned for that family, and plan on the existing indexes.
-    #[test]
-    fn family_reads_match_the_full_scan_and_use_indexes() -> crate::StoreResult<()> {
-        let mut connection = crate::fresh_state::test_canvas();
-        let tx = connection.transaction().expect("seed transaction");
-        for (id, root, deleted) in [
-            ("r1", "r1", false),
-            ("c1", "r1", false),
-            ("c2", "r1", true),
-            ("r2", "r2", false),
-            ("c3", "r2", false),
-        ] {
-            let record = json!({"id": id, "provider": "codex", "rootId": root, "epoch": 0, "status": "idle",
-                        "deletedAt": deleted.then_some(1)});
-            tx.execute(
-                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
-                [id, &record.to_string()],
-            )?;
-        }
-        for (id, agent) in [
-            ("q1", "r1"),
-            ("q2", "c1"),
-            ("q3", "c2"),
-            ("q4", "r2"),
-            ("q5", "c3"),
-        ] {
-            let record = json!({"id": id, "agent": agent, "method": "agent/asyncQuestion",
-                        "status": "pending"});
-            tx.execute(
-                "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
-                [id, &record.to_string()],
-            )?;
-        }
-        tx.commit().expect("seed corpus");
-        let family = QuestionsReadsRepository::agent_family(&connection, "c1").expect("family");
-        let family_ids = family
-            .iter()
-            .map(|a| a.id().as_ref().to_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(family_ids, ["c1", "c2", "r1"]);
-        assert!(
-            QuestionsReadsRepository::agent_family(&connection, "missing")
-                .expect("family")
-                .is_empty()
-        );
-        let indexed = QuestionsReadsRepository::requests_of_agents(&connection, &family)
-            .expect("indexed requests");
-        let scanned = QuestionsReadsRepository::questions(&connection)
-            .expect("all requests")
-            .into_iter()
-            .filter(|(request, _)| {
-                request.value()["agent"]
-                    .as_str()
-                    .is_some_and(|agent| family_ids.iter().any(|id| id == agent))
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(indexed, scanned);
-        for (sql, index) in [
-            (
-                AGENT_FAMILY_SQL,
-                crate::repositories::agent_indexed_reads::ROOT_INDEX,
-            ),
-            (
-                "SELECT id,record FROM runtime_requests WHERE json_extract(record,'$.agent') IN (?1,?2)",
-                "runtime_request_agent_status",
-            ),
-        ] {
-            let plan = connection
-                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
-                .expect("plan prepares")
-                .query_map(
-                    rusqlite::params_from_iter(["a", "b"].iter().take(sql.matches('?').count())),
-                    |row| row.get::<_, String>(3),
-                )
-                .expect("plan runs")
-                .collect::<Result<Vec<_>, _>>()
-                .expect("plan rows")
-                .join(" ");
-            assert!(plan.contains(index), "{plan}");
-        }
-        Ok(())
-    }
 
     #[test]
     fn bootstrapped_record_families_are_required() {
@@ -167,12 +78,6 @@ mod tests {
                 .as_ref(),
             "a"
         );
-        let questions = QuestionsReadsRepository::questions(&db).expect("questions read");
-        let question = &questions[0].1;
-        assert!(
-            question.find("password").expect("password field")
-                < question.find("color").expect("color field")
-        );
         assert_eq!(
             QuestionsReadsRepository::complaint(&db, "c")
                 .expect("complaint read")
@@ -197,37 +102,6 @@ impl QuestionsReadsRepository {
 
     pub fn questions(connection: &Connection) -> StoreResult<Vec<(RequestRecord, String)>> {
         Table::<RequestRecord>::new(connection).list_with_raw()
-    }
-
-    /// The agent and every agent sharing its root (deleted ones included), by the
-    /// `runtime_agent_root` index; empty when the agent does not exist.
-    pub fn agent_family(connection: &Connection, agent_id: &str) -> StoreResult<Vec<AgentRecord>> {
-        let table = Table::<AgentRecord>::new(connection);
-        let Some(owner) = table.get(&AgentId::from(agent_id.to_owned()))? else {
-            return Ok(Vec::new());
-        };
-        let mut statement = connection.prepare_cached(AGENT_FAMILY_SQL)?;
-        let rows = statement
-            .query_map([owner.root_id.as_ref()], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        rows.iter()
-            .map(|(id, encoded)| table.decode_stored(id, encoded))
-            .collect()
-    }
-
-    /// Every stored request of the given agents, by the `runtime_request_agent_status` index.
-    pub fn requests_of_agents(
-        connection: &Connection,
-        agents: &[AgentRecord],
-    ) -> StoreResult<Vec<(RequestRecord, String)>> {
-        let ids = agents
-            .iter()
-            .map(|agent| agent.id().as_ref().to_owned())
-            .collect::<Vec<_>>();
-        Table::<RequestRecord>::new(connection)
-            .list_with_raw_matching(Some(RecordPredicate::JsonAgentIn(&ids)), RecordOrder::RowId)
     }
 
     pub fn complaint(connection: &Connection, id: &str) -> StoreResult<Option<ComplaintRecord>> {

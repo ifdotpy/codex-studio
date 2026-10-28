@@ -59,12 +59,6 @@ pub fn work_item_view(item: &WorkItemRecord, statuses: &BTreeMap<String, WorkSta
     view
 }
 
-pub fn plan_view(agent_id: &str, root_id: &str, stored: Option<Value>) -> Value {
-    stored.unwrap_or_else(|| json!({
-        "id": agent_id, "rootId": root_id, "text": "", "version": 0, "updated": null, "steps": []
-    }))
-}
-
 pub fn prepare_queue(events: Vec<StoredQueueEvent>) -> Result<PreparedQueue, WorkPolicyError> {
     let mut items = Vec::with_capacity(events.len());
     let mut asset_ids = Vec::new();
@@ -150,7 +144,7 @@ pub fn invalid(object: &'static str, id: &str) -> WorkPolicyError {
 
 #[cfg(test)]
 mod tests {
-    use super::{plan_view, prepare_queue, queue_items, work_list};
+    use super::{prepare_queue, queue_items, work_list};
     use serde_json::json;
     use studio_runtime_store::StoredQueueEvent;
 
@@ -206,8 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_plan_defaults_and_queue_assets_refuse_dangling_assets() {
-        assert_eq!(plan_view("agent", "root", None)["text"], "");
+    fn queue_assets_refuse_dangling_assets() {
         let prepared = prepare_queue(vec![StoredQueueEvent {
             id: "event".into(),
             kind: "user".into(),

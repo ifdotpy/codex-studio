@@ -193,16 +193,6 @@ test("workspace ui", async ({ page: testPage }) => {
         .count(),
       0,
     );
-    const retiredPlanWrite = await fetch(origin + "/api/plan", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Canvas-Token": initial.token,
-        Origin: origin,
-      },
-      body: JSON.stringify({ agent: lead.id, text: "Retired", version: 0 }),
-    });
-    assert.equal(retiredPlanWrite.status, 405);
     let planAgent: TestAgent | undefined;
     await poll(async () => {
       planAgent = required(
@@ -226,12 +216,6 @@ test("workspace ui", async ({ page: testPage }) => {
         },
       }) + "\n",
     );
-    await poll(
-      async () =>
-        (await get("/api/plan", "?agent=" + lead.id)).native?.plan?.length ===
-        2,
-      "agent plan persisted",
-    );
     await drawer.getByRole("button", { name: "Refresh workspace" }).click();
     await drawer.getByText("Inspect evidence", { exact: true }).waitFor();
     await drawer.getByText("Accept the release", { exact: true }).waitFor();
@@ -249,8 +233,6 @@ test("workspace ui", async ({ page: testPage }) => {
         .getAttribute("data-chat"),
       lead.id,
     );
-    const unchangedPlan = await get("/api/plan", "?agent=" + lead.id);
-    assert.equal(unchangedPlan.native?.plan?.length, 2);
     await page
       .getByRole("button", { name: "Chat actions", exact: true })
       .click();

@@ -1,19 +1,16 @@
 //! Thin adapters over the synchronous receipt action service.
-use super::extractors::{ApiJson, QueryParams};
-use super::manifest::{OperationStatus, RouteGroup, get, post};
+use super::extractors::QueryParams;
+use super::manifest::{OperationStatus, RouteGroup, get};
 use crate::{error::ApiError, router::HttpState};
 use axum::{Json, extract::State, http::StatusCode};
 use serde_json::Value;
 use studio_runtime_services::tool_requests::{self, Action, ToolRequestError};
 pub(crate) fn routes() -> RouteGroup {
-    RouteGroup::new(vec![
-        get("/api/tool-requests", OperationStatus::Implemented, read),
-        post(
-            "/api/tool-requests/cancel",
-            OperationStatus::Implemented,
-            cancel,
-        ),
-    ])
+    RouteGroup::new(vec![get(
+        "/api/tool-requests",
+        OperationStatus::Implemented,
+        read,
+    )])
 }
 async fn read(State(state): State<HttpState>, query: QueryParams) -> Result<Json<Value>, ApiError> {
     let actor = query
@@ -26,96 +23,49 @@ async fn read(State(state): State<HttpState>, query: QueryParams) -> Result<Json
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
-    run(state, actor, id, false).await
+    run(state, actor, id).await
 }
-async fn cancel(
-    State(state): State<HttpState>,
-    ApiJson(body): ApiJson<crate::generated::ToolRequestCancelBody>,
-) -> Result<Json<Value>, ApiError> {
-    run(state, body.agent, Some(body.request_id), true).await
-}
-async fn run(
-    state: HttpState,
-    actor: String,
-    id: Option<String>,
-    cancel: bool,
-) -> Result<Json<Value>, ApiError> {
+async fn run(state: HttpState, actor: String, id: Option<String>) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let state_root = store.root().to_owned();
     let payload_root = state_root.clone();
     let now =
         studio_runtime_services::event_write::unix_time().map_err(|_| ApiError::internal())?;
-    let value = if cancel {
-        store
+    let read_actor = actor.clone();
+    let read_id = id.clone();
+    let read_root = payload_root.clone();
+    let read_result = store
+        .read_async("runtime-http/routes/tool_requests", move |tx| {
+            let action = read_id.as_deref().map_or(Action::List, Action::Get);
+            tool_requests::execute_http(tx, &read_actor, action, now, &read_root)
+        })
+        .await;
+    let value = match read_result {
+        Err(ToolRequestError::Store(studio_runtime_store::StoreError::Sqlite(
+            studio_runtime_store::SqliteError::SqliteFailure(sqlite_error, _),
+        ))) if sqlite_error.code == studio_runtime_store::ErrorCode::ReadOnly => store
             .transaction_with_error(move |tx| {
-                let action = match (id.as_deref(), cancel) {
-                    (Some(id), true) => Action::Cancel(id),
-                    (Some(id), false) => Action::Get(id),
-                    _ => Action::List,
-                };
+                let action = id.as_deref().map_or(Action::List, Action::Get);
                 tool_requests::execute_http(tx, &actor, action, now, &payload_root)
             })
             .await
-            .map_err(error)?
-    } else {
-        let read_actor = actor.clone();
-        let read_id = id.clone();
-        let read_root = payload_root.clone();
-        let read_result = store
-            .read_async("runtime-http/routes/tool_requests", move |tx| {
-                let action = match (read_id.as_deref(), cancel) {
-                    (Some(id), true) => Action::Cancel(id),
-                    (Some(id), false) => Action::Get(id),
-                    _ => Action::List,
-                };
-                tool_requests::execute_http(tx, &read_actor, action, now, &read_root)
-            })
-            .await;
-        match read_result {
-            Err(ToolRequestError::Store(studio_runtime_store::StoreError::Sqlite(
-                studio_runtime_store::SqliteError::SqliteFailure(sqlite_error, _),
-            ))) if sqlite_error.code == studio_runtime_store::ErrorCode::ReadOnly => store
-                .transaction_with_error(move |tx| {
-                    let action = match (id.as_deref(), cancel) {
-                        (Some(id), true) => Action::Cancel(id),
-                        (Some(id), false) => Action::Get(id),
-                        _ => Action::List,
-                    };
-                    tool_requests::execute_http(tx, &actor, action, now, &payload_root)
-                })
-                .await
-                .map_err(error)?,
-            result => result.map_err(error)?,
-        }
+            .map_err(error)?,
+        result => result.map_err(error)?,
     };
     let mut value = resolve_payload_response(&state_root, value)?;
     if let Some(result) = value.get_mut("result") {
         tool_requests::expire(result, now);
     }
     let canonical = value["id"].as_str().unwrap_or("list").to_owned();
-    let value = if cancel {
-        let response = super::generated_json::<
-            crate::generated::CancelToolRequestApiToolRequestsCancelPostResponse,
-        >(value)
-        .map_err(|_| {
-            ApiError::stored(studio_runtime_store::system_reads::invalid(
-                "runtime_tool_requests",
-                &canonical,
-            ))
-        })?;
-        serde_json::to_value(response).map_err(|_| ApiError::internal())?
-    } else {
-        let response = super::generated_json::<
-            crate::generated::ToolRequestsApiToolRequestsGetResponse,
-        >(value)
-        .map_err(|_| {
-            ApiError::stored(studio_runtime_store::system_reads::invalid(
-                "runtime_tool_requests",
-                &canonical,
-            ))
-        })?;
-        serde_json::to_value(response).map_err(|_| ApiError::internal())?
-    };
+    let response =
+        super::generated_json::<crate::generated::ToolRequestsApiToolRequestsGetResponse>(value)
+            .map_err(|_| {
+                ApiError::stored(studio_runtime_store::system_reads::invalid(
+                    "runtime_tool_requests",
+                    &canonical,
+                ))
+            })?;
+    let value = serde_json::to_value(response).map_err(|_| ApiError::internal())?;
     Ok(Json(value))
 }
 

@@ -234,14 +234,6 @@ pub struct OpenResult {
     pub extra: BTreeMap<String, Value>,
 }
 
-impl OpenResult {
-    pub fn handle_identity(&self, handle: SupervisorHandle) -> HandleIdentity {
-        HandleIdentity {
-            handle,
-            generation: self.generation,
-        }
-    }
-}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NextResult {

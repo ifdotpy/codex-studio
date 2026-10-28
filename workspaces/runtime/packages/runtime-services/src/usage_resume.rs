@@ -58,9 +58,6 @@ impl LimitsObservation {
     pub fn account_key(&self) -> &str {
         &self.account_key
     }
-    pub fn refresh_marker(&self) -> Option<&str> {
-        self.marker.as_deref()
-    }
     fn fresh_for(&self, key: &str, after: f64, strict: bool) -> bool {
         !present(&self.raw, "error")
             && !flag(&self.raw, "stale")

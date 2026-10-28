@@ -25,7 +25,6 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::Implemented,
             super::queue_write::queue_action,
         ),
-        get("/api/plan", OperationStatus::Implemented, plan),
         post("/api/annotation", OperationStatus::Implemented, annotation),
         post(
             "/api/organization",
@@ -99,60 +98,6 @@ pub(super) async fn queue_for_agent(state: HttpState, agent_id: String) -> Resul
         }))
     })
     .await
-}
-
-pub(crate) async fn plan(
-    State(state): State<HttpState>,
-    query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
-    let agent_id = query_string(&query, "agent")?;
-    read_agent(state, agent_id, |connection, agent, _validators| {
-        let stored =
-            WorkItemsRepository::plan(connection, &agent.id.0).map_err(|error| match error {
-                studio_runtime_store::StoreError::InvalidStoredObject { table, id } => {
-                    invalid_stored(table, &id)
-                }
-                studio_runtime_store::StoreError::RequestResult(error) => error.into(),
-                studio_runtime_store::StoreError::Outbox(error) => error.into(),
-                studio_runtime_store::StoreError::StateDirectory(_)
-                | studio_runtime_store::StoreError::AlreadyOwned
-                | studio_runtime_store::StoreError::MissingDatabase(_)
-                | studio_runtime_store::StoreError::Migration { .. }
-                | studio_runtime_store::StoreError::UnsafeStateDirectory
-                | studio_runtime_store::StoreError::SchemaMismatch(_)
-                | studio_runtime_store::StoreError::InvalidSyncObject { .. }
-                | studio_runtime_store::StoreError::InvalidSyncObjectField { .. }
-                | studio_runtime_store::StoreError::InvalidStoredRecord { .. }
-                | studio_runtime_store::StoreError::SchemaObjectMismatch { .. }
-                | studio_runtime_store::StoreError::Sqlite(_)
-                | studio_runtime_store::StoreError::CommitOutcomeUnknown(_)
-                | studio_runtime_store::StoreError::Json(_)
-                | studio_runtime_store::StoreError::SchemaValidation(_)
-                | studio_runtime_store::StoreError::RecordContract(_)
-                | studio_runtime_store::StoreError::WriterPoisoned
-                | studio_runtime_store::StoreError::WriterActorInitialization(_)
-                | studio_runtime_store::StoreError::WriterActorControl(_)
-                | studio_runtime_store::StoreError::CommitActorOutcomeUnknown(_)
-                | studio_runtime_store::StoreError::ReadTaskFailed => ApiError::internal(),
-            })?;
-        let record = match stored {
-            None => None,
-            Some(row) => {
-                let value = row.into_value();
-                if value.get("id").and_then(Value::as_str) != Some(agent.id.0.as_str()) {
-                    return Err(invalid_stored("runtime_plans", &agent.id.0));
-                }
-                Some(value)
-            }
-        };
-        Ok(work_policy::plan_view(
-            &agent.id.0,
-            &agent.root_id.0,
-            record,
-        ))
-    })
-    .await
-    .map(Json)
 }
 
 async fn read_agent<T, F>(state: HttpState, id: String, read: F) -> Result<T, ApiError>

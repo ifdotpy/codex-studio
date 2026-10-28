@@ -49,17 +49,6 @@ test("Background controls", async ({ context }, testInfo) => {
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url!, "http://localhost");
-      if (req.method === "POST" && url.pathname === "/api/monitor/cancel") {
-        for await (const _chunk of req) {
-          // The fixture action has no body fields beyond its id.
-        }
-        monitor.cancelRequested = true;
-        monitor.error = "Stop requested; waiting for the command to exit";
-        const syncEntities = updateEntitySyncFixture(state);
-        res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify({ ...monitor, _syncEntities: syncEntities }));
-        return;
-      }
       if (req.method === "POST" && url.pathname === "/api/sync/notify") {
         let body = "";
         for await (const chunk of req) body += chunk;
@@ -392,9 +381,7 @@ test("Background controls", async ({ context }, testInfo) => {
           invites: [],
           settings: { autoPair: true },
         };
-      else if (path === "/api/monitor/cancel") {
-        return route.continue();
-      } else if (path === "/api/monitor/input" && failInput) {
+      else if (path === "/api/monitor/input" && failInput) {
         failInput = false;
         return route.fulfill({
           status: 409,

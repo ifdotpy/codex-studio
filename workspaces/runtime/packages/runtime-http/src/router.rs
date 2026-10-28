@@ -383,29 +383,6 @@ impl HttpState {
         self
     }
 
-    /// Attach the guest bridge used to answer browser sign-in requests.
-    pub fn with_browser_answer_guest_rpc(
-        mut self,
-        guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>,
-    ) -> Self {
-        self.browser_answer_guest = Some(guest);
-        self.browser_local_forwarder = self
-            .browser_answer_guest
-            .as_ref()
-            .map(|guest| crate::routes::browser::new_local_forwarder(Arc::clone(guest)));
-        self
-    }
-
-    pub fn with_browser_answer_host_guest_rpc(
-        mut self,
-        guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>,
-    ) -> Self {
-        self.browser_answer_host_guest = Some(guest.clone());
-        self.browser_host_local_forwarder =
-            Some(crate::routes::browser::new_local_forwarder(guest));
-        self
-    }
-
     /// Attach the runtime-owned vault job client used by setup and login routes.
     pub fn with_vault_job_client(mut self, client: crate::routes::VaultJobClient) -> Self {
         self.vault_job_client = Some(client);

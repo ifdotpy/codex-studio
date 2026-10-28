@@ -451,7 +451,6 @@ const PROVIDER_NATIVE_DISCRIMINATORS: &[(&str, crate::ProviderKind)] = &[
 const PROVIDER_SQL_CONSUMERS: &[&str] = &[
     "workspaces/runtime/packages/runtime-store/src/feature_schema.rs",
     "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/selection.rs",
-    "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
 ];
 
 fn check_provider_sql_consumer(path: &str, source: &str) -> Result<(), String> {

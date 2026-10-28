@@ -345,68 +345,6 @@ test("messages focused ui", async ({ browser: _browser }) => {
       animations: "disabled",
     });
     await stableDrawer.locator(".mantine-Drawer-close").click();
-    let planError = false;
-    let planReads = 0,
-      concurrentPlans = 0,
-      maxPlans = 0;
-    await stable.route("**/api/plan?*", async (route) => {
-      planReads++;
-      concurrentPlans++;
-      maxPlans = Math.max(maxPlans, concurrentPlans);
-      await new Promise((resolve) =>
-        setTimeout(resolve, planReads === 1 ? 6500 : 400),
-      );
-      await route.fulfill(
-        planError
-          ? { status: 503, json: { error: "Plan read unavailable" } }
-          : { json: { plan: [] } },
-      );
-      concurrentPlans--;
-    });
-    await stable.getByRole("button", { name: /^(Chat actions|More)$/ }).click();
-    await stable.locator('[data-workspace-section="plan"]').click();
-    const workDrawer = stable.getByRole("dialog", {
-      name: "Workspace",
-      exact: true,
-    });
-    await workDrawer.waitFor();
-    const noPlan = workDrawer.getByText("This agent has not reported a plan.", {
-      exact: true,
-    });
-    assert.equal(
-      await noPlan.count(),
-      0,
-      "initial load does not claim no plan",
-    );
-    await noPlan.waitFor({ timeout: 9000 });
-    assert.equal(
-      maxPlans,
-      1,
-      "slow reads coalesce instead of overlapping or losing results",
-    );
-    await stable.waitForTimeout(500);
-    const planNode = await noPlan.elementHandle();
-    for (const fail of [false, true]) {
-      planError = fail;
-      const planResponse = stable.waitForResponse((response) =>
-        response.url().includes("/api/plan?"),
-      );
-      await workDrawer
-        .getByRole("button", { name: "Refresh workspace" })
-        .click();
-      await stable.waitForTimeout(100);
-      assert.ok(
-        await planNode.evaluate((el) => el.isConnected),
-        "empty plan survives an in-flight refresh",
-      );
-      await planResponse;
-      if (fail) await workDrawer.getByRole("alert").waitFor();
-      await stable.waitForTimeout(100);
-      assert.ok(
-        await planNode.evaluate((el) => el.isConnected),
-        "last settled empty plan survives refresh failure",
-      );
-    }
     await stable.close();
     assert.deepEqual(errors, []);
     console.log(
@@ -418,7 +356,6 @@ test("messages focused ui", async ({ browser: _browser }) => {
           "durable same-payload retry",
           "single empty state",
           "refresh stable",
-          "Plan initial/refresh/error",
           "recipient groups",
           "room pagination",
           "mobile visible tabs",

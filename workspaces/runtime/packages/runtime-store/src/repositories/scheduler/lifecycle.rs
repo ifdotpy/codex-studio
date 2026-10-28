@@ -449,66 +449,6 @@ impl SchedulerRepository {
         Ok(repaired)
     }
 
-    /// The error and retained cursor use existing fields published to the UI.
-    pub fn hold_account(
-        transaction: &Transaction<'_>,
-        account: &str,
-        cursor: Option<u64>,
-        reason: &str,
-    ) -> StoreResult<()> {
-        for mut agent in account_agents(
-            transaction,
-            account,
-            "(json_extract(record,'$.startAttempt') IS NOT NULL OR json_extract(record,'$.status')='queued')",
-        )? {
-            let (previous_error, previous_hold) = match &agent.start_outcome_hold {
-                Some(crate::StoredStartOutcomeHold::Known(
-                    crate::StartOutcomeHold::AccountSettlement {
-                        previous_error,
-                        previous_native_failure_hold,
-                        ..
-                    },
-                )) => (previous_error.clone(), previous_native_failure_hold.clone()),
-                _ => (
-                    agent.extra.get("error").cloned().unwrap_or(Value::Null),
-                    crate::records::PreviousNativeFailureHold {
-                        present: agent.extra.contains_key("nativeFailureHold"),
-                        value: agent
-                            .extra
-                            .get("nativeFailureHold")
-                            .cloned()
-                            .unwrap_or(Value::Null),
-                    },
-                ),
-            };
-            agent.extra.insert("nativeFailureHold".into(), json!(true));
-            agent.extra.insert("error".into(), json!(reason));
-            agent.start_outcome_hold = Some(crate::StoredStartOutcomeHold::Known(
-                crate::StartOutcomeHold::AccountSettlement {
-                    cursor,
-                    reason: reason.into(),
-                    previous_error,
-                    previous_native_failure_hold: previous_hold,
-                    extra: Default::default(),
-                },
-            ));
-            publish_agent(transaction, &agent)?;
-        }
-        Ok(())
-    }
-
-    pub fn clear_account_hold(transaction: &Transaction<'_>, account: &str) -> StoreResult<()> {
-        for mut agent in account_agents(
-            transaction,
-            account,
-            "json_extract(record,'$.startOutcomeHold.stage')='account_settlement'",
-        )? {
-            clear_hold(&mut agent);
-            publish_agent(transaction, &agent)?;
-        }
-        Ok(())
-    }
-
     /// Repair the caller's exact, classified authentication failure after verified sign-in.
     /// Other lifecycle owners retain their holds. No historical input is changed.
     pub fn repair_authenticated_failure(
@@ -695,55 +635,6 @@ impl SchedulerRepository {
         )?;
         publish_agent(tx, &agent)?;
         Ok(true)
-    }
-
-    /// Account sessions that must be reattached to observe any submitted turn.
-    pub fn accounts_with_unknown_submitted_turns(
-        connection: &Connection,
-    ) -> StoreResult<Vec<String>> {
-        let mut statement = connection.prepare_cached(
-            "SELECT DISTINCT account_key FROM runtime_agents \
-             WHERE provider='codex' AND start_attempt_submitted=1 \
-             AND start_attempt_connection_generation IS NOT NULL \
-             AND status IN ('starting','running','waiting','paused','interrupted') \
-             AND deleted_at IS NULL \
-             ORDER BY 1",
-        )?;
-        let rows = statement.query_map([], |row| row.get(0))?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-    }
-
-    /// Submitted `turn/start` requests whose reply may still arrive after reattach.
-    pub fn submitted_start_requests(
-        connection: &Connection,
-        account_key: &str,
-        generation: Option<u64>,
-    ) -> StoreResult<Vec<SubmittedStartRequest>> {
-        let agents = account_agents(connection, account_key, &unresolved_sql())?;
-        let mut result = Vec::new();
-        for agent in agents {
-            let Some(attempt) = stored_attempt(&agent) else {
-                continue;
-            };
-            if attempt["turnId"].is_string()
-                || attempt["requestTicket"].is_null()
-                || generation.is_some_and(|g| attempt["connectionGeneration"].as_u64() != Some(g))
-            {
-                continue;
-            }
-            let invalid = || invalid_agent(&agent.id.0);
-            result.push((
-                agent.id.0.clone(),
-                attempt["epoch"].as_i64().ok_or_else(invalid)?,
-                attempt["id"].as_str().ok_or_else(invalid)?.into(),
-                attempt["requestTicket"]
-                    .as_str()
-                    .ok_or_else(invalid)?
-                    .into(),
-                attempt["threadId"].as_str().ok_or_else(invalid)?.into(),
-            ));
-        }
-        Ok(result)
     }
 
     /// Resolve an account-scoped provider thread to its current submitted attempt.
@@ -969,72 +860,6 @@ impl SchedulerRepository {
             epoch,
             attempt_id,
         }))
-    }
-
-    /// Persist the uncertainty boundary before calling the turn-driver port.
-    pub fn mark_submitted(
-        transaction: &Transaction<'_>,
-        agent_id: &str,
-        epoch: i64,
-        attempt_id: &str,
-    ) -> StoreResult<bool> {
-        let Some(mut agent) = AgentRepository::get(transaction, &AgentId::from(agent_id))? else {
-            return Ok(false);
-        };
-        let matches = agent.epoch == epoch
-            && agent.status == AgentStatus::Starting
-            && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(true)
-            && agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true)
-            && !agent.extra.get("nativeFailureHold").is_some_and(truthy)
-            && agent
-                .extra
-                .get("startAttempt")
-                .and_then(Value::as_object)
-                .is_some_and(|attempt| {
-                    attempt.get("id").and_then(Value::as_str) == Some(attempt_id)
-                        && attempt.get("epoch").and_then(Value::as_i64) == Some(epoch)
-                        && attempt.get("submitted").and_then(Value::as_bool) == Some(false)
-                });
-        if !matches {
-            return Ok(false);
-        }
-        let mut count = 0;
-        for event_id in agent.extra.get("startAttempt").unwrap_or(&Value::Null)["events"]
-            .as_array()
-            .ok_or_else(|| invalid_agent(agent_id))?
-        {
-            let id = event_id.as_str().ok_or_else(|| invalid_agent(agent_id))?;
-            count += transaction.execute_cached(
-                "UPDATE runtime_events SET status='dispatching' WHERE id=?1 AND agent=?2 \
-                 AND epoch=?3 AND status='reserved'",
-                params![id, agent_id, epoch],
-            )?;
-        }
-        let event_count = agent.extra.get("startAttempt").unwrap_or(&Value::Null)["events"]
-            .as_array()
-            .map(Vec::len)
-            .unwrap_or_default();
-        if count != event_count {
-            return Err(StoreError::SchemaMismatch(
-                "scheduler reservation changed before submission".to_owned(),
-            ));
-        }
-        if let Some(attempt) = agent
-            .extra
-            .get_mut("startAttempt")
-            .and_then(Value::as_object_mut)
-        {
-            attempt.insert("submitted".to_owned(), Value::Bool(true));
-        }
-        AgentRepository::put(transaction, &agent)?;
-        EventWriteRepository::set_agent_sync_lifecycle(
-            transaction,
-            agent_id,
-            "starting",
-            true,
-            None,
-        )?;
-        Ok(true)
     }
 
     /// Record durable provider correlation before `turn/start` is written.

@@ -181,14 +181,6 @@ impl NativeRuntime {
         Self::with_ports(root, probe, Arc::new(SystemClock), Arc::new(NoFailPoints))
     }
 
-    pub fn with_fail_points(
-        root: impl Into<PathBuf>,
-        probe: Arc<dyn CompatibilityProbe>,
-        fail_points: Arc<dyn FailPoints>,
-    ) -> Result<Self, NativeRuntimeError> {
-        Self::with_ports(root, probe, Arc::new(SystemClock), fail_points)
-    }
-
     pub fn with_ports(
         root: impl Into<PathBuf>,
         probe: Arc<dyn CompatibilityProbe>,

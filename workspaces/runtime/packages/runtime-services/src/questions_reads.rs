@@ -6,13 +6,11 @@ use std::fmt;
 use serde::Deserialize;
 use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde_json::{Map, Value, json};
-use studio_runtime_store::{AgentRecord, CheckpointRecord, ComplaintRecord, RequestRecord};
+use studio_runtime_store::{AgentRecord, CheckpointRecord, ComplaintRecord};
 use thiserror::Error;
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum QuestionsReadsError {
-    #[error("a conversation is required")]
-    ConversationRequired,
     #[error("unknown agent")]
     UnknownAgent,
     #[error("this agent was deleted")]
@@ -23,53 +21,7 @@ pub enum QuestionsReadsError {
     InvalidStoredObject { object: &'static str, id: String },
 }
 
-pub fn question_history(
-    agent_id: Option<&str>,
-    agents: Vec<AgentRecord>,
-    requests: Vec<(RequestRecord, String)>,
-) -> Result<Value, QuestionsReadsError> {
-    let agent_id = agent_id
-        .filter(|id| !id.is_empty())
-        .ok_or(QuestionsReadsError::ConversationRequired)?;
-    let owner = agents
-        .iter()
-        .find(|agent| agent.id().as_ref() == agent_id)
-        .ok_or(QuestionsReadsError::UnknownAgent)?;
-    if deleted_value(owner.extra.get("deletedAt")) {
-        return Err(QuestionsReadsError::DeletedAgent);
-    }
-    let root = owner.root_id.as_ref();
-    let mut ids = BTreeSet::new();
-    for agent in &agents {
-        if agent.root_id.as_ref() == root && !deleted_value(agent.extra.get("deletedAt")) {
-            ids.insert(agent.id().as_ref().to_owned());
-        }
-    }
-
-    let mut items = Vec::new();
-    for (request, raw) in requests {
-        let id = request.id().to_owned();
-        let record = request
-            .value()
-            .as_object()
-            .expect("validated request record");
-        let Some(agent) = string_member(record, "agent") else {
-            continue;
-        };
-        if !ids.contains(agent) || deleted_value(record.get("deletedAt")) {
-            continue;
-        }
-        if !is_question(record) {
-            continue;
-        }
-        let property_order = elicitation_property_order(&raw, &id)?;
-        items.push(question_projection(record, &id, &property_order)?);
-    }
-    items.sort_by(|left, right| timestamp(right).total_cmp(&timestamp(left)));
-    Ok(json!({"items": items}))
-}
-
-/// The same question history projection used by the explicit read, published per request.
+/// Question history projection published per request.
 pub(crate) fn question_history_entity(raw: &str) -> Result<Option<Value>, QuestionsReadsError> {
     let record: Value = serde_json::from_str(raw).map_err(|_| invalid("requests", "unknown"))?;
     let Some(record) = record.as_object() else {
@@ -425,26 +377,11 @@ fn invalid(object: &'static str, id: &str) -> QuestionsReadsError {
     }
 }
 
-fn timestamp(record: &Value) -> f64 {
-    let answered = record
-        .get("answeredAt")
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
-    if answered != 0.0 {
-        return answered;
-    }
-    record
-        .get("createdAt")
-        .and_then(Value::as_f64)
-        .filter(|created| *created != 0.0)
-        .unwrap_or(0.0)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{QuestionsReadsError, checkpoint_list, complaint_detail, question_history};
+    use super::{QuestionsReadsError, checkpoint_list, complaint_detail};
     use serde_json::json;
-    use studio_runtime_store::{AgentRecord, CheckpointRecord, RequestRecord};
+    use studio_runtime_store::{AgentRecord, CheckpointRecord};
 
     fn agent(id: &str, root: &str, deleted_at: Option<f64>) -> AgentRecord {
         let mut record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"});
@@ -454,120 +391,8 @@ mod tests {
         AgentRecord::from_value(record).expect("agent fixture validates")
     }
 
-    fn request(id: &str, agent: &str, method: &str, at: i64) -> (RequestRecord, String) {
-        let value = json!({
-            "id":id,"agent":agent,"method":method,"status":"answered",
-            "createdAt":at,"params":{"questions":[{"id":"name"}]}
-        });
-        let raw = value.to_string();
-        (
-            RequestRecord::from_value(value).expect("request fixture validates"),
-            raw,
-        )
-    }
-
-    #[test]
-    fn projects_team_questions_and_orders_newest_first() {
-        let result = question_history(
-            Some("lead"),
-            vec![
-                agent("lead", "lead", None),
-                agent("worker", "lead", None),
-                agent("other", "other", None),
-                agent("deleted", "lead", Some(1.0)),
-            ],
-            vec![
-                request("old", "lead", "agent/asyncQuestion", 1),
-                request("new", "worker", "item/tool/requestUserInput", 2),
-                request("other", "other", "agent/asyncQuestion", 3),
-                request("gone", "deleted", "agent/asyncQuestion", 4),
-                request("not-question", "lead", "tools/call", 5),
-            ],
-        )
-        .expect("question projection succeeds");
-        assert_eq!(
-            result["items"]
-                .as_array()
-                .expect("questions")
-                .iter()
-                .map(|item| item["id"].as_str().expect("question id"))
-                .collect::<Vec<_>>(),
-            ["new", "old"]
-        );
-        assert_eq!(result["items"][0]["questions"][0]["question"], "name");
-    }
-
-    #[test]
-    fn preserves_python_written_elicitation_property_order() {
-        let source = r#"{"id":"form","agent":"lead","method":"mcpServer/elicitation/request","status":"pending","params":{"mode":"form","requestedSchema":{"properties":{"password":{"format":"password"},"color":{}}}}}"#;
-        let value = serde_json::from_str(source).expect("stored object");
-        let record = (
-            RequestRecord::from_value(value).expect("request fixture validates"),
-            source.to_owned(),
-        );
-        let result = question_history(
-            Some("lead"),
-            vec![agent("lead", "lead", None)],
-            vec![record],
-        )
-        .expect("form question projects");
-        assert_eq!(result["items"][0]["questions"][0]["id"], "password");
-        assert_eq!(result["items"][0]["questions"][1]["id"], "color");
-    }
-
-    #[test]
-    fn links_questions_to_their_transcript_items_with_choices() {
-        let stored = |value: serde_json::Value| {
-            (
-                RequestRecord::from_value(value.clone()).expect("request fixture validates"),
-                value.to_string(),
-            )
-        };
-        let result = question_history(
-            Some("lead"),
-            vec![agent("lead", "lead", None)],
-            vec![
-                stored(json!({
-                    "id":"native","agent":"lead","method":"item/tool/requestUserInput",
-                    "status":"answered","createdAt":2,
-                    "params":{"itemId":"toolu_1","turnId":"turn-1","questions":[{
-                        "id":"0","header":"Deploy","question":"Which target?","multiSelect":true,
-                        "isOther":true,"options":[{"label":"Dev","description":"Test first"},{"label":"Prod"},7]
-                    }]},
-                    "answerHistory":[{"id":"0","question":"Which target?","isSecret":false,"answer":["Dev","Prod"]}]
-                })),
-                stored(json!({
-                    "id":super::async_question_id("lead", "call_1"),"agent":"lead",
-                    "method":"agent/asyncQuestion","status":"pending","createdAt":1,"turnId":"turn-0",
-                    "params":{"questions":[{"id":"0","question":"Name?","options":[{"label":"A"}],"multiSelect":false}]}
-                })),
-            ],
-        )
-        .expect("question projection succeeds");
-        let native = &result["items"][0];
-        assert_eq!(native["itemId"], "toolu_1");
-        assert_eq!(native["turnId"], "turn-1");
-        assert_eq!(
-            native["questions"][0],
-            json!({
-                "id":"0","question":"Which target?","isSecret":false,"header":"Deploy",
-                "options":[{"label":"Dev","description":"Test first"},{"label":"Prod","description":null}],
-                "multiSelect":true,"isOther":true
-            })
-        );
-        let asynchronous = &result["items"][1];
-        assert_eq!(asynchronous["itemId"], "call_1");
-        assert_eq!(asynchronous["turnId"], "turn-0");
-        assert_eq!(asynchronous["questions"][0]["header"], json!(null));
-        assert_eq!(asynchronous["questions"][0]["isOther"], false);
-    }
-
     #[test]
     fn refuses_unknown_references() {
-        assert_eq!(
-            question_history(Some("missing"), vec![agent("lead", "lead", None)], vec![]),
-            Err(QuestionsReadsError::UnknownAgent),
-        );
         assert_eq!(
             complaint_detail(None),
             Err(QuestionsReadsError::UnknownComplaint)
@@ -601,12 +426,8 @@ mod tests {
     }
 
     #[test]
-    fn refuses_deleted_callers_for_both_read_paths() {
+    fn refuses_deleted_callers_for_checkpoint_reads() {
         let deleted = agent("deleted", "deleted", Some(1.0));
-        assert_eq!(
-            question_history(Some("deleted"), vec![deleted.clone()], vec![]),
-            Err(QuestionsReadsError::DeletedAgent),
-        );
         assert_eq!(
             checkpoint_list(Some("deleted"), vec![deleted], vec![]),
             Err(QuestionsReadsError::DeletedAgent),
