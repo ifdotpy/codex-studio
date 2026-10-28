@@ -830,6 +830,9 @@ pub(super) fn execute(
             monitor_cancel_owner(tx, &snapshot.context().agent, monitor_id).map_err(|error| {
                 match error {
                     crate::managed_host_tools::Error::Store(error) => CallbackError::Store(error),
+                    crate::managed_host_tools::Error::Expired => {
+                        CallbackError::Invalid("Request id expired")
+                    }
                     crate::managed_host_tools::Error::Invalid(_)
                     | crate::managed_host_tools::Error::Stale
                     | crate::managed_host_tools::Error::InvalidStored { .. }
@@ -1004,6 +1007,7 @@ pub(super) fn managed_error(error: crate::managed_host_tools::Error) -> Callback
     use crate::managed_host_tools::Error as E;
     match error {
         E::Invalid(message) => CallbackError::Invalid(message),
+        E::Expired => CallbackError::Invalid("Request id expired"),
         E::Stale => CallbackError::Stale,
         E::InvalidStored {
             table,
