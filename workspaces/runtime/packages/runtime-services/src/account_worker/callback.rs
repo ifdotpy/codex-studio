@@ -871,19 +871,25 @@ mod vm_auth_tests {
         }
     }
 
-    fn source() -> Option<(
+    async fn source() -> Option<(
         String,
         studio_runtime_store::request_results::AdmittedRequest,
     )> {
         use studio_runtime_schema::persistence::RequestIdentity;
         use studio_runtime_store::request_results::{Admission, RequestResults};
-        let mut db = rusqlite::Connection::open_in_memory().unwrap();
-        studio_runtime_store::receipt_schema::create(&db).unwrap();
-        let tx = db.transaction().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+            .await
+            .unwrap();
         let root = RequestIdentity::issue_root();
         let identity = RequestIdentity::new("callback", &["account-key"], &root, &[]).unwrap();
-        let Admission::Fresh(admitted) =
-            RequestResults::admit(&tx, &identity, "refresh", identity.issued_ms()).unwrap()
+        let Admission::Fresh(admitted) = store
+            .transaction(move |tx| {
+                RequestResults::admit(tx, &identity, "refresh", identity.issued_ms())
+                    .map_err(studio_runtime_store::StoreError::from)
+            })
+            .await
+            .unwrap()
         else {
             panic!("fresh callback");
         };
@@ -915,7 +921,7 @@ mod vm_auth_tests {
             7,
             &refresh_request(),
             Some(resolver),
-            source(),
+            source().await,
         )
         .await
         .expect("refresh response");
@@ -949,7 +955,7 @@ mod vm_auth_tests {
             7,
             &refresh_request(),
             Some(resolver),
-            source(),
+            source().await,
         )
         .await
         .expect("failure response");
@@ -979,7 +985,7 @@ mod vm_auth_tests {
             7,
             &refresh_request(),
             Some(resolver),
-            source(),
+            source().await,
         )
         .await
         .expect("failed response for stale actor");
