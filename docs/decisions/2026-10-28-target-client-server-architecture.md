@@ -110,6 +110,37 @@ Traffic to a remote frontend stays small:
 - A lost cache write only makes the next reconnect request a larger delta.
 - Unsent input is written at once and removed when the server confirms the command.
 
+### Routes and reconnect
+
+These rules come from T3 Code (`docs/internals/remote.md` and
+`docs/internals/connection-runtime.md` in `pingdotgg/t3code`).
+
+- **A list of routes for each server.** A server can have several addresses: the LAN
+  address, the Tailscale Serve address, and later others. The frontend keeps an ordered
+  list and uses the first route that answers.
+- **Identity before credentials.** Before it sends a key or a session, the frontend asks
+  the route for the server's public identity. A LAN address that now belongs to another
+  machine receives nothing.
+- **Learned routes.** A connected server reports its current LAN and Tailscale addresses.
+  The frontend adds them as learned routes and drops the ones the server stops reporting.
+  A key that was paired over HTTPS never travels over plain HTTP.
+- **Return to the faster route.** While it uses a later route, the frontend checks the
+  earlier routes when the network changes, when the app returns to the foreground, and
+  every minute. It moves back when one works. A route that fails waits for a cooldown.
+- **One owner of retries.** Transient failures retry with jittered exponential backoff,
+  capped at 5 minutes, that resets only after the connection stays up. Offline and
+  authentication failures wait for a wakeup (network change, foreground, user retry).
+- **Probe, then replace.** On foreground or a network change, the frontend probes the
+  open stream. Only a failed probe replaces it. A socket that the operating system killed
+  during suspension produces no close event, so a probe that gets no answer within a
+  short deadline replaces the stream.
+- **Health and freshness are separate.** An open stream is not "ready" until the first
+  baseline arrives. Cached data stays readable offline, is marked stale, and never
+  overwrites newer live data.
+
+Scoped permissions (read only, no terminal) are not needed for one owner. Add them when
+a second user or a read-only device appears.
+
 ### Transport
 
 fetch and SSE now. WebTransport may come later as a second binding of the same command and
@@ -165,7 +196,8 @@ is one file for backups and layr snapshots. The problems are in its use:
 4. Move drafts and uploads to the server. Delete the `client-core` stores and `client-wasm`.
 5. Move the remaining ledgers, then the agent writers (about 100 files), to command and provider handlers.
 6. One copy of the conversation, and blobs. Measure `dbstat` on an APFS clone first.
-7. WebTransport, only if a measurement requires it.
+7. Routes and reconnect rules in the frontend.
+8. WebTransport, only if a measurement requires it.
 
 ## Risks
 
