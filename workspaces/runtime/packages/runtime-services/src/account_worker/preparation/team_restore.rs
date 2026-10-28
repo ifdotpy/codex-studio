@@ -128,13 +128,32 @@ mod idle_return_tests {
             let current = snapshot(tx,&lead).expect("snapshot").expect("team");
             assert_eq!(current["children"],json!([]));
             assert_eq!(current["tasks"][0]["status"],"review");
-            let input: crate::turn_prepare::PreparationSnapshot = serde_json::from_value(json!({
-                "provider":"claude","idle_summary_return":true,
-                "actor":{"id":"lead","root_id":"lead","epoch":["thread",0],"is_lead":true,"forked_from":null,"prepared_context":null,"delivered_mode":null},
-                "root":{"concurrency":32,"mode_revision":0},"delivered_manifests":[],"plan":null,
-                "complaints":[],"workers":[],"team_state":current,"delivered_reminders":[],"assets":[],
-                "guidance":{"role":"Role"},"artifact_paths":{},"prepared_at":1.0,"operation_id":"return"
-            })).expect("input");
+            let input = crate::turn_prepare::PreparationSnapshot {
+                idle_summary_return: true,
+                provider: Some(studio_runtime_providers::ProviderKind::Claude),
+                actor: crate::turn_prepare::Actor {
+                    id: "lead".into(),
+                    root_id: "lead".into(),
+                    epoch: crate::turn_prepare::Epoch(Some("thread".into()), 0),
+                    is_lead: true,
+                    forked_from: None,
+                    prepared_context: None,
+                    delivered_mode: None,
+                },
+                root: crate::turn_prepare::RootSettings { concurrency: 32, mode_revision: 0 },
+                delivered_manifests: vec![],
+                plan: None,
+                complaints: vec![],
+                workers: vec![],
+                team_state: Some(current),
+                delivered_reminders: Default::default(),
+                assets: vec![],
+                asset_paths: Default::default(),
+                guidance: crate::turn_prepare::GuidanceBundle { role: "Role".into() },
+                artifact_paths: Default::default(),
+                prepared_at: 1.0,
+                operation_id: "return".into(),
+            };
             let event = crate::turn_prepare::Event {
                 id:"return".into(),kind:"user".into(),text:"continue".into(),created:1.0,
                 metadata:crate::turn_prepare::EventMetadata {assets:vec![],accepted_at:None,extra:serde_json::Map::new()},

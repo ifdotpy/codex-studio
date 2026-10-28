@@ -92,9 +92,7 @@ export interface Item {
   backgroundedByUser?: boolean | undefined;
   outputFile?: string | undefined;
   stalled?: boolean | undefined;
-  compactionMetadata?:
-    | import("@anthropic-ai/claude-agent-sdk").SDKCompactBoundaryMessage["compact_metadata"]
-    | undefined;
+  compactionMetadata?: unknown;
   idleCompactionRequestId?: string | undefined;
   idleCompactionOnReturn?: boolean | undefined;
   clientId?: string | undefined;

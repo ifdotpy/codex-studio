@@ -11,19 +11,22 @@ const metadata = {
   post_tokens: 1000,
 };
 
+// Test doubles carry only the fields these tests read.
+const typed = <T>(value: object) => value as T;
+
 function fixture() {
-  const source = [
+  const source = typed<SessionMessage[]>([
     { type: "user", uuid: "u", message: { content: "hello" } },
     { type: "assistant", uuid: "a", message: { content: "answer" } },
-  ] as unknown as SessionMessage[];
-  const s = {
+  ]);
+  const s = typed<Session>({
     id: "studio",
     nativeId: "main",
     cwd: "/repo",
     started: true,
     turns: [{ id: "turn", status: "completed", items: [] }],
     idleCache: { requestId: "response" },
-  } as unknown as Session;
+  });
   let forks = 0;
   const writes: Session[] = [];
   const deps = {
@@ -64,11 +67,13 @@ test("preparation keeps the main history; return commits the fork exactly once",
 test("changed history, prefix, and native identity prevent replacement", async () => {
   const changes: ((f: ReturnType<typeof fixture>) => void)[] = [
     (f) =>
-      f.source.push({
-        type: "user",
-        uuid: "new",
-        message: { content: "new input" },
-      } as unknown as SessionMessage),
+      f.source.push(
+        typed<SessionMessage>({
+          type: "user",
+          uuid: "new",
+          message: { content: "new input" },
+        }),
+      ),
     (f) => {
       f.s.model = "different";
     },
@@ -200,9 +205,10 @@ test("the installed SDK fork preserves the proof for native message and system r
   };
   // The SDK store options are not in the public type; the call shape is checked at runtime.
   const withStore = (options: object) =>
-    ({ ...options, sessionStore }) as unknown as Parameters<
-      typeof sdk.getSessionMessages
-    >[1];
+    typed<Parameters<typeof sdk.getSessionMessages>[1]>({
+      ...options,
+      sessionStore,
+    });
   const source = await sdk.getSessionMessages(
     main,
     withStore({
@@ -215,14 +221,14 @@ test("the installed SDK fork preserves the proof for native message and system r
     "system",
     "assistant",
   ]);
-  const s = {
+  const s = typed<Session>({
     id: "studio",
     nativeId: main,
     started: true,
     cwd: "/repo",
     turns: [],
     idleCache: { requestId: "response" },
-  } as unknown as Session;
+  });
   const receipt = await prepareIdleSummary(
     s,
     "idle:sdk",

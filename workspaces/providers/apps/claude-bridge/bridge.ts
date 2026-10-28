@@ -1976,9 +1976,7 @@ async function sessionOptions(
         { ...options, toolUseID: value.toolUseID || options.requestId },
       );
       const answers =
-        answer?.behavior === "allow"
-          ? answer.updatedInput?.answers
-          : undefined;
+        answer?.behavior === "allow" ? answer.updatedInput?.answers : undefined;
       const selected = isRecord(answers) ? answers[question] : undefined;
       return selected
         ? {
@@ -2012,8 +2010,9 @@ async function sessionOptions(
 // Summary reads use the verified history reader, as the rest of the bridge does.
 const summaryHistory =
   (s: Session): IdleSummaryDeps["getSessionMessages"] =>
-  async (id, options) =>
-    verifiedHistoryMessages({ id, cwd: options.dir ?? s.cwd });
+  async (id, options) => [
+    ...(await verifiedHistoryIndex({ id, cwd: options.dir ?? s.cwd })).messages,
+  ];
 
 async function compactSummaryFork(
   s: Session,
@@ -2030,7 +2029,7 @@ async function compactSummaryFork(
     startedAt,
   );
   // The SessionStart hook records the main session, so the fork query omits it.
-  const { hooks: _hooks, ...forkOptions } = options;
+  const { hooks: _hooks, sessionId: _sessionId, ...forkOptions } = options;
   const controller = new AbortController();
   let admit: () => void = () => {};
   const admitted = new Promise<void>((resolve) => (admit = resolve));
@@ -2049,7 +2048,6 @@ async function compactSummaryFork(
     prompt: prompt(),
     options: {
       ...forkOptions,
-      sessionId: undefined,
       resume: nativeId,
       abortController: controller,
       permissionMode: "dontAsk",
@@ -3847,14 +3845,15 @@ async function handle(
           ? s.idleSummary
           : null;
       if (appliedSummary) {
-        turn.items.push({
+        const boundary = {
           id: appliedSummary.requestId + ":boundary",
           type: "contextCompaction",
           status: "completed",
           compactionMetadata: appliedSummary.metadata,
           idleCompactionRequestId: appliedSummary.requestId,
           idleCompactionOnReturn: true,
-        });
+        } as const;
+        turn.items.push(boundary);
         appliedSummary.noticePending = false;
       }
       const message = userMessage(
