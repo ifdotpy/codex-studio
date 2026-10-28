@@ -10945,10 +10945,11 @@ export interface components {
     };
     /**
      * ClientCoreEvent
-     * @description One client core event; `event` names the page subscription.
+     * @description The first event names this stream connection (`connection`); `view.subscribe` must name it, and the views of a connection end with its stream. Later events are client core events; `event` names the page subscription.
      */
     ClientCoreEvent: {
-      event: string;
+      connection?: string | undefined;
+      event?: string | undefined;
     };
     /**
      * ClientCoreRequest

@@ -20894,15 +20894,15 @@
         "type": "object"
       },
       "ClientCoreEvent": {
-        "description": "One client core event; `event` names the page subscription.",
+        "description": "The first event names this stream connection (`connection`); `view.subscribe` must name it, and the views of a connection end with its stream. Later events are client core events; `event` names the page subscription.",
         "properties": {
+          "connection": {
+            "type": "string"
+          },
           "event": {
             "type": "string"
           }
         },
-        "required": [
-          "event"
-        ],
         "title": "ClientCoreEvent",
         "type": "object"
       },

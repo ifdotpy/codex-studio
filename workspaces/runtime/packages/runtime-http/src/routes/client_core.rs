@@ -2,7 +2,7 @@
 //! browser device, so a plain browser page uses the same core as the desktop
 //! app. See docs/desktop/hosted-client-core.md.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
@@ -13,7 +13,8 @@ use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use serde_json::Value;
+use futures_util::StreamExt;
+use serde_json::{Value, json};
 use studio_client_core::client::Client;
 use studio_client_core::native::{self, ConnectionConfig};
 use studio_client_core::protocol::{Request, Response as CoreResponse};
@@ -41,6 +42,8 @@ const CLIENT_EVENT_KEEP_ALIVE_SECONDS: u64 = 15;
 const CLIENT_CORE_CLOSE_WAIT_MILLISECONDS: u64 = 5_000;
 /// Pause between two checks of the state lock of a closing core, in milliseconds.
 const CLIENT_CORE_CLOSE_CHECK_MILLISECONDS: u64 = 20;
+/// Time after the last use of a device before the server deletes its state folder, in seconds (90 days).
+const CLIENT_STATE_RETENTION_SECONDS: u64 = 7_776_000;
 /// Folder below the server state directory that holds one core state folder per device.
 const CLIENT_STATE_FOLDER: &str = "web-clients";
 /// Error code of a command that needs the device of the person.
@@ -85,14 +88,102 @@ impl Drop for ActivityGuard {
     }
 }
 
+/// Views belong to the event stream connection that delivers their events.
+#[derive(Default)]
+struct Views {
+    connections: HashSet<String>,
+    /// Subscription identity to the connection that owns it.
+    owners: HashMap<String, String>,
+}
+
 struct DeviceCore {
     client: Client,
     /// Only the core event callback holds the sender, so streams end when the core closes.
     events: broadcast::WeakSender<Value>,
     activity: Arc<Mutex<Activity>>,
+    /// Held while the server changes views, so their core commands keep their order.
+    views: tokio::sync::Mutex<Views>,
+}
+
+fn core_request(method: &str, params: Value) -> Request {
+    Request {
+        id: uuid::Uuid::new_v4().to_string(),
+        method: method.to_owned(),
+        params,
+    }
 }
 
 impl DeviceCore {
+    async fn end_view(&self, subscription: &str, reason: &str) -> Result<(), String> {
+        self.client
+            .request(core_request(
+                "view.unsubscribe",
+                json!({"subscription": subscription, "reason": reason}),
+            ))
+            .await
+            .map(drop)
+    }
+
+    /// Runs `view.subscribe` for the open connection that the page names.
+    async fn subscribe(&self, mut request: Request) -> Result<CoreResponse, String> {
+        let connection = request
+            .params
+            .as_object_mut()
+            .and_then(|params| params.remove("connection"))
+            .and_then(|value| value.as_str().map(str::to_owned));
+        let subscription = request.params["subscription"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned();
+        let mut views = self.views.lock().await;
+        let Some(connection) = connection.filter(|id| views.connections.contains(id)) else {
+            return Ok(CoreResponse::failure(
+                request.id,
+                "invalid_subscription",
+                "The event stream of this view is closed. Subscribe again after it reconnects.",
+            ));
+        };
+        if views
+            .owners
+            .get(&subscription)
+            .is_some_and(|owner| *owner != connection)
+        {
+            self.end_view(&subscription, "moved to a new event stream")
+                .await?;
+            views.owners.remove(&subscription);
+        }
+        let response = self.client.request(request).await?;
+        if response.error.is_none() {
+            views.owners.insert(subscription, connection);
+        }
+        Ok(response)
+    }
+
+    async fn unsubscribe(&self, request: Request) -> Result<CoreResponse, String> {
+        let mut views = self.views.lock().await;
+        if let Some(subscription) = request.params["subscription"].as_str() {
+            views.owners.remove(subscription);
+        }
+        self.client.request(request).await
+    }
+
+    /// Ends every view of a closed event stream connection.
+    async fn end_connection(&self, connection: &str) {
+        let mut views = self.views.lock().await;
+        views.connections.remove(connection);
+        let owned = views
+            .owners
+            .iter()
+            .filter(|(_, owner)| *owner == connection)
+            .map(|(subscription, _)| subscription.clone())
+            .collect::<Vec<_>>();
+        for subscription in owned {
+            views.owners.remove(&subscription);
+            // A failed core closes its views with it.
+            drop(self.end_view(&subscription, "event stream closed").await);
+        }
+    }
+
     fn idle_for(&self) -> Duration {
         let activity = self
             .activity
@@ -124,6 +215,12 @@ impl ClientCores {
     }
 
     fn with_idle(state_dir: &str, port: u16, idle: Duration) -> Self {
+        let directory = PathBuf::from(state_dir).join(CLIENT_STATE_FOLDER);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let folder = directory.clone();
+            // Server start: no core is open yet.
+            runtime.spawn(async move { delete_unused(&folder, &HashMap::new()).await });
+        }
         Self {
             open: tokio::sync::Mutex::default(),
             directory: PathBuf::from(state_dir).join(CLIENT_STATE_FOLDER),
@@ -158,6 +255,12 @@ impl ClientCores {
         self: &Arc<Self>,
         device: &str,
     ) -> Result<(Arc<DeviceCore>, ActivityGuard), ApiError> {
+        if let Some(core) = self.open.lock().await.get(device) {
+            let active = ActivityGuard::new(&core.activity);
+            return Ok((Arc::clone(core), active));
+        }
+        // Only this device waits for its previous core; other devices keep working.
+        self.wait_for_previous_core(device).await?;
         let mut open = self.open.lock().await;
         if let Some(core) = open.get(device) {
             let active = ActivityGuard::new(&core.activity);
@@ -169,7 +272,7 @@ impl ClientCores {
                 "This server has too many open browser sessions. Close Studio in another browser and try again.",
             ));
         }
-        self.wait_for_previous_core(device).await?;
+        delete_unused(&self.directory, &open).await;
         let (sender, _) = broadcast::channel(CLIENT_EVENT_BUFFER);
         let events = sender.downgrade();
         let client = Client::open(
@@ -195,6 +298,7 @@ impl ClientCores {
                 active: 0,
                 used: Instant::now(),
             })),
+            views: tokio::sync::Mutex::default(),
         });
         let active = ActivityGuard::new(&core.activity);
         open.insert(device.to_owned(), Arc::clone(&core));
@@ -223,8 +327,15 @@ impl ClientCores {
             .await;
         let deadline = Instant::now() + Duration::from_millis(CLIENT_CORE_CLOSE_WAIT_MILLISECONDS);
         loop {
+            if self.open.lock().await.contains_key(device) {
+                return Ok(());
+            }
             match lock.try_lock() {
-                Ok(()) => return lock.unlock().map_err(|_| ApiError::internal()),
+                Ok(()) => {
+                    // The lock file time records the last use of the device state.
+                    drop(lock.set_modified(std::time::SystemTime::now()));
+                    return lock.unlock().map_err(|_| ApiError::internal());
+                }
                 Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
                     tokio::time::sleep(Duration::from_millis(CLIENT_CORE_CLOSE_CHECK_MILLISECONDS))
                         .await;
@@ -242,6 +353,7 @@ impl ClientCores {
             .is_some_and(|current| Arc::ptr_eq(current, core))
         {
             open.remove(device);
+            touch(&self.directory, device).await;
         }
     }
 
@@ -263,6 +375,7 @@ impl ClientCores {
                 let idle_for = current.idle_for();
                 if idle_for >= idle {
                     open.remove(&device);
+                    touch(&cores.directory, &device).await;
                     return;
                 }
                 wait = idle - idle_for;
@@ -276,6 +389,53 @@ impl ClientCores {
     }
 }
 
+fn valid_device(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Records the last use of a device state in its lock file time.
+async fn touch(directory: &std::path::Path, device: &str) {
+    if let Ok(file) = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(directory.join(device).join(native::STATE_LOCK_FILE))
+        .await
+    {
+        drop(
+            file.into_std()
+                .await
+                .set_modified(std::time::SystemTime::now()),
+        );
+    }
+}
+
+/// Deletes the state folders of closed devices unused for `CLIENT_STATE_RETENTION_SECONDS`.
+async fn delete_unused(directory: &std::path::Path, open: &HashMap<String, Arc<DeviceCore>>) {
+    let Ok(mut entries) = tokio::fs::read_dir(directory).await else {
+        return;
+    };
+    let retention = Duration::from_secs(CLIENT_STATE_RETENTION_SECONDS);
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !valid_device(&name) || open.contains_key(&name) {
+            continue;
+        }
+        let path = entry.path();
+        let used = match tokio::fs::metadata(path.join(native::STATE_LOCK_FILE)).await {
+            Ok(metadata) => metadata.modified().ok(),
+            Err(_) => tokio::fs::metadata(&path)
+                .await
+                .ok()
+                .and_then(|metadata| metadata.modified().ok()),
+        };
+        if used.is_some_and(|time| time.elapsed().is_ok_and(|age| age >= retention)) {
+            drop(tokio::fs::remove_dir_all(&path).await);
+        }
+    }
+}
+
 fn cookie_device(headers: &HeaderMap) -> Option<String> {
     headers
         .get_all(header::COOKIE)
@@ -285,12 +445,7 @@ fn cookie_device(headers: &HeaderMap) -> Option<String> {
         .filter_map(|pair| pair.trim().split_once('='))
         .find(|(name, _)| *name == CLIENT_DEVICE_COOKIE)
         .map(|(_, value)| value.to_owned())
-        .filter(|value| {
-            value.len() == 32
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        })
+        .filter(|value| valid_device(value))
 }
 
 /// The device of this request, and a new cookie when the server made a new device.
@@ -337,7 +492,11 @@ async fn request(
     }
     let id = request.id.clone();
     let (core, active) = cores.core(&device).await?;
-    let response = core.client.request(request).await;
+    let response = match request.method.as_str() {
+        "view.subscribe" => core.subscribe(request).await,
+        "view.unsubscribe" => core.unsubscribe(request).await,
+        _ => core.client.request(request).await,
+    };
     drop(active);
     let response = match response {
         Ok(response) => response,
@@ -348,6 +507,25 @@ async fn request(
         }
     };
     Ok(with_cookie(Json(response).into_response(), cookie))
+}
+
+/// One open event stream. When it ends, its views end in the core.
+struct Connection {
+    core: Weak<DeviceCore>,
+    id: String,
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        let (core, id) = (self.core.clone(), std::mem::take(&mut self.id));
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if let Some(core) = core.upgrade() {
+                    core.end_connection(&id).await;
+                }
+            });
+        }
+    }
 }
 
 async fn events(State(state): State<HttpState>, headers: HeaderMap) -> Result<Response, ApiError> {
@@ -364,14 +542,29 @@ async fn events(State(state): State<HttpState>, headers: HeaderMap) -> Result<Re
             )
         })?
         .subscribe();
+    let connection = uuid::Uuid::new_v4().simple().to_string();
+    core.views
+        .lock()
+        .await
+        .connections
+        .insert(connection.clone());
+    let first = Event::default().data(json!({ "connection": connection }).to_string());
+    let owner = Connection {
+        core: Arc::downgrade(&core),
+        id: connection,
+    };
     drop(core);
-    let stream =
-        futures_util::stream::unfold((receiver, active), |(mut receiver, active)| async move {
-            // A lagged stream ends: the page reconnects and subscribes again.
-            let value = receiver.recv().await.ok()?;
-            let event = Event::default().data(value.to_string());
-            Some((Ok::<_, Infallible>(event), (receiver, active)))
-        });
+    let stream = futures_util::stream::once(std::future::ready(Ok::<_, Infallible>(first))).chain(
+        futures_util::stream::unfold(
+            (receiver, active, owner),
+            |(mut receiver, active, owner)| async move {
+                // A lagged stream ends: the page reconnects and subscribes again.
+                let value = receiver.recv().await.ok()?;
+                let event = Event::default().data(value.to_string());
+                Some((Ok::<_, Infallible>(event), (receiver, active, owner)))
+            },
+        ),
+    );
     let mut response = Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(CLIENT_EVENT_KEEP_ALIVE_SECONDS)))
         .into_response();
@@ -500,6 +693,213 @@ mod tests {
         serde_json::from_str(data).expect("JSON event")
     }
 
+    fn view(subscription: &str, connection: &str) -> Value {
+        json!({"subscription": subscription, "topic": "outbox", "workspace": "workspace", "connection": connection})
+    }
+
+    /// Opens the event stream and reads its connection identity.
+    async fn connect(app: &axum::Router, cookie: &str) -> (axum::body::BodyDataStream, String) {
+        let mut stream = events(app, cookie).await;
+        let first = next_event(&mut stream).await;
+        let connection = first["connection"].as_str().expect("connection identity");
+        (stream, connection.to_owned())
+    }
+
+    fn device_of(cookie: &str) -> &str {
+        cookie.trim_start_matches("studio_client=")
+    }
+
+    /// Sends a command to the open core of a device directly, without the route.
+    async fn direct(state: &HttpState, cookie: &str, method: &str, params: Value) -> CoreResponse {
+        let core = state
+            .client_cores
+            .open
+            .lock()
+            .await
+            .get(device_of(cookie))
+            .cloned();
+        let request = Request {
+            id: uuid::Uuid::new_v4().to_string(),
+            method: method.to_owned(),
+            params,
+        };
+        core.expect("open core")
+            .client
+            .request(request)
+            .await
+            .expect("core reply")
+    }
+
+    async fn wait_until_closed(state: &HttpState) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while state.client_cores.open_count().await > 0 {
+            assert!(Instant::now() < deadline, "the idle core did not close");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_closed_event_stream_leaves_no_views_in_the_core() {
+        let (state, _directory) = state(Duration::from_secs(CLIENT_CORE_IDLE_SECONDS));
+        let app = crate::router(state.clone()).expect("router");
+        let cookie = new_device(&app).await;
+        let (mut stream, connection) = connect(&app, &cookie).await;
+        let (_, reply) = call(
+            &app,
+            Some(&cookie),
+            "s",
+            "view.subscribe",
+            view("v", &connection),
+        )
+        .await;
+        assert!(reply["error"].is_null(), "{reply}");
+        assert_eq!(next_event(&mut stream).await["event"], "v");
+        drop(stream);
+        // The core accepts the same subscription again only after the old view ended.
+        let params = json!({"subscription": "v", "topic": "outbox", "workspace": "workspace"});
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while direct(&state, &cookie, "view.subscribe", params.clone())
+            .await
+            .error
+            .is_some()
+        {
+            assert!(Instant::now() < deadline, "the view outlived its stream");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_view_needs_an_open_stream_of_its_own_device() {
+        let (state, _directory) = state(Duration::from_secs(CLIENT_CORE_IDLE_SECONDS));
+        let app = crate::router(state).expect("router");
+        let first = new_device(&app).await;
+        let second = new_device(&app).await;
+        let (_stream, connection) = connect(&app, &first).await;
+        for (cookie, params) in [
+            (&second, view("v", &connection)),
+            (&first, view("v", "unknown")),
+            (
+                &first,
+                json!({"subscription": "v", "topic": "outbox", "workspace": "workspace"}),
+            ),
+        ] {
+            let (_, reply) = call(&app, Some(cookie), "s", "view.subscribe", params).await;
+            assert_eq!(reply["error"]["code"], "invalid_subscription", "{reply}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_page_view_keeps_its_events_after_the_stream_and_core_reopen() {
+        let (state, _directory) = state(Duration::from_millis(200));
+        let app = crate::router(state.clone()).expect("router");
+        let cookie = new_device(&app).await;
+        let (mut stream, connection) = connect(&app, &cookie).await;
+        let (_, reply) = call(
+            &app,
+            Some(&cookie),
+            "s1",
+            "view.subscribe",
+            view("v", &connection),
+        )
+        .await;
+        assert!(reply["error"].is_null(), "{reply}");
+        assert_eq!(next_event(&mut stream).await["event"], "v");
+        drop(stream);
+        wait_until_closed(&state).await;
+        // The page reconnects and subscribes again with the same subscription identity.
+        let (mut stream, reconnected) = connect(&app, &cookie).await;
+        assert_ne!(reconnected, connection);
+        let (_, reply) = call(
+            &app,
+            Some(&cookie),
+            "s2",
+            "view.subscribe",
+            view("v", &reconnected),
+        )
+        .await;
+        assert!(reply["error"].is_null(), "{reply}");
+        assert_eq!(next_event(&mut stream).await["event"], "v");
+    }
+
+    #[tokio::test]
+    async fn opening_a_core_deletes_old_unused_device_folders() {
+        let (state, directory) = state(Duration::from_secs(CLIENT_CORE_IDLE_SECONDS));
+        let root = directory.path().join(CLIENT_STATE_FOLDER);
+        let (old, recent) = ("0".repeat(32), "1".repeat(32));
+        for (device, age) in [
+            (&old, CLIENT_STATE_RETENTION_SECONDS + 3600),
+            (&recent, 3600),
+        ] {
+            tokio::fs::create_dir_all(root.join(device))
+                .await
+                .expect("folder");
+            let lock = tokio::fs::File::create(root.join(device).join(native::STATE_LOCK_FILE))
+                .await
+                .expect("lock file")
+                .into_std()
+                .await;
+            let used = std::time::SystemTime::now() - Duration::from_secs(age);
+            lock.set_modified(used).expect("last use");
+        }
+        let app = crate::router(state).expect("router");
+        let _cookie = new_device(&app).await;
+        assert!(!tokio::fs::try_exists(root.join(&old)).await.expect("check"));
+        assert!(
+            tokio::fs::try_exists(root.join(&recent))
+                .await
+                .expect("check")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_closing_core_delays_only_its_own_device() {
+        let (state, directory) = state(Duration::from_secs(CLIENT_CORE_IDLE_SECONDS));
+        let app = crate::router(state).expect("router");
+        let other = new_device(&app).await;
+        let closing = "2".repeat(32);
+        let folder = directory.path().join(CLIENT_STATE_FOLDER).join(&closing);
+        tokio::fs::create_dir_all(&folder).await.expect("folder");
+        let lock = tokio::fs::File::create(folder.join(native::STATE_LOCK_FILE))
+            .await
+            .expect("lock file")
+            .into_std()
+            .await;
+        lock.try_lock()
+            .expect("the previous core still holds the state");
+        let cookie = format!("studio_client={closing}");
+        let waiting = tokio::spawn({
+            let app = app.clone();
+            async move {
+                call(
+                    &app,
+                    Some(&cookie),
+                    "wait",
+                    "preferences.raw_all",
+                    Value::Null,
+                )
+                .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let started = Instant::now();
+        let (_, reply) = call(
+            &app,
+            Some(&other),
+            "other",
+            "preferences.raw_all",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(reply["result"], json!({}));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "another device waited"
+        );
+        lock.unlock().expect("release");
+        let (_, reply) = waiting.await.expect("waiting request");
+        assert_eq!(reply["result"], json!({}));
+    }
+
     #[tokio::test]
     async fn client_routes_keep_the_server_trust_checks() {
         let (state, _directory) = state(Duration::from_secs(CLIENT_CORE_IDLE_SECONDS));
@@ -586,15 +986,14 @@ mod tests {
         let app = crate::router(state).expect("router");
         let first = new_device(&app).await;
         let second = new_device(&app).await;
-        let mut first_events = events(&app, &first).await;
-        let mut second_events = events(&app, &second).await;
-        let subscribe = |subscription: &str| json!({"subscription": subscription, "topic": "outbox", "workspace": "workspace"});
+        let (mut first_events, first_connection) = connect(&app, &first).await;
+        let (mut second_events, second_connection) = connect(&app, &second).await;
         let (_, reply) = call(
             &app,
             Some(&second),
             "second-view",
             "view.subscribe",
-            subscribe("second-view"),
+            view("second-view", &second_connection),
         )
         .await;
         assert!(reply["error"].is_null(), "{reply}");
@@ -604,7 +1003,7 @@ mod tests {
             Some(&first),
             "first-view",
             "view.subscribe",
-            subscribe("first-view"),
+            view("first-view", &first_connection),
         )
         .await;
         assert!(reply["error"].is_null(), "{reply}");

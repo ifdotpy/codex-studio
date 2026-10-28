@@ -2,6 +2,7 @@ import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
 } from "../generated/apiSchema";
+import { randomUUID } from "../uuid";
 
 // Transport to the client core that the server of this page hosts for the
 // browser device (docs/desktop/hosted-client-core.md). The device identity is
@@ -32,6 +33,13 @@ let token: Promise<string> | undefined;
 let contact: Promise<void> | undefined;
 let source: EventSource | undefined;
 const listeners = new Set<(value: unknown) => void>();
+// Views belong to one stream connection; the server ends them with the stream.
+let connection: string | undefined;
+let connectionWaiters: ((id: string) => void)[] = [];
+const liveViews = new Map<
+  string,
+  { params: Record<string, unknown>; connection: string }
+>();
 
 function sessionToken(): Promise<string> {
   token ??= fetch("/api/session", { credentials: "same-origin" })
@@ -67,8 +75,74 @@ async function afterContact<T>(work: () => Promise<T>): Promise<T> {
   return work();
 }
 
+function subscriptionOf(params: unknown) {
+  const value = (params as { subscription?: unknown } | null)?.subscription;
+  return typeof value === "string" ? value : "";
+}
+
+function succeeded(value: unknown) {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    Object.hasOwn(value, "result") &&
+    !Object.hasOwn(value, "error")
+  );
+}
+
+async function streamConnection(): Promise<string> {
+  if (!source) await afterContact(openEvents).catch(() => undefined);
+  if (connection) return connection;
+  return new Promise((resolve) => connectionWaiters.push(resolve));
+}
+
 /** Sends one command once. It returns the raw core reply for its identity. */
 export async function hostedRequest(
+  id: string,
+  method: string,
+  params: unknown,
+): Promise<unknown> {
+  if (method === "view.unsubscribe") liveViews.delete(subscriptionOf(params));
+  if (method !== "view.subscribe") return send(id, method, params);
+  const current = await streamConnection();
+  const value = await send(id, method, {
+    ...(params as object),
+    connection: current,
+  });
+  if (succeeded(value))
+    liveViews.set(subscriptionOf(params), {
+      params: params as Record<string, unknown>,
+      connection: current,
+    });
+  return value;
+}
+
+/** A new connection has none of the earlier views; subscribe them again with their identities. */
+function subscribeAgain(current: string) {
+  for (const [subscription, view] of liveViews) {
+    if (view.connection === current) continue;
+    view.connection = current;
+    const lost = (message: string) => {
+      liveViews.delete(subscription);
+      for (const listener of listeners)
+        listener({ event: subscription, error: { message } });
+    };
+    send(randomUUID(), "view.subscribe", {
+      ...view.params,
+      connection: current,
+    })
+      .then((value) => {
+        if (!succeeded(value))
+          lost(
+            "The view could not subscribe again after the stream reconnected.",
+          );
+      })
+      .catch((error: unknown) =>
+        lost(String((error as Error)?.message ?? error)),
+      );
+  }
+}
+
+async function send(
   id: string,
   method: string,
   params: unknown,
@@ -121,6 +195,15 @@ function openEvents(): Promise<void> {
     } catch {
       return;
     }
+    const opened = (value as { connection?: unknown } | null)?.connection;
+    if (typeof opened === "string" && opened) {
+      connection = opened;
+      const waiters = connectionWaiters;
+      connectionWaiters = [];
+      for (const resolve of waiters) resolve(opened);
+      subscribeAgain(opened);
+      return;
+    }
     for (const listener of listeners) listener(value);
   };
   return new Promise((resolve, reject) => {
@@ -143,6 +226,7 @@ export async function listenHostedEvents(
     if (listeners.size || !source) return;
     source.close();
     source = undefined;
+    connection = undefined;
   };
   // The browser reopens a failed stream by itself; a failed first open only
   // lets the next contact get the device cookie.

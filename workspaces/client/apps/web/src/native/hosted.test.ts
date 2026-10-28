@@ -160,4 +160,43 @@ describe("hosted client transport", () => {
     expect(stream.closed).toBe(true);
     expect(FakeEventSource.opened).toHaveLength(1);
   });
+
+  it("names the stream connection and subscribes views again after a reconnect", async () => {
+    const sent = server(({ id }) => ({ id, result: { subscribed: true } }));
+    const { listenNativeEvents, nativeRequest } = await load();
+    const listening = listenNativeEvents(() => {});
+    await vi.waitFor(() => expect(FakeEventSource.opened).toHaveLength(1));
+    const stream = FakeEventSource.opened[0]!;
+    stream.dispatchEvent(new Event("open"));
+    await listening;
+    stream.emit({ connection: "c1" });
+    const view = { subscription: "v", topic: "sse", path: "/api/sync/stream" };
+    await nativeRequest("view.subscribe", view, "subscribe-1");
+    const subscribes = () =>
+      sent
+        .filter((entry) => entry.url === "/api/client/request")
+        .map((entry) => JSON.parse(String(entry.init?.body)))
+        .filter((body) => body.method === "view.subscribe");
+    expect(subscribes()).toEqual([
+      {
+        id: "subscribe-1",
+        method: "view.subscribe",
+        params: { ...view, connection: "c1" },
+      },
+    ]);
+    // The browser reopened the stream; the server ended the views of c1.
+    stream.emit({ connection: "c2" });
+    await vi.waitFor(() => expect(subscribes()).toHaveLength(2));
+    const again = subscribes()[1];
+    expect(again.params).toEqual({ ...view, connection: "c2" });
+    expect(again.id).not.toBe("subscribe-1");
+    await nativeRequest(
+      "view.unsubscribe",
+      { subscription: "v" },
+      "unsubscribe",
+    );
+    stream.emit({ connection: "c3" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(subscribes()).toHaveLength(2);
+  });
 });

@@ -42,14 +42,22 @@ constants.
   next request opens it again on the same state. Before it opens a core, the
   server waits up to `CLIENT_CORE_CLOSE_WAIT_MILLISECONDS` (5000 ms) until the
   previous core of that device released its state lock
-  (`studio_client_core::native::STATE_LOCK_FILE`).
+  (`studio_client_core::native::STATE_LOCK_FILE`). Only that device waits.
+- The lock file time records the last use of a device. At server start and
+  when a core opens, the server deletes the folders of closed devices unused
+  for `CLIENT_STATE_RETENTION_SECONDS` (90 days).
 - `POST /api/client/request` takes one core `Request` (`id`, `method`,
   `params`) and returns the core `Response` with the same `id`. Its body limit
   is the core message limit (`protocol::MAX_MESSAGE`). If the core connection
   fails, the reply is the error `client_core` and the server opens a new core
   on the next request.
 - `GET /api/client/events` streams the core events of the device as SSE
-  `data:` lines (default `message` event, keep-alive every 15 s). Only the
+  `data:` lines (default `message` event, keep-alive every 15 s). The first
+  event is `{"connection": "<id>"}`. A hosted `view.subscribe` must name an
+  open connection of the device in `params.connection`; the server removes
+  it before the core sees the command. When the stream ends, the server
+  unsubscribes every view of that connection, so views never outlive their
+  stream. Only the
   core event callback holds the event sender, so the stream ends when the core
   closes. A stream that falls more than 1024 events behind also ends.
 - Request identities keep their meaning: the core replays a stored result for
@@ -97,6 +105,10 @@ nor a frame, and the page origin is HTTP or HTTPS.
   devices.
 - `listenNativeEvents` shares one `EventSource` on `/api/client/events`
   between all listeners and closes it after the last listener.
+- `view.subscribe` adds the current connection. On each new connection
+  (the browser reopened the stream, maybe to a new core) the page sends every
+  live `view.subscribe` again with the same subscription identity and a new
+  request identity. If that fails, the view listeners get an error event.
 
 ## Removal
 
@@ -110,14 +122,8 @@ After the hosted transport works, `hasNativeClient()` is always true. Then:
 
 ## Known limits
 
-- After the event stream reconnects (server restart, lagged stream), the core
-  can be new and the view subscriptions of the page are gone. The page does
-  not subscribe again by itself yet.
-- A tab that closes without `view.unsubscribe` leaves its views in the shared
-  device core until the core closes. The core has a limit of 64 views.
-- State folders under `web-clients/` are not deleted.
-- Waiting for a closing core holds the open-core lock of all devices, for at
-  most 5 s.
+- Events sent while the stream reconnects are lost; a view starts again
+  from its current state after it subscribes again.
 - The client core uses Unix sockets, so only Unix servers link it. On other
   targets the two routes answer the shared 501 response.
 - In the plain browser and in remote server views the queue of unsent
