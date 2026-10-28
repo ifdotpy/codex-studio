@@ -401,19 +401,18 @@ async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
         .transaction(|connection| {
             studio_runtime_store::receipt_schema::create(connection)?;
             for agent in ["agent", "other-agent"] {
-                let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
-                    "id": agent,
-                    "rootId": agent,
-                    "epoch": 0,
-                    "status": "idle",
-                    "isLead": true,
-                    "threadId": "thread",
-                    "accountKey": "account"
-                });
-                connection.execute(
-                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
-                    rusqlite::params![agent, record.to_string()],
-                )?;
+                let id = studio_runtime_store::AgentId::from(agent);
+                let record = studio_runtime_store::AgentRecord {
+                    id: id.clone(), root_id: id, epoch: 0,
+                    status: studio_runtime_store::AgentStatus::Idle,
+                    extra: [
+                        ("provider".into(), serde_json::to_value(studio_runtime_schema::ProviderKind::Codex).expect("provider")),
+                        ("isLead".into(), serde_json::Value::Bool(true)),
+                        ("threadId".into(), serde_json::Value::String("thread".into())),
+                        ("accountKey".into(), serde_json::Value::String("account".into())),
+                    ].into(),
+                };
+                studio_runtime_store::AgentRepository::put(connection, &record)?;
             }
             for (session, agent) in [
                 ("session:one", "agent"),
@@ -433,6 +432,15 @@ async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
         })
         .await
         .expect("seed agent and session rows");
+    studio_runtime_services::account_worker::attach_provider_stream_for_test(
+        &store,
+        "account",
+        None,
+        1,
+        "receipt-matrix-connection",
+    )
+    .await
+    .expect("attach fixture provider");
     (root, store)
 }
 
@@ -440,9 +448,35 @@ fn fixture_directory() -> tempfile::TempDir {
     tempfile::tempdir().expect("voice fixture directory")
 }
 
+async fn attach_delete_scope(store: &RuntimeStore) {
+    studio_runtime_services::account_worker::attach_provider_stream_for_test(
+        store, "account", None, 7, "7",
+    )
+    .await
+    .expect("attach voice provider");
+}
+
+fn save_scope(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    let agent = studio_runtime_store::AgentRepository::get(
+        tx,
+        &studio_runtime_store::AgentId::from("agent"),
+    )
+    .expect("read fixture agent")
+    .expect("fixture agent exists");
+    let scope = studio_runtime_store::account_state::current_provider_scope(tx, &agent)
+        .expect("fixture provider is attached");
+    let encoded = serde_json::to_string(&scope).expect("encode provider scope");
+    tx.execute(
+        "UPDATE voice_sessions SET provider_scope=?1 WHERE connection_id=?2",
+        rusqlite::params![encoded, scope.connection],
+    )?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn delete_voice_stop_intent_is_staged_before_voice_rows_are_removed() {
     let (_root, store) = seeded_store().await;
+    attach_delete_scope(&store).await;
     let first = store
         .transaction_with_error(|transaction| -> Result<_, voice::provider::VoiceProviderError> {
             transaction.execute(
@@ -454,18 +488,25 @@ async fn delete_voice_stop_intent_is_staged_before_voice_rows_are_removed() {
                  VALUES('delete-voice-session','agent',1,'thread','account','7','ready')",
                 [],
             )?;
+            save_scope(transaction)?;
             let intent = voice::provider::stage_delete_sessions(transaction, "agent")?;
             transaction.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
             Ok(intent)
         })
         .await
         .expect("deletion transaction stages voice stop before deleting its rows");
-    assert_eq!(first.id, "agent-delete-voice:agent:0");
+    assert_eq!(first.len(), 1);
+    let first = &first[0];
     assert_eq!(first.agent_id, "agent");
     assert_eq!(first.epoch, 0);
-    assert_eq!(first.sessions.len(), 1);
-    assert_eq!(first.sessions[0].session_id, "delete-voice-session");
-    assert_eq!(first.sessions[0].generation, 7);
+    assert_eq!(first.session.session_id, "delete-voice-session");
+    assert_eq!(first.session.generation, 7);
+    let before = studio_runtime_store::outbox::Outbox::get::<studio_runtime_store::VoiceEffect>(
+        &store.test_reader().expect("read deletion receipt"),
+        &first.id,
+    )
+    .expect("read staged receipt")
+    .expect("receipt exists");
 
     let replay = store
         .transaction_with_error(
@@ -475,38 +516,42 @@ async fn delete_voice_stop_intent_is_staged_before_voice_rows_are_removed() {
         )
         .await
         .expect("retry reuses the committed delete intent after voice rows are gone");
-    assert_eq!(replay, first);
-    let connection = store.test_reader().expect("read staged deletion receipt");
-    let result: String = connection
-        .query_row(
-            "SELECT payload FROM runtime_outbox WHERE id='agent-delete-voice:agent:0'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("durable voice delete intent");
-    let result: serde_json::Value = serde_json::from_str(&result).expect("valid receipt JSON");
-    assert_eq!(result["agent"], "agent");
-    assert_eq!(result["epoch"], 0);
-    assert_eq!(
-        result["voiceEndSessions"][0]["sessionId"],
-        "delete-voice-session"
+    assert!(
+        replay.is_empty(),
+        "deleted session cannot stage a second stop"
     );
-    assert_eq!(result["voiceEndSessions"][0]["connectionId"], "7");
+    let connection = store.test_reader().expect("read staged deletion receipt");
+    let after = studio_runtime_store::outbox::Outbox::get::<studio_runtime_store::VoiceEffect>(
+        &connection,
+        &first.id,
+    )
+    .expect("read receipt")
+    .expect("durable voice delete intent");
+    assert_eq!(after, before, "replay preserves the committed receipt");
+    let result = after.payload;
+    assert_eq!(result.agent, "agent");
+    assert_eq!(result.epoch, 0);
+    assert_eq!(result.session_id, "delete-voice-session");
+    assert!(
+        matches!(result.authority, studio_runtime_store::VoiceEffectAuthority::Admitted { scope, .. } if scope.connection == "7")
+    );
 }
 
 #[tokio::test]
 async fn eight_not_sent_delete_stops_leave_the_intent_durable_and_pending() {
     let (_root, store) = seeded_store().await;
-    store
-        .transaction_with_error(move |transaction| -> Result<(), voice::provider::VoiceProviderError> {
+    attach_delete_scope(&store).await;
+    let intents = store
+        .transaction_with_error(move |transaction| -> Result<_, voice::provider::VoiceProviderError> {
             transaction.execute(
                 "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
                  VALUES('delete-retry-session','agent',1,'thread','account','7','ready')",
                 [],
             )?;
-            voice::provider::stage_delete_sessions(transaction, "agent")?;
+            save_scope(transaction)?;
+            let intents = voice::provider::stage_delete_sessions(transaction, "agent")?;
             transaction.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
-            Ok(())
+            Ok(intents)
         })
         .await
         .expect("stage voice stop before removing its session row");
@@ -515,7 +560,8 @@ async fn eight_not_sent_delete_stops_leave_the_intent_durable_and_pending() {
         certainty: VoiceWriteCertainty::NotSent,
         calls: Mutex::new(Vec::new()),
     });
-    let intent_id = "agent-delete-voice:agent:0".to_owned();
+    assert_eq!(intents.len(), 1);
+    let intent_id = intents[0].id.clone();
 
     for _ in 0..8 {
         let intent = voice::provider::pending_delete_intents(&store)
@@ -524,12 +570,12 @@ async fn eight_not_sent_delete_stops_leave_the_intent_durable_and_pending() {
             .into_iter()
             .find(|intent| intent.id == intent_id)
             .expect("NotSent keeps the delete intent pending");
-        assert_eq!(intent.sessions.len(), 1);
+        assert_eq!(intent.session.session_id, "delete-retry-session");
         voice::provider::end_deleted_sessions_tracked(
             Arc::clone(&store),
             Arc::clone(&provider) as Arc<dyn VoiceProviderPort>,
             intent.id,
-            intent.sessions,
+            intent.session,
             10.0,
         )
         .await
@@ -542,21 +588,21 @@ async fn eight_not_sent_delete_stops_leave_the_intent_durable_and_pending() {
         .into_iter()
         .find(|intent| intent.id == intent_id)
         .expect("retry cap leaves the intent for a later startup/lifecycle pass");
-    assert_eq!(still_pending.sessions.len(), 1);
-    assert_eq!(still_pending.sessions[0].session_id, "delete-retry-session");
+    assert_eq!(still_pending.session.session_id, "delete-retry-session");
     let connection = store.test_reader().expect("read persisted retry state");
-    let raw: String = connection
-        .query_row(
-            "SELECT payload FROM runtime_outbox WHERE id=?1",
-            [&intent_id],
-            |row| row.get(0),
-        )
-        .expect("delete intent remains in the receipt table");
-    let result: serde_json::Value = serde_json::from_str(&raw).expect("valid receipt");
-    assert_eq!(
-        result["voiceEndResults"]["delete-retry-session"],
-        "not_sent"
-    );
+    let result = studio_runtime_store::outbox::Outbox::get::<studio_runtime_store::VoiceEffect>(
+        &connection,
+        &intent_id,
+    )
+    .expect("read receipt")
+    .expect("delete intent remains in the receipt table");
+    assert!(matches!(
+        result.payload.authority,
+        studio_runtime_store::VoiceEffectAuthority::Admitted {
+            outcome: studio_runtime_schema::persistence::VoiceStopOutcome::NotSent,
+            ..
+        }
+    ));
     let calls = provider.calls.lock().expect("provider call log");
     assert_eq!(calls.len(), 8);
     assert!(calls.iter().all(|(operation, method)| {
@@ -568,21 +614,24 @@ async fn eight_not_sent_delete_stops_leave_the_intent_durable_and_pending() {
 #[tokio::test]
 async fn proven_not_sent_delete_stop_retries_same_identity_and_completes_when_written() {
     let (_root, store) = seeded_store().await;
-    store
-        .transaction_with_error(|transaction| -> Result<(), voice::provider::VoiceProviderError> {
+    attach_delete_scope(&store).await;
+    let intents = store
+        .transaction_with_error(|transaction| -> Result<_, voice::provider::VoiceProviderError> {
             transaction.execute(
                 "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
                  VALUES('delete-retry-written-session','agent',1,'thread','account','7','ready')",
                 [],
             )?;
-            voice::provider::stage_delete_sessions(transaction, "agent")?;
+            save_scope(transaction)?;
+            let intents = voice::provider::stage_delete_sessions(transaction, "agent")?;
             transaction.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
-            Ok(())
+            Ok(intents)
         })
         .await
         .expect("stage voice stop before removing its session row");
     let store = Arc::new(store);
-    let intent_id = "agent-delete-voice:agent:0".to_owned();
+    assert_eq!(intents.len(), 1);
+    let intent_id = intents[0].id.clone();
     let first = Arc::new(ReceiptProvider {
         certainty: VoiceWriteCertainty::NotSent,
         calls: Mutex::new(Vec::new()),
@@ -597,7 +646,7 @@ async fn proven_not_sent_delete_stop_retries_same_identity_and_completes_when_wr
         Arc::clone(&store),
         Arc::clone(&first) as Arc<dyn VoiceProviderPort>,
         pending.id,
-        pending.sessions,
+        pending.session,
         10.0,
     )
     .await
@@ -609,7 +658,7 @@ async fn proven_not_sent_delete_stop_retries_same_identity_and_completes_when_wr
         .into_iter()
         .find(|intent| intent.id == intent_id)
         .expect("NotSent leaves the deletion intent pending");
-    assert_eq!(retry.sessions.len(), 1);
+    assert_eq!(retry.session.session_id, "delete-retry-written-session");
     let second = Arc::new(ReceiptProvider {
         certainty: VoiceWriteCertainty::Written,
         calls: Mutex::new(Vec::new()),
@@ -618,7 +667,7 @@ async fn proven_not_sent_delete_stop_retries_same_identity_and_completes_when_wr
         Arc::clone(&store),
         Arc::clone(&second) as Arc<dyn VoiceProviderPort>,
         retry.id,
-        retry.sessions,
+        retry.session,
         11.0,
     )
     .await
@@ -656,10 +705,10 @@ async fn empty_delete_intents_write_no_outbox() {
         .transaction_with_error(|tx| voice::provider::stage_delete_sessions(tx, "agent"))
         .await
         .expect("empty intent");
-    assert!(empty.sessions.is_empty() && empty.held_uncertain.is_empty());
+    assert!(empty.is_empty());
     let reader = store.test_reader().expect("reader");
     assert!(
-        studio_runtime_store::outbox::Outbox::for_owner::<voice::provider::VoiceStopPayload>(
+        studio_runtime_store::outbox::Outbox::for_owner::<studio_runtime_store::VoiceEffect>(
             &reader,
             studio_runtime_schema::persistence::OwnerKind::Agent,
             "agent",
@@ -673,54 +722,59 @@ async fn empty_delete_intents_write_no_outbox() {
 #[tokio::test]
 async fn delete_holds_an_unknown_stop_and_sends_only_for_the_active_session() {
     use studio_runtime_schema::persistence::{
-        OutboxKind, OutboxStatus, OwnerKind, RequestIdentity, VoiceStopOutcome,
+        OutboxKind, OutboxStatus, OwnerKind, VoiceStopOutcome,
     };
-    use studio_runtime_store::outbox::{Outbox, OutboxRow};
+    use studio_runtime_store::outbox::Outbox;
     let (_root, store) = seeded_store().await;
-    let intent = store.transaction_with_error(|tx| -> Result<_, voice::provider::VoiceProviderError> {
-        tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES('unknown-session','agent',1,'thread','account','7','unknown'),('active-session','agent',2,'thread','account','8','ready')", [])?;
-        let sessions = voice::provider::capture_delete_sessions(tx, "agent")?;
-        let root_request_id=RequestIdentity::issue_root();
-        let owner_identity=RequestIdentity::new("voice-fixture", &["agent"],&root_request_id,&[]).expect("identity");
-        let admission=match studio_runtime_store::request_results::RequestResults::admit(tx,&owner_identity,"fixture",owner_identity.issued_ms())? {studio_runtime_store::request_results::Admission::Fresh(value)=>value,studio_runtime_store::request_results::Admission::Replay(_)=>panic!("fresh fixture")};
-        let session = sessions.into_iter().find(|session| session.session_id == "unknown-session").expect("unknown session");
-        Outbox::put(tx, &OutboxRow {
-            id: "ordinary-stop".into(), kind: OutboxKind::VoiceStop, owner_kind: OwnerKind::Agent, owner_id:"agent".into(),
-            request_id:None, signature:"lifecycle.voice-stop.v1".into(), status:OutboxStatus::Unknown,
-            account:None,stream_id:None,generation:None,ordinal:None,next_at:None,created:1,
-            payload:voice::provider::VoiceStopPayload {agent:"agent".into(),epoch:0,root_request_id,admission,
-                voice_end_sessions:vec![session],voice_end_held_uncertain:vec![],voice_end_results:[("unknown-session".into(),VoiceStopOutcome::Unknown)].into()},
-        })?;
-        let intent = voice::provider::stage_delete_sessions(tx, "agent")?;
-        tx.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
-        tx.execute("DELETE FROM runtime_agents WHERE id='agent'", [])?;
-        Ok(intent)
-    }).await.expect("captured deletion");
-    assert_eq!(intent.sessions.len(), 1);
-    assert_eq!(intent.held_uncertain[0].session_id, "unknown-session");
+    attach_delete_scope(&store).await;
+    store.transaction(|tx| {
+        tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES('unknown-session','agent',1,'thread','account','7','ready'),('active-session','agent',2,'thread','account','7','ready')", [])?;
+        save_scope(tx)?;
+        Ok(())
+    }).await.expect("voice sessions");
+    let store = Arc::new(store);
+    let unknown = Arc::new(ReceiptProvider {
+        certainty: VoiceWriteCertainty::Unknown,
+        calls: Mutex::new(vec![]),
+    });
+    assert!(matches!(
+        voice::provider::end(
+            store.clone(),
+            unknown,
+            "agent".into(),
+            "unknown-session".into(),
+            1.0
+        )
+        .await,
+        Err(voice::provider::VoiceProviderError::Unknown)
+    ));
+    let intents = store
+        .transaction_with_error(|tx| -> Result<_, voice::provider::VoiceProviderError> {
+            let intents = voice::provider::stage_delete_sessions(tx, "agent")?;
+            tx.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
+            tx.execute("DELETE FROM runtime_agents WHERE id='agent'", [])?;
+            Ok(intents)
+        })
+        .await
+        .expect("captured deletion");
+    assert_eq!(intents.len(), 1);
+    let intent = &intents[0];
+    assert_eq!(intent.session.session_id, "active-session");
     let provider = Arc::new(ReceiptProvider {
         certainty: VoiceWriteCertainty::Written,
         calls: Mutex::new(vec![]),
     });
-    let store = Arc::new(store);
-    voice::provider::end_deleted_sessions_tracked(
-        store.clone(),
-        provider.clone(),
-        intent.id.clone(),
-        intent.sessions.clone(),
-        10.0,
-    )
-    .await
-    .expect("active stop");
-    voice::provider::end_deleted_sessions_tracked(
-        store.clone(),
-        provider.clone(),
-        intent.id.clone(),
-        intent.sessions,
-        11.0,
-    )
-    .await
-    .expect("stale retry");
+    for now in [10.0, 11.0] {
+        voice::provider::end_deleted_sessions_tracked(
+            store.clone(),
+            provider.clone(),
+            intent.id.clone(),
+            intent.session.clone(),
+            now,
+        )
+        .await
+        .expect("active stop and stale retry");
+    }
     assert_eq!(
         provider.calls.lock().expect("calls").as_slice(),
         &[(
@@ -735,21 +789,32 @@ async fn delete_holds_an_unknown_stop_and_sends_only_for_the_active_session() {
             .is_empty()
     );
     let reader = store.test_reader().expect("reader");
-    let held = Outbox::get::<voice::provider::VoiceStopPayload>(&reader, &intent.id)
-        .expect("held row")
-        .expect("uncertainty survives deletion");
-    assert_eq!(held.status, OutboxStatus::Unknown);
-    assert_eq!(
-        held.payload.voice_end_held_uncertain[0].session_id,
-        "unknown-session"
-    );
+    let held = Outbox::for_owner::<studio_runtime_store::VoiceEffect>(
+        &reader,
+        OwnerKind::Agent,
+        "agent",
+        OutboxKind::VoiceStop,
+    )
+    .expect("held rows");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].status, OutboxStatus::Unknown);
+    assert_eq!(held[0].payload.session_id, "unknown-session");
+    assert!(matches!(
+        held[0].payload.authority,
+        studio_runtime_store::VoiceEffectAuthority::Admitted {
+            outcome: VoiceStopOutcome::Unknown,
+            ..
+        }
+    ));
 }
 
 #[tokio::test]
 async fn rejected_ordinary_stop_can_be_stopped_by_deletion() {
     let (_root, store) = seeded_store().await;
+    attach_delete_scope(&store).await;
     store.transaction(|tx| {
         tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES('rejected-stop','agent',1,'thread','account','7','ready')",[])?;
+        save_scope(tx)?;
         Ok(())
     }).await.expect("session");
     let provider = Arc::new(ReceiptProvider {
@@ -772,8 +837,8 @@ async fn rejected_ordinary_stop_can_be_stopped_by_deletion() {
         .transaction_with_error(|tx| voice::provider::stage_delete_sessions(tx, "agent"))
         .await
         .expect("delete after rejection");
-    assert_eq!(intent.sessions[0].session_id, "rejected-stop");
-    assert!(intent.held_uncertain.is_empty());
+    assert_eq!(intent.len(), 1);
+    assert_eq!(intent[0].session.session_id, "rejected-stop");
 }
 
 fn table_rows(connection: &rusqlite::Connection, table: &str, order: &str) -> serde_json::Value {
@@ -1256,6 +1321,7 @@ async fn changed_speech_text_after_written_receipt_refuses_without_writes() {
     let store = Arc::new(store);
     store.transaction(|tx| {
         tx.execute("UPDATE voice_sessions SET native_thread='thread',account_key='account',connection_id='receipt-matrix-connection',state='ready' WHERE id='session'", [])?;
+        save_scope(tx)?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('written-record','agent','','orchestrator','original text','item','', '{}',1)", [])?;
         Ok(())
     }).await.expect("seed ready session and speech row");
@@ -1408,7 +1474,9 @@ async fn real_python_start_speech_end_rows_match_rust_with_rpc_boundary_stub() {
     )
     .await
     .expect("Rust start");
-    requested.await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), requested)
+        .await
+        .expect("provider request dispatched");
     voice::provider::wait_for_start_setup("agent", "oracle-session").await;
     voice::provider::handle_notification(&store, "account", "receipt-matrix-connection", &json!({"method":"thread/realtime/sdp","params":{"threadId":"thread","realtimeSessionId":"oracle-session","sdp":"answer"}}), 100.0).await.expect("Rust SDP callback");
     voice::provider::speech(
@@ -1432,6 +1500,22 @@ async fn real_python_start_speech_end_rows_match_rust_with_rpc_boundary_stub() {
     .expect("Rust end");
 
     let connection = store.test_reader().expect("Rust lifecycle rows");
+    let encoded_scope: String = connection
+        .query_row(
+            "SELECT provider_scope FROM voice_sessions WHERE id='oracle-session'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("captured voice scope");
+    let scope: studio_runtime_schema::persistence::ProviderScope =
+        serde_json::from_str(&encoded_scope).expect("typed voice scope");
+    assert_eq!(
+        scope,
+        studio_runtime_schema::persistence::ProviderScope {
+            generation: 1,
+            connection: "receipt-matrix-connection".into(),
+        }
+    );
     for (table, order) in [
         ("voice_sessions", "id"),
         ("voice_records", "seq"),
@@ -1446,6 +1530,11 @@ async fn real_python_start_speech_end_rows_match_rust_with_rpc_boundary_stub() {
                 .as_array_mut()
                 .expect("Rust voice-session array")
                 .retain(|row| row["id"] == "oracle-session");
+            for row in rust_rows.as_array_mut().expect("Rust voice-session array") {
+                row.as_object_mut()
+                    .expect("voice-session row")
+                    .remove("provider_scope");
+            }
             python_rows
                 .as_array_mut()
                 .expect("Python voice-session array")
@@ -2161,6 +2250,7 @@ async fn provider_actions_do_not_dispatch_when_intent_write_fails() {
     let (_root, store) = seeded_store().await;
     store.transaction(|tx| {
         tx.execute("UPDATE voice_sessions SET native_thread='thread',account_key='account',connection_id='receipt-matrix-connection',state='ready' WHERE id='session'", [])?;
+        save_scope(tx)?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('matrix-speech-fail','agent','','orchestrator','spoken','item','', '{}',1)", [])?;
         tx.execute_batch("CREATE TRIGGER fail_speech_intent BEFORE INSERT ON voice_speech_requests BEGIN SELECT RAISE(ABORT,'injected'); END;")?;
         Ok(())
@@ -2187,6 +2277,7 @@ async fn provider_actions_do_not_dispatch_when_intent_write_fails() {
         tx.execute("UPDATE runtime_agents SET record=?1 WHERE id='agent'", [actor.to_string()])?;
         tx.execute("UPDATE voice_sessions SET native_thread='thread',account_key='account',connection_id='receipt-matrix-connection',state='ready' WHERE id='session'", [])?;
         tx.execute("INSERT INTO voice_sessions(id,agent,created,account_key,connection_id,state) VALUES('matrix-approve-fail','agent',1,'account','receipt-matrix-connection','ready')", [])?;
+        save_scope(tx)?;
         let request = json!({"id":"matrix-approve-fail-request","rpcId":"matrix-rpc-fail","agent":"agent","epoch":0,"status":"pending","method":"item/commandExecution/requestApproval","accountKey":"account","connectionId":"receipt-matrix-connection","params":{"command":"safe","threadId":"thread"}});
         let fingerprint = studio_runtime_store::sha256_hex(studio_runtime_store::python_json(&request).as_bytes());
         tx.execute("INSERT INTO runtime_requests(id,record) VALUES('matrix-approve-fail-request',?1)", [request.to_string()])?;
@@ -2214,6 +2305,7 @@ async fn provider_actions_do_not_dispatch_when_intent_write_fails() {
     let (_root, store) = seeded_store().await;
     store.transaction(|tx| {
         tx.execute("UPDATE voice_sessions SET native_thread='thread',account_key='account',connection_id='receipt-matrix-connection',state='ready' WHERE id='session'", [])?;
+        save_scope(tx)?;
         tx.execute_batch("CREATE TRIGGER fail_end_intent BEFORE UPDATE ON voice_sessions WHEN OLD.id='session' BEGIN SELECT RAISE(ABORT,'injected'); END;")?;
         Ok(())
     }).await.expect("install end intent fail point");
@@ -2241,6 +2333,7 @@ async fn approval_from_another_connection_generation_is_refused_without_writes()
         actor["autoWake"] = json!(true);
         tx.execute("UPDATE runtime_agents SET record=?1 WHERE id='agent'", [actor.to_string()])?;
         tx.execute("INSERT INTO voice_sessions(id,agent,created,account_key,connection_id,state) VALUES('connection-bound-approval','agent',1,'account','receipt-matrix-connection','ready')", [])?;
+        save_scope(tx)?;
         let request = json!({
             "id":"request-from-prior-generation", "rpcId":"prior-rpc", "agent":"agent", "epoch":0,
             "status":"pending", "method":"item/commandExecution/requestApproval",
@@ -2298,6 +2391,15 @@ async fn approval_from_another_connection_generation_is_refused_without_writes()
 #[tokio::test]
 async fn voice_start_returns_connecting_before_provider_setup_and_replays_once() {
     let (_root, store) = seeded_store().await;
+    studio_runtime_services::account_worker::attach_provider_stream_for_test(
+        &store,
+        "account",
+        None,
+        1,
+        "delayed-prepare-connection",
+    )
+    .await
+    .expect("attach delayed provider");
     let store = Arc::new(store);
     let provider = Arc::new(DelayedPrepareProvider {
         prepare_entered: tokio::sync::Notify::new(),
@@ -2318,7 +2420,9 @@ async fn voice_start_returns_connecting_before_provider_setup_and_replays_once()
     .await
     .expect("the durable connecting session is accepted before provider setup");
     assert_eq!(accepted["state"], "connecting");
-    entered.await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered)
+        .await
+        .expect("provider preparation entered");
     let connection = store.test_reader().expect("read connecting session");
     let (state, connection_id): (String, Option<String>) = connection
         .query_row(
@@ -2332,7 +2436,12 @@ async fn voice_start_returns_connecting_before_provider_setup_and_replays_once()
     drop(connection);
 
     provider.release_prepare.notify_one();
-    provider.requested.notified().await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        provider.requested.notified(),
+    )
+    .await
+    .expect("provider request dispatched");
     voice::provider::wait_for_start_setup("other-agent", "delayed-prepare-success").await;
     let replay = voice::provider::start(
         store,
@@ -2424,7 +2533,9 @@ async fn not_sent_voice_prepare_replays_the_persisted_intent_without_repreparing
     .await
     .expect("provider setup does not delay HTTP acceptance");
     assert_eq!(first["state"], "connecting");
-    entered.await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered)
+        .await
+        .expect("provider preparation entered");
     let connection = store.test_reader().expect("read persisted start intent");
     let (state, ended, connection_id): (String, Option<f64>, Option<String>) = connection
         .query_row(
@@ -2489,7 +2600,9 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
         start.expect("provider setup is asynchronous")["state"],
         "connecting"
     );
-    requested.await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), requested)
+        .await
+        .expect("provider request dispatched");
     voice::provider::wait_for_start_setup("other-agent", "matrix-start").await;
     assert_eq!(provider.calls.lock().expect("provider calls").len(), 1);
     let replay_before_restart = voice::provider::start(
@@ -2558,6 +2671,7 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('matrix-playback','agent','matrix-approve','playback','played','','',?1,2)", [json!({"record_id":"matrix-approval-speech"}).to_string()])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('matrix-transcript','agent','matrix-approve','user','разрешаю','','','{}',3)", [])?;
         tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES('matrix-end','agent',1,'thread','account','receipt-matrix-connection','ready')", [])?;
+        save_scope(tx)?;
         Ok(())
     }).await.expect("seed speech, approval, and stop witness rows");
 
@@ -2735,7 +2849,9 @@ async fn written_provider_effects_survive_restart_and_replay_once() {
     .await
     .expect("provider setup is asynchronous");
     assert_eq!(start_written["state"], "connecting");
-    requested.await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), requested)
+        .await
+        .expect("provider request dispatched");
     voice::provider::wait_for_start_setup("other-agent", "written-start").await;
     assert_eq!(provider.calls.lock().expect("provider calls").len(), 1);
     let before_restart = voice::provider::start(
@@ -2785,6 +2901,7 @@ async fn written_provider_effects_survive_restart_and_replay_once() {
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('written-approval-transcript','agent','written-approval','user','разрешаю','','','{}',3)", [])?;
         tx.execute_batch("CREATE TRIGGER fail_approval_finalize BEFORE UPDATE ON voice_approvals WHEN OLD.id='written-request' BEGIN SELECT RAISE(ABORT,'crash after provider Written'); END;")?;
         tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES('written-end','agent',1,'thread','account','receipt-matrix-connection','ready')", [])?;
+        save_scope(tx)?;
         Ok(())
     }).await.expect("seed written-effect failpoints");
 
@@ -2889,6 +3006,15 @@ async fn written_provider_effects_survive_restart_and_replay_once() {
 #[tokio::test]
 async fn start_admission_finishes_before_end_dispatches_stop() {
     let (_root, store) = seeded_store().await;
+    studio_runtime_services::account_worker::attach_provider_stream_for_test(
+        &store,
+        "account",
+        None,
+        1,
+        "voice-corpus-connection",
+    )
+    .await
+    .expect("attach blocking provider");
     let provider = Arc::new(BlockingProvider {
         start_entered: tokio::sync::Notify::new(),
         release_start: tokio::sync::Notify::new(),
@@ -2906,7 +3032,9 @@ async fn start_admission_finishes_before_end_dispatches_stop() {
         "v=0\r\n".into(),
         1.0,
     ));
-    start_signal.await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), start_signal)
+        .await
+        .expect("start reaches provider");
 
     let stop_signal = provider.stop_entered.notified();
     let end_store = start_store.clone();
@@ -2923,7 +3051,9 @@ async fn start_admission_finishes_before_end_dispatches_stop() {
         .await
         .expect("start task join")
         .expect("start succeeds");
-    stop_signal.await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), stop_signal)
+        .await
+        .expect("stop reaches provider");
     ending.await.expect("end task join").expect("end succeeds");
     assert_eq!(
         provider

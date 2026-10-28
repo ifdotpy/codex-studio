@@ -2530,9 +2530,86 @@ mod voice_composition_tests {
         }
     }
 
+    #[derive(Default)]
     struct VoiceFactory {
         stop_writes: Arc<AtomicUsize>,
         request_writes: Arc<AtomicUsize>,
+        stop_refusals: Arc<AtomicUsize>,
+        stop_attempts: Arc<AtomicUsize>,
+        stop_signal: Arc<tokio::sync::Notify>,
+    }
+
+    async fn seed_voice_agent(store: &RuntimeStore, name: &'static str) {
+        use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus};
+        store
+            .transaction(move |tx| {
+                let id = AgentId::from(name);
+                AgentRepository::put(
+                    tx,
+                    &AgentRecord {
+                        id: id.clone(),
+                        root_id: id,
+                        epoch: 3,
+                        status: AgentStatus::Idle,
+                        extra: [
+                            ("isLead".into(), Value::Bool(true)),
+                            (
+                                "provider".into(),
+                                serde_json::to_value(studio_runtime_schema::ProviderKind::Codex)
+                                    .unwrap(),
+                            ),
+                            ("threadId".into(), Value::String("voice-thread".into())),
+                            ("accountKey".into(), Value::String("voice-account".into())),
+                        ]
+                        .into(),
+                    },
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("seed voice agent");
+    }
+
+    async fn seed_ready_voice_session(
+        store: Arc<RuntimeStore>,
+        session: Arc<AccountSessionRuntime>,
+        callbacks: Arc<CallbackRuntime>,
+        agent: &'static str,
+        voice_session: &str,
+    ) {
+        let provider = Arc::new(
+            studio_runtime_services::voice::account_session::AccountSessionVoicePort::new(
+                store.clone(),
+                session.clone(),
+                callbacks,
+            ),
+        );
+        studio_runtime_services::voice::provider::start(
+            store.clone(),
+            provider,
+            agent.into(),
+            voice_session.into(),
+            "v=0\r\n".into(),
+            1.0,
+        )
+        .await
+        .expect("start voice session");
+        tokio::time::timeout(
+            super::HOST_RUNTIME_SHUTDOWN_WAIT,
+            studio_runtime_services::voice::provider::wait_for_start_setup(agent, voice_session),
+        )
+        .await
+        .expect("voice setup completes");
+        let scope =
+            studio_runtime_services::account_session_runtime::AccountSessionPort::current_scope(
+                session.as_ref(),
+                "voice-account",
+            )
+            .unwrap();
+        studio_runtime_services::voice::provider::handle_notification(
+            &store, "voice-account", &scope.connection,
+            &json!({"method":"thread/realtime/sdp","params":{"threadId":"voice-thread","realtimeSessionId":voice_session,"sdp":"answer"}}), 1.0,
+        ).await.expect("voice session ready");
     }
 
     impl ProviderTaskFactory for VoiceFactory {
@@ -2560,6 +2637,9 @@ mod voice_composition_tests {
             let mut stop = shutdown.subscribe();
             let stop_writes = Arc::clone(&self.stop_writes);
             let request_writes = Arc::clone(&self.request_writes);
+            let stop_refusals = Arc::clone(&self.stop_refusals);
+            let stop_attempts = Arc::clone(&self.stop_attempts);
+            let stop_signal = Arc::clone(&self.stop_signal);
             let task = tokio::spawn(async move {
                 let mut cursor = 0_u64;
                 loop {
@@ -2587,6 +2667,19 @@ mod voice_composition_tests {
                                 }
                                 continue;
                             }
+                            if method == "thread/realtime/stop" {
+                                stop_attempts.fetch_add(1, Ordering::SeqCst);
+                                stop_signal.notify_one();
+                                if stop_refusals
+                                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                                        n.checked_sub(1)
+                                    })
+                                    .is_ok()
+                                {
+                                    let _ignored = reply.send(CommandReceipt::NotSent);
+                                    continue;
+                                }
+                            }
                             let _ignored = reply.send(CommandReceipt::Written {
                                 remote_id: None,
                                 duplicate: false,
@@ -2601,7 +2694,9 @@ mod voice_composition_tests {
                             else {
                                 continue;
                             };
-                            if method == "account/read" && message["params"]["refreshToken"] == true
+                            if (method == "account/read"
+                                && message["params"]["refreshToken"] == true)
+                                || method == "thread/realtime/appendSpeech"
                             {
                                 request_writes.fetch_add(1, Ordering::SeqCst);
                             }
@@ -2610,6 +2705,7 @@ mod voice_composition_tests {
                             }
                             let result = match method {
                                 "account/read" => json!({"account":{"type":"chatgpt"}}),
+                                "thread/loaded/list" => json!({"data":[],"nextCursor":null}),
                                 _ => json!({}),
                             };
                             cursor += 1;
@@ -2764,6 +2860,7 @@ mod voice_composition_tests {
         let factory = Arc::new(VoiceFactory {
             stop_writes: Arc::new(AtomicUsize::new(0)),
             request_writes: Arc::new(AtomicUsize::new(0)),
+            ..Default::default()
         });
         let (mut worker, session, _callbacks) =
             start_voice_worker(directory.path(), Arc::clone(&store), Arc::clone(&factory)).await;
@@ -2800,6 +2897,152 @@ mod voice_composition_tests {
     }
 
     #[tokio::test]
+    async fn voice_speech_http_reserves_and_replays_through_real_worker() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        seed_voice_agent(&store, "speech-agent").await;
+        let factory = Arc::new(VoiceFactory::default());
+        let voice_session = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let (mut worker, session, callbacks) =
+            start_voice_worker(directory.path(), store.clone(), factory.clone()).await;
+        seed_ready_voice_session(
+            store.clone(),
+            session.clone(),
+            callbacks.clone(),
+            "speech-agent",
+            &voice_session,
+        )
+        .await;
+        let record_session = voice_session.clone();
+        store.transaction(move |tx| {
+            tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('speech-record','speech-agent',?1,'orchestrator','hello','','','{}',1)", [&record_session])?;
+            Ok(())
+        }).await.unwrap();
+        let mut state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            directory.path().display().to_string(),
+            4620,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        state.account_session = Some(session);
+        let app = router(install_host_voice_port(state, store.clone(), callbacks)).unwrap();
+        let before = factory.request_writes.load(Ordering::SeqCst);
+        for _ in 0..2 {
+            let body = studio_runtime_http::generated::VoiceSpeechRequest {
+                agent: "speech-agent".into(),
+                session_id: voice_session.clone(),
+                record_id: "speech-record".into(),
+            };
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/voice/speech")
+                .header("host", "127.0.0.1:4620")
+                .header("x-canvas-token", "token")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap();
+            request.extensions_mut().insert(ConnectInfo(
+                "127.0.0.1:32100".parse::<std::net::SocketAddr>().unwrap(),
+            ));
+            let response = app.clone().oneshot(request).await.unwrap();
+            let status = response.status();
+            let body = to_bytes(response.into_body(), 100_000).await.unwrap();
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "{}, writes={}",
+                String::from_utf8_lossy(&body),
+                factory.request_writes.load(Ordering::SeqCst)
+            );
+        }
+        assert_eq!(factory.request_writes.load(Ordering::SeqCst), before + 1);
+        worker.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_unsent_voice_stop_reaches_real_worker_after_lifecycle_stop() {
+        use studio_runtime_services::{
+            agent_management::Action, lifecycle_effects::ProductionLifecyclePorts,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        seed_voice_agent(&store, "stale-agent").await;
+        let factory = Arc::new(VoiceFactory::default());
+        let voice_session = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        factory.stop_refusals.store(1, Ordering::SeqCst);
+        let (mut worker, session, callbacks) =
+            start_voice_worker(directory.path(), store.clone(), factory.clone()).await;
+        seed_ready_voice_session(
+            store.clone(),
+            session.clone(),
+            callbacks.clone(),
+            "stale-agent",
+            &voice_session,
+        )
+        .await;
+        let provider: Arc<dyn studio_runtime_services::voice::runtime::VoiceRequestPort> = Arc::new(
+            studio_runtime_services::voice::account_session::AccountSessionVoicePort::new(
+                store.clone(),
+                session.clone(),
+                callbacks,
+            ),
+        );
+        let result = studio_runtime_services::voice::provider::end(
+            store.clone(),
+            provider.clone(),
+            "stale-agent".into(),
+            voice_session,
+            1.0,
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(studio_runtime_services::voice::provider::VoiceProviderError::NotSent)
+            ),
+            "{result:?}, attempts={}",
+            factory.stop_attempts.load(Ordering::SeqCst)
+        );
+        assert_eq!(factory.stop_attempts.load(Ordering::SeqCst), 1);
+        let ports = Arc::new(ProductionLifecyclePorts::new(
+            store.clone(),
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(tokio::sync::Notify::new()),
+            session,
+            Some(provider),
+        ));
+        ports
+            .execute(
+                &Action::Stop {
+                    target: "stale-agent".into(),
+                    descendants: false,
+                    reason: None,
+                    sender: None,
+                    sender_epoch: None,
+                },
+                2.0,
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let notified = factory.stop_signal.notified();
+                if factory.stop_attempts.load(Ordering::SeqCst) == 2 {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .expect("current-epoch lifecycle stop reaches the retained provider");
+        assert_eq!(factory.stop_attempts.load(Ordering::SeqCst), 2);
+        worker.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn composed_runtime_server_routes_voice_through_the_shared_account_session() {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
@@ -2822,6 +3065,7 @@ mod voice_composition_tests {
         let factory = Arc::new(VoiceFactory {
             stop_writes: Arc::new(AtomicUsize::new(0)),
             request_writes: Arc::new(AtomicUsize::new(0)),
+            ..Default::default()
         });
         let (mut worker, session, callbacks) =
             start_voice_worker(directory.path(), store.clone(), Arc::clone(&factory)).await;
@@ -2881,8 +3125,8 @@ mod voice_composition_tests {
         let delete_intent = store
             .transaction_with_error(move |transaction| -> Result<_, studio_runtime_services::voice::provider::VoiceProviderError> {
                 transaction.execute(
-                    "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
-                     SELECT 'voice-session-unknown',agent,created+1,native_thread,account_key,connection_id,state \
+                    "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,provider_scope,state) \
+                     SELECT 'voice-session-unknown',agent,created+1,native_thread,account_key,connection_id,provider_scope,state \
                      FROM voice_sessions WHERE id=?1 AND agent='voice-composed-agent'",
                     [&session_id],
                 )?;
@@ -2902,7 +3146,7 @@ mod voice_composition_tests {
             })
             .await
             .unwrap();
-        assert_eq!(delete_intent.sessions.len(), 2);
+        assert_eq!(delete_intent.len(), 2);
 
         // Simulate a restart after the deletion transaction commits. Python
         // marks sessions on the vanished connection lost and never sends their
@@ -2918,29 +3162,42 @@ mod voice_composition_tests {
                     post_delete_callbacks,
                 ),
             );
-        studio_runtime_services::voice::provider::end_deleted_sessions_tracked(
-            Arc::clone(&store),
-            delete_provider,
-            delete_intent.id.clone(),
-            delete_intent.sessions.clone(),
-            2.0,
-        )
-        .await
-        .unwrap();
+        for intent in &delete_intent {
+            studio_runtime_services::voice::provider::end_deleted_sessions_tracked(
+                Arc::clone(&store),
+                Arc::clone(&delete_provider),
+                intent.id.clone(),
+                intent.session.clone(),
+                2.0,
+            )
+            .await
+            .unwrap();
+        }
         post_delete_worker.shutdown().await.unwrap();
-        let saved = studio_runtime_store::outbox::Outbox::get::<
-            studio_runtime_services::voice::provider::VoiceStopPayload,
-        >(&store.test_reader().unwrap(), &delete_intent.id)
-        .unwrap()
-        .expect("unknown deletion remains durable");
-        assert_eq!(
-            saved.status,
-            studio_runtime_schema::persistence::OutboxStatus::Unknown
+        let saved: Vec<_> = delete_intent
+            .iter()
+            .map(|intent| {
+                studio_runtime_store::outbox::Outbox::get::<studio_runtime_store::VoiceEffect>(
+                    &store.test_reader().unwrap(),
+                    &intent.id,
+                )
+                .unwrap()
+                .expect("unknown deletion remains durable")
+            })
+            .collect();
+        assert_eq!(saved.len(), 2);
+        assert!(
+            saved
+                .iter()
+                .all(|row| row.status == studio_runtime_schema::persistence::OutboxStatus::Unknown)
         );
-        assert_eq!(saved.payload.voice_end_results.len(), 2);
-        assert!(saved.payload.voice_end_results.values().all(|outcome| {
-            *outcome == studio_runtime_schema::persistence::VoiceStopOutcome::Unknown
-        }));
+        assert!(saved.iter().all(|row| matches!(
+            row.payload.authority,
+            studio_runtime_store::VoiceEffectAuthority::Admitted {
+                outcome: studio_runtime_schema::persistence::VoiceStopOutcome::Unknown,
+                ..
+            }
+        )));
         assert!(
             studio_runtime_services::voice::provider::pending_delete_intents(&store)
                 .await
@@ -2961,20 +3218,28 @@ mod voice_composition_tests {
                     recovered_callbacks,
                 ),
             );
-        studio_runtime_services::voice::provider::end_deleted_sessions_tracked(
-            Arc::clone(&store),
-            recovered_provider,
-            delete_intent.id.clone(),
-            delete_intent.sessions,
-            3.0,
-        )
-        .await
-        .unwrap();
-        let replay = studio_runtime_store::outbox::Outbox::get::<
-            studio_runtime_services::voice::provider::VoiceStopPayload,
-        >(&store.test_reader().unwrap(), &delete_intent.id)
-        .unwrap()
-        .expect("unknown deletion survives recovery");
+        for intent in &delete_intent {
+            studio_runtime_services::voice::provider::end_deleted_sessions_tracked(
+                Arc::clone(&store),
+                Arc::clone(&recovered_provider),
+                intent.id.clone(),
+                intent.session.clone(),
+                3.0,
+            )
+            .await
+            .unwrap();
+        }
+        let replay: Vec<_> = delete_intent
+            .iter()
+            .map(|intent| {
+                studio_runtime_store::outbox::Outbox::get::<studio_runtime_store::VoiceEffect>(
+                    &store.test_reader().unwrap(),
+                    &intent.id,
+                )
+                .unwrap()
+                .expect("unknown deletion survives recovery")
+            })
+            .collect();
         assert_eq!(replay, saved);
         assert_eq!(factory.stop_writes.load(Ordering::SeqCst), 0);
         recovered_worker.shutdown().await.unwrap();
