@@ -2978,11 +2978,11 @@ pub(crate) fn checkpoint(
             0
         });
     }
-    Ok(studio_runtime_store::account_state::provider_checkpoint(
+    studio_runtime_store::account_state::provider_checkpoint(
         tx,
         journal_scope,
         generation,
-    )?)
+    )
 }
 
 fn set_checkpoint(

@@ -964,7 +964,7 @@ async fn an_exhausted_account_publication_counter_ends_the_worker_and_holds_nobo
                         tx,
                         "default",
                         &format!(
-                            "{{\"entries\":[],\"closed\":[],\"publication_sequence\":{}}}",
+                            "{{\"revision\":\"test\",\"metadata\":{{\"entries\":[],\"closed\":[],\"publication_sequence\":{}}}}}",
                             u64::MAX
                         ),
                     )?;
