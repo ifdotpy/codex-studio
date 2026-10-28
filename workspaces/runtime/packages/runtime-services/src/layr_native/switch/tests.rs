@@ -50,6 +50,41 @@ fn no_effects(_: &Path, _: &Value, _: &Value) -> Result<Value> {
     panic!("a refused or repeated switch must not run filesystem effects")
 }
 
+async fn with_event(store: &RuntimeStore, status: &'static str) {
+    store
+        .transaction_with(move |tx| -> std::result::Result<(), StoreError> {
+            tx.execute(
+                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('event','wt-lead','child_result','{}',?1,1,0)",
+                [status],
+            )
+            .map_err(StoreError::from)?;
+            Ok(())
+        })
+        .await
+        .expect("fixture event");
+}
+
+#[tokio::test]
+async fn an_uncertain_past_delivery_does_not_block_the_switch_in_place() {
+    // The switch keeps the thread, so the event and its unknown outcome stay as they are.
+    let (_directory, store) = store_with(&[wt_lead()]).await;
+    with_event(&store, "uncertain").await;
+    let result = switch_chat_with(Arc::clone(&store), "wt-lead", fake_effects)
+        .await
+        .expect("an uncertain past delivery is not in flight");
+    assert_eq!(result["workspaceMode"], "layr-native");
+}
+
+#[tokio::test]
+async fn input_still_in_flight_blocks_the_switch() {
+    let (_directory, store) = store_with(&[wt_lead()]).await;
+    with_event(&store, "dispatching").await;
+    let error = switch_chat_with(Arc::clone(&store), "wt-lead", no_effects)
+        .await
+        .expect_err("input in flight refuses the switch");
+    assert!(error.to_string().contains("Finish pending input first"));
+}
+
 #[tokio::test]
 async fn switching_refuses_during_a_turn_and_keeps_the_wt_record() {
     let mut lead = wt_lead();

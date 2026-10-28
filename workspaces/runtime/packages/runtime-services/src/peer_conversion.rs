@@ -100,7 +100,7 @@ pub async fn convert(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, Pr
         let teams=live_teams(project["peerTeams"].as_array().map(Vec::as_slice).unwrap_or_default(),&all,&path,&prepared)?;
         if !teams.iter().any(|t|t["members"].as_array().is_some_and(|m|m.contains(&json!(source)))) { return Err(ProjectsError::Invalid("The source chat must belong to a peer team")); }
         let tree=records::all(db,"runtime_agents")?.into_iter().filter(|a|matches!(a["rootId"].as_str(),Some(root) if root==source.as_str() || root==target.as_str())).collect::<Vec<_>>();
-        idle(db,&tree)?;
+        idle(db,&tree,true)?;
         let moving=tree.iter().filter(|a|a["rootId"]==source).collect::<Vec<_>>();
         let moving_ids=moving.iter().filter_map(|a|a["id"].as_str()).collect::<Vec<_>>();
         let affected=records::all(db,"runtime_rooms")?.into_iter().filter(|r| matches!(r["rootId"].as_str(),Some(root) if root==source.as_str() || root==target.as_str()) || r["members"].as_array().is_some_and(|m|m.iter().any(|id|moving_ids.contains(&id.as_str().unwrap_or_default()) || teams.iter().any(|t|t["members"].as_array().is_some_and(|members|members.contains(id)))))).collect::<Vec<_>>();
@@ -196,7 +196,13 @@ fn put(db: &Transaction<'_>, table: &'static str, value: &Value) -> Result<(), P
     Ok(())
 }
 /// Shared idle gate for user actions that change a chat's owner or workspace.
-pub(crate) fn idle(db: &Connection, agents: &[Value]) -> Result<(), ProjectsError> {
+/// `uncertain_blocks` is true for a move to another owner, which must carry the
+/// unknown outcome; a switch in place keeps the thread and the event as they are.
+pub(crate) fn idle(
+    db: &Connection,
+    agents: &[Value],
+    uncertain_blocks: bool,
+) -> Result<(), ProjectsError> {
     let ids = agents
         .iter()
         .filter_map(|a| a["id"].as_str())
@@ -232,7 +238,7 @@ pub(crate) fn idle(db: &Connection, agents: &[Value]) -> Result<(), ProjectsErro
         ) {
             return Err(ProjectsError::Invalid("Finish the native release first"));
         }
-        if db.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND status IN ('pending','reserved','dispatching','uncertain'))",[a["id"].as_str().unwrap_or_default()],|r|r.get::<_,bool>(0))? {return Err(ProjectsError::Invalid("Finish pending input first"));}
+        if db.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND (status IN ('pending','reserved','dispatching') OR (?2 AND status='uncertain')))",rusqlite::params![a["id"].as_str().unwrap_or_default(),uncertain_blocks],|r|r.get::<_,bool>(0))? {return Err(ProjectsError::Invalid("Finish pending input first"));}
     }
     for table in [
         "runtime_tasks",
