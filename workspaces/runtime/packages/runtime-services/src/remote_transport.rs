@@ -57,6 +57,8 @@ pub enum RemoteTransportError {
     PeerRejected,
     #[error("remote request identity was reused with different content")]
     RequestConflict,
+    #[error(transparent)]
+    RequestIdentity(studio_runtime_schema::persistence::RequestIdentityError),
     #[error("remote peer response exceeds the size limit")]
     ResponseTooLarge,
     #[error("remote transport state operation failed")]
@@ -1033,6 +1035,12 @@ fn map_outbound_error(
     request_id: &str,
 ) -> RemoteTransportError {
     match &error {
+        StoreError::RequestResult(
+            studio_runtime_store::request_results::RequestResultError::Identity(identity),
+        ) => RemoteTransportError::RequestIdentity(identity.clone()),
+        StoreError::RequestResult(
+            studio_runtime_store::request_results::RequestResultError::Conflict { .. },
+        ) => RemoteTransportError::RequestConflict,
         StoreError::SchemaMismatch(message)
             if message.contains("conflicts with stored content") =>
         {
@@ -1065,6 +1073,7 @@ fn map_outbound_error(
         | StoreError::WriterActorControl(_)
         | StoreError::CommitActorOutcomeUnknown(_)
         | StoreError::ReadTaskFailed => RemoteTransportError::Store(error),
+        StoreError::RequestResult(_) | StoreError::Outbox(_) => RemoteTransportError::Store(error),
     }
 }
 
