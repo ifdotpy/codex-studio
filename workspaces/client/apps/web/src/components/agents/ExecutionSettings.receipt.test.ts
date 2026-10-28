@@ -760,6 +760,66 @@ test("an idle existing session queues the change until its next turn", async () 
   });
 });
 
+test("earlier matching pending and applied events cannot confirm an unresolved save", async () => {
+  const agent: Agent = {
+    ...initial,
+    fastMode: false,
+    status: AgentStatus.running,
+    nextTurnSettingsSupported: true,
+  };
+  h.post.mockImplementationOnce(() => new Promise<Agent>(() => {}));
+  render(agent).picker.onFast();
+  const oldPending: Agent = {
+    ...agent,
+    pendingSettings: {
+      model: agent.model,
+      effort: agent.effort,
+      fastMode: true,
+    },
+    pendingSettingsAccountKey: "default",
+  };
+  render(oldPending);
+  render({ ...agent, fastMode: true });
+  const modal = render({ ...agent, fastMode: true }).statusModal;
+  expect(children(modal).map((node) => node.props.children)).toContain(
+    "Saving…",
+  );
+});
+
+test("a recovered next-turn receipt confirms the modal after settings already applied", async () => {
+  const agent: Agent = {
+    ...initial,
+    fastMode: true,
+    status: AgentStatus.idle,
+    nextTurnSettingsSupported: true,
+  };
+  const request = {
+    id: agent.id,
+    next_turn: true,
+    request_id: "recover-1",
+    model: agent.model,
+    effort: agent.effort,
+    fast_mode: true,
+  };
+  h.storage.set(
+    `next-turn-settings:${JSON.stringify([agent.id, "default"])}`,
+    request,
+  );
+  h.post.mockResolvedValue(agent);
+  const retry = children(render(agent).controls).find(
+    (node) =>
+      node.type === Button && node.props.children === "Check settings save",
+  );
+  expect(retry).toBeDefined();
+  (required(retry).props.onClick as () => void)();
+  await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+  await Promise.resolve();
+  const modal = render(agent).statusModal;
+  expect(children(modal).map((node) => node.props.children)).toContain(
+    "Queued for the next turn",
+  );
+});
+
 test("a live change opens a modal and follows agent updates", async () => {
   const agent: Agent = {
     ...initial,
@@ -796,7 +856,7 @@ test("a live change opens a modal and follows agent updates", async () => {
   render(applied);
   modal = render(applied).statusModal;
   expect(children(modal).map((node) => node.props.children)).toContain(
-    "Applied",
+    "Queued for the next turn",
   );
 });
 

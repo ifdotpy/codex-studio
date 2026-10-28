@@ -273,7 +273,7 @@ function ExecutionSettingsController(props: ControllerProps) {
     setChangeStatus((current) =>
       current ? observeSettingsChange(current, props.agent) : null,
     );
-  }, [props.agent, changeStatus?.phase, changeStatus?.directConfirmed]);
+  }, [props.agent, changeStatus?.phase]);
   const loggedFailure = useRef<SettingsChange | null>(null);
   useEffect(() => {
     if (
@@ -304,9 +304,7 @@ function ExecutionSettingsController(props: ControllerProps) {
             ? "Saving…"
             : changeStatus.phase === "queued"
               ? "Queued for the next turn"
-              : changeStatus.phase === "applied"
-                ? "Applied"
-                : "Failed"}
+              : "Failed"}
         </Text>
         <Text size="sm">
           {changeStatus.before.model || "Default"} →{" "}
@@ -320,17 +318,10 @@ function ExecutionSettingsController(props: ControllerProps) {
           <Text size="sm">
             {props.agent.status === AgentStatus.idle ||
             props.agent.status === AgentStatus.completed
-              ? "The change applies when this agent next runs."
-              : "The current response keeps its settings. The change applies at the next turn."}
+              ? "If still queued, the change applies when this agent next runs. Check current settings for its latest state."
+              : "If still queued, the change applies at the next turn. Check current settings for its latest state."}
           </Text>
         )}
-        {changeStatus.phase === "applied" &&
-          (props.agent.status === AgentStatus.idle ||
-            props.agent.status === AgentStatus.completed) && (
-            <Text size="sm">
-              The settings take effect when this agent next runs.
-            </Text>
-          )}
         {changeStatus.phase === "saving" && changeStatus.error && (
           <Text size="sm">
             {changeStatus.error} Use Check settings save to confirm the same
@@ -505,7 +496,7 @@ function ExecutionSettingsController(props: ControllerProps) {
           current.requestKey === key &&
           projected.current.agent.id === current.agentId &&
           accountOf(projected.current.agent) === current.accountKey
-            ? { ...current, directConfirmed: true }
+            ? { ...current, phase: "queued" }
             : current,
         )
       }
@@ -1020,7 +1011,7 @@ function ScopedExecutionSettings({
           "The settings account changed. Check the current settings.",
         );
       confirmed = true;
-      if (!teamDefaults && !request.next_turn) onSettingsConfirmed(statusKey);
+      if (!teamDefaults) onSettingsConfirmed(statusKey);
       if (request.next_turn) {
         clearReceipt();
         if (mounted.current) setUnconfirmed(null);
