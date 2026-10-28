@@ -3064,6 +3064,64 @@ mod effect_obligation_tests {
             0
         );
     }
+
+    #[test]
+    fn mixed_generation_journal_compacts_only_the_contiguous_ready_prefix() {
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        studio_runtime_store::receipt_schema::create(&db).expect("schema");
+        db.execute("INSERT INTO runtime_account_state VALUES('account',7,6,'connection',0,0,'null',NULL,NULL)", []).expect("account");
+        let tx = db.transaction().expect("transaction");
+        for (generation, cursor, ready) in [(6, 1, true), (5, 2, false), (6, 3, true)] {
+            let row = OutboxRow {
+                id: journal_operation("account", generation, cursor),
+                kind: OutboxKind::JournalEntry,
+                owner_kind: OwnerKind::Account,
+                owner_id: "account".into(),
+                request_id: None,
+                signature: cursor.to_string(),
+                status: if ready {
+                    OutboxStatus::Committed
+                } else {
+                    OutboxStatus::Pending
+                },
+                account: Some("account".into()),
+                stream_id: Some("account".into()),
+                generation: Some(generation as i64),
+                ordinal: Some(cursor as i64),
+                next_at: (!ready).then_some(0),
+                payload: JournalSettlement {
+                    cursor,
+                    digest: cursor.to_string(),
+                    ready,
+                    committed: ready,
+                    notification: None,
+                },
+                created: 1,
+            };
+            Outbox::put(&tx, &row).expect("journal");
+        }
+        compact(&tx, "account", 5).expect("compact");
+        compact(&tx, "account", 6).expect("compact");
+        assert_eq!(
+            checkpoint(&tx, "account", 6).expect("ack"),
+            1,
+            "unready old entry holds current cursor"
+        );
+        let id = journal_operation("account", 5, 2);
+        let mut row: OutboxRow<JournalSettlement> =
+            Outbox::get(&tx, &id).expect("read").expect("gap");
+        row.payload.ready = true;
+        row.payload.committed = true;
+        row.status = OutboxStatus::Committed;
+        row.next_at = None;
+        Outbox::put(&tx, &row).expect("settle gap");
+        compact(&tx, "account", 5).expect("compact");
+        assert_eq!(
+            checkpoint(&tx, "account", 6).expect("ack"),
+            3,
+            "ready later generation drains behind gap"
+        );
+    }
 }
 pub(super) async fn complete_effect(store: &RuntimeStore, key: &str) -> Result<(), WorkerError> {
     let key = key.to_owned();
@@ -3272,16 +3330,21 @@ fn compact(
     journal_scope: &str,
     generation: u64,
 ) -> Result<(), WorkerError> {
-    let mut stmt = tx.prepare_cached("SELECT id,payload FROM runtime_outbox WHERE stream_id=?1 AND generation=?2 AND kind=?3 ORDER BY ordinal,id LIMIT ?4")?;
+    let mut stmt = tx.prepare_cached("SELECT id,payload,generation FROM runtime_outbox WHERE stream_id=?1 AND kind=?2 ORDER BY ordinal,id LIMIT ?3")?;
     let rows = stmt
         .query_map(
             params![
                 journal_scope,
-                generation as i64,
                 OutboxKind::JournalEntry,
                 JOURNAL_COMPACTION_LIMIT as i64
             ],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
         )?
         .collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
@@ -3289,21 +3352,30 @@ fn compact(
     let before = checkpoint(tx, journal_scope, stream_generation)?;
     let mut cursor = before;
     let mut covered = Vec::new();
-    for (id, raw) in rows {
+    let mut generations = std::collections::BTreeMap::new();
+    for (id, raw, origin) in rows {
         let row: JournalSettlement =
             serde_json::from_str(&raw).map_err(|_| invalid(journal_scope))?;
+        let origin = u64::try_from(origin).map_err(|_| invalid(journal_scope))?;
+        if origin > stream_generation || !row.ready || !row.committed {
+            break;
+        }
         if row.cursor <= before {
             covered.push(id);
+            generations.insert(origin, row.cursor);
             continue;
         }
-        if !row.ready || !row.committed || cursor.checked_add(1) != Some(row.cursor) {
+        if cursor.checked_add(1) != Some(row.cursor) {
             break;
         }
         cursor = row.cursor;
         covered.push(id);
+        generations.insert(origin, row.cursor);
+    }
+    for (origin, cursor) in generations {
+        super::retained::storage::checkpoint_covered(tx, journal_scope, origin, cursor)?;
     }
     if cursor > before {
-        super::retained::storage::checkpoint_covered(tx, journal_scope, generation, cursor)?;
         set_checkpoint(tx, journal_scope, stream_generation, cursor)?;
     }
     for id in covered {

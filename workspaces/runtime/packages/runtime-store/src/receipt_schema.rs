@@ -23,6 +23,7 @@ pub fn create(connection: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS runtime_outbox_owner ON runtime_outbox(owner_kind,owner_id,kind,id);
         CREATE INDEX IF NOT EXISTS runtime_outbox_account ON runtime_outbox(account,kind,status,ordinal,id);
         CREATE INDEX IF NOT EXISTS runtime_outbox_stream ON runtime_outbox(stream_id,generation,ordinal,id);
+        CREATE INDEX IF NOT EXISTS runtime_outbox_stream_ordered ON runtime_outbox(stream_id,kind,ordinal,id);
         CREATE INDEX IF NOT EXISTS runtime_outbox_request ON runtime_outbox(request_id,id) WHERE request_id IS NOT NULL;
         CREATE TABLE IF NOT EXISTS runtime_error_incidents (
             id TEXT PRIMARY KEY, kind TEXT NOT NULL {incident}, owner_kind TEXT NOT NULL {owner},
@@ -120,14 +121,26 @@ mod tests {
                 "runtime_outbox_stream",
             ),
             (
+                "SELECT id,payload,generation FROM runtime_outbox WHERE stream_id='s' AND kind='journal_entry' ORDER BY ordinal,id LIMIT 65",
+                "runtime_outbox_stream_ordered",
+            ),
+            (
                 "SELECT id FROM runtime_outbox WHERE request_id='r' ORDER BY id",
                 "runtime_outbox_request",
             ),
         ] {
             let plan: String = db
-                .query_row(&format!("EXPLAIN QUERY PLAN {sql}"), [], |row| row.get(3))
-                .expect("plan");
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .expect("plan")
+                .query_map([], |row| row.get::<_, String>(3))
+                .expect("steps")
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .expect("plan rows")
+                .join("; ");
             assert!(plan.contains(index), "{plan}");
+            if index == "runtime_outbox_stream_ordered" {
+                assert!(!plan.contains("TEMP B-TREE"), "{plan}");
+            }
         }
     }
 }
