@@ -271,6 +271,8 @@ impl From<StoreError> for NotificationDispatchError {
             | error @ StoreError::Json(_)
             | error @ StoreError::SchemaValidation(_)
             | error @ StoreError::RecordContract(_)
+            | error @ StoreError::RequestResult(_)
+            | error @ StoreError::Outbox(_)
             | error @ StoreError::WriterPoisoned
             | error @ StoreError::WriterActorInitialization(_)
             | error @ StoreError::WriterActorControl(_)
