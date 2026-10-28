@@ -519,7 +519,7 @@ impl ProductionLifecyclePorts {
                         tx,
                     )?
                 {
-                    let record: Value = serde_json::from_str(&raw)
+                    let record: AgentRecord = serde_json::from_str(&raw)
                         .map_err(studio_runtime_store::StoreError::from)?;
                     if needs_deleted_settlement(&record) {
                         pending.push(id);
@@ -1523,9 +1523,7 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
     if !studio_runtime_store::truthy(agent.extra.get("deletedAt")) {
         return Ok(());
     }
-    let agent_value =
-        serde_json::to_value(&agent).map_err(studio_runtime_store::StoreError::from)?;
-    if !needs_deleted_settlement(&agent_value) {
+    if !needs_deleted_settlement(&agent) {
         return Ok(());
     }
     agent.status = studio_runtime_store::AgentStatus::Paused;
@@ -1542,17 +1540,18 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
     Ok(())
 }
 
-fn needs_deleted_settlement(agent: &Value) -> bool {
-    studio_runtime_store::truthy(agent.get("deletedAt"))
-        && (studio_runtime_store::truthy(agent.get("inFlight"))
-            || studio_runtime_store::truthy(agent.get("turnId"))
-            || studio_runtime_store::truthy(agent.pointer("/startAttempt/activeAtReservation"))
-            || agent
-                .get("status")
-                .and_then(Value::as_str)
-                .is_some_and(|status| {
-                    studio_runtime_store::startup_recovery::ACTIVE_AGENT_STATUSES.contains(&status)
-                }))
+fn needs_deleted_settlement(agent: &AgentRecord) -> bool {
+    studio_runtime_store::truthy(agent.extra.get("deletedAt"))
+        && (studio_runtime_store::truthy(agent.extra.get("inFlight"))
+            || studio_runtime_store::truthy(agent.extra.get("turnId"))
+            || studio_runtime_store::truthy(
+                agent
+                    .extra
+                    .get("startAttempt")
+                    .and_then(|attempt| attempt.get("activeAtReservation")),
+            )
+            || studio_runtime_store::startup_recovery::ACTIVE_AGENT_STATUSES
+                .contains(&agent.status.as_str()))
 }
 
 fn required_str<'a>(
