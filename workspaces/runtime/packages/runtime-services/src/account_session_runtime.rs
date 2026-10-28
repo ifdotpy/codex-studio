@@ -28,6 +28,8 @@ pub type AccountSessionFuture<'a, T> =
 
 #[derive(Debug, Error)]
 pub enum AccountSessionError {
+    #[error("Request id expired")]
+    Expired,
     #[error("Not implemented: requires {0}")]
     Requires(&'static str),
     #[error("{0}")]

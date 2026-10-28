@@ -2488,7 +2488,7 @@ mod voice_composition_tests {
                     })
                     .await
                     .map_err(|error| match error {
-                        PortError::Expired => AccountSessionError::Refused("Request id expired"),
+                        PortError::Expired => AccountSessionError::Expired,
                         PortError::Unknown => AccountSessionError::Unknown,
                         PortError::Capacity => AccountSessionError::Persistence,
                         PortError::Identity
@@ -2782,10 +2782,7 @@ mod voice_composition_tests {
                 },
             )
             .await;
-        assert!(matches!(
-            result,
-            Err(AccountSessionError::Refused("Request id expired"))
-        ));
+        assert!(matches!(result, Err(AccountSessionError::Expired)));
         assert_eq!(
             factory.request_writes.load(Ordering::SeqCst),
             sent_before_retry
