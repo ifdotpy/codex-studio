@@ -1099,15 +1099,12 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             }
         })
     });
-<<<<<<< head
     // The puller of updates from paired servers runs only in the installed app (docs/peer-updates.md).
     let peer_update_task = studio_runtime_services::peer_update_pull::Puller::installed(
         Arc::clone(&store),
         monitor_shutdown.subscribe(),
     )
     .map(|puller| tokio::spawn(studio_runtime_services::peer_update_pull::run(puller)));
-||||||| base
-=======
     // Projects of paired servers for this server's own clients (docs/peer-projects.md).
     let peer_projects_task = state.orchestration_driver_handle().map(|driver| {
         let wake = state.peer_projects_wake_handle();
@@ -1121,7 +1118,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             studio_runtime_services::peer_projects::PeerProjects::new(Arc::clone(&store), driver);
         tokio::spawn(projects.run(wake, monitor_shutdown.subscribe()))
     });
->>>>>>> origin/main
     let federation_cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let federation_store = Arc::clone(&store);
     let federation_stop = Arc::clone(&federation_cancelled);
@@ -1365,14 +1361,11 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         if let Some(task) = orchestration_task {
             shutdown_join("orchestration driver task", task).await??;
         }
-<<<<<<< head
         if let Some(task) = peer_update_task {
             shutdown_join("peer update task", task).await??;
-||||||| base
-=======
+        }
         if let Some(task) = peer_projects_task {
             shutdown_join("peer projects task", task).await??;
->>>>>>> origin/main
         }
         let monitor_result = shutdown_join("monitor runtime task", monitor_task).await?;
         monitor_result.map_err(std::io::Error::other)??;

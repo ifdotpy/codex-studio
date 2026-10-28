@@ -134,12 +134,8 @@ pub mod panels;
 pub mod payload_blobs;
 pub mod payload_store;
 pub mod peer_conversion;
-<<<<<<< head
 pub mod peer_update_pull;
-||||||| base
-=======
 pub mod peer_projects;
->>>>>>> origin/main
 pub mod peer_updates;
 pub mod portable_history;
 pub mod pricing;
