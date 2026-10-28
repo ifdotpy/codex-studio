@@ -2486,6 +2486,7 @@ mod voice_composition_tests {
                     })
                     .await
                     .map_err(|error| match error {
+                        PortError::Expired => AccountSessionError::Refused("Request id expired"),
                         PortError::Unknown => AccountSessionError::Unknown,
                         PortError::Capacity => AccountSessionError::Persistence,
                         PortError::Identity
