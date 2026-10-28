@@ -3014,7 +3014,7 @@ fn set_checkpoint(
 }
 
 /// A proved attachment replaces only current stream provenance, never uncertain calls.
-pub(super) async fn attach_provider_stream(
+pub(crate) async fn attach_provider_stream(
     store: &RuntimeStore,
     account: &str,
     actor: Option<&str>,
