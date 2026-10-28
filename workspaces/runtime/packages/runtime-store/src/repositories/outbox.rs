@@ -107,9 +107,20 @@ impl Outbox {
         kind: OutboxKind,
     ) -> Result<Vec<OutboxRow<P>>> {
         let mut query = tx.prepare_cached("SELECT id,kind,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,payload,created FROM runtime_outbox WHERE owner_kind=?1 AND owner_id=?2 AND kind=?3 ORDER BY id")?;
-        Ok(query
+        query
             .query_map(params![owner, id, kind], Self::decode)?
-            .collect::<rusqlite::Result<_>>()?)
+            .collect::<rusqlite::Result<_>>()
+            .map_err(|error| match error {
+                rusqlite::Error::FromSqlConversionFailure(12, ty, source) => {
+                    match source.downcast::<serde_json::Error>() {
+                        Ok(error) => OutboxError::Json(*error),
+                        Err(source) => OutboxError::Sql(rusqlite::Error::FromSqlConversionFailure(
+                            12, ty, source,
+                        )),
+                    }
+                }
+                error => OutboxError::Sql(error),
+            })
     }
 
     pub fn for_account<P: DeserializeOwned>(
