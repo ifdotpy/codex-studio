@@ -152,7 +152,8 @@ export function createMutationJournal(
         unknown() {},
         reject(_status: number, _body: unknown) {},
       };
-    if (!serverId || serverId === "local") return null;
+    if ((!serverId || serverId === "local") && path !== "/api/native-command")
+      return null;
     const value =
       body && typeof body === "object" ? (body as Record<string, unknown>) : {};
     const explicit = [
