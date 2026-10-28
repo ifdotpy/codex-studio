@@ -86,7 +86,7 @@ fn delete_in_transaction(
     request: &Request,
     now: f64,
     ports: &dyn LifecyclePorts,
-) -> Result<(Value, bool), Error> {
+) -> Result<(DeleteReply, bool), Error> {
     let workspace = SyncDocumentsRepository::workspace_id(tx)?;
     let server = RuntimeStore::transaction_local_server_id(tx)?
         .filter(|s| !s.is_empty())
@@ -115,7 +115,7 @@ fn delete_in_transaction(
             .operation(&["delete"]);
     let admitted =
         match crate::event_write::begin_request::<DeleteReply>(tx, key, &signature, now_ms)? {
-            crate::event_write::CallerAdmission::Replay(reply) => return Ok((json!(reply), false)),
+            crate::event_write::CallerAdmission::Replay(reply) => return Ok((reply, false)),
             crate::event_write::CallerAdmission::Fresh(admitted) => admitted,
         };
     let (_, project) = ProjectsRepository::get(tx, &request.id)?.ok_or(Error::NotFound)?;
@@ -178,7 +178,7 @@ fn delete_in_transaction(
         deleted_room_ids: rooms,
     };
     crate::event_write::settle_request(tx, &admitted, None, &reply)?;
-    Ok((serde_json::to_value(reply).map_err(StoreError::from)?, true))
+    Ok((reply, true))
 }
 fn project_scope(
     tx: &Transaction<'_>,
