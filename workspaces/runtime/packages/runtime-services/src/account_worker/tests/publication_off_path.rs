@@ -3,6 +3,7 @@ use crate::notification_dispatch::NotificationPostCommit;
 use crate::notification_runtime_effects::NotificationPostCommitSink;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus};
 
 /// Records delivered cursors; delivery waits for a permit, so a test can hold
 /// the sink shut and later open it.
@@ -277,9 +278,13 @@ fn receipts_for(state: &State, cursor: u64) -> i64 {
         .test_reader()
         .expect("reader")
         .query_row(
-            "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:%' \
-             AND EXISTS(SELECT 1 FROM json_tree(result) WHERE key='cursor' AND value=?1)",
-            [cursor as i64],
+            "SELECT count(*) FROM runtime_outbox WHERE account='default' AND kind=?1 AND status=?2 \
+             AND EXISTS(SELECT 1 FROM json_tree(payload) WHERE key='cursor' AND value=?3)",
+            (
+                OutboxKind::Publication,
+                OutboxStatus::Pending,
+                cursor as i64,
+            ),
             |row| row.get(0),
         )
         .expect("publication receipts")
