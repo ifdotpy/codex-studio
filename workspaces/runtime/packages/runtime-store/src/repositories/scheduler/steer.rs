@@ -45,6 +45,7 @@ struct SteerPayload {
     created: f64,
     root_request_id: String,
     admission: AdmittedRequest,
+    provider_admission: Option<AdmittedRequest>,
     #[serde(default)]
     request_ticket: Option<String>,
     #[serde(default)]
@@ -110,12 +111,9 @@ fn receipt_id(agent: &str, steer: &str) -> String {
 fn invalid_receipt(id: &str) -> StoreError {
     invalid_object("runtime_outbox", id)
 }
-fn outbox_error(error: crate::outbox::OutboxError) -> StoreError {
-    StoreError::SchemaMismatch(error.to_string())
-}
 fn load(db: &Connection, id: &str) -> StoreResult<Option<SteerPayload>> {
     Outbox::get::<SteerPayload>(db, id)
-        .map_err(outbox_error)?
+        .map_err(StoreError::from)?
         .map(|row| {
             if row.kind != OutboxKind::Steer
                 || row.owner_kind != OwnerKind::Agent
@@ -153,16 +151,16 @@ fn store(tx: &Transaction<'_>, id: &str, value: &SteerPayload) -> StoreResult<()
             created: (value.created * 1000.0) as i64,
         },
     )
-    .map_err(outbox_error)
+    .map_err(StoreError::from)
 }
 fn delete(tx: &Transaction<'_>, id: &str) -> StoreResult<()> {
-    Outbox::delete_settled(tx, id, STEER_RECEIPT_SIGNATURE).map_err(outbox_error)?;
+    Outbox::delete_settled(tx, id, STEER_RECEIPT_SIGNATURE).map_err(StoreError::from)?;
     Ok(())
 }
 fn receipts(tx: &Transaction<'_>, agent: &str) -> StoreResult<Vec<(String, SteerPayload)>> {
     Ok(
         Outbox::for_owner::<SteerPayload>(tx, OwnerKind::Agent, agent, OutboxKind::Steer)
-            .map_err(outbox_error)?
+            .map_err(StoreError::from)?
             .into_iter()
             .map(|row| (row.id, row.payload))
             .collect(),
@@ -343,6 +341,31 @@ fn steer_target(
 }
 
 impl SchedulerRepository {
+    pub fn steer_provider_admission(
+        db: &Connection,
+        agent: &str,
+        steer: &str,
+    ) -> StoreResult<Option<AdmittedRequest>> {
+        Ok(load(db, &receipt_id(agent, steer))?.and_then(|receipt| receipt.provider_admission))
+    }
+    pub fn set_steer_provider_admission(
+        tx: &Transaction<'_>,
+        agent: &str,
+        steer: &str,
+        admitted: &AdmittedRequest,
+    ) -> StoreResult<()> {
+        let id = receipt_id(agent, steer);
+        let mut receipt = load(tx, &id)?.ok_or_else(|| invalid_receipt(&id))?;
+        if receipt
+            .provider_admission
+            .as_ref()
+            .is_some_and(|saved| saved != admitted)
+        {
+            return Err(invalid_receipt(&id));
+        }
+        receipt.provider_admission = Some(admitted.clone());
+        store(tx, &id, &receipt)
+    }
     pub fn steer_root(db: &Connection, agent: &str, steer: &str) -> StoreResult<Option<String>> {
         Ok(load(db, &receipt_id(agent, steer))?.map(|receipt| receipt.root_request_id))
     }
@@ -405,13 +428,15 @@ impl SchedulerRepository {
         mark_timing(tx, &json!(ids).to_string(), "dispatchPickedAt")?;
         let root = RequestIdentity::issue_root();
         let identity = RequestIdentity::new("execution-steer", &[agent_id], &root, &[steer_id])
-            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+            .map_err(crate::request_results::RequestResultError::from)
+            .map_err(StoreError::from)?;
         let signature =
             json!({"agent":agent_id,"epoch":epoch,"thread":thread_id,"turn":turn_id,"events":ids})
                 .to_string();
         let Admission::Fresh(admission) =
             RequestResults::admit(tx, &identity, &signature, (timestamp() * 1000.0) as i64)
-                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
+                .map_err(crate::request_results::RequestResultError::from)
+                .map_err(StoreError::from)?
         else {
             return Err(invalid_receipt(steer_id));
         };
@@ -434,6 +459,7 @@ impl SchedulerRepository {
                 created,
                 root_request_id: root.clone(),
                 admission: admission.clone(),
+                provider_admission: None,
                 request_ticket: None,
                 generation: None,
                 submitted_at: None,
@@ -908,7 +934,7 @@ impl SchedulerRepository {
                     status,
                     u32::MAX,
                 )
-                .map_err(outbox_error)?,
+                .map_err(StoreError::from)?,
             );
         }
         for row in rows {

@@ -2859,12 +2859,8 @@ pub(super) fn mark_timing(tx: &Transaction<'_>, ids: &str, field: &str) -> Store
     Ok(())
 }
 pub(super) fn publish_agent(transaction: &Transaction<'_>, agent: &AgentRecord) -> StoreResult<()> {
-    crate::ExecutionHistoryRepository::record(transaction, agent)?;
     let mut agent = agent.clone();
-    if let Some(pointer) = crate::ExecutionHistoryRepository::current_pointer(transaction, &agent)?
-    {
-        agent.extra.insert("activeExecution".into(), pointer);
-    }
+    crate::ExecutionHistoryRepository::record_current(transaction, &mut agent)?;
     AgentRepository::put(transaction, &agent)
 }
 
