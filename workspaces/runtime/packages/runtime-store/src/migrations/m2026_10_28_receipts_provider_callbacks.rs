@@ -353,6 +353,19 @@ fn frame(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> 
     {
         return Err(fail(row));
     }
+    // The historical checkpoint may already have retired the canonical owner.
+    // A written transport sibling then proves the frame needs no destination.
+    let written_orphan: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id=?1 AND signature='written' AND result='\"written\"') AND NOT EXISTS(SELECT 1 FROM request_results WHERE id=?2) AND NOT EXISTS(SELECT 1 FROM runtime_outbox o JOIN runtime_tool_requests t ON t.origin_key=o.id WHERE o.request_id=?2)",
+        params![format!("{base}:written"), old_origin], |r| r.get(0),
+    )?;
+    if written_orphan {
+        tx.execute(
+            "DELETE FROM runtime_operation_receipts WHERE id=?1",
+            [format!("{base}:written")],
+        )?;
+        return Ok(());
+    }
     let mut destinations = Outbox::for_request::<Value>(tx, old_origin).map_err(|_| fail(row))?;
     if destinations.len() > 1 {
         return Err(fail(row));
@@ -896,6 +909,66 @@ mod tests {
             while cp.status != MigrationStatus::Complete {
                 cp = Family.move_batch(tx, source, &cp).expect("move");
                 cp.save(tx, Family.id(), source, 1000).expect("save");
+            }
+        }
+    }
+    #[test]
+    fn delivered_orphan_frame_retires_without_changing_outbox() {
+        for (written, outbox, bound) in [
+            (true, false, true),
+            (true, true, true),
+            (false, false, true),
+            (true, false, false),
+        ] {
+            let mut db = database();
+            let tx = db.transaction().expect("transaction");
+            let operation = "historical-origin:attempt";
+            let base = format!(
+                "account-worker:retained-frame:default:{}",
+                crate::sha256_hex(operation.as_bytes())
+            );
+            let saved = json!({"scope":{"account":if bound { "default" } else { "other" },"connection":"old","generation":7},"operation":operation,"frame":"{\"id\":17,\"result\":{}}"});
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,'frame',?2)",
+                params![format!("{base}:frame"), saved.to_string()],
+            )
+            .expect("frame");
+            if written {
+                tx.execute(
+                    "INSERT INTO runtime_operation_receipts VALUES(?1,'written','\"written\"')",
+                    [format!("{base}:written")],
+                )
+                .expect("written");
+            }
+            if outbox {
+                tx.execute("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,request_id,signature,status,payload,created) VALUES('existing','provider_callback','task','retired','historical-origin','signature','unknown','{}',1)", []).expect("outbox");
+            }
+            let cp =
+                MigrationCheckpoint::begin(&tx, Family.id(), "frames", 1000).expect("checkpoint");
+            let result = Family.move_batch(&tx, "frames", &cp);
+            if written && bound {
+                result.expect("retire delivered orphan");
+                assert_eq!(
+                    tx.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                        .get::<_, i64>(0))
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(tx.query_row("SELECT count(*) FROM runtime_outbox WHERE id='existing' AND status='unknown' AND payload='{}'", [], |r| r.get::<_, i64>(0)).unwrap(), i64::from(outbox));
+                assert_eq!(
+                    tx.query_row("SELECT count(*) FROM request_results", [], |r| r
+                        .get::<_, i64>(0))
+                        .unwrap(),
+                    0
+                );
+            } else {
+                assert!(result.is_err());
+                assert_eq!(
+                    tx.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                        .get::<_, i64>(0))
+                        .unwrap(),
+                    if written { 2 } else { 1 }
+                );
             }
         }
     }
