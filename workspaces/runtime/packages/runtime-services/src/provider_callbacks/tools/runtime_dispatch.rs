@@ -919,12 +919,14 @@ async fn lifecycle_management(
         )),
         // A store failure can follow the commit, for example in workspace cleanup.
         Err(crate::agent_management::ManagementError::Store(error)) => Err(Error::Store(error)),
+        Err(crate::agent_management::ManagementError::Expired) => Err(Error::Expired),
     }
 }
 
 fn callback_refusal(error: crate::provider_callbacks::CallbackError) -> Error {
     use crate::provider_callbacks::CallbackError as C;
     match error {
+        C::Expired => Error::Expired,
         C::Invalid(message) => Error::Invalid(message),
         C::Dependency(name) => Error::Unavailable(name),
         C::Store(error) => Error::Store(error),

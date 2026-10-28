@@ -77,7 +77,7 @@ pub async fn convert(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, Pr
                 &replay_signature,
                 chrono::Utc::now().timestamp_millis(),
             )
-            .map_err(crate::projects::operations::request_error)
+            .map_err(studio_runtime_store::StoreError::from)
         })
         .await?
     {
@@ -105,7 +105,7 @@ pub async fn convert(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, Pr
     let source = source.to_owned();
     let target = target.to_owned();
     store.transaction_with(move |db| {
-        let admitted=match event_write::begin_request::<ConversionReply>(db,event_write::RequestKey::new("peer_conversion",&["owner-api"],&request_id).raw(&key),&signature,chrono::Utc::now().timestamp_millis()).map_err(crate::projects::operations::request_error)? {
+        let admitted=match event_write::begin_request::<ConversionReply>(db,event_write::RequestKey::new("peer_conversion",&["owner-api"],&request_id).raw(&key),&signature,chrono::Utc::now().timestamp_millis()).map_err(studio_runtime_store::StoreError::from)? {
             event_write::CallerAdmission::Replay(reply)=>return serde_json::to_value(reply).map_err(studio_runtime_store::StoreError::from).map_err(Into::into),
             event_write::CallerAdmission::Fresh(admitted)=>admitted,
         };
@@ -179,7 +179,7 @@ pub async fn convert(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, Pr
             SyncDocumentsRepository::put_entity(db,"peerTeam",id,view.unwrap_or(json!({})),next.is_none())?;
         }
         let result=json!({"id":source,"parentId":target,"rootId":target,"movedAgents":moving_ids,"peerTeamsRevision":next_revision});
-        event_write::settle_request(db,&admitted,Some("owner-api"),&serde_json::from_value::<ConversionReply>(result.clone()).map_err(studio_runtime_store::StoreError::from)?).map_err(crate::projects::operations::request_error)?;
+        event_write::settle_request(db,&admitted,Some("owner-api"),&serde_json::from_value::<ConversionReply>(result.clone()).map_err(studio_runtime_store::StoreError::from)?).map_err(studio_runtime_store::StoreError::from)?;
         Ok(result)
     }).await
 }

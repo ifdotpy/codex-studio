@@ -1581,6 +1581,7 @@ pub(crate) async fn request_review(
             let response =
                 crate::native_review::reserve(tx, &plan, &creator).map_err(
                     |error| match error {
+                        crate::native_actions::NativeError::Expired => crate::managed_host_tools::Error::Expired,
                         crate::native_actions::NativeError::Store(error) => {
                             crate::managed_host_tools::Error::Store(error)
                         }

@@ -165,6 +165,7 @@ pub(crate) fn management_error(error: crate::agent_management::ManagementError) 
         E::Unavailable(name) => CallbackError::Dependency(name),
         E::Stored { table, id } => CallbackError::Stored(format!("{table}/{id}")),
         E::Store(error) => CallbackError::Store(error),
+        E::Expired => CallbackError::Expired,
     }
 }
 
