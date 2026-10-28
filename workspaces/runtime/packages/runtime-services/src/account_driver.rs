@@ -311,7 +311,7 @@ fn read_codex_auth(home: &Path) -> CodexAuth {
         }
         Err(_) => return CodexAuth::Unreadable,
     };
-    let auth = (|| -> Result<Value, ()> {
+    let auth = (|| -> Result<CodexAuthFile, ()> {
         if file.metadata().map_err(|_| ())?.len() > AUTH_FILE_LIMIT {
             return Err(());
         }
@@ -322,84 +322,101 @@ fn read_codex_auth(home: &Path) -> CodexAuth {
         if bytes.len() as u64 > AUTH_FILE_LIMIT {
             return Err(());
         }
-        let value: Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
-        value.as_object().ok_or(())?;
-        Ok(value)
+        serde_json::from_slice(&bytes).map_err(|_| ())
     })();
     let Ok(auth) = auth else {
         return CodexAuth::Unreadable;
     };
-    codex_metadata_from_value(&auth).map_or(CodexAuth::Unreadable, CodexAuth::Parsed)
+    codex_metadata(auth).map_or(CodexAuth::Unreadable, CodexAuth::Parsed)
 }
 
-fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
-    let auth = auth.as_object().ok_or(())?;
-    let tokens = object_if_truthy(auth.get("tokens"))?;
-    let token = tokens.and_then(|tokens| {
-        tokens
-            .get("id_token")
-            .filter(|value| studio_runtime_store::truthy(Some(value)))
-            .or_else(|| {
-                tokens
-                    .get("access_token")
-                    .filter(|value| studio_runtime_store::truthy(Some(value)))
-            })
-    });
-    let claims = match token.and_then(Value::as_str) {
-        Some(token) => token
-            .split('.')
-            .nth(1)
-            .and_then(base64url_decode)
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .map(|value| value.as_object().cloned().ok_or(()))
-            .transpose()?
-            .unwrap_or_default(),
-        None => serde_json::Map::new(),
+// Provider credential and JWT documents contain additional provider-owned fields.
+#[derive(Default, Deserialize)]
+struct CodexAuthFile {
+    auth_mode: Option<String>,
+    #[serde(rename = "OPENAI_API_KEY")]
+    api_key: Option<String>,
+    tokens: Option<CodexTokens>,
+    #[serde(flatten)]
+    _extra: BTreeMap<String, IgnoredAny>,
+}
+
+#[derive(Default, Deserialize)]
+struct CodexTokens {
+    id_token: Option<String>,
+    access_token: Option<String>,
+    account_id: Option<String>,
+    #[serde(flatten)]
+    _extra: BTreeMap<String, IgnoredAny>,
+}
+
+#[derive(Default, Deserialize)]
+struct CodexClaims {
+    email: Option<String>,
+    #[serde(rename = "https://api.openai.com/auth")]
+    details: Option<CodexClaimDetails>,
+    #[serde(rename = "https://api.openai.com/profile")]
+    profile: Option<CodexClaimProfile>,
+    #[serde(flatten)]
+    _extra: BTreeMap<String, IgnoredAny>,
+}
+
+#[derive(Default, Deserialize)]
+struct CodexClaimDetails {
+    chatgpt_account_id: Option<String>,
+    chatgpt_plan_type: Option<String>,
+    #[serde(flatten)]
+    _extra: BTreeMap<String, IgnoredAny>,
+}
+
+#[derive(Default, Deserialize)]
+struct CodexClaimProfile {
+    email: Option<String>,
+    #[serde(flatten)]
+    _extra: BTreeMap<String, IgnoredAny>,
+}
+
+fn codex_metadata(auth: CodexAuthFile) -> Result<AuthMetadata, ()> {
+    let tokens = auth.tokens.unwrap_or_default();
+    let token = tokens
+        .id_token
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .or(tokens.access_token.as_deref().filter(|v| !v.is_empty()));
+    let claims = match token
+        .and_then(|token| token.split('.').nth(1))
+        .and_then(base64url_decode)
+    {
+        Some(bytes) => match serde_json::from_slice::<CodexClaims>(&bytes) {
+            Ok(claims) => claims,
+            Err(error) if error.is_syntax() || error.is_eof() => CodexClaims::default(),
+            Err(_) => return Err(()),
+        },
+        None => CodexClaims::default(),
     };
-    let details = object_if_truthy(claims.get("https://api.openai.com/auth"))?;
-    let profile = object_if_truthy(claims.get("https://api.openai.com/profile"))?;
+    let details = claims.details.unwrap_or_default();
     let account_id = tokens
-        .and_then(|tokens| tokens.get("account_id"))
-        .filter(|value| studio_runtime_store::truthy(Some(value)))
-        .or_else(|| {
-            details
-                .and_then(|details| details.get("chatgpt_account_id"))
-                .filter(|value| studio_runtime_store::truthy(Some(value)))
-        })
-        .map(|value| value.as_str().map(str::to_owned).ok_or(()))
-        .transpose()?;
-    let email = claims
-        .get("email")
-        .filter(|value| studio_runtime_store::truthy(Some(value)))
-        .or_else(|| {
-            profile
-                .and_then(|profile| profile.get("email"))
-                .filter(|value| studio_runtime_store::truthy(Some(value)))
-        })
-        .map(|value| value.as_str().map(str::to_owned).ok_or(()))
-        .transpose()?;
-    let api_key = auth
-        .get("OPENAI_API_KEY")
-        .filter(|value| studio_runtime_store::truthy(Some(value)));
-    if api_key.is_some_and(|value| value.as_str().is_none()) {
-        return Err(());
-    }
-    let api_key = api_key.and_then(Value::as_str);
-    let ready = (account_id.as_ref().is_some_and(|value| !value.is_empty())
-        && tokens
-            .and_then(|tokens| tokens.get("access_token"))
-            .is_some_and(truthy_value))
+        .account_id
+        .filter(|v| !v.is_empty())
+        .or(details.chatgpt_account_id.filter(|v| !v.is_empty()));
+    let email = claims.email.filter(|v| !v.is_empty()).or(claims
+        .profile
+        .and_then(|profile| profile.email)
+        .filter(|v| !v.is_empty()));
+    let api_key = auth.api_key.filter(|v| !v.is_empty());
+    let ready = (account_id.is_some() && tokens.access_token.is_some_and(|v| !v.is_empty()))
         || api_key.is_some();
     let credential_identity = account_id
         .as_ref()
-        .filter(|value| !value.is_empty())
-        .map(|value| format!("chatgpt:{value}"))
-        .or_else(|| api_key.map(|value| format!("api:{}", hex_sha256(value.as_bytes()))));
+        .map(|v| format!("chatgpt:{v}"))
+        .or_else(|| {
+            api_key
+                .as_ref()
+                .map(|v| format!("api:{}", hex_sha256(v.as_bytes())))
+        });
     let plan = details
-        .and_then(|details| details.get("chatgpt_plan_type"))
-        .filter(|value| studio_runtime_store::truthy(Some(value)))
-        .map(|value| value.as_str().map(str::to_owned).ok_or(()))
-        .transpose()?
+        .chatgpt_plan_type
+        .filter(|v| !v.is_empty())
         .or_else(|| api_key.map(|_| "API key".to_owned()));
     Ok(AuthMetadata {
         status: if ready {
@@ -410,18 +427,9 @@ fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
         account_id,
         email,
         plan,
-        organization_name: None,
         credential_identity,
-        error: None,
-        error_kind: None,
+        ..AuthMetadata::signed_out()
     })
-}
-
-fn object_if_truthy(value: Option<&Value>) -> Result<Option<&serde_json::Map<String, Value>>, ()> {
-    match value.filter(|value| studio_runtime_store::truthy(Some(value))) {
-        None => Ok(None),
-        Some(value) => value.as_object().map(Some).ok_or(()),
-    }
 }
 
 struct ClaudeCliAuthReader;
@@ -3351,9 +3359,13 @@ mod tests {
     #[test]
     fn codex_metadata_requires_strict_unpadded_base64url_jwt_payloads() {
         let metadata = |payload: &str| {
-            codex_metadata_from_value(&serde_json::json!({
-                "tokens": { "id_token": format!("header.{payload}.signature") }
-            }))
+            codex_metadata(CodexAuthFile {
+                tokens: Some(CodexTokens {
+                    id_token: Some(format!("header.{payload}.signature")),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
             .expect("well-formed auth object")
         };
         let valid = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -3923,7 +3935,7 @@ exit 0
         fs::create_dir_all(&home).expect("create fake Codex home");
         fs::write(
             home.join("auth.json"),
-            r#"{"tokens":{"id_token":"","access_token":"a.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjZXNzLWFjY291bnQifX0.x"}}"#,
+            r#"{"auth_mode":"chatgpt","last_refresh":"2026-01-01T00:00:00Z","tokens":{"refresh_token":"provider-owned","id_token":"","access_token":"a.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjZXNzLWFjY291bnQifX0.x"}}"#,
         )
         .expect("write placeholder token claims");
         let metadata = codex_auth_metadata(&home);
