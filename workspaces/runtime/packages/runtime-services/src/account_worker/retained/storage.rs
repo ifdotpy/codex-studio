@@ -795,13 +795,13 @@ pub(super) fn reserve(
         ordinal: None,
         next_at: None,
         created: admitted.created(),
-        payload: store::ProviderCall::Retained(RetainedCall {
+        payload: store::ProviderCall::Retained(Box::new(RetainedCall {
             call,
             request: None,
             admitted,
             written: false,
             outcome: None,
-        }),
+        })),
     };
     put(tx, &row)
 }
@@ -895,7 +895,7 @@ pub(super) async fn submitted(
         prior.request = Some(request);
         prior.outcome = None;
         prior.written = false;
-        row.payload = store::ProviderCall::Retained(prior);
+        row.payload = store::ProviderCall::Retained(Box::new(prior));
         row.status = OutboxStatus::Unknown;
         row.next_at = None;
         put(tx, &row)?;
@@ -1113,7 +1113,7 @@ pub(in crate::account_worker) fn record_outcome(
     } else {
         OutboxStatus::Unknown
     };
-    row.payload = store::ProviderCall::Retained(payload);
+    row.payload = store::ProviderCall::Retained(Box::new(payload));
     put(tx, &row)?;
     let stream = row.stream_id.clone().ok_or(WorkerError::Capacity)?;
     let generation = u64::try_from(row.generation.ok_or(WorkerError::Capacity)?)
@@ -1291,13 +1291,13 @@ mod replay_identity_tests {
         call.admitted_request = Some(admitted.clone());
         let mut row = row(tx, &call.key())?.ok_or(WorkerError::Capacity)?;
         row.status = OutboxStatus::Unknown;
-        row.payload = store::ProviderCall::Retained(RetainedCall {
+        row.payload = store::ProviderCall::Retained(Box::new(RetainedCall {
             call: call.clone(),
             request: Some(TransportRequest::from(request)),
             admitted,
             written,
             outcome,
-        });
+        }));
         put(tx, &row)?;
         Ok(call)
     }

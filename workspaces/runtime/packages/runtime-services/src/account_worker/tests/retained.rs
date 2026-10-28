@@ -2999,7 +2999,7 @@ async fn monitor_completion_config_read_finishes_before_an_unrelated_journal_che
         .bridge
         .run(|store| async move {
             store
-                .transaction_with::<_, WorkerError>(|tx| store::checkpoint(tx, "default", 1))
+                .transaction_with::<_, WorkerError>(|tx| Ok(store::checkpoint(tx, "default", 1)?))
                 .await
         })
         .await
