@@ -3,6 +3,7 @@
 //! worker: write, reply, acknowledgement, turn end and restart. Scenarios the
 //! two providers share run once per provider through `per_provider!`.
 use super::*;
+use studio_runtime_schema::persistence::EventKind;
 
 const INPUT: &str = "steer-input";
 const TEXT: &str = "Please also check the tests";
@@ -489,13 +490,13 @@ async fn mixed_inputs(state: &State) {
                 [json!({"id":"mixed-room","kind":"private","members":[agent,"mixed-child"]}).to_string()])?;
             tx.execute("UPDATE runtime_events SET created=50 WHERE id=?1", [INPUT])?;
             let rows = [
-                ("deferred", "user", "for the next turn".to_owned()),
-                ("available", "work_available", json!({"task":"task-1","title":"Review work"}).to_string()),
-                ("review", "work_review", json!({"task":"task-1","result":{"id":"result-1","text":"checks passed","checks":"cargo test","files":["src/lib.rs"]}}).to_string()),
-                ("child", "child_result", json!({"agent":"mixed-child","name":"Child","status":"completed","result":"child evidence ".repeat(2000)}).to_string()),
-                ("message", "agent_message", json!({"sender":"mixed-child","room":"mixed-room","text":"inspect the evidence","importance":"message"}).to_string()),
-                ("followup", "followup", "Child asks for another check".to_owned()),
-                ("decision", "work_decision", "Accepted with the reported checks".to_owned()),
+                ("deferred", EventKind::User, "for the next turn".to_owned()),
+                ("available", EventKind::WorkReady, json!({"task":"task-1","title":"Review work"}).to_string()),
+                ("review", EventKind::WorkReview, json!({"task":"task-1","result":{"id":"result-1","text":"checks passed","checks":"cargo test","files":["src/lib.rs"]}}).to_string()),
+                ("child", EventKind::ChildResult, json!({"agent":"mixed-child","name":"Child","status":"completed","result":"child evidence ".repeat(2000)}).to_string()),
+                ("message", EventKind::AgentMessage, json!({"sender":"mixed-child","room":"mixed-room","text":"inspect the evidence","importance":"message"}).to_string()),
+                (EventKind::Followup, EventKind::Followup, "Child asks for another check".to_owned()),
+                ("decision", EventKind::WorkDecision, "Accepted with the reported checks".to_owned()),
             ];
             for (index, (id, kind, text)) in rows.into_iter().enumerate() {
                 tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,?3,?4,'pending',?5,?6)",
@@ -568,7 +569,7 @@ async fn mixed_batch_is_compiled_acknowledged_once_and_deferred_input_waits(
         .collect::<Vec<_>>()
         .join("\n\n");
     for kind in [
-        "work_available",
+        "work_ready",
         "work_review",
         "child_result",
         "agent_message",
@@ -638,12 +639,12 @@ async fn mixed_batch_is_compiled_acknowledged_once_and_deferred_input_waits(
             )?;
             let record: Value = serde_json::from_str(&raw).unwrap();
             assert_eq!(record["inputs"].as_array().unwrap().len(), 7);
-            assert_eq!(record["inputs"][0]["kind"], "work_available");
+            assert_eq!(record["inputs"][0]["kind"], "work_ready");
             assert!(
                 record["text"]
                     .as_str()
                     .unwrap()
-                    .contains("[Orchestration event: work_available]")
+                    .contains("[Orchestration event: work_ready]")
             );
             assert!(record["text"].as_str().unwrap().contains("resultFile"));
             assert_eq!(record["inputs"][6]["id"], INPUT);
