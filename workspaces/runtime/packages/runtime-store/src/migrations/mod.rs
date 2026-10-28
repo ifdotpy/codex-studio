@@ -419,13 +419,14 @@ static CATALOG: &[&dyn Migration] = &[
         family: &m2026_10_28_receipts_owner_state::Family,
         sources: m2026_10_28_receipts_owner_state::SOURCES,
     },
-    &ReceiptMigration {
-        family: &m2026_10_28_receipts_requests::Family,
-        sources: m2026_10_28_receipts_requests::SOURCES,
-    },
+    // Tool lineage proves managed location identities before public replay classification.
     &ReceiptMigration {
         family: &m2026_10_28_receipts_tools::Family,
         sources: m2026_10_28_receipts_tools::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_requests::Family,
+        sources: m2026_10_28_receipts_requests::SOURCES,
     },
     &ReceiptMigration {
         family: &m2026_10_28_receipts_remote::Family,
@@ -1251,6 +1252,15 @@ mod tests {
 
     #[test]
     fn migration_catalog_has_real_unique_dates_sources_and_removal_rules() {
+        let order = catalog().map(|entry| entry.id).collect::<Vec<_>>();
+        let position = |id| {
+            order
+                .iter()
+                .position(|candidate| *candidate == id)
+                .expect("registered family")
+        };
+        assert!(position("2026-10-28-receipts-tools") < position("2026-10-28-receipts-requests"));
+        assert!(position("2026-10-28-receipts-requests") < position("2026-10-28-receipts-remote"));
         let mut ids = std::collections::BTreeSet::new();
         for entry in catalog() {
             assert!(ids.insert(entry.id), "duplicate migration ID");
