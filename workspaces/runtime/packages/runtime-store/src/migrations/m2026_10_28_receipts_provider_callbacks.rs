@@ -353,6 +353,21 @@ fn frame(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> 
     {
         return Err(fail(row));
     }
+    saved["scope"]["connection"]
+        .as_str()
+        .ok_or_else(|| fail(row))?;
+    saved["scope"]["generation"]
+        .as_i64()
+        .ok_or_else(|| fail(row))?;
+    let bytes = saved["frame"].as_str().ok_or_else(|| fail(row))?;
+    let encoded: Value = serde_json::from_str(bytes).map_err(|_| fail(row))?;
+    if !encoded
+        .get("id")
+        .is_some_and(|id| id.is_string() || id.is_number())
+        || (encoded.get("result").is_some() == encoded.get("error").is_some())
+    {
+        return Err(fail(row));
+    }
     // The historical checkpoint may already have retired the canonical owner.
     // A written transport sibling then proves the frame needs no destination.
     let written_orphan: bool = tx.query_row(
@@ -412,11 +427,7 @@ fn frame(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> 
     {
         return Err(fail(row));
     }
-    let bytes = saved["frame"].as_str().ok_or_else(|| fail(row))?;
-    let encoded: Value = serde_json::from_str(bytes).map_err(|_| fail(row))?;
-    if encoded["id"] != response.payload["identity"]["rpc_id"]
-        || (encoded.get("result").is_some() == encoded.get("error").is_some())
-    {
+    if encoded["id"] != response.payload["identity"]["rpc_id"] {
         return Err(fail(row));
     }
     let body = if let Some(result) = encoded.get("result") {
@@ -883,13 +894,16 @@ mod tests {
     }
     fn database() -> rusqlite::Connection {
         let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        prepare_database(&mut db);
+        db
+    }
+    fn prepare_database(db: &mut rusqlite::Connection) {
         let tx = db.transaction().expect("transaction");
         prepare_schema(&tx).expect("schema");
         tx.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL)").expect("source");
         Family.prepare(&tx, 1000).expect("prepare callbacks");
         assert!(tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name='runtime_tool_request_origin')", [], |row| row.get::<_,bool>(0)).expect("origin index"));
         tx.commit().expect("commit");
-        db
     }
     fn fixture(tx: &Transaction<'_>, rpc: u64, delivery: &str) -> String {
         let identity = json!({"context":{"agent":"agent","account":"default","generation":7,"epoch":3,"thread":"thread","turn":"turn","connection":"original"},"rpc_id":rpc,"attempt":"attempt"});
@@ -920,7 +934,10 @@ mod tests {
             (false, false, true),
             (true, false, false),
         ] {
-            let mut db = database();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("frames.db");
+            let mut db = rusqlite::Connection::open(&path).unwrap();
+            prepare_database(&mut db);
             let tx = db.transaction().expect("transaction");
             let operation = "historical-origin:attempt";
             let base = format!(
@@ -947,7 +964,9 @@ mod tests {
                 MigrationCheckpoint::begin(&tx, Family.id(), "frames", 1000).expect("checkpoint");
             let result = Family.move_batch(&tx, "frames", &cp);
             if written && bound {
-                result.expect("retire delivered orphan");
+                let next = result.expect("retire delivered orphan");
+                next.save(&tx, Family.id(), "frames", 1000)
+                    .expect("save checkpoint");
                 assert_eq!(
                     tx.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
                         .get::<_, i64>(0))
@@ -970,7 +989,64 @@ mod tests {
                     if written { 2 } else { 1 }
                 );
             }
+            tx.commit().unwrap();
+            drop(db);
+            if written && bound {
+                let mut reopened_db = rusqlite::Connection::open(&path).unwrap();
+                let reopened_tx = reopened_db.transaction().unwrap();
+                let checkpoint = MigrationCheckpoint::load(&reopened_tx, Family.id(), "frames")
+                    .unwrap()
+                    .unwrap();
+                let again = Family
+                    .move_batch(&reopened_tx, "frames", &checkpoint)
+                    .expect("reopen");
+                assert_eq!(again.status, MigrationStatus::Complete);
+                assert_eq!(
+                    reopened_tx
+                        .query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    0
+                );
+            }
         }
+    }
+    #[test]
+    fn delivered_orphan_rejects_malformed_frame() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let operation = "historical-origin:attempt";
+        let base = format!(
+            "account-worker:retained-frame:default:{}",
+            crate::sha256_hex(operation.as_bytes())
+        );
+        let saved = json!({"scope":{"account":"default","connection":"old","generation":7},"operation":operation,"frame":"{bad"}).to_string();
+        tx.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,'frame',?2)",
+            params![format!("{base}:frame"), saved],
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,'written','\"written\"')",
+            [format!("{base}:written")],
+        )
+        .unwrap();
+        let cp = MigrationCheckpoint::begin(&tx, Family.id(), "frames", 1000).unwrap();
+        assert!(Family.move_batch(&tx, "frames", &cp).is_err());
+        let retained: String = tx
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                [format!("{base}:frame")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, saved);
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
     }
     #[test]
     fn receipt_provider_callbacks_written_import_settles_raw_reply_and_owner_without_outbox() {
