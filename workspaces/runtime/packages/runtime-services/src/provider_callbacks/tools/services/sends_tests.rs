@@ -12,9 +12,17 @@ fn request_time() -> f64 {
     chrono::Utc::now().timestamp_millis() as f64 / 1000.0
 }
 
+fn admitted_request(tx: &Transaction<'_>, id: &str) -> Result<AdmittedRequest, StoreError> {
+    let raw: String = tx.query_row(
+        "SELECT json_extract(record,'$.admitted') FROM runtime_tool_requests WHERE id=?1",
+        [id],
+        |row| row.get(0),
+    )?;
+    Ok(serde_json::from_str(&raw)?)
+}
+
 fn replace_cached_result(tx: &Transaction<'_>, id: &str, result: Value) -> Result<(), StoreError> {
-    let task = records::get(tx, "runtime_tool_requests", id)?.unwrap();
-    let token: AdmittedRequest = serde_json::from_value(task["admitted"].clone())?;
+    let token = admitted_request(tx, id)?;
     let stored = RequestResults::replay(
         tx,
         token.id(),
@@ -1349,8 +1357,7 @@ async fn callback_blob_case(race: BlobRace) {
         if matches!(race, BlobRace::InlineExpiry | BlobRace::Cached) {
             replace_cached_result(tx, &seed_id, seed_result)?;
         } else {
-            let task = records::get(tx, "runtime_tool_requests", &seed_id)?.unwrap();
-            let token: AdmittedRequest = serde_json::from_value(task["admitted"].clone())?;
+            let token = admitted_request(tx, &seed_id)?;
             tx.execute("DELETE FROM request_results WHERE id=?1", [token.id()])?;
             tx.execute("UPDATE runtime_tool_requests SET record=json_remove(json_set(record,'$.stage','running','$.outcome','pending','$.result',json(?1)),'$.finished') WHERE id=?2", params![seed_result.to_string(), seed_id])?;
         }
