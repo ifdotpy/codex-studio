@@ -1,7 +1,7 @@
 import { randomUUID } from "../uuid";
 import { storageKeySnapshot } from "../storageKeys";
 import { maxPreferenceKeyBytes } from "./preferenceLimits";
-import { DRAFT_JOURNAL_PREFIX } from "./draftJournal";
+import { DRAFT_JOURNAL_PREFIX } from "./legacyDrafts";
 type Invoke = <T>(method: string, params: unknown, id?: string) => Promise<T>;
 type Write = {
   id: string;

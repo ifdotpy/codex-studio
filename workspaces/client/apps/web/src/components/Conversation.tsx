@@ -67,7 +67,7 @@ import { currentCapacityRetry } from "../capacityRetry";
 import { isCyberPolicyRefusal, nativeThreadError } from "../nativeErrors";
 import { useMessages, transcriptMessages } from "../hooks";
 import DraftVersions from "./DraftVersions";
-import type { DraftVersion } from "../sync/drafts";
+import type { DraftVersion } from "../generated/rustOwned";
 import { type OutgoingMessage } from "../sync/send";
 import { useDisplayPhase } from "./useDisplayPhase";
 import {

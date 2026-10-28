@@ -206,10 +206,10 @@ messages remain part of the agent's runtime phase, independently of transport.
 Opening a retry keeps the server transport degraded until a valid live frame
 arrives, so switching chats during that retry preserves the reconnect notice.
 
-Draft recovery journal and local record writes happen synchronously on each
-edit. RxDB coalesces upstream draft pushes according to the wait policy in
-[`src/sync/client.ts`](src/sync/client.ts), while resume and the journal rescan
-continue to recover pending local changes.
+In the desktop app, the Rust core stores drafts. Each edit is queued in the core
+and then committed, both under the edit's request ID, so a retry after a lost
+reply is safe. After a restart the client sends queued edits again. Other views
+keep text in memory and show that it is not saved.
 
 The client shows bounded cached history when a managed chat is reopened.
 Fresh scoped pulls replace it. If no local projection is available after 200 ms,

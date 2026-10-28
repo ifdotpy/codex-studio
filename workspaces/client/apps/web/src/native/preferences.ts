@@ -1,6 +1,6 @@
 import { importBrowserProfile } from "./importBrowserProfile.ts";
 import { combineBrowserProfiles } from "./combineBrowserProfiles.ts";
-import { setNativeJournalStorage } from "./draftJournal";
+import { setLegacyDraftStorage } from "./legacyDrafts";
 import { hasNativeClient, nativeRequest } from "./client";
 import { isNativeFrame } from "./frame";
 import { serverViewId } from "../servers/environment";
@@ -37,7 +37,7 @@ export async function initializeNativePreferences() {
             : { owner: chunk.owner || "root", sha256: chunk.sha256 },
         ),
     );
-  setNativeJournalStorage(window.localStorage);
+  setLegacyDraftStorage(window.localStorage);
   const invoke = isNativeFrame()
     ? <T>(method: string, params: unknown, id?: string) =>
         nativeRequest<T>("browser.preferences", { method, params }, id)

@@ -24,7 +24,6 @@ vi.mock("react", () => ({
 }));
 vi.mock("./client", () => ({ nativeRequest: mocks.request }));
 vi.mock("./legacyDrafts", () => ({ importLegacyDrafts: async () => {} }));
-vi.mock("./draftJournal", () => ({ nativeDraftJournal: () => undefined }));
 vi.mock("./closeState", () => ({ guardNativeClose: () => () => {} }));
 vi.mock("../sync/resume", () => ({
   onResume: (callback: () => void) => {
@@ -87,9 +86,11 @@ beforeEach(() => {
     "document",
     Object.assign(new EventTarget(), { hidden: false }),
   );
-  mocks.request.mockImplementation(async (method: string) =>
-    method === "identity.get" ? { workspaceId: "workspace" } : view,
-  );
+  mocks.request.mockImplementation(async (method: string) => {
+    if (method === "identity.get") return { workspaceId: "workspace" };
+    if (method === "drafts.queued") return { edits: [] };
+    return view;
+  });
 });
 afterEach(() => {
   for (const cleanup of mocks.cleanups.splice(0)) cleanup();
@@ -199,6 +200,7 @@ it("recovers local drafts offline even in a hidden window and retries on resume"
   mocks.request.mockImplementation(async (method: string) => {
     if (method === "identity.get") return { workspaceId: "workspace" };
     if (method === "drafts.refresh") throw new Error("offline");
+    if (method === "drafts.queued") return { edits: [] };
     return { ...view, drafts: { room: "saved" } };
   });
   const hook = mount();

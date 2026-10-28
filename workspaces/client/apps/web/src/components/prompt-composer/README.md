@@ -14,15 +14,13 @@ put the letter in the same saved draft record right away.
 
 ## Draft and send contract
 
-`useSyncedDrafts` in [`../../sync/drafts.ts`](../../sync/drafts.ts) remains the
-only owner of draft text, the recovery journal, sync, and conflict handling. On
-each edit, it updates its current value and notifies the chat's subscriber,
-then writes the recovery journal and saved scope map in the same synchronous
-call. Both writes finish before the input handler returns. The replication
-client coalesces upstream draft pushes with a trailing quiet wait and a bounded
-maximum wait ([`client.ts`](../../sync/client.ts)); it does not delay local
-recovery or change the storage format. Remote reconciliation and workspace
-adoption still update the legacy hook state and notify changed chat subscribers.
+`useServerDrafts` resolves to one hook per view, chosen by
+[`draftSource.ts`](../../native/draftSource.ts). In the desktop app, the local
+server uses `useNativeDrafts`: the Rust core owns draft text, the unsent queue,
+sync, and conflicts. Each edit updates the visible value and notifies the chat
+subscriber. The client queues the edit in the core (`drafts.queue`), then
+commits it (`drafts.edit`). Other views use `useUnavailableDrafts`: text stays
+in memory, and the view reports that nothing is saved.
 
 App and Conversation read the current value by chat ID when a send begins. This
 keeps an immediate Enter send and a send that waits on uploads or delivery from

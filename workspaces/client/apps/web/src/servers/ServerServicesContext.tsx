@@ -1,6 +1,8 @@
 import * as defaultSessionCosts from "../usage/sessionCostCache";
 import * as defaultUploads from "../sync/uploads";
 import { defaultServerAudio } from "../native/serverAudio";
+import { draftsForServer } from "../native/draftSource";
+import { isRemoteServerView } from "./environment";
 import * as defaultRecordings from "../dictation/storage";
 import * as defaultLocalDrafts from "../sync/localDraft";
 import { serverStorageEventKey } from "./storage";
@@ -11,7 +13,6 @@ import * as defaultFileDialogs from "../native/fileDialogs";
 import { watchResourceReads } from "../sync/subscriptions/reads";
 import * as defaultAccountLimits from "../usage/accountUsage";
 import * as defaultActivity from "./activity";
-import { useSyncedDrafts } from "../sync/drafts";
 import * as defaultOutbox from "../sync/send";
 import {
   createContext,
@@ -80,7 +81,7 @@ export const useServerOutbox = () =>
 
 export function useServerDrafts() {
   const services = useServerServices();
-  const useDrafts = services?.useDrafts ?? useSyncedDrafts;
+  const useDrafts = services?.useDrafts ?? draftsForServer(!isRemoteServerView);
   return useDrafts();
 }
 

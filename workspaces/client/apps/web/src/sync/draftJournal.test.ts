@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createDraftJournal } from "./draftJournal";
+import { readDraftJournal } from "./draftJournal";
 import { decodeDraftVersion } from "./draftDecoder";
 
 it("rejects malformed conflict metadata while retaining the journal", () => {
@@ -26,7 +26,7 @@ it("rejects malformed conflict metadata while retaining the journal", () => {
       throw new Error("unexpected deletion");
     },
   };
-  expect(() => createDraftJournal(storage).readDraftJournal("scope")).toThrow();
+  expect(() => readDraftJournal(storage, "scope")).toThrow();
   expect(storage.getItem(key)).toBe(raw);
 });
 
@@ -77,9 +77,8 @@ it("restores valid siblings and reports each unreadable journal entry", () => {
   };
   const original = storage.getItem("scope:pending:bad");
   const invalid: string[] = [];
-  const entries = createDraftJournal(storage).readDraftJournal(
-    "scope",
-    (key: string) => invalid.push(key),
+  const entries = readDraftJournal(storage, "scope", (key: string) =>
+    invalid.push(key),
   );
   expect(entries.map((entry) => entry.version)).toEqual([valid]);
   expect(invalid).toEqual(["scope:pending:bad"]);
