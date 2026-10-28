@@ -1162,6 +1162,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn receipt_cutover_startup_error_names_unclassifiable_row_in_display() {
+        let error = failure(
+            "2026-10-28-receipts-batch-witness",
+            MigrationTarget::Canvas,
+            MigrationPhase::Apply,
+            MigrationRollbackOutcome::RolledBack,
+            receipt_error(receipt_migration_contract::unclassifiable(
+                "source-table",
+                "source-key",
+                "source-signature",
+            )),
+        );
+        let shown = error.to_string();
+        for expected in ["source-table", "source-key", "source-signature"] {
+            assert!(
+                shown.contains(expected),
+                "operator startup error must name {expected}: {shown}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn retired_sqlite_drop_fault_rolls_back_each_target() {
         let root = tempfile::tempdir().expect("state");

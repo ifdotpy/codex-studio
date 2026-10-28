@@ -57,6 +57,16 @@ async fn migration_startup_unclassified_receipt_prevents_all_recovery() {
     assert!(!result.status.success());
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("store-open-started"), "{stderr}");
+    for expected in [
+        "runtime_operation_receipts",
+        "unsupported-operation",
+        "unsupported-signature",
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "{expected} missing from startup error: {stderr}"
+        );
+    }
     assert!(
         !stderr.contains("account-registry-open-started"),
         "provider recovery must not start: {stderr}"

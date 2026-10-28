@@ -774,7 +774,7 @@ pub enum StoreError {
     UnsafeStateDirectory,
     #[error("database schema or migration marker is incompatible: {0}")]
     SchemaMismatch(String),
-    #[error("migration {id} failed ({target:?}/{phase:?}, rollback {rollback:?})")]
+    #[error("migration {id} failed ({target:?}/{phase:?}, rollback {rollback:?}): {source}")]
     Migration {
         id: &'static str,
         target: studio_runtime_schema::studio_errors::MigrationTarget,
@@ -3397,12 +3397,13 @@ mod commit_notification_tests {
                 ("runtime_federation_rooms", 0),
                 ("runtime_federation_outbox", 0),
                 ("runtime_outbox", 1),
-                ("runtime_error_incidents", 1),
+                ("runtime_error_incidents", 0),
                 ("runtime_account_transfers", 0),
                 ("runtime_orchestration_settings", 0),
                 ("runtime_requests", 0),
                 ("runtime_tool_requests", 0),
                 ("runtime_analytics_projection", 0),
+                ("runtime_account_state", 0),
             ]
         );
     }
@@ -3622,7 +3623,7 @@ mod commit_notification_tests {
 
         let unpolled = store.transaction(|transaction| {
             transaction.execute(
-                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('unpolled','agent','message','text','queued',1.0,1)",
+                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('unpolled','agent','user','text','pending',1.0,1)",
                 [],
             )?;
             Ok(())
@@ -3631,9 +3632,9 @@ mod commit_notification_tests {
         assert_eq!(notifications.load(Ordering::Acquire), 0);
 
         let receipt_inserts = [
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES ('op-only','sig','{}')",
-            "INSERT INTO runtime_native_action_receipts(id,signature,receipt,outcome) VALUES ('native-only','sig','{}','{}')",
-            "INSERT INTO runtime_access_receipts(client,request_id,hash,session,status,record) VALUES ('client-only','request-only','hash','session','pending','{}')",
+            "INSERT INTO request_results(id,signature,result,created) VALUES ('op-only','sig','{}',0)",
+            "INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,signature,status,payload,created) VALUES ('native-only','native_action','agent','a','sig','unknown','{}',0)",
+            "INSERT INTO request_results(id,signature,result,created) VALUES ('access-only','hash','{}',0)",
         ];
         for sql in receipt_inserts {
             store
@@ -3647,16 +3648,16 @@ mod commit_notification_tests {
         assert_eq!(notifications.load(Ordering::Acquire), 0);
 
         let mixed_receipt_inserts = [
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES ('op-mixed','sig','{}')",
-            "INSERT INTO runtime_native_action_receipts(id,signature,receipt,outcome) VALUES ('native-mixed','sig','{}','{}')",
-            "INSERT INTO runtime_access_receipts(client,request_id,hash,session,status,record) VALUES ('client-mixed','request-mixed','hash','session','pending','{}')",
+            "INSERT INTO request_results(id,signature,result,created) VALUES ('op-mixed','sig','{}',0)",
+            "INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,signature,status,payload,created) VALUES ('native-mixed','native_action','agent','a','sig','unknown','{}',0)",
+            "INSERT INTO request_results(id,signature,result,created) VALUES ('access-mixed','hash','{}',0)",
         ];
         for (index, sql) in mixed_receipt_inserts.into_iter().enumerate() {
             store
                 .transaction(move |transaction| {
                     transaction.execute_batch(sql)?;
                     transaction.execute(
-                        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,'agent','message','text','queued',1.0,1)",
+                        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,'agent','user','text','pending',1.0,1)",
                         [format!("resource-event-{index}")],
                     )?;
                     Ok(())
@@ -3674,12 +3675,12 @@ mod commit_notification_tests {
             .transaction(|transaction| {
                 transaction.execute_batch(
                     "CREATE TABLE resource_receipt_trigger_side_effect(value INTEGER);
-                     CREATE TRIGGER resource_receipt_trigger AFTER INSERT ON runtime_access_receipts
+                     CREATE TRIGGER resource_receipt_trigger AFTER INSERT ON request_results
                      BEGIN INSERT INTO resource_receipt_trigger_side_effect VALUES (1); END;",
                 )?;
                 transaction.execute_batch(
-                    "INSERT INTO runtime_access_receipts(client,request_id,hash,session,status,record)
-                     VALUES ('trigger-client','trigger-request','hash','session','pending','{}')",
+                    "INSERT INTO request_results(id,signature,result,created)
+                     VALUES ('trigger-request','hash','{}',0)",
                 )?;
                 Ok(())
             })
@@ -3699,8 +3700,8 @@ mod commit_notification_tests {
         let rolled_back = store
             .transaction_with(|transaction| {
                 transaction.execute_batch(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result)
-                     VALUES ('op-rollback','sig','{}')",
+                    "INSERT INTO request_results(id,signature,result,created)
+                     VALUES ('op-rollback','sig','{}',0)",
                 )?;
                 Err::<(), StoreError>(StoreError::RecordContract("test rollback"))
             })
@@ -3714,8 +3715,8 @@ mod commit_notification_tests {
         let receipt_unknown = store
             .transaction(|transaction| {
                 transaction.execute_batch(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result)
-                     VALUES ('op-unknown-receipt','sig','{}')",
+                    "INSERT INTO request_results(id,signature,result,created)
+                     VALUES ('op-unknown-receipt','sig','{}',0)",
                 )?;
                 Ok(())
             })
@@ -3732,7 +3733,7 @@ mod commit_notification_tests {
         let resource_unknown = store
             .transaction(|transaction| {
                 transaction.execute(
-                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('unknown-resource','agent','message','text','queued',1.0,1)",
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('unknown-resource','agent','user','text','pending',1.0,1)",
                     [],
                 )?;
                 Ok(())
@@ -3764,8 +3765,8 @@ mod commit_notification_tests {
         store
             .transaction(|transaction| {
                 transaction.execute_batch(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result)
-                     VALUES ('op-missing-hook','sig','{}')",
+                    "INSERT INTO request_results(id,signature,result,created)
+                     VALUES ('op-missing-hook','sig','{}',0)",
                 )?;
                 Ok(())
             })
@@ -3797,7 +3798,7 @@ mod commit_notification_tests {
             .expect("restore update hook and remove delete authorizer");
         store
             .transaction(|transaction| {
-                transaction.execute("DELETE FROM runtime_operation_receipts", [])?;
+                transaction.execute("DELETE FROM request_results", [])?;
                 Ok(())
             })
             .await
