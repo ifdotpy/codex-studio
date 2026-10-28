@@ -41,7 +41,7 @@ pub struct LocationValue {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present_nullable"
     )]
-    pub git_origin: Option<Option<String>>,
+    pub git_origin: Option<Nullable<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub home_project_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -50,12 +50,20 @@ pub struct LocationValue {
     pub removed: Option<bool>,
 }
 
-fn present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Nullable<T> {
+    Null,
+    Value(T),
+}
+
+fn present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Nullable<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
 {
-    Option::<T>::deserialize(deserializer).map(Some)
+    Option::<T>::deserialize(deserializer)
+        .map(|value| Some(value.map_or(Nullable::Null, Nullable::Value)))
 }
 
 #[cfg(test)]
@@ -560,7 +568,7 @@ pub(crate) struct LocationWire<'a> {
 }
 impl LocationRequest {
     pub(crate) fn parse(args: LocationIngress, local: Option<&str>) -> Result<Self, &'static str> {
-        fn text(value: String, max: usize, error: &'static str) -> Result<String, &'static str> {
+        fn text(value: &str, max: usize, error: &'static str) -> Result<String, &'static str> {
             if value.chars().count() > max || value.trim().is_empty() {
                 return Err(error);
             }
@@ -573,7 +581,7 @@ impl LocationRequest {
                 path,
             } => {
                 let path = text(
-                    path,
+                    &path,
                     4096,
                     "Supply a location path with 1 to 4096 characters",
                 )?;
@@ -584,11 +592,11 @@ impl LocationRequest {
             }
         };
         let project = text(
-            project,
+            &project,
             4096,
             "Supply a project ID with 1 to 4096 characters",
         )?;
-        let server = text(server, 128, "Supply a server ID with 1 to 128 characters")?;
+        let server = text(&server, 128, "Supply a server ID with 1 to 128 characters")?;
         let server = if server == "local" {
             local
                 .ok_or("The local server identity is unavailable")?

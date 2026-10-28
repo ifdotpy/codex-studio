@@ -61,6 +61,7 @@ pub enum CallerAdmission<R> {
     Replay(R),
 }
 
+#[derive(Clone, Copy)]
 pub struct RequestKey<'a> {
     pub raw: &'a str,
     pub namespace: &'a str,

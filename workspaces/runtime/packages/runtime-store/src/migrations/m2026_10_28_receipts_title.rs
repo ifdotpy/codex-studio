@@ -421,7 +421,7 @@ mod tests {
         tx.commit().expect("commit");
         db
     }
-    fn put(db: &Connection, id: &str, sig: &str, result: Value) {
+    fn put(db: &Connection, id: &str, sig: &str, result: &Value) {
         db.execute(
             "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
             params![id, sig, result.to_string()],
@@ -459,13 +459,13 @@ mod tests {
                 &db,
                 "r",
                 &signature("a"),
-                json!({"id":"a","request_id":"r","status":"pending"}),
+                &json!({"id":"a","request_id":"r","status":"pending"}),
             );
             put(
                 &db,
                 &effect("r"),
                 TITLE_EFFECT_SIGNATURE,
-                json!({"request_id":"r","agent_id":"a","state":status,"fingerprint":"historical","epoch":3,"title":"Generated","titleFingerprintProvider20261026":"codex"}),
+                &json!({"request_id":"r","agent_id":"a","state":status,"fingerprint":"historical","epoch":3,"title":"Generated","titleFingerprintProvider20261026":"codex"}),
             );
             migrate(&mut db);
             let agent: String = db
@@ -535,7 +535,7 @@ mod tests {
             let mut db = fixture();
             let sig = crate::sha256_hex(body.as_bytes());
             let reply = json!({"id":id,"request_id":"public-id","status":"applied","name":name});
-            put(&db, "public-id", &sig, reply.clone());
+            put(&db, "public-id", &sig, &reply);
             migrate(&mut db);
             let (saved_sig, result): (String, String) = db
                 .query_row(
@@ -558,7 +558,7 @@ mod tests {
             crate::sha256_hex(br#"{"chat": "chat-1", "name": "Other", "operation": "rename"}"#);
         let reply =
             json!({"id":"chat-1","request_id":"public-id","status":"applied","name":"Original"});
-        put(&db, "public-id", &sig, reply.clone());
+        put(&db, "public-id", &sig, &reply);
         assert!(matches!(
             batch(&mut db, SOURCES[1]),
             Err(contract::ReceiptMigrationError::Unclassifiable { .. })
@@ -584,7 +584,7 @@ mod tests {
             &db,
             "public-id",
             &sig,
-            json!({"id":"café","request_id":"public-id","status":"pending"}),
+            &json!({"id":"café","request_id":"public-id","status":"pending"}),
         );
         migrate(&mut db);
         let payload: String = db
@@ -601,7 +601,7 @@ mod tests {
     fn receipts_title_completed_reply_keeps_raw_identity_signature_and_optional_nulls() {
         let mut db = fixture();
         let reply = json!({"id":"a","request_id":"raw-public","status":"failed","name":null,"error":"Exact original failure"});
-        put(&db, "raw-public", &signature("a"), reply.clone());
+        put(&db, "raw-public", &signature("a"), &reply);
         migrate(&mut db);
         let (saved_signature, created, result): (String, i64, String) = db
             .query_row(
@@ -626,13 +626,13 @@ mod tests {
                 &db,
                 &request,
                 &signature("a"),
-                json!({"id":"a","request_id":request,"status":"failed","error":"x".repeat(contract::MIGRATION_BATCH_BYTES/2)}),
+                &json!({"id":"a","request_id":request,"status":"failed","error":"x".repeat(contract::MIGRATION_BATCH_BYTES/2)}),
             );
             put(
                 &db,
                 &effect(&request),
                 "title-generation-effect-v1",
-                json!({"request_id":request,"agent_id":"a","state":"failed"}),
+                &json!({"request_id":request,"agent_id":"a","state":"failed"}),
             );
         }
         assert_eq!(
@@ -657,14 +657,14 @@ mod tests {
                 &db,
                 request,
                 &signature("a"),
-                json!({"id":"a","request_id":request,"status":"pending"}),
+                &json!({"id":"a","request_id":request,"status":"pending"}),
             );
             if let Some(state) = state {
                 put(
                     &db,
                     &effect(request),
                     "title-generation-effect-v1",
-                    json!({"request_id":request,"agent_id":"a","state":state,"fingerprint":"historical","titleFingerprintProvider20261026":null}),
+                    &json!({"request_id":request,"agent_id":"a","state":state,"fingerprint":"historical","titleFingerprintProvider20261026":null}),
                 );
             }
         }
@@ -702,19 +702,19 @@ mod tests {
             &db,
             "done",
             &signature("a"),
-            json!({"id":"a","request_id":"done","status":"applied","name":"Historical name"}),
+            &json!({"id":"a","request_id":"done","status":"applied","name":"Historical name"}),
         );
         put(
             &db,
             "pending",
             &signature("a"),
-            json!({"id":"a","request_id":"pending","status":"pending"}),
+            &json!({"id":"a","request_id":"pending","status":"pending"}),
         );
         put(
             &db,
             &effect("pending"),
             "title-generation-effect-v1",
-            json!({"request_id":"pending","agent_id":"a","state":"unknown","fingerprint":"exact","epoch":3}),
+            &json!({"request_id":"pending","agent_id":"a","state":"unknown","fingerprint":"exact","epoch":3}),
         );
         migrate(&mut db);
         let raw: String = db
@@ -757,13 +757,13 @@ mod tests {
             &db,
             "r",
             &signature("a"),
-            json!({"id":"a","request_id":"r","status":"pending"}),
+            &json!({"id":"a","request_id":"r","status":"pending"}),
         );
         put(
             &db,
             &effect("r"),
             "title-generation-effect-v1",
-            json!({"request_id":"r","agent_id":"a","state":"written","title":"Generated","epoch":3,"fingerprint":"old"}),
+            &json!({"request_id":"r","agent_id":"a","state":"written","title":"Generated","epoch":3,"fingerprint":"old"}),
         );
         migrate(&mut db);
         let raw: String = db
@@ -807,13 +807,13 @@ mod tests {
                 &db,
                 &request,
                 &signature("a"),
-                json!({"id":"a","request_id":request,"status":"pending"}),
+                &json!({"id":"a","request_id":request,"status":"pending"}),
             );
             put(
                 &db,
                 &effect(&request),
                 "title-generation-effect-v1",
-                json!({"request_id":request,"agent_id":"a","state":"unknown"}),
+                &json!({"request_id":request,"agent_id":"a","state":"unknown"}),
             );
         }
         db.execute_batch("COMMIT").expect("fixture setup committed");
@@ -843,7 +843,7 @@ mod tests {
             &db,
             &effect("bad"),
             "wrong",
-            json!({"request_id":"bad","agent_id":"a","state":"unknown"}),
+            &json!({"request_id":"bad","agent_id":"a","state":"unknown"}),
         );
         assert!(matches!(
             batch(&mut db, SOURCES[0]),

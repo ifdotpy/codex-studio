@@ -347,12 +347,12 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
         }) = &outcome
     {
         let reply = RetainedReply {
-            call: typed_call.clone(),
-            request: typed_transport.clone().ok_or_else(|| fail(row))?,
+            call: typed_call,
+            request: typed_transport.ok_or_else(|| fail(row))?,
             written: written.is_some(),
             result: result.clone(),
             ack: CommittedAck {
-                stream_id: stream.clone(),
+                stream_id: stream,
                 generation,
                 cursor: *cursor,
             },
@@ -425,7 +425,7 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
                 } else {
                     OwnerKind::Account
                 },
-                owner_id: actor.clone().unwrap_or_else(|| account.clone()),
+                owner_id: actor.unwrap_or_else(|| account.clone()),
                 request_id: Some(result_id),
                 signature,
                 status,
@@ -527,7 +527,7 @@ mod tests {
         tx.commit().expect("commit");
         db
     }
-    fn fixture(tx: &Transaction<'_>, operation: &str, outcome: Value) -> String {
+    fn fixture(tx: &Transaction<'_>, operation: &str, outcome: &Value) -> String {
         let key = format!(
             "retained:default:{}",
             crate::sha256_hex(operation.as_bytes())
@@ -558,7 +558,7 @@ mod tests {
         let key = fixture(
             &tx,
             "thread-create",
-            json!({"Reply":{"thread":{"id":"thread"}}}),
+            &json!({"Reply":{"thread":{"id":"thread"}}}),
         );
         tx.execute("INSERT INTO runtime_operation_receipts VALUES('account-worker:cursor:default:7:ack','ack','12')",[]).expect("ack");
         let mut cp =
@@ -612,8 +612,8 @@ mod tests {
     fn receipt_provider_delivery_unknown_and_unacknowledged_not_sent_stay_unknown() {
         let mut db = database();
         let tx = db.transaction().expect("transaction");
-        let a = fixture(&tx, "unknown", json!("Unknown"));
-        let b = fixture(&tx, "not-sent", json!("NotSent"));
+        let a = fixture(&tx, "unknown", &json!("Unknown"));
+        let b = fixture(&tx, "not-sent", &json!("NotSent"));
         let cp =
             MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).expect("checkpoint");
         Family.move_batch(&tx, SOURCES[0], &cp).expect("move");
@@ -638,7 +638,7 @@ mod tests {
     fn receipt_provider_delivery_unknown_keeps_exact_committed_ack_after_cursor_removal() {
         let mut db = database();
         let tx = db.transaction().expect("transaction");
-        let key = fixture(&tx, "unknown-committed", json!("Unknown"));
+        let key = fixture(&tx, "unknown-committed", &json!("Unknown"));
         tx.execute("INSERT INTO runtime_operation_receipts VALUES('account-worker:cursor:default:7:ack','ack','19')",[]).expect("ack");
         let cp =
             MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).expect("checkpoint");
@@ -673,7 +673,7 @@ mod tests {
         ] {
             let mut db = database();
             let tx = db.transaction().expect("transaction");
-            let key = fixture(&tx, "mismatched-ack", json!("NotSent"));
+            let key = fixture(&tx, "mismatched-ack", &json!("NotSent"));
             tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.committed_ack',json(?2)) WHERE id=?1", (format!("account-worker:{key}:result"), proof.to_string())).expect("mismatched proof");
             tx.execute("INSERT INTO runtime_operation_receipts VALUES('account-worker:cursor:default:7:ack','ack','19')", []).expect("later checkpoint");
             let cp =
@@ -694,7 +694,7 @@ mod tests {
     fn receipt_provider_delivery_not_sent_keeps_original_cursor_and_exact_proof() {
         let mut db = database();
         let tx = db.transaction().expect("transaction");
-        let key = fixture(&tx, "not-sent-committed", json!("NotSent"));
+        let key = fixture(&tx, "not-sent-committed", &json!("NotSent"));
         tx.execute("INSERT INTO runtime_operation_receipts VALUES('account-worker:cursor:default:7:ack','ack','19')",[]).expect("ack");
         let cp =
             MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).expect("checkpoint");
@@ -715,7 +715,7 @@ mod tests {
         let mut db = database();
         let tx = db.transaction().expect("transaction");
         tx.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);INSERT INTO runtime_monitors VALUES('monitor','{\"operation\":{}}')").expect("monitor");
-        let key = fixture(&tx, "monitor:monitor", json!("Unknown"));
+        let key = fixture(&tx, "monitor:monitor", &json!("Unknown"));
         let source = read_receipt_batch(
             &tx,
             SOURCES[0],
@@ -769,7 +769,7 @@ mod tests {
     fn receipt_provider_delivery_preserves_hydrated_source_root() {
         let mut db = database();
         let tx = db.transaction().expect("transaction");
-        let key = fixture(&tx, "source-root", json!("Unknown"));
+        let key = fixture(&tx, "source-root", &json!("Unknown"));
         let root = RequestIdentity::issue_root();
         tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.call.root_request_id',?1) WHERE signature='submitted'",[&root]).expect("owner hydration");
         let cp = MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).expect("begin");
@@ -783,7 +783,7 @@ mod tests {
     fn receipt_provider_delivery_invalid_source_root_aborts_without_source_delete() {
         let mut db = database();
         let tx = db.transaction().expect("transaction");
-        fixture(&tx, "bad-root", json!("Unknown"));
+        fixture(&tx, "bad-root", &json!("Unknown"));
         tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.call.root_request_id','invalid-root') WHERE signature='submitted'",[]).expect("invalid root");
         let cp = MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).expect("begin");
         assert!(matches!(
@@ -809,7 +809,7 @@ mod tests {
         {
             let tx = db.transaction().expect("transaction");
             for index in 0..(MIGRATION_BATCH_ROWS / 3 + 2) {
-                fixture(&tx, &format!("operation-{index}"), json!("Unknown"));
+                fixture(&tx, &format!("operation-{index}"), &json!("Unknown"));
             }
             tx.commit().expect("fixtures");
         }

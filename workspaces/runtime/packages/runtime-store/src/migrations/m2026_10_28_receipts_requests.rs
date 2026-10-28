@@ -1410,7 +1410,7 @@ mod tests {
         prepare_schema(&tx).expect("schema");
         tx.commit().expect("schema commit");
     }
-    fn insert(db: &Connection, id: &str, reply: Value) {
+    fn insert(db: &Connection, id: &str, reply: &Value) {
         db.execute(
             "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
             params![id, SIGNATURE, reply.to_string()],
@@ -1441,8 +1441,8 @@ mod tests {
         let mode =
             json!({"applied":true,"concurrency":2,"agentMode":"multi","agentModeRevision":1});
         let work = json!({"id":"task","rootId":"root","title":"Task","status":"ready","created":1.0,"updated":2.0,"version":1,"submissionRefusal":{"message":"Result does not satisfy the task result contract","errors":[{"path":"/value","message":"invalid"}],"failedSubmits":1,"limit":3,"retryAllowed":true}});
-        insert(&db, mode_id, mode);
-        insert(&db, work_id, work);
+        insert(&db, mode_id, &mode);
+        insert(&db, work_id, &work);
         migrate(&mut db);
         let tx = db.transaction().expect("transaction");
         assert_eq!(
@@ -1489,7 +1489,7 @@ mod tests {
         ] {
             let mut db = Connection::open_in_memory().unwrap();
             fixture(&mut db);
-            insert(&db, "bad", reply);
+            insert(&db, "bad", &reply);
             let tx = db.transaction().unwrap();
             let cp = MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).unwrap();
             assert!(Family.move_batch(&tx, SOURCE, &cp).is_err());
@@ -1509,7 +1509,7 @@ mod tests {
         insert(
             &db,
             "request",
-            json!({"id":"task","rootId":"root","title":"Task","status":"ready","submissionRefusal":{"message":"Result does not satisfy the task result contract","errors":[],"failedSubmits":1,"limit":3,"retryAllowed":true}}),
+            &json!({"id":"task","rootId":"root","title":"Task","status":"ready","submissionRefusal":{"message":"Result does not satisfy the task result contract","errors":[],"failedSubmits":1,"limit":3,"retryAllowed":true}}),
         );
         let tx = db.transaction().unwrap();
         let cp = MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).unwrap();
@@ -1539,7 +1539,7 @@ mod tests {
                 "CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
             )
             .expect("owner");
-            insert(&db, "tool-id", reply.clone());
+            insert(&db, "tool-id", &reply);
             let token = admitted_owner_token("tool-id", "outer-signature", CUTOVER);
             let task = json!({"id":"tool-id","agent":"agent","tool":tool,"kind":"managed_tool","stage":"interrupted","outcome":"unknown","signature":"outer-signature","admitted":token});
             let owner = task.to_string();
@@ -1593,7 +1593,7 @@ mod tests {
             )
             .expect("owner");
             let reply = json!({"id":"message","room":"room","deliveries":{}});
-            insert(&db, "tool-id", reply);
+            insert(&db, "tool-id", &reply);
             let outer_signature = if failure == "same_signature" {
                 SIGNATURE
             } else {
@@ -1669,7 +1669,7 @@ mod tests {
             fixture(&mut db);
             db.execute_batch("CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL); CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL)").expect("owners");
             let reply = json!({"id":"task","rootId":"root","title":"Task","status":"ready","created":1.0,"updated":2.0,"version":1});
-            insert(&db, "tool-id", reply);
+            insert(&db, "tool-id", &reply);
             let admitted = admitted_owner_token("tool-id", "outer-signature", CUTOVER);
             let task = json!({"id":"tool-id","agent":"agent","tool":"orchestration_task","kind":"managed_tool","stage":"completed","outcome":"applied","signature":"outer-signature","admitted":admitted});
             db.execute(
@@ -1772,7 +1772,7 @@ mod tests {
     fn receipts_requests_old_row_second_open_and_original_reply() {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&mut db);
-        insert(&db, "plan-request:old", plan());
+        insert(&db, "plan-request:old", &plan());
         migrate(&mut db);
         let saved: (String, String, i64) = db
             .query_row(
@@ -1815,7 +1815,7 @@ mod tests {
             let mut db = Connection::open(&path).expect("database");
             fixture(&mut db);
             for n in 0..=MIGRATION_BATCH_ROWS {
-                insert(&db, &format!("plan-request:{n}"), plan());
+                insert(&db, &format!("plan-request:{n}"), &plan());
             }
             assert_eq!(batch(&mut db, true).cursor, MIGRATION_BATCH_ROWS as i64);
             batch(&mut db, false);
@@ -1834,8 +1834,8 @@ mod tests {
     fn receipts_requests_unclassifiable_rolls_back_and_completed_lossy_marker_is_counted() {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&mut db);
-        insert(&db, "old-settings", json!({"applied":true}));
-        insert(&db, "plan-request:bad", json!({"unexpected":true}));
+        insert(&db, "old-settings", &json!({"applied":true}));
+        insert(&db, "plan-request:bad", &json!({"unexpected":true}));
         let tx = db.transaction().expect("transaction");
         let checkpoint = MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
         assert!(
@@ -1896,7 +1896,7 @@ mod tests {
         insert(
             &db,
             "managed-rules:actor:request",
-            json!({"value":{"status":"paused"},"cancelMonitorIds":["monitor"]}),
+            &json!({"value":{"status":"paused"},"cancelMonitorIds":["monitor"]}),
         );
         migrate(&mut db);
         let raw: String = db
@@ -1935,7 +1935,7 @@ mod tests {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&mut db);
         let root = "0000000f-4240-7000-8000-000000000000";
-        insert(&db, root, json!({"applied":true}));
+        insert(&db, root, &json!({"applied":true}));
         migrate(&mut db);
         let identity = studio_runtime_schema::persistence::RequestIdentity::new(
             "settings",
@@ -1955,7 +1955,7 @@ mod tests {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&mut db);
         let future = "0000000f-4241-7000-8000-000000000000";
-        insert(&db, future, json!({"applied":true}));
+        insert(&db, future, &json!({"applied":true}));
         let tx = db.transaction().expect("transaction");
         let checkpoint = MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
         assert!(
@@ -1986,7 +1986,7 @@ mod tests {
             [old.to_string()],
         )
         .expect("chat message");
-        insert(&db, "input", json!({"id":"input","status":"queued"}));
+        insert(&db, "input", &json!({"id":"input","status":"queued"}));
         migrate(&mut db);
         for source in &SOURCES[1..3] {
             let (raw, text): (String, String) = db
@@ -2236,8 +2236,8 @@ mod tests {
         let mut oversized = plan();
         oversized["text"] =
             json!("x".repeat(crate::receipt_migration_contract::MIGRATION_BATCH_BYTES));
-        insert(&db, "plan-request:oversized", oversized);
-        insert(&db, "plan-request:next", plan());
+        insert(&db, "plan-request:oversized", &oversized);
+        insert(&db, "plan-request:next", &plan());
         let first = batch(&mut db, true);
         assert_eq!(first.cursor, 1);
         assert_eq!(first.status, MigrationStatus::Running);
@@ -2335,7 +2335,7 @@ mod tests {
                 )
                 .expect("user message C");
             } else {
-                insert(&db, id, reply.clone());
+                insert(&db, id, reply);
             }
         }
         migrate(&mut db);
@@ -2409,7 +2409,7 @@ mod tests {
         ] {
             let mut db = Connection::open_in_memory().expect("database");
             fixture(&mut db);
-            insert(&db, id, reply);
+            insert(&db, id, &reply);
             let tx = db.transaction().expect("transaction");
             let checkpoint =
                 MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
@@ -2664,7 +2664,7 @@ mod tests {
         insert(
             &db,
             "ui-old",
-            json!({"requestId":"ui-old","outcome":"applied","value":{"serverId":"peer","path":"/original"}}),
+            &json!({"requestId":"ui-old","outcome":"applied","value":{"serverId":"peer","path":"/original"}}),
         );
         migrate(&mut db);
         assert!(
@@ -2686,7 +2686,7 @@ mod tests {
             } else {
                 json!({"revision":1,"groups":{"workspace":["first","second"]}})
             };
-            insert(&db, &id, reply.clone());
+            insert(&db, &id, &reply);
             migrate(&mut db);
             assert!(
                 crate::request_results::RequestResults::replay(
@@ -2733,7 +2733,7 @@ mod tests {
             let mut db = Connection::open_in_memory().expect("database");
             fixture(&mut db);
             let future = format!("{prefix}0000000f-4241-7000-8000-000000000000");
-            insert(&db, &future, reply);
+            insert(&db, &future, &reply);
             let tx = db.transaction().expect("transaction");
             let checkpoint =
                 MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
@@ -2757,12 +2757,12 @@ mod tests {
         insert(
             &db,
             "project-registration:project",
-            json!({"projectId":"project","requestId":"location","outcome":"unknown"}),
+            &json!({"projectId":"project","requestId":"location","outcome":"unknown"}),
         );
         insert(
             &db,
             "location",
-            json!({"projectId":"project","requestId":"location","outcome":"unknown"}),
+            &json!({"projectId":"project","requestId":"location","outcome":"unknown"}),
         );
         migrate(&mut db);
         let raw: String = db

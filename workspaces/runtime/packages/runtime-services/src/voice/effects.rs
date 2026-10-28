@@ -125,7 +125,7 @@ fn reserved(
     mut effect: VoiceEffect,
     kind: OutboxKind,
     root: String,
-    owner: AdmittedRequest,
+    owner: &AdmittedRequest,
 ) -> Result<OutboxRow<VoiceEffect>, VoiceProviderError> {
     let CapturedScope::Known(scope) = captured(&effect) else {
         return Err(VoiceProviderError::ContextUnavailable);
@@ -148,7 +148,7 @@ fn reserved(
         method: Method::ThreadRealtimeStop,
         params: json!({"threadId":effect.thread}),
     };
-    let admission = crate::account_worker::retained::reserve_provider_call(tx, &owner, intent)
+    let admission = crate::account_worker::retained::reserve_provider_call(tx, owner, intent)
         .map_err(|error| VoiceProviderError::Provider(Box::new(error)))?;
     let id = Outbox::effect_id(
         owner.id(),
@@ -200,7 +200,7 @@ fn new_row(
         Admission::Fresh(owner) => owner,
         Admission::Replay(_) => return Err(VoiceProviderError::ContextChanged),
     };
-    reserved(tx, effect, kind, root, owner)
+    reserved(tx, effect, kind, root, &owner)
 }
 
 fn held_row(
@@ -566,7 +566,7 @@ fn settle_outcome(
             row.payload.authority = VoiceEffectAuthority::Held {
                 scope: CapturedScope::Known(scope),
             };
-            let replacement = reserved(tx, row.payload, OutboxKind::VoiceDelete, root, owner)?;
+            let replacement = reserved(tx, row.payload, OutboxKind::VoiceDelete, root, &owner)?;
             Outbox::put(tx, &replacement)?;
         } else if matches!(next, VoiceStopOutcome::Written | VoiceStopOutcome::Rejected) {
             Outbox::delete_settled(tx, &row.id, &row.signature)?;

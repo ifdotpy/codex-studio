@@ -922,17 +922,21 @@ mod tests {
         ));
     }
 
+    #[derive(PartialEq)]
+    enum Scenario {
+        Unknown,
+        Unloaded,
+        StopLead,
+        ChangeWorkerEpoch,
+        CloseBeforeReply,
+        RecoverUnknown,
+        Terminal,
+    }
     struct Session {
         store: Arc<RuntimeStore>,
         calls: Mutex<Vec<(Method, String)>>,
-        unknown: bool,
+        scenarios: Vec<Scenario>,
         expired: Option<Method>,
-        unloaded: bool,
-        stop_lead: bool,
-        change_worker_epoch: bool,
-        close_before_reply: bool,
-        recover_unknown: bool,
-        terminal: bool,
         recoveries: Mutex<Vec<AuthorizedRecoveryRequest>>,
     }
     impl Session {
@@ -960,7 +964,7 @@ mod tests {
         ) -> AccountSessionFuture<'a, crate::recovery::RecoveryReceipt> {
             self.recoveries.lock().expect("recoveries").push(request);
             Box::pin(async move {
-                if self.recover_unknown {
+                if self.scenarios.contains(&Scenario::RecoverUnknown) {
                     Err(crate::account_session_runtime::AccountSessionError::Unknown)
                 } else {
                     Ok(crate::recovery::RecoveryReceipt::Unknown(
@@ -1055,7 +1059,7 @@ mod tests {
                         })
                         .await
                         .expect("retained release authority");
-                    if self.close_before_reply {
+                    if self.scenarios.contains(&Scenario::CloseBeforeReply) {
                         self.store
                             .transaction(|tx| {
                                 let mut worker =
@@ -1071,7 +1075,9 @@ mod tests {
                             .expect("exact native close before reply");
                     }
                 }
-                if self.change_worker_epoch && request.method == Method::ThreadQueueList {
+                if self.scenarios.contains(&Scenario::ChangeWorkerEpoch)
+                    && request.method == Method::ThreadQueueList
+                {
                     self.store
                         .transaction(|tx| {
                             let mut worker =
@@ -1083,7 +1089,9 @@ mod tests {
                         .await
                         .expect("worker epoch changes during inspection");
                 }
-                if self.stop_lead && request.method == Method::ThreadQueueList {
+                if self.scenarios.contains(&Scenario::StopLead)
+                    && request.method == Method::ThreadQueueList
+                {
                     self.store
                         .transaction(|tx| {
                             let mut lead =
@@ -1098,9 +1106,11 @@ mod tests {
                 }
                 let body = match request.method {
                     Method::ThreadRead => {
-                        json!({"thread":{"id":"worker-thread","status":{"type":if self.unloaded {"notLoaded"} else {"idle"}}}})
+                        json!({"thread":{"id":"worker-thread","status":{"type":if self.scenarios.contains(&Scenario::Unloaded) {"notLoaded"} else {"idle"}}}})
                     }
-                    Method::ThreadBackgroundTerminalsList if self.terminal => {
+                    Method::ThreadBackgroundTerminalsList
+                        if self.scenarios.contains(&Scenario::Terminal) =>
+                    {
                         json!({"data":[{"id":"live-command"}],"nextCursor":null})
                     }
                     Method::ThreadBackgroundTerminalsList | Method::ThreadQueueList => {
@@ -1249,7 +1259,8 @@ mod tests {
                         panic!("unexpected native mutation or read: {method:?}")
                     }
                 };
-                let unknown = self.unknown && request.method == Method::ThreadUnsubscribe;
+                let unknown = self.scenarios.contains(&Scenario::Unknown)
+                    && request.method == Method::ThreadUnsubscribe;
                 let ticket = RequestTicket {
                     id: RequestId::String(request.operation.clone()),
                     generation: 1,
@@ -1297,14 +1308,8 @@ mod tests {
         let session = Session {
             store: Arc::clone(&store),
             calls: Mutex::new(Vec::new()),
-            unknown: false,
+            scenarios: Vec::new(),
             expired: None,
-            unloaded: false,
-            stop_lead: false,
-            change_worker_epoch: false,
-            close_before_reply: false,
-            recover_unknown: false,
-            terminal: false,
             recoveries: Mutex::new(vec![]),
         };
         (directory, store, actor, session)
@@ -1526,7 +1531,7 @@ mod tests {
     #[tokio::test]
     async fn a_lost_recovery_response_does_not_overwrite_the_workers_late_result() {
         let (_directory, store, actor, mut session) = fixture().await;
-        session.recover_unknown = true;
+        session.scenarios.push(Scenario::RecoverUnknown);
         let session = Arc::new(session);
         let args = json!({"action":"recover","agent_id":"worker-00000000"});
         let lost = execute(
@@ -1655,7 +1660,7 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_manual_tool_reset_is_not_sent_again() {
         let (_directory, store, actor, mut session) = fixture().await;
-        session.unknown = true;
+        session.scenarios.push(Scenario::Unknown);
         let session = Arc::new(session);
         let first = execute(
             Arc::clone(&store),
@@ -1692,7 +1697,7 @@ mod tests {
     #[tokio::test]
     async fn manual_tool_reset_rechecks_the_lead_after_native_reads() {
         let (_directory, store, actor, mut session) = fixture().await;
-        session.stop_lead = true;
+        session.scenarios.push(Scenario::StopLead);
         let session = Arc::new(session);
         let result = execute(
             Arc::clone(&store),
@@ -1710,7 +1715,7 @@ mod tests {
     #[tokio::test]
     async fn manual_tool_reset_refuses_a_changed_worker_epoch_after_inspection() {
         let (_directory, store, actor, mut session) = fixture().await;
-        session.change_worker_epoch = true;
+        session.scenarios.push(Scenario::ChangeWorkerEpoch);
         let session = Arc::new(session);
         let checked = execute(
             store,
@@ -1760,7 +1765,7 @@ mod tests {
     #[tokio::test]
     async fn a_native_close_before_unsubscribe_reply_keeps_the_reset_hold_clear() {
         let (_directory, store, actor, mut session) = fixture().await;
-        session.close_before_reply = true;
+        session.scenarios.push(Scenario::CloseBeforeReply);
         let session = Arc::new(session);
         let checked = execute(
             Arc::clone(&store),
@@ -1782,7 +1787,9 @@ mod tests {
     async fn manual_tool_reset_keeps_native_commands_and_uncertain_input() {
         for native_command in [false, true] {
             let (_directory, store, actor, mut session) = fixture().await;
-            session.terminal = native_command;
+            if native_command {
+                session.scenarios.push(Scenario::Terminal);
+            }
             if !native_command {
                 store.transaction(|tx| {
                     tx.execute("INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created) VALUES('unknown-input','worker-00000000',3,'followup','original input','uncertain',1)", [])?;
@@ -1808,7 +1815,7 @@ mod tests {
     #[tokio::test]
     async fn a_confirmed_native_closure_needs_no_unsubscribe() {
         let (_directory, store, actor, mut session) = fixture().await;
-        session.unloaded = true;
+        session.scenarios.push(Scenario::Unloaded);
         let session = Arc::new(session);
         let result = execute(
             Arc::clone(&store),

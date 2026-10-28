@@ -96,7 +96,7 @@ async fn send_now_recovers_unsent_batch_after_result_gc() {
                     tx, &current, &target
                 )?
             );
-            let mut changed = current.clone();
+            let mut changed = current;
             changed.extra.get_mut("startAttempt").expect("attempt")["observedTurnId"] =
                 json!("other-turn");
             assert!(

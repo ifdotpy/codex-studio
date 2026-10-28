@@ -158,6 +158,7 @@ fn state(generation: u64, connection: Option<String>) -> ProviderState {
 }
 
 /// Source owner for the current provider generation and journal ACK.
+#[derive(Clone, Copy)]
 pub enum ProviderOwner<'a> {
     Account(&'a str),
     Agent(&'a crate::AgentRecord),

@@ -186,7 +186,7 @@ mod tests {
         tx.commit().expect("commit");
         db
     }
-    fn put(db: &Connection, id: &str, sig: &str, value: Value) {
+    fn put(db: &Connection, id: &str, sig: &str, value: &Value) {
         db.execute(
             "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
             params![id, sig, value.to_string()],
@@ -230,7 +230,7 @@ mod tests {
                 &db,
                 &format!("liveness:session-start-failure:{i}"),
                 "liveness",
-                json!({"reason":"x".repeat(contract::MIGRATION_BATCH_BYTES/2),"at":1.0}),
+                &json!({"reason":"x".repeat(contract::MIGRATION_BATCH_BYTES/2),"at":1.0}),
             );
         }
         assert_eq!(batch(&mut db).expect("byte bounded").cursor, 1);
@@ -240,7 +240,7 @@ mod tests {
             &db,
             "idle-compaction:unknown",
             "idle-compaction",
-            json!({"outcome":"unknown","at":1.0,"fireAt":1.0,"contextTokens":100,"lateMs":0.0}),
+            &json!({"outcome":"unknown","at":1.0,"fireAt":1.0,"contextTokens":100,"lateMs":0.0}),
         );
         assert!(matches!(
             batch(&mut db),
@@ -260,19 +260,19 @@ mod tests {
             &db,
             "liveness:session-start-failure:a",
             "liveness",
-            json!({"reason":"failed","at":1.5}),
+            &json!({"reason":"failed","at":1.5}),
         );
         put(
             &db,
             "idle-compaction:episode",
             "idle-compaction",
-            json!({"outcome":"started","at":2.5,"fireAt":2.0,"contextTokens":100,"lateMs":500.0,"before":{"status":"idle"}}),
+            &json!({"outcome":"started","at":2.5,"fireAt":2.0,"contextTokens":100,"lateMs":500.0,"before":{"status":"idle"}}),
         );
         put(
             &db,
             "project-destructive-removal:p",
             "project-destructive-removal",
-            json!(7),
+            &json!(7),
         );
         db.execute("INSERT INTO runtime_agents VALUES('agent',?1)",[json!({"id":"agent","idleCompactionEpisode":{"id":"idle-compaction:episode","identity":{}}}).to_string()]).expect("agent");
         batch(&mut db).expect("migration");
@@ -341,7 +341,7 @@ mod tests {
                 &db,
                 &format!("liveness:session-start-failure:a{i}"),
                 "liveness",
-                json!({"reason":"failed","at":1.0}),
+                &json!({"reason":"failed","at":1.0}),
             );
         }
         let first = batch(&mut db).expect("first batch");
@@ -361,7 +361,7 @@ mod tests {
             &db,
             "liveness:session-start-failure:invalid",
             "wrong",
-            json!({"status":"unknown"}),
+            &json!({"status":"unknown"}),
         );
         db.execute("UPDATE runtime_operation_receipts SET rowid=502 WHERE id='liveness:session-start-failure:invalid'",[]).expect("stable source rowid");
         assert!(

@@ -1273,7 +1273,7 @@ async fn persist_start(
         WorkEffectStatus::NotSent
     };
     store
-        .transaction_with(move |tx| settle_start(tx, identity, status, info))
+        .transaction_with(move |tx| settle_start(tx, &identity, status, info))
         .await
 }
 
@@ -1354,7 +1354,7 @@ fn hold_obligation(
 
 fn settle_start(
     tx: &Transaction<'_>,
-    identity: StartIdentity,
+    identity: &StartIdentity,
     status: WorkEffectStatus,
     info: Option<Value>,
 ) -> Result<()> {
@@ -1362,7 +1362,7 @@ fn settle_start(
         .ok_or(GuestProviderError::Unknown)?;
     let mut saved: VmLaunch =
         agent_field(&agent, "vmLaunch")?.ok_or(GuestProviderError::Unknown)?;
-    if saved.identity != identity || agent.epoch != identity.epoch {
+    if saved.identity != *identity || agent.epoch != identity.epoch {
         return Err(GuestProviderError::Unknown);
     }
     if saved.status == WorkEffectStatus::Complete && status == WorkEffectStatus::Complete {

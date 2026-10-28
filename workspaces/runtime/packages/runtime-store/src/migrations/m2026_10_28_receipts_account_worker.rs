@@ -283,7 +283,7 @@ fn effects(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
                     value["order"].as_i64().ok_or_else(|| fail(row))?,
                 )
             } else {
-                (value.clone(), row.rowid)
+                (value, row.rowid)
             };
             if !payload.is_object() {
                 return Err(fail(row));

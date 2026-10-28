@@ -686,7 +686,8 @@ fn run_receipt_migrations(db: &mut Connection) -> StoreResult<()> {
     for migration in CATALOG.iter().filter_map(|entry| entry.receipt_family()) {
         run_receipt_family(db, migration, &mut |_, _, _| Ok(()))?;
     }
-    m2026_10_28_receipts_drop_old_tables::verify_absent(db).map_err(receipt_error)?;
+    m2026_10_28_receipts_drop_old_tables::verify_absent(db)
+        .map_err(|error| receipt_error(&error))?;
     crate::schema::verify_bootstrap(db)?;
     crate::verify_observed_tables_are_rowid(db)
 }
@@ -697,7 +698,7 @@ enum CommitBoundary {
     After,
 }
 
-fn receipt_error(error: receipt_migration_contract::ReceiptMigrationError) -> StoreError {
+fn receipt_error(error: &receipt_migration_contract::ReceiptMigrationError) -> StoreError {
     StoreError::SchemaMismatch(error.to_string())
 }
 
@@ -713,22 +714,22 @@ fn run_receipt_family(
     {
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let completed = MigrationCheckpoint::load(&tx, &finish, "")
-            .map_err(receipt_error)?
+            .map_err(|error| receipt_error(&error))?
             .is_some_and(|checkpoint| checkpoint.status == MigrationStatus::Complete);
         if completed {
             return Ok(());
         }
-        let mut checkpoint =
-            MigrationCheckpoint::begin(&tx, &prepare, "", now).map_err(receipt_error)?;
+        let mut checkpoint = MigrationCheckpoint::begin(&tx, &prepare, "", now)
+            .map_err(|error| receipt_error(&error))?;
         if checkpoint.status != MigrationStatus::Complete {
             migration
                 .family
                 .prepare(&tx, checkpoint.cutover_ms)
-                .map_err(receipt_error)?;
+                .map_err(|error| receipt_error(&error))?;
             checkpoint.status = MigrationStatus::Complete;
             checkpoint
                 .save(&tx, &prepare, "", now)
-                .map_err(receipt_error)?;
+                .map_err(|error| receipt_error(&error))?;
             commit_receipt_phase(
                 tx,
                 id,
@@ -742,8 +743,8 @@ fn run_receipt_family(
     for source in migration.sources {
         loop {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let checkpoint =
-                MigrationCheckpoint::begin(&tx, id, source, now).map_err(receipt_error)?;
+            let checkpoint = MigrationCheckpoint::begin(&tx, id, source, now)
+                .map_err(|error| receipt_error(&error))?;
             if checkpoint.status == MigrationStatus::Complete {
                 break;
             }
@@ -755,7 +756,7 @@ fn run_receipt_family(
                         id,
                         MigrationTarget::Canvas,
                         MigrationPhase::Apply,
-                        receipt_error(error),
+                        receipt_error(&error),
                     ));
                 }
             };
@@ -771,7 +772,8 @@ fn run_receipt_family(
                     StoreError::RecordContract("receipt batch did not advance its checkpoint"),
                 ));
             }
-            next.save(&tx, id, source, now).map_err(receipt_error)?;
+            next.save(&tx, id, source, now)
+                .map_err(|error| receipt_error(&error))?;
             commit_receipt_phase(tx, id, ReceiptMigrationPhase::Move, next.cursor, fault)?;
             receipt_checkpoint(db)?;
             if next.status == MigrationStatus::Complete {
@@ -782,7 +784,7 @@ fn run_receipt_family(
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     for source in migration.sources {
         if !MigrationCheckpoint::load(&tx, id, source)
-            .map_err(receipt_error)?
+            .map_err(|error| receipt_error(&error))?
             .is_some_and(|checkpoint| checkpoint.status == MigrationStatus::Complete)
         {
             return Err(rolled_back(
@@ -796,13 +798,16 @@ fn run_receipt_family(
             ));
         }
     }
-    migration.family.finish(&tx).map_err(receipt_error)?;
+    migration
+        .family
+        .finish(&tx)
+        .map_err(|error| receipt_error(&error))?;
     let mut checkpoint =
-        MigrationCheckpoint::begin(&tx, &finish, "", now).map_err(receipt_error)?;
+        MigrationCheckpoint::begin(&tx, &finish, "", now).map_err(|error| receipt_error(&error))?;
     checkpoint.status = MigrationStatus::Complete;
     checkpoint
         .save(&tx, &finish, "", now)
-        .map_err(receipt_error)?;
+        .map_err(|error| receipt_error(&error))?;
     commit_receipt_phase(
         tx,
         id,
@@ -1170,7 +1175,7 @@ mod tests {
             MigrationTarget::Canvas,
             MigrationPhase::Apply,
             MigrationRollbackOutcome::RolledBack,
-            receipt_error(receipt_migration_contract::unclassifiable(
+            receipt_error(&receipt_migration_contract::unclassifiable(
                 "source-table",
                 "source-key",
                 "source-signature",

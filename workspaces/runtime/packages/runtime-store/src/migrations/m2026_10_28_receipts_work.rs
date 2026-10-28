@@ -703,7 +703,7 @@ mod tests {
         tx.commit().expect("commit");
         db
     }
-    fn put(db: &Connection, id: &str, signature: &str, result: Value) {
+    fn put(db: &Connection, id: &str, signature: &str, result: &Value) {
         db.execute(
             "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
             params![id, signature, result.to_string()],
@@ -760,7 +760,7 @@ mod tests {
             &db,
             "work-write-vm-intent:submission:t",
             "work-write-vm-intent-v1",
-            json!({"status":"completed","taskId":"t","requestId":"rpc","owner":"a","revision":"rev","version":1,"created":1.0,"evidence":{"layrProjectId":"p","layrLine":"a","layrStateId":"rev"}}),
+            &json!({"status":"completed","taskId":"t","requestId":"rpc","owner":"a","revision":"rev","version":1,"created":1.0,"evidence":{"layrProjectId":"p","layrLine":"a","layrStateId":"rev"}}),
         );
         migrate(&mut db);
         assert_eq!(
@@ -784,7 +784,7 @@ mod tests {
                 .unwrap()
                 .extend(extra.as_object().unwrap().clone());
             let id = format!("work-write-vm-intent:{kind}:t");
-            put(&db, &id, "work-write-vm-intent-v1", source);
+            put(&db, &id, "work-write-vm-intent-v1", &source);
             assert!(batch(&mut db, TABLE).is_err());
             assert!(work(&db, "t").get("vmSubmit").is_none());
             assert_eq!(
@@ -812,7 +812,7 @@ mod tests {
             &db,
             "other",
             "sig",
-            json!({"vmAcceptReservation":true,"taskId":"t","agentId":"root","status":"reserved"}),
+            &json!({"vmAcceptReservation":true,"taskId":"t","agentId":"root","status":"reserved"}),
         );
         assert!(batch(&mut db, TABLE).is_err());
         assert_eq!(work(&db, "t"), original);
@@ -842,7 +842,7 @@ mod tests {
                     &db,
                     id,
                     "sig",
-                    json!({"vmAcceptReservation":true,"taskId":"t","agentId":"root","status":"reserved"}),
+                    &json!({"vmAcceptReservation":true,"taskId":"t","agentId":"root","status":"reserved"}),
                 )
             };
             let intent = || {
@@ -850,7 +850,7 @@ mod tests {
                     &db,
                     "work-write-vm-intent:merge:t",
                     "work-write-vm-intent-v1",
-                    json!({"status":"unknown","taskId":"t","requestId":"rpc","owner":"a","revision":"rev","resultId":"r","created":1.0}),
+                    &json!({"status":"unknown","taskId":"t","requestId":"rpc","owner":"a","revision":"rev","resultId":"r","created":1.0}),
                 )
             };
             if reservation_first {
@@ -883,13 +883,13 @@ mod tests {
             &db,
             "work-archive:t:old",
             "accepted-archive-v1",
-            json!({"status":"unknown","taskId":"t","intentId":"t:old","target":"a","actor":"root","actorEpoch":2,"attempts":1,"created":1.0}),
+            &json!({"status":"unknown","taskId":"t","intentId":"t:old","target":"a","actor":"root","actorEpoch":2,"attempts":1,"created":1.0}),
         );
         put(
             &db,
             "public",
             "sig",
-            json!({"vmAcceptReservation":true,"taskId":"t","agentId":"root","status":"reserved"}),
+            &json!({"vmAcceptReservation":true,"taskId":"t","agentId":"root","status":"reserved"}),
         );
         db.execute(
             "INSERT INTO runtime_work VALUES('current',?1)",
@@ -903,7 +903,7 @@ mod tests {
             &db,
             "work-archive:current:r",
             "accepted-archive-v1",
-            json!({"status":"unknown","taskId":"current","intentId":"current:r","target":"a","actor":"root","actorEpoch":2,"attempts":1,"created":1.0}),
+            &json!({"status":"unknown","taskId":"current","intentId":"current:r","target":"a","actor":"root","actorEpoch":2,"attempts":1,"created":1.0}),
         );
         migrate(&mut db);
         assert_eq!(work(&db, "current")["archiveIntent"]["status"], "unknown");
@@ -948,7 +948,7 @@ mod tests {
                 &db,
                 &format!("work-write-vm-intent:submission:{id}"),
                 "work-write-vm-intent-v1",
-                json!({"status":"unknown","taskId":id,"requestId":"rpc","owner":"x".repeat(bytes),"revision":"rev","version":1,"created":1.0}),
+                &json!({"status":"unknown","taskId":id,"requestId":"rpc","owner":"x".repeat(bytes),"revision":"rev","version":1,"created":1.0}),
             );
         }
         assert_eq!(batch(&mut db, TABLE).expect("oversized alone").cursor, 1);
@@ -983,7 +983,7 @@ mod tests {
             &db,
             &counter,
             "work-result-failures-v1",
-            json!({"failed":2,"errors":[]}),
+            &json!({"failed":2,"errors":[]}),
         );
         migrate(&mut db);
         assert_eq!(
@@ -1009,25 +1009,25 @@ mod tests {
             &db,
             &counter,
             "work-result-failures-v1",
-            json!({"failed":2}),
+            &json!({"failed":2}),
         );
         put(
             &db,
             "old-submit",
             "sig",
-            json!({"id":"t","version":1,"owner":"a","submissionRefusal":{"failedSubmits":2,"errors":[{"path":"/x","message":"bad"}]}}),
+            &json!({"id":"t","version":1,"owner":"a","submissionRefusal":{"failedSubmits":2,"errors":[{"path":"/x","message":"bad"}]}}),
         );
         put(
             &db,
             "work-archive:t:r",
             "accepted-archive-v1",
-            json!({"status":"complete","taskId":"t","intentId":"t:r","target":"a","actor":"a","actorEpoch":2,"attempts":1,"created":1.0,"outcome":{"status":"archived"}}),
+            &json!({"status":"complete","taskId":"t","intentId":"t:r","target":"a","actor":"a","actorEpoch":2,"attempts":1,"created":1.0,"outcome":{"status":"archived"}}),
         );
         put(
             &db,
             "work-write-vm-intent:submission:t",
             "work-write-vm-intent-v1",
-            json!({"status":"unknown","taskId":"t","requestId":"rpc","owner":"a","revision":"rev","version":1,"created":1.0}),
+            &json!({"status":"unknown","taskId":"t","requestId":"rpc","owner":"a","revision":"rev","version":1,"created":1.0}),
         );
         migrate(&mut db);
         assert_eq!(
@@ -1066,7 +1066,7 @@ mod tests {
                 &db,
                 &format!("work-write-vm-intent:submission:{id}"),
                 "work-write-vm-intent-v1",
-                json!({"status":"unknown","taskId":id,"requestId":"rpc","owner":"a","revision":"rev","version":1,"created":1.0}),
+                &json!({"status":"unknown","taskId":id,"requestId":"rpc","owner":"a","revision":"rev","version":1,"created":1.0}),
             );
         }
         let first = batch(&mut db, TABLE).expect("batch");
@@ -1086,7 +1086,7 @@ mod tests {
             &db,
             "work-archive:bad",
             "unexpected",
-            json!({"status":"unknown"}),
+            &json!({"status":"unknown"}),
         );
         assert!(
             matches!(batch(&mut db,TABLE),Err(contract::ReceiptMigrationError::Unclassifiable{table,key,signature}) if table==TABLE&&key=="work-archive:bad"&&signature=="unexpected")

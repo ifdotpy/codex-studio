@@ -1652,6 +1652,7 @@ pub trait CommandAdmission {
         instruction: &str,
     ) -> Result<Value>;
 }
+#[derive(Clone, Copy)]
 pub enum CommandAction<'a> {
     Input(&'a str),
     Cancel,

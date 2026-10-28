@@ -905,7 +905,7 @@ mod tests {
                 scope: studio_runtime_schema::persistence::CapturedScope::Unproven
             }
         ));
-        let expected = row.payload.clone();
+        let expected = row.payload;
         drop(db);
         let mut db = Connection::open(path).expect("reopen");
         batch(&mut db).expect("second open");

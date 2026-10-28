@@ -1319,7 +1319,7 @@ pub async fn monitor_result(
             {
                 return Ok(None);
             }
-            Ok(monitor_response(submitted))
+            Ok(monitor_response(&submitted))
         })
         .await
 }
@@ -1351,12 +1351,12 @@ pub async fn monitor_late_result(
             let Some(submitted) = monitor_call(tx, &id, &operation)? else {
                 return Ok(None);
             };
-            Ok(monitor_response(submitted))
+            Ok(monitor_response(&submitted))
         })
         .await
 }
 fn monitor_response(
-    submitted: storage::RecordedCall,
+    submitted: &storage::RecordedCall,
 ) -> Option<crate::account_session_runtime::ProviderResponse> {
     use crate::account_session_runtime::ProviderResponse;
     let storage::Replay::Return(receipt) = submitted.replay() else {

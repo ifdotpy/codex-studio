@@ -220,10 +220,7 @@ impl RemoteTransportRepository {
             .optional()?;
         if let Some((saved_fingerprint, record)) = existing {
             if saved_fingerprint != fingerprint {
-                return Err(crate::request_results::RequestResultError::Conflict {
-                    id: id.clone(),
-                }
-                .into());
+                return Err(crate::request_results::RequestResultError::Conflict { id }.into());
             }
             let record: PendingAccessRequest = serde_json::from_str(&record)
                 .map_err(|_| invalid_outbound(server_id, request_id))?;
@@ -287,7 +284,7 @@ impl RemoteTransportRepository {
             server_id,
             request_id,
             fingerprint,
-            AccessReply {
+            &AccessReply {
                 outcome: AccessOutboundState::Complete,
                 value: Some(serde_json::value::to_raw_value(value)?),
             },
@@ -306,7 +303,7 @@ impl RemoteTransportRepository {
             server_id,
             request_id,
             fingerprint,
-            AccessReply {
+            &AccessReply {
                 outcome: AccessOutboundState::Redacted,
                 value: None,
             },
@@ -336,7 +333,7 @@ fn finish_access(
     server: &str,
     request: &str,
     signature: &str,
-    reply: AccessReply,
+    reply: &AccessReply,
 ) -> Result<(), StoreError> {
     let raw: String = tx.query_row(
         "SELECT record FROM runtime_access_outbound WHERE server=?1 AND request_id=?2 AND hash=?3",
@@ -349,7 +346,7 @@ fn finish_access(
     {
         return Err(invalid_outbound(server, request));
     }
-    settle_remote(tx, &pending.admission, None, &reply).map_err(request_result_error)?;
+    settle_remote(tx, &pending.admission, None, reply).map_err(request_result_error)?;
     tx.execute(
         "DELETE FROM runtime_access_outbound WHERE server=?1 AND request_id=?2 AND hash=?3",
         params![server, request, signature],

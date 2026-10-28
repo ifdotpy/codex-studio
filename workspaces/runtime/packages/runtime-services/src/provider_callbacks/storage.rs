@@ -230,7 +230,7 @@ pub(super) fn save_reply(
             payload: CallbackResponse {
                 identity: reply.identity.clone(),
                 body: CallbackBody::from(&reply.body),
-                card: owner.payload.card.clone(),
+                card: owner.payload.card,
                 tool_request: None,
                 unanswered: None,
                 delete_requested_at: None,
@@ -982,7 +982,7 @@ mod tests {
             .expect("same exact frame"),
             FrameAdmission::Written
         );
-        let mut changed = reply.clone();
+        let mut changed = reply;
         changed.body = ResponseBody::Result(json!({"native":false}));
         assert!(matches!(
             begin_frame(

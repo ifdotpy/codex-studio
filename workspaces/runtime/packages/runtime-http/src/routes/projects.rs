@@ -31,6 +31,7 @@ enum LocationAdmission {
     Replay(LocationResult),
     Pending(AdmittedRequest, String),
 }
+#[derive(Clone, Copy)]
 struct LocationRequest<'a> {
     raw_key: &'a str,
     root: &'a str,

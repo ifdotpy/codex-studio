@@ -2550,7 +2550,7 @@ mod tests {
             })
             .expect("owner");
         assert_eq!(serde_json::from_str::<Value>(&raw).expect("JSON"), original);
-        let mut malformed = original.clone();
+        let mut malformed = original;
         malformed["admittedRequest"]["unexpected"] = json!(true);
         db.execute(
             "UPDATE runtime_process_actions SET record=?1",

@@ -156,7 +156,7 @@ mod tests {
         value.as_object_mut().expect("object").remove("level");
         value
     }
-    fn put(db: &Connection, id: &str, signature: &str, value: Value) {
+    fn put(db: &Connection, id: &str, signature: &str, value: &Value) {
         db.execute(
             "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
             params![id, signature, value.to_string()],
@@ -194,25 +194,25 @@ mod tests {
             &db,
             "studio-errors:dismissed:http",
             "studio-error-dismissal",
-            json!({"at":2.5}),
+            &json!({"at":2.5}),
         );
         put(
             &db,
             "studio-errors:incident:http",
             "studio-error-incident-v1",
-            incident("http", Kind::HttpFailure),
+            &incident("http", Kind::HttpFailure),
         );
         put(
             &db,
             "studio-errors:incident:recovery",
             "studio-error-incident-v1",
-            incident("recovery", Kind::RecoveryFailed),
+            &incident("recovery", Kind::RecoveryFailed),
         );
         put(
             &db,
             "studio-errors:dismissed:monitors:rule",
             "studio-error-dismissal",
-            json!({"at":3.0}),
+            &json!({"at":3.0}),
         );
         run(&mut db).expect("migrate");
         let first = rows(&db);
@@ -250,13 +250,13 @@ mod tests {
             &db,
             "studio-errors:dismissed:first",
             "studio-error-dismissal",
-            json!({"at":2.5}),
+            &json!({"at":2.5}),
         );
         put(
             &db,
             "studio-errors:incident:bad",
             "unknown-signature",
-            json!({}),
+            &json!({}),
         );
         assert!(
             matches!(run(&mut db),Err(ReceiptMigrationError::Unclassifiable {table,key,signature}) if table==SOURCE && key=="studio-errors:incident:bad" && signature=="unknown-signature")

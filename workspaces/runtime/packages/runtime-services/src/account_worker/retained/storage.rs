@@ -622,11 +622,13 @@ fn validate_root(
     call: &Call,
 ) -> Result<Result<(), PortError>, WorkerError> {
     let floor = RequestResults::expired_before_ms(tx).map_err(result_error)?;
-    Ok(call
-        .identity()
-        .and_then(|identity| identity.validate(now_ms(), floor).map_err(identity_error)))
+    Ok(call.identity().and_then(|identity| {
+        identity
+            .validate(now_ms(), floor)
+            .map_err(|error| identity_error(&error))
+    }))
 }
-fn identity_error(error: studio_runtime_schema::persistence::RequestIdentityError) -> PortError {
+fn identity_error(error: &studio_runtime_schema::persistence::RequestIdentityError) -> PortError {
     use studio_runtime_schema::persistence::RequestIdentityError;
     match error {
         RequestIdentityError::Expired { .. } => PortError::Expired,
@@ -639,7 +641,7 @@ fn call_error(error: RequestResultError) -> Result<PortError, WorkerError> {
     match error {
         RequestResultError::Conflict { .. } => Ok(PortError::Identity),
         RequestResultError::Expired => Ok(PortError::Expired),
-        RequestResultError::Identity(error) => Ok(identity_error(error)),
+        RequestResultError::Identity(error) => Ok(identity_error(&error)),
         error @ (RequestResultError::Sql(_) | RequestResultError::Json(_)) => {
             Err(result_error(error))
         }

@@ -722,7 +722,6 @@ async fn persist_intent(
                     current
                         .dispatch
                         .admitted_request
-                        .clone()
                         .ok_or(Error::InvalidStoredState)?
                 } else {
                     crate::account_worker::retained::reserve_provider_call(

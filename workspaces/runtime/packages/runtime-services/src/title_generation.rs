@@ -1105,7 +1105,7 @@ mod tests {
         ]});
         assert_eq!(
             title_model(
-                &ModelCatalog::parse(catalog.clone()).expect("valid fixture catalog"),
+                &ModelCatalog::parse(catalog).expect("valid fixture catalog"),
                 &agent
             )
             .expect("model"),
