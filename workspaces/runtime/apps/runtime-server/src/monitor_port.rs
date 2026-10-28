@@ -2449,7 +2449,7 @@ mod tests {
             epoch: 0,
             account_key: "default".into(),
             connection_id: "connection".into(),
-            evidence: BTreeMap::new(),
+            evidence: BTreeMap::from([("rootRequestId".into(), json!(studio_runtime_schema::persistence::RequestIdentity::issue_root()))]),
         };
         let mut watch = starting_watch(root.path(), "watch");
         watch["status"] = json!("running");
@@ -3792,9 +3792,16 @@ mod tests {
         });
         let port = RetainedMonitorPort::new(Arc::clone(&store), Arc::new(NoSession));
         port.start_monitor("watch", 62.0).await.expect("own start");
-        tokio::time::timeout(Duration::from_secs(10), changed.notified())
-            .await
-            .expect("terminal commit");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                changed.notified().await;
+                let terminal = store.read_async("test/expired-status", |tx| {
+                    Ok::<_, studio_runtime_store::StoreError>(MonitorsRepository::get(tx, "watch")?
+                        .is_some_and(|watch| watch.value()["status"] == "failed"))
+                }).await.expect("read status");
+                if terminal { break; }
+            }
+        }).await.expect("terminal commit");
         let (watch, owner, count) = store.read_async("test/expired-preparation", |tx| {
             Ok::<_, studio_runtime_store::StoreError>((MonitorsRepository::get(tx,"watch")?.expect("watch"), AgentRepository::get(tx,&"owner".into())?.expect("owner"), tx.query_row("SELECT count(*) FROM runtime_events WHERE id='monitor:watch' AND kind='monitor_exit'",[],|row|row.get::<_,i64>(0))?))
         }).await.expect("terminal evidence");
