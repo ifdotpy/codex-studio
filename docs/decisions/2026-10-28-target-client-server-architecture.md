@@ -176,7 +176,8 @@ enum Grant { Full, Observe }                // Observe: read commands only
   Tailscale Serve from a tailnet address acts as `Owner`, as today (`middleware.rs`,
   `trusted`). Device keys and grants are for devices that connect directly.
 - A process on the server host can read the owner token through loopback. Agent shells
-  therefore have owner rights outside the agent tools.
+  therefore have owner rights outside the agent tools. This stays (owner decision,
+  2026-10-28).
 
 ### One command path
 
@@ -464,8 +465,6 @@ BEGIN SELECT RAISE(ABORT, 'invalid delivery state'); END;
   about 4 GB. Measure `dbstat` on an APFS clone before any analytics change.
 - **Ownership:** Sasha handed the typed storage work to Claude. Most other parts also
   change backend code that he owns (#37). Agree each part with him.
-- **Agent shells:** should agents lose the owner token on loopback? Agents with full
-  access can also change files and the database directly, so the gain is small.
 - **Codex turn start:** does Codex ignore a repeated `turn/start` with the same
   `clientUserMessageId` when the thread is idle? It duplicates input when a turn is
   active (`docs/orchestration.md`). Measure before the rule moves to `TargetDedupes`.
