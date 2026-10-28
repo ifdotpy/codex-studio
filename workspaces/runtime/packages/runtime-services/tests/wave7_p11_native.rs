@@ -219,6 +219,73 @@ fn reserve_case(db: &mut Connection, case: &Value) {
     reserve(&tx, &request, "attempt", 1234567.5, &Gate).expect("reserve");
     tx.commit().expect("commit");
 }
+
+#[tokio::test]
+async fn receipt_pivot_migrated_settings_resume_through_native_caller() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use studio_runtime_services::account_session_runtime::{
+        AccountSessionError, AccountSessionFuture, AccountSessionPort, ProviderRequest,
+    };
+    struct Broker(AtomicUsize);
+    impl AccountSessionPort for Broker {
+        fn provider_request<'a>(
+            &'a self,
+            _: ProviderRequest,
+        ) -> AccountSessionFuture<'a, SessionReceipt> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(AccountSessionError::Unknown) })
+        }
+    }
+    for status in ["acknowledged", "not_sent"] {
+        let root = tempfile::tempdir().expect("state");
+        drop(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("bootstrap"),
+        );
+        let case = &corpus()["actions"][0];
+        let request: Request = serde_json::from_value(case["request"].clone()).expect("request");
+        let scope = ConnectionScope {
+            account: "default".into(),
+            connection: "connection".into(),
+            generation: 1,
+        };
+        let params = json!({"threadId":"thread"});
+        let mut agent = case["after"].clone();
+        agent["startAttempt"]["modelSettings"] = json!({"operation":"attempt:settings", "requestId":request.request_id, "scope":scope, "method":"thread/settings/update", "params":params, "status":status});
+        let db = Connection::open(root.path().join("canvas.sqlite3")).expect("database");
+        db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL); CREATE TABLE runtime_native_action_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,receipt TEXT NOT NULL,outcome TEXT NOT NULL);").expect("source schema");
+        db.execute(
+            "INSERT INTO runtime_agents(id,record) VALUES('lead',?1)",
+            [agent.to_string()],
+        )
+        .expect("source agent");
+        db.execute(
+            "INSERT INTO runtime_native_action_receipts VALUES(?1,?2,?3,?4)",
+            rusqlite::params![
+                request.request_id,
+                case["row"][1].as_str().expect("signature"),
+                case["row"][2].to_string(),
+                case["row"][3].to_string()
+            ],
+        )
+        .expect("source action");
+        drop(db);
+        let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("migrate");
+        let broker = Broker(AtomicUsize::new(0));
+        let result =
+            update_action_settings(&store, &broker, &request, &ticket(), &scope, params).await;
+        if status == "acknowledged" {
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(broker.0.load(Ordering::SeqCst), 0);
+        } else {
+            assert!(matches!(result, Err(NativeError::Unknown)), "{result:?}");
+            assert_eq!(broker.0.load(Ordering::SeqCst), 1);
+        }
+    }
+}
 #[test]
 fn complete_python_native_admission_rows_match() {
     for case in corpus()["actions"].as_array().expect("actions") {
