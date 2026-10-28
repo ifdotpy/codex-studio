@@ -481,7 +481,7 @@ mod tests {
             .expect("volatile agent table creates");
         connection
             .execute(
-                "INSERT INTO runtime_agents VALUES('a',?1)",
+                "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
                 [
                     json!({"id":"a","provider":"codex","rootId":"a","name":"Agent","status":"running","epoch":2,
                 "inFlight":true,"turnId":"turn-1","lastAnswer":"",
