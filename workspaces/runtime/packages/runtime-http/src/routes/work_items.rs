@@ -6,7 +6,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use studio_runtime_services::event_write::{self, AnnotationWrite, EventWriteError, PlanWrite};
+use studio_runtime_services::event_write::{self, AnnotationWrite, EventWriteError};
 use studio_runtime_services::work_policy::{self, WorkPolicyError};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, Connection, WorkItemsRepository,
@@ -26,7 +26,6 @@ pub(crate) fn routes() -> RouteGroup {
             super::queue_write::queue_action,
         ),
         get("/api/plan", OperationStatus::Implemented, plan),
-        post("/api/plan", OperationStatus::Implemented, save_plan),
         post("/api/annotation", OperationStatus::Implemented, annotation),
         post(
             "/api/organization",
@@ -198,39 +197,6 @@ fn stored_error(error: WorkPolicyError) -> ApiError {
     }
 }
 
-pub(crate) async fn save_plan(
-    State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let agent_id = optional_string(&body, "agent")
-        .map(str::to_owned)
-        .unwrap_or_else(|| state.workspace_id.clone());
-    let expected_version = body
-        .get("version")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))?;
-    let text = required_string(&body, "text")?.to_owned();
-    let signature = request_signature(&body)?;
-    let input = PlanWrite {
-        agent_id,
-        request_id: optional_string(&body, "id").map(str::to_owned),
-        expected_version,
-        text,
-        signature,
-    };
-    let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let wake = state.event_wake.clone();
-    let result = store
-        .transaction_with_error(|connection| event_write::save_plan(connection, input))
-        .await
-        .map_err(write_error)?;
-    if result.event_inserted {
-        wake.notify_one();
-    }
-    let result = result.record;
-    Ok(Json(result))
-}
-
 pub(crate) async fn annotation(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
@@ -285,11 +251,6 @@ fn optional_string<'a>(body: &'a Value, field: &str) -> Option<&'a str> {
 fn required_string<'a>(body: &'a Value, field: &str) -> Result<&'a str, ApiError> {
     optional_string(body, field)
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))
-}
-
-fn request_signature(body: &Value) -> Result<String, ApiError> {
-    let bytes = serde_json::to_vec(body).map_err(|_| ApiError::internal())?;
-    Ok(studio_runtime_store::sha256_hex(&bytes))
 }
 
 pub(crate) fn python_operation_signature(body: &Value) -> Result<String, ApiError> {

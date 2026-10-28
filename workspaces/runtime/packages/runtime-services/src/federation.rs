@@ -28,10 +28,6 @@ pub async fn snapshot(store: &RuntimeStore) -> Result<Value, FederationError> {
         .await?)
 }
 
-pub async fn manage(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, FederationError> {
-    manage_with_origin(store, body, None).await
-}
-
 pub async fn manage_with_origin(
     store: Arc<RuntimeStore>,
     body: &Value,

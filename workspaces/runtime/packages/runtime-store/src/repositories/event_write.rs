@@ -1,4 +1,4 @@
-//! Atomic persistence primitives for plan and annotation requests.
+//! Atomic persistence primitives for event requests.
 
 use crate::CachedSql;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -6,16 +6,12 @@ use serde_json::Value;
 
 use super::sync_documents::{hash_payload, next_sequence};
 use crate::records::{
-    AgentId, AnnotationRecord, EventMetadataRecord, JsonRecord, PlanRecord, QueueEventId, Table,
+    AgentId, AnnotationRecord, EventMetadataRecord, JsonRecord, QueueEventId, Table,
 };
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{AgentRepository, QueueEvent, StoreError, StoreResult};
 
 const TABLES: &[TableRequirement] = &[
-    TableRequirement {
-        name: "runtime_plans",
-        columns: &["id", "record"],
-    },
     TableRequirement {
         name: "runtime_annotations",
         columns: &["id", "record"],
@@ -37,12 +33,12 @@ const TABLES: &[TableRequirement] = &[
 ];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: &[TABLES[3]],
+    tables: &[TABLES[2]],
     conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[TABLES[0], TABLES[1], TABLES[2], TABLES[4]],
+    bootstrap_tables: &[TABLES[0], TABLES[1], TABLES[3]],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -104,34 +100,6 @@ impl EventWriteRepository {
             params![record.to_string(), retry_id, agent_id],
         )?;
         Ok(Some(true))
-    }
-
-    pub fn plan(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
-        Ok(Table::<PlanRecord>::new(connection)
-            .get(&AgentId::from(id))?
-            .map(|record| record.value().clone()))
-    }
-
-    pub fn put_plan(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
-        if value.get("id").and_then(Value::as_str) != Some(id) {
-            return Err(crate::StoreError::InvalidStoredObject {
-                table: PlanRecord::TABLE,
-                id: id.to_owned(),
-            });
-        }
-        let record = PlanRecord::from_value(value.clone())?;
-        Table::<PlanRecord>::new(connection).put_at(&AgentId::from(id), &record)
-    }
-
-    pub fn validate_plan(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
-        if value.get("id").and_then(Value::as_str) != Some(id) {
-            return Err(crate::StoreError::InvalidStoredObject {
-                table: PlanRecord::TABLE,
-                id: id.to_owned(),
-            });
-        }
-        let record = PlanRecord::from_value(value.clone())?;
-        Table::<PlanRecord>::new(connection).validate_at(&AgentId::from(id), &record)
     }
 
     pub fn put_annotation(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {

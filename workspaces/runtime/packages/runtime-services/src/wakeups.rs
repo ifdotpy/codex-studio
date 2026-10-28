@@ -1,5 +1,5 @@
 //! Retire only notifications proven obsolete; preserve original payloads and ambiguous progress.
-use crate::continuation::{Decision, Snapshot, flag, patch, present, text};
+use crate::continuation::{Decision, Snapshot, flag, patch, text};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 const COMPLAINT_DONE: &str = "Every referenced complaint already has a response";
@@ -184,64 +184,5 @@ pub fn pending_batch(s: &Snapshot) -> Decision {
         }
         Some(event)
     }).collect();
-    d
-}
-/// Revalidate the exact ordered batch under the submission lock immediately before sending.
-pub fn reconcile_start(s: &Snapshot, event_ids: &[String]) -> Decision {
-    let attempt = &s.agent["startAttempt"];
-    if attempt.get("submitted") != Some(&Value::Bool(false))
-        || present(attempt, "turnId")
-        || present(attempt, "observedTurnId")
-        || attempt.get("epoch") != s.agent.get("epoch")
-        || attempt.get("events") != Some(&json!(event_ids))
-        || event_ids.is_empty()
-    {
-        return Decision::default();
-    }
-    let selected: Option<Vec<&Value>> = event_ids
-        .iter()
-        .map(|id| s.events.iter().find(|e| text(e, "id") == id))
-        .collect();
-    let Some(selected) = selected else {
-        return Decision::default();
-    };
-    if selected
-        .iter()
-        .any(|e| !matches!(text(e, "status"), "reserved" | "dispatching"))
-    {
-        return Decision::default();
-    }
-    let retired: Vec<&str> = selected
-        .iter()
-        .filter(|e| obsolete(s, e).is_some())
-        .map(|e| text(e, "id"))
-        .collect();
-    if retired.is_empty() {
-        return Decision::default();
-    }
-    let mut d = Decision::default();
-    for event in selected {
-        let mut e = event.clone();
-        let reason = obsolete(s, &e);
-        patch(
-            &mut e,
-            json!({"status":if reason.is_some(){"stored_only"}else{"pending"},"error":reason}),
-        );
-        d.events.push(e);
-    }
-    let mut agent = s.agent.clone();
-    patch(
-        &mut agent["startAttempt"],
-        json!({"notSubmittedReason":"Notifications resolved before native submission","retiredEvents":retired}),
-    );
-    let pending = s.events.iter().any(|e| text(e, "status") == "pending")
-        || d.events.iter().any(|e| text(e, "status") == "pending");
-    if !flag(attempt, "activeAtReservation") {
-        patch(
-            &mut agent,
-            json!({"inFlight":false,"status":if pending{"queued"}else{"waiting"}}),
-        );
-    }
-    d.agent = Some(agent);
     d
 }

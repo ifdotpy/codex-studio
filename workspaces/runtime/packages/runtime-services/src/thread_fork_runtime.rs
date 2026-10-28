@@ -133,21 +133,6 @@ pub async fn execute(
     store.transaction_with(move |tx| settle(tx, &receipt)).await
 }
 
-/// Dispatch a fork whose durable intent is owned by another workflow (for
-/// example context repair). The caller must persist the exact NativeRequest
-/// before invoking this function; this function never claims or retries it.
-/// A custom portable-history path is accepted only with turns excluded and goal
-/// continuation deferred, and its source thread may differ from the managed
-/// agent's current thread.
-pub async fn dispatch_reserved(
-    request: &NativeRequest,
-    session: &impl RetainedSession,
-    deadline: tokio::time::Instant,
-) -> Result<TransportReceipt> {
-    validate_request(request)?;
-    send(session, request, deadline).await
-}
-
 /// Submit a reserved fork through HttpState's shared retained-account broker.
 /// The caller persists the exact NativeRequest before calling this function;
 /// the broker commits its provider intent and checks the connection scope.

@@ -1772,10 +1772,6 @@
       "fingerprint": "139bd0b3a122af5d05130eaf829c224f00bb2a02fcf82143a45e56e755c4f044:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/event_write.rs",
-      "fingerprint": "66e997a7f4dccc742e3518b8d363324e055f90f22267f08b66d7b2b07ef0c59b:0"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/federation_effects.rs",
       "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:0"
     },

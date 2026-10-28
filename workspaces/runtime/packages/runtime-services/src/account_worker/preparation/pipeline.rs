@@ -1058,6 +1058,7 @@ async fn workspace_with_vm_action(
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn prepare(
     store: Arc<RuntimeStore>,
     resources: &PreparationResources,
