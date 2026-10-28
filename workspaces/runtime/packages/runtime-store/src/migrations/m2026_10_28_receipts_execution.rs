@@ -39,6 +39,23 @@ fn classify<T: strum::VariantNames>(
         signature: format!("{field}={value}"),
     })
 }
+fn classify_kind<T: for<'de> Deserialize<'de>>(
+    kind: &str,
+    source: &str,
+    id: &str,
+    field: &str,
+) -> Result<()> {
+    if T::deserialize(serde::de::value::StrDeserializer::<serde::de::value::Error>::new(kind))
+        .is_ok()
+    {
+        return Ok(());
+    }
+    Err(ReceiptMigrationError::Unclassifiable {
+        table: source.into(),
+        key: id.into(),
+        signature: format!("{field}={}", Value::String(kind.into())),
+    })
+}
 #[derive(Deserialize)]
 struct AdmissionRecord {
     admission: AdmittedRequest,
@@ -135,8 +152,8 @@ impl ReceiptFamilyMigration for ExecutionMigration {
                     if let Some(receipts) = record.get("receipts") {
                         let receipts = receipts.as_object().ok_or_else(invalid)?;
                         for (kind, receipt) in receipts {
-                            classify::<ExecutionReceiptKind>(
-                                &json!(kind),
+                            classify_kind::<ExecutionReceiptKind>(
+                                kind,
                                 source,
                                 &id,
                                 "receiptKind",
@@ -173,7 +190,7 @@ impl ReceiptFamilyMigration for ExecutionMigration {
                         [&id],
                         |r| r.get(0),
                     )?;
-                    classify::<ExecutionEffectKind>(&json!(kind), source, &id, "kind")?;
+                    classify_kind::<ExecutionEffectKind>(&kind, source, &id, "kind")?;
                     if record["kind"] != kind {
                         return Err(invalid());
                     }
