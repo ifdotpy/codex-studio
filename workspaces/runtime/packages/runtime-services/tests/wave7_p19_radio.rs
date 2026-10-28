@@ -538,14 +538,16 @@ async fn python_written_radio_corpus_and_restart_replay() {
 // across tables, then cross each operation's restart boundary once.
 async fn failpoints_rollback_then_restart(name: &str, tables: &[&str]) {
     let corpus = corpus();
-    let case = corpus
+    let mut case = corpus
         .cases
         .iter()
         .find(|case| case["name"] == name)
-        .expect("case");
+        .expect("case")
+        .clone();
     let root = tempfile::tempdir().expect("radio state directory");
     copy_template(&corpus, root.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    case["body"]["request_id"] = json!(studio_runtime_schema::persistence::RequestIdentity::issue_root());
     seed(&store, &case["before"]).await;
     let before = database_rows(&store);
     for table in tables {
@@ -555,7 +557,7 @@ async fn failpoints_rollback_then_restart(name: &str, tables: &[&str]) {
             Ok(())
         }).await.expect("failpoint");
         assert!(
-            run(std::sync::Arc::clone(&store), case).await.is_err(),
+            run(std::sync::Arc::clone(&store), &case).await.is_err(),
             "{name} {table} reached"
         );
         assert_eq!(
@@ -578,7 +580,7 @@ async fn failpoints_rollback_then_restart(name: &str, tables: &[&str]) {
             .expect("restart after rollback"),
     );
     assert_eq!(database_rows(&store), before, "rollback survives restart");
-    run(std::sync::Arc::clone(&store), case)
+    run(std::sync::Arc::clone(&store), &case)
         .await
         .expect("retry after rollback");
     let committed = database_rows(&store);
@@ -588,7 +590,7 @@ async fn failpoints_rollback_then_restart(name: &str, tables: &[&str]) {
             .await
             .expect("restart after commit"),
     );
-    run(std::sync::Arc::clone(&store), case)
+    run(std::sync::Arc::clone(&store), &case)
         .await
         .expect("retry after lost response");
     assert_eq!(
@@ -607,14 +609,14 @@ macro_rules! radio_failpoints {
     )+};
 }
 radio_failpoints! {
-    create_rollback_and_restart: "create" => ["runtime_agents", "runtime_rooms", "sync_entities", "runtime_operation_receipts"],
-    convert_rollback_and_restart: "convert" => ["runtime_projects", "runtime_agents", "sync_entities", "runtime_operation_receipts"],
-    stop_rollback_and_restart: "stop-pending" => ["runtime_events", "runtime_rooms", "sync_entities", "runtime_operation_receipts"],
+    create_rollback_and_restart: "create" => ["runtime_agents", "runtime_rooms", "sync_entities", "request_results"],
+    convert_rollback_and_restart: "convert" => ["runtime_projects", "runtime_agents", "sync_entities", "request_results"],
+    stop_rollback_and_restart: "stop-pending" => ["runtime_events", "runtime_rooms", "sync_entities", "request_results"],
     interrupt_rollback_and_restart: "interrupt" => ["runtime_rooms", "sync_entities"],
     floor_rollback_and_restart: "floor" => ["runtime_events", "runtime_rooms", "sync_entities"],
     binding_rollback_and_restart: "binding" => ["runtime_rooms", "sync_entities"],
     answer_rollback_and_restart: "answer" => ["runtime_chat_messages", "runtime_rooms", "sync_entities"],
-    send_rollback_and_restart: "send" => ["runtime_chat_messages", "runtime_rooms", "sync_entities", "runtime_operation_receipts"],
+    send_rollback_and_restart: "send" => ["runtime_chat_messages", "runtime_rooms", "sync_entities", "request_results"],
 }
 
 fn database_rows(store: &RuntimeStore) -> Vec<(String, Vec<Vec<SqlValue>>)> {
@@ -876,9 +878,14 @@ impl radio_runtime::RadioCreation for Creation {
         &mut self,
         _body: &Value,
         _path: &Path,
-        _ids: [AgentId; 2],
+        ids: [AgentId; 2],
     ) -> Result<[AgentRecord; 2], ProjectsError> {
-        Ok(self.0.clone())
+        let mut drafts = self.0.clone();
+        for (draft, id) in drafts.iter_mut().zip(ids) {
+            draft.id = id.clone();
+            draft.root_id = id;
+        }
+        Ok(drafts)
     }
     fn recheck(
         &mut self,
