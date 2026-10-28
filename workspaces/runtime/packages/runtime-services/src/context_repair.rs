@@ -11,16 +11,15 @@ use crate::account_session_runtime::{
     AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
     RequestCertainty,
 };
-use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use studio_runtime_schema::persistence::{ContextRepairPhase, RequestIdentity};
 use studio_runtime_store::{
     AgentRecord, ContextRepairRepository, RuntimeStore, StoreError, Transaction,
 };
 use thiserror::Error;
-use studio_runtime_schema::persistence::{ContextRepairPhase,RequestIdentity};
 
 pub const MAX_TURNS: usize = 1600;
 pub const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
@@ -93,7 +92,9 @@ fn register_source_terminal_receipt(
     if proof["threadId"] != thread || source["accountKey"] != account || proof["turnId"] != turn {
         return Err(RepairError::ReceiptHold);
     }
-    let attempt = repair["startAttemptSnapshot"]["id"].as_str().ok_or(RepairError::ReceiptHold)?;
+    let attempt = repair["startAttemptSnapshot"]["id"]
+        .as_str()
+        .ok_or(RepairError::ReceiptHold)?;
     ContextRepairRepository::save_terminal_provenance(tx, attempt, &record)?;
     Ok(())
 }
@@ -203,7 +204,9 @@ fn archive_previous_repair(agent: &mut Value) -> Result<(), RepairError> {
     if !previous.is_object() {
         return Ok(());
     }
-    if previous["phase"] == ContextRepairPhase::Completed.as_str() || studio_runtime_store::truthy(previous.get("rpcMethod")) {
+    if previous["phase"] == ContextRepairPhase::Completed.as_str()
+        || studio_runtime_store::truthy(previous.get("rpcMethod"))
+    {
         if agent
             .get("contextRepairHistory")
             .is_some_and(|history| !history.is_array())
@@ -1068,12 +1071,13 @@ pub async fn repair_idle_with_broker(
                         Some("preparing" | "submitted")
                     )
                 {
-                    current["contextRepair"]["phase"] =
-                        json!(if current["contextRepair"]["phase"] == ContextRepairPhase::Submitted.as_str() {
-                            "unknown"
-                        } else {
-                            "failed"
-                        });
+                    current["contextRepair"]["phase"] = json!(if current["contextRepair"]["phase"]
+                        == ContextRepairPhase::Submitted.as_str()
+                    {
+                        ContextRepairPhase::Unknown
+                    } else {
+                        ContextRepairPhase::Failed
+                    });
                     current["contextRepair"]["error"] = json!(error_message);
                     ContextRepairRepository::put_agent(tx, &current)?;
                 }
@@ -1191,15 +1195,17 @@ async fn repair_idle_with_broker_inner(
         }
         let operation_id = RequestIdentity::issue_root();
         archive_previous_repair(&mut agent)?;
+        let start_snapshot=if let Some(attempt)=agent.get("startAttempt").filter(|value|value.is_object()) {attempt.clone()} else if let Some(id)=agent["activeExecution"]["attemptId"].as_str() {studio_runtime_store::ExecutionHistoryRepository::attempt(tx,id)?.unwrap_or(Value::Null)} else {Value::Null};
         let repair = json!({
             "id":operation_id,
+            "rootRequestId":operation_id,
             "agent":&transaction_agent_id,
             "source":{"id":transaction_source_id,"epoch":epoch,"accountKey":account,"threadId":agent["threadId"]},
             "phase":ContextRepairPhase::Preparing,
             "created":SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| RepairError::Invalid("clock"))?.as_secs_f64(),
             "checkedEventIds":events.iter().filter_map(|e| e["id"].as_str()).collect::<Vec<_>>(),
             "compactions":agent.get("compactions").and_then(Value::as_u64).unwrap_or(0),
-            "startAttemptSnapshot":agent.get("startAttempt").cloned().unwrap_or(Value::Null),
+            "startAttemptSnapshot":start_snapshot,
             "connectionId":scope.connection,
             "connectionGeneration":scope.generation
         });
@@ -1523,6 +1529,9 @@ async fn repair_idle_with_broker_inner(
         request: fork_operation,
     };
     let request = crate::native_actions::NativeRequest {
+        root_request_id: operation_id.clone(),
+        admitted_request: serde_json::from_value(agent["contextRepair"]["admittedRequest"].clone())
+            .map_err(|_| RepairError::ReceiptHold)?,
         ticket,
         method: "thread/fork".to_owned(),
         params: fork_params,
@@ -1661,28 +1670,20 @@ async fn broker_read(
     broker: &dyn AccountSessionPort,
     request: BrokerRead<'_>,
 ) -> Result<Value, RepairError> {
-    broker_call(
-        broker,
-        request.scope,
-        request.actor,
-        &format!("context-repair:{}:{}", request.operation, request.suffix),
-        request.method,
-        request.params,
-        request.deadline,
-    )
-    .await
-}
-async fn broker_call(
-    broker: &dyn AccountSessionPort,
-    scope: &ConnectionScope,
-    actor: &crate::account_worker::retained::RequestActor,
-    operation: &str,
-    method: studio_runtime_providers::Method,
-    params: Value,
-    deadline: Instant,
-) -> Result<Value, RepairError> {
+    let BrokerRead {
+        scope,
+        actor,
+        operation: root,
+        suffix,
+        method,
+        params,
+        deadline,
+    } = request;
+    let operation = format!("context-repair:{root}:{suffix}");
     match broker
         .provider_request(ProviderRequest {
+            root_request_id: String::new(),
+            admitted_request: None,
             account: scope.account.clone(),
             operation: operation.to_owned(),
             actor: Some(actor.clone()),
@@ -1854,6 +1855,8 @@ mod native_queue_admission_tests {
                     scope: scope.clone(),
                     expected_scope: Some(scope.clone()),
                     operation: request.operation.clone(),
+                    root_request_id: request.root_request_id.clone(),
+                    admitted_request: request.admitted_request.clone(),
                     actor: request.actor,
                     transfer: None,
                     deleted_actor_session: None,
