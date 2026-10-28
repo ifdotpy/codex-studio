@@ -21,6 +21,7 @@ pub(super) const SOURCES: &[&str] = &[
     "messages",
     "runtime_chat_messages",
     "runtime_workspace_operations",
+    "runtime_event_meta",
 ];
 const SOURCE: &str = "runtime_operation_receipts";
 /// Persistent count of classified completed settings markers without a replay body.
@@ -64,6 +65,9 @@ impl ReceiptFamilyMigration for Family {
         }
         if source == "runtime_workspace_operations" {
             return move_workspace_operations(tx, checkpoint);
+        }
+        if source == "runtime_event_meta" {
+            return move_remote_event_identities(tx, checkpoint);
         }
         if source != SOURCE {
             return move_messages(tx, source, checkpoint);
@@ -175,6 +179,87 @@ impl ReceiptFamilyMigration for Family {
         }
         Ok(())
     }
+}
+
+fn move_remote_event_identities(
+    tx: &Transaction<'_>,
+    checkpoint: &MigrationCheckpoint,
+) -> Result<MigrationCheckpoint> {
+    const TABLE: &str = "runtime_event_meta";
+    let rows = read_source_batch(
+        tx,
+        TABLE,
+        checkpoint,
+        &ReceiptProjection {
+            id: "source.id",
+            signature: "''",
+            result: "source.record",
+        },
+        "1",
+    )?;
+    let has_outbox = crate::receipt_migration_contract::source_exists(tx, "runtime_server_outbox")?;
+    let mut next = checkpoint.clone();
+    next.status = if rows.is_empty() {
+        MigrationStatus::Complete
+    } else {
+        MigrationStatus::Running
+    };
+    for row in rows {
+        let invalid = || unclassifiable(TABLE, &row.id, &row.signature);
+        let mut metadata: Value = row.json(TABLE)?;
+        if !metadata.is_object() {
+            return Err(invalid());
+        }
+        if let Some(root) = metadata.get("remoteRequestId") {
+            if !root.is_null()
+                && root
+                    .as_str()
+                    .is_none_or(|root| uuid::Uuid::parse_str(root).is_err())
+            {
+                return Err(invalid());
+            }
+            next.cursor = row.rowid;
+            continue;
+        }
+        let mut proven = Vec::new();
+        for (operation, action) in [
+            ("input", "input"),
+            ("anchor-input", "input"),
+            ("event", "event"),
+        ] {
+            let wire = uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_URL,
+                format!("studio-cross-server:{operation}:{}", row.id).as_bytes(),
+            )
+            .to_string();
+            let source: Option<(Option<String>, Option<String>)> = if has_outbox {
+                tx.query_row("SELECT CASE WHEN json_valid(body) THEN json_extract(body,'$.requestId') END,CASE WHEN json_valid(body) THEN json_extract(body,'$.action') END FROM runtime_server_outbox WHERE id=?1",[&wire],|r|Ok((r.get(0)?,r.get(1)?))).optional()?
+            } else {
+                None
+            };
+            let source_matches = source.as_ref().is_some_and(|(root, kind)| {
+                root.as_deref() == Some(wire.as_str()) && kind.as_deref() == Some(action)
+            });
+            let cached:Option<(Option<String>,Option<String>)>=tx.query_row("SELECT CASE WHEN json_valid(json_extract(result,'$.reply.body')) THEN json_extract(json_extract(result,'$.reply.body'),'$.requestId') END,CASE WHEN json_valid(json_extract(result,'$.reply.body')) THEN json_extract(json_extract(result,'$.reply.body'),'$.action') END FROM request_results WHERE id=?1 AND json_type(result,'$.reply.server')='text'",[&wire],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let cached_matches = cached.as_ref().is_some_and(|(root, kind)| {
+                root.as_deref() == Some(wire.as_str()) && kind.as_deref() == Some(action)
+            });
+            if source_matches || cached_matches {
+                proven.push(wire);
+            }
+        }
+        metadata["remoteRequestId"] = if proven.len() == 1 {
+            json!(proven[0])
+        } else {
+            Value::Null
+        };
+        tx.execute(
+            "UPDATE runtime_event_meta SET record=?1 WHERE rowid=?2",
+            params![metadata.to_string(), row.rowid],
+        )?;
+        next.cursor = row.rowid;
+    }
+    Ok(next)
 }
 
 fn discard_completed_reply(
@@ -1725,5 +1810,153 @@ mod tests {
             0
         );
         migrate(&mut db);
+    }
+
+    #[test]
+    fn receipts_requests_remote_metadata_keeps_proven_wire_v5_after_rollback_and_reopen() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute_batch("CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT)")
+            .expect("metadata");
+        let mut expected = Vec::new();
+        for (operation, action) in [
+            ("input", "input"),
+            ("anchor-input", "input"),
+            ("event", "event"),
+        ] {
+            let id = format!("old-{operation}");
+            let wire = uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_URL,
+                format!("studio-cross-server:{operation}:{id}").as_bytes(),
+            )
+            .to_string();
+            let body =
+                json!({"requestId":wire,"action":action,"payload":{"text":"Original"}}).to_string();
+            db.execute("INSERT INTO runtime_event_meta VALUES(?1,'{}')", [&id])
+                .expect("old event");
+            db.execute(
+                "INSERT INTO runtime_server_outbox VALUES(?1,?2)",
+                params![wire, body],
+            )
+            .expect("retained transport authority");
+            expected.push((id, wire, body));
+        }
+        batch_source(&mut db, "runtime_event_meta", false);
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_event_meta LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .expect("rollback");
+        assert_eq!(raw, "{}");
+        migrate(&mut db);
+        migrate(&mut db);
+        for (id, wire, body) in expected {
+            let raw: String = db
+                .query_row(
+                    "SELECT record FROM runtime_event_meta WHERE id=?1",
+                    [&id],
+                    |r| r.get(0),
+                )
+                .expect("metadata");
+            let meta: Value = serde_json::from_str(&raw).expect("meta JSON");
+            assert_eq!(meta["remoteRequestId"], wire);
+            assert_eq!(
+                uuid::Uuid::parse_str(meta["remoteRequestId"].as_str().expect("root"))
+                    .expect("UUID")
+                    .get_version_num(),
+                5
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT body FROM runtime_server_outbox WHERE id=?1",
+                    [wire],
+                    |r| r.get::<_, String>(0)
+                )
+                .expect("same request"),
+                body
+            );
+        }
+    }
+
+    #[test]
+    fn receipts_requests_remote_metadata_accepts_cached_proof_and_holds_unprovable_ids() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute_batch("CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT);INSERT INTO runtime_event_meta VALUES('cached','{}');INSERT INTO runtime_event_meta VALUES('missing','{}');INSERT INTO runtime_event_meta VALUES('ambiguous','{}');").expect("metadata");
+        let wire = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            b"studio-cross-server:event:cached",
+        )
+        .to_string();
+        let body = json!({"requestId":wire,"action":"event","payload":{}}).to_string();
+        let reply = crate::multi_server_delivery::SavedRemoteReply {
+            principal: None,
+            server: Some("peer".into()),
+            actor: None,
+            body: Some(body),
+            response: crate::multi_server_delivery::RemoteReply {
+                request_id: wire.clone(),
+                outcome: studio_runtime_schema::persistence::RemoteOutcome::Applied,
+                value: None,
+                error: None,
+                waiting_for: None,
+            },
+        };
+        let tx = db.transaction().expect("transaction");
+        import_result(
+            &tx,
+            &wire,
+            SIGNATURE,
+            &ResultEnvelope {
+                actor: None,
+                reply,
+                references: Vec::new(),
+            },
+            CUTOVER,
+        )
+        .expect("completed outgoing proof");
+        tx.commit().expect("proof commit");
+        for operation in ["input", "anchor-input"] {
+            let root = uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_URL,
+                format!("studio-cross-server:{operation}:ambiguous").as_bytes(),
+            )
+            .to_string();
+            db.execute(
+                "INSERT INTO runtime_server_outbox VALUES(?1,?2)",
+                params![
+                    root,
+                    json!({"requestId":root,"action":"input","payload":{}}).to_string()
+                ],
+            )
+            .expect("conflicting historical authorities");
+        }
+        migrate(&mut db);
+        migrate(&mut db);
+        for (id, expected) in [
+            ("cached", Some(wire.as_str())),
+            ("missing", None),
+            ("ambiguous", None),
+        ] {
+            let raw: String = db
+                .query_row(
+                    "SELECT record FROM runtime_event_meta WHERE id=?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .expect("meta");
+            let meta: Value = serde_json::from_str(&raw).expect("JSON");
+            assert!(
+                meta.get("remoteRequestId").is_some(),
+                "old IDs never become fresh admission"
+            );
+            assert_eq!(meta["remoteRequestId"].as_str(), expected);
+        }
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                .get::<_, i64>(0))
+                .expect("no new admission or effect"),
+            1
+        );
     }
 }
