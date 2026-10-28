@@ -29,8 +29,6 @@ pub use recovery::{
     revalidate_unresolved_context_tool_receipts,
 };
 use serde_json::{Value, json};
-#[cfg(test)]
-pub(crate) use storage::reply_key;
 pub use storage::{
     CallbackBody, CallbackOwner, CallbackResponse, DeliveryOutcome, FrameAdmission,
     admit_callback_request, begin_frame, bind_journal, callback_admission, callback_origin_key,

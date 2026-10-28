@@ -1,24 +1,21 @@
 //! A thread request whose `submitted` commit returned but which was never
 //! written must not hold its agent forever, and must never be sent again.
 use super::*;
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus};
 
-/// Unresolved thread request receipts of the account.
-async fn unresolved_thread_receipts(state: &State) -> Vec<String> {
-    state
-        .bridge
-        .run(|store| async move {
-            let connection = store.test_reader()?;
-            let mut statement = connection.prepare(
-                "SELECT r.id FROM runtime_operation_receipts r WHERE r.id GLOB 'account-worker:account:default:*:thread/*:submitted' \
-                 AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved')",
-            )?;
-            let ids = statement
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(ids)
-        })
-        .await
-        .unwrap()
+/// Outstanding account thread requests, selected from the pending provider outbox.
+async fn unresolved_thread_obligations(state: &State) -> Vec<String> {
+    state.bridge.run(|store|async move {
+        let db=store.test_reader()?;
+        let mut query=db.prepare("SELECT id,payload FROM runtime_outbox WHERE account=?1 AND kind=?2 AND status IN (?3,?4,?5) ORDER BY id")?;
+        let rows=query.query_map(rusqlite::params!["default",OutboxKind::ProviderCall,OutboxStatus::Pending,OutboxStatus::Submitted,OutboxStatus::Unknown],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
+        let mut operations=Vec::new();
+        for (id,raw) in rows {
+            let payload:store::ProviderCall=serde_json::from_str(&raw).map_err(StoreError::from)?;
+            if matches!(payload,store::ProviderCall::Account(call) if matches!(call.context.method,Method::ThreadStart|Method::ThreadResume)) {operations.push(id);}
+        }
+        Ok(operations)
+    }).await.unwrap()
 }
 
 /// Commit the agent's thread request `submitted` receipt and stop the worker
@@ -33,7 +30,7 @@ async fn commit_thread_request_without_writing(state: &State, worker: &AccountHa
     .await
     .expect("the thread request's submitted commit returns");
     *state.bridge.faults.pause_after_operation.lock().unwrap() = None;
-    assert_eq!(unresolved_thread_receipts(state).await.len(), 1);
+    assert_eq!(unresolved_thread_obligations(state).await.len(), 1);
 }
 
 /// What a send does: wake the agent and queue a message of `kind`.
@@ -77,7 +74,7 @@ async fn shutdown_settles_a_committed_thread_request_it_never_wrote() {
     release.await.unwrap();
     assert!(peer.writes.try_recv().is_err(), "nothing was written");
     assert!(
-        unresolved_thread_receipts(&state).await.is_empty(),
+        unresolved_thread_obligations(&state).await.is_empty(),
         "the unwritten request is settled as not sent"
     );
     assert_eq!(state.event_status("input").await, "pending");
@@ -125,7 +122,7 @@ async fn unwritten_thread_receipt_after_restart(shape: Orphan) {
     commit_thread_request_without_writing(&state, &worker).await;
     worker.task.abort();
     assert!(worker.completion().await.is_err());
-    let orphan = unresolved_thread_receipts(&state).await;
+    let orphan = unresolved_thread_obligations(&state).await;
     let agent_id = state.agent.clone();
     let epoch = state.epoch;
     state
@@ -169,7 +166,7 @@ async fn unwritten_thread_receipt_after_restart(shape: Orphan) {
     let mut replacement = next.worker(bridge).await;
     worker_barrier(&replacement).await;
     if shape == Orphan::MessageBeforeRestart {
-        assert!(unresolved_thread_receipts(&state).await.is_empty());
+        assert!(unresolved_thread_obligations(&state).await.is_empty());
         assert!(state.record().await["startOutcomeHold"].is_null());
     } else {
         let held = state.record().await;
@@ -186,7 +183,7 @@ async fn unwritten_thread_receipt_after_restart(shape: Orphan) {
             next.writes.try_recv().is_err(),
             "nothing is sent while held"
         );
-        assert_eq!(unresolved_thread_receipts(&state).await, orphan);
+        assert_eq!(unresolved_thread_obligations(&state).await, orphan);
         send_message(&state, "continue-message", "user").await;
     }
 
@@ -220,7 +217,7 @@ async fn unwritten_thread_receipt_after_restart(shape: Orphan) {
         );
         assert!(!wire.value["params"]["input"].to_string().contains("second"));
     }
-    assert!(unresolved_thread_receipts(&state).await.is_empty());
+    assert!(unresolved_thread_obligations(&state).await.is_empty());
     replacement.shutdown().await.unwrap();
 }
 
@@ -266,8 +263,8 @@ async fn unwritten_thread_start_stays_held_after_a_message() {
     commit_thread_request_without_writing(&state, &worker).await;
     worker.task.abort();
     assert!(worker.completion().await.is_err());
-    let orphan = unresolved_thread_receipts(&state).await;
-    assert!(orphan[0].ends_with(":thread/start:submitted"), "{orphan:?}");
+    let orphan = unresolved_thread_obligations(&state).await;
+    assert!(orphan[0].ends_with(":thread/start"), "{orphan:?}");
 
     let mut bridge = StoreBridge::new(state.bridge.store.clone()).await.unwrap();
     bridge.faults = state.bridge.faults.clone();
@@ -278,6 +275,6 @@ async fn unwritten_thread_start_stays_held_after_a_message() {
     state.wake(&replacement).await;
     worker_barrier(&replacement).await;
     assert!(next.writes.try_recv().is_err(), "nothing is sent");
-    assert_eq!(unresolved_thread_receipts(&state).await, orphan);
+    assert_eq!(unresolved_thread_obligations(&state).await, orphan);
     replacement.shutdown().await.unwrap();
 }

@@ -65,6 +65,14 @@ pub enum MonitorError {
     Io(#[from] std::io::Error),
 }
 
+impl From<studio_runtime_schema::persistence::RequestIdentityError> for MonitorError {
+    fn from(error: studio_runtime_schema::persistence::RequestIdentityError) -> Self {
+        Self::Store(studio_runtime_store::StoreError::RequestResult(
+            error.into(),
+        ))
+    }
+}
+
 impl MonitorError {
     /// A failure at the durable store boundary, retryable or not.
     pub fn store_failure_for_task(&self) -> bool {

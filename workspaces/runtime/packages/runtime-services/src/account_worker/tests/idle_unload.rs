@@ -1008,6 +1008,8 @@ async fn unrelated_request_in_flight(
     let method = adapter.diagnostics_method();
     let port = worker.retained_session();
     let call = SessionRequest {
+        root_request_id: String::new(),
+        admitted_request: None,
         scope: port.scope().clone(),
         expected_scope: Some(port.scope().clone()),
         operation: format!("{DIAGNOSTICS_OPERATION_PREFIX}{}", method.as_str()),
@@ -1187,6 +1189,8 @@ async fn a_thread_parked_by_its_own_request_unloads_when_that_request_finishes()
     .await;
     let port = worker.retained_session();
     let history = SessionRequest {
+        root_request_id: String::new(),
+        admitted_request: None,
         scope: port.scope().clone(),
         expected_scope: None,
         operation: "history-of-idle-lead".into(),

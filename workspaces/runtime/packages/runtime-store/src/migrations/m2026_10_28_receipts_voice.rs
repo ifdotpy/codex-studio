@@ -93,7 +93,22 @@ fn prior(
     {
         return Err(invalid());
     }
+    if call.deleted_actor_session.as_deref()
+        != operation
+            .starts_with("voice:delete-stop:")
+            .then_some(session.session_id.as_str())
+    {
+        return Err(invalid());
+    }
     session.epoch = actor.epoch;
+    let _root = crate::receipt_migration_contract::hydrate_source_root(
+        tx,
+        SOURCES[0],
+        &id,
+        &signature,
+        "result",
+        "$.call.root_request_id",
+    )?;
     session.admitted_request = Some(admitted_owner_token(
         &format!("{prefix}:result"),
         &call.fingerprint(&call.scope.account, call.method.as_str()),
@@ -575,8 +590,12 @@ mod tests {
         let path = dir.path().join("test.db");
         let mut db = Connection::open(&path).expect("database");
         fixture(&db);
-        for n in 0..=MIGRATION_BATCH_ROWS {
-            insert(&db, n, Some(VoiceStopOutcome::Unknown));
+        {
+            let setup = db.transaction().expect("fixture transaction");
+            for n in 0..=MIGRATION_BATCH_ROWS {
+                insert(&setup, n, Some(VoiceStopOutcome::Unknown));
+            }
+            setup.commit().expect("fixture commit");
         }
         assert_eq!(batch(&mut db).expect("first batch").cursor, 500);
         {
@@ -655,6 +674,72 @@ mod tests {
             Outbox::pending::<Value>(&db, OutboxKind::VoiceStop, 2000, 500)
                 .expect("selector")
                 .is_empty()
+        );
+    }
+    #[test]
+    fn receipts_voice_delete_priority_and_new_reservation_keep_final_tokens() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        insert(&db, 0, None);
+        insert(&db, 1, None);
+        let operation = "voice:delete-stop:session-0";
+        let key = format!("account-worker:{}", transport_key("account", operation));
+        let call: Call = Call {
+            root_request_id: String::new(),
+            admitted_request: None,
+            scope: ConnectionScope {
+                account: "account".into(),
+                connection: "1".into(),
+                generation: 1,
+            },
+            operation: operation.into(),
+            actor: Some(RequestActor {
+                agent: "agent-0".into(),
+                epoch: 1,
+            }),
+            transfer: None,
+            deleted_actor_session: Some("session-0".into()),
+            method: Method::ThreadRealtimeStop,
+            params: json!({"threadId":"thread"}),
+        };
+        db.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)",
+            params![format!("{key}:submitted"), json!({"call":call}).to_string()],
+        )
+        .expect("delete admission");
+        batch(&mut db).expect("migrate");
+        let old: OutboxRow<VoiceStopPayload> = Outbox::get(&db, "agent-delete-voice:agent-0:1")
+            .expect("read")
+            .expect("old obligation");
+        assert_eq!(old.status, OutboxStatus::Unknown);
+        assert_eq!(
+            old.payload.voice_end_sessions[0]
+                .admitted_request
+                .as_ref()
+                .expect("original token")
+                .id(),
+            format!("{key}:result")
+        );
+        assert!(old.payload.voice_end_held_uncertain.is_empty());
+        let fresh: OutboxRow<VoiceStopPayload> = Outbox::get(&db, "agent-delete-voice:agent-1:1")
+            .expect("read")
+            .expect("pending");
+        let token = fresh.payload.voice_end_sessions[0]
+            .admitted_request
+            .as_ref()
+            .expect("reserved");
+        let provider: OutboxRow<Value> = Outbox::get(
+            &db,
+            &transport_key("account", "voice:delete-stop:session-1"),
+        )
+        .expect("read")
+        .expect("provider reserve");
+        assert_eq!(provider.request_id.as_deref(), Some(token.id()));
+        assert_eq!(provider.payload["payload"]["admitted"], json!(token));
+        assert!(provider.payload["payload"]["request"].is_null());
+        assert_eq!(
+            provider.payload["payload"]["call"]["root_request_id"],
+            fresh.payload.root_request_id
         );
     }
 }

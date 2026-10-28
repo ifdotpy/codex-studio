@@ -72,8 +72,8 @@ async fn receipt_cutover_enum_checks_match_owners_on_fresh_and_reopened_schema()
     let root = tempfile::tempdir().expect("state");
     let mut first = None;
     for _ in 0..2 {
-        drop(RuntimeStore::open(Some(root.path())).await.expect("open"));
-        let mut db = Connection::open(root.path().join("canvas.sqlite3")).expect("database");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("open");
+        let db = Connection::open(root.path().join("canvas.sqlite3")).expect("database");
         enum_column::<EventKind>(&db, "runtime_events", "kind");
         enum_column::<EventStatus>(&db, "runtime_events", "status");
         enum_column::<MigrationStatus>(&db, "runtime_payload_migrations", "status");
@@ -105,7 +105,7 @@ async fn receipt_cutover_enum_checks_match_owners_on_fresh_and_reopened_schema()
         } else {
             first = Some(ddl);
         }
-        let tx = db.transaction().expect("validation witness");
+        let result = store.transaction(|tx| {
         tx.execute_batch("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('enum-witness','a','user','','pending',1,0); INSERT INTO runtime_tool_requests(id,record) VALUES('managed-enum','{\"id\":\"managed-enum\",\"kind\":\"managed_tool\",\"stage\":\"queued\",\"agent\":\"a\",\"admitted\":{\"id\":\"request\"}}');").expect("canonical variants");
         assert!(
             tx.execute(
@@ -124,6 +124,57 @@ async fn receipt_cutover_enum_checks_match_owners_on_fresh_and_reopened_schema()
             .expect("canonical status codec"),
             ToolRequestStatus::Queued
         );
-        tx.rollback().expect("no domain changes");
+        Err::<(), _>(studio_runtime_store::StoreError::RecordContract("rollback enum witness"))
+        }).await;
+        assert!(matches!(
+            result,
+            Err(studio_runtime_store::StoreError::RecordContract(
+                "rollback enum witness"
+            ))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn receipt_cutover_old_reply_matches_after_startup_and_second_open() {
+    let root = tempfile::tempdir().expect("state");
+    drop(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("bootstrap old fixture"),
+    );
+    let reply = serde_json::json!({"status":"updated","revision":"original-revision","capabilities":{"queue":true}});
+    let db = Connection::open(root.path().join("canvas.sqlite3")).expect("old database");
+    db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);").expect("pre-cutover markers and source");
+    db.execute("INSERT INTO runtime_operation_receipts VALUES('queue:old-request','original-signature',?1)",[reply.to_string()]).expect("old exact reply");
+    drop(db);
+    let mut first = None;
+    for _ in 0..2 {
+        drop(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("startup cutover"),
+        );
+        let db = Connection::open(root.path().join("canvas.sqlite3")).expect("new database");
+        let saved: (String, String, i64) = db
+            .query_row(
+                "SELECT signature,result,created FROM request_results WHERE id='queue:old-request'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("ordinary result");
+        assert_eq!(saved.0, "original-signature");
+        let envelope: serde_json::Value = serde_json::from_str(&saved.1).expect("envelope");
+        assert_eq!(
+            envelope,
+            serde_json::json!({"actor":null,"reply":reply,"references":[]})
+        );
+        assert!(saved.2 > 0);
+        if let Some(previous) = &first {
+            assert_eq!(&saved, previous);
+        } else {
+            first = Some(saved);
+        }
+        assert!(!db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='runtime_operation_receipts')",[],|row|row.get::<_,bool>(0)).expect("old table absent"));
     }
 }

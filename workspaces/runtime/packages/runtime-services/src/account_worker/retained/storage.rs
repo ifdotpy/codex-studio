@@ -57,16 +57,10 @@ impl TransportRequestExt for TransportRequest {
 
 type RetainedRow = OutboxRow<store::ProviderCall>;
 fn outbox_error(error: studio_runtime_store::outbox::OutboxError) -> WorkerError {
-    match error {
-        studio_runtime_store::outbox::OutboxError::Sql(error) => WorkerError::Store(error.into()),
-        studio_runtime_store::outbox::OutboxError::Json(error) => WorkerError::Store(error.into()),
-        studio_runtime_store::outbox::OutboxError::Conflict(id) => {
-            WorkerError::PreparationRefused(format!("retained-session/identity-changed: {id}"))
-        }
-    }
+    WorkerError::Store(error.into())
 }
 fn result_error(error: studio_runtime_store::request_results::RequestResultError) -> WorkerError {
-    WorkerError::PreparationRefused(error.to_string())
+    WorkerError::Store(error.into())
 }
 fn row(tx: &rusqlite::Connection, key: &str) -> Result<Option<RetainedRow>, WorkerError> {
     Outbox::get(tx, key).map_err(outbox_error)
@@ -632,7 +626,7 @@ pub(super) fn replay_in_transaction(
                 studio_runtime_schema::persistence::RequestIdentityError::Expired { .. } => {
                     PortError::Expired
                 }
-                studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7
+                studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7(_)
                 | studio_runtime_schema::persistence::RequestIdentityError::FutureTimestamp {
                     ..
                 } => PortError::Invalid,
@@ -721,7 +715,7 @@ pub(super) fn replay_recorded(
                 studio_runtime_schema::persistence::RequestIdentityError::Expired { .. } => {
                     PortError::Expired
                 }
-                studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7
+                studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7(_)
                 | studio_runtime_schema::persistence::RequestIdentityError::FutureTimestamp {
                     ..
                 } => PortError::Invalid,
@@ -858,11 +852,19 @@ pub(super) async fn submitted(
                 Ok(identity) => identity,
                 Err(error) => return Ok(Err(error)),
             };
-            let admitted = match RequestResults::admit(tx, &identity, &call.signature(), now_ms())
-                .map_err(result_error)?
-            {
-                Admission::Fresh(admitted) => admitted,
-                Admission::Replay(_) => return Ok(Err(PortError::Unknown)),
+            let admitted = match RequestResults::admit(tx, &identity, &call.signature(), now_ms()) {
+                Ok(Admission::Fresh(admitted)) => admitted,
+                Ok(Admission::Replay(_)) => return Ok(Err(PortError::Unknown)),
+                Err(studio_runtime_store::request_results::RequestResultError::Conflict {
+                    ..
+                }) => return Ok(Err(PortError::Identity)),
+                Err(studio_runtime_store::request_results::RequestResultError::Identity(
+                    studio_runtime_schema::persistence::RequestIdentityError::Expired { .. },
+                )) => return Ok(Err(PortError::Expired)),
+                Err(studio_runtime_store::request_results::RequestResultError::Identity(_)) => {
+                    return Ok(Err(PortError::Invalid));
+                }
+                Err(error) => return Err(result_error(error)),
             };
             let mut reserved = call.clone();
             reserved.admitted_request = Some(admitted.clone());
@@ -876,6 +878,12 @@ pub(super) async fn submitted(
         if row.status != OutboxStatus::Pending {
             return Ok(Err(PortError::Unknown));
         }
+        if request.generation != prior.call.scope.generation
+            || row.generation != i64::try_from(request.generation).ok()
+        {
+            return Ok(Err(PortError::Unknown));
+        }
+
         if let Some(original) = &prior.request {
             if retry_ticket.as_ref() != Some(&original.recovered().ticket)
                 || request.recovered().ticket != original.recovered().ticket
@@ -992,15 +1000,37 @@ fn settle(
     }
     if payload.call.method == Method::ThreadStart
         && let RequestResult::Reply(reply) = &outcome.result
-        && let Some(thread) = reply["thread"]["id"].as_str()
-        && let Some(actor) = &payload.call.actor
-        && let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))?
     {
+        let Some(thread) = reply["thread"]["id"]
+            .as_str()
+            .filter(|thread| !thread.is_empty())
+        else {
+            return Ok(());
+        };
+        let Some(actor) = &payload.call.actor else {
+            return Ok(());
+        };
+        let mut agent = match AgentRepository::get(tx, &AgentId::from(actor.agent.as_str())) {
+            Ok(Some(agent)) => agent,
+            Ok(None)
+            | Err(
+                StoreError::InvalidStoredRecord { .. }
+                | StoreError::InvalidStoredObject { .. }
+                | StoreError::SchemaValidation(_)
+                | StoreError::RecordContract(_)
+                | StoreError::Json(_)
+                | StoreError::InvalidSyncObject { .. }
+                | StoreError::InvalidSyncObjectField { .. },
+            ) => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
         let provenance = agent
             .extra
             .entry("threadProvenance".into())
             .or_insert_with(|| json!({}));
-        let map = provenance.as_object_mut().ok_or(WorkerError::Capacity)?;
+        let Some(map) = provenance.as_object_mut() else {
+            return Ok(());
+        };
         map.insert(
             thread.into(),
             serde_json::to_value(ThreadProvenance {
@@ -1044,7 +1074,7 @@ fn proven_not_sent(payload: &RetainedCall) -> bool {
     })
 }
 
-pub(super) fn record_outcome(
+pub(in crate::account_worker) fn record_outcome(
     tx: &rusqlite::Transaction<'_>,
     key: &str,
     written: Option<RecoveredRequest>,

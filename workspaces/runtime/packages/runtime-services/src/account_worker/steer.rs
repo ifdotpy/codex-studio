@@ -283,7 +283,7 @@ pub(super) fn acknowledge(
     };
     let [first_event, ..] = ack.events.as_slice() else {
         return Err(StoreError::InvalidSyncObject {
-            scope: "runtime_operation_receipts".into(),
+            scope: "runtime_outbox".into(),
             id: agent_id.clone(),
         }
         .into());
