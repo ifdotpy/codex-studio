@@ -40,18 +40,21 @@ pub struct VoiceDeleteIntent {
 }
 
 fn operation(kind: OutboxKind, session: &str) -> Result<String, VoiceProviderError> {
-    match kind {
-        OutboxKind::VoiceStop => Ok(format!("voice:stop:{session}")),
-        OutboxKind::VoiceDelete => Ok(format!("voice:delete-stop:{session}")),
-        _ => Err(VoiceProviderError::ContextChanged),
-    }
+    let (operation, _) = kind_fields(kind)?;
+    Ok(format!("voice:{operation}:{session}"))
 }
 
 fn signature(kind: OutboxKind) -> Result<&'static str, VoiceProviderError> {
-    match kind {
-        OutboxKind::VoiceStop => Ok(STOP_SIGNATURE),
-        OutboxKind::VoiceDelete => Ok(DELETE_SIGNATURE),
-        _ => Err(VoiceProviderError::ContextChanged),
+    Ok(kind_fields(kind)?.1)
+}
+
+fn kind_fields(kind: OutboxKind) -> Result<(&'static str, &'static str), VoiceProviderError> {
+    if kind == OutboxKind::VoiceStop {
+        Ok(("stop", STOP_SIGNATURE))
+    } else if kind == OutboxKind::VoiceDelete {
+        Ok(("delete-stop", DELETE_SIGNATURE))
+    } else {
+        Err(VoiceProviderError::ContextChanged)
     }
 }
 
