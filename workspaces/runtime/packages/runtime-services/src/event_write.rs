@@ -1393,7 +1393,7 @@ mod tests {
             public
         );
         for preserved in [
-            json!(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"imported")),
+            json!(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"imported").to_string()),
             Value::Null,
         ] {
             with_transaction(&mut connection, |tx| {
