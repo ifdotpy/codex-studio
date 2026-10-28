@@ -27,6 +27,8 @@ pub(super) const SOURCES: &[&str] = &[
 ];
 /// Source-era default for records predating the transport sequence. Unit: attempts.
 const MISSING_RESET_TRANSPORT_SEQUENCE: u64 = 0;
+const CLOSED_REATTACH_REPORT: &str = "closed-reattach-missing-started-at";
+const CLOSED_REATTACH_REASON: &str = "Reattach recovery had no start time; closed by migration";
 const ACTIONS: &str = "source.id GLOB 'native-command:*' OR source.id GLOB 'monitor-http-input:*' OR source.id GLOB 'claude-steer:*' OR source.id GLOB 'manual-management:*' OR source.id GLOB 'park-event:*'";
 
 #[derive(Serialize)]
@@ -1636,6 +1638,21 @@ impl ReceiptFamilyMigration for ActionsMigration {
         for row in rows {
             if domain {
                 if source == "runtime_monitors" {
+                    let changed = tx.execute(
+                        "UPDATE runtime_monitors SET record=json_set(record,'$.reattachRecovery.status','not_reattachable','$.reattachRecovery.proof',?1) WHERE rowid=?2 AND json_valid(record) AND json_extract(record,'$.reattachRecovery.status') IN ('running','starting') AND json_type(record,'$.reattachRecovery.startedAt') IS NULL",
+                        params![CLOSED_REATTACH_REASON, row.rowid],
+                    )?;
+                    if changed != 0 {
+                        let mut count = MigrationCheckpoint::begin(
+                            tx,
+                            self.id(),
+                            CLOSED_REATTACH_REPORT,
+                            checkpoint.cutover_ms,
+                        )?;
+                        count.cursor += 1;
+                        count.status = MigrationStatus::Complete;
+                        count.save(tx, self.id(), CLOSED_REATTACH_REPORT, checkpoint.cutover_ms)?;
+                    }
                     if let Ok(value) = row.json::<LegacyMonitorOwner>(source) {
                         monitor_owner(tx, &row, value, checkpoint.cutover_ms)?;
                     }
@@ -1760,6 +1777,59 @@ mod tests {
         next.save(&tx, ActionsMigration.id(), source, 1000)?;
         tx.commit()?;
         Ok(next)
+    }
+    #[test]
+    fn receipts_actions_missing_reattach_start_is_closed_and_counted() {
+        let mut db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .expect("monitors");
+        for (id, recovery) in [
+            (
+                "one",
+                json!({"accountKey":"account","epoch":1,"status":"running","error":"nested"}),
+            ),
+            (
+                "two",
+                json!({"accountKey":"account","epoch":2,"status":"starting","error":null}),
+            ),
+            (
+                "three",
+                json!({"accountKey":"account","epoch":3,"status":"running","startedAt":1.0}),
+            ),
+        ] {
+            db.execute("INSERT INTO runtime_monitors VALUES(?1,?2)", params![id, json!({"id":id,"rootRequestId":"root","finished":null,"error":null,"reattachRecovery":recovery}).to_string()]).expect("monitor");
+        }
+        db.execute("UPDATE runtime_monitors SET record=json_set(record,'$.error','existing') WHERE id='one'", []).expect("existing error");
+        batch(&mut db, "runtime_monitors").expect("migration");
+        for id in ["one", "two"] {
+            let record: String = db
+                .query_row(
+                    "SELECT record FROM runtime_monitors WHERE id=?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .expect("record");
+            let record: Value = serde_json::from_str(&record).expect("JSON");
+            assert_eq!(record["reattachRecovery"]["status"], "not_reattachable");
+            assert!(record["reattachRecovery"]["proof"].is_string());
+            assert!(record["finished"].is_null());
+            assert!(record["reattachRecovery"].get("startedAt").is_none());
+            if id == "one" {
+                assert_eq!(record["error"], "existing");
+                assert_eq!(record["reattachRecovery"]["error"], "nested");
+            } else {
+                assert!(record["error"].is_null());
+                assert!(record["reattachRecovery"]["error"].is_null());
+            }
+        }
+        let status: String = db.query_row("SELECT json_extract(record,'$.reattachRecovery.status') FROM runtime_monitors WHERE id='three'", [], |r| r.get(0)).expect("status");
+        assert_eq!(status, "running");
+        batch(&mut db, "runtime_monitors").expect("repeat migration");
+        let tx = db.transaction().expect("transaction");
+        let count = MigrationCheckpoint::load(&tx, ActionsMigration.id(), CLOSED_REATTACH_REPORT)
+            .expect("count query")
+            .expect("count");
+        assert_eq!(count.cursor, 2);
     }
     #[test]
     fn receipts_actions_unchanged_agent_keeps_transcript_revision() {
