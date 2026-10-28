@@ -16,10 +16,6 @@ use studio_runtime_store::request_results::AdmittedRequest;
 struct ReconnectAttempt {
     request: AdmittedRequest,
 }
-enum ReconnectAdmission {
-    Send(AdmittedRequest),
-    Replay(McpReconnectResponse),
-}
 fn unknown() -> McpReconnectResponse {
     McpReconnectResponse { status: McpReconnectResponseStatus::Unknown, message: "Reconnect outcome is unconfirmed. Check this request again; do not start another reconnect.".to_owned() }
 }
@@ -161,8 +157,8 @@ async fn execute(
         })
         .await?;
     let admitted = match replay {
-        ReconnectAdmission::Replay(reply) => return Ok(reply),
-        ReconnectAdmission::Send(request) => request,
+        CallerAdmission::Replay(reply) => return Ok(reply),
+        CallerAdmission::Fresh(request) => request,
     };
     let ticket = studio_runtime_services::workspace_operations::ProviderTicket {
         operation: key.clone(),
@@ -206,18 +202,16 @@ async fn execute(
             }
         }
     };
-    let saved = result.clone();
     store
         .transaction_with_error(move |tx| {
-            settle_request(tx, &admitted, Some(&ticket.agent), &saved)?;
+            settle_request(tx, &admitted, Some(&ticket.agent), &result)?;
             // An unconfirmed provider call remains an obligation for its owner.
-            if saved.status != McpReconnectResponseStatus::Unknown {
+            if result.status != McpReconnectResponseStatus::Unknown {
                 Outbox::delete_settled(tx, &key, &signature)?;
             }
-            Ok::<_, ApiError>(())
+            Ok::<_, ApiError>(result)
         })
-        .await?;
-    Ok(result)
+        .await
 }
 
 fn claim_request(
@@ -227,9 +221,9 @@ fn claim_request(
     root: &str,
     agent: &str,
     now_ms: i64,
-) -> Result<ReconnectAdmission, ApiError> {
+) -> Result<CallerAdmission<McpReconnectResponse>, ApiError> {
     if let Some(saved) = replay_request::<McpReconnectResponse>(tx, key, signature, now_ms)? {
-        return Ok(ReconnectAdmission::Replay(saved.reply));
+        return Ok(CallerAdmission::Replay(saved.reply));
     }
     if let Some(attempt) = Outbox::get::<ReconnectAttempt>(tx, key)? {
         if attempt.signature != signature || attempt.owner_id != agent {
@@ -238,15 +232,15 @@ fn claim_request(
                 "This request ID has different content",
             ));
         }
-        if let Some(saved) = replay_request::<McpReconnectResponse>(
-            tx,
-            attempt.payload.request.id(),
-            signature,
-            now_ms,
-        )? {
-            return Ok(ReconnectAdmission::Replay(saved.reply));
-        }
-        return Ok(ReconnectAdmission::Replay(unknown()));
+        return Ok(CallerAdmission::Replay(
+            replay_request::<McpReconnectResponse>(
+                tx,
+                attempt.payload.request.id(),
+                signature,
+                now_ms,
+            )?
+            .map_or_else(unknown, |saved| saved.reply),
+        ));
     }
     let request = match begin_request(
         tx,
@@ -256,7 +250,7 @@ fn claim_request(
         signature,
         now_ms,
     )? {
-        CallerAdmission::Replay(reply) => return Ok(ReconnectAdmission::Replay(reply)),
+        CallerAdmission::Replay(reply) => return Ok(CallerAdmission::Replay(reply)),
         CallerAdmission::Fresh(request) => request,
     };
     Outbox::put(
@@ -280,7 +274,7 @@ fn claim_request(
             created: request.created(),
         },
     )?;
-    Ok(ReconnectAdmission::Send(request))
+    Ok(CallerAdmission::Fresh(request))
 }
 
 inventory::submit! {crate::routes::manifest::RouteModuleRegistration{name:"mcp_reconnect",routes:Some(routes),dependencies:&[]}}

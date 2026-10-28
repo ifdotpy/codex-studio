@@ -9,6 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
+use studio_runtime_schema::json_compat::python_json_compact as canonical_json;
 use studio_runtime_schema::model_catalog::ModelCatalog;
 use studio_runtime_services::agents_create::CreateError;
 use studio_runtime_services::host_worker_create::{
@@ -545,16 +546,10 @@ async fn local_project_registration(
     let registration = json!({"server":local_server,"path":path,"name":name});
     let operation =
         json!({"action":"add_location","project":project_id,"server":local_server,"path":path});
-    let registration_signature = studio_runtime_store::sha256_hex(
-        studio_runtime_services::remote_transport::canonical_json(&registration)
-            .map_err(|_| ApiError::internal())?
-            .as_bytes(),
-    );
-    let operation_signature = studio_runtime_store::sha256_hex(
-        studio_runtime_services::remote_transport::canonical_json(&operation)
-            .map_err(|_| ApiError::internal())?
-            .as_bytes(),
-    );
+    let registration_signature =
+        studio_runtime_store::sha256_hex(canonical_json(&registration).as_bytes());
+    let operation_signature =
+        studio_runtime_store::sha256_hex(canonical_json(&operation).as_bytes());
     let now =
         studio_runtime_services::event_write::unix_time().map_err(|_| ApiError::internal())? as i64;
     let first_project_id = project_id.clone();
@@ -818,11 +813,8 @@ async fn remote_project_write(
             None
         };
         let signature_data = json!({"action":action,"project":project,"server":server,"path":path});
-        let signature = studio_runtime_store::sha256_hex(
-            studio_runtime_services::remote_transport::canonical_json(&signature_data)
-                .map_err(|_| ApiError::internal())?
-                .as_bytes(),
-        );
+        let signature =
+            studio_runtime_store::sha256_hex(canonical_json(&signature_data).as_bytes());
         let early_store = store.clone();
         let early_root = request_id.to_owned();
         let early_project = project.to_owned();
@@ -885,8 +877,7 @@ async fn remote_project_write(
 
         let mut payload = json!({"project":project,"name":record.get("name"),"path":path,
             "request":signature_data,"signature":studio_runtime_store::sha256_hex(
-                studio_runtime_services::remote_transport::canonical_json(&signature_data)
-                    .map_err(|_| ApiError::internal())?.as_bytes()),
+                canonical_json(&signature_data).as_bytes()),
             "location":existing});
         payload[studio_runtime_services::project_locations::LOCATION_ADMISSION_FIELD] = admission;
         (project.to_owned(), operation, signature_data, payload, None)
@@ -896,11 +887,7 @@ async fn remote_project_write(
             "Unknown project action",
         ));
     };
-    let signature = studio_runtime_store::sha256_hex(
-        studio_runtime_services::remote_transport::canonical_json(&signature_data)
-            .map_err(|_| ApiError::internal())?
-            .as_bytes(),
-    );
+    let signature = studio_runtime_store::sha256_hex(canonical_json(&signature_data).as_bytes());
     payload["signature"] = json!(signature);
     let admission_store = store.clone();
     let raw_key = projects::cross_server_identity(&["project-location", "ui", request_id]);
@@ -908,14 +895,9 @@ async fn remote_project_write(
     let scope_server = local_server.clone();
     let scope_project = project_id.clone();
     let request_signature = signature.clone();
-    let registration_signature = creation_signature
-        .as_ref()
-        .map(|registration| {
-            studio_runtime_services::remote_transport::canonical_json(registration)
-                .map(|value| studio_runtime_store::sha256_hex(value.as_bytes()))
-        })
-        .transpose()
-        .map_err(|_| ApiError::internal())?;
+    let registration_signature = creation_signature.as_ref().map(|registration| {
+        studio_runtime_store::sha256_hex(canonical_json(registration).as_bytes())
+    });
     let admitted = if let Some(admission) = location_admission {
         admission
     } else {
@@ -952,11 +934,8 @@ async fn remote_project_write(
         LocationAdmission::Pending(request, operation) => (request, operation),
     };
     if let Some(registration) = &creation_signature {
-        let creation_signature = studio_runtime_store::sha256_hex(
-            studio_runtime_services::remote_transport::canonical_json(registration)
-                .map_err(|_| ApiError::internal())?
-                .as_bytes(),
-        );
+        let creation_signature =
+            studio_runtime_store::sha256_hex(canonical_json(registration).as_bytes());
         let project_for_registration = project_id.clone();
 
         let local_for_registration = local_server.clone();
@@ -1320,7 +1299,7 @@ fn projects_error(error: ProjectsError) -> ApiError {
             object,
             id,
         }) => ApiError::invalid_stored(object, &id),
-        ProjectsError::Store(error) => ApiError::stored(error),
+        ProjectsError::Store(error) => error.into(),
         ProjectsError::Sqlite(_) => ApiError::internal(),
         ProjectsError::PreparationWorker => ApiError::internal(),
     }
