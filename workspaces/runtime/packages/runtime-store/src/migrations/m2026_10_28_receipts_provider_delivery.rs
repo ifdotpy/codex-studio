@@ -29,7 +29,13 @@ const SELECT: &str = "source.id GLOB 'account-worker:retained:*'";
 #[serde(deny_unknown_fields)]
 struct Submitted {
     call: Value,
-    request: Value,
+    #[serde(default, deserialize_with = "present_request")]
+    request: Option<Value>,
+}
+fn present_request<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 
 fn fail(row: &SourceReceipt) -> ReceiptMigrationError {
@@ -118,12 +124,14 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
         .to_owned();
     let key = transport_key(&account, &operation);
     if base != format!("account-worker:{key}")
-        || request["generation"].as_u64() != Some(generation)
-        || request["operation"] != key
-        || request["id"] != key
-        || request["method"] != call["method"]
-        || request["lightweight"].as_bool().is_none()
-        || request["deadline"].as_u64().is_none()
+        || request.as_ref().is_some_and(|request| {
+            request["generation"].as_u64() != Some(generation)
+                || request["operation"] != key
+                || request["id"] != key
+                || request["method"] != call["method"]
+                || request["lightweight"].as_bool().is_none()
+                || request["deadline"].as_u64().is_none()
+        })
         || !call["params"].is_object()
     {
         return Err(fail(row));
@@ -233,19 +241,21 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
     typed_call.admitted_request = Some(admission.clone());
     typed_call.root_request_id = root;
     let written = sibling(tx, row, base, "written")?;
-    let transport = written
-        .as_ref()
-        .map_or(&request, |(_, value)| value)
-        .clone();
-    if transport["id"] != request["id"]
-        || transport["operation"] != request["operation"]
-        || transport["generation"] != request["generation"]
-    {
-        return Err(fail(row));
-    }
-    let typed_transport: TransportRequest<Method> =
-        serde_json::from_value(transport.clone()).map_err(|_| fail(row))?;
     let saved = sibling(tx, row, base, "result")?;
+    let typed_transport: Option<TransportRequest<Method>> = match request {
+        Some(request) => {
+            let transport = written.as_ref().map_or(&request, |(_, value)| value);
+            if transport["id"] != request["id"]
+                || transport["operation"] != request["operation"]
+                || transport["generation"] != request["generation"]
+            {
+                return Err(fail(row));
+            }
+            Some(serde_json::from_value(transport.clone()).map_err(|_| fail(row))?)
+        }
+        None if written.is_none() && saved.is_none() => None,
+        None => return Err(fail(row)),
+    };
     let mut outcome = saved
         .as_ref()
         .map(|(_, value)| {
@@ -338,7 +348,7 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
     {
         let reply = RetainedReply {
             call: typed_call.clone(),
-            request: typed_transport.clone(),
+            request: typed_transport.clone().ok_or_else(|| fail(row))?,
             written: written.is_some(),
             result: result.clone(),
             ack: CommittedAck {
@@ -399,7 +409,7 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
             };
         let retained = RetainedCall {
             call: typed_call,
-            request: Some(typed_transport),
+            request: typed_transport,
             admitted: admission,
             written: written.is_some(),
             outcome,
