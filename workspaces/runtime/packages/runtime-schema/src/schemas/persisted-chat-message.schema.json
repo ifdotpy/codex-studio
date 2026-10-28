@@ -12,7 +12,7 @@
     },
     "deliveries": {
       "additionalProperties": {
-        "type": "string"
+        "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/RecipientDelivery"
       },
       "title": "Deliveries",
       "type": "object"
