@@ -23,7 +23,8 @@ pub(crate) fn replay_error(error: RequestResultError) -> AccessError {
             "request_future",
             "The request ID timestamp is too far in the future",
         ),
-        RequestResultError::Identity(
+        RequestResultError::Expired
+        | RequestResultError::Identity(
             studio_runtime_schema::persistence::RequestIdentityError::Expired { .. }
             | studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7(_),
         ) => refused(410, "request_expired", "The request ID expired"),
@@ -3127,7 +3128,7 @@ impl OrchestrationDriver {
             }
             let clock=chrono::Utc::now().timestamp_millis();
             let identity=studio_runtime_schema::persistence::RequestIdentity::new(Direction::Incoming.namespace(),&[&principal_for_claim],&envelope_for_claim.root,&envelope_for_claim.operation_parts())
-                .map_err(|_|replay_error(studio_runtime_schema::persistence::RequestIdentityError::Expired{issued_ms:0,expired_before_ms:clock}.into()))?;
+                .map_err(|_|replay_error(RequestResultError::Expired))?;
             identity.validate(clock,studio_runtime_store::request_results::RequestResults::expired_before_ms(tx).map_err(replay_error)?).map_err(|error|replay_error(error.into()))?;
             let saved = inbox(tx, &key)?;
             let replaying_claim = saved.is_some();

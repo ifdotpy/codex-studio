@@ -87,12 +87,8 @@ pub fn admit_remote(
     signature: &str,
     now_ms: i64,
 ) -> Result<Admission, RequestResultError> {
-    let identity = RequestIdentity::new(namespace, authority, root, &[]).map_err(|_| {
-        studio_runtime_schema::persistence::RequestIdentityError::Expired {
-            issued_ms: 0,
-            expired_before_ms: now_ms,
-        }
-    })?;
+    let identity = RequestIdentity::new(namespace, authority, root, &[])
+        .map_err(|_| RequestResultError::Expired)?;
     RequestResults::admit(tx, &identity, signature, now_ms)
 }
 
