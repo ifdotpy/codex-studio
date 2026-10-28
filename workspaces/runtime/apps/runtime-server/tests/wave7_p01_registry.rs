@@ -43,6 +43,7 @@ struct Fixture {
     store: Arc<RuntimeStore>,
     agents: Value,
     changes: watch::Receiver<u64>,
+    event_ids: Mutex<BTreeMap<String, String>>,
 }
 impl Fixture {
     async fn new() -> Self {
@@ -57,11 +58,13 @@ impl Fixture {
             store,
             agents,
             changes,
+            event_ids: Mutex::new(BTreeMap::new()),
         }
     }
     async fn enqueue(&self, index: usize, id: &str) {
         let agent_id = self.agents[index]["id"].as_str().unwrap().to_owned();
-        let event_id = id.to_owned();
+        let event_id = if id.len() == 36 { id.to_owned() } else { studio_runtime_schema::persistence::RequestIdentity::issue_root() };
+        self.event_ids.lock().unwrap().insert(format!("annotation:{id}"), format!("annotation:{event_id}"));
         self.store
             .transaction_with(move |tx| {
                 annotate(
@@ -83,6 +86,7 @@ impl Fixture {
     }
 
     fn event_status(&self, id: &str) -> String {
+        let id = self.event_ids.lock().unwrap().get(id).cloned().unwrap_or_else(|| id.to_owned());
         self.store
             .test_reader()
             .unwrap()
@@ -2015,7 +2019,7 @@ fn seed_backlog_rows(
                 INSERT INTO runtime_events(id, agent, kind, text, status, created, epoch)
                 SELECT printf('00000000-0000-4000-8000-%012d', seq.i),
                        printf('00000000-0000-4000-8000-%012d', seq.i),
-                       'annotation', 'fixture', 'pending', 0, json_extract(source.record, '$.epoch')
+                       'user', 'fixture', 'pending', 0, json_extract(source.record, '$.epoch')
                 FROM seq CROSS JOIN source"
         ),
         (count as i64, source),
@@ -2117,7 +2121,7 @@ async fn account_backlog_rejects_invalid_stored_account() {
     fixture.store.transaction(move |tx| {
         let raw: String = tx.query_row("SELECT record FROM runtime_agents WHERE id=?1", [&source], |row| row.get(0))?;
         tx.execute("INSERT INTO runtime_agents(id,record) VALUES('bad-account-key',json_set(?1,'$.id','bad-account-key','$.accountKey',7))", [raw])?;
-        tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('bad-account-key-event','bad-account-key','annotation','fixture','pending',0,json_extract((SELECT record FROM runtime_agents WHERE id='bad-account-key'),'$.epoch'))", [])?;
+        tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('bad-account-key-event','bad-account-key','user','fixture','pending',0,json_extract((SELECT record FROM runtime_agents WHERE id='bad-account-key'),'$.epoch'))", [])?;
         Ok(())
     }).await.unwrap();
     assert!(matches!(
@@ -2177,7 +2181,7 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
         .unwrap();
     assert_eq!(launcher.opened.lock().unwrap().len(), 2);
     let db = fixture.store.test_reader().unwrap();
-    let blocked: i64 = db.query_row("SELECT count(*) FROM runtime_events WHERE kind='annotation' AND text='fixture' AND status='pending'",[],|r|r.get(0)).unwrap();
+    let blocked: i64 = db.query_row("SELECT count(*) FROM runtime_events WHERE kind='user' AND text='fixture' AND status='pending'",[],|r|r.get(0)).unwrap();
     assert_eq!(blocked, 48);
 }
 
@@ -4821,6 +4825,7 @@ async fn backend_restart_keeps_live_work_and_ends_the_stopped_turn_once() {
         store: store.clone(),
         agents: agents.clone(),
         changes: _changes,
+        event_ids: Mutex::new(BTreeMap::new()),
     };
     fixture.enqueue(0, "a-input").await;
     fixture.enqueue(1, "b-input").await;

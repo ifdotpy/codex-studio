@@ -2006,7 +2006,7 @@ mod targeted_scheduler_wake_tests {
                 tx.execute(
                     "INSERT INTO runtime_server_outbox(\
                         id,server,body,state,created_at,next_at,fingerprint,attempts\
-                     ) VALUES('outbox-event','peer','{}','queued',1,1,'fingerprint',0)",
+                     ) VALUES('outbox-event','peer','{\"action\":\"event\"}','queued',1,1,'fingerprint',0)",
                     [],
                 )?;
                 Ok(())

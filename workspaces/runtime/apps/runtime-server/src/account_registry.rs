@@ -2297,7 +2297,7 @@ mod bounded_reconcile_tests {
                     },
                 )?;
                 transaction.execute(
-                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,?1,'annotation','fixture','pending',0,1)",
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,?1,'user','fixture','pending',0,1)",
                     [id.0.as_str()],
                 )?;
                 Ok(())
