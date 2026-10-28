@@ -998,6 +998,7 @@ fn monitor_operation(
             return Err(invalid());
         }
         crate::MonitorOperationEvidence {
+            thread_id: None,
             root_request_id: Some(call.root_request_id),
             provider_request: Some(token),
             provider_generation: Some(call.scope.generation),
@@ -1038,6 +1039,7 @@ fn monitor_operation(
             RequestIdentity::issue_root()
         };
         crate::MonitorOperationEvidence {
+            thread_id: None,
             root_request_id: Some(root),
             provider_request: None,
             provider_generation: operation.provider_generation,

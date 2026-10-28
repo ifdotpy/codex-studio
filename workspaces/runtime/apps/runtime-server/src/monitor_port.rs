@@ -699,6 +699,7 @@ impl RetainedMonitorPort {
             account_key: account.to_owned(),
             connection_id: scope.connection.clone(),
             evidence: studio_runtime_services::monitor_policy::OperationEvidence {
+                thread_id: None,
                 root_request_id: Some(root_request_id),
                 provider_generation: Some(scope.generation),
                 provider_request: None,
@@ -970,6 +971,7 @@ impl RetainedMonitorPort {
                 .unwrap_or_else(|| "default".into()),
             connection_id: scope.connection,
             evidence: studio_runtime_services::monitor_policy::OperationEvidence {
+                thread_id: None,
                 root_request_id: Some(root_request_id),
                 provider_generation: Some(scope.generation),
                 provider_request: None,
@@ -2197,6 +2199,7 @@ mod tests {
             account_key: "default".into(),
             connection_id: "old".into(),
             evidence: studio_runtime_services::monitor_policy::OperationEvidence {
+                thread_id: None,
                 root_request_id: Some(root_request_id.clone()),
                 provider_generation: Some(1),
                 provider_request: None,
@@ -2433,6 +2436,7 @@ mod tests {
             account_key: "default".into(),
             connection_id: "connection".into(),
             evidence: studio_runtime_services::monitor_policy::OperationEvidence {
+                thread_id: None,
                 root_request_id: Some(
                     studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 ),
@@ -3964,6 +3968,7 @@ mod tests {
             account_key: "default".into(),
             connection_id: "connection".into(),
             evidence: studio_runtime_services::monitor_policy::OperationEvidence {
+                thread_id: None,
                 root_request_id: Some(
                     studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 ),

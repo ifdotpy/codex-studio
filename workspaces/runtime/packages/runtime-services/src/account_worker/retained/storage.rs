@@ -1294,6 +1294,7 @@ mod replay_identity_tests {
             account_key: "default".into(),
             connection_id: "old-connection".into(),
             evidence: crate::monitor_policy::OperationEvidence {
+                thread_id: None,
                 root_request_id: Some(request_root.clone()),
                 provider_generation: Some(4),
                 provider_request: None,

@@ -17,9 +17,11 @@ pub struct MonitorOperation {
     pub evidence: MonitorOperationEvidence,
 }
 
-#[derive(Clone, Debug, Default, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MonitorOperationEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -38,6 +40,15 @@ pub struct MonitorOperationEvidence {
         deserialize_with = "present"
     )]
     pub provider_request: Option<crate::request_results::AdmittedRequest>,
+}
+
+impl PartialEq for MonitorOperationEvidence {
+    fn eq(&self, other: &Self) -> bool {
+        // The historical thread is retained for reading, not operation identity.
+        self.root_request_id == other.root_request_id
+            && self.provider_generation == other.provider_generation
+            && self.provider_request == other.provider_request
+    }
 }
 
 fn present<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
@@ -208,6 +219,25 @@ inventory::submit! {
 mod tests {
     use super::{MonitorsRepository, QUEUED_STREAM_INDEX, STUDIO_ERROR_INDEX};
     use rusqlite::Connection;
+
+    #[test]
+    fn historical_thread_is_readable_but_does_not_change_operation_identity() {
+        let base = serde_json::json!({"agent":"a","epoch":1,"accountKey":"default","connectionId":"c"});
+        let mut historical = base.clone();
+        historical["threadId"] = serde_json::json!("thread");
+        let original: super::MonitorOperation = serde_json::from_value(base.clone()).unwrap();
+        let saved: super::MonitorOperation = serde_json::from_value(historical.clone()).unwrap();
+        assert_eq!(original, saved);
+        assert_eq!(serde_json::to_value(&saved).unwrap(), historical);
+        historical["threadId"] = serde_json::Value::Null;
+        assert_eq!(
+            serde_json::from_value::<super::MonitorOperation>(historical).unwrap(),
+            original
+        );
+        let mut unknown = base;
+        unknown["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<super::MonitorOperation>(unknown).is_err());
+    }
 
     /// The index build runs at every store open, also on older states that
     /// may hold malformed monitor rows. It must succeed there, be a no-op when
