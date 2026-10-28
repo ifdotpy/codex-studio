@@ -359,6 +359,7 @@ async fn drive(
                     }
                     break receipt;
                 }
+                Err(AccountSessionError::Expired) => return Err(Error::Expired),
                 Err(AccountSessionError::Requires(name)) => return Err(Error::Requires(name)),
                 Err(AccountSessionError::Unknown) => {
                     if !persist_unknown_receipt(
