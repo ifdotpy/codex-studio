@@ -164,7 +164,19 @@ pub fn chat_read(
             )?
             .collect::<Result<Vec<_>, _>>()?;
         (
-            json!({"id":room_id,"name":studio_runtime_store::projection_value(&root.name).map_err(studio_runtime_store::StoreError::from)?,"members":studio_runtime_store::projection_value(&members).map_err(studio_runtime_store::StoreError::from)?}),
+            Value::Object(serde_json::Map::from_iter([
+                ("id".into(), Value::String(room_id.to_owned())),
+                (
+                    "name".into(),
+                    studio_runtime_store::projection_value(&root.name)
+                        .map_err(studio_runtime_store::StoreError::from)?,
+                ),
+                (
+                    "members".into(),
+                    studio_runtime_store::projection_value(&members)
+                        .map_err(studio_runtime_store::StoreError::from)?,
+                ),
+            ])),
             ids,
         )
     } else {
@@ -268,12 +280,15 @@ pub fn chat_read(
             }
             let deliveries = message_deliveries(connection, &id, &deliveries)?;
             if seq < 1
-                || seq > studio_runtime_schema::shared_values::MAX_SAFE_INTEGER as i64
+                || seq > studio_runtime_schema::shared_values::MAX_SAFE_INTEGER
                 || !created.is_finite()
             {
                 return Err(records::invalid("runtime_chat_messages", &id).into());
             }
-            let sender_name = names.get(&sender).cloned().unwrap_or(json!(sender));
+            let sender_name = names
+                .get(&sender)
+                .cloned()
+                .unwrap_or_else(|| Value::String(sender.clone()));
             messages.push(ChatMessage {
                 seq,
                 id,
@@ -390,7 +405,14 @@ fn message_deliveries(
             records::validate(
                 "runtime_events",
                 &event_id,
-                json!({"id":event_id,"status":event.0.as_str(),"error":event.1}),
+                Value::Object(serde_json::Map::from_iter([
+                    ("id".into(), Value::String(event_id.clone())),
+                    ("status".into(), Value::String(event.0.as_str().into())),
+                    (
+                        "error".into(),
+                        event.1.clone().map_or(Value::Null, Value::String),
+                    ),
+                ])),
             )?;
             delivery.status = status;
             delivery.error = event.1;

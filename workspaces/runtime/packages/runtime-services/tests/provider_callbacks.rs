@@ -573,6 +573,32 @@ async fn provider_callbacks_local_message_once_and_worker_chat() {
     let message = &tool_value(&read_reply)["messages"][0];
     assert_eq!(message["text"], "A real stored message");
     assert!(message.get("deliveries").is_none());
+    let long = "x".repeat(3001);
+    let long_send = call(
+        &context,
+        "long",
+        "orchestration_message",
+        json!({"target":worker,"text":long}),
+    );
+    dispatch(std::sync::Arc::clone(&store), &context, &long_send, 13.0)
+        .await
+        .unwrap();
+    let read = call(
+        &context,
+        "read-long",
+        "orchestration_chat_read",
+        json!({"room_id":room}),
+    );
+    let read_reply = reply(
+        dispatch(std::sync::Arc::clone(&store), &context, &read, 14.0)
+            .await
+            .unwrap(),
+    );
+    let result = tool_value(&read_reply);
+    let message = &result["messages"][1];
+    assert_eq!(message["text"].as_str().unwrap().len(), 2400);
+    assert_eq!(message["textChars"], 3001);
+    assert_eq!(message["truncated"], true);
 }
 
 #[tokio::test]

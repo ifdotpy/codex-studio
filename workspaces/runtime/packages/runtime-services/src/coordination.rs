@@ -220,8 +220,15 @@ pub(crate) fn remote_message_receipt(
     let Some(event) = QueueEventRepository::get(connection, &QueueEventId::from(id))? else {
         return Ok(None);
     };
-    let metadata = QueueWriteRepository::metadata(connection, id)?
-        .unwrap_or_else(|| json!({"assets": [], "delivery": DeliveryMoment::CurrentTurn.as_str()}));
+    let metadata = QueueWriteRepository::metadata(connection, id)?.unwrap_or_else(|| {
+        Value::Object(serde_json::Map::from_iter([
+            ("assets".into(), Value::Array(Vec::new())),
+            (
+                "delivery".into(),
+                Value::String(DeliveryMoment::CurrentTurn.as_str().into()),
+            ),
+        ]))
+    });
     let assets = metadata
         .get("assets")
         .and_then(Value::as_array)
@@ -395,7 +402,18 @@ fn post_managed_message(
     QueueWriteRepository::put_metadata(
         transaction,
         input.id,
-        &json!({"assets": input.assets, "acceptedAt": created, "delivery": input.delivery.as_str(), "requestedDelivery": input.delivery.as_str()}),
+        &Value::Object(serde_json::Map::from_iter([
+            ("assets".into(), Value::Array(input.assets.to_vec())),
+            ("acceptedAt".into(), Value::from(created)),
+            (
+                "delivery".into(),
+                Value::String(input.delivery.as_str().into()),
+            ),
+            (
+                "requestedDelivery".into(),
+                Value::String(input.delivery.as_str().into()),
+            ),
+        ])),
     )?;
     let inserted = crate::event_write::enqueue_event(
         transaction,
@@ -615,7 +633,15 @@ fn send_followup_inner(
             studio_runtime_store::projection_value(&recipient).map_err(StoreError::from)?;
         crate::agents_create::publish_agent(transaction, &projection)?;
     }
-    let mut metadata = json!({"assets":[],"acceptedAt":now,"delivery":delivery.as_str(),"requestedDelivery":delivery.as_str()});
+    let mut metadata = Value::Object(serde_json::Map::from_iter([
+        ("assets".into(), Value::Array(Vec::new())),
+        ("acceptedAt".into(), Value::from(now)),
+        ("delivery".into(), Value::String(delivery.as_str().into())),
+        (
+            "requestedDelivery".into(),
+            Value::String(delivery.as_str().into()),
+        ),
+    ]));
     if let Some(turn_id) = radio_answer_turn_id.filter(|value| !value.is_empty()) {
         metadata["radioAnswerTurnId"] = Value::String(turn_id.to_owned());
     }

@@ -51,11 +51,28 @@ pub(crate) fn project_chat(
         let body = message.text.as_str();
         let truncated = body.len() > 3000;
         let brief = BriefMessage {
-            seq: message.seq, id: &message.id, room: &message.room, sender: &message.sender,
-            text: if truncated { &body[..body.floor_char_boundary(2400.min(body.len()))] } else { body },
-            created: message.created, sender_name: &message.sender_name,
-            truncated: truncated.then_some(true), text_chars: truncated.then(|| body.chars().count()),
-            read: truncated.then(|| json!({"tool":"orchestration_read","output_ref":format!("chat-message:{}",message.id)})),
+            seq: message.seq,
+            id: &message.id,
+            room: &message.room,
+            sender: &message.sender,
+            text: if truncated {
+                &body[..body.floor_char_boundary(2400.min(body.len()))]
+            } else {
+                body
+            },
+            created: message.created,
+            sender_name: &message.sender_name,
+            truncated: truncated.then_some(true),
+            text_chars: truncated.then(|| body.chars().count()),
+            read: truncated.then(|| {
+                Value::Object(Map::from_iter([
+                    ("tool".into(), Value::String("orchestration_read".into())),
+                    (
+                        "output_ref".into(),
+                        Value::String(format!("chat-message:{}", message.id)),
+                    ),
+                ]))
+            }),
         };
         let mut candidate = vec![brief];
         candidate.extend(selected.iter().cloned());
@@ -64,7 +81,8 @@ pub(crate) fn project_chat(
             room: &room,
             messages: &candidate,
         })?;
-        let bytes = json!([{"type":"inputText","text":inner}]).to_string().len();
+        let bytes =
+            r#"[{"text":,"type":"inputText"}]"#.len() + serde_json::to_string(&inner)?.len();
         if !selected.is_empty() && bytes > 13000 {
             break;
         }
