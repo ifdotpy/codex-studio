@@ -2008,7 +2008,7 @@ mod item_read_identity_tests {
 
 #[cfg(test)]
 mod repair_history_tests {
-    use super::archive_previous_repair;
+    use super::{ContextRepairPhase, archive_previous_repair};
     use serde_json::json;
 
     #[test]

@@ -271,7 +271,7 @@ impl ExecutionHistoryRepository {
         }
         Ok(())
     }
-    pub fn attempt(tx: &Transaction<'_>, id: &str) -> StoreResult<Option<Value>> {
+    pub fn attempt(tx: &rusqlite::Connection, id: &str) -> StoreResult<Option<Value>> {
         tx.query_row(
             "SELECT record FROM runtime_execution_attempts WHERE id=?1",
             [id],
