@@ -1189,6 +1189,23 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     }
     crate::records::refresh_openapi(&mut openapi)?;
     crate::multi_server_protocol::refresh_openapi(&mut openapi);
+    let mut delivery_generator = schemars::generate::SchemaSettings::draft2020_12()
+        .with(|settings| settings.definitions_path = "/components/schemas".into())
+        .into_generator();
+    delivery_generator.subschema_for::<crate::persistence::RecipientDelivery>();
+    for (name, schema) in delivery_generator.take_definitions(true) {
+        openapi["components"]["schemas"][name] = schema;
+    }
+    for path in [
+        "/components/schemas/ChatMessage/properties/deliveries/additionalProperties",
+        "/components/schemas/MessageRecord/properties/deliveries/additionalProperties",
+        "/components/schemas/studio_api__work__models__MessageReceipt/properties/deliveries/anyOf/0/additionalProperties",
+    ] {
+        *openapi
+            .pointer_mut(path)
+            .ok_or_else(|| format!("missing recipient delivery map {path}"))? =
+            serde_json::json!({"$ref":"#/components/schemas/RecipientDelivery"});
+    }
     openapi["components"]["schemas"]["AdmittedRequest"] = admitted_request_schema();
     openapi["components"]["schemas"]["ServerOperationRequest"]["properties"]["action"] = serde_json::json!({"type":"string","enum":crate::persistence::ServerOperationKind::VARIANTS});
     crate::task_command::apply_api_contract(&mut openapi);
@@ -1457,6 +1474,12 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         if let Some(required) = schema["required"].as_array_mut() {
             required.retain(|field| field != "receipt");
         }
+        schema["properties"]["requestId"] = serde_json::json!({"type":"string","format":"uuid"});
+        if let Some(required) = schema["required"].as_array_mut()
+            && !required.iter().any(|field| field == "requestId")
+        {
+            required.push(serde_json::json!("requestId"));
+        }
         if file == "persisted-federation-outbox" {
             schema["properties"]["kind"]["enum"] =
                 serde_json::json!(crate::persistence::FederationMessageKind::VARIANTS);
@@ -1487,6 +1510,19 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         )?;
         rendered.push(Rendered { path, text });
     }
+    let path =
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-chat-message.schema.json";
+    let mut messages = read_json(root, path)?;
+    messages["properties"]["deliveries"]["additionalProperties"] = serde_json::json!({"$ref":format!("{}#/components/schemas/RecipientDelivery",crate::OPENAPI_URI)});
+    rendered.push(Rendered {
+        path: path.into(),
+        text: run_node(
+            root,
+            "node_modules/oxfmt/bin/oxfmt",
+            &format!("--stdin-filepath={path}"),
+            &serde_json::to_string_pretty(&messages).map_err(|error| error.to_string())?,
+        )?,
+    });
     let monitor_path = crate::studio_errors::MONITOR_RECORD_SCHEMA_PATH;
     let mut monitor = read_json(root, monitor_path)?;
     monitor["properties"]["status"]["anyOf"][0] =
