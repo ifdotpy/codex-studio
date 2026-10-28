@@ -582,7 +582,7 @@ fn status_error(error: crate::managed_status_watch::StatusError) -> Error {
     }
 }
 
-fn rules_error(error: crate::managed_status_watch::RulesServiceError) -> Error {
+pub(super) fn rules_error(error: crate::managed_status_watch::RulesServiceError) -> Error {
     use crate::managed_status_watch::RulesServiceError as E;
     match error {
         E::Store(error) => Error::Store(error),

@@ -48,7 +48,8 @@ export function serverMutationResponseIsUncertain(
   status: number,
   body: unknown,
 ) {
-  if (status >= 500 || status === 408 || status === 429) return true;
+  if (status >= 500 || status === 408 || status === 410 || status === 429)
+    return true;
   const code =
     body && typeof body === "object"
       ? String((body as Record<string, unknown>).code || "")
@@ -151,7 +152,8 @@ export function createMutationJournal(
         unknown() {},
         reject(_status: number, _body: unknown) {},
       };
-    if (!serverId || serverId === "local") return null;
+    if ((!serverId || serverId === "local") && path !== "/api/native-command")
+      return null;
     const value =
       body && typeof body === "object" ? (body as Record<string, unknown>) : {};
     const explicit = [

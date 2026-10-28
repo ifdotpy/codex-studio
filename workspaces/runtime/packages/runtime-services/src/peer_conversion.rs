@@ -3,8 +3,7 @@
 use crate::event_write::{self, truthy};
 use crate::host_project_runtime::PreparedHost;
 use crate::projects::operations::{
-    is_project_lead, live_teams, peer_team_projection, project_agents, replay,
-    save_operation_receipt,
+    is_project_lead, live_teams, peer_team_projection, project_agents,
 };
 use crate::projects::{ProjectsError, project_key};
 use rusqlite::{Connection, Transaction, params};
@@ -14,6 +13,16 @@ use std::sync::Arc;
 use studio_runtime_store::{
     ProjectsRepository, RuntimeStore, SyncDocumentsRepository, system_reads as records,
 };
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversionReply {
+    id: String,
+    parent_id: String,
+    root_id: String,
+    moved_agents: Vec<String>,
+    peer_teams_revision: u64,
+}
 
 const MOVE_FIELDS: &[(&str, &[&str])] = &[
     ("runtime_work", &["rootId"]),
@@ -56,13 +65,25 @@ pub async fn convert(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, Pr
     let key = format!("peer-convert:{request}");
     let signature =
         event_write::request_signature(&json!({"operation":"peer-convert","body":body}));
+    let replay_root = request_id.clone();
     let replay_key = key.clone();
     let replay_signature = signature.clone();
     if let Some(result) = store
-        .transaction_with(move |db| replay(db, &replay_key, &replay_signature, "peer conversion"))
+        .transaction_with(move |db| {
+            event_write::saved_request::<ConversionReply>(
+                db,
+                event_write::RequestKey::new("peer_conversion", &["owner-api"], &replay_root)
+                    .raw(&replay_key),
+                &replay_signature,
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .map_err(crate::projects::operations::request_error)
+        })
         .await?
     {
-        return Ok(result);
+        return serde_json::to_value(result)
+            .map_err(studio_runtime_store::StoreError::from)
+            .map_err(Into::into);
     }
     let next_revision = revision
         .checked_add(1)
@@ -84,7 +105,10 @@ pub async fn convert(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, Pr
     let source = source.to_owned();
     let target = target.to_owned();
     store.transaction_with(move |db| {
-        if let Some(result)=replay(db,&key,&signature,"peer conversion")? { return Ok(result); }
+        let admitted=match event_write::begin_request::<ConversionReply>(db,event_write::RequestKey::new("peer_conversion",&["owner-api"],&request_id).raw(&key),&signature,chrono::Utc::now().timestamp_millis()).map_err(crate::projects::operations::request_error)? {
+            event_write::CallerAdmission::Replay(reply)=>return serde_json::to_value(reply).map_err(studio_runtime_store::StoreError::from).map_err(Into::into),
+            event_write::CallerAdmission::Fresh(admitted)=>admitted,
+        };
         prepared.recheck(db)?;
         let all=project_agents(db)?;
         let src=all.get(&source).ok_or(ProjectsError::Invalid("source chat missing"))?;
@@ -155,7 +179,7 @@ pub async fn convert(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, Pr
             SyncDocumentsRepository::put_entity(db,"peerTeam",id,view.unwrap_or(json!({})),next.is_none())?;
         }
         let result=json!({"id":source,"parentId":target,"rootId":target,"movedAgents":moving_ids,"peerTeamsRevision":next_revision});
-        save_operation_receipt(db,&key,&signature,&result)?;
+        event_write::settle_request(db,&admitted,Some("owner-api"),&serde_json::from_value::<ConversionReply>(result.clone()).map_err(studio_runtime_store::StoreError::from)?).map_err(crate::projects::operations::request_error)?;
         Ok(result)
     }).await
 }
@@ -168,6 +192,9 @@ fn field<'a>(body: &'a Value, field: &str) -> Result<&'a str, ProjectsError> {
 }
 fn event_error(error: event_write::EventWriteError) -> ProjectsError {
     match error {
+        event_write::EventWriteError::RequestResult(error) => {
+            ProjectsError::Store(studio_runtime_store::StoreError::RequestResult(error))
+        }
         event_write::EventWriteError::Store(error) => ProjectsError::Store(error),
         event_write::EventWriteError::InvalidRequest(reason)
         | event_write::EventWriteError::Conflict(reason) => ProjectsError::Invalid(reason),

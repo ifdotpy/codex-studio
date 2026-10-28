@@ -611,12 +611,28 @@ async fn session_reply(
             value,
         ));
     }
+    let admission = if call.method == Method::ThreadUnsubscribe {
+        driver::provider_admission(
+            context.store,
+            context.transfer,
+            context.agent,
+            &call.operation,
+        )
+        .await?
+    } else {
+        driver::ProviderAdmission {
+            root_request_id: String::new(),
+            admitted_request: None,
+        }
+    };
     let mut last_receipt = None;
     for attempt in 0..2 {
         let receipt = (if let Some(thread_id) = &call.transfer_source_thread {
             context
                 .session
                 .transfer_provider_request(TransferProviderRequest {
+                    root_request_id: admission.root_request_id.clone(),
+                    admitted_request: admission.admitted_request.clone(),
                     transfer_id: context.transfer.into(),
                     member: context.agent.into(),
                     source_account: context.account.into(),
@@ -632,6 +648,8 @@ async fn session_reply(
             context
                 .session
                 .provider_request(ProviderRequest {
+                    root_request_id: admission.root_request_id.clone(),
+                    admitted_request: admission.admitted_request.clone(),
                     account: context.account.into(),
                     operation: call.operation.clone(),
                     actor: call.actor.clone(),
@@ -1388,7 +1406,16 @@ impl TransferTransport for AccountTransferExecutor {
             let Some(method) = parsed else {
                 return Err(TransferError::Refused("Invalid transfer method"));
             };
+            let admission = driver::provider_admission(
+                &self.store,
+                &ticket.operation,
+                &ticket.agent,
+                &ticket.request,
+            )
+            .await?;
             let request = ProviderRequest {
+                root_request_id: admission.root_request_id,
+                admitted_request: admission.admitted_request,
                 account: ticket.account.clone(),
                 operation: ticket.request.clone(),
                 actor: Some(crate::account_worker::retained::RequestActor {
@@ -1964,6 +1991,8 @@ mod retained_executor_tests {
                 assert_eq!(request.thread_id, "source-thread");
                 crate::account_worker::retained::validate(
                     &crate::account_worker::retained::SessionRequest {
+                        root_request_id: request.root_request_id.clone(),
+                        admitted_request: request.admitted_request.clone(),
                         scope: request.expected_scope.clone(),
                         expected_scope: Some(request.expected_scope.clone()),
                         operation: request.operation.clone(),

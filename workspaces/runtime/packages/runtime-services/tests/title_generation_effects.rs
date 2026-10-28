@@ -1,19 +1,19 @@
 use futures_util::FutureExt;
 use serde_json::{Value, json};
-use sha2::Digest;
 use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::{Duration, SystemTime},
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
+use studio_runtime_schema::persistence::{
+    OutboxKind, OutboxStatus, REQUEST_RESULT_TTL_MS, RequestIdentity,
 };
 use studio_runtime_services::title_generation::{
-    TitleReceipt, TitleRequest, TitleRequestPort, TitleResult, WriteOutcome, admit_python_request,
-    generate, generate_admitted, settle_catalog_failure,
+    TitleError, TitleReceipt, TitleRequest, TitleRequestPort, TitleResult, WriteOutcome,
+    admit_python_request, generate, generate_admitted, progress, settle_catalog_failure,
+    validate_dispatch,
 };
-use studio_runtime_store::migrations::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
-use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
+use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, outbox::Outbox};
 use tokio::sync::{mpsc, oneshot};
 
 async fn fixture() -> (tempfile::TempDir, RuntimeStore) {
@@ -27,463 +27,92 @@ async fn fixture() -> (tempfile::TempDir, RuntimeStore) {
         .expect("fixture state opens");
     (root, store)
 }
-
 fn catalog() -> studio_runtime_schema::model_catalog::ModelCatalog {
     studio_runtime_schema::model_catalog::ModelCatalog::parse(json!({"data":[{"model":"gpt-6-mini","supportedReasoningEfforts":[{"reasoningEffort":"low"}]}]})).expect("valid fixture catalog")
 }
+fn request_id() -> String {
+    RequestIdentity::issue_root()
+}
 fn deadline() -> SystemTime {
-    SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000_000)
+    SystemTime::now() + std::time::Duration::from_secs(60)
 }
-
-async fn legacy_title_effect(
-    state: &str,
-    null_provider: bool,
-) -> (tempfile::TempDir, RuntimeStore) {
-    legacy_title_effect_changed(state, null_provider, None).await
-}
-
-async fn legacy_title_effect_changed(
-    state: &str,
-    null_provider: bool,
-    change: Option<&str>,
-) -> (tempfile::TempDir, RuntimeStore) {
-    let root = tempfile::tempdir().expect("legacy title state");
-    crate::media_auth_fixtures::write_state(
-        root.path(),
-        include_str!("title_generation/initial-state.json"),
-    );
-    {
-        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3"))
-            .expect("closed historical database");
-        db.execute(
-            if null_provider {
-                "UPDATE runtime_agents SET record=json_set(record,'$.provider',NULL)"
-            } else {
-                "UPDATE runtime_agents SET record=json_remove(record,'$.provider')"
-            },
-            [],
-        )
-        .expect("historical provider representation");
-        let agent: String = db
-            .query_row(
-                "SELECT record FROM runtime_agents WHERE id='title-agent'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("legacy agent");
-        let agent: Value = serde_json::from_str(&agent).expect("legacy agent JSON");
-        let items = db
-            .prepare("SELECT record FROM runtime_items ORDER BY created")
-            .expect("items")
-            .query_map([], |row| row.get::<_, String>(0))
-            .expect("item rows")
-            .map(|row| serde_json::from_str::<Value>(&row.expect("item")).expect("item JSON"))
-            .collect::<Vec<_>>();
-        let prompt =
-            studio_runtime_services::title_generation::title_prompt(&agent, &items, &items)
-                .expect("historical title prompt");
-        // Frozen v1 fingerprint preimage: absent and null providers both encoded JSON null.
-        let content = json!({"agent":{"id":"title-agent","epoch":1,"provider":null,
-            "model":"gpt-6","accountKey":"default"},"requestId":"legacy-title",
-            "model":"gpt-6-mini","effort":"low","prompt":prompt,"accountKey":"default"});
-        let fingerprint = data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(
-            serde_json::to_vec(&content).expect("preimage"),
-        ));
-        let public_signature = data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(
-            br#"{"chat": "title-agent", "name": null, "operation": "rename"}"#,
-        ));
-        let effect_id = format!(
-            "title-generation:{}",
-            data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(b"legacy-title"))
-        );
-        db.execute(
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
-            rusqlite::params![
-                "legacy-title",
-                public_signature,
-                json!({"id":"title-agent","request_id":"legacy-title","status":"pending"})
-                    .to_string()
-            ],
-        )
-        .expect("historical public receipt");
-        db.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
-            rusqlite::params![effect_id,"title-generation-effect-v1",json!({"request_id":"legacy-title","agent_id":"title-agent","state":state,"epoch":1,"fingerprint":fingerprint,"title":"Saved legacy title"}).to_string()]).expect("historical effect");
-        if let Some(change) = change {
-            db.execute_batch(change)
-                .expect("historical input changed after request");
-        }
-    }
-    let store = RuntimeStore::open(Some(root.path()))
-        .await
-        .expect("dated provider migration");
-    (root, store)
-}
-
-#[tokio::test]
-async fn provider_identity_migration_preserves_not_sent_and_uncertain_effects() {
-    for state in ["not_sent", "pending", "unknown"] {
-        let (_root, store) = legacy_title_effect(state, false).await;
-        let (pending, finish) = admit_python_request(&store, "title-agent", "legacy-title")
-            .await
-            .expect("same HTTP rename admission");
-        assert_eq!(pending["status"], "pending");
-        assert_eq!(finish, state == "not_sent");
-        let port = FixedPort::new(if state == "not_sent" {
-            vec![TitleReceipt {
-                request_id: "legacy-title".into(),
-                agent_id: "title-agent".into(),
-                epoch: 1,
-                account_key: "default".into(),
-                outcome: WriteOutcome::Written,
-                title: Some("Safely retried title".into()),
-            }]
-        } else {
-            Vec::new()
-        });
-        let result = generate_admitted(
-            &store,
-            &port,
-            "title-agent",
-            &catalog(),
-            "legacy-title",
-            deadline(),
-        )
-        .await
-        .expect("migrated effect semantics");
-        if state == "not_sent" {
-            assert_eq!(
-                result,
-                TitleResult::Applied {
-                    title: "Safely retried title".into()
-                }
-            );
-            assert_eq!(port.calls.load(Ordering::SeqCst), 1);
-        } else {
-            assert_eq!(result, TitleResult::HeldUnknown);
-            assert_eq!(port.calls.load(Ordering::SeqCst), 0);
-            let effect = legacy_effect_record(&store);
-            assert_eq!(effect["state"], state);
-            assert_eq!(effect["title"], "Saved legacy title");
-            assert!(effect.get(TITLE_FINGERPRINT_PROVIDER_2026_10_26).is_none());
-            let canonical = persisted_snapshot(&store);
-            assert_eq!(
-                generate_admitted(
-                    &store,
-                    &port,
-                    "title-agent",
-                    &catalog(),
-                    "legacy-title",
-                    deadline()
-                )
-                .await
-                .expect("held canonical replay"),
-                TitleResult::HeldUnknown
-            );
-            assert_eq!(persisted_snapshot(&store), canonical);
-        }
-    }
-}
-
-fn legacy_effect_record(store: &RuntimeStore) -> Value {
+fn agent(store: &RuntimeStore) -> Value {
     let raw: String = store
         .test_reader()
-        .expect("effect reader")
+        .expect("reader")
         .query_row(
-            "SELECT result FROM runtime_operation_receipts WHERE signature=?1",
-            [studio_runtime_schema::shared_values::TITLE_EFFECT_SIGNATURE],
+            "SELECT record FROM runtime_agents WHERE id='title-agent'",
+            [],
             |row| row.get(0),
         )
-        .expect("saved title effect");
-    serde_json::from_str(&raw).expect("effect JSON")
+        .expect("agent");
+    serde_json::from_str(&raw).expect("record")
 }
-
-#[tokio::test]
-async fn provider_identity_migration_title_conversion_rolls_back_with_admission() {
-    let (_root, store) = legacy_title_effect("written", false).await;
+fn row_count(store: &RuntimeStore, table: &str) -> i64 {
     store
-        .transaction(|tx| {
-            tx.execute_batch(
-                "CREATE TRIGGER fail_title_conversion AFTER UPDATE ON runtime_operation_receipts
-            BEGIN SELECT RAISE(ABORT,'conversion failpoint'); END",
-            )?;
-            Ok(())
+        .test_reader()
+        .expect("reader")
+        .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+            row.get(0)
         })
-        .await
-        .expect("conversion failpoint");
-    let before = persisted_snapshot(&store);
-    let port = FixedPort::new(Vec::new());
-    assert!(
-        generate_admitted(
-            &store,
-            &port,
-            "title-agent",
-            &catalog(),
-            "legacy-title",
-            deadline()
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(persisted_snapshot(&store), before);
-    assert_eq!(port.calls.load(Ordering::SeqCst), 0);
-    store
-        .transaction(|tx| {
-            tx.execute_batch("DROP TRIGGER fail_title_conversion")?;
-            Ok(())
-        })
-        .await
-        .expect("remove conversion failpoint");
-    assert_eq!(
-        generate_admitted(
-            &store,
-            &port,
-            "title-agent",
-            &catalog(),
-            "legacy-title",
-            deadline()
-        )
-        .await
-        .expect("retry atomic conversion"),
-        TitleResult::Applied {
-            title: "Saved legacy title".into()
-        }
-    );
-    assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+        .expect("count")
 }
-
-#[tokio::test]
-async fn provider_identity_migration_rejects_provider_change_after_tagging() {
-    let (_root, store) = legacy_title_effect("written", true).await;
-    store
-        .transaction(|tx| {
-            tx.execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.provider','claude')",
-                [],
-            )?;
-            Ok(())
-        })
-        .await
-        .expect("provider changed after migration");
-    let before = persisted_snapshot(&store);
-    let port = FixedPort::new(Vec::new());
-    let catalog = studio_runtime_schema::model_catalog::ModelCatalog::parse(
-        json!({"data":[{"model":"claude-haiku"}]}),
+fn reply(store: &RuntimeStore, id: &str) -> Value {
+    serde_json::to_value(
+        progress(&store.test_reader().expect("reader"), "title-agent", id)
+            .expect("progress")
+            .expect("known request"),
     )
-    .expect("valid fixture catalog");
-    assert!(matches!(
-        generate_admitted(
-            &store,
-            &port,
-            "title-agent",
-            &catalog,
-            "legacy-title",
-            deadline()
-        )
-        .await,
-        Err(studio_runtime_services::title_generation::TitleError::Conflict)
-    ));
-    assert_eq!(persisted_snapshot(&store), before);
-    assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+    .expect("reply")
 }
-
-#[tokio::test]
-async fn provider_identity_migration_keeps_changed_title_requests_in_conflict() {
-    for state in ["written", "not_sent", "pending", "unknown"] {
-        for (change, current_catalog) in [
-            (
-                Some(
-                    "UPDATE runtime_items SET record=json_set(record,'$.text','changed prompt') WHERE id='title-item-1'",
-                ),
-                catalog(),
-            ),
-            (
-                Some(
-                    "UPDATE runtime_agents SET record=json_set(record,'$.model','changed-chat-model')",
-                ),
-                catalog(),
-            ),
-            (
-                Some(
-                    "UPDATE runtime_agents SET record=json_set(record,'$.accountKey','changed-account')",
-                ),
-                catalog(),
-            ),
-            (
-                Some("UPDATE runtime_agents SET record=json_set(record,'$.epoch',2)"),
-                catalog(),
-            ),
-            (
-                None,
-                studio_runtime_schema::model_catalog::ModelCatalog::parse(json!({"data":[{"model":"changed-mini","supportedReasoningEfforts":[{"reasoningEffort":"low"}]}]})).expect("valid fixture catalog"),
-            ),
-            (None, studio_runtime_schema::model_catalog::ModelCatalog::parse(json!({"data":[{"model":"gpt-6-mini"}]})).expect("valid fixture catalog")),
-        ] {
-            let (_root, store) = legacy_title_effect_changed(state, true, change).await;
-            let before = persisted_snapshot(&store);
-            let port = FixedPort::new(Vec::new());
-            assert!(
-                matches!(
-                    generate_admitted(
-                        &store,
-                        &port,
-                        "title-agent",
-                        &current_catalog,
-                        "legacy-title",
-                        deadline()
-                    )
-                    .await,
-                    Err(studio_runtime_services::title_generation::TitleError::Conflict)
-                ),
-                "{state}, {change:?}, {current_catalog:?}"
-            );
-            assert_eq!(port.calls.load(Ordering::SeqCst), 0);
-            assert_eq!(
-                persisted_snapshot(&store),
-                before,
-                "conflict preserves receipts and provenance"
-            );
-        }
+fn receipt(request: &TitleRequest, outcome: WriteOutcome, title: Option<String>) -> TitleReceipt {
+    TitleReceipt {
+        request_id: request.request_id.clone(),
+        agent_id: request.agent_id.clone(),
+        epoch: request.epoch,
+        account_key: request.account_key.clone(),
+        outcome,
+        title,
     }
 }
-
-#[tokio::test]
-async fn provider_identity_migration_finishes_saved_written_title_without_resend() {
-    for null_provider in [false, true] {
-        let (root, store) = legacy_title_effect("written", null_provider).await;
-        let mut original = legacy_effect_record(&store);
-        assert_eq!(
-            original.get(TITLE_FINGERPRINT_PROVIDER_2026_10_26),
-            Some(&Value::Null)
-        );
-        let (pending, finish) = admit_python_request(&store, "title-agent", "legacy-title")
-            .await
-            .expect("HTTP rename replay admission");
-        assert_eq!(pending["status"], "pending");
-        assert!(finish);
-        let port = FixedPort::new(Vec::new());
-        assert_eq!(
-            generate_admitted(
-                &store,
-                &port,
-                "title-agent",
-                &catalog(),
-                "legacy-title",
-                deadline()
-            )
-            .await
-            .expect("finish migrated durable title"),
-            TitleResult::Applied {
-                title: "Saved legacy title".into()
-            }
-        );
-        assert_eq!(port.calls.load(Ordering::SeqCst), 0);
-        let converted = legacy_effect_record(&store);
-        assert_ne!(original["fingerprint"], converted["fingerprint"]);
-        original
-            .as_object_mut()
-            .expect("original effect")
-            .remove(TITLE_FINGERPRINT_PROVIDER_2026_10_26);
-        original["fingerprint"] = converted["fingerprint"].clone();
-        original["state"] = json!("applied");
-        assert_eq!(
-            converted, original,
-            "only canonical fingerprint and normal apply state change"
-        );
-        let applied = persisted_snapshot(&store);
-        assert_eq!(applied["agent"]["name"], "Saved legacy title");
-        drop(store);
-        let reopened = RuntimeStore::open(Some(root.path()))
-            .await
-            .expect("reopen canonical effect");
-        assert_eq!(
-            generate_admitted(
-                &reopened,
-                &port,
-                "title-agent",
-                &catalog(),
-                "legacy-title",
-                deadline()
-            )
-            .await
-            .expect("idempotent canonical replay"),
-            TitleResult::Applied {
-                title: "Saved legacy title".into()
-            }
-        );
-        assert_eq!(persisted_snapshot(&reopened), applied);
-        assert_eq!(port.calls.load(Ordering::SeqCst), 0);
-    }
-}
-
-#[tokio::test]
-async fn provider_identity_title_generation_refuses_before_request_or_receipt() {
-    let (_root, store) = fixture().await;
-    for provider in [json!("future"), json!(7)] {
-        store.transaction(move |db| {
-            db.execute("UPDATE runtime_agents SET record=json_set(record,'$.provider',json(?1)) WHERE id='title-agent'", [provider.to_string()])?;
-            Ok(())
-        }).await.expect("unknown provider");
-        let before = agent_and_projection(&store);
-        let port = FixedPort::new(vec![TitleReceipt {
-            request_id: "provider-identity".into(),
-            agent_id: "title-agent".into(),
-            epoch: 0,
-            account_key: "default".into(),
-            outcome: WriteOutcome::NotSent,
-            title: None,
-        }]);
-        let error = generate(
-            &store,
-            &port,
-            "title-agent",
-            &catalog(),
-            "provider-identity",
-            deadline(),
-        )
-        .await
-        .expect_err("unknown provider refused");
-        assert!(
-            matches!(error, studio_runtime_services::title_generation::TitleError::InvalidStoredObject { table: "runtime_agents", id } if id == "title-agent")
-        );
-        assert_eq!(port.calls.load(Ordering::SeqCst), 0);
-        assert_eq!(agent_and_projection(&store), before);
-        let receipts: i64 = store
-            .test_reader()
-            .expect("reader")
-            .query_row(
-                "SELECT count(*) FROM runtime_operation_receipts",
-                [],
-                |row| row.get(0),
-            )
-            .expect("receipts");
-        assert_eq!(receipts, 0, "no request intent created");
-    }
-}
-
 struct FixedPort {
-    calls: AtomicUsize,
-    replies: Mutex<Vec<TitleReceipt>>,
+    requests: Mutex<Vec<TitleRequest>>,
+    replies: Mutex<VecDeque<(WriteOutcome, Option<String>)>>,
 }
 impl FixedPort {
-    fn new(replies: Vec<TitleReceipt>) -> Self {
+    fn new(replies: Vec<(WriteOutcome, Option<&str>)>) -> Self {
         Self {
-            calls: AtomicUsize::new(0),
-            replies: Mutex::new(replies),
+            requests: Mutex::new(vec![]),
+            replies: Mutex::new(
+                replies
+                    .into_iter()
+                    .map(|(outcome, title)| (outcome, title.map(str::to_owned)))
+                    .collect(),
+            ),
         }
+    }
+    fn calls(&self) -> usize {
+        self.requests.lock().expect("requests").len()
     }
 }
 impl TitleRequestPort for FixedPort {
     fn request<'a>(
         &'a self,
-        _request: TitleRequest,
+        request: TitleRequest,
     ) -> futures_util::future::BoxFuture<'a, TitleReceipt> {
         Box::pin(async move {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.replies.lock().expect("reply lock").remove(0)
+            let (outcome, title) = self
+                .replies
+                .lock()
+                .expect("replies")
+                .pop_front()
+                .expect("no unexpected dispatch");
+            let reply = receipt(&request, outcome, title);
+            self.requests.lock().expect("requests").push(request);
+            reply
         })
     }
 }
-
 struct GatedPort {
     started: mpsc::UnboundedSender<TitleRequest>,
     reply: Mutex<Option<oneshot::Receiver<TitleReceipt>>>,
@@ -493,946 +122,570 @@ impl TitleRequestPort for GatedPort {
         &'a self,
         request: TitleRequest,
     ) -> futures_util::future::BoxFuture<'a, TitleReceipt> {
-        let started = self.started.clone();
-        let reply = self
+        let receiver = self
             .reply
             .lock()
-            .expect("reply lock")
+            .expect("reply")
             .take()
-            .expect("single request");
+            .expect("single dispatch");
         Box::pin(async move {
-            started
-                .send(request)
-                .expect("request entered provider port");
-            reply.await.expect("provider receipt")
+            self.started.send(request).expect("started");
+            receiver.await.expect("provider receipt")
         })
     }
 }
 
-fn receipt(request: &TitleRequest, outcome: WriteOutcome, title: Option<&str>) -> TitleReceipt {
-    TitleReceipt {
-        request_id: request.request_id.clone(),
-        agent_id: request.agent_id.clone(),
-        epoch: request.epoch,
-        account_key: request.account_key.clone(),
-        outcome,
-        title: title.map(str::to_owned),
-    }
+#[tokio::test]
+async fn title_admission_owns_one_root_and_unresolved_outbox() {
+    let (_root, store) = fixture().await;
+    let id = request_id();
+    let (pending, start) = admit_python_request(&store, "title-agent", &id)
+        .await
+        .expect("admit");
+    assert!(start);
+    assert_eq!(
+        pending,
+        json!({"id":"title-agent","request_id":id,"status":"pending"})
+    );
+    let job = agent(&store)["titleJob"].clone();
+    let root = job["rootRequestId"]
+        .as_str()
+        .expect("provider root admitted once");
+    RequestIdentity::new("provider", &[], root, &[]).expect("v7 provider root");
+    assert_eq!(row_count(&store, "runtime_outbox"), 1);
+    assert_eq!(
+        row_count(&store, "request_results"),
+        0,
+        "pending work is not a completed response"
+    );
+    let retry = admit_python_request(&store, "title-agent", &id)
+        .await
+        .expect("retry");
+    assert_eq!(retry, (pending, true));
+    assert_eq!(agent(&store)["titleJob"], job);
+    let rows = Outbox::pending::<Value>(
+        &store.test_reader().expect("reader"),
+        OutboxKind::TitleGeneration,
+        i64::MAX,
+        10,
+    )
+    .expect("pending selector");
+    assert!(
+        rows.is_empty(),
+        "only the owner explicitly dispatches a title"
+    );
 }
 
-fn agent_and_projection(store: &RuntimeStore) -> (String, Vec<Value>) {
-    let connection = store.test_reader().expect("reader");
-    let agent = connection
-        .query_row(
-            "SELECT record FROM runtime_agents WHERE id='title-agent'",
-            [],
-            |row| row.get(0),
+#[tokio::test]
+async fn unknown_survives_restart_expiry_and_a_new_current_job() {
+    let (root, store) = fixture().await;
+    let id = request_id();
+    let port = FixedPort::new(vec![(WriteOutcome::Unknown, None)]);
+    assert_eq!(
+        generate(&store, &port, "title-agent", &catalog(), &id, deadline())
+            .await
+            .expect("unknown"),
+        TitleResult::HeldUnknown
+    );
+    assert_eq!(port.calls(), 1);
+    let old_job = agent(&store)["titleJob"].clone();
+    let new_id = request_id();
+    admit_python_request(&store, "title-agent", &new_id)
+        .await
+        .expect("new current job");
+    assert_eq!(agent(&store)["titleJob"]["requestId"], new_id);
+    assert_eq!(row_count(&store, "runtime_outbox"), 2);
+    let expired = chrono::Utc::now().timestamp_millis() - REQUEST_RESULT_TTL_MS - 1;
+    let old_id = id.clone();
+    store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_outbox SET payload=json_set(payload,'$.admittedRequest.created',?1) WHERE request_id=?2",rusqlite::params![expired,old_id])?;
+        Ok(())
+    }).await.expect("elapsed admission time");
+    drop(store);
+    let reopened = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("restart");
+    let never_send = FixedPort::new(vec![]);
+    assert_eq!(
+        generate_admitted(
+            &reopened,
+            &never_send,
+            "title-agent",
+            &catalog(),
+            &id,
+            deadline()
         )
-        .expect("agent row");
-    let projection = connection
-        .prepare("SELECT collection,id,seq,hash,payload,deleted FROM sync_entities WHERE collection='agent' AND id='title-agent'")
-        .expect("projection query")
-        .query_map([], |row| {
-            Ok(json!([row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,i64>(5)?]))
-        })
-        .expect("projection rows")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("projection values");
-    (agent, projection)
-}
-
-fn persisted_snapshot(store: &RuntimeStore) -> Value {
-    let connection = store.test_reader().expect("snapshot reader");
-    super::agent_view_fixtures::assert_agent_view_projections(&connection);
-    let agent: String = connection
-        .query_row(
-            "SELECT record FROM runtime_agents WHERE id='title-agent'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("persisted agent");
-    let mut events_statement = connection
-        .prepare("SELECT * FROM runtime_events ORDER BY id")
-        .expect("events query");
-    let event_columns = events_statement
-        .column_names()
+        .await
+        .expect("held"),
+        TitleResult::HeldUnknown
+    );
+    settle_catalog_failure(&reopened, "title-agent", &id)
+        .await
+        .expect("catalog cannot settle unknown");
+    assert_eq!(reply(&reopened, &id)["status"], "pending");
+    assert_eq!(never_send.calls(), 0);
+    let rows = Outbox::for_owner::<Value>(
+        &reopened.test_reader().expect("reader"),
+        studio_runtime_schema::persistence::OwnerKind::Agent,
+        "title-agent",
+        OutboxKind::TitleGeneration,
+    )
+    .expect("obligations");
+    let row = rows
         .iter()
-        .map(|name| (*name).to_owned())
-        .collect::<Vec<_>>();
-    let events = events_statement
-        .query_map([], |row| {
-            let mut event = serde_json::Map::new();
-            for (index, name) in event_columns.iter().enumerate() {
-                let value = match row.get_ref(index)? {
-                    rusqlite::types::ValueRef::Null => Value::Null,
-                    rusqlite::types::ValueRef::Integer(value) => json!(value),
-                    rusqlite::types::ValueRef::Real(value) => json!(value),
-                    rusqlite::types::ValueRef::Text(value) => {
-                        json!(String::from_utf8_lossy(value).to_string())
-                    }
-                    rusqlite::types::ValueRef::Blob(value) => json!(
-                        value
-                            .iter()
-                            .map(|byte| format!("{byte:02x}"))
-                            .collect::<String>()
-                    ),
-                };
-                event.insert(name.clone(), value);
-            }
-            Ok(Value::Object(event))
-        })
-        .expect("event rows")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("event values");
-    let projection = connection.prepare("SELECT collection,id,seq,hash,payload,deleted FROM sync_entities WHERE collection='agent' AND id='title-agent' ORDER BY id")
-        .expect("projection query")
-        .query_map([], |row| Ok(json!([row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<String>>(4)?, row.get::<_, i64>(5)?])))
-        .expect("projection rows").collect::<Result<Vec<_>, _>>().expect("projection values");
-    let receipts = connection
-        .prepare("SELECT id,signature,result FROM runtime_operation_receipts ORDER BY id")
-        .expect("receipt query")
-        .query_map([], |row| {
-            Ok(json!([
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?
-            ]))
-        })
-        .expect("receipt rows")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("receipt values");
-    json!({"agent":serde_json::from_str::<Value>(&agent).expect("agent JSON"),"events":events,"projection":projection,"receipts":receipts})
+        .find(|row| row.request_id.as_deref() == Some(&id))
+        .expect("old job retained");
+    assert_eq!(row.status, OutboxStatus::Unknown);
+    assert_eq!(row.next_at, None);
+    assert_eq!(row.payload["rootRequestId"], old_job["rootRequestId"]);
+    assert_eq!(row_count(&reopened, "request_results"), 0);
 }
 
 #[tokio::test]
-async fn admitted_title_catalog_failure_settles_python_receipt_without_renaming() {
-    let (_root, store) = fixture().await;
-    let before = persisted_snapshot(&store);
-    let (pending, start) = admit_python_request(&store, "title-agent", "catalog-unavailable")
-        .await
-        .expect("admit title");
-    assert!(start);
-    assert_eq!(pending["status"], "pending");
-
-    settle_catalog_failure(&store, "title-agent", "catalog-unavailable")
-        .await
-        .expect("settle unavailable catalog");
-    let connection = store.test_reader().expect("read settled title");
-    let result: String = connection
-        .query_row(
-            "SELECT result FROM runtime_operation_receipts WHERE id='catalog-unavailable'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("durable failure receipt");
-    drop(connection);
-    let result: Value = serde_json::from_str(&result).expect("failure receipt JSON");
-    assert_eq!(result["status"], "failed");
-    assert_eq!(result["request_id"], "catalog-unavailable");
-
-    let after = persisted_snapshot(&store);
-    assert_eq!(after["agent"], before["agent"]);
-    assert_eq!(after["events"], before["events"]);
-    assert_eq!(after["projection"], before["projection"]);
-    let (replayed, retry) = admit_python_request(&store, "title-agent", "catalog-unavailable")
-        .await
-        .expect("replay");
-    assert!(!retry);
-    assert_eq!(replayed["status"], "failed");
-    assert_eq!(persisted_snapshot(&store), after);
-}
-
-#[tokio::test]
-async fn catalog_failure_settlement_preserves_a_durable_written_title_for_recovery() {
-    let (_root, store) = fixture().await;
-    store
-        .transaction(|tx| {
-            tx.execute_batch(
-                "CREATE TRIGGER title_apply_fail BEFORE UPDATE ON runtime_agents
-                 BEGIN SELECT RAISE(ABORT,'title apply failpoint'); END",
-            )?;
-            Ok(())
-        })
-        .await
-        .expect("install deterministic final-apply failure");
-    let provider = FixedPort::new(vec![TitleReceipt {
-        request_id: "written-before-catalog-failure".into(),
-        agent_id: "title-agent".into(),
-        epoch: 1,
-        account_key: "default".into(),
-        outcome: WriteOutcome::Written,
-        title: Some("Durable generated title".into()),
-    }]);
-    assert!(
-        generate(
-            &store,
-            &provider,
-            "title-agent",
-            &catalog(),
-            "written-before-catalog-failure",
-            deadline()
-        )
-        .await
-        .is_err(),
-        "the final title-application transaction fails"
-    );
-
-    let written_effect: Value = {
-        let connection = store.test_reader().expect("read durable provider effect");
-        let raw: String = connection
-            .query_row(
-                "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'title-generation:%'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("written effect receipt");
-        serde_json::from_str(&raw).expect("effect JSON")
-    };
-    assert_eq!(written_effect["state"], "written");
-    assert_eq!(written_effect["title"], "Durable generated title");
-    assert!(written_effect["fingerprint"].as_str().is_some());
-
-    settle_catalog_failure(&store, "title-agent", "written-before-catalog-failure")
-        .await
-        .expect("settle catalog failure without losing written result");
-    let (public_result, effect_after_settlement) = {
-        let connection = store
-            .test_reader()
-            .expect("read title receipts after settlement");
-        let public_raw: String = connection
-            .query_row(
-                "SELECT result FROM runtime_operation_receipts WHERE id='written-before-catalog-failure'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("public receipt");
-        let effect_raw: String = connection
-            .query_row(
-                "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'title-generation:%'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("written effect receipt");
-        (
-            serde_json::from_str::<Value>(&public_raw).expect("public JSON"),
-            serde_json::from_str::<Value>(&effect_raw).expect("effect JSON"),
-        )
-    };
-    assert_eq!(public_result["status"], "pending");
-    assert_eq!(effect_after_settlement, written_effect);
-
-    store
-        .transaction(|tx| {
-            tx.execute_batch("DROP TRIGGER title_apply_fail")?;
-            Ok(())
-        })
-        .await
-        .expect("remove deterministic failure");
-    let (retry_receipt, should_finish) =
-        admit_python_request(&store, "title-agent", "written-before-catalog-failure")
-            .await
-            .expect("same-identity HTTP retry admission");
-    assert!(
-        should_finish,
-        "written effects must schedule application recovery"
-    );
-    assert_eq!(retry_receipt["status"], "pending");
-    let no_provider = FixedPort::new(Vec::new());
-    assert_eq!(
-        generate_admitted(
-            &store,
-            &no_provider,
-            "title-agent",
-            &catalog(),
-            "written-before-catalog-failure",
-            deadline()
-        )
-        .await
-        .expect("recover durable written title"),
-        TitleResult::Applied {
-            title: "Durable generated title".into()
-        }
-    );
-    assert_eq!(no_provider.calls.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test]
-async fn admitted_title_receipt_replays_in_python_shape_without_second_provider_call() {
-    let (_root, store) = fixture().await;
-    let port = FixedPort::new(vec![TitleReceipt {
-        request_id: "admitted-replay".into(),
-        agent_id: "title-agent".into(),
-        epoch: 1,
-        account_key: "default".into(),
-        outcome: WriteOutcome::Written,
-        title: Some("Generated once".into()),
-    }]);
-    let (pending, start) = admit_python_request(&store, "title-agent", "admitted-replay")
-        .await
-        .expect("durable admission");
-    assert!(start);
-    assert_eq!(pending["status"], "pending");
-    assert_eq!(
-        generate_admitted(
-            &store,
-            &port,
-            "title-agent",
-            &catalog(),
-            "admitted-replay",
-            deadline()
-        )
-        .await
-        .expect("provider result"),
-        TitleResult::Applied {
-            title: "Generated once".into()
-        }
-    );
-    let (replayed, retry) = admit_python_request(&store, "title-agent", "admitted-replay")
-        .await
-        .expect("poll completed title receipt");
-    assert!(!retry);
-    assert_eq!(replayed["id"], "title-agent");
-    assert_eq!(replayed["request_id"], "admitted-replay");
-    assert_eq!(replayed["status"], "applied");
-    assert_eq!(replayed["name"], "Generated once");
-    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn python_pending_without_internal_effect_remains_unchanged_and_is_not_resent() {
-    let (_root, store) = fixture().await;
-    let python_signature = data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(
-        br#"{"chat": "title-agent", "name": null, "operation": "rename"}"#,
-    ));
-    store
-        .transaction(move |tx| {
-            tx.execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
-                rusqlite::params![
-                    "legacy-pending",
-                    python_signature,
-                    json!({"id":"title-agent","request_id":"legacy-pending","status":"pending"})
-                        .to_string()
-                ],
-            )?;
-            Ok(())
-        })
-        .await
-        .expect("Python-shaped pending receipt");
-    let port = FixedPort::new(Vec::new());
-    assert_eq!(
-        generate_admitted(
-            &store,
-            &port,
-            "title-agent",
-            &catalog(),
-            "legacy-pending",
-            deadline()
-        )
-        .await
-        .expect("pending receipt with unknown execution state stays held"),
-        TitleResult::HeldUnknown,
-    );
-    assert_eq!(port.calls.load(Ordering::SeqCst), 0);
-    let (replayed, start) = admit_python_request(&store, "title-agent", "legacy-pending")
-        .await
-        .expect("replay Python pending receipt");
-    assert!(!start);
-    assert_eq!(replayed["status"], "pending");
-    assert_eq!(replayed["request_id"], "legacy-pending");
-    assert_eq!(port.calls.load(Ordering::SeqCst), 0);
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TitleScenario {
-    Apply,
-    Manual,
-    Tool,
-    Refusal,
-}
-
-fn expected_snapshot(scenario: TitleScenario) -> Value {
-    serde_json::from_str(match scenario {
-        TitleScenario::Apply => include_str!("title_generation/apply-expected.json"),
-        TitleScenario::Manual => include_str!("title_generation/manual-expected.json"),
-        TitleScenario::Tool => include_str!("title_generation/tool-expected.json"),
-        TitleScenario::Refusal => include_str!("title_generation/refusal-expected.json"),
-    })
-    .expect("frozen title snapshot")
-}
-
-async fn write_concurrent_title(store: &RuntimeStore, name: &str, manual: bool) {
-    let name = name.to_owned();
-    store
-        .transaction_with(move |tx| {
-            let raw: String = tx.query_row(
-                "SELECT record FROM runtime_agents WHERE id='title-agent'",
-                [],
-                |row| row.get(0),
-            )?;
-            let mut record: Value =
-                serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
-            record["name"] = json!(name);
-            record["needsTitle"] = json!(false);
-            if manual {
-                record["manualName"] = json!(true);
-            }
-            let typed: AgentRecord = serde_json::from_value(record.clone())
-                .map_err(studio_runtime_store::StoreError::from)?;
-            AgentRepository::put(tx, &typed)?;
-            studio_runtime_services::agents_create::publish_agent(tx, &record)?;
-            Ok::<_, studio_runtime_store::StoreError>(())
-        })
-        .await
-        .expect("concurrent writer commits");
-}
-
-async fn write_deleted(store: &RuntimeStore) {
-    store
-        .transaction_with(|tx| {
-            let raw: String = tx.query_row(
-                "SELECT record FROM runtime_agents WHERE id='title-agent'",
-                [],
-                |row| row.get(0),
-            )?;
-            let mut record: Value =
-                serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
-            record["deletedAt"] = json!(1_791_936_000.0);
-            let typed: AgentRecord = serde_json::from_value(record.clone())
-                .map_err(studio_runtime_store::StoreError::from)?;
-            AgentRepository::put(tx, &typed)?;
-            studio_runtime_services::agents_create::publish_agent(tx, &record)?;
-            Ok::<_, studio_runtime_store::StoreError>(())
-        })
-        .await
-        .expect("deletion commits");
-}
-
-#[tokio::test]
-async fn persisted_python_results_match_apply_late_writers_and_refusal() {
-    for (scenario, concurrent) in [
-        (TitleScenario::Apply, None),
-        (TitleScenario::Manual, Some(("Manual title", true))),
-        (TitleScenario::Tool, Some(("Tool title", false))),
-        (TitleScenario::Refusal, None),
-    ] {
-        let (_root, store) = fixture().await;
-        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let port = Arc::new(GatedPort {
-            started: started_tx,
-            reply: Mutex::new(Some(reply_rx)),
-        });
-        let task_store = Arc::new(store);
-        let future_store = task_store.clone();
-        let future_port = port.clone();
-        let task = tokio::spawn(async move {
-            generate(
-                &future_store,
-                future_port.as_ref(),
-                "title-agent",
-                &catalog(),
-                "persisted-title",
-                deadline(),
-            )
-            .await
-        });
-        let request = started_rx.recv().await.expect("provider request pending");
-        match concurrent {
-            Some((name, manual)) => write_concurrent_title(&task_store, name, manual).await,
-            None if scenario == TitleScenario::Refusal => write_deleted(&task_store).await,
-            None => {}
-        }
-        let before_result = agent_and_projection(&task_store);
-        reply_tx
-            .send(receipt(
-                &request,
-                WriteOutcome::Written,
-                Some("Generated title"),
-            ))
-            .expect("provider result");
-        let result = task
-            .await
-            .expect("title task joins")
-            .expect("title service result");
-        if scenario == TitleScenario::Apply {
-            assert_eq!(
-                result,
-                TitleResult::Applied {
-                    title: "Generated title".into()
-                }
-            );
-        } else {
-            assert_eq!(result, TitleResult::Discarded);
-            assert_eq!(agent_and_projection(&task_store), before_result);
-        }
-        let rust = persisted_snapshot(&task_store);
-        let python = expected_snapshot(scenario);
-        assert_eq!(rust["receipts"].as_array().map(Vec::len), Some(2));
-        assert_eq!(python["receipts"].as_array().map(Vec::len), Some(1));
-        let public_receipt = rust["receipts"]
-            .as_array()
-            .expect("Rust receipts")
-            .iter()
-            .find(|row| row[0] == "persisted-title")
-            .expect("Python-shaped public title receipt");
-        let python_receipt = python["receipts"]
-            .as_array()
-            .expect("Python receipts")
-            .first()
-            .expect("Python title receipt");
-        assert_eq!(public_receipt[0], python_receipt[0]);
-        assert_eq!(public_receipt[1], python_receipt[1]);
-        assert_eq!(
-            serde_json::from_str::<Value>(public_receipt[2].as_str().expect("Rust receipt JSON"))
-                .expect("Rust receipt value"),
-            serde_json::from_str::<Value>(python_receipt[2].as_str().expect("Python receipt JSON"))
-                .expect("Python receipt value")
-        );
-        let mut rust_without_receipts = rust.clone();
-        let mut python_without_receipts = python.clone();
-        rust_without_receipts
-            .as_object_mut()
-            .expect("Rust snapshot")
-            .remove("receipts");
-        python_without_receipts
-            .as_object_mut()
-            .expect("Python snapshot")
-            .remove("receipts");
-        // Added summary/detail publications share the durable sequence owner.
-        // Keep complete payload/hash parity; check counters as positive revisions.
-        for snapshot in [&mut rust_without_receipts, &mut python_without_receipts] {
-            for projection in snapshot["projection"].as_array_mut().expect("projections") {
-                assert!(projection[2].as_i64().is_some_and(|seq| seq > 0));
-                projection[2] = json!("<revision>");
-            }
-        }
-        assert_eq!(
-            rust_without_receipts, python_without_receipts,
-            "agent, events, and projection for {scenario:?}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn applied_request_replays_after_restart_and_rejects_changed_content_without_writes() {
+async fn not_sent_retry_preserves_root_and_exact_reply_after_later_changes() {
     let (root, store) = fixture().await;
-    let port = FixedPort::new(vec![TitleReceipt {
-        request_id: "restart-applied".into(),
-        agent_id: "title-agent".into(),
-        epoch: 1,
-        account_key: "default".into(),
-        outcome: WriteOutcome::Written,
-        title: Some("Persisted title".into()),
-    }]);
-    assert_eq!(
-        generate(
-            &store,
-            &port,
-            "title-agent",
-            &catalog(),
-            "restart-applied",
-            deadline(),
-        )
-        .await
-        .expect("first apply"),
-        TitleResult::Applied {
-            title: "Persisted title".into()
-        }
-    );
-    drop(store);
-
-    let reopened = RuntimeStore::open(Some(root.path()))
-        .await
-        .expect("restart after applied title");
-    let before_replay = persisted_snapshot(&reopened);
-    let no_provider = FixedPort::new(Vec::new());
-    assert_eq!(
-        generate(
-            &reopened,
-            &no_provider,
-            "title-agent",
-            &catalog(),
-            "restart-applied",
-            deadline(),
-        )
-        .await
-        .expect("same identity replay"),
-        TitleResult::Applied {
-            title: "Persisted title".into()
-        }
-    );
-    assert_eq!(no_provider.calls.load(Ordering::SeqCst), 0);
-    assert_eq!(persisted_snapshot(&reopened), before_replay);
-
-    reopened
-        .transaction(|tx| {
-            tx.execute(
-                "UPDATE runtime_items SET record=json_set(record,'$.text','changed after apply') WHERE id='title-item-1'",
-                [],
-            )?;
-            Ok(())
-        })
-        .await.expect("changed request content persists");
-    let before_conflict = persisted_snapshot(&reopened);
-    assert!(matches!(
-        generate(
-            &reopened,
-            &no_provider,
-            "title-agent",
-            &catalog(),
-            "restart-applied",
-            deadline(),
-        )
-        .await,
-        Err(studio_runtime_services::title_generation::TitleError::Conflict)
-    ));
-    assert_eq!(no_provider.calls.load(Ordering::SeqCst), 0);
-    assert_eq!(persisted_snapshot(&reopened), before_conflict);
-}
-
-#[tokio::test]
-async fn completed_python_receipt_replays_without_request_or_persisted_writes() {
-    let (root, store) = fixture().await;
-    drop(store);
-    crate::media_auth_fixtures::write_state(
-        root.path(),
-        include_str!("title_generation/apply-state.json"),
-    );
-    let python = expected_snapshot(TitleScenario::Apply);
-    let reopened = RuntimeStore::open(Some(root.path()))
-        .await
-        .expect("open Python-completed receipt");
-    let before = persisted_snapshot(&reopened);
-    assert_eq!(before, python, "Python persisted rows including receipt");
-
-    let no_provider = FixedPort::new(Vec::new());
-    assert_eq!(
-        generate(
-            &reopened,
-            &no_provider,
-            "title-agent",
-            &catalog(),
-            "persisted-title",
-            deadline(),
-        )
-        .await
-        .expect("Python receipt replay"),
-        TitleResult::Applied {
-            title: "Generated title".into()
-        }
-    );
-    assert_eq!(no_provider.calls.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        persisted_snapshot(&reopened),
-        before,
-        "replay does not write agent, events, projection, or receipt"
-    );
-}
-
-#[tokio::test]
-async fn unknown_provider_outcome_is_never_resent_after_replay() {
-    let (_root, store) = fixture().await;
-    let port = FixedPort::new(vec![TitleReceipt {
-        request_id: "title-request".into(),
-        agent_id: "title-agent".into(),
-        epoch: 1,
-        account_key: "default".into(),
-        outcome: WriteOutcome::Unknown,
-        title: None,
-    }]);
-    let first = generate(
-        &store,
-        &port,
-        "title-agent",
-        &catalog(),
-        "title-request",
-        deadline(),
-    )
-    .await
-    .expect("first request");
-    let second = generate(
-        &store,
-        &port,
-        "title-agent",
-        &catalog(),
-        "title-request",
-        deadline(),
-    )
-    .await
-    .expect("replay");
-    assert_eq!(first, TitleResult::HeldUnknown);
-    assert_eq!(second, TitleResult::HeldUnknown);
-    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn proven_not_sent_can_retry_same_identity_once_written() {
-    let (_root, store) = fixture().await;
+    let id = request_id();
     let port = FixedPort::new(vec![
-        TitleReceipt {
-            request_id: "title-request".into(),
-            agent_id: "title-agent".into(),
-            epoch: 1,
-            account_key: "default".into(),
-            outcome: WriteOutcome::NotSent,
-            title: None,
-        },
-        TitleReceipt {
-            request_id: "title-request".into(),
-            agent_id: "title-agent".into(),
-            epoch: 1,
-            account_key: "default".into(),
-            outcome: WriteOutcome::Written,
-            title: Some("Useful title".into()),
-        },
+        (WriteOutcome::NotSent, None),
+        (WriteOutcome::Written, Some("Useful title")),
     ]);
     assert_eq!(
-        generate(
-            &store,
-            &port,
-            "title-agent",
-            &catalog(),
-            "title-request",
-            deadline()
-        )
-        .await
-        .expect("not sent"),
+        generate(&store, &port, "title-agent", &catalog(), &id, deadline())
+            .await
+            .expect("not sent"),
         TitleResult::RetryableNotSent
     );
     assert_eq!(
-        generate(
-            &store,
-            &port,
-            "title-agent",
-            &catalog(),
-            "title-request",
-            deadline()
-        )
-        .await
-        .expect("retry"),
+        generate(&store, &port, "title-agent", &catalog(), &id, deadline())
+            .await
+            .expect("retry"),
         TitleResult::Applied {
             title: "Useful title".into()
         }
     );
-    assert_eq!(port.calls.load(Ordering::SeqCst), 2);
-    let (record, projection) = agent_and_projection(&store);
-    assert_eq!(
-        serde_json::from_str::<Value>(&record).expect("record")["name"],
-        "Useful title"
-    );
-    assert_eq!(projection.len(), 1);
-}
-
-#[tokio::test]
-async fn changed_prompt_under_a_retry_identity_conflicts_without_resending() {
-    let (_root, store) = fixture().await;
-    let port = FixedPort::new(vec![TitleReceipt {
-        request_id: "same-id".into(),
-        agent_id: "title-agent".into(),
-        epoch: 1,
-        account_key: "default".into(),
-        outcome: WriteOutcome::NotSent,
-        title: None,
-    }]);
-    assert_eq!(
-        generate(
-            &store,
-            &port,
-            "title-agent",
-            &catalog(),
-            "same-id",
-            deadline()
-        )
-        .await
-        .expect("NotSent"),
-        TitleResult::RetryableNotSent
-    );
+    let requests = port.requests.lock().expect("requests").clone();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].root_request_id, requests[1].root_request_id);
+    assert_eq!(requests[0].admitted_request, requests[1].admitted_request);
+    let expected =
+        json!({"id":"title-agent","request_id":id,"status":"applied","name":"Useful title"});
+    assert_eq!(reply(&store, &id), expected);
+    assert_eq!(row_count(&store, "runtime_outbox"), 0);
+    assert_eq!(row_count(&store, "request_results"), 1);
     store.transaction(|tx| {
-        tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text','changed prompt') WHERE id='title-item-1'", [])?;
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.name','Later title','$.model','different model') WHERE id='title-agent'",[])?;
+        tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text','later prompt')",[])?;
         Ok(())
-    }).await.expect("Python-written item changes");
-    assert!(
-        generate(
-            &store,
-            &port,
-            "title-agent",
-            &catalog(),
-            "same-id",
-            deadline()
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn committed_intent_is_held_after_restart_before_provider_call() {
-    let (root, store) = fixture().await;
-    store.set_commit_notifier(|| panic!("crash after durable intent commit"));
-    let port = FixedPort::new(Vec::new());
-    let interrupted = std::panic::AssertUnwindSafe(generate(
-        &store,
-        &port,
-        "title-agent",
-        &catalog(),
-        "crash-after-intent",
-        deadline(),
-    ))
-    .catch_unwind()
-    .await;
-    assert!(interrupted.is_err());
-    assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+    }).await.expect("later business state");
     drop(store);
     let reopened = RuntimeStore::open(Some(root.path()))
         .await
-        .expect("restart after intent");
-    let replay_port = FixedPort::new(Vec::new());
+        .expect("restart");
+    let no_provider = FixedPort::new(vec![]);
     assert_eq!(
-        generate(
+        admit_python_request(&reopened, "title-agent", &id)
+            .await
+            .expect("replay"),
+        (expected, false)
+    );
+    assert_eq!(
+        generate_admitted(
             &reopened,
-            &replay_port,
+            &no_provider,
             "title-agent",
             &catalog(),
-            "crash-after-intent",
+            &id,
             deadline()
         )
         .await
-        .expect("held intent"),
-        TitleResult::HeldUnknown,
+        .expect("exact replay"),
+        TitleResult::Applied {
+            title: "Useful title".into()
+        }
     );
-    assert_eq!(replay_port.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(agent(&reopened)["name"], "Later title");
+    assert_eq!(no_provider.calls(), 0);
 }
 
 #[tokio::test]
-async fn failpoints_before_provider_dispatch_roll_back() {
-    // Final title/projection failures are covered by the durable replay test below.
-    for operation in ["INSERT", "UPDATE"] {
-        for timing in ["BEFORE", "AFTER"] {
-            let (_root, store) = fixture().await;
-            store.transaction(move |tx| {
-                tx.execute_batch(&format!("CREATE TRIGGER title_write_fail {timing} {operation} ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT,'title write failpoint'); END"))?;
-                Ok(())
-            }).await.expect("title write failpoint");
-            let port = FixedPort::new(Vec::new());
-            assert!(
-                generate(
-                    &store,
-                    &port,
-                    "title-agent",
-                    &catalog(),
-                    "title-write-fail",
-                    deadline()
-                )
-                .await
-                .is_err(),
-                "{operation} {timing}"
-            );
-            assert_eq!(port.calls.load(Ordering::SeqCst), 0);
-            if operation == "INSERT" {
-                let connection = store.test_reader().expect("state read");
-                let intents: i64 = connection
-                    .query_row(
-                        "SELECT COUNT(*) FROM runtime_operation_receipts",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .expect("intent count");
-                assert_eq!(intents, 0, "{timing} intent write rolls back");
-            }
-            let (record, projection) = agent_and_projection(&store);
-            assert_eq!(
-                serde_json::from_str::<Value>(&record).expect("agent")["name"],
-                "Original conversation name"
-            );
-            assert!(projection.is_empty(), "{operation} {timing}");
-        }
+async fn changed_input_conflicts_only_before_another_not_sent_dispatch() {
+    let (_root, store) = fixture().await;
+    let id = request_id();
+    let port = FixedPort::new(vec![(WriteOutcome::NotSent, None)]);
+    generate(&store, &port, "title-agent", &catalog(), &id, deadline())
+        .await
+        .expect("not sent");
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_items SET record=json_set(record,'$.text','changed prompt')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("change prompt");
+    assert!(matches!(
+        generate(&store, &port, "title-agent", &catalog(), &id, deadline()).await,
+        Err(TitleError::Conflict)
+    ));
+    assert_eq!(port.calls(), 1);
+}
+
+#[tokio::test]
+async fn crash_after_dispatch_admission_never_resends() {
+    let (root, store) = fixture().await;
+    let id = request_id();
+    admit_python_request(&store, "title-agent", &id)
+        .await
+        .expect("admit");
+    store.set_commit_notifier(|| panic!("crash after durable dispatch admission"));
+    let port = FixedPort::new(vec![]);
+    assert!(
+        std::panic::AssertUnwindSafe(generate_admitted(
+            &store,
+            &port,
+            "title-agent",
+            &catalog(),
+            &id,
+            deadline()
+        ))
+        .catch_unwind()
+        .await
+        .is_err()
+    );
+    assert_eq!(port.calls(), 0);
+    drop(store);
+    let reopened = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("restart");
+    assert_eq!(
+        generate_admitted(&reopened, &port, "title-agent", &catalog(), &id, deadline())
+            .await
+            .expect("held intent"),
+        TitleResult::HeldUnknown
+    );
+    assert_eq!(port.calls(), 0);
+}
+
+#[tokio::test]
+async fn admission_failures_roll_back_before_provider_dispatch() {
+    for table in ["runtime_agents", "runtime_outbox"] {
+        let (_root, store) = fixture().await;
+        store.transaction(move |tx| {
+            let operation=if table=="runtime_agents" {"UPDATE"}else{"INSERT"};
+            tx.execute_batch(&format!("CREATE TRIGGER title_admit_fail AFTER {operation} ON {table} BEGIN SELECT RAISE(ABORT,'admission failpoint'); END"))?;Ok(())
+        }).await.expect("admission failure");
+        let port = FixedPort::new(vec![]);
+        assert!(
+            generate(
+                &store,
+                &port,
+                "title-agent",
+                &catalog(),
+                &request_id(),
+                deadline()
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(port.calls(), 0);
+        assert_eq!(row_count(&store, "runtime_outbox"), 0);
+        assert_eq!(row_count(&store, "request_results"), 0);
+        assert!(agent(&store).get("titleJob").is_none());
     }
 }
 
 #[tokio::test]
-async fn durable_written_title_replays_after_failed_final_commit_without_provider_resend() {
-    for (table, operation, condition) in [
-        ("runtime_agents", "UPDATE", ""),
-        ("sync_entities", "INSERT", ""),
-        (
-            "runtime_operation_receipts",
-            "UPDATE",
-            " WHEN NEW.id LIKE 'title-generation:%' AND json_extract(NEW.result,'$.state')='applied'",
-        ),
+async fn durable_written_title_recovers_after_final_transaction_failure() {
+    for statement in [
+        "CREATE TRIGGER title_final_fail BEFORE UPDATE ON runtime_agents WHEN json_extract(NEW.record,'$.name')='Recovered title' BEGIN SELECT RAISE(ABORT,'final failpoint'); END",
+        "CREATE TRIGGER title_final_fail AFTER INSERT ON request_results BEGIN SELECT RAISE(ABORT,'final failpoint'); END",
+        "CREATE TRIGGER title_final_fail AFTER DELETE ON runtime_outbox BEGIN SELECT RAISE(ABORT,'final failpoint'); END",
+        "CREATE TRIGGER title_final_fail BEFORE INSERT ON sync_entities WHEN NEW.collection='agentSummary' AND json_extract(NEW.payload,'$.value.name')='Recovered title' BEGIN SELECT RAISE(ABORT,'final failpoint'); END",
     ] {
-        for timing in ["BEFORE", "AFTER"] {
-            let (root, store) = fixture().await;
-            store
-                .transaction(move |tx| {
-                    tx.execute_batch(&format!("CREATE TRIGGER title_final_fail {timing} {operation} ON {table}{condition} BEGIN SELECT RAISE(ABORT,'title final failpoint'); END"))?;
-                    Ok(())
-                })
-                .await.expect("final-write failpoint");
-            let port = FixedPort::new(vec![TitleReceipt {
-                request_id: "title-replay".into(),
-                agent_id: "title-agent".into(),
-                epoch: 1,
-                account_key: "default".into(),
-                outcome: WriteOutcome::Written,
-                title: Some("Recovered title".into()),
-            }]);
-            assert!(
-                generate(
-                    &store,
-                    &port,
-                    "title-agent",
-                    &catalog(),
-                    "title-replay",
-                    deadline()
-                )
+        let (root, store) = fixture().await;
+        let id = request_id();
+        store
+            .transaction(move |tx| {
+                tx.execute_batch(statement)?;
+                Ok(())
+            })
+            .await
+            .expect("final failure");
+        let port = FixedPort::new(vec![(WriteOutcome::Written, Some("Recovered title"))]);
+        assert!(
+            generate(&store, &port, "title-agent", &catalog(), &id, deadline())
                 .await
                 .is_err(),
-                "{table} {timing}"
-            );
-            assert_eq!(port.calls.load(Ordering::SeqCst), 1);
-            let (record, projection) = agent_and_projection(&store);
-            assert_eq!(
-                serde_json::from_str::<Value>(&record).expect("agent")["name"],
-                "Original conversation name"
-            );
-            assert!(projection.is_empty(), "{table} {timing}");
-            store
-                .transaction(|tx| {
-                    tx.execute_batch("DROP TRIGGER title_final_fail")?;
-                    Ok(())
-                })
-                .await
-                .expect("remove failure trigger");
-            drop(store);
-            let reopened = RuntimeStore::open(Some(root.path()))
-                .await
-                .expect("restart with written title");
-            let no_provider = FixedPort::new(Vec::new());
-            assert_eq!(
-                generate(
-                    &reopened,
-                    &no_provider,
-                    "title-agent",
-                    &catalog(),
-                    "title-replay",
-                    deadline()
-                )
-                .await
-                .expect("replay durable title"),
-                TitleResult::Applied {
-                    title: "Recovered title".into()
-                },
-                "{table} {timing}"
-            );
-            assert_eq!(no_provider.calls.load(Ordering::SeqCst), 0);
-            let (record, projection) = agent_and_projection(&reopened);
-            assert_eq!(
-                serde_json::from_str::<Value>(&record).expect("agent")["name"],
-                "Recovered title"
-            );
-            assert_eq!(projection.len(), 1);
-        }
+            "{statement}"
+        );
+        assert_eq!(port.calls(), 1);
+        assert_eq!(agent(&store)["name"], "Original conversation name");
+        assert_eq!(agent(&store)["titleJob"]["status"], "written");
+        assert_eq!(row_count(&store, "request_results"), 0);
+        settle_catalog_failure(&store, "title-agent", &id)
+            .await
+            .expect("catalog preserves written title");
+        assert_eq!(reply(&store, &id)["status"], "pending");
+        store
+            .transaction(|tx| {
+                tx.execute_batch("DROP TRIGGER title_final_fail")?;
+                Ok(())
+            })
+            .await
+            .expect("remove failure");
+        drop(store);
+        let reopened = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart");
+        let never_send = FixedPort::new(vec![]);
+        assert_eq!(
+            generate_admitted(
+                &reopened,
+                &never_send,
+                "title-agent",
+                &catalog(),
+                &id,
+                deadline()
+            )
+            .await
+            .expect("recover written"),
+            TitleResult::Applied {
+                title: "Recovered title".into()
+            }
+        );
+        assert_eq!(never_send.calls(), 0);
+        assert_eq!(row_count(&reopened, "runtime_outbox"), 0);
+        assert_eq!(row_count(&reopened, "request_results"), 1);
     }
+}
+
+#[tokio::test]
+async fn catalog_failure_settles_only_unsent_and_invalid_titles_complete() {
+    let (_root, store) = fixture().await;
+    let id = request_id();
+    admit_python_request(&store, "title-agent", &id)
+        .await
+        .expect("admit");
+    settle_catalog_failure(&store, "title-agent", &id)
+        .await
+        .expect("catalog failure");
+    assert_eq!(
+        reply(&store, &id),
+        json!({"id":"title-agent","request_id":id,"status":"failed","error":"The title could not be generated. Try /rename again."})
+    );
+    let second = request_id();
+    let port = FixedPort::new(vec![(WriteOutcome::Written, Some("bad\ntitle"))]);
+    assert!(matches!(
+        generate(
+            &store,
+            &port,
+            "title-agent",
+            &catalog(),
+            &second,
+            deadline()
+        )
+        .await,
+        Err(TitleError::InvalidTitle)
+    ));
+    assert_eq!(reply(&store, &second)["status"], "failed");
+    assert_eq!(row_count(&store, "runtime_outbox"), 0);
+    assert_eq!(row_count(&store, "request_results"), 2);
+}
+
+#[tokio::test]
+async fn late_name_epoch_or_deletion_changes_discard_without_renaming() {
+    for change in [
+        json!({"name":"Manual title","manualName":true}),
+        json!({"name":"Tool title"}),
+        json!({"epoch":2}),
+        json!({"deletedAt":1}),
+    ] {
+        let (_root, store) = fixture().await;
+        let id = request_id();
+        let (started, mut requests) = mpsc::unbounded_channel();
+        let (send, receive) = oneshot::channel();
+        let port = Arc::new(GatedPort {
+            started,
+            reply: Mutex::new(Some(receive)),
+        });
+        let store = Arc::new(store);
+        let (task_store, task_port, task_id) = (Arc::clone(&store), Arc::clone(&port), id.clone());
+        let task = tokio::spawn(async move {
+            generate(
+                &task_store,
+                task_port.as_ref(),
+                "title-agent",
+                &catalog(),
+                &task_id,
+                deadline(),
+            )
+            .await
+        });
+        let request = requests.recv().await.expect("provider request");
+        let db = store.test_reader().expect("owner proof");
+        validate_dispatch(&db, &request).expect("exact pending job");
+        for changed in ["root", "prompt", "epoch"] {
+            let mut invalid = request.clone();
+            match changed {
+                "root" => invalid.root_request_id = request_id(),
+                "prompt" => invalid.prompt.push_str(" changed"),
+                "epoch" => invalid.epoch += 1,
+                _ => unreachable!(),
+            }
+            assert!(matches!(
+                validate_dispatch(&db, &invalid),
+                Err(TitleError::Conflict)
+            ));
+        }
+        drop(db);
+
+        store
+            .transaction(move |tx| {
+                let raw: String = tx.query_row(
+                    "SELECT record FROM runtime_agents WHERE id='title-agent'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let mut record: Value = serde_json::from_str(&raw)?;
+                record
+                    .as_object_mut()
+                    .expect("record")
+                    .extend(change.as_object().expect("change").clone());
+                AgentRepository::put(tx, &AgentRecord::from_value(record)?)?;
+                Ok(())
+            })
+            .await
+            .expect("concurrent writer");
+        let name = agent(&store)["name"].clone();
+        send.send(receipt(
+            &request,
+            WriteOutcome::Written,
+            Some("Generated title".into()),
+        ))
+        .expect("receipt");
+        assert_eq!(
+            task.await.expect("join").expect("discard"),
+            TitleResult::Discarded
+        );
+        assert_eq!(agent(&store)["name"], name);
+        assert_eq!(reply(&store, &id)["status"], "failed");
+        assert_eq!(row_count(&store, "runtime_outbox"), 0);
+    }
+}
+
+#[tokio::test]
+async fn unknown_provider_and_unadmitted_opaque_ids_never_dispatch() {
+    let (_root, store) = fixture().await;
+    let port = FixedPort::new(vec![]);
+    assert!(
+        admit_python_request(&store, "title-agent", "opaque-new-id")
+            .await
+            .is_err()
+    );
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.provider','future')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("unknown provider");
+    assert!(matches!(
+        generate(
+            &store,
+            &port,
+            "title-agent",
+            &catalog(),
+            &request_id(),
+            deadline()
+        )
+        .await,
+        Err(TitleError::InvalidStoredObject { .. })
+    ));
+    assert_eq!(port.calls(), 0);
+    assert_eq!(row_count(&store, "runtime_outbox"), 0);
+    assert_eq!(row_count(&store, "request_results"), 0);
+}
+
+#[tokio::test]
+async fn expired_not_sent_job_never_authorizes_a_new_provider_attempt() {
+    let (_root, store) = fixture().await;
+    let id = request_id();
+    let port = FixedPort::new(vec![(WriteOutcome::NotSent, None)]);
+    generate(&store, &port, "title-agent", &catalog(), &id, deadline())
+        .await
+        .expect("not sent");
+    let expired = chrono::Utc::now().timestamp_millis() - REQUEST_RESULT_TTL_MS - 1;
+    store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_outbox SET payload=json_set(payload,'$.admittedRequest.created',?1)", [expired])?;
+        Ok(())
+    }).await.expect("elapsed admission time");
+    assert!(matches!(
+        generate_admitted(&store, &port, "title-agent", &catalog(), &id, deadline()).await,
+        Err(TitleError::RequestResult(_))
+    ));
+    assert_eq!(port.calls(), 1);
+    assert_eq!(reply(&store, &id)["status"], "pending");
+    assert_eq!(row_count(&store, "runtime_outbox"), 1);
+}
+
+#[tokio::test]
+async fn mismatched_provider_evidence_is_held_without_redispatch() {
+    let (_root, store) = fixture().await;
+    let id = request_id();
+    let (started, mut requests) = mpsc::unbounded_channel();
+    let (send, receive) = oneshot::channel();
+    let port = Arc::new(GatedPort {
+        started,
+        reply: Mutex::new(Some(receive)),
+    });
+    let store = Arc::new(store);
+    let (task_store, task_port, task_id) = (Arc::clone(&store), Arc::clone(&port), id.clone());
+    let task = tokio::spawn(async move {
+        generate(
+            &task_store,
+            task_port.as_ref(),
+            "title-agent",
+            &catalog(),
+            &task_id,
+            deadline(),
+        )
+        .await
+    });
+    let request = requests.recv().await.expect("provider request");
+    let mut wrong = receipt(
+        &request,
+        WriteOutcome::Written,
+        Some("Unproven title".into()),
+    );
+    wrong.epoch += 1;
+    send.send(wrong).expect("mismatched evidence");
+    assert_eq!(
+        task.await.expect("join").expect("held"),
+        TitleResult::HeldUnknown
+    );
+    assert!(matches!(
+        validate_dispatch(&store.test_reader().expect("reader"), &request),
+        Err(TitleError::Conflict)
+    ));
+    let never_send = FixedPort::new(vec![]);
+    assert_eq!(
+        generate_admitted(
+            &store,
+            &never_send,
+            "title-agent",
+            &catalog(),
+            &id,
+            deadline()
+        )
+        .await
+        .expect("held replay"),
+        TitleResult::HeldUnknown
+    );
+    assert_eq!(never_send.calls(), 0);
+    assert_eq!(row_count(&store, "request_results"), 0);
 }

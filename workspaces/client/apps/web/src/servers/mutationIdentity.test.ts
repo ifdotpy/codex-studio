@@ -27,6 +27,7 @@ import {
   serverMutationResponseIsUncertain,
 } from "./mutationIdentity";
 import { post } from "../api";
+import { NativeCommandAction } from "../generated/api.ts";
 beforeEach(() => rows.clear());
 it("keeps the same durable journal key and uncertain identity without subtle", async () => {
   const storage = {
@@ -216,7 +217,6 @@ it.each([500, 503, 504, 410])(
       return Response.json(
         {
           error: "Not resolved",
-          ...(status === 410 ? { code: "receipt_expired" } : {}),
         },
         { status: requests.length === 1 ? status : 400 },
       );
@@ -265,4 +265,70 @@ it("does not journal ephemeral subscription control requests after a lost respon
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+it.each([NativeCommandAction.input, NativeCommandAction.cancel])(
+  "reuses the persisted body request_id after a lost native %s response",
+  async (action) => {
+    const requests: Request[] = [];
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", async (request: Request) => {
+      requests.push(request);
+      bodies.push(await request.clone().json());
+      if (requests.length === 1) throw new Error("Lost action response");
+      return Response.json({ status: "accepted" });
+    });
+    try {
+      const body = { id: "command", action, text: "one line\n" };
+      await expect(post("/api/native-command", body)).rejects.toThrow(
+        "Lost action response",
+      );
+      await post("/api/native-command", body);
+      expect(bodies[0]?.request_id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+      expect(bodies[1]).toEqual(bodies[0]);
+      expect(bodies[0]?.request_id).toBe(
+        requests[0]?.headers.get("X-Studio-Request-Id"),
+      );
+      expect(rows.size).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  },
+);
+
+it("keeps a local native command root across mutation owner recreation", async () => {
+  const storage: Storage = {
+    get length() {
+      return rows.size;
+    },
+    clear: () => rows.clear(),
+    key: (index) => [...rows.keys()][index] ?? null,
+    getItem: (key) => rows.get(key) ?? null,
+    setItem: (key, value) => {
+      rows.set(key, value);
+    },
+    removeItem: (key) => {
+      rows.delete(key);
+    },
+  };
+  const body = {
+    id: "command",
+    action: NativeCommandAction.input,
+    text: "line\n",
+  };
+  const first = await createMutationJournal("local", storage)(
+    "/api/native-command",
+    body,
+  );
+  expect(first).not.toBeNull();
+  first!.unknown();
+  const retry = await createMutationJournal("local", storage)(
+    "/api/native-command",
+    body,
+  );
+  expect(retry?.requestId).toBe(first!.requestId);
+  retry!.finish();
+  expect(rows.size).toBe(0);
 });

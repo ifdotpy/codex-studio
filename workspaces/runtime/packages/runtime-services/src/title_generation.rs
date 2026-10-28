@@ -1,13 +1,7 @@
 //! Provider-backed automatic titles, ported from `codex_rename.py`.
 //!
-//! Registered differences: Unknown outcomes and intents left pending at restart
-//! are held under their durable request identity and are never resent without a
-//! proven NotSent receipt. Malformed stored inputs are rejected with a located
-//! error. Public receipts keep Python's operation-result shape (`id`, `name`,
-//! `request_id`, `status`); execution certainty is stored in a separate generic
-//! operation receipt keyed from the public receipt id. The model-supplied
-//! `orchestration_title` tool remains the caller's
-//! responsibility; its `manualName` and name-change guards are enforced here.
+//! Unresolved jobs own one provider root and remain in the outbox until proven
+//! settled. Completed public replies live in request_results.
 
 use std::{
     future::Future,
@@ -15,12 +9,20 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use rusqlite::{Connection, OptionalExtension, params};
+use crate::event_write::{CallerAdmission, RequestKey, begin_request, replay_request};
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use studio_runtime_schema::ProviderKind;
 use studio_runtime_schema::model_catalog::ModelCatalog;
+use studio_runtime_schema::persistence::{
+    OutboxKind, OutboxStatus, OwnerKind, RequestIdentity, RequestIdentityError, TitleStatus,
+};
 use studio_runtime_schema::shared_values::TITLE_EFFECT_SIGNATURE;
+use studio_runtime_store::outbox::{Outbox, OutboxError, OutboxRow};
+use studio_runtime_store::request_results::{
+    AdmittedRequest, RequestResultError, RequestResults, ResultEnvelope,
+};
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
 use thiserror::Error;
 
@@ -48,6 +50,10 @@ pub enum TitleError {
     #[error("The title model returned an invalid name")]
     InvalidTitle,
     #[error(transparent)]
+    RequestResult(#[from] RequestResultError),
+    #[error(transparent)]
+    Outbox(#[from] OutboxError),
+    #[error(transparent)]
     Store(#[from] StoreError),
 }
 impl From<rusqlite::Error> for TitleError {
@@ -65,6 +71,8 @@ pub enum WriteOutcome {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TitleRequest {
+    pub root_request_id: String,
+    pub admitted_request: AdmittedRequest,
     pub request_id: String,
     pub agent_id: String,
     pub epoch: i64,
@@ -104,209 +112,346 @@ pub enum TitleResult {
     HeldUnknown,
 }
 
-/// Persist Python-compatible admission before catalog refresh or provider work.
-/// A pending receipt is durable before the caller starts its background finisher.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TitleReply {
+    pub id: String,
+    pub request_id: String,
+    pub status: TitleStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TitleJob {
+    request_id: String,
+    agent_id: String,
+    root_request_id: String,
+    admitted_request: AdmittedRequest,
+    status: TitleStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    epoch: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+}
+
+impl TitleJob {
+    fn reply(&self, status: TitleStatus, error: Option<&str>) -> TitleReply {
+        TitleReply {
+            id: self.agent_id.clone(),
+            request_id: self.request_id.clone(),
+            status,
+            name: (status == TitleStatus::Applied)
+                .then(|| self.title.clone())
+                .flatten(),
+            error: error.map(str::to_owned),
+        }
+    }
+}
+
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+fn identity(agent_id: &str, request_id: &str) -> Result<RequestIdentity, TitleError> {
+    RequestIdentity::new("title-generation", &[agent_id], request_id, &[]).map_err(|_| {
+        RequestResultError::Identity(RequestIdentityError::Expired {
+            issued_ms: 0,
+            expired_before_ms: now_ms(),
+        })
+        .into()
+    })
+}
+
+fn read_agent(tx: &Connection, agent_id: &str) -> Result<Value, TitleError> {
+    let raw: String = tx
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id=?1",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or(TitleError::AgentNotFound)?;
+    let agent: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
+    if agent.get("id").and_then(Value::as_str) != Some(agent_id) {
+        return Err(invalid("runtime_agents", agent_id));
+    }
+    Ok(agent)
+}
+
+fn effect_id(request_id: &str, agent_id: &str) -> String {
+    Outbox::effect_id(
+        request_id,
+        OutboxKind::TitleGeneration,
+        OwnerKind::Agent,
+        agent_id,
+        &[],
+    )
+}
+
+fn read_job(
+    tx: &Connection,
+    agent_id: &str,
+    request_id: &str,
+) -> Result<Option<TitleJob>, TitleError> {
+    let Some(row) = Outbox::get::<TitleJob>(tx, &effect_id(request_id, agent_id))? else {
+        return Ok(None);
+    };
+    if row.kind != OutboxKind::TitleGeneration
+        || row.owner_kind != OwnerKind::Agent
+        || row.owner_id != agent_id
+        || row.signature != TITLE_EFFECT_SIGNATURE
+        || row.request_id.as_deref() != Some(request_id)
+        || row.payload.agent_id != agent_id
+        || row.payload.request_id != request_id
+    {
+        return Err(TitleError::Conflict);
+    }
+    Ok(Some(row.payload))
+}
+
+fn write_job(
+    tx: &rusqlite::Transaction<'_>,
+    job: &TitleJob,
+    replace_current: bool,
+) -> Result<(), TitleError> {
+    let mut agent = read_agent(tx, &job.agent_id)?;
+    if replace_current
+        || agent.get("titleJob").is_none_or(|current| {
+            current.get("requestId").and_then(Value::as_str) == Some(job.request_id.as_str())
+        })
+    {
+        agent["titleJob"] = serde_json::to_value(job).map_err(StoreError::from)?;
+        AgentRepository::put(
+            tx,
+            &AgentRecord::from_value(agent).map_err(StoreError::from)?,
+        )?;
+    }
+    let status = match job.status {
+        TitleStatus::Scheduled | TitleStatus::NotSent => OutboxStatus::Pending,
+        TitleStatus::Pending | TitleStatus::Submitted | TitleStatus::Unknown => {
+            OutboxStatus::Unknown
+        }
+        TitleStatus::Written => OutboxStatus::Submitted,
+        TitleStatus::Applied
+        | TitleStatus::Failed
+        | TitleStatus::Invalid
+        | TitleStatus::Discarded => return Ok(()),
+    };
+    Outbox::put(
+        tx,
+        &OutboxRow {
+            id: effect_id(&job.request_id, &job.agent_id),
+            kind: OutboxKind::TitleGeneration,
+            owner_kind: OwnerKind::Agent,
+            owner_id: job.agent_id.clone(),
+            request_id: Some(job.request_id.clone()),
+            signature: TITLE_EFFECT_SIGNATURE.into(),
+            status,
+            account: None,
+            stream_id: None,
+            generation: None,
+            ordinal: None,
+            next_at: None,
+            payload: job.clone(),
+            created: job.admitted_request.created(),
+        },
+    )?;
+    Ok(())
+}
+
+fn settle_job(
+    tx: &rusqlite::Transaction<'_>,
+    job: &TitleJob,
+    error: Option<&str>,
+) -> Result<(), TitleError> {
+    let public_status = if job.status == TitleStatus::Applied {
+        TitleStatus::Applied
+    } else {
+        TitleStatus::Failed
+    };
+    let reply = job.reply(public_status, error);
+    RequestResults::settle(
+        tx,
+        &job.admitted_request,
+        &ResultEnvelope {
+            actor: None,
+            reply,
+            references: vec![],
+        },
+    )?;
+    write_job(tx, job, false)?;
+    Outbox::delete_settled(
+        tx,
+        &effect_id(&job.request_id, &job.agent_id),
+        TITLE_EFFECT_SIGNATURE,
+    )?;
+    Ok(())
+}
+
+fn saved_reply(
+    tx: &Connection,
+    agent_id: &str,
+    request_id: &str,
+) -> Result<Option<TitleReply>, TitleError> {
+    let signature = python_rename_signature(agent_id);
+    let scoped = RequestIdentity::new("title-generation", &[agent_id], request_id, &[]).ok();
+    for id in std::iter::once(request_id).chain(scoped.as_ref().map(RequestIdentity::id)) {
+        if let Some(envelope) = replay_request::<TitleReply>(tx, id, &signature, now_ms())? {
+            if envelope.reply.id != agent_id || envelope.reply.request_id != request_id {
+                return Err(TitleError::Conflict);
+            }
+            return Ok(Some(envelope.reply));
+        }
+    }
+    Ok(None)
+}
+
+/// Validate title authority in the same writer transaction that reserves a provider suboperation.
+pub fn validate_dispatch(tx: &Connection, request: &TitleRequest) -> Result<(), TitleError> {
+    let job = read_job(tx, &request.agent_id, &request.request_id)?.ok_or(TitleError::Conflict)?;
+    let agent = read_agent(tx, &request.agent_id)?;
+    if job.status != TitleStatus::Pending
+        || job.root_request_id != request.root_request_id
+        || job.admitted_request != request.admitted_request
+        || job.epoch != Some(request.epoch)
+        || agent.get("epoch").and_then(Value::as_i64) != Some(request.epoch)
+        || agent.pointer("/titleJob/requestId").and_then(Value::as_str)
+            != Some(request.request_id.as_str())
+        || agent
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            != request.account_key
+        || agent.get("provider").and_then(Value::as_str) != request.provider.as_deref()
+    {
+        return Err(TitleError::Conflict);
+    }
+    let snapshot = Snapshot {
+        agent,
+        original_name: job.original_name.clone().ok_or(TitleError::Conflict)?,
+        epoch: request.epoch,
+        prompt: request.prompt.clone(),
+        model: request.model.clone(),
+        effort: request.effort.clone(),
+        account_key: request.account_key.clone(),
+        provider: request.provider.clone(),
+        request_id: request.request_id.clone(),
+        eligible: true,
+    };
+    if job.fingerprint.as_deref() != Some(signature(&snapshot).as_str()) {
+        return Err(TitleError::Conflict);
+    }
+    Ok(())
+}
+
+/// Read-only discovery of completed replies or retained unresolved work.
+/// Authorization belongs to the HTTP caller and precedes this lookup.
+pub fn progress(
+    tx: &Connection,
+    agent_id: &str,
+    request_id: &str,
+) -> Result<Option<TitleReply>, TitleError> {
+    if let Some(reply) = saved_reply(tx, agent_id, request_id)? {
+        return Ok(Some(reply));
+    }
+    Ok(read_job(tx, agent_id, request_id)?.map(|job| job.reply(TitleStatus::Pending, None)))
+}
+
+/// Commit the job and its provider root before catalog refresh or background work.
 pub async fn admit_python_request(
     store: &RuntimeStore,
     agent_id: &str,
     request_id: &str,
 ) -> Result<(Value, bool), TitleError> {
-    if request_id.is_empty() || request_id.len() > 200 {
-        return Err(TitleError::Conflict);
-    }
-    let signature = python_rename_signature(agent_id);
-    let pending = json!({"id":agent_id,"request_id":request_id,"status":"pending"});
     let agent_id = agent_id.to_owned();
     let request_id = request_id.to_owned();
     store
         .transaction_with(move |tx| {
-            let raw_agent: Option<String> = tx
-                .query_row(
-                    "SELECT record FROM runtime_agents WHERE id=?1",
-                    [agent_id.as_str()],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let Some(raw_agent) = raw_agent else {
-                return Err(TitleError::AgentNotFound);
-            };
-            let agent: Value = serde_json::from_str(&raw_agent).map_err(StoreError::from)?;
+            let agent = read_agent(tx, &agent_id)?;
             if agent.get("deletedAt").is_some_and(truthy) {
                 return Err(TitleError::DeletedAgent);
             }
-            if let Some((saved_signature, raw_result)) = tx
-                .query_row(
-                    "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
-                    [request_id.as_str()],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .optional()?
-            {
-                let saved: Value = serde_json::from_str(&raw_result)
-                    .map_err(|_| invalid("runtime_operation_receipts", &request_id))?;
-                if saved_signature != signature
-                    || saved.get("id").and_then(Value::as_str) != Some(agent_id.as_str())
-                    || saved.get("request_id").and_then(Value::as_str) != Some(request_id.as_str())
-                {
-                    return Err(TitleError::Conflict);
-                }
-                if saved.get("status").and_then(Value::as_str) != Some("pending") {
-                    return Ok((saved, false));
-                }
-                // Only the internal durable effect proves that the request is safe
-                // to schedule. A Python-shaped pending receipt without it remains
-                // uncertain and is returned unchanged.
-                let effect = read_effect(tx, &request_id, &agent_id)?;
-                let should_finish = effect.as_ref().is_some_and(|effect| {
-                    matches!(effect.state.as_str(), "not_sent" | "scheduled" | "written")
-                });
-                return Ok((saved, should_finish));
+            if let Some(reply) = saved_reply(tx, &agent_id, &request_id)? {
+                return Ok((
+                    serde_json::to_value(reply).map_err(StoreError::from)?,
+                    false,
+                ));
             }
-            tx.execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
-                params![request_id, signature, pending.to_string()],
-            )?;
-            write_effect(tx, &request_id, &agent_id, &json!({"state":"not_sent"}))?;
-            Ok((pending, true))
+            let public_identity = identity(&agent_id, &request_id)?;
+            public_identity
+                .validate(now_ms(), RequestResults::expired_before_ms(tx)?)
+                .map_err(RequestResultError::from)?;
+            let job = if let Some(job) = read_job(tx, &agent_id, &request_id)? {
+                job
+            } else {
+                let admitted_request = match begin_request::<TitleReply>(
+                    tx,
+                    RequestKey::new("title-generation", &[agent_id.as_str()], &request_id),
+                    &python_rename_signature(&agent_id),
+                    now_ms(),
+                )? {
+                    CallerAdmission::Fresh(admitted) => admitted,
+                    CallerAdmission::Replay(reply) => {
+                        return Ok((
+                            serde_json::to_value(reply).map_err(StoreError::from)?,
+                            false,
+                        ));
+                    }
+                };
+                let job = TitleJob {
+                    request_id,
+                    agent_id,
+                    root_request_id: RequestIdentity::issue_root(),
+                    admitted_request,
+                    status: TitleStatus::NotSent,
+                    fingerprint: None,
+                    epoch: None,
+                    original_name: None,
+                    title: None,
+                };
+                write_job(tx, &job, true)?;
+                job
+            };
+            let start = matches!(
+                job.status,
+                TitleStatus::NotSent | TitleStatus::Scheduled | TitleStatus::Written
+            );
+            Ok((
+                serde_json::to_value(job.reply(TitleStatus::Pending, None))
+                    .map_err(StoreError::from)?,
+                start,
+            ))
         })
         .await
 }
 
-#[derive(Clone, Debug)]
-struct TitleEffect {
-    state: String,
-    record: Value,
-}
-
-fn effect_id(request_id: &str) -> String {
-    let digest = Sha256::digest(request_id.as_bytes());
-    format!(
-        "title-generation:{}",
-        data_encoding::HEXLOWER.encode(&digest)
-    )
-}
-
-fn read_effect(
-    tx: &Connection,
-    request_id: &str,
-    agent_id: &str,
-) -> Result<Option<TitleEffect>, TitleError> {
-    let id = effect_id(request_id);
-    let row: Option<(String, String)> = tx
-        .query_row(
-            "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
-            [&id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    let Some((signature, raw)) = row else {
-        return Ok(None);
-    };
-    let record: Value =
-        serde_json::from_str(&raw).map_err(|_| invalid("runtime_operation_receipts", &id))?;
-    if signature != TITLE_EFFECT_SIGNATURE
-        || record.get("request_id").and_then(Value::as_str) != Some(request_id)
-        || record.get("agent_id").and_then(Value::as_str) != Some(agent_id)
-    {
-        return Err(invalid("runtime_operation_receipts", &id));
-    }
-    let state = record
-        .get("state")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("runtime_operation_receipts", &id))?
-        .to_owned();
-    Ok(Some(TitleEffect { state, record }))
-}
-
-fn write_effect(
-    tx: &Connection,
-    request_id: &str,
-    agent_id: &str,
-    effect: &Value,
-) -> Result<(), TitleError> {
-    let id = effect_id(request_id);
-    let mut record = effect.clone();
-    let object = record
-        .as_object_mut()
-        .ok_or_else(|| invalid("runtime_operation_receipts", &id))?;
-    object.insert("request_id".to_owned(), json!(request_id));
-    object.insert("agent_id".to_owned(), json!(agent_id));
-    let existing: Option<(String, String)> = tx
-        .query_row(
-            "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
-            [&id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    if let Some((signature, raw)) = existing {
-        let existing: Value =
-            serde_json::from_str(&raw).map_err(|_| invalid("runtime_operation_receipts", &id))?;
-        if signature != TITLE_EFFECT_SIGNATURE
-            || existing.get("request_id").and_then(Value::as_str) != Some(request_id)
-            || existing.get("agent_id").and_then(Value::as_str) != Some(agent_id)
-        {
-            return Err(invalid("runtime_operation_receipts", &id));
-        }
-        tx.execute(
-            "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2 AND signature=?3",
-            params![record.to_string(), id, TITLE_EFFECT_SIGNATURE],
-        )?;
-    } else {
-        tx.execute(
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
-            params![id, TITLE_EFFECT_SIGNATURE, record.to_string()],
-        )?;
-    }
-    Ok(())
-}
-
-/// Settle a pre-provider catalog failure as Python's asynchronous `_finish` does.
+/// Catalog failure settles only a job proven not to have reached the provider.
 pub async fn settle_catalog_failure(
     store: &RuntimeStore,
     agent_id: &str,
     request_id: &str,
 ) -> Result<(), TitleError> {
-    let signature = python_rename_signature(agent_id);
-    let failed = json!({
-        "id":agent_id,
-        "request_id":request_id,
-        "status":"failed",
-        "error":"The title could not be generated. Try /rename again."
-    });
     let agent_id = agent_id.to_owned();
     let request_id = request_id.to_owned();
     store
         .transaction_with(move |tx| {
-            let Some((saved_signature, raw_result)) = tx
-                .query_row(
-                    "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
-                    [request_id.as_str()],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .optional()?
-            else {
-                return Err(TitleError::Conflict);
+            let Some(mut job) = read_job(tx, &agent_id, &request_id)? else {
+                return Ok(());
             };
-            let saved: Value = serde_json::from_str(&raw_result)
-                .map_err(|_| invalid("runtime_operation_receipts", &request_id))?;
-            if saved_signature == signature
-                && saved.get("id").and_then(Value::as_str) == Some(agent_id.as_str())
-                && saved.get("request_id").and_then(Value::as_str) == Some(request_id.as_str())
-                && saved.get("status").and_then(Value::as_str) == Some("pending")
-            {
-                // A catalog failure can race recovery after the provider result was
-                // durably written. Keep that result intact so the title finisher
-                // can apply it instead of turning a known write into a failure.
-                if read_effect(tx, &request_id, &agent_id)?
-                    .is_some_and(|effect| effect.state == "written")
-                {
-                    return Ok(());
-                }
-                tx.execute(
-                    "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2 AND signature=?3",
-                    params![failed.to_string(), request_id, signature],
+            if matches!(job.status, TitleStatus::NotSent | TitleStatus::Scheduled) {
+                job.status = TitleStatus::Failed;
+                settle_job(
+                    tx,
+                    &job,
+                    Some("The title could not be generated. Try /rename again."),
                 )?;
-                write_effect(tx, &request_id, &agent_id, &json!({"state":"failed"}))?;
             }
             Ok(())
         })
@@ -328,8 +473,8 @@ struct Snapshot {
 }
 
 enum Admission {
-    Request,
-    Apply(String),
+    Request(TitleJob),
+    Apply(TitleJob),
     Held(TitleResult),
 }
 
@@ -518,191 +663,98 @@ async fn generate_inner(
     deadline: SystemTime,
     admitted: bool,
 ) -> Result<TitleResult, TitleError> {
-    if request_id.is_empty() || request_id.len() > 200 {
-        return Err(TitleError::Conflict);
+    let (agent, request) = (agent_id.to_owned(), request_id.to_owned());
+    if let Some(reply) = store
+        .read_async("title-generation/replay", move |tx| {
+            read_agent(tx, &agent)?;
+            saved_reply(tx, &agent, &request)
+        })
+        .await?
+    {
+        return Ok(reply
+            .name
+            .map_or(TitleResult::Skipped, |title| TitleResult::Applied { title }));
     }
-    let (snapshot_agent, snapshot_catalog, snapshot_request) =
-        (agent_id.to_owned(), catalog.clone(), request_id.to_owned());
+    let (agent, request, catalog_copy) =
+        (agent_id.to_owned(), request_id.to_owned(), catalog.clone());
     let snapshot = store
-        .read_async("runtime-services/title_generation", move |connection| {
-            make_snapshot(
-                connection,
-                &snapshot_agent,
-                &snapshot_catalog,
-                &snapshot_request,
-            )
+        .read_async("title-generation/snapshot", move |tx| {
+            make_snapshot(tx, &agent, &catalog_copy, &request)
         })
         .await?;
-    let fingerprint = signature(&snapshot);
-    let agent_id_for_admission = agent_id.to_owned();
-    let request_id_for_admission = request_id.to_owned();
-    let snapshot_for_admission = snapshot.clone();
-    let catalog_for_admission = catalog.clone();
-    let fingerprint_for_admission = fingerprint.clone();
+    if !admitted {
+        admit_python_request(store, agent_id, request_id).await?;
+    }
+    let (agent, request, snapshot_copy, catalog) = (
+        agent_id.to_owned(),
+        request_id.to_owned(),
+        snapshot.clone(),
+        catalog.clone(),
+    );
     let admission = store
         .transaction_with(move |tx| {
-            let agent_id = agent_id_for_admission.as_str();
-            let request_id = request_id_for_admission.as_str();
-            let snapshot = &snapshot_for_admission;
-            let catalog = &catalog_for_admission;
-            let fingerprint = fingerprint_for_admission.as_str();
-            migrate_title_fingerprint_2026_10_26(tx, snapshot, fingerprint)?;
-            let saved = tx
-                .query_row(
-                    "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
-                    [request_id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .optional()?;
-            let public_receipt = if let Some((saved_signature, raw_result)) = saved {
-                let result: Value = serde_json::from_str(&raw_result)
-                    .map_err(|_| invalid("runtime_operation_receipts", request_id))?;
-                if saved_signature != python_rename_signature(agent_id)
-                    || result.get("id").and_then(Value::as_str) != Some(agent_id)
-                    || result.get("request_id").and_then(Value::as_str) != Some(request_id)
-                {
-                    return Err(TitleError::Conflict);
+            let mut job = read_job(tx, &agent, &request)?.ok_or(TitleError::Conflict)?;
+            match job.status {
+                TitleStatus::Pending | TitleStatus::Submitted | TitleStatus::Unknown => {
+                    return Ok(Admission::Held(TitleResult::HeldUnknown));
                 }
-                match result.get("status").and_then(Value::as_str) {
-                    Some("applied") => {
-                        if let Some(effect) = read_effect(tx, request_id, agent_id)?
-                            && (effect.record.get("fingerprint").and_then(Value::as_str)
-                                != Some(fingerprint)
-                                || effect.state != "applied")
-                        {
-                            return Err(TitleError::Conflict);
-                        }
-                        let title = result
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| invalid("runtime_operation_receipts", request_id))?;
-                        return Ok(Admission::Held(TitleResult::Applied {
-                            title: title.to_owned(),
-                        }));
-                    }
-                    Some("failed") => return Ok(Admission::Held(TitleResult::Skipped)),
-                    Some("pending") => result,
-                    _ => return Err(invalid("runtime_operation_receipts", request_id)),
-                }
-            } else {
-                if admitted {
-                    return Err(TitleError::Conflict);
-                }
-                let result = json!({"id":agent_id,"request_id":request_id,"status":"pending"});
-                tx.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
-                    params![
-                        request_id,
-                        python_rename_signature(agent_id),
-                        result.to_string()
-                    ],
-                )?;
-                write_effect(tx, request_id, agent_id, &json!({"state":"not_sent"}))?;
-                result
-            };
-            let Some(effect) = read_effect(tx, request_id, agent_id)? else {
-                return Ok(Admission::Held(TitleResult::HeldUnknown));
-            };
-            let effect_fingerprint = effect.record.get("fingerprint").and_then(Value::as_str);
-            if effect_fingerprint.is_some_and(|saved| saved != fingerprint) {
+                TitleStatus::Written => return Ok(Admission::Apply(job)),
+                TitleStatus::Failed
+                | TitleStatus::Invalid
+                | TitleStatus::Discarded
+                | TitleStatus::Applied => return Err(TitleError::Conflict),
+                TitleStatus::Scheduled | TitleStatus::NotSent => {}
+            }
+            // An expired admitted job can settle, but cannot start another provider attempt.
+            let floor =
+                now_ms().saturating_sub(studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS);
+            if job.admitted_request.created() <= floor {
+                return Err(RequestResultError::Identity(RequestIdentityError::Expired {
+                    issued_ms: job.admitted_request.created(),
+                    expired_before_ms: floor,
+                })
+                .into());
+            }
+            let fingerprint = signature(&snapshot_copy);
+            if job
+                .fingerprint
+                .as_deref()
+                .is_some_and(|saved| saved != fingerprint)
+            {
                 return Err(TitleError::Conflict);
             }
-            let admission = match effect.state.as_str() {
-                "written" => {
-                    let title = effect
-                        .record
-                        .get("title")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            invalid("runtime_operation_receipts", &effect_id(request_id))
-                        })?;
-                    Admission::Apply(title.to_owned())
-                }
-                "not_sent" | "scheduled" => {
-                    if public_receipt.get("status").and_then(Value::as_str) != Some("pending") {
-                        return Err(TitleError::Conflict);
-                    }
-                    write_effect(
-                        tx,
-                        request_id,
-                        agent_id,
-                        &json!({
-                            "state":"pending", "epoch":snapshot.epoch, "fingerprint":fingerprint
-                        }),
-                    )?;
-                    Admission::Request
-                }
-                "pending" | "unknown" => return Ok(Admission::Held(TitleResult::HeldUnknown)),
-                "failed" | "invalid" | "discarded" => {
-                    return Ok(Admission::Held(TitleResult::Skipped));
-                }
-                "applied" => {
-                    let title = public_receipt
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| invalid("runtime_operation_receipts", request_id))?;
-                    return Ok(Admission::Held(TitleResult::Applied {
-                        title: title.to_owned(),
-                    }));
-                }
-                _ => {
-                    return Err(invalid(
-                        "runtime_operation_receipts",
-                        &effect_id(request_id),
-                    ));
-                }
-            };
-
-            let current_agent = tx
-                .query_row(
-                    "SELECT record FROM runtime_agents WHERE id=?1",
-                    [agent_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .ok_or_else(|| invalid("runtime_agents", agent_id))?;
-            let current_agent: Value =
-                serde_json::from_str(&current_agent).map_err(StoreError::from)?;
-            if !snapshot.eligible
-                || current_agent.get("id").and_then(Value::as_str) != Some(agent_id)
-                || current_agent.get("epoch").and_then(Value::as_i64) != Some(snapshot.epoch)
-                || current_agent.get("name").and_then(Value::as_str)
-                    != Some(snapshot.original_name.as_str())
-                || current_agent.get("manualName").is_some_and(truthy)
-                || current_agent.get("needsTitle").and_then(Value::as_bool) != Some(true)
-                || current_agent.get("deletedAt").is_some_and(truthy)
+            let current = make_snapshot(tx, &agent, &catalog, &request)?;
+            if signature(&current) != fingerprint {
+                return Err(TitleError::Conflict);
+            }
+            if !snapshot_copy.eligible
+                || current.original_name != snapshot_copy.original_name
+                || !current.eligible
             {
+                job.status = TitleStatus::Discarded;
+                settle_job(
+                    tx,
+                    &job,
+                    Some("The chat name changed before the title was ready."),
+                )?;
                 return Ok(Admission::Held(TitleResult::Discarded));
             }
-            let current_prompt = build_prompt(tx, agent_id, &current_agent)?;
-            let (current_model, current_effort) = title_model(catalog, &current_agent)?;
-            let current_account = match current_agent.get("accountKey") {
-                None => "default",
-                Some(Value::String(key)) => key.as_str(),
-                Some(_) => return Err(invalid("runtime_agents", agent_id)),
-            };
-            let current_provider = match current_agent.get("provider") {
-                None | Some(Value::Null) => None,
-                Some(Value::String(provider)) => Some(provider.clone()),
-                Some(_) => return Err(invalid("runtime_agents", agent_id)),
-            };
-            if current_prompt != snapshot.prompt
-                || current_model != snapshot.model
-                || current_effort != snapshot.effort
-                || current_account != snapshot.account_key
-                || current_provider != snapshot.provider
-            {
-                return Err(TitleError::Conflict);
-            }
-            Ok(admission)
+            job.status = TitleStatus::Pending;
+            job.fingerprint = Some(fingerprint);
+            job.epoch = Some(snapshot_copy.epoch);
+            job.original_name = Some(snapshot_copy.original_name.clone());
+            write_job(tx, &job, false)?;
+            Ok(Admission::Request(job))
         })
         .await?;
-    let title = match admission {
+    let mut job = match admission {
         Admission::Held(result) => return Ok(result),
-        Admission::Apply(title) => title,
-        Admission::Request => {
+        Admission::Apply(job) => job,
+        Admission::Request(mut job) => {
             let receipt = port
                 .request(TitleRequest {
+                    root_request_id: job.root_request_id.clone(),
+                    admitted_request: job.admitted_request.clone(),
                     request_id: request_id.to_owned(),
                     agent_id: agent_id.to_owned(),
                     epoch: snapshot.epoch,
@@ -719,175 +771,103 @@ async fn generate_inner(
                 || receipt.epoch != snapshot.epoch
                 || receipt.account_key != snapshot.account_key
             {
-                persist_state(
-                    store,
-                    request_id,
-                    agent_id,
-                    snapshot.epoch,
-                    &json!({"state":"unknown"}),
-                )
-                .await?;
-                return Ok(TitleResult::HeldUnknown);
+                job.status = TitleStatus::Unknown;
+            } else {
+                job.status = match receipt.outcome {
+                    WriteOutcome::NotSent => TitleStatus::NotSent,
+                    WriteOutcome::Unknown => TitleStatus::Unknown,
+                    WriteOutcome::Written => {
+                        match receipt.title.as_deref().map(normalize_title).transpose() {
+                            Ok(Some(title)) => {
+                                job.title = Some(title);
+                                TitleStatus::Written
+                            }
+                            Ok(None) | Err(TitleError::InvalidTitle) => TitleStatus::Invalid,
+                            Err(error) => return Err(error),
+                        }
+                    }
+                };
             }
-            match receipt.outcome {
-                WriteOutcome::NotSent => {
-                    persist_state(
-                        store,
-                        request_id,
-                        agent_id,
-                        snapshot.epoch,
-                        &json!({"state":"not_sent"}),
-                    )
-                    .await?;
-                    return Ok(TitleResult::RetryableNotSent);
-                }
-                WriteOutcome::Unknown => {
-                    persist_state(
-                        store,
-                        request_id,
-                        agent_id,
-                        snapshot.epoch,
-                        &json!({"state":"unknown"}),
-                    )
-                    .await?;
-                    return Ok(TitleResult::HeldUnknown);
-                }
-                WriteOutcome::Written => {}
-            }
-            let Some(raw_title) = receipt.title.as_deref() else {
-                persist_state(
-                    store,
-                    request_id,
-                    agent_id,
-                    snapshot.epoch,
-                    &json!({"state":"invalid"}),
-                )
+            let saved_job = job.clone();
+            store
+                .transaction_with(move |tx| {
+                    let current = read_job(tx, &saved_job.agent_id, &saved_job.request_id)?
+                        .ok_or(TitleError::Conflict)?;
+                    if current.status != TitleStatus::Pending
+                        || current.root_request_id != saved_job.root_request_id
+                    {
+                        return Err(TitleError::Conflict);
+                    }
+                    if saved_job.status == TitleStatus::Invalid {
+                        settle_job(
+                            tx,
+                            &saved_job,
+                            Some("The title could not be generated. Try /rename again."),
+                        )?;
+                    } else {
+                        write_job(tx, &saved_job, false)?;
+                    }
+                    Ok::<(), TitleError>(())
+                })
                 .await?;
-                return Err(TitleError::InvalidTitle);
-            };
-            let title = match normalize_title(raw_title) {
-                Ok(title) => title,
-                Err(error) => {
-                    persist_state(
-                        store,
-                        request_id,
-                        agent_id,
-                        snapshot.epoch,
-                        &json!({"state":"invalid"}),
-                    )
-                    .await?;
-                    return Err(error);
-                }
-            };
-            persist_state(
-                store,
-                request_id,
-                agent_id,
-                snapshot.epoch,
-                &json!({"state":"written","title":title}),
-            )
-            .await?;
-            title
+            match job.status {
+                TitleStatus::Unknown => return Ok(TitleResult::HeldUnknown),
+                TitleStatus::NotSent => return Ok(TitleResult::RetryableNotSent),
+                TitleStatus::Invalid => return Err(TitleError::InvalidTitle),
+                TitleStatus::Written => job,
+                TitleStatus::Scheduled
+                | TitleStatus::Pending
+                | TitleStatus::Submitted
+                | TitleStatus::Applied
+                | TitleStatus::Failed
+                | TitleStatus::Discarded => return Err(TitleError::Conflict),
+            }
         }
     };
-    let agent_id_for_apply = agent_id.to_owned();
-    let request_id_for_apply = request_id.to_owned();
-    let snapshot_for_apply = snapshot.clone();
-    let fingerprint_for_apply = fingerprint.clone();
-    let title_for_apply = title.clone();
+    let title = job.title.clone().ok_or(TitleError::InvalidTitle)?;
     let applied = store
         .transaction_with(move |tx| {
-            let agent_id = agent_id_for_apply.as_str();
-            let request_id = request_id_for_apply.as_str();
-            let snapshot = &snapshot_for_apply;
-            let fingerprint = fingerprint_for_apply.as_str();
-            let title = title_for_apply.as_str();
-            let effect = read_effect(tx, request_id, agent_id)?
-                .ok_or_else(|| invalid("runtime_operation_receipts", &effect_id(request_id)))?;
-            if effect.record.get("fingerprint").and_then(Value::as_str) != Some(fingerprint)
-                || effect.state != "written"
-                || effect.record.get("title").and_then(Value::as_str) != Some(title)
+            let current =
+                read_job(tx, &job.agent_id, &job.request_id)?.ok_or(TitleError::Conflict)?;
+            if current.status != TitleStatus::Written
+                || current.fingerprint != job.fingerprint
+                || current.title != job.title
             {
                 return Err(TitleError::Conflict);
             }
-            let saved = tx
-                .query_row(
-                    "SELECT record FROM runtime_agents WHERE id=?1",
-                    [agent_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .ok_or_else(|| invalid("runtime_agents", agent_id))?;
-            let mut record: Value = serde_json::from_str(&saved).map_err(StoreError::from)?;
-            if record.get("id").and_then(Value::as_str) != Some(agent_id) {
-                return Err(invalid("runtime_agents", agent_id));
-            }
+            let mut record = read_agent(tx, &job.agent_id)?;
             if record.get("manualName").is_some_and(truthy)
-                || record.get("epoch").and_then(Value::as_i64) != Some(snapshot.epoch)
-                || record.get("name").and_then(Value::as_str)
-                    != Some(snapshot.original_name.as_str())
+                || record.get("epoch").and_then(Value::as_i64) != job.epoch
+                || record.get("name").and_then(Value::as_str) != job.original_name.as_deref()
                 || record.get("needsTitle").and_then(Value::as_bool) != Some(true)
                 || record.get("deletedAt").is_some_and(truthy)
             {
-                let failed = json!({
-                    "id":agent_id,"request_id":request_id,"status":"failed",
-                    "error":"The chat name changed before the title was ready."
-                });
-                tx.execute(
-                    "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2 AND signature=?3",
-                    params![
-                        failed.to_string(),
-                        request_id,
-                        python_rename_signature(agent_id)
-                    ],
-                )?;
-                write_effect(
+                job.status = TitleStatus::Discarded;
+                settle_job(
                     tx,
-                    request_id,
-                    agent_id,
-                    &json!({
-                        "state":"discarded", "epoch":snapshot.epoch, "fingerprint":fingerprint
-                    }),
+                    &job,
+                    Some("The chat name changed before the title was ready."),
                 )?;
                 return Ok(false);
             }
-            record["name"] = json!(title);
+            record["name"] = json!(job.title);
             record["needsTitle"] = json!(false);
-            // Python's provider-backed _finish calls _set_name, which persists
-            // manualName=true for every accepted title.
             record["manualName"] = json!(true);
-            let typed: AgentRecord =
-                serde_json::from_value(record.clone()).map_err(StoreError::from)?;
-            AgentRepository::put(tx, &typed)?;
-            crate::agents_create::publish_agent(tx, &record)?;
-            let public_result = json!({
-                "id":agent_id,"request_id":request_id,"status":"applied","name":title
-            });
-            tx.execute(
-                "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2 AND signature=?3",
-                params![
-                    public_result.to_string(),
-                    request_id,
-                    python_rename_signature(agent_id)
-                ],
-            )?;
-            write_effect(
+            AgentRepository::put(
                 tx,
-                request_id,
-                agent_id,
-                &json!({
-                    "state":"applied", "epoch":snapshot.epoch, "fingerprint":fingerprint,
-                    "title":title
-                }),
+                &AgentRecord::from_value(record.clone()).map_err(StoreError::from)?,
             )?;
+            crate::agents_create::publish_agent(tx, &record)?;
+            job.status = TitleStatus::Applied;
+            settle_job(tx, &job, None)?;
             Ok(true)
         })
         .await?;
-    if applied {
-        Ok(TitleResult::Applied { title })
+    Ok(if applied {
+        TitleResult::Applied { title }
     } else {
-        Ok(TitleResult::Discarded)
-    }
+        TitleResult::Discarded
+    })
 }
 
 fn make_snapshot(
@@ -1034,42 +1014,6 @@ fn validate_item(item: &Value, agent_id: &str) -> Result<(), TitleError> {
     Ok(())
 }
 
-async fn persist_state(
-    store: &RuntimeStore,
-    id: &str,
-    agent_id: &str,
-    epoch: i64,
-    result: &Value,
-) -> Result<(), TitleError> {
-    let id = id.to_owned();
-    let agent_id = agent_id.to_owned();
-    let result = result.clone();
-    store
-        .transaction_with(move |tx| {
-            let current = read_effect(tx, &id, &agent_id)?
-                .ok_or_else(|| invalid("runtime_operation_receipts", &effect_id(&id)))?;
-            let mut next = current.record;
-            let object = next
-                .as_object_mut()
-                .ok_or_else(|| invalid("runtime_operation_receipts", &effect_id(&id)))?;
-            object.insert(
-                "state".to_owned(),
-                result
-                    .get("state")
-                    .cloned()
-                    .ok_or_else(|| invalid("runtime_operation_receipts", &effect_id(&id)))?,
-            );
-            object.insert("epoch".to_owned(), json!(epoch));
-            if let Some(title) = result.get("title") {
-                object.insert("title".to_owned(), title.clone());
-            }
-            write_effect(tx, &id, &agent_id, &next)?;
-            Ok::<(), TitleError>(())
-        })
-        .await?;
-    Ok(())
-}
-
 fn signature(snapshot: &Snapshot) -> String {
     let content = json!({
         "agent": {
@@ -1087,49 +1031,6 @@ fn signature(snapshot: &Snapshot) -> String {
     });
     let digest = Sha256::digest(serde_json::to_vec(&content).unwrap_or_default());
     data_encoding::HEXLOWER.encode(&digest)
-}
-
-/// Complete the 2026-10-26 provider migration using the actual title snapshot.
-/// Retire with the store migration only after supported states and backups cross
-/// the format boundary and all tagged title effects are converted or terminal.
-fn migrate_title_fingerprint_2026_10_26(
-    tx: &Connection,
-    snapshot: &Snapshot,
-    fingerprint: &str,
-) -> Result<(), TitleError> {
-    use studio_runtime_store::migrations::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
-
-    let agent_id = snapshot.agent["id"]
-        .as_str()
-        .ok_or_else(|| invalid("runtime_agents", "<missing-id>"))?;
-    let Some(mut effect) = read_effect(tx, &snapshot.request_id, agent_id)? else {
-        return Ok(());
-    };
-    let Some(provider) = effect.record.get(TITLE_FINGERPRINT_PROVIDER_2026_10_26) else {
-        return Ok(());
-    };
-    if !provider.is_null() || snapshot.provider.as_deref() != Some(ProviderKind::Codex.key()) {
-        return Err(TitleError::Conflict);
-    }
-    let mut historical = snapshot.clone();
-    historical.agent["provider"] = provider.clone();
-    if effect.record.get("fingerprint").and_then(Value::as_str)
-        != Some(signature(&historical).as_str())
-    {
-        return Err(TitleError::Conflict);
-    }
-    effect.record["fingerprint"] = json!(fingerprint);
-    effect
-        .record
-        .as_object_mut()
-        .ok_or_else(|| {
-            invalid(
-                "runtime_operation_receipts",
-                &effect_id(&snapshot.request_id),
-            )
-        })?
-        .remove(TITLE_FINGERPRINT_PROVIDER_2026_10_26);
-    write_effect(tx, &snapshot.request_id, agent_id, &effect.record)
 }
 
 fn python_rename_signature(agent_id: &str) -> String {

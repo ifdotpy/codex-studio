@@ -545,6 +545,16 @@ pub(super) async fn dispatch(
                     .cancel_monitor(&monitor_id, actor_id, now)
                     .await?;
             }
+            if action != "list" {
+                crate::managed_status_watch::acknowledge_rule_cancellations(
+                    store_ref,
+                    actor_id,
+                    u64::try_from(actor.record().epoch).map_err(|_| Error::Stale)?,
+                    request_id,
+                )
+                .await
+                .map_err(super::runtime_ports::rules_error)?;
+            }
             written(result.value, Vec::new())
         }
         "orchestration_spawn" | "orchestration_review" => {
@@ -1170,6 +1180,7 @@ mod tests {
         let actor = crate::managed_host_tools::Actor::from_record(&record.value(), "lead", 1)
             .expect("actor");
         let context = crate::provider_callbacks::CallbackContext {
+            stream_id: "default".into(),
             agent: "lead".into(),
             account: "default".into(),
             connection: "fixture".into(),

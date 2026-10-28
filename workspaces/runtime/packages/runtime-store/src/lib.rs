@@ -106,10 +106,7 @@ pub use repositories::claude_retry::{ClaudeRetryRecords, ClaudeRetryRepository};
 pub use repositories::context_repair::ContextRepairRepository;
 pub use repositories::continuation::{ContinuationRepository, ContinuationTable};
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
-pub use repositories::event_write::{
-    EventWriteReceipt, EventWriteRepository, INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-    INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
-};
+pub use repositories::event_write::EventWriteRepository;
 pub use repositories::execution_history::ExecutionHistoryRepository;
 pub use repositories::federation::FederationRepository;
 pub use repositories::federation_credentials::FederationCredentialsRepository;

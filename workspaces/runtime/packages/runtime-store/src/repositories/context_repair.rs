@@ -66,6 +66,36 @@ fn capture_bytes(used: &mut usize, value: &Value, maximum_bytes: usize) -> Store
 }
 
 impl ContextRepairRepository {
+    /// Long-lived callback authority belongs to the original execution attempt.
+    pub fn save_terminal_provenance(
+        tx: &Transaction<'_>,
+        attempt: &str,
+        record: &Value,
+    ) -> StoreResult<()> {
+        let changed = tx.execute(
+            "UPDATE runtime_execution_attempts SET record=json_set(record,'$.terminalRepair',json(?1)) WHERE id=?2 AND json_extract(record,'$.epoch')=?3 AND run IN (SELECT id FROM runtime_execution_runs WHERE agent=?4 AND account=?5 AND thread=?6) AND (json_type(record,'$.terminalRepair') IS NULL OR json_extract(record,'$.terminalRepair')=json(?1))",
+            params![record.to_string(), attempt, record["source"]["epoch"].as_i64(),record["source"]["id"].as_str(),record["source"]["accountKey"].as_str(),record["source"]["threadId"].as_str()],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::RecordContract(
+                "context terminal provenance changed",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn terminal_provenance(
+        db: &Connection,
+        account: &str,
+        thread: &str,
+        turn: &str,
+    ) -> StoreResult<Option<Value>> {
+        db.query_row(
+            "SELECT json_extract(record,'$.terminalRepair') FROM runtime_execution_attempts WHERE json_type(record,'$.terminalRepair')='object' AND json_extract(record,'$.terminalRepair.source.accountKey')=?1 AND json_extract(record,'$.terminalRepair.source.threadId')=?2 AND json_extract(record,'$.terminalRepair.proof.turnId')=?3",
+            params![account, thread, turn], |row| row.get::<_,String>(0),
+        ).optional()?.map(|raw| serde_json::from_str(&raw).map_err(StoreError::from)).transpose()
+    }
+
     pub fn agent(db: &Connection, id: &str) -> StoreResult<Option<Value>> {
         Ok(AgentRepository::get(db, &AgentId::from(id))?.map(|a| a.value()))
     }
@@ -152,3 +182,42 @@ impl ContextRepairRepository {
     }
 }
 inventory::submit! { crate::repositories::SchemaRegistration { repository: "context_repair", requirements: &REQUIREMENTS } }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn terminal_provenance_remains_on_its_exact_execution_owner() {
+        let mut db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,thread TEXT);
+            INSERT INTO runtime_execution_runs VALUES('run','agent','account','source');
+            CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT,record TEXT);
+            INSERT INTO runtime_execution_attempts VALUES('attempt','run','{\"id\":\"attempt\",\"epoch\":2}');").expect("owners");
+        let tx = db.transaction().expect("transaction");
+        let proof = json!({"operationId":"repair","source":{"id":"agent","accountKey":"account","threadId":"source","epoch":2},"proof":{"turnId":"turn","threadId":"source","status":"completed"},"startAttemptSnapshot":{"id":"attempt"},"connectionId":"old-connection","connectionGeneration":7,"newThreadId":"destination","phase":"completed"});
+        ContextRepairRepository::save_terminal_provenance(&tx, "attempt", &proof)
+            .expect("save authority");
+        ContextRepairRepository::save_terminal_provenance(&tx, "attempt", &proof)
+            .expect("same authority");
+        assert_eq!(
+            ContextRepairRepository::terminal_provenance(&tx, "account", "source", "turn")
+                .expect("lookup"),
+            Some(proof.clone())
+        );
+        assert!(
+            ContextRepairRepository::terminal_provenance(&tx, "other-account", "source", "turn")
+                .expect("other scope")
+                .is_none()
+        );
+        let mut changed = proof.clone();
+        changed["newThreadId"] = json!("another-destination");
+        assert!(
+            ContextRepairRepository::save_terminal_provenance(&tx, "attempt", &changed).is_err()
+        );
+        let mut changed = proof;
+        changed["source"]["id"] = json!("another-agent");
+        assert!(
+            ContextRepairRepository::save_terminal_provenance(&tx, "attempt", &changed).is_err()
+        );
+    }
+}

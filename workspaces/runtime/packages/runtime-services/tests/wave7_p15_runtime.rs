@@ -22,6 +22,28 @@ use tokio::sync::Notify;
 
 use crate::monitor_runtime_support as support;
 use support::Port;
+fn input_request_id(label: &str) -> String {
+    static ISSUED: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    let issued = *ISSUED.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_millis()
+    });
+    let digest = studio_runtime_store::sha256_hex(label.as_bytes());
+    let suffix = u64::from_str_radix(&digest[..15], 16).expect("digest");
+    uuid::Uuid::from_u128((issued << 80) | (7 << 76) | (2 << 62) | u128::from(suffix)).to_string()
+}
+async fn input_schema(store: &RuntimeStore) {
+    store
+        .transaction(|tx| {
+            studio_runtime_store::receipt_schema::create(tx)?;
+            Ok(())
+        })
+        .await
+        .expect("target schema");
+}
+
 fn record(store: &RuntimeStore, id: &str) -> Value {
     MonitorsRepository::get(&store.test_reader().expect("read"), id)
         .expect("get")
@@ -1115,6 +1137,7 @@ async fn http_input_retry_after_ack_replays_one_logical_input() {
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     let store = Arc::new(fixtures::store(root.path(), "http-input-replay").await);
+    input_schema(&store).await;
     fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let mut monitor = record(&store, id);
@@ -1134,7 +1157,7 @@ async fn http_input_retry_after_ack_replays_one_logical_input() {
     };
     // A lost HTTP success must not authorize another stdin write.
     runtime
-        .input_http(id, "lost-http-success", &input, 2000.0)
+        .input_http(id, &input_request_id("lost-http-success"), &input, 2000.0)
         .await
         .expect("first input acknowledged");
     let first = record(&store, id)["lastInputAttempt"]["id"]
@@ -1142,7 +1165,7 @@ async fn http_input_retry_after_ack_replays_one_logical_input() {
         .expect("first ticket")
         .to_owned();
     runtime
-        .input_http(id, "lost-http-success", &input, 2001.0)
+        .input_http(id, &input_request_id("lost-http-success"), &input, 2001.0)
         .await
         .expect("same logical input replays its acknowledgement");
     let second = record(&store, id)["lastInputAttempt"]["id"]
@@ -1166,6 +1189,7 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
     let mut case = running(&fixtures::corpus(root.path()));
     case["before"]["interactive"] = json!(true);
     let store = Arc::new(fixtures::store(root.path(), "http-input-busy").await);
+    input_schema(&store).await;
     fixtures::seed(&store, &case).await;
     let id = case["before"]["id"]
         .as_str()
@@ -1180,7 +1204,7 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
         close_stdin: false,
     };
     runtime
-        .input_http(&id, "previous-ack", &input, 2000.0)
+        .input_http(&id, &input_request_id("previous-ack"), &input, 2000.0)
         .await
         .expect("previous input acknowledged");
     let entered = Arc::new(Notify::new());
@@ -1189,18 +1213,23 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
     let (active_runtime, active_id, active_input) = (runtime.clone(), id.clone(), input.clone());
     let active = tokio::spawn(async move {
         active_runtime
-            .input_http(&active_id, "active-request", &active_input, 2001.0)
+            .input_http(
+                &active_id,
+                &input_request_id("active-request"),
+                &active_input,
+                2001.0,
+            )
             .await
     });
     entered.notified().await;
     let busy = runtime
-        .input_http(&id, "busy-fresh-request", &input, 2002.0)
+        .input_http(&id, &input_request_id("busy-fresh-request"), &input, 2002.0)
         .await;
     let pending = runtime
-        .input_http(&id, "active-request", &input, 2002.0)
+        .input_http(&id, &input_request_id("active-request"), &input, 2002.0)
         .await;
     let acknowledged = runtime
-        .input_http(&id, "previous-ack", &input, 2002.0)
+        .input_http(&id, &input_request_id("previous-ack"), &input, 2002.0)
         .await;
     release
         .send(())
@@ -1227,7 +1256,7 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
         acknowledged.is_ok(),
         "prior acknowledgement replays while another request holds the sequence"
     );
-    let query = json!({"requestId":"busy-fresh-request","agent":case["actor"]["id"],"accountKey":case["actor"]["accountKey"],"epoch":case["actor"]["epoch"]});
+    let query = json!({"requestId":input_request_id(input_request_id("busy-fresh-request")),"agent":case["actor"]["id"],"accountKey":case["actor"]["accountKey"],"epoch":case["actor"]["epoch"]});
     let receipt = studio_runtime_services::process_controls::receipt(
         &store.test_reader().expect("read"),
         &query,
@@ -1246,7 +1275,7 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
     );
     assert!(
         runtime
-            .input_http(&id, "busy-fresh-request", &input, 2003.0)
+            .input_http(&id, &input_request_id("busy-fresh-request"), &input, 2003.0)
             .await
             .is_err()
     );
@@ -1255,7 +1284,12 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
         2
     );
     runtime
-        .input_http(&id, "fresh-intent-after-refusal", &input, 2004.0)
+        .input_http(
+            &id,
+            &input_request_id("fresh-intent-after-refusal"),
+            &input,
+            2004.0,
+        )
         .await
         .expect("confirmed refusal permits a new intentional identity");
     assert_eq!(
@@ -1278,6 +1312,7 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         let mut case = running(&fixtures::corpus(root.path()));
         case["before"]["interactive"] = json!(true);
         let store = Arc::new(fixtures::store(root.path(), boundary).await);
+        input_schema(&store).await;
         fixtures::seed(&store, &case).await;
         let id = case["before"]["id"].as_str().expect("monitor id");
         let port = Arc::new(Port::default());
@@ -1298,7 +1333,7 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         }
         if boundary == "settlement-rollback" {
             store.transaction(|tx| {
-                tx.execute_batch("CREATE TRIGGER refuse_input_receipt BEFORE UPDATE ON runtime_operation_receipts WHEN NEW.id LIKE 'monitor-http-input:%' BEGIN SELECT RAISE(ABORT,'fixture receipt failure'); END")?;
+                tx.execute_batch("CREATE TRIGGER refuse_input_receipt BEFORE INSERT ON request_results BEGIN SELECT RAISE(ABORT,'fixture receipt failure'); END")?;
                 Ok(())
             }).await.expect("inject exact settlement failure");
         }
@@ -1309,7 +1344,7 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
             close_stdin: false,
         };
         let result = runtime(&store, &port)
-            .input_http(id, "same-request", &input, 2000.0)
+            .input_http(id, &input_request_id("same-request"), &input, 2000.0)
             .await;
         assert_eq!(
             result.is_ok(),
@@ -1335,7 +1370,7 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         let fresh_port = Arc::new(Port::default());
         let restarted = runtime(&store, &fresh_port);
         let replay = restarted
-            .input_http(id, "same-request", &input, 2001.0)
+            .input_http(id, &input_request_id("same-request"), &input, 2001.0)
             .await;
         assert_eq!(
             replay.is_ok(),
@@ -1354,7 +1389,7 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         };
         assert!(
             restarted
-                .input_http(id, "same-request", &changed, 2002.0)
+                .input_http(id, &input_request_id("same-request"), &changed, 2002.0)
                 .await
                 .is_err()
         );
@@ -1367,14 +1402,19 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         );
         if matches!(boundary, "acknowledged" | "rejected" | "not-sent") {
             restarted
-                .input_http(id, "new-intentional-request", &input, 2003.0)
+                .input_http(
+                    id,
+                    &input_request_id("new-intentional-request"),
+                    &input,
+                    2003.0,
+                )
                 .await
                 .expect("fresh identity permits deliberate identical input");
             assert_eq!(fresh_port.submitted.lock().expect("fresh write").len(), 1);
         } else {
             assert!(
                 restarted
-                    .input_http(id, "different-request", &input, 2003.0)
+                    .input_http(id, &input_request_id("different-request"), &input, 2003.0)
                     .await
                     .is_err()
             );
@@ -1400,7 +1440,7 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
             .await
             .expect("late exact native callback resolves the uncertainty");
             restarted
-                .input_http(id, "same-request", &input, 2005.0)
+                .input_http(id, &input_request_id("same-request"), &input, 2005.0)
                 .await
                 .expect("replay the late durable acknowledgement without native I/O");
             assert!(

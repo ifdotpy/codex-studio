@@ -211,6 +211,8 @@ fn invalid_stored(object: &str, id: &str) -> ApiError {
 fn map_store_error(error: StoreError) -> ApiError {
     match error {
         StoreError::InvalidStoredObject { table, id } => invalid_stored(table, &id),
+        StoreError::RequestResult(error) => error.into(),
+        StoreError::Outbox(error) => error.into(),
         StoreError::StateDirectory(_)
         | StoreError::AlreadyOwned
         | StoreError::MissingDatabase(_)

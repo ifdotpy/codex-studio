@@ -140,6 +140,7 @@ async fn held_response_proof(
         &operation,
         "thread/read",
         json!({"threadId":owner["threadId"],"includeTurns":false}),
+        ("", None),
     )
     .await
     .ok()?;
@@ -227,6 +228,12 @@ async fn execute(
             result,
         } => (record, targets, result),
     };
+    let root_request_id = record
+        .get("rootRequestId")
+        .and_then(Value::as_str)
+        .filter(|root| !root.is_empty())
+        .ok_or_else(ApiError::internal)?
+        .to_owned();
     let scope = request.command().scope();
     match request.command() {
         ProcessControlRequest::BackgroundCommand { item_id, .. } => {
@@ -235,6 +242,7 @@ async fn execute(
                 &record["responseTarget"],
                 item_id,
                 &scope.request_id,
+                &root_request_id,
             )
             .await
             .unwrap_or_else(|_| ResponseOutcome::Uncertain {
@@ -256,6 +264,7 @@ async fn execute(
                 &record["responseTarget"],
                 &scope.request_id,
                 proof.as_ref(),
+                &root_request_id,
             )
             .await
             .unwrap_or_else(|_| ResponseOutcome::Uncertain {
@@ -273,8 +282,20 @@ async fn execute(
         }
         ProcessControlRequest::StopSelected { .. } | ProcessControlRequest::StopOwned { .. } => {
             for target in targets {
-                let outcome = stop_process(&state, runtime.as_ref(), &target, &scope.request_id).await
-                    .unwrap_or_else(|_| ProcessOutcome::Uncertain { error: Some("The process stop outcome is unknown. Inspect its receipt before retrying".into()) });
+                let outcome = stop_process(
+                    &state,
+                    runtime.as_ref(),
+                    &target,
+                    &scope.request_id,
+                    &root_request_id,
+                )
+                .await
+                .unwrap_or_else(|_| ProcessOutcome::Uncertain {
+                    error: Some(
+                        "The process stop outcome is unknown. Inspect its receipt before retrying"
+                            .into(),
+                    ),
+                });
                 if let Some(entry) = result
                     .processes
                     .iter_mut()
@@ -386,6 +407,7 @@ async fn stop_process(
     runtime: Option<&Arc<MonitorRuntime>>,
     process: &Value,
     request_id: &str,
+    root_request_id: &str,
 ) -> Result<ProcessOutcome, ApiError> {
     if process["source"] == "monitor" {
         let Some(runtime) = runtime else {
@@ -453,6 +475,7 @@ async fn stop_process(
                 "thread/backgroundTerminals/list"
             },
             params.clone(),
+            ("", None),
         )
         .await?;
         let items = result[if claude { "tasks" } else { "data" }]
@@ -506,6 +529,7 @@ async fn stop_process(
         } else {
             json!({"threadId":ticket.thread,"processId":pid})
         },
+        (root_request_id, None),
     )
     .await?;
     if !claude {
@@ -524,6 +548,7 @@ async fn stop_process(
         &format!("{operation}:after"),
         "claude/state",
         json!({"threadId":ticket.thread}),
+        ("", None),
     )
     .await?;
     let tasks = after["tasks"]
@@ -540,6 +565,7 @@ async fn stop_response(
     target: &Value,
     request_id: &str,
     proof: Option<&controls::HeldResponseProof>,
+    root_request_id: &str,
 ) -> Result<ResponseOutcome, ApiError> {
     let expected = target.clone();
     let request_id = request_id.to_owned();
@@ -595,6 +621,7 @@ async fn stop_response(
         &ticket.request,
         "turn/interrupt",
         params,
+        (root_request_id, None),
     )
     .await?;
     Ok(ResponseOutcome::Requested)
@@ -604,6 +631,7 @@ async fn background_command(
     target: &Value,
     item_id: &str,
     request_id: &str,
+    root_request_id: &str,
 ) -> Result<ResponseOutcome, ApiError> {
     let expected = target.clone();
     let request_id = request_id.to_owned();
@@ -657,6 +685,7 @@ async fn background_command(
         &ticket.request,
         "thread/commandExecution/background",
         json!({"threadId":target["threadId"],"turnId":target["turnId"],"itemId":item_id}),
+        (root_request_id, None),
     )
     .await
     {

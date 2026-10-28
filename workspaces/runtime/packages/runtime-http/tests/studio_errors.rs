@@ -829,7 +829,7 @@ async fn incident_storage_failure_keeps_the_original_response_without_recursive_
         .unwrap();
     store.transaction(|tx| {
         tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.log',123) WHERE id='one'",[])?;
-        tx.execute_batch("CREATE TRIGGER refuse_incident BEFORE INSERT ON runtime_operation_receipts WHEN NEW.id LIKE 'studio-errors:incident:%' BEGIN SELECT RAISE(ABORT,'password=sink-canary'); END;")?;
+        tx.execute_batch("CREATE TRIGGER refuse_incident BEFORE INSERT ON runtime_error_incidents BEGIN SELECT RAISE(ABORT,'password=sink-canary'); END;")?;
         Ok(())
     }).await.unwrap();
     let (status, body) = tokio::time::timeout(
@@ -846,7 +846,13 @@ async fn incident_storage_failure_keeps_the_original_response_without_recursive_
     .expect("one failed diagnostic write cannot recurse");
     assert_eq!(status, 503, "{body}");
     assert!(!body.to_string().contains("sink-canary"));
-    let receipts:i64=store.test_reader().unwrap().query_row("SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'studio-errors:incident:%'",[],|row|row.get(0)).unwrap();
+    let receipts: i64 = store
+        .test_reader()
+        .unwrap()
+        .query_row("SELECT count(*) FROM runtime_error_incidents", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
     assert_eq!(
         receipts, 0,
         "failed capture neither creates receipts nor retries an operation"
@@ -907,7 +913,7 @@ async fn malformed_receipts_agents_and_owners_do_not_poison_startup_or_following
         }
         tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.agent','bad-owner') WHERE id='one'",[])?;
         for (id,encoded) in [("http:bad-json","{"),("http:bad-shape","{\"private\":\"receipt-private-canary\"}"),("http:bad-identity","{\"id\":\"wrong-id\",\"kind\":\"http_failure\",\"reason\":\"private\",\"action\":\"details\",\"detail\":\"\",\"subject\":\"\",\"at\":1,\"diagnostics\":{\"context\":{\"source\":\"http\",\"route\":\"GET /api/example\",\"requestId\":null,\"status\":500,\"class\":\"store_data\"},\"certainty\":\"unknown\",\"causes\":[]}}") ] {
-            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'studio-error-incident-v1',?2)",rusqlite::params![format!("studio-errors:incident:{id}"),encoded])?;
+            tx.execute("INSERT INTO runtime_error_incidents(id,kind,owner_kind,owner_id,created,last_seen,payload) VALUES(?1,'http_failure','request',?1,1000,1000,?2)",rusqlite::params![id,encoded])?;
         }
         Ok(())
     }).await.unwrap();
@@ -941,7 +947,15 @@ async fn malformed_receipts_agents_and_owners_do_not_poison_startup_or_following
         streamed["value"]["diagnostics"]["causes"][0]["pointer"],
         "/epoch"
     );
-    let raw:String=store.test_reader().unwrap().query_row("SELECT result FROM runtime_operation_receipts WHERE id='studio-errors:incident:http:bad-json'",[],|row|row.get(0)).unwrap();
+    let raw: String = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT payload FROM runtime_error_incidents WHERE id='http:bad-json'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(
         raw, "{",
         "diagnostic interpretation never repairs the retained receipt"
@@ -1235,11 +1249,11 @@ async fn studio_errors_batch_rejects_oversize_without_dismissing_anything() {
 async fn studio_errors_batch_rolls_back_all_receipts_if_one_write_fails() {
     let (_root, store, app) = batch_fixture().await;
     let [one, two, _] = batch_row_ids(&app).await;
-    let failing_receipt = format!("studio-errors:dismissed:{two}");
+    let failing_receipt = two.clone();
     store
         .transaction(move |tx| {
             tx.execute_batch(&format!(
-                "CREATE TRIGGER fail_second_dismissal BEFORE INSERT ON runtime_operation_receipts
+                "CREATE TRIGGER fail_second_dismissal BEFORE INSERT ON runtime_error_incidents
             WHEN NEW.id='{failing_receipt}'
             BEGIN SELECT RAISE(ABORT, 'fixture dismissal failure'); END;"
             ))?;
@@ -1274,7 +1288,15 @@ async fn studio_errors_batch_rolls_back_all_receipts_if_one_write_fails() {
         .expect("actual database refusal is captured");
     assert_eq!(failure["diagnostics"]["certainty"], "unknown");
     assert_eq!(failure["diagnostics"]["causes"][0]["kind"], "sqlite");
-    let dismissals:i64=store.test_reader().unwrap().query_row("SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'studio-errors:dismissed:%'",[],|row|row.get(0)).unwrap();
+    let dismissals: i64 = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM runtime_error_incidents WHERE dismissed_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(
         dismissals, 0,
         "diagnostic capture cannot commit a rolled-back dismissal"

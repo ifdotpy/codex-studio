@@ -1,67 +1,36 @@
-//! The durable answer obligation of one provider callback request.
-//!
-//! A journal batch that commits a provider request writes this record in the
-//! same transaction, so the event is durably accepted and its journal cursor
-//! settles with the batch. The record, not the cursor, owns the obligation to
-//! answer. Its lifecycle:
-//!
-//! - `accepted`: the request is stored; the answer has not been submitted.
-//!   Dispatch is idempotent through the tool request's own durable identity,
-//!   so an accepted record may be dispatched again after a restart.
-//! - `submitted`: the exact answer and connection identity are stored before
-//!   handoff. A supervised retry uses the same durable operation identity.
-//!   Legacy records without those bytes never permit another answer.
-//! - `unknown`: the write outcome is uncertain; the record is kept.
-//! - retired: the answer was written, or the provider generation that waited
-//!   for it ended. A retired record is deleted.
-//!
-//! Records live under their own receipt prefix, outside the journal namespace,
-//! so journal compaction neither deletes nor implies anything about them.
-use super::{
-    JournalEntry, JournalPayload, WorkerError, WriteOutcome,
-    store::{delete_receipt, invalid, receipt, save},
+//! Accepted callbacks own handoff authority; response bytes have one outbox owner.
+use super::{JournalEntry, JournalPayload, WorkerError, WriteOutcome, store::invalid};
+use crate::{
+    provider_callbacks as callbacks,
+    provider_session_task::SessionStatus,
+    tool_requests::{self, CallbackTask},
 };
-use crate::provider_session_task::SessionStatus;
-use rusqlite::params;
+use rusqlite::{Connection, Transaction, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use studio_runtime_process::ProviderHandle;
 use studio_runtime_providers::{
     DecodedJournalPayload, Frame, ResponseBody, decode_journal_entry, encode_line,
 };
+use studio_runtime_schema::persistence::{RequestIdentity, ToolRequestKind, ToolRequestStatus};
 use studio_runtime_store::RuntimeStore;
 
-/// Receipt phases. `runtime-server` diagnostics count unanswered records by the
-/// `:accepted` and `:unknown` id suffixes; `callback_handoff` pins both.
-const ACCEPTED: &str = "accepted";
-const SUBMITTED: &str = "submitted";
-const UNKNOWN: &str = "unknown";
-/// A timed-out first handoff may recover only through the exact saved reply.
-const RECOVERABLE: &str = "recoverable";
-/// Written before the one supervised reconciliation attempt, not after it.
-const REPLAYED: &str = "replayed";
-/// Written before records existed; only deleted, never read.
-const LEGACY_WRITTEN: &str = "written";
-const SAVED_REPLY_VERSION: u64 = 1;
-/// Receipt range used by callback scans and registry demand. Unit: receipt IDs.
-const RECEIPT_PREFIX: &str = "account-worker:callback:";
-/// Maximum wait for callback admission or its final write receipt. Unit: seconds.
-/// The deadline makes a lost handoff visible without repeating its business tool.
+/// Maximum wait for callback admission or final write evidence. Unit: seconds.
 pub(super) const WRITE_RECEIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SavedReply {
-    version: u64,
     handle: String,
     generation: u64,
     pid: u32,
-    frame: String,
+    response_key: String,
     sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     authority: Option<super::callback::ManagedReplyAuthority>,
+    /// Hydrated from the canonical response only while processing this task.
+    #[serde(skip)]
+    frame: String,
 }
-
 impl SavedReply {
     pub(super) fn new(frame: &Frame, status: &SessionStatus) -> Result<Self, WorkerError> {
         let info = status
@@ -71,20 +40,19 @@ impl SavedReply {
             .ok_or(WorkerError::CallbackUnknown)?;
         let bytes = encode_line(frame).map_err(|_| WorkerError::CallbackUnknown)?;
         let saved = Self {
-            version: SAVED_REPLY_VERSION,
-            handle: info.handle.as_str().to_owned(),
+            handle: info.handle.as_str().into(),
             generation: info.generation.0,
             pid: info.pid,
+            response_key: String::new(),
             sha256: studio_runtime_store::sha256_hex(&bytes),
-            frame: String::from_utf8(bytes).map_err(|_| WorkerError::CallbackUnknown)?,
             authority: None,
+            frame: String::from_utf8(bytes).map_err(|_| WorkerError::CallbackUnknown)?,
         };
         if !saved.same_connection(status) {
             return Err(WorkerError::CallbackUnknown);
         }
         Ok(saved)
     }
-
     pub(super) fn same_connection(&self, status: &SessionStatus) -> bool {
         status
             .ready_connection(
@@ -93,10 +61,8 @@ impl SavedReply {
             )
             .is_some_and(|info| info.handle.as_str() == self.handle && info.pid == self.pid)
     }
-
     fn response(&self, accepted: &Accepted) -> Result<Frame, WorkerError> {
-        if self.version != SAVED_REPLY_VERSION
-            || self.generation != accepted.generation
+        if self.generation != accepted.generation
             || self.handle != ProviderHandle::for_account(&accepted.account).as_str()
             || self.sha256 != studio_runtime_store::sha256_hex(self.frame.as_bytes())
         {
@@ -112,7 +78,7 @@ impl SavedReply {
             return Err(WorkerError::CallbackUnknown);
         };
         let Frame::Response { id, .. } = &frame else {
-            unreachable!()
+            return Err(WorkerError::CallbackUnknown);
         };
         if serde_json::to_value(id).map_err(|_| WorkerError::CallbackUnknown)?
             != accepted.request_id
@@ -121,9 +87,17 @@ impl SavedReply {
         }
         Ok(frame)
     }
+    fn hydrate(&mut self, db: &Connection) -> Result<(), WorkerError> {
+        let frame = callbacks::response_frame(db, &self.response_key)
+            .map_err(callback_error)?
+            .ok_or(WorkerError::CallbackUnknown)?;
+        self.frame =
+            String::from_utf8(encode_line(&frame).map_err(|_| WorkerError::CallbackUnknown)?)
+                .map_err(|_| WorkerError::CallbackUnknown)?;
+        Ok(())
+    }
 }
 
-/// Everything needed to dispatch the request and to answer it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Accepted {
@@ -131,30 +105,26 @@ pub(super) struct Accepted {
     pub journal_scope: String,
     pub generation: u64,
     pub cursor: u64,
-    /// The provider's request id, as sent.
     pub request_id: Value,
     pub method: String,
-    /// The encoded request frame.
     pub frame: String,
-    /// The emitting VM actor and its epoch; none for the account session.
     pub actor: Option<String>,
     pub epoch: Option<i64>,
-    /// Loaded beside the accepted row, never part of its stored request.
     #[serde(skip)]
-    pub submitted: Option<Value>,
+    pub submitted: Option<SavedReply>,
+    #[serde(skip)]
+    pub root_request_id: String,
+    #[serde(skip)]
+    pub source_admission: Option<studio_runtime_store::request_results::AdmittedRequest>,
 }
-
 impl Accepted {
-    /// Only an exact saved reply on a durable, same-process transport qualifies.
     pub(super) fn saved_response(
         &self,
         status: &SessionStatus,
     ) -> Result<Option<Frame>, WorkerError> {
-        let Some(raw) = self.submitted.clone() else {
+        let Some(saved) = &self.submitted else {
             return Ok(None);
         };
-        let saved: SavedReply =
-            serde_json::from_value(raw).map_err(|_| WorkerError::CallbackUnknown)?;
         if self.managed_frame()?.is_some() && saved.authority.is_none() {
             return Err(WorkerError::CallbackUnknown);
         }
@@ -169,12 +139,13 @@ impl Accepted {
     pub(super) fn operation(&self) -> String {
         operation(&self.journal_scope, self.generation, self.cursor)
     }
-
     fn managed_frame(&self) -> Result<Option<Frame>, WorkerError> {
         let frame = self.frame()?;
-        Ok(matches!(&frame, Frame::Request(request) if request.method.as_str() == "item/tool/call").then_some(frame))
+        Ok(
+            matches!(&frame,Frame::Request(request) if request.method.as_str()=="item/tool/call")
+                .then_some(frame),
+        )
     }
-
     pub(super) fn frame(&self) -> Result<Frame, WorkerError> {
         match decode_journal_entry(
             self.cursor,
@@ -189,19 +160,42 @@ impl Accepted {
     }
 }
 
-/// The receipt operation of one request. It is also the provider write's
-/// operation id, so a lost write outcome is attributed to this record.
-pub(super) fn operation(journal_scope: &str, generation: u64, cursor: u64) -> String {
-    format!("callback:{journal_scope}:{generation}:{cursor}")
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct CallbackObligation {
+    pub accepted: Accepted,
+    pub submitted: Option<SavedReply>,
+    pub recovery_authorized: bool,
+    pub recovery_attempted: bool,
+    pub request_fingerprint: String,
+    pub root_request_id: String,
+}
+type Task = CallbackTask<CallbackObligation>;
+fn task(db: &Connection, operation: &str) -> Result<Option<Task>, WorkerError> {
+    tool_requests::get_callback(db, operation).map_err(tool_error)
+}
+fn put(tx: &Transaction<'_>, task: &Task) -> Result<(), WorkerError> {
+    tool_requests::put_callback(tx, task).map_err(tool_error)
+}
+fn tool_error(error: tool_requests::ToolRequestError) -> WorkerError {
+    match error {
+        tool_requests::ToolRequestError::Store(error) => WorkerError::Store(error),
+        _ => WorkerError::CallbackUnknown,
+    }
+}
+fn callback_error(error: callbacks::CallbackError) -> WorkerError {
+    match error {
+        callbacks::CallbackError::Store(error) => WorkerError::Store(error),
+        _ => WorkerError::CallbackUnknown,
+    }
+}
+pub(super) fn operation(scope: &str, generation: u64, cursor: u64) -> String {
+    format!("callback:{scope}:{generation}:{cursor}")
 }
 
-/// Store the record of a provider request journaled in this transaction.
-/// Repeating it for the same entry changes nothing. Entries that are not
-/// provider requests have no record.
 pub(super) fn accept(
-    tx: &studio_runtime_store::Transaction<'_>,
+    tx: &Transaction<'_>,
     account: &str,
-    journal_scope: &str,
+    scope: &str,
     actor: Option<(&str, i64)>,
     entry: &JournalEntry,
 ) -> Result<(), WorkerError> {
@@ -216,169 +210,160 @@ pub(super) fn accept(
         Frame::UnknownMethod(request) => request.method.clone(),
         Frame::Notification(_) | Frame::Response { .. } => return Ok(()),
     };
-    let operation = operation(journal_scope, entry.generation.0, entry.cursor.0);
-    let line = encode_line(frame).map_err(|_| invalid(&operation))?;
-    let record = Accepted {
-        account: account.to_owned(),
-        journal_scope: journal_scope.to_owned(),
+    let operation = operation(scope, entry.generation.0, entry.cursor.0);
+    let bytes = encode_line(frame).map_err(|_| invalid(&operation))?;
+    let fingerprint = studio_runtime_store::sha256_hex(&bytes);
+    if let Some(task) = task(tx, &operation)? {
+        if task.payload.request_fingerprint != fingerprint {
+            return Err(invalid(&operation));
+        }
+        return Ok(());
+    }
+    let accepted = Accepted {
+        account: account.into(),
+        journal_scope: scope.into(),
         generation: entry.generation.0,
         cursor: entry.cursor.0,
         request_id: serde_json::to_value(id).map_err(|_| invalid(&operation))?,
         method,
-        frame: String::from_utf8(line).map_err(|_| invalid(&operation))?,
-        actor: actor.map(|(actor, _)| actor.to_owned()),
+        frame: String::from_utf8(bytes).map_err(|_| invalid(&operation))?,
+        actor: actor.map(|(id, _)| id.into()),
         epoch: actor.map(|(_, epoch)| epoch),
         submitted: None,
+        root_request_id: String::new(),
+        source_admission: None,
     };
-    save(
+    let context = accepted_context(tx, &accepted, "")?;
+    let root_request_id =
+        callbacks::admit_callback_request(tx, &context, frame).map_err(callback_error)?;
+    put(
         tx,
-        &operation,
-        ACCEPTED,
-        serde_json::to_value(record).map_err(|_| invalid(&operation))?,
+        &CallbackTask {
+            id: RequestIdentity::issue_root(),
+            origin_key: operation,
+            status: ToolRequestStatus::Queued,
+            updated: chrono::Utc::now().timestamp_millis(),
+            payload: CallbackObligation {
+                accepted,
+                submitted: None,
+                recovery_authorized: false,
+                recovery_attempted: false,
+                request_fingerprint: fingerprint,
+                root_request_id,
+            },
+        },
     )
 }
 
-/// A request journaled before records existed was held by its unready journal
-/// receipt. Give it a record unless its answer was already written.
-pub(super) fn adopt_legacy(
-    tx: &studio_runtime_store::Transaction<'_>,
-    account: &str,
-    journal_scope: &str,
-    actor: Option<(&str, i64)>,
-    entry: &JournalEntry,
-) -> Result<(), WorkerError> {
-    let operation = operation(journal_scope, entry.generation.0, entry.cursor.0);
-    if receipt(tx, &operation, LEGACY_WRITTEN)?.is_some() {
-        return retire(tx, &operation);
-    }
-    accept(tx, account, journal_scope, actor, entry)
+fn retire(tx: &Transaction<'_>, operation: &str) -> Result<(), WorkerError> {
+    let Some(mut task) = task(tx, operation)? else {
+        return Ok(());
+    };
+    task.status = ToolRequestStatus::Completed;
+    task.payload.accepted.frame.clear();
+    task.payload.submitted = None;
+    put(tx, &task)
 }
-
-fn retire(tx: &studio_runtime_store::Transaction<'_>, operation: &str) -> Result<(), WorkerError> {
-    for phase in [
-        ACCEPTED,
-        SUBMITTED,
-        UNKNOWN,
-        RECOVERABLE,
-        REPLAYED,
-        LEGACY_WRITTEN,
-    ] {
-        delete_receipt(tx, operation, phase)?;
-    }
-    Ok(())
-}
-
 pub(super) async fn retire_async(store: &RuntimeStore, operation: &str) -> Result<(), WorkerError> {
     let operation = operation.to_owned();
     store
         .transaction_with(move |tx| retire(tx, &operation))
         .await
 }
-
-/// Legacy admission has no exact saved reply, so a lost outcome cannot retry.
-/// True means that the record is retired and no answer is owed.
 #[cfg(test)]
 pub(super) async fn admit(store: &RuntimeStore, operation: &str) -> Result<bool, WorkerError> {
     admit_reply(store, operation, None).await
 }
 
-/// Persist exact bytes before admission. An existing match grants one retry
-/// only when the transport owns durable supervisor deduplication.
-/// True forbids a write: the record retired or current actor authority refused it.
+fn accepted_context(
+    tx: &Transaction<'_>,
+    accepted: &Accepted,
+    connection: &str,
+) -> Result<callbacks::CallbackContext, WorkerError> {
+    let frame = accepted.frame()?;
+    let params = match &frame {
+        Frame::Request(request) => request.params.as_ref(),
+        Frame::UnknownMethod(request) => request.fields.get("params"),
+        _ => None,
+    };
+    let thread = params
+        .and_then(|params| params["threadId"].as_str())
+        .unwrap_or_default();
+    let turn = params.and_then(|params| params["turnId"].as_str());
+    Ok(super::callback::callback_context_in(
+        tx,
+        &accepted.account,
+        accepted.generation,
+        accepted.actor.as_deref(),
+        thread,
+        turn,
+    )?
+    .unwrap_or_else(|| callbacks::CallbackContext {
+        agent: accepted.actor.clone().unwrap_or_default(),
+        account: accepted.account.clone(),
+        stream_id: accepted.journal_scope.clone(),
+        generation: accepted.generation,
+        connection: connection.into(),
+        epoch: accepted
+            .epoch
+            .and_then(|epoch| u64::try_from(epoch).ok())
+            .unwrap_or(0),
+        thread: thread.into(),
+        turn: turn.unwrap_or_default().into(),
+    }))
+}
+
+/// First admission commits exact response provenance. Only the existing
+/// supervisor proof permits one retry of the very same operation and bytes.
 pub(super) async fn admit_reply(
     store: &RuntimeStore,
     operation: &str,
     reply: Option<(SavedReply, bool)>,
 ) -> Result<bool, WorkerError> {
     let operation = operation.to_owned();
-    store
-        .transaction_with(move |tx| {
-            let Some(accepted) = receipt(tx, &operation, ACCEPTED)? else {
-                return Ok(true);
-            };
-            if receipt(tx, &operation, UNKNOWN)?.is_some() {
-                return Err(WorkerError::CallbackUnknown);
+    store.transaction_with(move|tx| {
+        let Some(mut task)=task(tx,&operation)? else { return Ok(true); };
+        if task.status==ToolRequestStatus::Completed { return Ok(true); }
+        if task.status==ToolRequestStatus::Unknown { return Err(WorkerError::CallbackUnknown); }
+        let Some((mut saved,deduplicated))=reply else {
+            if task.status!=ToolRequestStatus::Queued { return Err(WorkerError::CallbackUnknown); }
+            task.status=ToolRequestStatus::Running; put(tx,&task)?; return Ok(false);
+        };
+        let accepted=&task.payload.accepted;
+        if accepted.operation()!=operation || accepted.actor.is_some() { return Err(WorkerError::CallbackUnknown); }
+        let frame=saved.response(accepted)?;
+        let refusal=matches!(&frame,Frame::Response{body:ResponseBody::Error(_),..}) || matches!(&frame,Frame::Response{body:ResponseBody::Result(value),..} if value.get("success")==Some(&Value::Bool(false)));
+        let managed=accepted.managed_frame()?;
+        let authority=managed.as_ref().map(|frame|super::callback::managed_reply_authority_in(tx,&accepted.account,accepted.generation,frame)).transpose()?.flatten();
+        if let Some(original)=&task.payload.submitted {
+            if managed.is_some() && !original.authority.as_ref().is_some_and(|old|authority.as_ref().is_some_and(|current|old.same_actor(current))) {
+                task.status=ToolRequestStatus::Unknown; put(tx,&task)?; return Ok(true);
             }
-            let value = if let Some((mut saved, deduplicated)) = reply {
-                let accepted: Accepted =
-                    serde_json::from_value(accepted).map_err(|_| invalid(&operation))?;
-                if accepted.operation() != operation || accepted.actor.is_some() {
-                    return Err(WorkerError::CallbackUnknown);
-                }
-                let response = saved.response(&accepted)?;
-                let refusal = matches!(
-                    &response,
-                    Frame::Response {
-                        body: ResponseBody::Error(_),
-                        ..
-                    }
-                ) || matches!(&response, Frame::Response { body: ResponseBody::Result(value), .. }
-                        if value.get("success") == Some(&Value::Bool(false)));
-                let prior = receipt(tx, &operation, SUBMITTED)?;
-                let managed = accepted.managed_frame()?;
-                let current_authority = managed
-                    .as_ref()
-                    .map(|frame| {
-                        super::callback::managed_reply_authority_in(
-                            tx,
-                            &accepted.account,
-                            accepted.generation,
-                            frame,
-                        )
-                    })
-                    .transpose()?
-                    .flatten();
-                if let Some(prior) = prior {
-                    let original: SavedReply = serde_json::from_value(prior.clone())
-                        .map_err(|_| WorkerError::CallbackUnknown)?;
-                    if managed.is_some()
-                        && !original.authority.as_ref().is_some_and(|authority| {
-                            current_authority
-                                .as_ref()
-                                .is_some_and(|current| authority.same_actor(current))
-                        })
-                    {
-                        save(tx, &operation, UNKNOWN, json!(true))?;
-                        return Ok(true);
-                    }
-                    saved.authority = original.authority;
-                    let value = serde_json::to_value(saved).map_err(|_| invalid(&operation))?;
-                    if !deduplicated
-                        || prior != value
-                        || receipt(tx, &operation, REPLAYED)?.is_some()
-                    {
-                        save(tx, &operation, UNKNOWN, json!(true))?;
-                        return Ok(true);
-                    }
-                    save(tx, &operation, REPLAYED, json!(true))?;
-                    return Ok(false);
-                }
-                saved.authority = current_authority;
-                let missing_authority = managed.is_some() && saved.authority.is_none();
-                let value = serde_json::to_value(saved).map_err(|_| invalid(&operation))?;
-                // A malformed request still receives its first refusal. It
-                // cannot recover that response without captured authority.
-                if missing_authority && !refusal {
-                    save(tx, &operation, SUBMITTED, value)?;
-                    save(tx, &operation, UNKNOWN, json!(true))?;
-                    return Ok(true);
-                }
-                value
-            } else {
-                if receipt(tx, &operation, SUBMITTED)?.is_some() {
-                    return Err(WorkerError::CallbackUnknown);
-                }
-                json!(true)
-            };
-            save(tx, &operation, SUBMITTED, value)?;
-            Ok(false)
-        })
-        .await
+            saved.authority=original.authority.clone();
+            saved.response_key=original.response_key.clone();
+            // Compare persisted provenance, including bytes' hash, never a freshly built body.
+            if !deduplicated || task.payload.recovery_attempted || serde_json::to_value(&saved).map_err(|_|invalid(&operation))?!=serde_json::to_value(original).map_err(|_|invalid(&operation))? {
+                task.status=ToolRequestStatus::Unknown; put(tx,&task)?; return Ok(true);
+            }
+            let mut original=original.clone(); original.hydrate(tx)?;
+            if original.response(accepted)?!=frame { return Err(WorkerError::CallbackUnknown); }
+            task.payload.recovery_attempted=true;
+            put(tx,&task)?; return Ok(false);
+        }
+        saved.authority=authority;
+        let callback_context=accepted_context(tx,accepted,&saved.handle)?;
+        let identity=callbacks::save_frame_response(tx,&callback_context,&accepted.frame()?,&frame).map_err(callback_error)?;
+        saved.response_key=callbacks::callback_origin_key(&callback_context,&identity.rpc_id);
+        let admission=callbacks::begin_frame(tx,&callback_context.stream_id,accepted.generation,&identity.operation_id(),&frame).map_err(callback_error)?;
+        if admission!=callbacks::FrameAdmission::Send { return Err(WorkerError::CallbackUnknown); }
+        let missing=managed.is_some() && saved.authority.is_none();
+        task.payload.submitted=Some(saved);
+        task.status=if missing && !refusal { ToolRequestStatus::Unknown } else { ToolRequestStatus::Running };
+        put(tx,&task)?;
+        Ok(missing && !refusal)
+    }).await
 }
 
-/// A timed-out first supervised handoff retains exact bytes for one deduplicated
-/// reconciliation. A second lost outcome, a legacy row, or a different transport
-/// stays unknown. Late shutdown evidence must not erase this distinction.
 pub(super) async fn expired(
     store: &RuntimeStore,
     operation: &str,
@@ -387,46 +372,50 @@ pub(super) async fn expired(
     let operation = operation.to_owned();
     store
         .transaction_with(move |tx| {
-            let accepted = receipt(tx, &operation, ACCEPTED)?
-                .and_then(|value| serde_json::from_value::<Accepted>(value).ok());
-            let submitted = receipt(tx, &operation, SUBMITTED)?;
-            let recoverable = match (accepted, submitted, status) {
-                (Some(mut accepted), Some(submitted), Some(status))
-                    if receipt(tx, &operation, UNKNOWN)?.is_none()
-                        && receipt(tx, &operation, REPLAYED)?.is_none() =>
-                {
-                    accepted.submitted = Some(submitted);
-                    accepted.operation() == operation
-                        && accepted
-                            .saved_response(&status)
-                            .is_ok_and(|reply| reply.is_some())
-                }
-                _ => false,
+            let Some(mut task) = task(tx, &operation)? else {
+                return Ok(());
             };
-            save(
-                tx,
-                &operation,
-                if recoverable { RECOVERABLE } else { UNKNOWN },
-                json!(true),
-            )
+            if task.status == ToolRequestStatus::Completed {
+                return Ok(());
+            }
+            let mut accepted = task.payload.accepted.clone();
+            if let Some(mut saved) = task.payload.submitted.clone() {
+                if saved.hydrate(tx).is_ok() {
+                    accepted.submitted = Some(saved);
+                }
+            }
+            let recoverable = task.status != ToolRequestStatus::Unknown
+                && !task.payload.recovery_attempted
+                && status.as_ref().is_some_and(|status| {
+                    accepted
+                        .saved_response(status)
+                        .is_ok_and(|frame| frame.is_some())
+                });
+            task.payload.recovery_authorized = recoverable;
+            if !recoverable {
+                task.status = ToolRequestStatus::Unknown;
+            }
+            put(tx, &task)
         })
         .await
 }
-
-/// A refused recovery is not a late receipt from the timed-out attachment.
-/// Keep the refusal even when the first timeout left a recoverable marker.
 pub(super) async fn refuse_recovery(
     store: &RuntimeStore,
     operation: &str,
 ) -> Result<(), WorkerError> {
     let operation = operation.to_owned();
     store
-        .transaction_with(move |tx| save(tx, &operation, UNKNOWN, json!(true)))
+        .transaction_with(move |tx| {
+            if let Some(mut task) = task(tx, &operation)? {
+                task.status = ToolRequestStatus::Unknown;
+                task.payload.recovery_authorized = false;
+                put(tx, &task)?;
+            }
+            Ok(())
+        })
         .await
 }
 
-/// Record how the provider write of the answer ended. A write that provably
-/// did not leave returns the record to `accepted`, so it may be sent again.
 pub(super) async fn written(
     store: &RuntimeStore,
     operation: &str,
@@ -434,137 +423,80 @@ pub(super) async fn written(
 ) -> Result<(), WorkerError> {
     let operation = operation.to_owned();
     store
-        .transaction_with(move |tx| match outcome {
-            WriteOutcome::Written => retire(tx, &operation),
-            WriteOutcome::NotSent | WriteOutcome::Unknown
-                if receipt(tx, &operation, RECOVERABLE)?.is_some()
-                    && receipt(tx, &operation, REPLAYED)?.is_none() =>
-            {
-                Ok(())
+        .transaction_with(move |tx| {
+            let Some(mut task) = task(tx, &operation)? else {
+                return Ok(());
+            };
+            if task.status == ToolRequestStatus::Completed {
+                return Ok(());
             }
-            WriteOutcome::NotSent
-                if receipt(tx, &operation, REPLAYED)?.is_none()
-                    && receipt(tx, &operation, UNKNOWN)?.is_none() =>
+            if matches!(outcome, WriteOutcome::NotSent | WriteOutcome::Unknown)
+                && task.payload.recovery_authorized
+                && !task.payload.recovery_attempted
             {
-                delete_receipt(tx, &operation, SUBMITTED)
+                return Ok(());
             }
-            WriteOutcome::NotSent | WriteOutcome::Unknown => {
-                save(tx, &operation, UNKNOWN, json!(true))
+            if let Some(saved) = &task.payload.submitted {
+                callbacks::settle_response(
+                    tx,
+                    &saved.response_key,
+                    match outcome {
+                        WriteOutcome::Written => callbacks::DeliveryOutcome::Written,
+                        WriteOutcome::NotSent => callbacks::DeliveryOutcome::NotSent,
+                        WriteOutcome::Unknown => callbacks::DeliveryOutcome::Unknown,
+                    },
+                )
+                .map_err(callback_error)?;
+            }
+            match outcome {
+                WriteOutcome::Written => {
+                    retire(tx, &operation)?;
+                    callbacks::retire_checkpointed(
+                        tx,
+                        &task.payload.accepted.journal_scope,
+                        task.payload.accepted.generation,
+                    )
+                    .map_err(callback_error)?;
+                    Ok(())
+                }
+                WriteOutcome::NotSent
+                    if !task.payload.recovery_attempted
+                        && task.status != ToolRequestStatus::Unknown =>
+                {
+                    task.payload.submitted = None;
+                    task.status = ToolRequestStatus::Queued;
+                    put(tx, &task)
+                }
+                WriteOutcome::NotSent | WriteOutcome::Unknown => {
+                    task.status = ToolRequestStatus::Unknown;
+                    put(tx, &task)
+                }
             }
         })
         .await
 }
 
-fn unsent_prefix(account: &str) -> String {
-    format!("{RECEIPT_PREFIX}{account}:")
-}
-
-macro_rules! callback_rows_sql {
-    () => {
-        "FROM runtime_operation_receipts a \
-    LEFT JOIN runtime_operation_receipts s ON s.id=substr(a.id,1,length(a.id)-8)||'submitted' \
-    WHERE a.id>=?1 AND a.id<?2 AND a.signature='accepted' "
-    };
-}
-macro_rules! callback_unknown_absent_sql {
-    () => {
-        "NOT EXISTS (SELECT 1 FROM runtime_operation_receipts u \
-        WHERE u.id=substr(a.id,1,length(a.id)-8)||'unknown')"
-    };
-}
-/// One owner for the recoverable reply predicate in both worker and registry.
-macro_rules! saved_reply_available_sql {
-    () => {
-        concat!(
-            "json_type(s.result)='object' AND ",
-            callback_unknown_absent_sql!(),
-            " \
-        AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts r \
-        WHERE r.id=substr(a.id,1,length(a.id)-8)||'replayed')"
-        )
-    };
-}
-const UNSENT_SQL: &str = concat!(
-    "SELECT a.result,s.result ",
-    callback_rows_sql!(),
-    " \
-    AND json_extract(a.result,'$.account')=?3 \
-    AND (json_extract(a.result,'$.generation')<?4 OR ",
-    callback_unknown_absent_sql!(),
-    ") \
-    AND (json_extract(a.result,'$.generation')<?4 OR s.id IS NULL OR (",
-    saved_reply_available_sql!(),
-    ")) "
-);
-const REPLY_DEMAND_ROWS_SQL: &str = concat!(
-    callback_rows_sql!(),
-    " \
-    AND json_type(a.result,'$.account')='text' AND json_extract(a.result,'$.account')<>'' \
-    AND json_extract(a.result,'$.actor') IS NULL AND ",
-    saved_reply_available_sql!()
-);
-
-/// A saved response is account demand even when there is no queued user input.
-/// This selects metadata only; the ready attachment validates bytes and identity.
-pub(super) fn reply_accounts(
-    connection: &rusqlite::Connection,
-    after: &str,
-    limit: usize,
-) -> Result<Vec<String>, WorkerError> {
-    let mut query = connection.prepare_cached(&format!(
-        "SELECT DISTINCT json_extract(a.result,'$.account') {REPLY_DEMAND_ROWS_SQL} \
-         AND json_extract(a.result,'$.account')>?3 ORDER BY 1 LIMIT ?4"
-    ))?;
-    Ok(query
-        .query_map(
-            params![
-                RECEIPT_PREFIX,
-                format!("{RECEIPT_PREFIX}~"),
-                after,
-                i64::try_from(limit).map_err(|_| WorkerError::TaskFailed)?
-            ],
-            |row| row.get(0),
-        )?
-        .collect::<Result<Vec<_>, _>>()?)
-}
-
-pub(super) fn has_reply_demand(
-    connection: &rusqlite::Connection,
-    account: &str,
-) -> Result<bool, WorkerError> {
-    let prefix = unsent_prefix(account);
-    Ok(connection.query_row(
-        &format!(
-            "SELECT EXISTS(SELECT 1 {REPLY_DEMAND_ROWS_SQL} \
-        AND json_extract(a.result,'$.account')=?3)"
-        ),
-        params![prefix, format!("{prefix}~"), account],
-        |row| row.get(0),
-    )?)
-}
-
-/// Whether any accepted record of the account needs the worker: its answer
-/// was not submitted, or its generation ended and it only waits to be retired.
+// These selectors visit current callback tasks, never completed reply history.
+const TASKS: &str = "FROM runtime_tool_requests WHERE kind=?1 AND status IN (?2,?3,?4) AND json_extract(record,'$.payload.accepted.account')=?5";
+const UNSENT: &str = " AND (json_extract(record,'$.payload.accepted.generation')<?6 OR (status!=?4 AND (json_type(record,'$.payload.submitted')='null' OR json_extract(record,'$.payload.recovery_attempted')=0)))";
 pub(super) fn any_unsent(
-    connection: &rusqlite::Connection,
+    db: &Connection,
     account: &str,
     generation: u64,
 ) -> Result<bool, WorkerError> {
-    let prefix = unsent_prefix(account);
-    Ok(connection.query_row(
-        &format!("SELECT EXISTS({UNSENT_SQL})"),
+    Ok(db.query_row(
+        &format!("SELECT EXISTS(SELECT 1 {TASKS}{UNSENT})"),
         params![
-            prefix,
-            format!("{prefix}~"),
+            ToolRequestKind::ProviderCallback,
+            ToolRequestStatus::Queued,
+            ToolRequestStatus::Running,
+            ToolRequestStatus::Unknown,
             account,
-            i64::try_from(generation).map_err(|_| WorkerError::TaskFailed)?
+            i64::try_from(generation).map_err(|_| invalid(account))?
         ],
         |row| row.get(0),
     )?)
 }
-
-/// Up to `limit` accepted records of the account whose answer was not
-/// submitted, or whose generation ended before `generation`, oldest first.
 pub(super) async fn unsent(
     store: &RuntimeStore,
     account: &str,
@@ -572,32 +504,108 @@ pub(super) async fn unsent(
     limit: usize,
 ) -> Result<Vec<Accepted>, WorkerError> {
     let account = account.to_owned();
-    let limit = i64::try_from(limit).map_err(|_| WorkerError::TaskFailed)?;
-    let generation = i64::try_from(generation).map_err(|_| WorkerError::TaskFailed)?;
-    store
-        .read_async("runtime-services/account_worker_read", move |connection| {
-            let prefix = unsent_prefix(&account);
-            let mut statement = connection.prepare_cached(&format!(
-                "{UNSENT_SQL} ORDER BY json_extract(a.result,'$.generation'), \
-                 json_extract(a.result,'$.cursor') LIMIT ?5"
-            ))?;
-            let rows = statement
-                .query_map(
-                    params![prefix, format!("{prefix}~"), account, generation, limit],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-                )?
-                .collect::<Result<Vec<_>, _>>()?;
-            rows.into_iter()
-                .map(|(raw, submitted)| {
-                    let mut accepted: Accepted =
-                        serde_json::from_str(&raw).map_err(|_| invalid(&account))?;
-                    accepted.submitted = submitted
-                        .map(|raw| serde_json::from_str(&raw))
-                        .transpose()
-                        .map_err(|_| invalid(&account))?;
-                    Ok(accepted)
-                })
-                .collect()
-        })
-        .await
+    store.read_async("runtime-services/callback_tasks",move|db|{
+        let mut query=db.prepare_cached(&format!("SELECT record {TASKS}{UNSENT} ORDER BY json_extract(record,'$.payload.accepted.generation'),json_extract(record,'$.payload.accepted.cursor') LIMIT ?7"))?;
+        let rows=query.query_map(params![ToolRequestKind::ProviderCallback,ToolRequestStatus::Queued,ToolRequestStatus::Running,ToolRequestStatus::Unknown,account,i64::try_from(generation).map_err(|_|invalid(&account))?,i64::try_from(limit).map_err(|_|invalid(&account))?],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
+        rows.into_iter().map(|raw|{
+            let task:Task=serde_json::from_str(&raw).map_err(|_|invalid(&account))?;
+            let mut accepted=task.payload.accepted;
+            accepted.root_request_id=task.payload.root_request_id;
+            accepted.source_admission=callbacks::callback_admission(db,&accepted.root_request_id).map_err(callback_error)?;
+            if let Some(mut submitted)=task.payload.submitted {
+                // An expired/missing canonical body is a hold, never another dispatch.
+                submitted.hydrate(db)?;accepted.submitted=Some(submitted);
+            }
+            Ok(accepted)
+        }).collect()
+    }).await
+}
+const DEMAND: &str = "FROM runtime_tool_requests WHERE kind=?1 AND status=?2 AND json_type(record,'$.payload.submitted')='object' AND json_extract(record,'$.payload.recovery_attempted')=0 AND json_extract(record,'$.payload.accepted.actor') IS NULL";
+pub(super) fn reply_accounts(
+    db: &Connection,
+    after: &str,
+    limit: usize,
+) -> Result<Vec<String>, WorkerError> {
+    let mut query=db.prepare_cached(&format!("SELECT DISTINCT json_extract(record,'$.payload.accepted.account') {DEMAND} AND json_extract(record,'$.payload.accepted.account')>?3 ORDER BY 1 LIMIT ?4"))?;
+    Ok(query
+        .query_map(
+            params![
+                ToolRequestKind::ProviderCallback,
+                ToolRequestStatus::Running,
+                after,
+                i64::try_from(limit).map_err(|_| invalid(after))?
+            ],
+            |row| row.get(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?)
+}
+pub(super) fn has_reply_demand(db: &Connection, account: &str) -> Result<bool, WorkerError> {
+    Ok(db.query_row(&format!("SELECT EXISTS(SELECT 1 {DEMAND} AND json_extract(record,'$.payload.accepted.account')=?3)"),params![ToolRequestKind::ProviderCallback,ToolRequestStatus::Running,account],|row|row.get(0))?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use studio_runtime_process::{EventCursor, Generation};
+    use studio_runtime_providers::{Method, RequestFrame, RequestId};
+
+    fn request(cursor: u64, params: Value) -> JournalEntry {
+        JournalEntry {
+            received_at_ms: 1,
+            cursor: EventCursor(cursor),
+            generation: Generation(7),
+            payload: JournalPayload::Frame(Frame::Request(RequestFrame {
+                id: RequestId::String("opaque-rpc".into()),
+                method: Method::CurrentTimeRead,
+                params: Some(params),
+                fields: Default::default(),
+            })),
+        }
+    }
+    #[tokio::test]
+    async fn callback_task_reuses_logical_root_at_later_cursor_and_keeps_retired_fence() {
+        let directory = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let roots = store
+            .transaction_with(|tx| {
+                let first = request(1, json!({}));
+                let second = request(2, json!({}));
+                accept(tx, "account", "account", None, &first)?;
+                accept(tx, "account", "account", None, &second)?;
+                let first = task(tx, &operation("account", 7, 1))?.expect("first obligation");
+                let second = task(tx, &operation("account", 7, 2))?.expect("second obligation");
+                assert_ne!(first.id, second.id);
+                assert_eq!(
+                    first.payload.root_request_id,
+                    second.payload.root_request_id
+                );
+                assert!(
+                    accept(
+                        tx,
+                        "account",
+                        "account",
+                        None,
+                        &request(1, json!({"changed":true}))
+                    )
+                    .is_err()
+                );
+                retire(tx, &first.origin_key)?;
+                accept(tx, "account", "account", None, &request(1, json!({})))?;
+                let retired = task(tx, &first.origin_key)?.expect("retained operation fence");
+                assert_eq!(retired.status, ToolRequestStatus::Completed);
+                assert!(retired.payload.accepted.frame.is_empty());
+                Ok::<_, WorkerError>(second.payload.root_request_id)
+            })
+            .await
+            .expect("transaction");
+        let pending = unsent(&store, "account", 7, 10)
+            .await
+            .expect("pending tasks");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].root_request_id, roots);
+        assert!(pending[0].source_admission.is_some());
+    }
 }

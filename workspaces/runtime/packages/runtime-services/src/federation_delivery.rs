@@ -399,7 +399,7 @@ pub(crate) async fn pump_peer_until(
     let identity_for_claim = Arc::clone(&identity);
     let (peer, queued) = store
         .transaction_with(move |tx| {
-            let state = snapshot(tx, &peer_id_owned, "", "", now)?;
+            let state = snapshot(tx, &peer_id_owned, "", now)?;
             state.authorize(false)?;
             effects::check_identity(tx, identity_for_claim.as_ref())?;
             Ok::<_, Error>((
@@ -424,14 +424,15 @@ pub(crate) async fn pump_peer_until(
         let hash_for_check = hash.clone();
         store
             .transaction_with(move |tx| {
-                let state = snapshot(tx, &peer_id_owned, "", "", now)?;
+                let state = snapshot(tx, &peer_id_owned, "", now)?;
                 state.authorize(false)?;
                 if state.peer.public_key != peer_for_check.public_key {
                     return Err(Error::Conflict("peer key changed"));
                 }
                 let mut latest = Repo::record(tx, Table::Outbox, &id_for_check, &peer_id_owned)?
                     .ok_or(Error::Conflict("outbox removed"))?;
-                if latest["status"] != "queued"
+                if latest["status"]
+                    != studio_runtime_schema::persistence::FederationDeliveryState::Queued.as_str()
                     || core::envelope_hash(&effects::outbound(
                         &latest,
                         identity_for_check.as_ref(),
@@ -478,7 +479,7 @@ pub(crate) async fn pump_peer_until(
                     .transaction_with(move |tx| {
                         if let Some(mut latest) =
                             Repo::record(tx, Table::Outbox, &id_owned, &peer_id_owned)?
-                            && latest["status"] == "queued"
+                            && latest["status"] == studio_runtime_schema::persistence::FederationDeliveryState::Queued.as_str()
                         {
                             let attempts = latest["attempts"]
                                 .as_u64()
@@ -505,23 +506,18 @@ pub(crate) async fn pump_peer_until(
         let result_for_ack = result.clone();
         store
             .transaction_with(move |tx| {
-                let state = snapshot(tx, &peer_id_owned, "", "", now)?;
+                let state = snapshot(tx, &peer_id_owned, "", now)?;
                 state.authorize(false)?;
                 if state.peer.public_key != peer_for_ack.public_key {
                     return Err(Error::Conflict("peer key changed"));
                 }
-                if effects::acknowledge_outbox(
+                effects::acknowledge_outbox(
                     tx,
                     &peer_id_owned,
-                    &json!({"id":id_for_ack,"hash":hash_for_ack}),
+                    &json!({"id":id_for_ack,"hash":hash_for_ack,"requestId":item["requestId"],"receipt":result_for_ack}),
                     now,
                     true,
-                )? {
-                    let mut latest = Repo::record(tx, Table::Outbox, &id_for_ack, &peer_id_owned)?
-                        .ok_or(Error::Conflict("outbox removed"))?;
-                    latest["receipt"] = result_for_ack.clone();
-                    Repo::put(tx, Table::Outbox, &id_for_ack, &peer_id_owned, &latest)?;
-                }
+                )?;
                 Ok::<_, Error>(())
             })
             .await?;
@@ -534,7 +530,7 @@ pub(crate) async fn pump_peer_until(
     let peer_for_acks = peer.clone();
     let acks = store
         .transaction_with(move |tx| {
-            let state = snapshot(tx, &peer_id_owned, "", "", now)?;
+            let state = snapshot(tx, &peer_id_owned, "", now)?;
             state.authorize(false)?;
             if state.peer.public_key != peer_for_acks.public_key {
                 return Err(Error::Conflict("peer key changed"));
@@ -542,7 +538,7 @@ pub(crate) async fn pump_peer_until(
             Ok::<_, Error>(
                 Repo::batch(tx, Table::Inbox, &peer_id_owned, now)?
                     .into_iter()
-                    .map(|(id, item)| json!({"id":id,"hash":item["hash"]}))
+                    .map(|(id, item)| json!({"id":id,"hash":item["hash"],"requestId":item["requestId"]}))
                     .collect::<Vec<_>>(),
             )
         })
@@ -661,7 +657,7 @@ pub fn send_message_in_transaction(
         .as_str()
         .ok_or(Error::Invalid("room.peerId"))?
         .to_owned();
-    snapshot(tx, &peer, room_id, "", now)?.authorize(false)?;
+    snapshot(tx, &peer, room_id, now)?.authorize(false)?;
     if room["status"] != "approved"
         || room["localApproved"] != true
         || room["remoteApproved"] != true
@@ -675,64 +671,20 @@ pub fn send_message_in_transaction(
     let signature = crate::event_write::request_signature(&json!({
         "sender":sender,"room":room_id,"text":text,"delivery":delivery,
     }));
-    if let Some(saved) = crate::event_write::read_receipt(
+    use crate::event_write::{CallerAdmission, RequestKey, begin_request};
+    use studio_runtime_store::multi_server_delivery::remote_result_key;
+    use studio_runtime_store::request_results::Admission;
+    let admitted = match begin_request::<core::MessageSendReply>(
         tx,
-        Some(&message_id),
+        RequestKey::new("federation-send", &[sender], key).raw(&message_id),
         &signature,
-        "runtime_chat_messages",
-        &message_id,
-        |value| {
-            value["id"] == message_id
-                && value["room"] == room_id
-                && value["deliveries"].is_object()
-                && value["status"].is_string()
-        },
-    )
-    .map_err(|error| match error {
-        crate::event_write::EventWriteError::Conflict(message) => Error::Conflict(message),
-        other @ crate::event_write::EventWriteError::InvalidRequest(_)
-        | other @ crate::event_write::EventWriteError::InvalidResultSchema(_)
-        | other @ crate::event_write::EventWriteError::RemoteEventsUnavailable
-        | other @ crate::event_write::EventWriteError::WorkerAssignmentUnavailable
-        | other @ crate::event_write::EventWriteError::InvalidStoredObject { .. }
-        | other @ crate::event_write::EventWriteError::Store(_)
-        | other @ crate::event_write::EventWriteError::Clock => Error::Event(other),
-    })? {
-        return Ok(saved);
-    }
-    let existing: Option<(String, String, String, String)> = tx
-        .query_row(
-            "SELECT room,sender,text,deliveries FROM runtime_chat_messages WHERE id=?1",
-            [&message_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .optional()
-        .map_err(StoreError::from)?;
-    if let Some((prior_room, prior_sender, prior_text, raw)) = existing {
-        if delivery != DeliveryMoment::CurrentTurn {
-            return Err(Error::Conflict(
-                "legacy message identity has different delivery timing",
-            ));
+        chrono::Utc::now().timestamp_millis(),
+    )? {
+        CallerAdmission::Fresh(admitted) => admitted,
+        CallerAdmission::Replay(saved) => {
+            return serde_json::to_value(saved).map_err(|error| StoreError::from(error).into());
         }
-        if (
-            prior_room.as_str(),
-            prior_sender.as_str(),
-            prior_text.as_str(),
-        ) != (room_id, sender, text)
-        {
-            return Err(Error::Conflict("message identity has different content"));
-        }
-        let deliveries: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
-        let object = deliveries
-            .as_object()
-            .ok_or(Error::Invalid("chat.deliveries"))?;
-        let status = if !object.is_empty() && object.values().all(|v| v == "delivered") {
-            "delivered"
-        } else {
-            "queued"
-        };
-        return Ok(json!({"id":message_id,"room":room_id,"deliveries":deliveries,"status":status}));
-    }
+    };
     let person = room
         .get("localParticipants")
         .and_then(Value::as_array)
@@ -760,13 +712,28 @@ pub fn send_message_in_transaction(
         .checked_add(1)
         .ok_or(Error::Invalid("room.sequence"))?;
     let payload = json!({"sender":sender,"senderName":name,"text":text,"created":now,"sequence":sequence,"delivery":delivery});
-    let item = json!({"id":message_id,"kind":"chat-message","room":room_id,"payload":payload,"created":now,"status":"queued","attempts":0,"nextAt":0,"error":null});
+    let mut item = json!({"id":message_id,"requestId":key,"kind":core::MessageKind::ChatMessage,"room":room_id,"payload":payload,"created":now,"status":studio_runtime_schema::persistence::FederationDeliveryState::Queued,"attempts":0,"nextAt":0,"error":null});
+    let immutable = json!({"protocol":PROTOCOL,"senderServer":state_id,"id":message_id,"kind":core::MessageKind::ChatMessage,"room":room_id,"payload":item["payload"],"created":now});
+    let delivery_signature = core::envelope_hash(&immutable)?;
+    let delivery_admission = match crate::event_write::admit_request(
+        tx,
+        "federation-outbox",
+        &[&peer],
+        key,
+        &[],
+        &delivery_signature,
+        chrono::Utc::now().timestamp_millis(),
+    )? {
+        Admission::Fresh(admitted) => admitted,
+        Admission::Replay(_) => return Err(Error::Conflict("message delivery already settled")),
+    };
+    item["admission"] = serde_json::to_value(delivery_admission).map_err(StoreError::from)?;
     let item = core::decide_queue(
         Repo::record(tx, Table::Outbox, &message_id, &peer)?.as_ref(),
         item,
         Repo::queue_size(tx, &peer)?,
     )?;
-    let deliveries = json!({format!("remote:{peer}"):"queued"});
+    let deliveries = json!({format!("remote:{peer}"):{"status":studio_runtime_schema::persistence::DeliveryStatus::Queued,"error":null}});
     tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?1,?2,?3,?4,?5,?6)", params![message_id, room_id, sender, text, now, transport::canonical_json(&deliveries)?]).map_err(StoreError::from)?;
     let event = json!({"room":room_id,"message_id":message_id,"sender":sender,"sender_name":name,"text":text,"untrusted_remote":false,"authority":"room-data-only"});
     for member in room["localMembers"]
@@ -800,8 +767,10 @@ pub fn send_message_in_transaction(
     room["sequence"] = json!(sequence);
     room["updated"] = json!(now);
     effects::save_room(tx, &peer, &room)?;
-    let result = json!({"id":message_id,"room":room_id,"deliveries":deliveries,"status":"queued"});
-    crate::event_write::save_receipt(tx, Some(&message_id), &signature, &result)?;
+    let result = json!({"id":message_id,"room":room_id,"deliveries":deliveries,"status":studio_runtime_schema::persistence::DeliveryStatus::Queued});
+    let reply: core::MessageSendReply =
+        serde_json::from_value(result.clone()).map_err(StoreError::from)?;
+    crate::event_write::settle_request(tx, &admitted, Some(sender), &reply)?;
     Ok(result)
 }
 

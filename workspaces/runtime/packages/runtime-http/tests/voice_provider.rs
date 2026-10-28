@@ -50,7 +50,7 @@ impl VoiceRequestPort for RecordingPort {
     fn request<'a>(
         &'a self,
         scope: VoiceConnectionScope,
-        operation_id: String,
+        operation: studio_runtime_services::voice_runtime::VoiceOperation,
         method: Method,
         params: Value,
         deadline: Instant,
@@ -64,7 +64,7 @@ impl VoiceRequestPort for RecordingPort {
             self.calls
                 .lock()
                 .expect("record requests")
-                .push((operation_id, method, params));
+                .push((operation.id, method, params));
             VoiceRequestReceipt {
                 certainty: VoiceWriteCertainty::Written,
             }

@@ -100,7 +100,7 @@ fn failed_notification_transaction_discards_staged_stream_changes() {
     let mut db = super::tests::database();
     let tx = db.transaction().expect("test transaction");
     tx.execute_batch(
-        "CREATE TEMP TRIGGER fail_notification_receipt BEFORE INSERT ON runtime_operation_receipts
+        "CREATE TEMP TRIGGER fail_notification_receipt BEFORE INSERT ON runtime_outbox
          BEGIN SELECT RAISE(ABORT, 'receipt failpoint'); END;",
     )
     .expect("receipt failpoint installs");
@@ -149,7 +149,7 @@ fn failed_notification_transaction_discards_staged_stream_changes() {
         NotificationDispatchRepository::agent_record(&tx, "agent").unwrap(),
         before_agent
     );
-    for table in ["runtime_items", "runtime_operation_receipts"] {
+    for table in ["runtime_items", "runtime_outbox", "request_results"] {
         assert_eq!(
             tx.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
                 .get::<_, i64>(0))
@@ -240,7 +240,16 @@ fn p06_recovery_message_retains_buffered_text_questions_and_atomicity() {
         streams.pending_bytes() > 0,
         "caller buffer remains staged until commit"
     );
-    assert_eq!(tx.query_row("SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'provider-notification:%'",[],|r|r.get::<_,i64>(0)).expect("test invariant"),1,"recovery must not invent a provider receipt");
+    assert_eq!(
+        tx.query_row(
+            "SELECT count(*) FROM runtime_outbox WHERE kind=?1",
+            [studio_runtime_schema::persistence::OutboxKind::JournalEntry],
+            |r| r.get::<_, i64>(0)
+        )
+        .expect("test invariant"),
+        1,
+        "recovery must not invent a journal entry"
+    );
     let request: String = tx
         .query_row(
             "SELECT record FROM runtime_requests WHERE id='agent:question:answer'",

@@ -174,47 +174,28 @@ pub(crate) fn receipt_state(
     if t["type"] != "dynamicToolCall" {
         return Ok((vec![], vec![]));
     }
-    let aliases: Vec<String> = tx.prepare_cached("SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 ORDER BY request LIMIT 2")?
-        .query_map(rusqlite::params![a["id"].as_str(),t["itemId"].as_str()], |r| r.get(0))?.collect::<Result<_,_>>()?;
-    if aliases.len() > 1 {
-        return Ok((aliases, vec![]));
-    }
-    let account = a
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
-    let prefix = if account == "default" {
-        String::new()
-    } else {
-        format!("{account}:")
+    let actor = a["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
+    let call = t["itemId"].as_str().ok_or(RecoveryError::CommitFailed)?;
+    let Some(mut row) =
+        crate::tool_requests::resolve(tx, actor, call).map_err(|_| RecoveryError::CommitFailed)?
+    else {
+        return Ok((vec![], vec![]));
     };
-    let key = aliases.first().cloned().unwrap_or_else(|| {
-        format!(
-            "{prefix}{}:{}",
-            a["threadId"].as_str().unwrap_or_default(),
-            t["itemId"].as_str().unwrap_or_default()
-        )
-    });
-    let row: Option<(String, String)> = tx
-        .query_row(
-            "SELECT id,record FROM runtime_tool_requests WHERE id=?1",
-            [key],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    let rows = row
-        .map(|(key, raw)| {
-            serde_json::from_str(&raw)
-                .map_err(|_| studio_runtime_store::StoreError::InvalidStoredObject {
-                    table: "runtime_tool_requests",
-                    id: key.clone(),
-                })
-                .map(|v| (key, v))
-        })
-        .transpose()?
-        .into_iter()
-        .collect::<Vec<_>>();
-    Ok((aliases, rows))
+    if row["stage"] == "ambiguous" {
+        return Err(RecoveryError::CommitFailed);
+    }
+    let key = row["id"]
+        .as_str()
+        .ok_or(RecoveryError::CommitFailed)?
+        .to_owned();
+    if let Some(result) =
+        crate::tool_requests::saved_result(tx, &key).map_err(|_| RecoveryError::CommitFailed)?
+    {
+        row["result"] = result;
+    } else if !row["finished"].is_null() {
+        return Err(RecoveryError::CommitFailed);
+    }
+    Ok((vec![key.clone()], vec![(key, row)]))
 }
 
 /// P06 supplies notification_dispatch::recover_task_in_transaction directly.

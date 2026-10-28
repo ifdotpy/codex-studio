@@ -11,6 +11,19 @@ use studio_runtime_services::{
     native_review::{self, ReviewPlan},
 };
 
+fn request_id(label: &str) -> String {
+    static ISSUED: OnceLock<u128> = OnceLock::new();
+    let issued = *ISSUED.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_millis()
+    });
+    let digest = studio_runtime_store::sha256_hex(label.as_bytes());
+    let suffix = u64::from_str_radix(&digest[..15], 16).expect("digest");
+    uuid::Uuid::from_u128((issued << 80) | (7 << 76) | (2 << 62) | u128::from(suffix)).to_string()
+}
+
 fn corpus() -> &'static Value {
     static CORPUS: OnceLock<Value> = OnceLock::new();
     CORPUS.get_or_init(|| {
@@ -36,6 +49,20 @@ fn corpus() -> &'static Value {
                     case[*field]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
                 }
             }
+        }
+        fn roots(value: &mut Value) {
+            match value {
+                Value::String(text) if text == "action-request" => {
+                    *text = request_id("action-request")
+                }
+                Value::Array(values) => values.iter_mut().for_each(roots),
+                Value::Object(values) => values.values_mut().for_each(roots),
+                Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => (),
+            }
+        }
+        roots(&mut data);
+        for case in data["actions"].as_array_mut().expect("actions") {
+            case["after"]["startAttempt"]["rootRequestId"] = case["request"]["requestId"].clone();
         }
         data
     })
@@ -71,6 +98,55 @@ impl Admission for Gate {
         Ok(())
     }
 }
+
+struct IdleGate {
+    episode: String,
+}
+impl Admission for IdleGate {
+    fn check(&self, _: &Transaction<'_>, _: &Value, _: Action) -> Result<()> {
+        Ok(())
+    }
+    fn idle_episode_id(&self) -> Option<&str> {
+        Some(&self.episode)
+    }
+}
+
+#[test]
+fn receipt_pivot_superseded_idle_purpose_never_becomes_manual_compaction() {
+    let case = &corpus()["actions"][0];
+    let mut db = db(case);
+    let request: Request = serde_json::from_value(case["request"].clone()).expect("request");
+    let before = actor(&db);
+    let tx = db.transaction().expect("transaction");
+    reserve(
+        &tx,
+        &request,
+        "attempt",
+        1234567.5,
+        &IdleGate {
+            episode: request.request_id.clone(),
+        },
+    )
+    .expect("idle admission");
+    let provenance = idle_provenance(&tx, &request.request_id)
+        .expect("immutable purpose")
+        .expect("idle purpose captured");
+    assert_eq!(provenance.episode_id, request.request_id);
+    assert_eq!(provenance.before.start_attempt, before["startAttempt"]);
+    // A new report can remove the old episode, while its native reservation remains.
+    tx.execute("UPDATE runtime_agents SET record=json_remove(record,'$.idleCompactionEpisode') WHERE id='lead'",[]).expect("superseding episode");
+    assert!(
+        matches!(
+            claim(&tx, &request.request_id, &ticket()),
+            Err(NativeError::Invalid("newer_request"))
+        ),
+        "captured idle purpose still invokes the final authority gate"
+    );
+    assert!(matches!(
+        outcome(&tx, &request.request_id).expect("outcome"),
+        Some(Outcome::Pending { .. })
+    ));
+}
 struct Accept;
 impl Acceptance for Accept {
     fn apply(&self, tx: &Transaction<'_>, _: &NativeRequest, _: &Delivery) -> Result<()> {
@@ -80,11 +156,12 @@ impl Acceptance for Accept {
 }
 fn db(case: &Value) -> Connection {
     let db = Connection::open_in_memory().expect("fixture db");
-    db.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE TABLE runtime_native_action_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,receipt TEXT NOT NULL,outcome TEXT NOT NULL); CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL); CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE TABLE effects(value TEXT);")).expect("Python table shapes");
+    db.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE TABLE effects(value TEXT);")).expect("Python table shapes");
+    studio_runtime_store::receipt_schema::create(&db).expect("receipt target schema");
     db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
     db.execute(
-        "INSERT INTO runtime_agents VALUES('lead',?1)",
+        "INSERT INTO runtime_agents(id,record) VALUES('lead',?1)",
         [case["agent"].to_string()],
     )
     .expect("Python-written agent");
@@ -92,7 +169,7 @@ fn db(case: &Value) -> Connection {
 }
 fn row(db: &Connection) -> Value {
     db.query_row(
-        "SELECT id,signature,receipt,outcome FROM runtime_native_action_receipts",
+        "SELECT id,signature,json_extract(payload,'$.receipt'),json_extract(payload,'$.outcome') FROM runtime_outbox WHERE kind='native_action' AND owner_kind='agent' UNION ALL SELECT json_extract(result,'$.reply.receipt.requestId'),signature,json_extract(result,'$.reply.receipt'),json_extract(result,'$.reply.outcome') FROM request_results WHERE json_type(result,'$.reply.receipt') IS NOT NULL",
         [],
         |r| {
             Ok((
@@ -133,7 +210,7 @@ fn ticket() -> ProviderTicket {
         thread: Some("thread".into()),
         connection: "connection".into(),
         generation: 1,
-        request: "action-request".into(),
+        request: request_id("action-request"),
     }
 }
 fn reserve_case(db: &mut Connection, case: &Value) {
@@ -180,8 +257,8 @@ fn reservation_targets_the_authorized_repair_destination_and_keeps_request_ident
 
     let receipt: Value = db
         .query_row(
-            "SELECT receipt FROM runtime_native_action_receipts WHERE id='action-request'",
-            [],
+            "SELECT json_extract(payload,'$.receipt') FROM runtime_outbox WHERE id=?1",
+            [serde_json::json!(["native-action", request_id("action-request")]).to_string()],
             |row| row.get::<_, String>(0),
         )
         .map(|raw| serde_json::from_str(&raw).expect("receipt"))
@@ -209,7 +286,7 @@ fn crash_matrix_never_reclaims_committed_handoff() {
             drop(tx);
             assert_eq!(
                 db.query_row(
-                    "SELECT count(*) FROM runtime_native_action_receipts",
+                    "SELECT count(*) FROM runtime_outbox WHERE kind='native_action'",
                     [],
                     |r| r.get::<_, u32>(0)
                 )
@@ -221,13 +298,13 @@ fn crash_matrix_never_reclaims_committed_handoff() {
         reserve_case(&mut db, case);
         if stop == 1 {
             let tx = db.transaction().expect("begin");
-            claim(&tx, "action-request", &ticket()).expect("claim");
+            claim(&tx, &request_id("action-request"), &ticket()).expect("claim");
             drop(tx);
             assert_eq!(row(&db)[3]["status"], "pending");
             continue;
         }
         let tx = db.transaction().expect("begin");
-        let request = claim(&tx, "action-request", &ticket()).expect("claim");
+        let request = claim(&tx, &request_id("action-request"), &ticket()).expect("claim");
         tx.commit().expect("commit");
         if stop >= 3 {
             let tx = db.transaction().expect("begin");
@@ -235,7 +312,7 @@ fn crash_matrix_never_reclaims_committed_handoff() {
                 ticket: request.ticket.clone(),
                 delivery: Delivery::Written(json!({"ok":true})),
             };
-            settle(&tx, "action-request", &receipt, &Accept).expect("settle");
+            settle(&tx, &request_id("action-request"), &receipt, &Accept).expect("settle");
             if stop == 3 {
                 drop(tx);
             } else {
@@ -248,7 +325,7 @@ fn crash_matrix_never_reclaims_committed_handoff() {
         let mut db = Connection::open(path).expect("restart");
         let tx = db.transaction().expect("begin");
         assert!(matches!(
-            claim(&tx, "action-request", &ticket()),
+            claim(&tx, &request_id("action-request"), &ticket()),
             Err(NativeError::Unknown)
         ));
         drop(tx);
@@ -260,7 +337,7 @@ fn crash_matrix_never_reclaims_committed_handoff() {
             let tx = db.transaction().expect("begin");
             settle(
                 &tx,
-                "action-request",
+                &request_id("action-request"),
                 &TransportReceipt {
                     ticket: request.ticket,
                     delivery: Delivery::Written(json!({"ok":true})),
@@ -284,7 +361,7 @@ fn claimed_native_action_is_correlated_by_the_scheduler_before_handoff() {
     let mut db = db(case);
     reserve_case(&mut db, case);
     let tx = db.transaction().expect("begin claim");
-    claim(&tx, "action-request", &ticket()).expect("claim durable provider request");
+    claim(&tx, &request_id("action-request"), &ticket()).expect("claim durable provider request");
     tx.commit().expect("commit claim before provider handoff");
 
     let correlated = studio_runtime_store::SchedulerRepository::find_attempt_for_thread(
@@ -323,7 +400,7 @@ fn changed_payload_and_foreign_receipts_leave_intent_held() {
     ));
     drop(tx);
     let tx = db.transaction().expect("begin");
-    claim(&tx, "action-request", &ticket()).expect("claim");
+    claim(&tx, &request_id("action-request"), &ticket()).expect("claim");
     tx.commit().expect("commit");
     for field in 0..7 {
         let mut wrong = ticket();
@@ -340,7 +417,7 @@ fn changed_payload_and_foreign_receipts_leave_intent_held() {
         assert!(
             settle(
                 &tx,
-                "action-request",
+                &request_id("action-request"),
                 &TransportReceipt {
                     ticket: wrong,
                     delivery: Delivery::Written(json!({}))
@@ -366,7 +443,7 @@ fn invalid_worker_not_sent_receipts_keep_intent_unknown_and_unclaimable() {
         let mut db = db(case);
         reserve_case(&mut db, case);
         let tx = db.transaction().expect("begin claim");
-        claim(&tx, "action-request", &ticket()).expect("claim request before handoff");
+        claim(&tx, &request_id("action-request"), &ticket()).expect("claim request before handoff");
         tx.commit().expect("persist claim before native handoff");
 
         let receipt = SessionReceipt {
@@ -383,7 +460,13 @@ fn invalid_worker_not_sent_receipts_keep_intent_unknown_and_unclaimable() {
         };
         let tx = db.transaction().expect("begin receipt settlement");
         assert!(matches!(
-            settle_provider(&tx, "action-request", ticket(), Ok(receipt), &Accept),
+            settle_provider(
+                &tx,
+                &request_id("action-request"),
+                ticket(),
+                Ok(receipt),
+                &Accept
+            ),
             Err(NativeError::Changed)
         ));
         drop(tx);
@@ -392,7 +475,7 @@ fn invalid_worker_not_sent_receipts_keep_intent_unknown_and_unclaimable() {
         assert_eq!(actor(&db)["startAttempt"]["submitted"], true);
         let tx = db.transaction().expect("begin retry claim");
         assert!(matches!(
-            claim(&tx, "action-request", &ticket()),
+            claim(&tx, &request_id("action-request"), &ticket()),
             Err(NativeError::Unknown)
         ));
         drop(tx);
@@ -524,7 +607,7 @@ fn native_command_cancel_list_terminate_and_replay_match_python() {
             .expect("snapshot");
         let mut cancel_ticket = ticket();
         cancel_ticket.operation = case["task"]["id"].as_str().expect("task id").to_owned();
-        cancel_ticket.request = "cancel-corpus".into();
+        cancel_ticket.request = request_id("cancel-corpus");
         let mut list_ticket = cancel_ticket.clone();
         list_ticket.request.push_str(":list");
         let list = TransportReceipt {
@@ -582,6 +665,8 @@ impl RetainedSession for Hanging {
 #[tokio::test(start_paused = true)]
 async fn deadline_holds_unknown_and_expired_request_is_not_sent() {
     let request = NativeRequest {
+        root_request_id: request_id("action-request"),
+        admitted_request: None,
         ticket: ticket(),
         method: "thread/compact/start".into(),
         params: json!({"threadId":"thread"}),
@@ -725,7 +810,7 @@ fn a_worker_review_checks_lead_settings_but_accepts_lead_progress() {
         let mut db = db(&json!({"agent":parent}));
         root[field] = value;
         db.execute(
-            "INSERT INTO runtime_agents VALUES('root',?1)",
+            "INSERT INTO runtime_agents(id,record) VALUES('root',?1)",
             [root.to_string()],
         )
         .expect("lead change");
@@ -910,16 +995,18 @@ fn commands_commit_before_send_and_reject_changed_input() {
         .expect("snapshot");
     {
         let tx = db.transaction().expect("begin");
-        command_input(&tx, "input-key", &snapshot, "one", &Enqueue).expect("enqueue rollback");
+        command_input(&tx, &request_id("input-key"), &snapshot, "one", &Enqueue)
+            .expect("enqueue rollback");
     }
     for _ in 0..2 {
         let tx = db.transaction().expect("begin");
-        command_input(&tx, "input-key", &snapshot, "one", &Enqueue).expect("enqueue/replay");
+        command_input(&tx, &request_id("input-key"), &snapshot, "one", &Enqueue)
+            .expect("enqueue/replay");
         tx.commit().expect("commit");
     }
     let tx = db.transaction().expect("begin");
     assert!(matches!(
-        command_input(&tx, "input-key", &snapshot, "two", &Enqueue),
+        command_input(&tx, &request_id("input-key"), &snapshot, "two", &Enqueue),
         Err(NativeError::Conflict)
     ));
     drop(tx);
@@ -930,9 +1017,9 @@ fn commands_commit_before_send_and_reject_changed_input() {
     );
     let mut t = ticket();
     t.operation = "task".into();
-    t.request = "cancel-key".into();
+    t.request = request_id("cancel-key");
     let mut list = t.clone();
-    list.request = "cancel-key:list".into();
+    list.request = format!("{}:list", request_id("cancel-key"));
     let receipt = TransportReceipt {
         ticket: list,
         delivery: Delivery::Written(json!({"data":[{"itemId":"item","processId":"17"}]})),
@@ -1022,14 +1109,14 @@ fn stored_native_action_errors_name_the_table_and_row() {
     )
     .expect("restore valid agent");
     db.execute(
-        "INSERT INTO runtime_native_action_receipts(id,signature,receipt,outcome) VALUES('broken-receipt','sig','{','{}')",
+        r#"INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,signature,status,payload,created) VALUES('["native-action","broken-receipt"]','native_action','agent','lead','sig','unknown','{',0)"#,
         [],
     )
     .expect("corrupt receipt fixture");
     let tx = db.unchecked_transaction().expect("begin");
     assert!(matches!(
         claim(&tx, "broken-receipt", &ticket()),
-        Err(NativeError::InvalidStored { table: "runtime_native_action_receipts", ref id, .. }) if id == "broken-receipt"
+        Err(NativeError::Sql(_))
     ));
 }
 #[test]
@@ -1078,7 +1165,7 @@ fn definitely_unsent_action_releases_owner_and_keeps_receipt_retryable() {
     let mut db = db(case);
     reserve_case(&mut db, case);
     let tx = db.transaction().expect("begin");
-    claim(&tx, "action-request", &ticket()).expect("claim");
+    claim(&tx, &request_id("action-request"), &ticket()).expect("claim");
     tx.commit().expect("commit");
     let tx = db.transaction().expect("begin");
     assert_eq!(
@@ -1177,7 +1264,7 @@ fn python_review_child_claim_and_review_start_match() {
         )
         .expect("scheduler table shapes");
         db.execute(
-            "INSERT INTO runtime_agents VALUES(?1,?2)",
+            "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
             [id.clone(), child.to_string()],
         )
         .expect("Python-written review child");

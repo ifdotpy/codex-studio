@@ -271,13 +271,50 @@ async fn capabilities(
 async fn native_command(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<NativeCommandRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::NativeCommandResponse>, ApiError> {
     let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
-    // Python codex_workspace.py:2183-2217 uses per-invocation semantics and
-    // does not bind this action to a caller request ID. This ticket is
-    // internal to this attempt, so a later HTTP invocation is a new action.
-    let request_id = uuid::Uuid::new_v4().to_string();
+    let request_id = body.request_id.clone();
     let store = std::sync::Arc::clone(store);
+    let lookup_root = request_id.clone();
+    let lookup_task = body.id.clone();
+    let lookup_action = body.action;
+    let lookup_text = body.text.clone();
+    let replay = store
+        .read_async("runtime-http/native-command-replay", move |connection| {
+            let task = WorkspaceViewsRepository::task(connection, &lookup_task)
+                .map_err(ApiError::stored)?
+                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown task"))?;
+            let agent_id = task
+                .get("agent")
+                .and_then(Value::as_str)
+                .ok_or_else(invalid_stored_task)?;
+            let action = match lookup_action {
+                NativeCommandAction::Input => {
+                    studio_runtime_services::native_actions::CommandAction::Input(
+                        lookup_text.as_deref().ok_or_else(|| {
+                            ApiError::new(StatusCode::BAD_REQUEST, "Command input must be text")
+                        })?,
+                    )
+                }
+                NativeCommandAction::Cancel => {
+                    studio_runtime_services::native_actions::CommandAction::Cancel
+                }
+            };
+            studio_runtime_services::native_actions::replay_command(
+                connection,
+                agent_id,
+                &lookup_task,
+                &lookup_root,
+                action,
+            )
+            .map_err(native_command_error)
+        })
+        .await?;
+    if let Some(reply) = replay {
+        return serde_json::from_str(&reply.response_json)
+            .map(Json)
+            .map_err(ApiError::json);
+    }
     match body.action {
         NativeCommandAction::Input => {
             let text = body.text.ok_or_else(|| {
@@ -350,8 +387,7 @@ async fn native_command(
                 .await
                 .map_err(|_| ApiError::internal())?;
             state.event_wake_handle().notify_one();
-            let result = posted;
-            Ok(Json(result))
+            super::generated_json::<crate::generated::NativeCommandResponse>(posted).map(Json)
         }
         NativeCommandAction::Cancel => native_command_cancel(state, body.id, request_id)
             .await
@@ -363,7 +399,7 @@ async fn native_command_cancel(
     state: HttpState,
     task_id: String,
     request_id: String,
-) -> Result<Value, ApiError> {
+) -> Result<crate::generated::NativeCommandResponse, ApiError> {
     // Match codex_workspace.py:2194-2210: verify the exact item/process pair
     // in the provider's terminal list before sending terminate.
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
@@ -442,6 +478,7 @@ async fn native_command_cancel(
             &list_key,
             "thread/backgroundTerminals/list",
             params.clone(),
+            ("", None),
         )
         .await?;
         let Some(entries) = page.get("data").and_then(Value::as_array) else {
@@ -499,7 +536,7 @@ async fn native_command_cancel(
         .map_err(|_| ApiError::internal())?;
     let request = match claim {
         studio_runtime_services::native_actions::CommandCancelClaim::Replay(result) => {
-            return Ok(result);
+            return super::generated_json(result);
         }
         studio_runtime_services::native_actions::CommandCancelClaim::Send(request) => request,
     };
@@ -510,6 +547,7 @@ async fn native_command_cancel(
         &request.ticket.request,
         &request.method,
         request.params.clone(),
+        (&request.root_request_id, request.admitted_request.as_ref()),
     )
     .await?;
     if result.get("terminated") != Some(&Value::Bool(true)) {
@@ -523,13 +561,14 @@ async fn native_command_cancel(
         delivery: studio_runtime_services::native_actions::Delivery::Written(result),
     };
     let store = state.store.ok_or_else(ApiError::internal)?;
-    store
+    let result = store
         .transaction_with(move |tx| {
             studio_runtime_services::native_actions::command_cancel_settle(tx, &receipt)
                 .map_err(native_command_error)
         })
         .await
-        .map_err(|_| ApiError::internal())
+        .map_err(|_| ApiError::internal())?;
+    super::generated_json(result)
 }
 
 pub(super) async fn provider_call(
@@ -539,6 +578,10 @@ pub(super) async fn provider_call(
     operation: &str,
     method: &str,
     params: Value,
+    request_identity: (
+        &str,
+        Option<&studio_runtime_store::request_results::AdmittedRequest>,
+    ),
 ) -> Result<Value, ApiError> {
     use studio_runtime_services::account_session_runtime::{ProviderRequest, ProviderResponse};
     let method_value = studio_runtime_providers::Method::from_wire(method).ok_or_else(|| {
@@ -558,6 +601,8 @@ pub(super) async fn provider_call(
     let expected_operation = operation.clone();
     let receipt = port
         .provider_request(ProviderRequest {
+            root_request_id: request_identity.0.to_owned(),
+            admitted_request: request_identity.1.cloned(),
             account,
             operation: operation.clone(),
             actor: Some(actor),
@@ -667,10 +712,10 @@ fn native_command_error(error: studio_runtime_services::native_actions::NativeEr
             "The command action outcome is unknown",
         ),
         NativeError::Unavailable(dependency) => ApiError::dependency(dependency),
-        NativeError::InvalidStored { .. }
-        | NativeError::Store(_)
-        | NativeError::Json(_)
-        | NativeError::Sql(_) => ApiError::internal(),
+        NativeError::Store(error) => ApiError::stored(error),
+        NativeError::Json(error) => ApiError::json(error),
+        NativeError::Sql(error) => ApiError::stored(error.into()),
+        NativeError::InvalidStored { table, id, .. } => ApiError::invalid_stored(table, &id),
     }
 }
 
@@ -685,6 +730,7 @@ async fn sync_notify(
 #[serde(deny_unknown_fields)]
 struct NativeCommandRequest {
     id: String,
+    request_id: String,
     action: NativeCommandAction,
     #[serde(default)]
     text: Option<String>,
@@ -780,5 +826,136 @@ inventory::submit! {
         dependencies: &[
             "turn-path/native-command-input",
         ],
+    }
+}
+
+#[cfg(test)]
+mod native_command_tests {
+    use super::*;
+
+    #[test]
+    fn native_command_requires_the_origin_request_identity_for_both_actions() {
+        for action in ["input", "cancel"] {
+            let missing = json!({"id":"task","action":action,"text":"input"});
+            assert!(serde_json::from_value::<NativeCommandRequest>(missing).is_err());
+            let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+            let parsed: NativeCommandRequest = serde_json::from_value(
+                json!({"id":"task","action":action,"text":"input","request_id":root}),
+            )
+            .expect("caller identity");
+            assert_eq!(parsed.request_id, root);
+        }
+    }
+
+    #[tokio::test]
+    async fn native_command_http_replays_origin_input_and_cancel_after_task_completion() {
+        use axum::{
+            body::{Body, to_bytes},
+            extract::ConnectInfo,
+            http::Request,
+        };
+        use tower::ServiceExt;
+        let directory = tempfile::tempdir().expect("state");
+        let store = std::sync::Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("store"),
+        );
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let request_root = root.clone();
+        let cancel_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let stored_cancel_root = cancel_root.clone();
+        store.transaction(move |tx| {
+            studio_runtime_store::receipt_schema::create(tx)?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('task',?1)", [json!({"id":"task","agent":"agent","kind":"command","status":"completed","processId":"17","itemId":"item","created":1.0}).to_string()])?;
+            let signature = json!({"task":"task","action":"input","text":"one"}).to_string();
+            let envelope = json!({"actor":"agent","reply":{"id":"original-input","status":"pending"},"references":[]});
+            let identity = studio_runtime_schema::persistence::RequestIdentity::new("native-command", &[], &request_root, &[]).expect("identity");
+            tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)", rusqlite::params![identity.id(),signature,envelope.to_string(),identity.issued_ms()])?;
+            let request = studio_runtime_services::native_actions::NativeRequest {
+                root_request_id: stored_cancel_root.clone(), admitted_request: None,
+                ticket: studio_runtime_services::workspace_operations::ProviderTicket {
+                    operation:"task".into(), request:stored_cancel_root.clone(),agent:"agent".into(),epoch:1,
+                    account:"default".into(),thread:Some("thread".into()),connection:"connection".into(),generation:1,
+                }, method:studio_runtime_providers::Method::CommandExecTerminate.as_str().to_owned(),params:json!({}),
+            };
+            let signature = json!({"task":"task","action":"cancel"}).to_string();
+            let envelope = json!({"actor":"agent","reply":{"request":request,"result":{"terminated":true}},"references":[]});
+            let identity = studio_runtime_schema::persistence::RequestIdentity::new("native-command", &[], &stored_cancel_root, &[]).expect("identity");
+            tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)", rusqlite::params![identity.id(),signature,envelope.to_string(),identity.issued_ms()])?;
+            Ok(())
+        }).await.expect("new-table fixture");
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            directory.path().display().to_string(),
+            4621,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router::router(state).expect("router");
+        for (action, text, token, request_root, expected) in [
+            ("input", "one", true, root.clone(), 200),
+            ("cancel", "", true, cancel_root, 200),
+            ("input", "different", true, root.clone(), 409),
+            ("input", "one", false, root.clone(), 403),
+            (
+                "input",
+                "one",
+                true,
+                "f43c1885-f4fc-485b-bf99-8b4f31e7e7c4".to_owned(),
+                410,
+            ),
+        ] {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/native-command")
+                .header("host", "127.0.0.1:4621")
+                .header("origin", "http://127.0.0.1:4621")
+                .header("content-type", "application/json")
+                .header(
+                    crate::schema::API_SCHEMA_HASH_HEADER,
+                    crate::schema::api_schema_hash(),
+                )
+                .extension(ConnectInfo(
+                    "127.0.0.1:12345"
+                        .parse::<std::net::SocketAddr>()
+                        .expect("peer"),
+                ));
+            if token {
+                request = request.header("x-canvas-token", "token");
+            }
+            let response = app
+                .clone()
+                .oneshot(
+                    request
+                        .body(Body::from(
+                            json!({"id":"task","action":action,"text":text,"request_id":request_root})
+                                .to_string(),
+                        ))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status().as_u16(), expected);
+            if expected == 200 {
+                let bytes = to_bytes(response.into_body(), 4096).await.expect("body");
+                let reply: crate::generated::NativeCommandResponse =
+                    serde_json::from_slice(&bytes).expect("typed original reply");
+                if action == "input" {
+                    assert_eq!(reply.id.flatten().as_deref(), Some("original-input"));
+                } else {
+                    assert_eq!(reply.terminated.flatten(), Some(true));
+                }
+            }
+        }
+        let events: i64 = store
+            .test_reader()
+            .expect("reader")
+            .query_row("SELECT count(*) FROM runtime_events", [], |row| row.get(0))
+            .expect("event count");
+        assert_eq!(events, 0, "replay never enqueues a new native input");
     }
 }

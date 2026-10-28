@@ -691,7 +691,7 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary runtime");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents VALUES('agent',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
             for (id, created) in [("a", 1), ("b", 2), ("c", 3)] {
                 tx.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":if id == "a" { "wrong" } else { id },"agent":"agent","created":created,"tail":"large tail","arguments":{},"error":"detail"}).to_string()))?;
             }

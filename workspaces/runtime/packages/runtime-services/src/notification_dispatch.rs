@@ -1,4 +1,4 @@
-//! Transactional provider notifications with replay-safe receipts and checked stored state.
+//! Transactional provider notifications with journal-owned replay and checked state.
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::OptionalExtension;
@@ -33,13 +33,12 @@ pub use effects::{
 mod stream;
 #[path = "notification_dispatch/submission.rs"]
 mod submission;
+pub(crate) use stream::NotificationPendingStreams;
 pub use stream::NotificationStreamBuffer;
 use stream::{EnqueueResult, StreamKey};
-use submission::{submission_record, validate_submission};
+use submission::record_submission;
 
 const ITEM_PREVIEW_CHARS: usize = 20_000;
-const SUBMISSION_RECEIPT_PREFIX: &str = "provider-submission:";
-const DELIVERY_RECEIPT_PREFIX: &str = "provider-notification:";
 const SAVEPOINT: &str = "notification_dispatch_scope";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -49,6 +48,13 @@ pub enum DispatchOutcome {
     RequiresService { service: NotificationDependency },
     Ignored { reason: String },
     Unhandled { kind: String, reason: String },
+}
+
+/// Notification application proof stored in the owning journal gap until ACK.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct NotificationSettlement {
+    pub signature: String,
+    pub outcome: DispatchOutcome,
 }
 
 /// Native session identity supplied by the account worker, never reconstructed
@@ -228,6 +234,8 @@ pub enum NotificationDispatchError {
     Move(#[from] crate::agent_move::MoveError),
     #[error("JSON serialization failed")]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    RequestResult(#[from] studio_runtime_store::request_results::RequestResultError),
 }
 
 impl NotificationDispatchError {
@@ -271,6 +279,8 @@ impl From<StoreError> for NotificationDispatchError {
             | error @ StoreError::Json(_)
             | error @ StoreError::SchemaValidation(_)
             | error @ StoreError::RecordContract(_)
+            | error @ StoreError::RequestResult(_)
+            | error @ StoreError::Outbox(_)
             | error @ StoreError::WriterPoisoned
             | error @ StoreError::WriterActorInitialization(_)
             | error @ StoreError::WriterActorControl(_)
@@ -281,15 +291,19 @@ impl From<StoreError> for NotificationDispatchError {
 }
 
 #[derive(Clone, Copy)]
-enum SubmissionAuthorization {
+enum SubmissionAuthorization<'a> {
     Current,
     /// A turn start commits only input it reserved for this attempt; delivered or
     /// uncertain input is never claimed again, so an earlier record under the same
     /// first event belongs to an attempt that returned its input unsent, and the
     /// new submission replaces it.
-    Start,
+    Start {
+        attempt_id: &'a str,
+    },
     /// The exact batch was authorized and frozen before the provider write.
-    AcknowledgedSteer,
+    AcknowledgedSteer {
+        admission: &'a studio_runtime_store::request_results::AdmittedRequest,
+    },
 }
 
 /// Persist the submitted batch before the provider turn begins.
@@ -311,13 +325,14 @@ pub fn record_user_submission(
 pub fn record_start_submission(
     transaction: &Transaction<'_>,
     agent_id: &str,
+    attempt_id: &str,
     submission: &PreparedSubmission,
 ) -> Result<DispatchOutcome, NotificationDispatchError> {
     record_submission(
         transaction,
         agent_id,
         submission,
-        SubmissionAuthorization::Start,
+        SubmissionAuthorization::Start { attempt_id },
     )
 }
 
@@ -349,104 +364,10 @@ pub(crate) fn record_acknowledged_steer_submission(
         transaction,
         agent_id,
         submission,
-        SubmissionAuthorization::AcknowledgedSteer,
+        SubmissionAuthorization::AcknowledgedSteer {
+            admission: &acknowledgement.admission,
+        },
     )
-}
-
-fn record_submission(
-    transaction: &Transaction<'_>,
-    agent_id: &str,
-    submission: &PreparedSubmission,
-    authorization: SubmissionAuthorization,
-) -> Result<DispatchOutcome, NotificationDispatchError> {
-    in_savepoint(transaction, || {
-        let id = format!("{agent_id}:{}", submission.first_event_id);
-        let record = submission_record(&id, submission);
-        let signature = sha256_json(&json!({
-            "agent": agent_id,
-            "firstEventId": submission.first_event_id,
-            "submittedAt": submission.submitted_at,
-            "createdAt": submission.created_at,
-            "record": record,
-            "text": submission.text,
-            "inputTexts": submission.inputs.iter().map(|input| &input.text).collect::<Vec<_>>(),
-        }))?;
-        let receipt_id = format!(
-            "{SUBMISSION_RECEIPT_PREFIX}{}",
-            sha256_hex(format!("{agent_id}:{}", submission.first_event_id).as_bytes())
-        );
-        let replaces_earlier = matches!(authorization, SubmissionAuthorization::Start);
-        if let Some(receipt) =
-            NotificationDispatchRepository::notification_receipt(transaction, &receipt_id)?
-        {
-            if receipt.signature == signature {
-                return decode_outcome(&receipt.result, &receipt_id);
-            }
-            if !replaces_earlier {
-                return Err(NotificationDispatchError::ConflictingInput);
-            }
-        }
-        validate_submission(transaction, agent_id, submission, authorization)?;
-        if let Some((existing, created)) =
-            NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?
-        {
-            let existing_text = saved_text(transaction, &id, &existing)?;
-            if existing != record
-                || existing_text != submission.text
-                || created != submission.created_at
-            {
-                if !replaces_earlier {
-                    return Err(NotificationDispatchError::ConflictingInput);
-                }
-            } else {
-                return save_submission_outcome(
-                    transaction,
-                    &receipt_id,
-                    &signature,
-                    replaces_earlier,
-                );
-            }
-        }
-
-        NotificationDispatchRepository::put_transcript_item(
-            transaction,
-            &id,
-            agent_id,
-            &record,
-            submission.created_at,
-            &submission.text,
-            true,
-        )?;
-        for input in &submission.inputs {
-            NotificationDispatchRepository::link_transcript_item_to_event(
-                transaction,
-                agent_id,
-                &input.id,
-                &id,
-            )?;
-        }
-        save_submission_outcome(transaction, &receipt_id, &signature, replaces_earlier)
-    })
-}
-
-/// Save the written outcome; a turn start replaces the receipt of an earlier attempt.
-fn save_submission_outcome(
-    transaction: &Transaction<'_>,
-    receipt_id: &str,
-    signature: &str,
-    replace: bool,
-) -> Result<DispatchOutcome, NotificationDispatchError> {
-    if !replace {
-        return save_outcome(transaction, receipt_id, signature, DispatchOutcome::Written);
-    }
-    let outcome = checked_outcome(DispatchOutcome::Written)?;
-    NotificationDispatchRepository::replace_notification_receipt(
-        transaction,
-        receipt_id,
-        signature,
-        &serde_json::to_string(&outcome)?,
-    )?;
-    Ok(outcome)
 }
 
 /// Transaction-aware read/respond service for model-authored complaints.
@@ -485,7 +406,7 @@ pub struct NotificationDispatchResult {
 /// Use scheduler::lifecycle_transaction_with to publish changed agents in the same
 /// SQLite transaction, then apply `stream_update` (when present) to that buffer. On
 /// rollback or commit failure discard the update. This call never mutates the
-/// supplied buffer; a saved receipt returns the saved outcome and no update.
+/// supplied buffer; journal replay returns the saved outcome and no update.
 /// `observed_at` is never part of delivery identity.
 pub fn dispatch_notification(
     transaction: &Transaction<'_>,
@@ -545,19 +466,18 @@ pub fn dispatch_notification_with_effects(
                 return Err(NotificationDispatchError::invalid_account());
             }
             let content_signature = notification_content_signature(agent_id, notification)?;
-            let identity_signature = sha256_json(&json!({
-                "providerHandle": delivery.provider_handle,
-                "generation": delivery.generation,
-                "cursor": delivery.cursor,
-            }))?;
-            let receipt_id = format!("{DELIVERY_RECEIPT_PREFIX}{identity_signature}");
-            if let Some(receipt) =
-                NotificationDispatchRepository::notification_receipt(transaction, &receipt_id)?
+            if crate::account_worker::store::notification_acknowledged(transaction, delivery)? {
+                return Ok(DispatchOutcome::Ignored {
+                    reason: "acknowledged-journal-entry".into(),
+                });
+            }
+            if let Some(settlement) =
+                crate::account_worker::store::get_notification(transaction, delivery)?
             {
-                if receipt.signature != content_signature {
+                if settlement.signature != content_signature {
                     return Err(NotificationDispatchError::ConflictingDelivery);
                 }
-                return decode_outcome(&receipt.result, &receipt_id);
+                return checked_outcome(settlement.outcome);
             }
 
             fresh = true;
@@ -568,7 +488,7 @@ pub fn dispatch_notification_with_effects(
                 effects.account_notice(transaction, kind, params, identity, observed_at)?;
                 return save_outcome(
                     transaction,
-                    &receipt_id,
+                    delivery,
                     &content_signature,
                     DispatchOutcome::Written,
                 );
@@ -584,7 +504,7 @@ pub fn dispatch_notification_with_effects(
                     effects.generation_started()?;
                     return save_outcome(
                         transaction,
-                        &receipt_id,
+                        delivery,
                         &content_signature,
                         DispatchOutcome::Written,
                     );
@@ -593,7 +513,7 @@ pub fn dispatch_notification_with_effects(
                 if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
                     return save_outcome(
                         transaction,
-                        &receipt_id,
+                        delivery,
                         &content_signature,
                         DispatchOutcome::Ignored {
                             reason: "deleted-agent".to_owned(),
@@ -604,7 +524,7 @@ pub fn dispatch_notification_with_effects(
                 effects.generation_started()?;
                 return save_outcome(
                     transaction,
-                    &receipt_id,
+                    delivery,
                     &content_signature,
                     DispatchOutcome::Written,
                 );
@@ -615,7 +535,7 @@ pub fn dispatch_notification_with_effects(
             if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
                 return save_outcome(
                     transaction,
-                    &receipt_id,
+                    delivery,
                     &content_signature,
                     DispatchOutcome::Ignored {
                         reason: "deleted-agent".to_owned(),
@@ -672,7 +592,8 @@ pub fn dispatch_notification_with_effects(
                     .selected(None)
                     .into_iter()
                     .filter(|key| {
-                        key.thread == thread
+                        key.agent_id == agent_id
+                            && key.thread == thread
                             && (unload || turn.is_none_or(|turn| key.turn.as_deref() == Some(turn)))
                     })
                     .collect();
@@ -709,7 +630,7 @@ pub fn dispatch_notification_with_effects(
                     }
                 };
                 after_known = AfterAgent::Unchanged;
-                return save_outcome(transaction, &receipt_id, &content_signature, outcome);
+                return save_outcome(transaction, delivery, &content_signature, outcome);
             }
             if kind == "item/commandExecution/outputDelta" {
                 let key = command_key(agent_id, identity, params)?;
@@ -731,7 +652,7 @@ pub fn dispatch_notification_with_effects(
                         }
                     }
                 };
-                return save_outcome(transaction, &receipt_id, &content_signature, outcome);
+                return save_outcome(transaction, delivery, &content_signature, outcome);
             }
             if kind == "item/completed" && params["item"]["type"] != "agentMessage" {
                 let mut scoped = params.to_owned();
@@ -765,7 +686,7 @@ pub fn dispatch_notification_with_effects(
                 publication,
                 observed_at,
             )? {
-                return save_outcome(transaction, &receipt_id, &content_signature, outcome);
+                return save_outcome(transaction, delivery, &content_signature, outcome);
             }
             let turn_id = params
                 .get("turnId")
@@ -919,7 +840,7 @@ pub fn dispatch_notification_with_effects(
                 } else {
                     AfterAgent::Stored(persist_agent(transaction, agent_id, &agent)?)
                 };
-                return save_outcome(transaction, &receipt_id, &content_signature, outcome);
+                return save_outcome(transaction, delivery, &content_signature, outcome);
             }
             if !stale_item
                 && !matches!(
@@ -932,7 +853,7 @@ pub fn dispatch_notification_with_effects(
             if !matches!(outcome, DispatchOutcome::Ignored { .. }) {
                 after_known = AfterAgent::Stored(persist_agent(transaction, agent_id, &agent)?);
             }
-            save_outcome(transaction, &receipt_id, &content_signature, outcome)
+            save_outcome(transaction, delivery, &content_signature, outcome)
         })()?;
         if fresh {
             let unchanged = matches!(after_known, AfterAgent::Unchanged);
@@ -1518,12 +1439,7 @@ fn write_text_notification(
             .map(|(record, _)| saved_text(transaction, &id, &record))
             .transpose()?
             .unwrap_or_default();
-        streams.preserve_base(&key, sha256_hex(flushed.as_bytes()));
-        NotificationDispatchRepository::put_stream_base(
-            transaction,
-            &stream_base_id(&key),
-            Some(&flushed),
-        )?;
+        streams.preserve_base(&key, flushed);
     }
     let (text, streaming, phase, index_search, completed) = match update {
         TextUpdate::Started(snapshot, phase) => (
@@ -1640,8 +1556,8 @@ fn stream_turn_active(
     key: &StreamKey,
 ) -> Result<bool, NotificationDispatchError> {
     Ok(transaction.query_row_cached(
-        "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE account_key=?1 AND thread_id=?2 AND (?3 IS NULL OR turn_id=?3) AND deleted_at IS NULL AND (in_flight=1 OR status IN ('running','starting','approval')))",
-        rusqlite::params![key.account, key.thread, key.turn],
+        "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE id=?4 AND account_key=?1 AND thread_id=?2 AND (?3 IS NULL OR turn_id=?3) AND deleted_at IS NULL AND (in_flight=1 OR status IN ('running','starting','approval')))",
+        rusqlite::params![key.account, key.thread, key.turn, key.agent_id],
         |row| row.get(0),
     ).map_err(StoreError::from)?)
 }
@@ -1705,11 +1621,6 @@ pub(crate) fn prune_inactive_streams(
                 )?;
                 continue;
             }
-            NotificationDispatchRepository::put_stream_base(
-                transaction,
-                &stream_base_id(&key),
-                None,
-            )?;
             streams.close(&key);
         }
     }
@@ -1720,23 +1631,13 @@ fn stream_owner(
     transaction: &Transaction<'_>,
     key: &StreamKey,
 ) -> Result<Option<(String, String)>, NotificationDispatchError> {
-    let owner = if key.agent_id.is_empty() {
-        transaction
-            .query_row_cached(
-                "SELECT id,record FROM runtime_agents WHERE account_key=?1 AND thread_id=?2",
-                rusqlite::params![key.account, key.thread],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()
-    } else {
-        transaction
-            .query_row_cached(
-                "SELECT id,record FROM runtime_agents WHERE id=?1 AND account_key=?2",
-                rusqlite::params![key.agent_id, key.account],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()
-    };
+    let owner = transaction
+        .query_row_cached(
+            "SELECT id,record FROM runtime_agents WHERE id=?1 AND account_key=?2",
+            rusqlite::params![key.agent_id, key.account],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional();
     let owner = owner.map_err(StoreError::from)?;
     Ok(owner
         .map(|(id, raw)| {
@@ -1779,7 +1680,6 @@ fn flush_one_stream(
         )?;
     }
     if close {
-        NotificationDispatchRepository::put_stream_base(transaction, &stream_base_id(key), None)?;
         streams.close(key);
     }
     Ok(())
@@ -1846,36 +1746,6 @@ fn flush_reasoning_stream(
     Ok(())
 }
 
-fn stream_base_id(key: &StreamKey) -> String {
-    format!(
-        "account-worker:stream-base:{}",
-        sha256_hex(
-            serde_json::to_string(key)
-                .expect("stream key serialization")
-                .as_bytes()
-        )
-    )
-}
-
-fn durable_stream_base(
-    transaction: &Transaction<'_>,
-    streams: &NotificationStreamBuffer,
-    key: &StreamKey,
-) -> Result<Option<String>, NotificationDispatchError> {
-    let Some(hash) = streams.base(key) else {
-        return Ok(None);
-    };
-    let id = stream_base_id(key);
-    let raw = NotificationDispatchRepository::stream_base(transaction, &id)?
-        .ok_or_else(|| stored("runtime_operation_receipts", &id))?;
-    let text: String =
-        serde_json::from_str(&raw).map_err(|_| stored("runtime_operation_receipts", &id))?;
-    if sha256_hex(text.as_bytes()) != hash {
-        return Err(stored("runtime_operation_receipts", &id));
-    }
-    Ok(Some(text))
-}
-
 fn flush_selected(
     transaction: &Transaction<'_>,
     agent_id: &str,
@@ -1906,7 +1776,8 @@ fn flush_keys(
     observed_at: f64,
 ) -> Result<(), NotificationDispatchError> {
     for key in keys {
-        if agent.get("threadId").and_then(Value::as_str) != Some(key.thread.as_str())
+        if key.agent_id != agent_id
+            || agent.get("threadId").and_then(Value::as_str) != Some(key.thread.as_str())
             || agent
                 .get("accountKey")
                 .and_then(Value::as_str)
@@ -1927,11 +1798,6 @@ fn flush_keys(
                     .as_deref()
                     .is_some_and(|turn| agent.get("turnId").and_then(Value::as_str) != Some(turn)))
         {
-            NotificationDispatchRepository::put_stream_base(
-                transaction,
-                &stream_base_id(&key),
-                None,
-            )?;
             streams.discard(&key);
             if close {
                 streams.close(&key);
@@ -1967,11 +1833,6 @@ fn flush_keys(
             None,
         )?;
         if close {
-            NotificationDispatchRepository::put_stream_base(
-                transaction,
-                &stream_base_id(&key),
-                None,
-            )?;
             streams.close(&key);
         }
     }
@@ -1996,16 +1857,9 @@ fn flush_text_stream(
     let old = NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?;
     // The stored item holds the flushed text unless item/started replaced it,
     // which preserved the flushed text as the durable base first.
-    let base = durable_stream_base(transaction, streams, key)?;
+    let base = streams.base(key).map(str::to_owned);
     let previous = match base {
-        Some(base) => {
-            NotificationDispatchRepository::put_stream_base(
-                transaction,
-                &stream_base_id(key),
-                None,
-            )?;
-            base
-        }
+        Some(base) => base,
         None => old
             .as_ref()
             .map(|(record, _)| saved_text(transaction, &id, record))
@@ -2275,15 +2129,6 @@ fn has_questions(value: Option<&Value>) -> bool {
     }
 }
 
-fn decode_outcome(
-    raw: &str,
-    receipt_id: &str,
-) -> Result<DispatchOutcome, NotificationDispatchError> {
-    checked_outcome(
-        serde_json::from_str(raw).map_err(|_| stored("runtime_operation_receipts", receipt_id))?,
-    )
-}
-
 fn checked_outcome(outcome: DispatchOutcome) -> Result<DispatchOutcome, NotificationDispatchError> {
     match outcome {
         DispatchOutcome::RequiresService { service } => {
@@ -2297,16 +2142,18 @@ fn checked_outcome(outcome: DispatchOutcome) -> Result<DispatchOutcome, Notifica
 
 fn save_outcome(
     transaction: &Transaction<'_>,
-    receipt_id: &str,
+    identity: &ProviderDeliveryIdentity,
     signature: &str,
     outcome: DispatchOutcome,
 ) -> Result<DispatchOutcome, NotificationDispatchError> {
     let outcome = checked_outcome(outcome)?;
-    NotificationDispatchRepository::put_notification_receipt(
+    crate::account_worker::store::put_notification(
         transaction,
-        receipt_id,
-        signature,
-        &serde_json::to_string(&outcome)?,
+        identity,
+        NotificationSettlement {
+            signature: signature.to_owned(),
+            outcome: outcome.clone(),
+        },
     )?;
     Ok(outcome)
 }
@@ -2715,6 +2562,8 @@ mod tests {
                  CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT NOT NULL,record TEXT NOT NULL,created REAL NOT NULL);
                  CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT NOT NULL);
                  CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
+                 CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT NOT NULL,record TEXT NOT NULL);
                  CREATE TABLE sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
                  CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
@@ -2727,6 +2576,8 @@ mod tests {
                  INSERT INTO sync_entities VALUES('agent','agent',1,'old','{\"collection\":\"agent\",\"id\":\"agent\",\"value\":{\"id\":\"agent\",\"status\":\"running\",\"threadId\":\"thread\",\"accountKey\":\"default\",\"turnId\":\"turn\",\"inFlight\":true,\"events\":0}}',0);"),
             )
             .expect("notification dispatch tables create");
+        studio_runtime_store::receipt_schema::create(&connection).expect("receipt owner tables");
+        fixture_attempt(&connection, "attempt");
         connection
             .execute(
                 "INSERT INTO runtime_agents VALUES('agent',?1)",
@@ -2734,7 +2585,7 @@ mod tests {
                     json!({"id":"agent","provider":studio_runtime_schema::ProviderKind::Codex,
                     "rootId":"agent","epoch":1,"status":"running","threadId":"thread",
                     "accountKey":"default","turnId":"turn","inFlight":true,"events":0,
-                    "activeTools":[],"autoWake":false})
+                    "activeTools":[],"autoWake":false,"activeExecution":{"attemptId":"attempt"}})
                     .to_string(),
                 ],
             )
@@ -2743,6 +2594,36 @@ mod tests {
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         connection
+    }
+
+    fn fixture_attempt(connection: &Connection, attempt: &str) {
+        use studio_runtime_schema::persistence::RequestIdentity;
+        use studio_runtime_store::request_results::{Admission, RequestResults};
+        let tx = connection
+            .unchecked_transaction()
+            .expect("attempt transaction");
+        let root = RequestIdentity::new(
+            "test-attempt",
+            &["agent"],
+            &RequestIdentity::issue_root(),
+            &[attempt],
+        )
+        .expect("identity");
+        let Admission::Fresh(admission) =
+            RequestResults::admit(&tx, &root, attempt, chrono::Utc::now().timestamp_millis())
+                .expect("admitted attempt")
+        else {
+            panic!("new root");
+        };
+        tx.execute(
+            "INSERT INTO runtime_execution_attempts VALUES(?1,'run',?2)",
+            params![
+                attempt,
+                json!({"id":attempt,"admission":admission}).to_string()
+            ],
+        )
+        .expect("attempt owner");
+        tx.commit().expect("attempt committed");
     }
 
     pub(super) fn frame(value: &Value) -> Frame {
@@ -3415,12 +3296,9 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            tx.query_row(
-                "SELECT count(*) FROM runtime_operation_receipts",
-                [],
-                |row| row.get::<_, i64>(0)
-            )
-            .expect("receipt count"),
+            tx.query_row("SELECT count(*) FROM runtime_outbox", [], |row| row
+                .get::<_, i64>(0))
+                .expect("receipt count"),
             1
         );
         tx.commit().expect("caller catches error and commits");
@@ -3436,7 +3314,7 @@ mod tests {
                     "runtime_agents",
                     "runtime_items",
                     "sync_entities",
-                    "runtime_operation_receipts",
+                    "runtime_outbox",
                 ]
                 .map(|table| {
                     let mut statement = tx
@@ -3539,12 +3417,24 @@ mod tests {
         .expect("agent reads")
         .expect("agent exists");
         assert_eq!(agent["events"], 1);
+        let old_rows: i64 = connection.query_row("SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'provider-notification:%'", [], |row| row.get(0)).expect("old notification rows");
+        assert_eq!(old_rows, 0, "journal state owns notification dedup");
+        let tx = connection.transaction().expect("ACK transaction");
+        studio_runtime_store::account_state::set_provider_checkpoint(&tx, "default", 7, 1)
+            .expect("contiguous ACK");
+        tx.execute(
+            "DELETE FROM runtime_outbox WHERE kind=?1",
+            [studio_runtime_schema::persistence::OutboxKind::JournalEntry],
+        )
+        .expect("ACK-covered gap retired");
+        let replay = super::dispatch_notification(&tx, "agent", &PublicationContext::default(), &streams, &identity(1), &frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"different"}})), 9.0).expect("ACK suppresses dispatch after gap cleanup");
+        assert!(matches!(replay.outcome, DispatchOutcome::Ignored { .. }));
+        assert!(replay.stream_update.is_none());
+        assert!(replay.post_commit.effects.is_empty());
     }
 
     #[test]
     fn snapshot_and_late_delta_order_matches_stream_buffer_completion_rules() {
-        use studio_runtime_store::NotificationDispatchRepository;
-
         macro_rules! send {
             ($transaction:expr, $streams:expr, $cursor:expr, $value:expr, $at:expr) => {{
                 let result = super::dispatch_notification(
@@ -3593,25 +3483,10 @@ mod tests {
             &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}}),
             1.0
         );
-        let key = super::stream::StreamKey {
-            agent_id: "agent".to_owned(),
-            account: "default".to_owned(),
-            generation: 7,
-            thread: "thread".to_owned(),
-            turn: Some("turn".to_owned()),
-            item: "answer".to_owned(),
-            method: "item/agentMessage/delta".to_owned(),
-        };
         let mut saved_streams = serde_json::to_value(&streams).expect("stream serializes");
-        saved_streams["entries"][0]["base"] = Value::String(super::sha256_hex(b"base"));
+        saved_streams["entries"][0]["base"] = Value::String("base".into());
         saved_streams["entries"][0]["flushed"] = Value::Bool(true);
         streams = serde_json::from_value(saved_streams).expect("persisted stream restores");
-        NotificationDispatchRepository::put_stream_base(
-            &transaction,
-            &super::stream_base_id(&key),
-            Some("base"),
-        )
-        .expect("durable stream base writes");
         send!(
             &transaction,
             &mut streams,
@@ -3703,11 +3578,7 @@ mod tests {
         .expect("agent exists");
         assert_eq!(agent["events"], 0);
         let receipts: i64 = connection
-            .query_row(
-                "SELECT count(*) FROM runtime_operation_receipts",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT count(*) FROM runtime_outbox", [], |row| row.get(0))
             .expect("receipt count reads");
         assert_eq!(receipts, 0);
         connection
@@ -3728,6 +3599,7 @@ mod tests {
     #[test]
     fn start_submission_replaces_an_earlier_unsent_attempt() {
         let mut connection = database();
+        fixture_attempt(&connection, "attempt-retry");
         connection
             .execute_batch(
                 "INSERT INTO runtime_events VALUES('e1','agent','user','hello','dispatching',1,1,'turn',NULL);
@@ -3759,7 +3631,16 @@ mod tests {
         let write = |connection: &mut Connection, submission: &PreparedSubmission, start: bool| {
             let transaction = connection.transaction().expect("transaction begins");
             let result = if start {
-                record_start_submission(&transaction, "agent", submission)
+                record_start_submission(
+                    &transaction,
+                    "agent",
+                    if submission.submitted_at == 1.0 {
+                        "attempt"
+                    } else {
+                        "attempt-retry"
+                    },
+                    submission,
+                )
             } else {
                 record_user_submission(&transaction, "agent", submission)
             };
@@ -3767,12 +3648,27 @@ mod tests {
             result
         };
         write(&mut connection, &first, true).expect("first start writes");
+        let tx = connection.transaction().expect("conflict transaction");
+        assert!(matches!(
+            record_start_submission(&tx, "agent", "attempt", &retry),
+            Err(super::NotificationDispatchError::ConflictingInput)
+        ));
+        tx.commit().expect("refusal commits no changes");
         write(&mut connection, &retry, true).expect("retry replaces the unsent record");
+        write(&mut connection, &first, true)
+            .expect("old exact attempt replays its original result");
         let item = TranscriptRepository::item(&connection, "agent", "agent:e1")
             .expect("item reads")
             .expect("item exists");
         assert_eq!(item.record["text"], retry.text);
         assert_eq!(item.record["inputs"][1]["text"], "more");
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM request_results", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("result count"),
+            2
+        );
         assert_eq!(
             write(&mut connection, &retry, true).expect("identical replay"),
             DispatchOutcome::Written
@@ -3841,6 +3737,11 @@ mod tests {
             let meta: Value = serde_json::from_str(&meta).expect("metadata remains JSON");
             assert_eq!(meta["transcriptItemId"], "agent:e1");
             assert_eq!(meta["modelEventProjection"], 1);
+            assert_eq!(meta["providerSubmission"]["firstEventId"], "e1");
+            assert_eq!(
+                meta["providerSubmission"]["publicationOutcome"]["status"],
+                "written"
+            );
         }
         let transaction = connection.transaction().expect("replay transaction begins");
         assert_eq!(
@@ -3864,6 +3765,92 @@ mod tests {
             DispatchOutcome::Written
         );
         transaction.commit().expect("deleted-agent replay commits");
+        let now = chrono::Utc::now().timestamp_millis();
+        let expired = now - studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS - 1;
+        connection
+            .execute("UPDATE request_results SET created=?1", [expired])
+            .expect("age response");
+        connection.execute("UPDATE runtime_event_meta SET record=json_set(record,'$.providerSubmission.admission.created',?1)", [expired]).expect("age admitted owner");
+        let tx = connection.transaction().expect("GC transaction");
+        assert_eq!(
+            studio_runtime_store::request_results::RequestResults::gc(&tx, now)
+                .expect("bounded GC"),
+            1
+        );
+        assert!(matches!(
+            record_user_submission(&tx, "agent", &submission),
+            Err(super::NotificationDispatchError::RequestResult(
+                studio_runtime_store::request_results::RequestResultError::Identity(
+                    studio_runtime_schema::persistence::RequestIdentityError::Expired { .. }
+                )
+            ))
+        ));
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM request_results", [], |row| row
+                .get::<_, i64>(0))
+                .expect("response count"),
+            0
+        );
+        assert_eq!(
+            TranscriptRepository::item(&tx, "agent", "agent:e1")
+                .expect("item")
+                .expect("published input")
+                .record["text"],
+            submission.text
+        );
+    }
+
+    #[test]
+    fn acknowledged_steer_uses_frozen_admission_after_current_attempt_clears() {
+        let mut connection = database();
+        let admission =
+            studio_runtime_store::ExecutionHistoryRepository::admission(&connection, "attempt")
+                .expect("root admission")
+                .expect("persisted root");
+        connection.execute_batch("INSERT INTO runtime_events VALUES('e1','agent','user','hello','dispatching',1,1,'turn',NULL); UPDATE runtime_agents SET record=json_remove(record,'$.activeExecution','$.startAttempt') WHERE id='agent';").expect("late acknowledgement fixture");
+        let submission = PreparedSubmission {
+            first_event_id: "e1".into(),
+            submitted_at: 2.0,
+            created_at: 1.0,
+            text: "hello".into(),
+            inputs: vec![SubmittedInput {
+                id: "e1".into(),
+                at: 1.0,
+                kind: "user".into(),
+                text: "hello".into(),
+                assets: json!([]),
+            }],
+            assets: json!([]),
+            radio_authorized: false,
+        };
+        let ack = studio_runtime_store::AcknowledgedSteer {
+            agent_id: "agent".into(),
+            admission,
+            steer_id: "steer".into(),
+            event_ids: vec!["e1".into()],
+            prepared_submission: Some(json!({})),
+            events: vec![],
+            submitted_at: 2.0,
+        };
+        let tx = connection
+            .transaction()
+            .expect("late publication transaction");
+        assert_eq!(
+            super::record_acknowledged_steer_submission(&tx, "agent", &submission, &ack)
+                .expect("frozen publication authority"),
+            DispatchOutcome::Written
+        );
+        assert_eq!(
+            super::record_acknowledged_steer_submission(&tx, "agent", &submission, &ack)
+                .expect("exact callback replay"),
+            DispatchOutcome::Written
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM request_results", [], |row| row
+                .get::<_, i64>(0))
+                .expect("exact result count"),
+            1
+        );
     }
 
     #[test]
@@ -3957,7 +3944,7 @@ mod tests {
             .expect("unauthorized submission leaves transaction committable");
         let writes: i64 = connection
             .query_row(
-                "SELECT (SELECT count(*) FROM runtime_items)+(SELECT count(*) FROM runtime_operation_receipts)",
+                "SELECT (SELECT count(*) FROM runtime_items)+(SELECT count(*) FROM runtime_outbox)+(SELECT count(*) FROM request_results)",
                 [],
                 |row| row.get(0),
             )
@@ -4153,6 +4140,34 @@ mod tests {
     /// and no search row until item/completed indexes the whole answer. A
     /// snapshot after a flush keeps the flushed text as the stream's base.
     #[test]
+    fn stream_base_survives_restart_in_current_stream_state() {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("transaction");
+        let mut streams = NotificationStreamBuffer::default();
+        dispatch(&transaction, &mut streams, 1, &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"before"}}), 1.0).expect("flushed delta");
+        dispatch(&transaction, &mut streams, 2, &json!({"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"id":"answer","type":"agentMessage","text":"snapshot"}}}), 2.0).expect("snapshot");
+        let saved = serde_json::to_value(&streams).expect("current stream state");
+        assert_eq!(saved["entries"][0]["base"], "before");
+        let bases: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM runtime_operation_receipts WHERE signature='stream-base'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("old base count");
+        assert_eq!(bases, 0);
+        streams = serde_json::from_value(saved).expect("restart");
+        dispatch(&transaction, &mut streams, 3, &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"after"}}), 3.0).expect("continued delta");
+        let item = TranscriptRepository::item(&transaction, "agent", "agent:answer")
+            .expect("read")
+            .expect("item");
+        assert_eq!(item.record["text"], "beforeafter");
+        assert!(
+            serde_json::to_value(&streams).expect("stream state")["entries"][0]["base"].is_null()
+        );
+    }
+
+    #[test]
     fn stream_flushes_store_the_text_once_and_index_it_at_completion() {
         use rusqlite::OptionalExtension;
         let mut connection = database();
@@ -4212,7 +4227,11 @@ mod tests {
         assert_eq!(base_rows(&transaction), 0);
         dispatch(&transaction, &mut streams, 33, &json!({"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"id":"short","type":"agentMessage","text":"snap"}}}), 4.0).expect("started");
         assert_eq!(text(&transaction, "agent:short"), "snap");
-        assert_eq!(base_rows(&transaction), 1);
+        assert_eq!(base_rows(&transaction), 0);
+        assert_eq!(
+            serde_json::to_value(&streams).expect("stream state")["entries"][0]["base"],
+            "one"
+        );
         dispatch(&transaction, &mut streams, 34, &delta("short", "two"), 5.0).expect("delta");
         assert_eq!(text(&transaction, "agent:short"), "onetwo");
         assert_eq!(base_rows(&transaction), 0);

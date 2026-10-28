@@ -636,10 +636,10 @@ fn native_error(error: NativeError) -> ApiError {
             ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
         }
         NativeError::Unknown => ApiError::new(StatusCode::CONFLICT, error.to_string()),
-        NativeError::InvalidStored { .. }
-        | NativeError::Store(_)
-        | NativeError::Json(_)
-        | NativeError::Sql(_) => ApiError::internal(),
+        NativeError::Store(error) => ApiError::stored(error),
+        NativeError::Json(error) => ApiError::json(error),
+        NativeError::Sql(error) => ApiError::stored(error.into()),
+        NativeError::InvalidStored { table, id, .. } => ApiError::invalid_stored(table, &id),
     }
 }
 
@@ -1100,6 +1100,8 @@ mod native_review_preflight_tests {
         let scope = provider.current_scope("vm-account").expect("guest scope");
         let receipt = provider
             .provider_request(ProviderRequest {
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
                 account: "vm-account".into(),
                 operation: "vm-native-op".into(),
                 actor: None,

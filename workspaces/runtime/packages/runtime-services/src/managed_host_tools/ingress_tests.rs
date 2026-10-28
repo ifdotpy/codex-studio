@@ -3,6 +3,9 @@
 #[path = "ingress_tests/claude_permissions.rs"]
 mod claude_permissions;
 
+#[path = "ingress_tests/receipts.rs"]
+mod receipts;
+
 use crate::managed_host_tools::{
     Actor, ChildCreationPort, ComplaintPort, ContextPort, Error, InterruptPort, OperationResult,
     PostCommitPort, ReviewPort, SearchPort, SendPort, StatusPort, WakeSignal, WatchMonitorPort,
@@ -18,6 +21,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
+use studio_runtime_schema::persistence::RequestIdentity;
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError};
 
@@ -60,7 +64,6 @@ fn template() -> &'static Template {
             "monitor": serde_json::from_str::<Value>(&FIXTURE_MONITOR.replace("@cwd", &cwd)).unwrap(),
             "managedToolCases": [{"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_send", "arguments": {"agent_id": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "text": "descendant input"}, "callId": "managed-0"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_send", "arguments": {"agent_id": "parent", "text": "parent alias"}, "callId": "managed-1"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_send", "arguments": {"agent_id": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "text": "parent id"}, "callId": "managed-2"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_send", "arguments": {"agent_id": "broadcast", "text": "team notice"}, "callId": "managed-3"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_send", "arguments": {"agent_id": "787d59cc-071a-4918-990a-cb1dffba4e2f", "text": "peer refusal"}, "callId": "managed-4"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_complaint", "arguments": {"action": "submit", "text": "Need help"}, "callId": "managed-5"}, {"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_complaint", "arguments": {"action": "read", "complaint_id": "ccba5086-ee65-562b-9703-fd2fc708bad4"}, "callId": "managed-6"}, {"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_complaint", "arguments": {"action": "respond", "complaint_id": "ccba5086-ee65-562b-9703-fd2fc708bad4", "text": "Investigating", "status": "in_progress"}, "callId": "managed-7"}, {"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_context", "arguments": {"topic": "monitor", "id": "6a1cbd51-e035-54ce-af5c-7fd9850e3065"}, "callId": "managed-9"}, {"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_cancel_monitor", "arguments": {"monitor_id": "6a1cbd51-e035-54ce-af5c-7fd9850e3065"}, "callId": "managed-10"}],
             "managedRootDeletedRefusal": {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_complaint", "callId": "deleted-root", "arguments": {"action": "read"}},
-            "reservations": [{"record": {"id": "thread-0:spawn:request-1", "agent": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "threadId": "thread-0", "callId": "alias-1", "tool": "orchestration_spawn", "signature": "c91f8a50f288534226b47d6abda036631ba03b0ad5aae43ad0b8e1fe6431fc12", "rpcId": 1, "turnId": "turn-0", "epoch": 3, "accountKey": "default", "connectionId": "connection", "created": 10.0, "updated": 10.0, "readOnly": false, "timing": {"reservationBeganAt": 49476990541458_i64, "reservationLockedAt": 49476991477012_i64, "reservationEndedAt": 49476991698409_i64}, "request_id": "request-1", "stage": "queued", "outcome": "pending", "cancelRequested": false}}],
         });
         Template {
             value,
@@ -104,6 +107,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
         .unwrap();
     let actor = &template.value["agents"][0];
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -653,7 +657,6 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
         );
         let tickets = fake.tickets.lock().unwrap();
         assert_eq!(tickets.len(), 1, "same native ticket must not be resent");
-        assert!(tickets[0].contains("production-monitor-input"));
         let row = studio_runtime_store::system_reads::all(
             &store.test_reader().unwrap(),
             "runtime_tool_requests",
@@ -662,6 +665,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
         .into_iter()
         .find(|row| row["callId"] == "production-monitor-input")
         .unwrap();
+        assert_eq!(tickets[0], row["id"].as_str().unwrap());
         let expected = match certainty {
             crate::managed_host_tools::DeliveryCertainty::Written => "written",
             crate::managed_host_tools::DeliveryCertainty::NotSent => "not_sent",
@@ -674,6 +678,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
     let (_root, store, _lead_context) = fixture_arc().await;
     let worker = &template().value["agents"][1];
     let worker_context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().to_owned(),
         account: "default".into(),
         connection: "connection".into(),
@@ -820,11 +825,11 @@ fn callback_intent_snapshot(store: &RuntimeStore) -> Value {
         "requests": connection.prepare("SELECT id,record FROM runtime_tool_requests ORDER BY id").unwrap()
             .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap()
             .collect::<Result<Vec<_>, _>>().unwrap(),
-        "results": connection.prepare("SELECT id,result FROM runtime_tool_results ORDER BY id").unwrap()
+        "results": connection.prepare("SELECT id,result FROM request_results ORDER BY id").unwrap()
             .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap()
             .collect::<Result<Vec<_>, _>>().unwrap(),
-        "aliases": connection.prepare("SELECT agent,alias,request FROM runtime_tool_request_aliases ORDER BY agent,alias,request").unwrap()
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).unwrap()
+        "outbox": connection.prepare("SELECT id,payload FROM runtime_outbox ORDER BY id").unwrap()
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap()
             .collect::<Result<Vec<_>, _>>().unwrap(),
     })
 }
@@ -925,10 +930,6 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
             .await
             .unwrap();
         assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            *fake.tickets.lock().unwrap(),
-            ["thread-0:stable-monitor-input"]
-        );
         let row = studio_runtime_store::system_reads::all(
             &store.test_reader().unwrap(),
             "runtime_tool_requests",
@@ -937,6 +938,13 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
         .into_iter()
         .find(|row| row["callId"] == "stable-monitor-input")
         .unwrap();
+        assert_eq!(*fake.tickets.lock().unwrap(), [row["id"].as_str().unwrap()]);
+        assert_eq!(
+            uuid::Uuid::parse_str(row["id"].as_str().unwrap())
+                .unwrap()
+                .get_version_num(),
+            7
+        );
         let expected = match certainty {
             crate::managed_host_tools::DeliveryCertainty::Written => "written",
             crate::managed_host_tools::DeliveryCertainty::NotSent => "not_sent",
@@ -948,6 +956,7 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
     let (_root, store, _lead_context) = fixture().await;
     let worker = &template().value["agents"][1];
     let worker_context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().to_owned(),
         account: "default".into(),
         connection: "connection".into(),
@@ -1112,6 +1121,38 @@ fn intent_count(store: &RuntimeStore, kind: &str) -> i64 {
         .unwrap()
 }
 
+fn queued_tool_request(context: &CallbackContext, call_id: &str) -> Value {
+    json!({
+        "agent":context.agent,"threadId":context.thread,"turnId":context.turn,
+        "epoch":context.epoch,"accountKey":context.account,"connectionId":context.connection,
+        "supervisor":{"generation":context.generation},"callId":call_id,
+        "rpcId":format!("rpc-{call_id}"),"tool":"orchestration_spawn",
+        "arguments":{"agents":[]},"signature":"fixture-signature","readOnly":false,
+        "updated":chrono::Utc::now().timestamp_millis() as f64 / 1000.0,
+    })
+}
+
+fn seed_tool_request(tx: &Transaction<'_>, mut record: Value) -> Value {
+    record["id"] = json!(RequestIdentity::issue_root());
+    record["created"] = json!(chrono::Utc::now().timestamp_millis() as f64 / 1000.0);
+    record["stage"] = json!("queued");
+    record["outcome"] = json!("pending");
+    record["cancelRequested"] = json!(false);
+    for field in [
+        "admitted",
+        "request_id",
+        "aliases",
+        "result",
+        "started",
+        "finished",
+        "deliveryCertainty",
+    ] {
+        record.as_object_mut().unwrap().remove(field);
+    }
+    let call = record["callId"].as_str().unwrap().to_owned();
+    crate::tool_requests::admission::reserve(tx, record, &call, "", None).unwrap()
+}
+
 fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)> {
     use rusqlite::types::ValueRef;
     let connection = store.test_reader().unwrap();
@@ -1127,10 +1168,7 @@ fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)
     for name in names {
         // Callback ingress necessarily persists its idempotency/result receipt.
         // The tested operation must leave every other row byte-for-byte stable.
-        if matches!(
-            name.as_str(),
-            "runtime_tool_requests" | "runtime_tool_results" | "runtime_tool_request_aliases"
-        ) {
+        if matches!(name.as_str(), "runtime_tool_requests" | "request_results") {
             continue;
         }
         let quoted = name.replace('"', "\"\"");
@@ -1143,8 +1181,8 @@ fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)
             .map(|column| column.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        let receipt_filter = if name == "runtime_operation_receipts" {
-            " WHERE signature!='provider-callback'"
+        let receipt_filter = if name == "runtime_outbox" {
+            " WHERE kind!='provider_callback'"
         } else {
             ""
         };
@@ -1189,6 +1227,7 @@ async fn dispatch_case(
         .find(|actor| actor["id"] == expected["actor"])
         .unwrap();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().to_owned(),
         account: "default".into(),
         connection: "connection".into(),
@@ -1290,10 +1329,13 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
         saved["status"].as_str(),
         Some("starting" | "approval")
     ));
-    assert!(
-        saved["requestId"]
-            .as_str()
-            .is_some_and(|id| id.ends_with(":managed-monitor-create"))
+    let task = claim_settlement::request_row(&store, "managed-monitor-create");
+    assert_eq!(saved["requestId"], task["id"]);
+    assert_eq!(
+        uuid::Uuid::parse_str(task["id"].as_str().unwrap())
+            .unwrap()
+            .get_version_num(),
+        7
     );
 
     let actor_record = {
@@ -1746,8 +1788,8 @@ async fn startup_reconciles_reserved_callback_once() {
     store
         .transaction_with::<_, StoreError>(|tx| {
             tx.execute("DELETE FROM runtime_requests", [])?;
-            tx.execute("DELETE FROM runtime_operation_receipts", [])?;
-            tx.execute_batch("CREATE TRIGGER p05_crash_after_reservation BEFORE INSERT ON runtime_tool_results BEGIN SELECT RAISE(ABORT,'crash after reservation'); END")?;
+            tx.execute("DELETE FROM request_results", [])?;
+            tx.execute_batch("CREATE TRIGGER p05_crash_after_reservation BEFORE INSERT ON request_results BEGIN SELECT RAISE(ABORT,'crash after reservation'); END")?;
             Ok(())
         }).await
         .unwrap();
@@ -1990,40 +2032,23 @@ async fn remote_origin_search_and_monitor_context_stay_local() {
 #[tokio::test]
 async fn queued_managed_tool_request_can_be_cancelled_before_dispatch() {
     let (_root, store, context) = fixture().await;
-    let mut queued = template().value["reservations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|reservation| &reservation["record"])
-        .find(|record| record["tool"] == "orchestration_spawn")
-        .unwrap()
-        .clone();
-    let request_id = "thread-0:spawn:p05-cancel";
-    queued["id"] = json!(request_id);
-    queued["request_id"] = json!("p05-cancel");
-    let queued_record = queued.to_string();
-    let request_id = request_id.to_owned();
-    let request_id_for_tx = request_id.clone();
+    let queued = queued_tool_request(&context, "queued-cancel");
     let agent_id = context.agent.clone();
-    store
+    let request_id = store
         .transaction_with(move |tx| {
-            tx.execute(
-                "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",
-                params![request_id_for_tx, queued_record],
-            )?;
-            let stored = studio_runtime_store::system_reads::get(
-                tx,
-                "runtime_tool_requests",
-                &request_id_for_tx,
-            )?;
+            let queued = seed_tool_request(tx, queued);
+            let request_id = queued["id"].as_str().unwrap().to_owned();
+            let stored =
+                studio_runtime_store::system_reads::get(tx, "runtime_tool_requests", &request_id)?;
             assert_eq!(stored.as_ref(), Some(&queued));
             let result = crate::tool_requests::execute(
                 tx,
                 &agent_id,
-                crate::tool_requests::Action::Cancel(&request_id_for_tx),
+                crate::tool_requests::Action::Cancel(&request_id),
                 21.0,
             )?;
-            Ok::<_, CallbackError>(result)
+            assert_eq!(result["outcome"], "not_applied");
+            Ok::<_, CallbackError>(request_id)
         })
         .await
         .unwrap();
@@ -2516,6 +2541,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             .unwrap();
         let context = if label.starts_with("nested-") {
             CallbackContext {
+                stream_id: "default".into(),
                 agent: WORKER.into(),
                 thread: "thread-1".into(),
                 turn: "turn-1".into(),
@@ -2529,6 +2555,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
                 continue;
             }
             let key = format!("reviewer-defaults-{label}-{tool}");
+            let request_id = RequestIdentity::issue_root();
             let args = if tool == "orchestration_spawn" {
                 let mut spec =
                     json!({"name":"Review", "prompt":"Review the changes", "role":"reviewer"});
@@ -2538,10 +2565,10 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
                 if spec["role"].is_null() {
                     spec.as_object_mut().unwrap().remove("role");
                 }
-                json!({"request_id":key,"agents":[spec]})
+                json!({"request_id":request_id,"agents":[spec]})
             } else {
                 let mut args = options.clone();
-                args["request_id"] = json!(key);
+                args["request_id"] = json!(request_id);
                 args
             };
             let frame = call(&context, &key, tool, args);
@@ -3761,9 +3788,10 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
     assert!(record.get("deletedAt").is_none(), "{record}");
     assert_eq!(record["status"], "paused");
     assert_eq!(record["autoWake"], false);
+    let archive_request = RequestIdentity::issue_root();
     let (success, batch) = manage(
         "manage-archive-finished",
-        json!({"action":"archive_finished","request_id":"finished-batch"}),
+        json!({"action":"archive_finished","request_id":archive_request}),
     )
     .await;
     assert!(success, "{batch}");
@@ -3772,7 +3800,7 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
     assert_eq!(report.archived, 1);
     let (success, replay) = manage(
         "manage-archive-finished",
-        json!({"action":"archive_finished","request_id":"finished-batch"}),
+        json!({"action":"archive_finished","request_id":archive_request}),
     )
     .await;
     assert!(success, "{replay}");
@@ -3811,7 +3839,7 @@ async fn archive_finished_runs_for_codex_and_claude_leads_through_tool_dispatch(
             &context,
             "archive-finished-provider",
             "orchestration_agent_manage",
-            json!({"action":"archive_finished","request_id":format!("finished-{provider}")}),
+            json!({"action":"archive_finished","request_id":RequestIdentity::issue_root()}),
         );
         let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports(
@@ -3867,7 +3895,7 @@ async fn archive_finished_reason_survives_dispatch_and_receipt_replay() {
         }).await.expect("finished worker");
         let mut args = args;
         args["action"] = json!("archive_finished");
-        args["request_id"] = json!("archive-with-reason");
+        args["request_id"] = json!(RequestIdentity::issue_root());
         let frame = call(
             &context,
             "archive-with-reason",

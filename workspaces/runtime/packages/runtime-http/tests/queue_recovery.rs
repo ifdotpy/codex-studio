@@ -85,11 +85,11 @@ async fn call(app: &axum::Router, body: Option<Value>) -> (u16, Value) {
 async fn promotion(app: &axum::Router) -> Value {
     let (status, queue) = call(app, None).await;
     assert_eq!(status, 200, "{queue}");
-    json!({"agent":ACTOR,"action":"send_now","message_id":USER,"request_id":"retry-original-input","expected_revision":queue["revision"]})
+    json!({"agent":ACTOR,"action":"send_now","message_id":USER,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"expected_revision":queue["revision"]})
 }
 fn snapshot(store: &RuntimeStore) -> Vec<Vec<String>> {
     let db = store.test_reader().unwrap();
-    ["SELECT record FROM runtime_agents ORDER BY id","SELECT json_array(id,agent,kind,text,status,created,epoch,turn_id,error) FROM runtime_events ORDER BY id","SELECT record FROM runtime_event_meta ORDER BY id","SELECT record FROM runtime_execution_attempts ORDER BY id","SELECT result FROM runtime_operation_receipts ORDER BY id"].into_iter().map(|sql|db.prepare(sql).unwrap().query_map([],|row|row.get(0)).unwrap().collect::<Result<Vec<String>,_>>().unwrap()).collect()
+    ["SELECT record FROM runtime_agents ORDER BY id","SELECT json_array(id,agent,kind,text,status,created,epoch,turn_id,error) FROM runtime_events ORDER BY id","SELECT record FROM runtime_event_meta ORDER BY id","SELECT record FROM runtime_execution_attempts ORDER BY id","SELECT result FROM request_results ORDER BY id"].into_iter().map(|sql|db.prepare(sql).unwrap().query_map([],|row|row.get(0)).unwrap().collect::<Result<Vec<String>,_>>().unwrap()).collect()
 }
 
 #[tokio::test]

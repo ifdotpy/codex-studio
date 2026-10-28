@@ -228,7 +228,8 @@ async fn restore_owned(
                 let operation = json!({
                     "id":operation_id,"kind":"restore","agent":agent_id,"checkpoint":checkpoint.id,
                     "expectedTree":expected_tree,"signature":signature,"source":source,
-                    "phase":"provider_pending","created":now_seconds()
+                    "phase":"provider_pending","created":now_seconds(),
+                    "rootRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root()
                 });
                 tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)", rusqlite::params![operation_id, operation.to_string()]).map_err(|error| ApiError::stored(error.into()))?;
                 let mut actor = AgentRepository::get(tx, &AgentRecord::from_value(snapshot.agent.record.clone()).map_err(|_| ApiError::internal())?.id).map_err(ApiError::stored)?
@@ -327,6 +328,8 @@ async fn restore_owned(
         let params = params.clone();
         port.provider_request(
             studio_runtime_services::account_session_runtime::ProviderRequest {
+                root_request_id: operation_state.get("rootRequestId").and_then(Value::as_str).or_else(|| operation_state.get("providerAdmission").map(|_| "")).ok_or_else(|| ApiError::new(StatusCode::CONFLICT, "The restore request identity is unavailable; inspect workspace recovery"))?.to_owned(),
+                admitted_request: operation_state.get("providerAdmission").cloned().map(serde_json::from_value).transpose().map_err(ApiError::json)?,
                 account,
                 operation: provider_operation.clone(),
                 actor: Some(actor),

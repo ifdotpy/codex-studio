@@ -2,6 +2,8 @@
 //! holds compaction, so later settled receipts accumulate behind it.
 use super::*;
 use studio_runtime_providers::{DecodedJournalPayload, decode_journal_value};
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
+use studio_runtime_store::outbox::{Outbox, OutboxRow};
 
 const GENERATION: u64 = 7;
 const SCOPE: &str = "default";
@@ -84,13 +86,13 @@ pub(super) async fn journal(
     streams
 }
 
-fn journal_receipts(store: &RuntimeStore) -> i64 {
+fn journal_rows(store: &RuntimeStore) -> i64 {
     store
         .test_reader()
         .expect("reader")
         .query_row(
-            "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:journal:%'",
-            [],
+            "SELECT COUNT(*) FROM runtime_outbox WHERE stream_id=?1 AND generation=?2 AND kind=?3",
+            (SCOPE, GENERATION as i64, OutboxKind::JournalEntry),
             |row| row.get(0),
         )
         .expect("count")
@@ -102,13 +104,45 @@ async fn clear_publications(store: &RuntimeStore) {
     store
         .transaction_with(|tx| -> Result<(), WorkerError> {
             tx.execute(
-                "DELETE FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:%'",
-                [],
+                "DELETE FROM runtime_outbox WHERE account=?1 AND kind=?2 AND status=?3",
+                (SCOPE, OutboxKind::Publication, OutboxStatus::Pending),
             )?;
             Ok(())
         })
         .await
         .expect("clear publications");
+}
+
+fn seed_journal_gap(
+    tx: &studio_runtime_store::Transaction<'_>,
+    cursor: u64,
+    ready: bool,
+) -> Result<(), WorkerError> {
+    let id = store::journal_operation(SCOPE, GENERATION, cursor);
+    let payload = json!({"cursor":cursor,"digest":"d","ready":ready,"committed":true});
+    let mut row = if let Some(row) = Outbox::get::<Value>(tx, &id).map_err(StoreError::from)? {
+        row
+    } else {
+        OutboxRow {
+            signature: studio_runtime_store::sha256_hex(id.as_bytes()),
+            id,
+            kind: OutboxKind::JournalEntry,
+            owner_kind: OwnerKind::Account,
+            owner_id: SCOPE.into(),
+            request_id: None,
+            status: OutboxStatus::Committed,
+            account: Some(SCOPE.into()),
+            stream_id: Some(SCOPE.into()),
+            generation: Some(GENERATION as i64),
+            ordinal: Some(cursor as i64),
+            next_at: None,
+            payload: Value::Null,
+            created: (now() * 1000.0) as i64,
+        }
+    };
+    row.payload = payload;
+    Outbox::put(tx, &row).map_err(StoreError::from)?;
+    Ok(())
 }
 
 /// SQLite virtual machine steps between progress callbacks.
@@ -156,14 +190,7 @@ async fn journal_batch_work_is_independent_of_held_receipt_backlog() {
     const BATCH: u64 = super::JOURNAL_BATCH_MAX_EVENTS as u64;
     let (_directory, store) = running_store().await;
     store
-        .transaction_with(|tx| -> Result<(), WorkerError> {
-            store::replace(
-                tx,
-                &store::journal_operation(SCOPE, GENERATION, 1),
-                "settled",
-                json!({"cursor":1,"digest":"d","ready":false,"committed":true}),
-            )
-        })
+        .transaction_with(|tx| -> Result<(), WorkerError> { seed_journal_gap(tx, 1, false) })
         .await
         .expect("held receipt");
     let streams = NotificationStreamBuffer::default();
@@ -181,12 +208,7 @@ async fn journal_batch_work_is_independent_of_held_receipt_backlog() {
     store
         .transaction_with(move |tx| -> Result<(), WorkerError> {
             for cursor in base..base + BACKLOG {
-                store::replace(
-                    tx,
-                    &store::journal_operation(SCOPE, GENERATION, cursor),
-                    "settled",
-                    json!({"cursor":cursor,"digest":"d","ready":true,"committed":true}),
-                )?;
+                seed_journal_gap(tx, cursor, true)?;
             }
             Ok(())
         })
@@ -200,21 +222,14 @@ async fn journal_batch_work_is_independent_of_held_receipt_backlog() {
         large <= small + small / 20,
         "journal work grew with the held backlog: {small} -> {large} ticks"
     );
-    assert_eq!(journal_receipts(&store), (3 * BATCH + BACKLOG + 1) as i64);
+    assert_eq!(journal_rows(&store), (3 * BATCH + BACKLOG + 1) as i64);
 
     store
-        .transaction_with(|tx| -> Result<(), WorkerError> {
-            store::replace(
-                tx,
-                &store::journal_operation(SCOPE, GENERATION, 1),
-                "settled",
-                json!({"cursor":1,"digest":"d","ready":true,"committed":true}),
-            )
-        })
+        .transaction_with(|tx| -> Result<(), WorkerError> { seed_journal_gap(tx, 1, true) })
         .await
         .expect("release the held receipt");
     let mut cursor = next + BATCH;
-    while journal_receipts(&store) > 0 {
+    while journal_rows(&store) > 0 {
         streams = journal(&store, streams, vec![delta(cursor)]).await;
         cursor += 1;
     }
@@ -225,64 +240,49 @@ async fn journal_batch_work_is_independent_of_held_receipt_backlog() {
     assert_eq!(checkpoint, cursor - 1);
 }
 
-/// Receipts written before key padding keep their exactly-once evidence and
-/// their drain position.
+/// Current journal and publication keys preserve numeric order and committed proof on reopen.
 #[tokio::test]
-async fn legacy_receipt_keys_are_padded_once() {
-    let (_directory, store) = running_store().await;
-    let legacy = |cursor: u64| {
-        (
-            format!("account-worker:journal:{SCOPE}:{GENERATION}:{cursor}:settled"),
-            cursor,
-        )
-    };
+async fn journal_and_publication_keys_keep_order_and_proof_on_reopen() {
+    let (directory, store) = running_store().await;
     store
-        .transaction_with(move |tx| -> Result<(), WorkerError> {
-            for (id, cursor) in [legacy(2), legacy(10)] {
-                tx.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'settled',?2)",
-                    rusqlite::params![
-                        id,
-                        json!({"cursor":cursor,"digest":"d","ready":false,"committed":true}).to_string()
-                    ],
-                )?;
-            }
-            tx.execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'pending',?2)",
-                rusqlite::params![
-                    "account-worker:notification-publication:default:3:1:pending",
-                    json!({"account":"default","sequence":3,"index":1,"analyticsOverflow":1}).to_string()
-                ],
-            )?;
-            store::pad_legacy_receipt_keys(tx, "default")?;
-            store::pad_legacy_receipt_keys(tx, "default")?;
-            let publication: String = tx.query_row(
-                "SELECT id FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:%'",
-                [],
-                |row| row.get(0),
-            )?;
-            assert_eq!(
-                publication,
-                "account-worker:notification-publication:default:00000000000000000003:00000000000000000001:pending"
-            );
+        .transaction_with(|tx| -> Result<(), WorkerError> {
             for cursor in [2, 10] {
-                assert!(store::journal_committed(tx, SCOPE, GENERATION, cursor)?);
+                seed_journal_gap(tx, cursor, false)?;
             }
-            let ids = tx
-                .prepare("SELECT id FROM runtime_operation_receipts WHERE id LIKE 'account-worker:journal:%' ORDER BY id")?
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            assert_eq!(
-                ids,
-                [
-                    "account-worker:journal:default:7:00000000000000000002:settled",
-                    "account-worker:journal:default:7:00000000000000000010:settled",
-                ]
-            );
             Ok(())
         })
         .await
-        .expect("legacy receipts");
+        .expect("journal gaps");
+    super::publication_drain::stage(
+        &store,
+        3,
+        1,
+        json!({"account":"default","sequence":3,"index":1,"class":"pending","analyticsOverflow":1}),
+    )
+    .await;
+    let original = store.transaction_with(|tx| -> Result<_, WorkerError> {
+        for cursor in [2,10] { assert!(store::journal_committed(tx,SCOPE,GENERATION,cursor)?); }
+        let ids = tx.prepare("SELECT id FROM runtime_outbox WHERE stream_id=?1 AND generation=?2 AND kind=?3 ORDER BY id")?
+            .query_map((SCOPE,GENERATION as i64,OutboxKind::JournalEntry),|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
+        assert_eq!(ids,["journal:default:7:00000000000000000002","journal:default:7:00000000000000000010"]);
+        let publication:String=tx.query_row("SELECT id FROM runtime_outbox WHERE account=?1 AND kind=?2",(SCOPE,OutboxKind::Publication),|row|row.get(0))?;
+        assert_eq!(publication,"notification-publication:default:00000000000000000003:00000000000000000001");
+        Ok(tx.prepare("SELECT id,signature,payload,created FROM runtime_outbox WHERE account=?1 ORDER BY id")?
+            .query_map([SCOPE],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,i64>(3)?)))?.collect::<Result<Vec<_>,_>>()?)
+    }).await.expect("ordered current keys and proof");
+    drop(store);
+    let reopened = RuntimeStore::open(Some(directory.path()))
+        .await
+        .expect("reopen");
+    let restored=reopened.transaction_with(|tx| -> Result<_,WorkerError> {
+        for cursor in [2,10] { assert!(store::journal_committed(tx,SCOPE,GENERATION,cursor)?); }
+        Ok(tx.prepare("SELECT id,signature,payload,created FROM runtime_outbox WHERE account=?1 ORDER BY id")?
+            .query_map([SCOPE],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,i64>(3)?)))?.collect::<Result<Vec<_>,_>>()?)
+    }).await.expect("restored current proof");
+    assert_eq!(
+        restored, original,
+        "reopen cannot rename or rewrite committed evidence"
+    );
 }
 
 /// At the publication receipt bound each committed token-rate effect reclaims
@@ -393,8 +393,8 @@ async fn publications_drain_in_sequence_order_with_one_delete_transaction() {
             .test_reader()
             .expect("reader")
             .query_row(
-                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:%'",
-                [],
+                "SELECT COUNT(*) FROM runtime_outbox WHERE account='default' AND kind=?1 AND status=?2",
+                (OutboxKind::Publication, OutboxStatus::Pending),
                 |row| row.get(0),
             )
             .expect("count")
@@ -404,7 +404,7 @@ async fn publications_drain_in_sequence_order_with_one_delete_transaction() {
         store
             .transaction_with_commit_generation(|tx| -> Result<(), WorkerError> {
                 tx.execute(
-                    "INSERT OR REPLACE INTO runtime_operation_receipts(id,signature,result) VALUES('drain-probe','probe',CAST(random() AS TEXT))",
+                    "INSERT INTO runtime_orchestration_settings(id,record) VALUES('global',json_object('drainProbe',random())) ON CONFLICT(id) DO UPDATE SET record=json_set(record,'$.drainProbe',random())",
                     [],
                 )?;
                 Ok(())
@@ -433,15 +433,8 @@ async fn publications_drain_in_sequence_order_with_one_delete_transaction() {
 
 /// The durable stream metadata text of the `default` account, if any.
 fn stream_metadata(store: &RuntimeStore) -> Option<String> {
-    store
-        .test_reader()
-        .expect("reader")
-        .query_row(
-            "SELECT result FROM runtime_operation_receipts WHERE id='account-worker:streams:default:metadata'",
-            [],
-            |row| row.get(0),
-        )
-        .ok()
+    studio_runtime_store::account_state::streams(&store.test_reader().expect("reader"), SCOPE)
+        .expect("current stream owner")
 }
 
 /// A batch whose events leave every stream untouched writes no stream
@@ -454,7 +447,7 @@ async fn journal_batch_persists_streams_only_when_they_change() {
     store
         .transaction_with(|tx| -> Result<(), WorkerError> {
             tx.execute(
-                "UPDATE runtime_operation_receipts SET result=json_set(result,'$.testMarker',1) WHERE id='account-worker:streams:default:metadata'",
+                "UPDATE runtime_account_state SET streams=json_set(streams,'$.testMarker',1) WHERE account='default'",
                 [],
             )?;
             Ok(())

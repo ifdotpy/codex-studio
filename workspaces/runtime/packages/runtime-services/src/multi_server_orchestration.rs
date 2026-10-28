@@ -7,7 +7,283 @@ use studio_runtime_schema::delivery::DeliveryMoment;
 
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use studio_runtime_schema::persistence::{ServerDeliveryState, ServerOperationKind};
+use studio_runtime_store::multi_server_delivery::{
+    RemoteReply, SavedRemoteReply, remote_operation_key,
+};
+use studio_runtime_store::request_results::{AdmittedRequest, RequestResultError};
 use studio_runtime_store::{RuntimeStore, StoreError};
+
+pub(crate) fn replay_error(error: RequestResultError) -> AccessError {
+    match error {
+        RequestResultError::Identity(
+            studio_runtime_schema::persistence::RequestIdentityError::FutureTimestamp { .. },
+        ) => refused(
+            400,
+            "request_future",
+            "The request ID timestamp is too far in the future",
+        ),
+        RequestResultError::Identity(
+            studio_runtime_schema::persistence::RequestIdentityError::Expired { .. }
+            | studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7(_),
+        ) => refused(410, "request_expired", "The request ID expired"),
+        RequestResultError::Conflict { .. } => refused(
+            409,
+            "request_conflict",
+            "This request id has different content",
+        ),
+        RequestResultError::Sql(error) => error.into(),
+        RequestResultError::Json(_) => {
+            refused(503, "invalid_record", "Stored delivery result is invalid")
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Incoming,
+    Outgoing,
+}
+impl Direction {
+    fn table(self) -> &'static str {
+        match self {
+            Self::Incoming => "runtime_server_inbox",
+            Self::Outgoing => "runtime_server_outbox",
+        }
+    }
+    fn namespace(self) -> &'static str {
+        match self {
+            Self::Incoming => "server-inbox",
+            Self::Outgoing => "server-outbox",
+        }
+    }
+}
+
+fn replay_delivery(
+    db: &rusqlite::Connection,
+    direction: Direction,
+    authority: &str,
+    envelope: &Envelope,
+    now: i64,
+) -> Result<Option<ExchangeOutcome>, AccessError> {
+    let signature = match direction {
+        Direction::Incoming => envelope.incoming_signature(authority)?,
+        Direction::Outgoing => envelope.fingerprint.clone(),
+    };
+    let scoped = envelope.clone().scoped(direction, authority).key;
+    let raw = if envelope.operation.is_empty() {
+        &envelope.root
+    } else {
+        &scoped
+    };
+    let saved = crate::event_write::replay_request::<SavedRemoteReply>(
+        db,
+        raw,
+        &signature,
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .map_err(replay_error)?
+    .or(crate::event_write::replay_request::<SavedRemoteReply>(
+        db,
+        &scoped,
+        &signature,
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .map_err(replay_error)?);
+    saved
+        .map(|saved| {
+            if direction == Direction::Incoming
+                && saved.reply.principal.as_deref() != Some(authority)
+            {
+                return Err(refused(
+                    403,
+                    "receipt_owner",
+                    "The receipt belongs to another caller",
+                ));
+            }
+            if direction == Direction::Outgoing && saved.reply.server.as_deref() != Some(authority)
+            {
+                return Err(refused(
+                    403,
+                    "receipt_owner",
+                    "The receipt belongs to another server",
+                ));
+            }
+            let value = serde_json::to_value(saved.reply.response)
+                .map_err(|_| refused(503, "invalid_record", "Stored delivery result is invalid"))?;
+            ExchangeOutcome::from_value(&value, &envelope.root, now)
+        })
+        .transpose()
+}
+
+fn admit_delivery(
+    tx: &Transaction<'_>,
+    direction: Direction,
+    authority: &str,
+    envelope: &Envelope,
+    now: i64,
+) -> Result<AdmittedRequest, AccessError> {
+    use crate::event_write::{CallerAdmission, RequestKey, begin_request};
+    let signature = match direction {
+        Direction::Incoming => envelope.incoming_signature(authority)?,
+        Direction::Outgoing => envelope.fingerprint.clone(),
+    };
+    match begin_request::<SavedRemoteReply>(
+        tx,
+        RequestKey::new(direction.namespace(), &[authority], &envelope.root)
+            .raw(if envelope.operation.is_empty() {
+                &envelope.root
+            } else {
+                &envelope.key
+            })
+            .operation(&envelope.operation_parts()),
+        &signature,
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .map_err(replay_error)?
+    {
+        CallerAdmission::Fresh(admitted) => Ok(admitted),
+        CallerAdmission::Replay(_) => Err(refused(
+            409,
+            "receipt_changed",
+            "The saved delivery changed",
+        )),
+    }
+}
+
+fn pending_key(
+    tx: &rusqlite::Connection,
+    direction: Direction,
+    authority: &str,
+    envelope: &Envelope,
+) -> Result<String, AccessError> {
+    let column = match direction {
+        Direction::Incoming => "principal",
+        Direction::Outgoing => "server",
+    };
+    let exists: bool = tx.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM {} WHERE id=?1 AND {column}=?2)",
+            direction.table()
+        ),
+        params![envelope.root, authority],
+        |r| r.get(0),
+    )?;
+    Ok(if exists && envelope.operation.is_empty() {
+        envelope.root.clone()
+    } else {
+        envelope.clone().scoped(direction, authority).key
+    })
+}
+
+fn saved_remote(
+    tx: &rusqlite::Connection,
+    direction: Direction,
+    authority: &str,
+    root: &str,
+    now: i64,
+) -> Result<Option<SavedRemoteReply>, AccessError> {
+    let scoped = remote_operation_key(
+        direction.namespace(),
+        &[authority],
+        root,
+        &[ServerOperationKind::Exec.as_str()],
+    );
+    let row: Option<(String,String)> = tx.query_row("SELECT id,signature FROM request_results WHERE id IN (?1,?2) ORDER BY id=?2 DESC LIMIT 1",params![root,scoped],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    row.map(|(id, signature)| {
+        crate::event_write::replay_request::<SavedRemoteReply>(
+            tx,
+            &id,
+            &signature,
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .map_err(replay_error)
+    })
+    .transpose()
+    .map(|saved| saved.flatten().map(|saved| saved.reply))
+}
+
+fn settle_delivery(
+    tx: &Transaction<'_>,
+    direction: Direction,
+    key: &str,
+    root: &str,
+    signature: &str,
+    result: &ExchangeOutcome,
+) -> Result<(), AccessError> {
+    let (admission, principal, server, actor, body): (String, Option<String>,Option<String>, Option<String>, Option<String>) = match direction {
+        Direction::Incoming => tx.query_row("SELECT admission,principal,NULL,actor,NULL FROM runtime_server_inbox WHERE id=?1 AND signature=?2", params![key,signature], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?,
+        Direction::Outgoing => tx.query_row("SELECT admission,NULL,server,json_extract(body,'$.payload.actor'),body FROM runtime_server_outbox WHERE id=?1 AND fingerprint=?2", params![key,signature], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?,
+    };
+    let admission: AdmittedRequest = serde_json::from_str(&admission).map_err(|_| {
+        refused(
+            503,
+            "invalid_record",
+            "Stored delivery admission is invalid",
+        )
+    })?;
+    if admission.signature() != signature {
+        return Err(refused(
+            409,
+            "request_conflict",
+            "This request id has different content",
+        ));
+    }
+    let response: RemoteReply = serde_json::from_value(result.to_value(root))
+        .map_err(|_| refused(503, "invalid_record", "Stored delivery result is invalid"))?;
+    let saved = SavedRemoteReply {
+        principal,
+        server,
+        actor: actor.clone(),
+        body,
+        response,
+    };
+    crate::event_write::settle_request(tx, &admission, actor.as_deref(), &saved)
+        .map_err(replay_error)?;
+    if direction == Direction::Outgoing
+        && let Some(body) = saved.body.as_deref()
+    {
+        let envelope: Value = serde_json::from_str(body).map_err(|_| {
+            refused(
+                503,
+                "invalid_record",
+                "Stored cross-server envelope is invalid",
+            )
+        })?;
+        if matches!(
+            text(&envelope, "action"),
+            "add_location" | "remove_location"
+        ) {
+            let local = RuntimeStore::transaction_local_server_id(tx)?.ok_or_else(|| {
+                refused(
+                    503,
+                    "identity_unavailable",
+                    "The local server identity is unavailable",
+                )
+            })?;
+            let receipt = result.to_value(root);
+            let raw = json!({"id":key,"server":saved.server,"body":envelope,"state":ServerDeliveryState::Complete,"result":receipt});
+            let now = crate::event_write::unix_time().map_err(|_| {
+                refused(503, "clock_unavailable", "The system clock is unavailable")
+            })?;
+            crate::project_locations::complete_snapshot_in_transaction(
+                tx, &raw, &receipt, &local, now,
+            )
+            .map_err(|_| {
+                refused(
+                    409,
+                    "project_location_changed",
+                    "The project location changed before settlement",
+                )
+            })?;
+        }
+    }
+    tx.execute(
+        &format!("DELETE FROM {} WHERE id=?1", direction.table()),
+        [key],
+    )?;
+    Ok(())
+}
 
 use crate::multi_server_auth::{AccessError, digest, refused, schema, stored, text};
 use crate::remote_transport::{
@@ -1013,7 +1289,7 @@ fn durable_anchor_input_receipt(
     envelope: &Envelope,
 ) -> Result<Option<Value>, AccessError> {
     let payload = &envelope.payload;
-    if envelope.action != "input"
+    if envelope.action.as_str() != "input"
         || payload
             .get(REMOTE_ANCHOR_INPUT_FIELD)
             .and_then(Value::as_bool)
@@ -1437,13 +1713,20 @@ impl crate::server_exec::ExecEvents for ExecNotices {
                     }
                     let queued: Option<i64> = tx
                         .query_row(
-                            "SELECT 1 FROM runtime_server_outbox WHERE id=?1 UNION SELECT 1 FROM runtime_server_retired WHERE id=?1 AND direction='out'",
+                            "SELECT 1 FROM runtime_server_outbox WHERE id=?1",
                             [&key],
                             |row| row.get(0),
                         )
                         .optional()?;
                     if queued.is_none() {
-                        enqueue_in_transaction(tx, &principal, EXEC_EVENT_ACTION, &payload, &key, now as i64)?;
+                        enqueue_in_transaction(
+                            tx,
+                            &principal,
+                            EXEC_EVENT_ACTION,
+                            &payload,
+                            &key,
+                            now as i64,
+                        )?;
                     }
                     Ok(())
                 })
@@ -1859,11 +2142,11 @@ impl RuntimeOrchestrationEffects {
 // between paired servers.
 
 /// The one-shot action that starts a command on a paired server.
-pub const EXEC_ACTION: &str = "exec";
+pub const EXEC_ACTION: &str = ServerOperationKind::Exec.as_str();
 /// The effect-free probe that reads the stored receipt of one `exec` request.
-pub const EXEC_RECEIPT_ACTION: &str = "exec_receipt";
+pub const EXEC_RECEIPT_ACTION: &str = ServerOperationKind::ExecReceipt.as_str();
 /// The command-exit notice that the executing server sends to the owner.
-pub const EXEC_EVENT_ACTION: &str = "exec_event";
+pub const EXEC_EVENT_ACTION: &str = ServerOperationKind::ExecEvent.as_str();
 /// First name part of the probe identity: `identity('exec-receipt', handle)`.
 const EXEC_RECEIPT_IDENTITY_PART: &str = "exec-receipt";
 /// The payload field that replaces an `exec` command in its outbox body after
@@ -1886,7 +2169,8 @@ fn exec_receipt_probe(key: &str, payload: &Value) -> Option<Value> {
         return None;
     }
     Some(json!({
-        "requestId": crate::projects::cross_server_identity(&[EXEC_RECEIPT_IDENTITY_PART, key]),
+        "requestId": key,
+        "operation":[EXEC_RECEIPT_IDENTITY_PART],
         "action": EXEC_RECEIPT_ACTION,
         "payload": {
             "handle": key,
@@ -1901,7 +2185,8 @@ fn exec_receipt_probe(key: &str, payload: &Value) -> Option<Value> {
 fn exec_receipt_body(envelope: &Envelope, local_server: &str) -> Result<String, AccessError> {
     let digest = envelope.incoming_signature(local_server)?;
     canonical_json(&json!({
-        "requestId": envelope.key,
+        "requestId": envelope.root,
+        "operation":envelope.operation,
         "action": envelope.action,
         "payload": {
             "actor": envelope.payload.get("actor").cloned().unwrap_or(Value::Null),
@@ -1933,15 +2218,33 @@ fn exec_owner(
     let Some(handle) = handle.as_str() else {
         return Ok(false);
     };
+    let scoped = remote_operation_key(
+        Direction::Outgoing.namespace(),
+        &[server],
+        handle,
+        &[ServerOperationKind::Exec.as_str()],
+    );
     let row: Option<(String, String)> = tx
         .query_row(
-            "SELECT server,body FROM runtime_server_outbox WHERE id=?1",
-            [handle],
+            "SELECT server,body FROM runtime_server_outbox WHERE id IN (?1,?2)",
+            params![handle, scoped],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    let Some((saved_server, body)) = row else {
-        return Ok(false);
+    let (saved_server, body) = match row {
+        Some(row) => row,
+        None => {
+            let now = crate::event_write::unix_time()
+                .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?
+                as i64;
+            let Some(saved) = saved_remote(tx, Direction::Outgoing, server, handle, now)? else {
+                return Ok(false);
+            };
+            let Some(body) = saved.body else {
+                return Ok(false);
+            };
+            (server.to_owned(), body)
+        }
     };
     let envelope: Value = serde_json::from_str(&body).map_err(|_| {
         refused(
@@ -2050,62 +2353,58 @@ fn exec_receipt_answer(
     payload: &Value,
     now: i64,
 ) -> Result<Option<Result<Value, &'static str>>, AccessError> {
-    type Original = (String, Option<String>, Option<String>, Option<String>);
     let Some(handle) = payload.get("handle").and_then(Value::as_str) else {
         return Ok(None);
     };
-    let unknown = json!({"requestId": handle, "outcome": "unknown"});
-    let original: Option<Original> = tx
-        .query_row(
-            "SELECT signature,result,principal,actor FROM runtime_server_inbox WHERE id=?1",
-            [handle],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .optional()?;
-    let Some((signature, result, owner, actor)) = original else {
-        return Ok(Some(Ok(unknown)));
-    };
-    if owner.is_none() && actor.is_none() {
-        // Receipts from the previous schema still need ownership proof before
-        // a new effect-free probe can read them.
-        let job: Option<(String, String)> = tx
-            .query_row(
-                "SELECT owner,actor FROM runtime_server_exec WHERE id=?1",
-                [handle],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        if !job.is_some_and(|(owner, actor)| {
-            owner == principal && payload_actor_is(payload, Some(&actor))
-        }) {
+    let unknown = json!({"requestId":handle,"outcome":"unknown"});
+    let invalid = || refused(503, "invalid_record", "Stored delivery result is invalid");
+    if let Some(saved) = saved_remote(tx, Direction::Incoming, principal, handle, now)? {
+        if saved.principal.as_deref() != Some(principal)
+            || !payload_actor_is(payload, saved.actor.as_deref())
+        {
             return Ok(Some(Err(EXEC_RECEIPT_OWNER_REFUSAL)));
         }
-    } else if owner.as_deref() != Some(principal) || !payload_actor_is(payload, actor.as_deref()) {
+        let key = remote_operation_key(
+            Direction::Incoming.namespace(),
+            &[principal],
+            handle,
+            &[ServerOperationKind::Exec.as_str()],
+        );
+        let signature: String = tx.query_row(
+            "SELECT signature FROM request_results WHERE id IN (?1,?2) ORDER BY id=?2 DESC LIMIT 1",
+            params![handle, key],
+            |r| r.get(0),
+        )?;
+        if payload.get("digest").and_then(Value::as_str) != Some(signature.as_str()) {
+            return Ok(Some(Err(EXEC_RECEIPT_DIGEST_REFUSAL)));
+        }
+        let receipt = serde_json::to_value(saved.response).map_err(|_| invalid())?;
+        return Ok(Some(Ok(
+            match ExchangeOutcome::from_value(&receipt, handle, now)? {
+                ExchangeOutcome::Unknown => unknown,
+                _ => receipt,
+            },
+        )));
+    }
+    let probe_source = Envelope::from_value(
+        &json!({"requestId":handle,"operation":[],"action":ServerOperationKind::Exec,"payload":{}}),
+    )?;
+    let key = pending_key(tx, Direction::Incoming, principal, &probe_source)?;
+    let original: Option<(String, Option<String>, Option<String>)> = tx
+        .query_row(
+            "SELECT signature,principal,actor FROM runtime_server_inbox WHERE id=?1",
+            [key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((signature, owner, actor)) = original else {
+        return Ok(Some(Ok(unknown)));
+    };
+    if owner.as_deref() != Some(principal) || !payload_actor_is(payload, actor.as_deref()) {
         return Ok(Some(Err(EXEC_RECEIPT_OWNER_REFUSAL)));
     }
     if payload.get("digest").and_then(Value::as_str) != Some(signature.as_str()) {
         return Ok(Some(Err(EXEC_RECEIPT_DIGEST_REFUSAL)));
-    }
-    let invalid = || refused(503, "invalid_record", "Stored delivery result is invalid");
-    if let Some(raw) = result.filter(|raw| !raw.is_empty()) {
-        let receipt: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-        // Python `live_receipt`: expired command output reads as unknown.
-        let expired = receipt
-            .get("value")
-            .filter(|value| value.is_object())
-            .and_then(|value| value.get("outputExpiresAt"))
-            .and_then(Value::as_f64)
-            .is_some_and(|at| at <= now as f64);
-        return Ok(Some(Ok(if expired {
-            json!({
-                "requestId": receipt.get("requestId").cloned().unwrap_or(Value::Null),
-                "outcome": "unknown",
-                "expired": true,
-                "detail": EXPIRED_RECEIPT_DETAIL,
-            })
-        } else {
-            receipt
-        })));
     }
     // Python `_evidence(db, 'exec', ...)`: a settled job record proves the
     // start when the claim lost its receipt.
@@ -2135,7 +2434,7 @@ fn exec_receipt_answer(
 /// The saved state of an `exec` outbox row that is already in receipt form.
 enum SavedExecReceipt {
     /// Not settled: deliver this probe.
-    Pending(Value),
+    Pending(Value, String, String),
     /// Settled: the saved receipt of the original command.
     Settled(ExchangeOutcome),
 }
@@ -2146,46 +2445,37 @@ enum SavedExecReceipt {
 fn settle_exec_row(
     tx: &Transaction<'_>,
     key: &str,
-    state: &str,
+    root: &str,
+    state: ServerDeliveryState,
     attempts: i64,
     result: &ExchangeOutcome,
     now: i64,
 ) -> Result<(), AccessError> {
     match result {
-        ExchangeOutcome::Applied(_) | ExchangeOutcome::NotApplied(_) => tx.execute(
-            "UPDATE runtime_server_outbox SET state='complete',result=?1,error=NULL,completed_at=?2 WHERE id=?3",
-            params![result.to_value(key).to_string(), now, key],
-        )?,
-        ExchangeOutcome::Unknown | ExchangeOutcome::PreEffectWaiting => tx.execute(
+        ExchangeOutcome::Applied(_) | ExchangeOutcome::NotApplied(_) => {
+            let signature: String = tx.query_row(
+                "SELECT fingerprint FROM runtime_server_outbox WHERE id=?1",
+                [key],
+                |row| row.get(0),
+            )?;
+            settle_delivery(tx, Direction::Outgoing, key, root, &signature, result)?;
+        }
+        ExchangeOutcome::Unknown | ExchangeOutcome::PreEffectWaiting => {
+            tx.execute(
             "UPDATE runtime_server_outbox SET state=?1,attempts=attempts+1,next_at=?2,error='unknown' WHERE id=?3",
             params![state, now.saturating_add(peer_retry_delay(attempts)), key],
-        )?,
-    };
-    Ok(())
-}
-
-/// Python `compact_receipt('exec_receipt', ...)`: the probe's own receipt does
-/// not keep a second copy of the command output.
-fn compact_exec_receipt(result: &ExchangeOutcome, key: &str) -> Value {
-    match result {
-        ExchangeOutcome::Applied(value) => json!({
-            "requestId": key,
-            "outcome": "applied",
-            "value": {
-                "requestId": value.get("requestId").cloned().unwrap_or(Value::Null),
-                "outcome": value.get("outcome").cloned().unwrap_or(Value::Null),
-            },
-        }),
-        other @ ExchangeOutcome::NotApplied(_)
-        | other @ ExchangeOutcome::Unknown
-        | other @ ExchangeOutcome::PreEffectWaiting => other.to_value(key),
+        )?;
+        }
     }
+    Ok(())
 }
 
 #[derive(Clone)]
 pub struct Envelope {
     key: String,
-    action: String,
+    root: String,
+    action: ServerOperationKind,
+    operation: Vec<String>,
     payload: Value,
     body: String,
     fingerprint: String,
@@ -2214,14 +2504,31 @@ impl Envelope {
         }
         Ok(Self {
             key: text(value, "requestId").to_owned(),
-            action: action.to_owned(),
+            root: text(value, "requestId").to_owned(),
+            action: serde_json::from_value(value["action"].clone()).map_err(|_|refused(400,"invalid_request","Unknown cross-server operation"))?,
+            operation: serde_json::from_value(value["operation"].clone()).map_err(|_|refused(400,"invalid_request","Invalid cross-server operation identity"))?,
             payload: value["payload"].clone(),
-            fingerprint: digest(body.as_bytes()),
+            fingerprint: digest(canonical_json(&json!({"requestId":text(value,"requestId"),"action":action,"payload":value["payload"]})).map_err(|_|refused(400,"invalid_request","Invalid cross-server request"))?.as_bytes()),
             body,
         })
     }
     pub fn value(&self) -> Value {
-        json!({"requestId":self.key,"action":self.action,"payload":self.payload})
+        json!({"requestId":self.root,"operation":self.operation,"action":self.action,"payload":self.payload})
+    }
+    fn scoped(mut self, direction: Direction, peer: &str) -> Self {
+        self.key = serde_json::to_string(&(
+            direction.namespace(),
+            [peer],
+            &self.root,
+            self.operation_parts(),
+        ))
+        .expect("string tuple serializes");
+        self
+    }
+    fn operation_parts(&self) -> Vec<&str> {
+        std::iter::once(self.action.as_str())
+            .chain(self.operation.iter().map(String::as_str))
+            .collect()
     }
     fn incoming_signature(&self, principal: &str) -> Result<String, AccessError> {
         Ok(digest(
@@ -2235,10 +2542,9 @@ impl Envelope {
 /// A checked constructor is the only path from Python-written SQL rows into a
 /// delivery decision. The raw result is validated against the envelope identity.
 pub struct DeliverySnapshot {
-    state: String,
+    state: ServerDeliveryState,
     signature: String,
     server: Option<String>,
-    result: Option<ExchangeOutcome>,
     next_at: f64,
 }
 impl DeliverySnapshot {
@@ -2264,32 +2570,14 @@ impl DeliverySnapshot {
             .map(str::to_owned)
             .or_else(|| body.map(|b| digest(b.as_bytes())))
             .ok_or_else(|| refused(503, "invalid_record", "Stored delivery has no identity"))?;
-        let result = value
-            .get("result")
-            .and_then(Value::as_str)
-            .map(|s| {
-                serde_json::from_str::<Value>(s)
-                    .map_err(|_| {
-                        refused(503, "invalid_record", "Stored delivery result is invalid")
-                    })
-                    .and_then(|v| ExchangeOutcome::from_value(&v, id, now))
-            })
-            .transpose()?;
-        if text(&value, "state") == "complete" && result.is_none() {
-            return Err(refused(
-                503,
-                "invalid_record",
-                "Completed delivery has no receipt",
-            ));
-        }
         Ok(Self {
-            state: text(&value, "state").to_owned(),
+            state: serde_json::from_value(value["state"].clone())
+                .map_err(|_| refused(503, "invalid_record", "Stored delivery state is invalid"))?,
             signature,
             server: value
                 .get("server")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
-            result,
             next_at: value.get("next_at").and_then(Value::as_f64).unwrap_or(0.0),
         })
     }
@@ -2298,77 +2586,65 @@ pub enum DeliveryDecision {
     Execute,
     Return(ExchangeOutcome),
 }
-const PEER_REPLAY_SAFE_ACTIONS: &[&str] = &[
-    "event",
-    "input",
-    "message",
-    "move_send",
-    "location_info",
-    "location_matches",
-    "stop",
+const PEER_REPLAY_SAFE_ACTIONS: &[ServerOperationKind] = &[
+    ServerOperationKind::Event,
+    ServerOperationKind::Input,
+    ServerOperationKind::Message,
+    ServerOperationKind::MoveSend,
+    ServerOperationKind::LocationInfo,
+    ServerOperationKind::LocationMatches,
+    ServerOperationKind::Stop,
     // The event row identity is the request identity, so a replay finds it.
-    EXEC_EVENT_ACTION,
+    ServerOperationKind::ExecEvent,
     // Effect-free reads (Python `receive` runs them again for a running claim).
-    "projects",
-    "folders",
-    "git",
-    "chunk",
-    "exec_read",
+    ServerOperationKind::Projects,
+    ServerOperationKind::Folders,
+    ServerOperationKind::Git,
+    ServerOperationKind::Chunk,
+    ServerOperationKind::ExecRead,
     // Removing a released bundle again has no further effect.
-    "release",
+    ServerOperationKind::Release,
     // Reads of the installed app and its archive (Python `UPDATE_ACTIONS`).
-    "update.offer",
-    "update.export",
-    "update.chunk",
-    "update.release",
+    ServerOperationKind::UpdateOffer,
+    ServerOperationKind::UpdateExport,
+    ServerOperationKind::UpdateChunk,
+    ServerOperationKind::UpdateRelease,
 ];
-
-/// Python `receive` and `deliver` never answer a bundle or update chunk from its
-/// saved receipt: that receipt keeps no data, so each delivery reads the chunk again.
-const REREAD_ACTIONS: &[&str] = &["chunk", "update.chunk"];
-
-/// Python `compact_receipt`: a stored chunk receipt keeps no chunk data.
-fn compact_receipt(action: &str, result: &ExchangeOutcome, key: &str) -> Value {
-    let mut value = result.to_value(key);
-    if REREAD_ACTIONS.contains(&action)
-        && let Some(applied) = value.get_mut("value").and_then(Value::as_object_mut)
-    {
-        applied.remove("data");
-    }
-    value
-}
 
 /// Worker calls that a remote worker sends to its home server (Python
 /// `worker_call`). The home server binds each request identity to a durable
 /// inbox claim, so the sender delivers the same envelope again after a lost
 /// reply, as Python `_retry` does. The receiver never runs a claimed write
 /// twice, so these actions are not replay-safe on the receiving side.
-pub(crate) const WORKER_CALL_RETRY_ACTIONS: &[&str] = &[
-    "task",
-    "complaint",
-    "context",
-    "directory",
-    "chat_read",
-    "move_manage",
-    "move_interrupt",
-    "move_spawn",
+pub(crate) const WORKER_CALL_RETRY_ACTIONS: &[ServerOperationKind] = &[
+    ServerOperationKind::Task,
+    ServerOperationKind::Complaint,
+    ServerOperationKind::Context,
+    ServerOperationKind::Directory,
+    ServerOperationKind::ChatRead,
+    ServerOperationKind::MoveManage,
+    ServerOperationKind::MoveInterrupt,
+    ServerOperationKind::MoveSpawn,
 ];
 
 /// The sender may deliver this queued or crashed outbox envelope again.
-fn outgoing_retry(action: &str) -> bool {
-    peer_replay_safe(action) || WORKER_CALL_RETRY_ACTIONS.contains(&action)
+fn outgoing_retry(action: ServerOperationKind) -> bool {
+    action == ServerOperationKind::Export
+        || peer_replay_safe(action)
+        || WORKER_CALL_RETRY_ACTIONS.contains(&action)
 }
 
 fn outgoing_retry_sql_values() -> String {
     PEER_REPLAY_SAFE_ACTIONS
         .iter()
         .chain(WORKER_CALL_RETRY_ACTIONS)
-        .map(|action| format!("'{action}'"))
+        .chain(std::iter::once(&ServerOperationKind::Export))
+        .map(|action| format!("'{}'", action.as_str()))
         .collect::<Vec<_>>()
         .join(",")
 }
 
-fn peer_replay_safe(action: &str) -> bool {
+fn peer_replay_safe(action: ServerOperationKind) -> bool {
     // Every input variant binds its stable request identity to a durable
     // message receipt or event row before reporting an applied effect.
     PEER_REPLAY_SAFE_ACTIONS.contains(&action)
@@ -2388,6 +2664,8 @@ pub fn decide_delivery(
     action: &str,
     now: i64,
 ) -> Result<DeliveryDecision, AccessError> {
+    let action: ServerOperationKind = serde_json::from_value(json!(action))
+        .map_err(|_| refused(400, "invalid_request", "Unknown cross-server operation"))?;
     let Some(snapshot) = snapshot else {
         return Ok(DeliveryDecision::Execute);
     };
@@ -2398,28 +2676,23 @@ pub fn decide_delivery(
             "This request id has different content",
         ));
     }
-    if snapshot.state == "complete" && REREAD_ACTIONS.contains(&action) {
-        return Ok(DeliveryDecision::Execute);
-    }
-    if snapshot.state == "complete" {
-        return Ok(DeliveryDecision::Return(
-            snapshot.result.clone().ok_or_else(|| {
-                refused(503, "invalid_record", "Completed delivery has no receipt")
-            })?,
-        ));
-    }
     // A running input claim is ambiguous: only an exact durable-effect lookup
     // may resolve it. The generic effect adapter cannot prove that lookup, so
     // leave the receipt unknown instead of executing the input again.
     if !outgoing
-        && (snapshot.state == "waiting"
-            || (peer_replay_safe(action) && action != "input" && snapshot.state == "running"))
+        && (snapshot.state == ServerDeliveryState::Waiting
+            || (peer_replay_safe(action)
+                && action != ServerOperationKind::Input
+                && snapshot.state == ServerDeliveryState::Running))
     {
         return Ok(DeliveryDecision::Execute);
     }
     if outgoing
         && outgoing_retry(action)
-        && matches!(snapshot.state.as_str(), "queued" | "running")
+        && matches!(
+            snapshot.state,
+            ServerDeliveryState::Queued | ServerDeliveryState::Running
+        )
         && snapshot.next_at <= now as f64
     {
         return Ok(DeliveryDecision::Execute);
@@ -2439,21 +2712,21 @@ fn check_project_reservation(
     tx: &Transaction<'_>,
     action: &str,
     payload: &Value,
-    exact_legacy_reservation: bool,
 ) -> Result<(), AccessError> {
     if matches!(action, "add_location" | "remove_location") {
-        crate::project_locations::check_location_admission(tx, payload, exact_legacy_reservation)
-            .map_err(|error| match error {
-            crate::project_locations::LocationError::Store(error) => AccessError::from(error),
-            crate::project_locations::LocationError::InvalidStored { .. }
-            | crate::project_locations::LocationError::Refused(_)
-            | crate::project_locations::LocationError::Requires(_)
-            | crate::project_locations::LocationError::Sqlite(_) => refused(
-                409,
-                "project_location_changed",
-                "The project or caller changed before location reservation",
-            ),
-        })?;
+        crate::project_locations::check_location_admission(tx, payload).map_err(
+            |error| match error {
+                crate::project_locations::LocationError::Store(error) => AccessError::from(error),
+                crate::project_locations::LocationError::InvalidStored { .. }
+                | crate::project_locations::LocationError::Refused(_)
+                | crate::project_locations::LocationError::Requires(_)
+                | crate::project_locations::LocationError::Sqlite(_) => refused(
+                    409,
+                    "project_location_changed",
+                    "The project or caller changed before location reservation",
+                ),
+            },
+        )?;
     }
     Ok(())
 }
@@ -2468,13 +2741,19 @@ pub fn enqueue_in_transaction(
     request_id: &str,
     now: i64,
 ) -> Result<(), AccessError> {
-    let envelope =
-        Envelope::from_value(&json!({"requestId":request_id,"action":action,"payload":payload}))?;
+    let mut envelope = Envelope::from_value(
+        &json!({"requestId":request_id,"operation":[],"action":action,"payload":payload}),
+    )?
+    .scoped(Direction::Outgoing, server);
     require_paired(transaction, server)?;
+    if replay_delivery(transaction, Direction::Outgoing, server, &envelope, now)?.is_some() {
+        return Ok(());
+    }
+    envelope.key = pending_key(transaction, Direction::Outgoing, server, &envelope)?;
     let prior = transaction
         .query_row(
             "SELECT server,body,fingerprint FROM runtime_server_outbox WHERE id=?1",
-            [request_id],
+            [&envelope.key],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -2495,10 +2774,11 @@ pub fn enqueue_in_transaction(
         }
         return Ok(());
     }
-    check_project_reservation(transaction, action, payload, false)?;
+    check_project_reservation(transaction, action, payload)?;
+    let admitted = admit_delivery(transaction, Direction::Outgoing, server, &envelope, now)?;
     transaction.execute(
-        "INSERT INTO runtime_server_outbox(id,server,body,state,created_at,next_at,fingerprint,attempts) VALUES(?1,?2,?3,'queued',?4,0,?5,0)",
-        params![request_id, server, envelope.body, now, envelope.fingerprint],
+        "INSERT INTO runtime_server_outbox(id,server,body,state,created_at,next_at,fingerprint,attempts,admission) VALUES(?1,?2,?3,?7,?4,0,?5,0,?6)",
+        params![envelope.key, server, envelope.body, now, envelope.fingerprint, serde_json::to_string(&admitted).map_err(|_| refused(503,"invalid_record","Delivery admission could not be saved"))?,ServerDeliveryState::Queued],
     )?;
     Ok(())
 }
@@ -2543,6 +2823,32 @@ impl OrchestrationDriver {
         now: i64,
         timeout: std::time::Duration,
     ) -> Result<ExchangeOutcome, AccessError> {
+        self.exchange_request(
+            server,
+            &json!({"requestId":request_id,"operation":[],"action":action,"payload":payload}),
+            now,
+            timeout,
+        )
+        .await
+    }
+
+    pub async fn exchange_operation(
+        &self,
+        server: &str,
+        request: &Value,
+        now: i64,
+    ) -> Result<ExchangeOutcome, AccessError> {
+        self.exchange_request(server, request, now, std::time::Duration::from_secs(20))
+            .await
+    }
+
+    async fn exchange_request(
+        &self,
+        server: &str,
+        request: &Value,
+        now: i64,
+        timeout: std::time::Duration,
+    ) -> Result<ExchangeOutcome, AccessError> {
         let store_for_local = Arc::clone(&self.store);
         let local_server = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/multi_server_orchestration",
@@ -2558,18 +2864,22 @@ impl OrchestrationDriver {
         })??
         .unwrap_or_default();
         let is_local = !local_server.is_empty() && server == local_server;
-        let envelope = Envelope::from_value(
-            &json!({"requestId":request_id,"action":action,"payload":payload}),
-        )?;
-        if envelope.action == EXEC_ACTION {
-            match self.saved_exec_receipt(server, &envelope, now).await? {
+        let mut envelope = Envelope::from_value(request)?.scoped(Direction::Outgoing, server);
+
+        if envelope.action.as_str() == EXEC_ACTION {
+            match self
+                .saved_exec_receipt(server, is_local, &envelope, now)
+                .await?
+            {
                 Some(SavedExecReceipt::Settled(result)) => return Ok(result),
-                Some(SavedExecReceipt::Pending(probe)) => {
+                Some(SavedExecReceipt::Pending(probe, key, signature)) => {
+                    envelope.key = key;
+                    envelope.fingerprint = signature;
                     return self
                         .deliver_exec_receipt(
                             server,
                             is_local.then_some(local_server.as_str()),
-                            &envelope.key,
+                            &envelope,
                             &probe,
                             timeout,
                             now,
@@ -2587,22 +2897,32 @@ impl OrchestrationDriver {
                 None => {}
             }
         }
-        let envelope_for_claim = envelope.clone();
+        let mut envelope_for_claim = envelope.clone();
         let server_for_claim = server.to_owned();
         let in_flight_until = now.saturating_add(timeout.as_secs().max(1) as i64);
-        let decision=self.store.transaction_with(move |tx| {
+        let (decision,key)=self.store.transaction_with(move |tx| {
             if !is_local { require_paired(tx,&server_for_claim)?; }
-            if retired(tx,&envelope_for_claim.key,"out",&envelope_for_claim.fingerprint,Some(&server_for_claim))? {return Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown));}
+            if let Some(result) = replay_delivery(tx,Direction::Outgoing,&server_for_claim,&envelope_for_claim,now)? {
+                return Ok((DeliveryDecision::Return(result),envelope_for_claim.key));
+            }
+            envelope_for_claim.key=pending_key(tx,Direction::Outgoing,&server_for_claim,&envelope_for_claim)?;
             let saved=outbox(tx,&envelope_for_claim.key,now)?;
-            let decision=decide_delivery(saved.as_ref(),&envelope_for_claim.fingerprint,Some(&server_for_claim),true,&envelope_for_claim.action,now)?;
+            let decision=decide_delivery(saved.as_ref(),&envelope_for_claim.fingerprint,Some(&server_for_claim),true,envelope_for_claim.action.as_str(),now)?;
             if matches!(decision,DeliveryDecision::Execute) {
-                check_project_reservation(tx,&envelope_for_claim.action,&envelope_for_claim.value()["payload"],saved.is_some())?;
+                check_project_reservation(tx,envelope_for_claim.action.as_str(),&envelope_for_claim.value()["payload"])?;
                 // An in-flight claim is not due: the pump replays a running peer
                 // operation only after its exchange deadline has passed.
-                tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,fingerprint,attempts,next_at) VALUES(?1,?2,?3,'running',?4,?5,0,?6) ON CONFLICT(id) DO UPDATE SET state='running',next_at=?6",params![envelope_for_claim.key,server_for_claim,envelope_for_claim.body,now,envelope_for_claim.fingerprint,in_flight_until])?;
+                if saved.is_some() {
+                    tx.execute("UPDATE runtime_server_outbox SET state=?1,next_at=?2 WHERE id=?3",params![ServerDeliveryState::Running,in_flight_until,envelope_for_claim.key])?;
+                } else {
+                    let admitted = admit_delivery(tx,Direction::Outgoing,&server_for_claim,&envelope_for_claim,now)?;
+                    let admission = serde_json::to_string(&admitted).map_err(|_| refused(503,"invalid_record","Delivery admission could not be saved"))?;
+                    tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,fingerprint,attempts,next_at,admission) VALUES(?1,?2,?3,?7,?4,?5,0,?6,?8)",params![envelope_for_claim.key,server_for_claim,envelope_for_claim.body,now,envelope_for_claim.fingerprint,in_flight_until,ServerDeliveryState::Running,admission])?;
+                }
             }
-            Ok::<_,AccessError>(decision)
+            Ok::<_,AccessError>((decision,envelope_for_claim.key))
         }).await?;
+        envelope.key = key;
         if let DeliveryDecision::Return(result) = decision {
             return Ok(result);
         }
@@ -2613,21 +2933,22 @@ impl OrchestrationDriver {
             self.transport
                 .exchange(server, &envelope.value(), timeout)
                 .await
-                .and_then(|value| ExchangeOutcome::from_value(&value, &envelope.key, now))
+                .and_then(|value| ExchangeOutcome::from_value(&value, &envelope.root, now))
         };
         let result = match exchange {
             Ok(value) => value,
             Err(_) => ExchangeOutcome::Unknown,
         };
-        if envelope.action == EXEC_ACTION {
+        if envelope.action.as_str() == EXEC_ACTION {
             return self
                 .finish_exec(server, &envelope, &local_server, result, now)
                 .await;
         }
         self.finish(
-            "outbox",
+            Direction::Outgoing,
             &envelope.key,
-            &envelope.action,
+            &envelope.root,
+            envelope.action,
             &envelope.fingerprint,
             Some(server),
             &result,
@@ -2644,23 +2965,46 @@ impl OrchestrationDriver {
     async fn saved_exec_receipt(
         &self,
         server: &str,
+        is_local: bool,
         envelope: &Envelope,
         now: i64,
     ) -> Result<Option<SavedExecReceipt>, AccessError> {
-        let key = envelope.key.clone();
-        type Row = (String, String, Option<String>, String, Option<String>);
-        let row: Option<Row> = self.store
-        .read_async("runtime-services/multi_server_orchestration", move |tx| {
-                tx.query_row(
-                    "SELECT server,body,fingerprint,state,result FROM runtime_server_outbox WHERE id=?1",
-                    [key],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-                )
-                .optional()
-                .map_err(StoreError::from)
+        let envelope_for_read = envelope.clone();
+        let server_for_read = server.to_owned();
+        type Row = (String, String, Option<String>, String);
+        let (replayed, row): (Option<ExchangeOutcome>, Option<Row>) = self
+            .store
+            .transaction_with(move |tx| {
+                if !is_local {
+                    require_paired(tx, &server_for_read)?;
+                }
+                let replayed = replay_delivery(
+                    tx,
+                    Direction::Outgoing,
+                    &server_for_read,
+                    &envelope_for_read,
+                    now,
+                )?;
+                let key = pending_key(
+                    tx,
+                    Direction::Outgoing,
+                    &server_for_read,
+                    &envelope_for_read,
+                )?;
+                let row = tx
+                    .query_row(
+                        "SELECT server,body,fingerprint,id FROM runtime_server_outbox WHERE id=?1",
+                        [key],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .optional()?;
+                Ok::<_, AccessError>((replayed, row))
             })
-        .await?;
-        let Some((saved_server, body, fingerprint, state, result)) = row else {
+            .await?;
+        if let Some(result) = replayed {
+            return Ok(Some(SavedExecReceipt::Settled(result)));
+        }
+        let Some((saved_server, body, fingerprint, key)) = row else {
             return Ok(None);
         };
         let saved: Value = serde_json::from_str(&body).map_err(|_| {
@@ -2670,7 +3014,7 @@ impl OrchestrationDriver {
                 "Stored cross-server envelope is invalid",
             )
         })?;
-        let Some(probe) = exec_receipt_probe(&envelope.key, &saved["payload"]) else {
+        let Some(probe) = exec_receipt_probe(&envelope.root, &saved["payload"]) else {
             return Ok(None);
         };
         if saved_server != server
@@ -2682,14 +3026,14 @@ impl OrchestrationDriver {
                 "This request id has different content",
             ));
         }
-        if state != "complete" {
-            return Ok(Some(SavedExecReceipt::Pending(probe)));
-        }
-        let receipt = result
-            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-            .ok_or_else(|| refused(503, "invalid_record", "Completed delivery has no receipt"))?;
-        ExchangeOutcome::from_value(&receipt, &envelope.key, now)
-            .map(|result| Some(SavedExecReceipt::Settled(result)))
+        let signature = fingerprint.ok_or_else(|| {
+            refused(
+                503,
+                "invalid_record",
+                "Stored command fingerprint is missing",
+            )
+        })?;
+        Ok(Some(SavedExecReceipt::Pending(probe, key, signature)))
     }
 
     /// Send the effect-free `exec_receipt` probe for one `exec` row in receipt
@@ -2699,7 +3043,7 @@ impl OrchestrationDriver {
         &self,
         server: &str,
         local_server: Option<&str>,
-        key: &str,
+        envelope: &Envelope,
         probe: &Value,
         timeout: std::time::Duration,
         now: i64,
@@ -2715,33 +3059,33 @@ impl OrchestrationDriver {
         };
         let result = match reply {
             Ok(ExchangeOutcome::Applied(receipt)) => {
-                ExchangeOutcome::from_value(&receipt, key, now).unwrap_or(ExchangeOutcome::Unknown)
+                ExchangeOutcome::from_value(&receipt, &envelope.root, now)
+                    .unwrap_or(ExchangeOutcome::Unknown)
             }
             _ => ExchangeOutcome::Unknown,
         };
-        let key = key.to_owned();
+        let envelope = envelope.clone();
+        let key = envelope.key.clone();
+        let root = envelope.root.clone();
+        let server = server.to_owned();
         self.store
             .transaction_with(move |tx| {
-                let row: Option<(String, Option<String>, i64)> = tx
+                if let Some(saved) =
+                    replay_delivery(tx, Direction::Outgoing, &server, &envelope, now)?
+                {
+                    return Ok(saved);
+                }
+                let row: Option<(ServerDeliveryState, i64)> = tx
                     .query_row(
-                        "SELECT state,result,attempts FROM runtime_server_outbox WHERE id=?1",
+                        "SELECT state,attempts FROM runtime_server_outbox WHERE id=?1",
                         [&key],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                        |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .optional()?;
-                let (state, saved, attempts) = row.ok_or_else(|| {
+                let (state, attempts) = row.ok_or_else(|| {
                     refused(409, "receipt_missing", "The delivery claim is missing")
                 })?;
-                if state == "complete" {
-                    // A concurrent probe already settled this command.
-                    let saved = saved
-                        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-                        .ok_or_else(|| {
-                            refused(503, "invalid_record", "Completed delivery has no receipt")
-                        })?;
-                    return ExchangeOutcome::from_value(&saved, &key, now);
-                }
-                settle_exec_row(tx, &key, &state, attempts, &result, now)?;
+                settle_exec_row(tx, &key, &root, state, attempts, &result, now)?;
                 Ok(result)
             })
             .await
@@ -2760,6 +3104,7 @@ impl OrchestrationDriver {
     ) -> Result<ExchangeOutcome, AccessError> {
         let body = exec_receipt_body(envelope, local_server)?;
         let key = envelope.key.clone();
+        let root = envelope.root.clone();
         let fingerprint = envelope.fingerprint.clone();
         let server = server.to_owned();
         self.store
@@ -2769,7 +3114,7 @@ impl OrchestrationDriver {
                 })?;
                 if snapshot.signature != fingerprint
                     || snapshot.server.as_deref() != Some(server.as_str())
-                    || snapshot.state != "running"
+                    || snapshot.state != ServerDeliveryState::Running
                 {
                     return Err(refused(
                         409,
@@ -2787,7 +3132,7 @@ impl OrchestrationDriver {
                     |row| row.get(0),
                 )?;
                 // Python keeps an unsettled command row queued for the probe.
-                settle_exec_row(tx, &key, "queued", attempts, &result, now)?;
+                settle_exec_row(tx, &key,&root, ServerDeliveryState::Queued, attempts, &result, now)?;
                 Ok(result)
             })
             .await
@@ -2813,94 +3158,93 @@ impl OrchestrationDriver {
         })??
         .unwrap_or_default();
         let is_local = !local_server.is_empty() && principal == local_server;
-        let envelope = Envelope::from_value(value)?;
-        if envelope.action == EXEC_RECEIPT_ACTION {
+        let envelope = Envelope::from_value(value)?.scoped(Direction::Incoming, principal);
+        if envelope.action.as_str() == EXEC_RECEIPT_ACTION {
             return self
                 .receive_exec_receipt(principal, is_local, envelope, now)
                 .await;
         }
-        if !self.effects.supports(&envelope.action) {
+        if !self.effects.supports(envelope.action.as_str()) {
             return Err(refused(
                 501,
                 "orchestration_effect",
                 "Not implemented: requires multi-server-runtime/orchestration-effects",
             ));
         }
+
         let signature = envelope.incoming_signature(principal)?;
         let envelope_for_claim = envelope.clone();
         let signature_for_claim = signature.clone();
         let principal_for_claim = principal.to_owned();
-        let (decision, replaying_claim) = self.store.transaction_with(move |tx| {
+        let (decision, replaying_claim, claim_key) = self.store.transaction_with(move |tx| {
             if !is_local {
                 require_paired(tx, &principal_for_claim)?;
             }
-            if retired(tx, &envelope_for_claim.key, "in", &signature_for_claim, None)? {
-                return Ok((DeliveryDecision::Return(ExchangeOutcome::Unknown), false));
+            let key = pending_key(tx,Direction::Incoming,&principal_for_claim,&envelope_for_claim)?;
+            if let Some(result) = replay_delivery(tx,Direction::Incoming,&principal_for_claim,&envelope_for_claim,now)? {
+                return Ok((DeliveryDecision::Return(result), false, key));
             }
-            let saved = inbox(tx, &envelope_for_claim.key, now)?;
+            let saved = inbox(tx, &key, now)?;
             let replaying_claim = saved.is_some();
             let decision = decide_delivery(
                 saved.as_ref(),
                 &signature_for_claim,
                 None,
                 false,
-                &envelope_for_claim.action,
+                envelope_for_claim.action.as_str(),
                 now,
             )?;
             if matches!(decision, DeliveryDecision::Return(ExchangeOutcome::Unknown))
                 && saved.as_ref().is_some_and(|snapshot| {
-                    snapshot.state == "running"
+                    snapshot.state == ServerDeliveryState::Running
                         && snapshot.signature == signature_for_claim
                         && snapshot.server.is_none()
                 })
                 && let Some(receipt) = durable_anchor_input_receipt(tx, &principal_for_claim, &envelope_for_claim)?
             {
                 let result = ExchangeOutcome::Applied(receipt);
-                let stored_result = result.to_value(&envelope_for_claim.key).to_string();
+                let stored_result = result.to_value(&envelope_for_claim.root).to_string();
                 if stored_result.len() > MAX_RESPONSE_BYTES {
                     return Ok((
                         DeliveryDecision::Return(ExchangeOutcome::Unknown),
                         replaying_claim,
+                        key,
                     ));
                 }
-                let updated = tx.execute(
-                    "UPDATE runtime_server_inbox SET state='complete',result=?1,completed_at=?2 WHERE id=?3 AND signature=?4 AND state='running' AND principal=?5",
-                    params![stored_result, now, envelope_for_claim.key, signature_for_claim, principal_for_claim],
-                )?;
-                if updated != 1 {
-                    return Err(refused(
-                        409,
-                        "stale_receipt",
-                        "The delivery receipt does not match its claim",
-                    ));
-                }
-                return Ok((DeliveryDecision::Return(result), replaying_claim));
+                settle_delivery(tx,Direction::Incoming,&key,&envelope_for_claim.root,&signature_for_claim,&result)?;
+                return Ok((DeliveryDecision::Return(result), replaying_claim,key));
             }
             if matches!(decision, DeliveryDecision::Execute) {
                 if saved.is_some() {
                     tx.execute(
-                        "UPDATE runtime_server_inbox SET state='running' WHERE id=?1 AND (state IN ('waiting','running') OR (state='complete' AND ?2))",
-                        params![&envelope_for_claim.key, REREAD_ACTIONS.contains(&envelope_for_claim.action.as_str())],
+                        "UPDATE runtime_server_inbox SET state=?2 WHERE id=?1 AND state IN (?3,?2)",
+                        params![&key, ServerDeliveryState::Running,ServerDeliveryState::Waiting],
                     )?;
                 } else {
+                    let admitted = admit_delivery(tx,Direction::Incoming,&principal_for_claim,&envelope_for_claim,now)?;
+                    let admission = serde_json::to_string(&admitted).map_err(|_| refused(503,"invalid_record","Delivery admission could not be saved"))?;
                     tx.execute(
-                        "INSERT INTO runtime_server_inbox(id,signature,state,result,created_at,principal,actor) VALUES(?1,?2,'running',NULL,?3,?4,?5)",
-                        params![envelope_for_claim.key, signature_for_claim, now, principal_for_claim, envelope_for_claim.payload.get("actor").and_then(Value::as_str)],
+                        "INSERT INTO runtime_server_inbox(id,signature,state,result,created_at,principal,actor,admission) VALUES(?1,?2,?7,NULL,?3,?4,?5,?6)",
+                        params![key, signature_for_claim, now, principal_for_claim, envelope_for_claim.payload.get("actor").and_then(Value::as_str),admission,ServerDeliveryState::Running],
                     )?;
                 }
             }
-            Ok::<_, AccessError>((decision, replaying_claim))
+            Ok::<_, AccessError>((decision, replaying_claim,key))
         }).await?;
         if let DeliveryDecision::Return(result) = decision {
             return Ok(result);
         }
         let mut result = match self.effects.execute(principal, &envelope.value()).await {
             Ok(result) => result,
-            Err(error) if envelope.action == "browser_callback" && error.status() < 500 => {
+            Err(error)
+                if envelope.action.as_str() == "browser_callback" && error.status() < 500 =>
+            {
                 ExchangeOutcome::NotApplied(error.to_string())
             }
             Err(error)
-                if envelope.action == "input" && !replaying_claim && error.status() < 500 =>
+                if envelope.action.as_str() == "input"
+                    && !replaying_claim
+                    && error.status() < 500 =>
             {
                 // Input refusals are validated before the durable write; keep
                 // fresh permanent 4xx failures from retrying forever as unknown.
@@ -2908,7 +3252,7 @@ impl OrchestrationDriver {
             }
             Err(_) => ExchangeOutcome::Unknown,
         };
-        if envelope.action == "input"
+        if envelope.action.as_str() == "input"
             && replaying_claim
             && matches!(result, ExchangeOutcome::NotApplied(_))
         {
@@ -2917,11 +3261,12 @@ impl OrchestrationDriver {
             // negative receipt after response loss.
             result = ExchangeOutcome::Unknown;
         }
-        if result.to_value(&envelope.key).to_string().len() > MAX_RESPONSE_BYTES {
+        if result.to_value(&envelope.root).to_string().len() > MAX_RESPONSE_BYTES {
             self.finish(
-                "inbox",
-                &envelope.key,
-                &envelope.action,
+                Direction::Incoming,
+                &claim_key,
+                &envelope.root,
+                envelope.action,
                 &signature,
                 None,
                 &ExchangeOutcome::Unknown,
@@ -2931,9 +3276,10 @@ impl OrchestrationDriver {
             return Ok(ExchangeOutcome::Unknown);
         }
         self.finish(
-            "inbox",
-            &envelope.key,
-            &envelope.action,
+            Direction::Incoming,
+            &claim_key,
+            &envelope.root,
+            envelope.action,
             &signature,
             None,
             &result,
@@ -2953,50 +3299,20 @@ impl OrchestrationDriver {
         envelope: Envelope,
         now: i64,
     ) -> Result<ExchangeOutcome, AccessError> {
-        let signature = envelope.incoming_signature(principal)?;
         let principal = principal.to_owned();
         self.store
             .transaction_with(move |tx| {
                 if !is_local {
                     require_paired(tx, &principal)?;
                 }
-                if retired(tx, &envelope.key, "in", &signature, None)? {
-                    return Ok(ExchangeOutcome::Unknown);
-                }
-                let saved: Option<String> = tx
-                    .query_row(
-                        "SELECT signature FROM runtime_server_inbox WHERE id=?1",
-                        [&envelope.key],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if saved.is_some_and(|saved| saved != signature) {
-                    return Err(refused(
-                        409,
-                        "request_conflict",
-                        "This request id has different content",
-                    ));
-                }
-                tx.execute(
-                    "INSERT OR IGNORE INTO runtime_server_inbox(id,signature,state,result,created_at,principal,actor) VALUES(?1,?2,'running',NULL,?3,?4,?5)",
-                    params![envelope.key, signature, now, principal, envelope.payload.get("actor").and_then(Value::as_str)],
-                )?;
                 let Some(answer) = exec_receipt_answer(tx, &principal, &envelope.payload, now)?
                 else {
                     return Ok(ExchangeOutcome::Unknown);
                 };
-                let result = match answer {
+                Ok(match answer {
                     Ok(receipt) => ExchangeOutcome::Applied(receipt),
                     Err(refusal) => ExchangeOutcome::NotApplied(refusal.to_owned()),
-                };
-                if result.to_value(&envelope.key).to_string().len() > MAX_RESPONSE_BYTES {
-                    return Ok(ExchangeOutcome::Unknown);
-                }
-                tx.execute(
-                    "UPDATE runtime_server_inbox SET state='complete',result=?1,completed_at=?2 WHERE id=?3",
-                    params![compact_exec_receipt(&result, &envelope.key).to_string(), now, envelope.key],
-                )?;
-                Ok(result)
+                })
             })
             .await
     }
@@ -3019,7 +3335,7 @@ impl OrchestrationDriver {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
+                        row.get::<_, ServerDeliveryState>(2)?,
                     ))
                 })?;
                 rows.collect::<Result<Vec<_>, _>>()
@@ -3039,26 +3355,21 @@ impl OrchestrationDriver {
             // A crash after claiming leaves a row running. Stable-identity
             // peer operations can safely replay; provider commands remain
             // one-shot and deliberately stay unknown after that crash point.
-            if state == "running" && !outgoing_retry(&envelope.action) {
+            if state == ServerDeliveryState::Running && !outgoing_retry(envelope.action) {
                 continue;
             }
             // One row that cannot be delivered must not hold back the rows after it
             // (Python delivers each queued row on its own).
             match self
-                .exchange(
-                    &server,
-                    &envelope.action,
-                    &envelope.payload,
-                    &envelope.key,
-                    now,
-                )
+                .exchange_operation(&server, &envelope.value(), now)
                 .await
             {
                 Ok(_) => count += 1,
                 Err(error) => {
                     eprintln!(
                         "orchestration delivery of {} ({}) failed: {error}",
-                        envelope.key, envelope.action
+                        envelope.key,
+                        envelope.action.as_str()
                     );
                 }
             }
@@ -3080,9 +3391,10 @@ impl OrchestrationDriver {
     #[allow(clippy::too_many_arguments)]
     async fn finish(
         &self,
-        table: &str,
+        direction: Direction,
         key: &str,
-        action: &str,
+        root: &str,
+        action: ServerOperationKind,
         signature: &str,
         server: Option<&str>,
         result: &ExchangeOutcome,
@@ -3092,7 +3404,7 @@ impl OrchestrationDriver {
             result,
             ExchangeOutcome::Unknown | ExchangeOutcome::PreEffectWaiting
         ) {
-            if outgoing_retry(action) && table == "outbox" {
+            if outgoing_retry(action) && direction == Direction::Outgoing {
                 let key_for_read = key.to_owned();
                 let attempts = self
                     .store
@@ -3114,8 +3426,8 @@ impl OrchestrationDriver {
                     Ok::<_,AccessError>(())
                 }).await?;
             } else if *result == ExchangeOutcome::PreEffectWaiting
-                && action == "input"
-                && table == "inbox"
+                && action == ServerOperationKind::Input
+                && direction == Direction::Incoming
             {
                 let key_for_update = key.to_owned();
                 self.store.transaction_with(move |tx| {
@@ -3125,7 +3437,10 @@ impl OrchestrationDriver {
             // A generic unknown input can follow a committed message/event.
             // Keep its claim running; only the typed pre-effect result above
             // proves that retrying the input is safe.
-            } else if peer_replay_safe(action) && action != "input" && table == "inbox" {
+            } else if peer_replay_safe(action)
+                && action != ServerOperationKind::Input
+                && direction == Direction::Incoming
+            {
                 let key_for_update = key.to_owned();
                 self.store.transaction_with(move |tx| {
                     tx.execute("UPDATE runtime_server_inbox SET state='waiting' WHERE id=?1 AND state='running'", [key_for_update])?;
@@ -3134,19 +3449,35 @@ impl OrchestrationDriver {
             }
             return Ok(());
         }
-        let table = table.to_owned();
         let key = key.to_owned();
-        let action = action.to_owned();
+        let root = root.to_owned();
         let signature = signature.to_owned();
         let server = server.map(str::to_owned);
         let result = result.clone();
-        self.store.transaction_with(move |tx| {
-            let saved=if table=="outbox"{outbox(tx,&key,now)?}else{inbox(tx,&key,now)?};
-            let snapshot=saved.ok_or_else(||refused(409,"receipt_missing","The delivery claim is missing"))?;
-            if snapshot.signature!=signature || snapshot.server.as_deref()!=server.as_deref() || snapshot.state!="running" { return Err(refused(409,"stale_receipt","The delivery receipt does not match its claim")); }
-            tx.execute(&format!("UPDATE runtime_server_{table} SET state='complete',result=?1,completed_at=?2 WHERE id=?3"),params![compact_receipt(&action,&result,&key).to_string(),now,key])?;
-            Ok(())
-        }).await
+        self.store
+            .transaction_with(move |tx| {
+                let saved = if direction == Direction::Outgoing {
+                    outbox(tx, &key, now)?
+                } else {
+                    inbox(tx, &key, now)?
+                };
+                let snapshot = saved.ok_or_else(|| {
+                    refused(409, "receipt_missing", "The delivery claim is missing")
+                })?;
+                if snapshot.signature != signature
+                    || snapshot.server.as_deref() != server.as_deref()
+                    || snapshot.state != ServerDeliveryState::Running
+                {
+                    return Err(refused(
+                        409,
+                        "stale_receipt",
+                        "The delivery receipt does not match its claim",
+                    ));
+                }
+                settle_delivery(tx, direction, &key, &root, &signature, &result)?;
+                Ok(())
+            })
+            .await
     }
 }
 fn require_paired(tx: &Transaction<'_>, id: &str) -> Result<(), AccessError> {
@@ -3187,33 +3518,6 @@ fn inbox(
     raw.map(|s| DeliverySnapshot::from_record("runtime_server_inbox", key, &s, now))
         .transpose()
 }
-fn retired(
-    tx: &Transaction<'_>,
-    key: &str,
-    direction: &str,
-    signature: &str,
-    server: Option<&str>,
-) -> Result<bool, AccessError> {
-    let row = tx
-        .query_row(
-            "SELECT signature,server FROM runtime_server_retired WHERE id=?1 AND direction=?2",
-            params![key, direction],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
-        )
-        .optional()?;
-    if let Some((stored_signature, stored_server)) = row {
-        if stored_signature != signature || stored_server.as_deref() != server {
-            return Err(refused(
-                409,
-                "request_conflict",
-                "This request id has different content",
-            ));
-        }
-        return Ok(true);
-    }
-    Ok(false)
-}
-
 fn outbox_next_due_at(
     connection: &rusqlite::Connection,
 ) -> studio_runtime_store::StoreResult<Option<i64>> {
@@ -3239,6 +3543,154 @@ fn delivery_moment(payload: &Value) -> Result<DeliveryMoment, AccessError> {
 
 #[cfg(test)]
 mod tests {
+    struct CountEffects(std::sync::atomic::AtomicUsize);
+    impl super::OrchestrationEffects for CountEffects {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+        fn execute<'a>(
+            &'a self,
+            principal: &'a str,
+            envelope: &'a serde_json::Value,
+        ) -> futures_util::future::BoxFuture<
+            'a,
+            Result<super::ExchangeOutcome, crate::multi_server_auth::AccessError>,
+        > {
+            Box::pin(async move {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if envelope["payload"]["unknown"] == true {
+                    return Ok(super::ExchangeOutcome::Unknown);
+                }
+                Ok(super::ExchangeOutcome::Applied(
+                    serde_json::json!({"owner":principal,"root":envelope["requestId"],"operation":envelope["operation"]}),
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn same_request_from_two_peers_replays_within_each_principal() {
+        let directory = tempfile::tempdir().expect("state directory");
+        let store = std::sync::Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("store"),
+        );
+        store.transaction(|tx| {
+            for peer in ["peer-a", "peer-b"] {
+                let record = serde_json::json!({"id":peer,"clientId":peer,"kind":"server","label":peer,"created":1,"publicKey":"key","origin":"https://peer.invalid","status":"paired"});
+                tx.execute("INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)", rusqlite::params![peer,record.to_string()])?;
+            }
+            Ok(())
+        }).await.expect("paired peers");
+        let effects = std::sync::Arc::new(CountEffects(std::sync::atomic::AtomicUsize::new(0)));
+        let driver = super::OrchestrationDriver::new(
+            store.clone(),
+            std::sync::Arc::new(super::HttpsPairedTransport::new(store.clone())),
+            effects.clone(),
+        );
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let request =
+            serde_json::json!({"requestId":root,"operation":[],"action":"projects","payload":{}});
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs() as i64;
+        for peer in ["peer-a", "peer-b"] {
+            assert_eq!(
+                driver
+                    .receive(peer, &request, now)
+                    .await
+                    .expect("scoped reply"),
+                super::ExchangeOutcome::Applied(
+                    serde_json::json!({"owner":peer,"root":root,"operation":[]})
+                )
+            );
+        }
+        assert_eq!(effects.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+        drop(driver);
+        drop(store);
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("restart"),
+        );
+        let driver = super::OrchestrationDriver::new(
+            store.clone(),
+            Arc::new(super::HttpsPairedTransport::new(store.clone())),
+            effects.clone(),
+        );
+        for peer in ["peer-a", "peer-b"] {
+            assert_eq!(
+                driver
+                    .receive(peer, &request, now)
+                    .await
+                    .expect("original reply after restart"),
+                super::ExchangeOutcome::Applied(
+                    serde_json::json!({"owner":peer,"root":root,"operation":[]})
+                )
+            );
+        }
+        assert_eq!(effects.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+        for offset in ["0", "0", "4096", "4096"] {
+            let chunk = serde_json::json!({"requestId":root,"operation":[offset],"action":"chunk","payload":{"offset":offset}});
+            assert_eq!(
+                driver
+                    .receive("peer-a", &chunk, now)
+                    .await
+                    .expect("chunk reply"),
+                super::ExchangeOutcome::Applied(
+                    serde_json::json!({"owner":"peer-a","root":root,"operation":[offset]})
+                )
+            );
+        }
+        assert_eq!(
+            effects.0.load(std::sync::atomic::Ordering::SeqCst),
+            4,
+            "same-offset chunk retries replay; a new offset executes once"
+        );
+        let conflict = serde_json::json!({"requestId":root,"operation":["0"],"action":"chunk","payload":{"offset":"different"}});
+        assert_eq!(
+            driver
+                .receive("peer-a", &conflict, now)
+                .await
+                .expect_err("content conflicts")
+                .status(),
+            409
+        );
+        let unknown_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let unknown = serde_json::json!({"requestId":unknown_root,"operation":[],"action":"input","payload":{"unknown":true}});
+        for _ in 0..2 {
+            assert_eq!(
+                driver
+                    .receive("peer-a", &unknown, now)
+                    .await
+                    .expect("unknown held"),
+                super::ExchangeOutcome::Unknown
+            );
+        }
+        assert_eq!(effects.0.load(std::sync::atomic::Ordering::SeqCst), 5);
+        let pending = store
+            .test_reader()
+            .expect("reader")
+            .query_row("SELECT count(*) FROM runtime_server_inbox", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("pending rows");
+        assert_eq!(pending, 1, "only unresolved obligations remain");
+        let root_for_expiry = root.clone();
+        store.transaction(move|tx|{tx.execute("UPDATE request_results SET created=?1 WHERE json_extract(result,'$.reply.response.requestId')=?2",rusqlite::params![chrono::Utc::now().timestamp_millis()-studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS-1,root_for_expiry])?;Ok(())}).await.expect("expired cache fixture");
+        assert_eq!(
+            driver
+                .receive("peer-a", &request, now)
+                .await
+                .expect_err("expired reply never resends")
+                .status(),
+            410
+        );
+        assert_eq!(effects.0.load(std::sync::atomic::Ordering::SeqCst), 5);
+    }
+
     use super::{
         DeliveryDecision, DeliverySnapshot, ExchangeOutcome, HttpsPairedTransport, decide_delivery,
         outbox_next_due_at, peer_retry_delay,
@@ -3249,10 +3701,9 @@ mod tests {
 
     fn saved(state: &str, next_at: f64) -> DeliverySnapshot {
         DeliverySnapshot {
-            state: state.to_owned(),
+            state: serde_json::from_value(serde_json::json!(state)).expect("state"),
             signature: "same-content".to_owned(),
             server: Some("peer".to_owned()),
-            result: None,
             next_at,
         }
     }

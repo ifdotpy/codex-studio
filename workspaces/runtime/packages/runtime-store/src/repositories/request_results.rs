@@ -91,6 +91,14 @@ pub enum Admission {
 
 pub struct RequestResults;
 impl RequestResults {
+    /// Completion-only lookup using the persisted owner token. Age does not
+    /// invalidate already admitted work; a miss grants no new effect/admission.
+    pub fn admitted_result(
+        tx: &Connection,
+        admitted: &AdmittedRequest,
+    ) -> Result<Option<StoredResult>> {
+        Self::stored(tx, admitted.id(), admitted.signature())
+    }
     pub fn expired_before_ms(tx: &Connection) -> Result<i64> {
         Ok(tx.query_row("SELECT coalesce(json_extract(record,'$.expired_before_ms'),0) FROM runtime_orchestration_settings WHERE id='global'", [], |row| row.get(0)).optional()?.unwrap_or(0))
     }
@@ -296,6 +304,29 @@ mod tests {
             },
         )
         .expect("late completion remains allowed");
+        assert!(
+            RequestResults::admitted_result(&tx, &final_result)
+                .expect("owner completion sees retained result")
+                .is_some()
+        );
+        assert!(matches!(
+            RequestResults::replay(
+                &tx,
+                final_result.id(),
+                final_result.signature(),
+                issued + REQUEST_RESULT_TTL_MS + 1
+            ),
+            Err(RequestResultError::Identity(
+                RequestIdentityError::Expired { .. }
+            ))
+        ));
+        RequestResults::gc(&tx, issued + REQUEST_RESULT_TTL_MS + 1)
+            .expect("normal expired cache GC");
+        assert!(
+            RequestResults::admitted_result(&tx, &final_result)
+                .expect("no resurrection after GC")
+                .is_none()
+        );
         let migrated = crate::receipt_migration_contract::admitted_owner_token(
             "opaque migrated pk",
             "original signature",

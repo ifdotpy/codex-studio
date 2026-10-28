@@ -538,20 +538,25 @@ pub fn respond_to_complaint(
         signature,
     } = input;
     let receipt_id = format!("user:{request_id}");
-    if let Some(saved) = event_write::read_receipt(
+    let now_ms = (unix_time()? * 1000.0) as i64;
+    let admitted = match event_write::begin_request::<studio_runtime_store::ComplaintRecord>(
         transaction,
-        Some(&receipt_id),
+        event_write::RequestKey::new("complaint_response", &[complaint_id, USER], request_id)
+            .raw(&receipt_id),
         signature,
-        "runtime_complaints",
-        complaint_id,
-        &validate,
-    )? {
-        return Ok(ComplaintWriteResult {
-            record: saved,
-            event_inserted: false,
-            wake_event_worker: false,
-        });
-    }
+        now_ms,
+    )
+    .map_err(EventWriteError::from)?
+    {
+        event_write::CallerAdmission::Replay(reply) => {
+            return Ok(ComplaintWriteResult {
+                record: reply.into_value(),
+                event_inserted: false,
+                wake_event_worker: false,
+            });
+        }
+        event_write::CallerAdmission::Fresh(admitted) => admitted,
+    };
     let raw = QuestionsWriteRepository::complaint(transaction, complaint_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown complaint"))?;
     let mut complaint = parse_complaint(&raw, complaint_id, &validate)?;
@@ -654,7 +659,13 @@ pub fn respond_to_complaint(
     let wake_event_worker = event_inserted
         && event_write::truthy(reporter.extra.get("autoWake"))
         && !event_write::recovery_pending(&reporter);
-    event_write::save_receipt(transaction, Some(&receipt_id), signature, &complaint)?;
+    event_write::settle_request(
+        transaction,
+        &admitted,
+        Some(USER),
+        &studio_runtime_store::ComplaintRecord::from_value(complaint.clone())?,
+    )
+    .map_err(EventWriteError::from)?;
     Ok(ComplaintWriteResult {
         record: complaint,
         event_inserted,

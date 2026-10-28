@@ -13,9 +13,13 @@ use studio_runtime_store::path_identity::CanonicalPath;
 
 use base64::Engine;
 use futures_util::future::BoxFuture;
-use rusqlite::{OptionalExtension, Transaction};
+use rusqlite::{OptionalExtension, Transaction, params};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
+use studio_runtime_schema::persistence::{ServerDeliveryState, ServerFetchState};
+use studio_runtime_store::multi_server_delivery::{SavedRemoteReply, remote_operation_key};
+use studio_runtime_store::request_results::{AdmittedRequest, RequestResultError};
 use studio_runtime_store::{
     AgentId, AgentRepository, ProjectsRepository, RuntimeStore, StoreError,
 };
@@ -77,6 +81,33 @@ pub(crate) struct ServerTools {
 }
 
 impl ServerTools {
+    async fn deliver_operation(
+        &self,
+        server: &str,
+        operation: &[String],
+        action: &str,
+        payload: &Value,
+        key: &str,
+    ) -> Result<Value, Step> {
+        let now = crate::event_write::unix_time()
+            .map_err(|_| Step::Refused("The system clock is unavailable".into()))?
+            as i64;
+        self.driver
+            .exchange_operation(
+                server,
+                &json!({"requestId":key,"operation":operation,"action":action,"payload":payload}),
+                now,
+            )
+            .await
+            .map(|outcome| receipt(&outcome, key))
+            .map_err(|error| match error {
+                AccessError::Store(error) => Step::Store(error),
+                AccessError::Sqlite(error) => Step::Store(error.into()),
+                other @ AccessError::Refused { .. } | other @ AccessError::Stored { .. } => {
+                    Step::Refused(other.to_string())
+                }
+            })
+    }
     pub(crate) fn new(
         store: Arc<RuntimeStore>,
         driver: Arc<OrchestrationDriver>,
@@ -92,6 +123,7 @@ impl ServerTools {
 
 /// A step result. A refusal proves that no envelope was queued; a failure
 /// after a queued envelope or a local Git effect leaves the outcome unknown.
+#[derive(Debug)]
 enum Step {
     Refused(String),
     Failed(String),
@@ -119,6 +151,66 @@ impl From<crate::project_locations::LocationError> for Step {
             }
         }
     }
+}
+
+impl From<RequestResultError> for Step {
+    fn from(error: RequestResultError) -> Self {
+        Self::Store(error.into())
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FetchReply {
+    request_id: String,
+    server: String,
+    branch: String,
+    commit: String,
+    bytes: u64,
+    destination: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct ExportRequest {
+    cwd: Option<String>,
+    branch: String,
+    known: Vec<String>,
+}
+
+enum FetchPayload {
+    Preparing(ExportRequest),
+    Fetching(ExportRequest),
+}
+impl FetchPayload {
+    fn decode(state: ServerFetchState, raw: Option<&str>) -> Result<Option<Self>, Step> {
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        let request: ExportRequest = serde_json::from_str(raw).map_err(StoreError::from)?;
+        match state {
+            ServerFetchState::Preparing => Ok(Some(Self::Preparing(request))),
+            ServerFetchState::Fetching => Ok(Some(Self::Fetching(request))),
+            ServerFetchState::Complete => Err(Step::Refused(
+                "A completed fetch must have a saved request result".into(),
+            )),
+        }
+    }
+    fn export(&self) -> &ExportRequest {
+        match self {
+            Self::Preparing(request) | Self::Fetching(request) => request,
+        }
+    }
+}
+
+fn task_admission(
+    tx: &studio_runtime_store::Connection,
+    key: &str,
+    actor: &str,
+) -> Result<AdmittedRequest, Step> {
+    let task = crate::tool_requests::resolve(tx, actor, key)
+        .map_err(|error| Step::Refused(error.to_string()))?
+        .ok_or_else(|| Step::Refused("The admitted tool request is unavailable".into()))?;
+    serde_json::from_value(task["admitted"].clone()).map_err(|error| Step::Store(error.into()))
 }
 
 fn refuse<T>(message: impl Into<String>) -> Result<T, Step> {
@@ -154,11 +246,6 @@ fn settle(step: Result<Value, Step>) -> Result<DispatchedOperation, Error> {
 
 fn io(error: std::io::Error) -> Step {
     Step::Failed(error.to_string())
-}
-
-/// Python `identity`.
-fn identity(parts: &[&str]) -> String {
-    crate::projects::cross_server_identity(parts)
 }
 
 /// Python `text_field`: a stripped text of 1 to `maximum` characters.
@@ -243,26 +330,7 @@ impl ServerTools {
                 }
                 refuse(message)
             }
-            Err(_) => {
-                // The claim may have committed. Its saved receipt, when there
-                // is one, is the outcome; otherwise the outcome stays unknown.
-                let key_for_read = key.to_owned();
-                let saved = self
-                    .read(move |tx| {
-                        Ok(tx
-                            .query_row(
-                                "SELECT result FROM runtime_server_outbox WHERE id=?1 AND state='complete'",
-                                [key_for_read],
-                                |row| row.get::<_, Option<String>>(0),
-                            )
-                            .optional()?
-                            .flatten())
-                    })
-                    .await?;
-                Ok(saved
-                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-                    .unwrap_or_else(|| json!({"requestId": key, "outcome": "unknown"})))
-            }
+            Err(_) => Ok(json!({"requestId":key,"outcome":"unknown"})),
         }
     }
 
@@ -280,9 +348,7 @@ impl ServerTools {
                     .await;
             }
             "location_matches" => {
-                return self
-                    .location_matches(args, &identity(&[&actor.record().id.0, action, key]))
-                    .await;
+                return self.location_matches(args, key).await;
             }
             _ if EXEC_ACTIONS.contains(&action) => {
                 return self.exec(actor, args, action, key, &local).await;
@@ -319,7 +385,7 @@ impl ServerTools {
                 payload.insert(name.to_owned(), value.clone());
             }
         }
-        let key = identity(&[&actor.record().id.0, action, key]);
+        let key = key.to_owned();
         self.deliver(server, action, &Value::Object(payload), &key)
             .await
     }
@@ -362,73 +428,38 @@ impl ServerTools {
         let actor_id = actor.record().id.0.clone();
         let server = server.to_owned();
         self.read(move |tx| {
-            let id = crate::project_locations::tool_receipt_key(tx, &actor_id, &request, &server)?;
-            type Row = (String, String, Option<String>, Option<String>);
-            let mut row: Option<Row> = tx
-                .query_row(
-                    "SELECT server,state,result,error,body FROM runtime_server_outbox WHERE id=?1",
-                    [&id],
-                    |row| {
-                        let body: String = row.get(4)?;
-                        Ok(((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?), body))
-                    },
-                )
-                .optional()?
-                .map(|(row, body)| -> Result<Row, Step> {
-                    let envelope: Value = serde_json::from_str(&body)
-                        .map_err(|_| Step::Refused("Stored cross-server envelope is invalid".into()))?;
-                    if field(&envelope, "action").starts_with("exec")
-                        && envelope.pointer("/payload/actor").and_then(Value::as_str)
-                            != Some(actor_id.as_str())
-                    {
-                        return refuse("The command receipt belongs to another lead");
-                    }
-                    Ok(row)
-                })
-                .transpose()?;
-            if row.is_none() {
-                row = tx
-                    .query_row(
-                        "SELECT server,state,result FROM runtime_server_fetch WHERE id=?1",
-                        [&id],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, None)),
-                    )
-                    .optional()?;
+            let now=crate::event_write::unix_time().map_err(|_|Step::Refused("The system clock is unavailable".into()))?;
+            if let Some(saved)=crate::project_locations::tool_location_receipt(tx,&actor_id,&request,&server,now)? {
+                return Ok(json!({"state":ServerDeliveryState::Complete,"result":saved,"error":null}));
             }
-            if row.is_none() {
-                let retired: Option<Option<String>> = tx
-                    .query_row(
-                        "SELECT actor FROM runtime_server_retired WHERE id=?1 AND direction='out' AND server=?2",
-                        [&id, &server],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if let Some(owner) = retired {
-                    if owner.is_some_and(|owner| !owner.is_empty() && owner != actor_id) {
-                        return refuse("The command receipt belongs to another lead");
-                    }
-                    return Ok(json!({
-                        "state": "expired",
-                        "result": expired_receipt(&id),
-                        "error": null,
-                    }));
+            let task=crate::tool_requests::resolve(tx,&actor_id,&request).map_err(|error|Step::Refused(error.to_string()))?;
+            let root=task.as_ref().and_then(|task|task["id"].as_str()).unwrap_or(&request);
+            let action=task.as_ref().and_then(|task|task.pointer("/arguments/action")).and_then(Value::as_str).unwrap_or("exec");
+            if action=="fetch" {
+                let parent=task_admission(tx,root,&actor_id)?;
+                let admitted=parent.derive_result("server-fetch",&[],"");
+                let row:Option<(String,String)>=tx.query_row("SELECT id,signature FROM request_results WHERE id IN (?1,?2)",params![root,admitted.id()],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+                if let Some((id,signature))=row && let Some(saved)=crate::event_write::replay_request::<FetchReply>(tx,&id,&signature,(now*1000.0) as i64)? {
+                    if saved.reply.server!=server {return refuse("The receipt belongs to another server");}
+                    return Ok(json!({"state":ServerFetchState::Complete,"result":saved.reply,"error":null}));
                 }
+                let state:Option<ServerFetchState>=tx.query_row("SELECT state FROM runtime_server_fetch WHERE id=?1 AND server=?2",params![root,server],|row|row.get(0)).optional()?;
+                return state.map(|state|json!({"state":state,"result":null,"error":null})).ok_or_else(||Step::Refused("The request ID expired".into()));
             }
-            let Some((saved_server, state, result, error)) = row.filter(|row| row.0 == server)
-            else {
-                return refuse("Unknown remote request receipt");
-            };
-            let _ = saved_server;
-            let result = result
-                .map(|raw| {
-                    serde_json::from_str::<Value>(&raw)
-                        .map(live_receipt)
-                        .map_err(|_| Step::Refused("Stored delivery result is invalid".into()))
-                })
-                .transpose()?;
-            Ok(json!({"state": state, "result": result, "error": error}))
-        })
-        .await
+            let canonical=remote_operation_key("server-outbox",&[&server],root,&[action]);
+            let row:Option<(String,String)>=tx.query_row("SELECT id,signature FROM request_results WHERE id IN (?1,?2)",params![root,canonical],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+            if let Some((id,signature))=row && let Some(saved)=crate::event_write::replay_request::<SavedRemoteReply>(tx,&id,&signature,(now*1000.0) as i64)? {
+                if saved.reply.server.as_deref()!=Some(&server) || (action.starts_with("exec") && saved.reply.actor.as_deref()!=Some(&actor_id)) {return refuse("The receipt belongs to another actor or server");}
+                return Ok(json!({"state":ServerDeliveryState::Complete,"result":saved.reply.response,"error":null}));
+            }
+            let pending:Option<(ServerDeliveryState,Option<String>,String)>=tx.query_row("SELECT state,error,body FROM runtime_server_outbox WHERE id IN (?1,?2) AND server=?3",params![root,canonical,server],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+            if let Some((state,error,body))=pending {
+                let envelope:Value=serde_json::from_str(&body).map_err(StoreError::from)?;
+                if action.starts_with("exec") && envelope.pointer("/payload/actor").and_then(Value::as_str)!=Some(&actor_id) {return refuse("The receipt belongs to another lead");}
+                return Ok(json!({"state":state,"result":null,"error":error}));
+            }
+            refuse("The request ID expired")
+        }).await
     }
 
     /// Python `codex_project_locations.request` with the lead as the actor.
@@ -450,7 +481,7 @@ impl ServerTools {
         }
         // Python passes `{**args, 'request_id': key}`: the tool request owns the identity.
         let request_id = text_field(Some(&json!(key)), "a request ID", 128)?;
-        let outbox_key = identity(&["project-location", &actor.record().id.0, &request_id]);
+        let outbox_key = request_id.clone();
         let path = if action == "add_location" {
             Some(text_field(args.get("path"), "a location path", 4096)?)
         } else {
@@ -472,11 +503,10 @@ impl ServerTools {
                 if current.extra.get("isLead") != Some(&Value::Bool(true)) || current.epoch != epoch {
                     return refuse("Only the active lead can change project locations");
                 }
-                if let Some((saved, previous)) = ProjectsRepository::receipt(tx, &key_for_write)? {
-                    if saved != signature {
-                        return refuse("This request id has different content");
-                    }
-                    return Ok(Err(previous));
+                let parent=task_admission(tx,&key_for_write,&actor_id)?;
+                let admitted=parent.derive_result("project-location",&["location"],&signature);
+                if let Some(saved)=crate::event_write::replay_request::<crate::project_locations::LocationResult>(tx,admitted.id(),admitted.signature(),(crate::event_write::unix_time().map_err(|_|Step::Refused("The system clock is unavailable".into()))?*1000.0) as i64)? {
+                    return Ok(Err(serde_json::to_value(saved.reply).map_err(StoreError::from)?));
                 }
                 let Some((_, mut project)) = ProjectsRepository::get(tx, &project_id)? else {
                     return refuse("Select an existing project");
@@ -484,8 +514,8 @@ impl ServerTools {
                 crate::project_locations::normalize_project(&mut project, &local_for_write)?;
                 let old: Option<(String, String)> = tx
                     .query_row(
-                        "SELECT server,body FROM runtime_server_outbox WHERE id=?1",
-                        [&key_for_write],
+                        "SELECT server,body FROM runtime_server_outbox WHERE id IN (?1,?2)",
+                        params![key_for_write,remote_operation_key("server-outbox",&[&server_for_write],&key_for_write,&[&action_for_write])],
                         |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .optional()?;
@@ -531,6 +561,8 @@ impl ServerTools {
                 if let Some(location) = location {
                     payload["location"] = location;
                 }
+                ProjectsRepository::put_location_request(tx,&project_id,&key_for_write,&admitted)?;
+                payload["resultId"]=json!(admitted.id());
                 payload[crate::project_locations::LOCATION_ADMISSION_FIELD]=crate::project_locations::location_admission(tx,&project_id,Some((&actor_id,epoch)))?;
                 Ok(Ok(payload))
             })
@@ -540,26 +572,6 @@ impl ServerTools {
             Ok(payload) => payload,
         };
         let result = self.deliver(&server, action, &payload, &outbox_key).await?;
-        if matches!(result["outcome"].as_str(), Some("applied" | "not_applied")) {
-            // Python `applied`: the home location and its receipt commit with
-            // the completed outbound receipt.
-            let local = local.to_owned();
-            let receipt = result.clone();
-            let now = crate::event_write::unix_time().unwrap_or_default();
-            self.store
-                .transaction_with(move |tx| {
-                    crate::project_locations::apply_completed_in_transaction(
-                        tx,
-                        &outbox_key,
-                        &server,
-                        &receipt,
-                        &local,
-                        now,
-                    )
-                    .map_err(Step::from)
-                })
-                .await?;
-        }
         Ok(result)
     }
 
@@ -636,10 +648,11 @@ impl ServerTools {
         if action == "exec" {
             payload = validate_exec(&payload, server != local).map_err(Step::Refused)?;
         }
-        let key = identity(&[&actor.record().id.0, action, key]);
-        let encoded =
-            canonical_json(&json!({"requestId": key, "action": action, "payload": payload}))
-                .map_err(|_| Step::Refused("Invalid cross-server request".into()))?;
+        let key = key.to_owned();
+        let encoded = canonical_json(
+            &json!({"requestId": key,"operation":[], "action": action, "payload": payload}),
+        )
+        .map_err(|_| Step::Refused("Invalid cross-server request".into()))?;
         if encoded.len() > MAX_REQUEST_BYTES {
             return refuse("The encoded command request exceeds 256 KiB");
         }
@@ -760,69 +773,53 @@ impl ServerTools {
             "branch": branch,
             "destination": destination,
         }));
-        let export_key = identity(&[key, "export"]);
+        let export_key = key.to_owned();
         let key_owned = key.to_owned();
         let server_owned = server.to_owned();
         let signature_for_claim = signature.clone();
-        let export_key_for_claim = export_key.clone();
-        let worker_cwd = worker.extra.get("cwd").cloned().unwrap_or(Value::Null);
+        let worker_cwd = worker
+            .extra
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let mut known_sorted = known;
         known_sorted.sort();
         known_sorted.dedup();
         let branch_for_claim = branch.clone();
+        let actor_for_fetch = actor.record().id.0.clone();
         let claim = self
             .store
-            .transaction_with(move |tx| -> Result<Result<Value, Value>, Step> {
-                if let Some((saved, previous)) = ProjectsRepository::receipt(tx, &key_owned)? {
-                    if saved != signature_for_claim {
-                        return refuse("This request id has different content");
-                    }
-                    return Ok(Err(previous));
+            .transaction_with(move |tx| -> Result<Result<FetchPayload, Value>, Step> {
+                let parent=task_admission(tx,&key_owned,&actor_for_fetch)?;
+                let admitted=parent.derive_result("server-fetch",&[],&signature_for_claim);
+                let now=(crate::event_write::unix_time().map_err(|_|Step::Refused("The system clock is unavailable".into()))?*1000.0) as i64;
+                if let Some(saved)=crate::event_write::replay_request::<FetchReply>(tx,&key_owned,&signature_for_claim,now)?.or(crate::event_write::replay_request::<FetchReply>(tx,admitted.id(),&signature_for_claim,now)?) {
+                    return Ok(Err(serde_json::to_value(saved.reply).map_err(StoreError::from)?));
                 }
-                let prior: Option<(String, String)> = tx
-                    .query_row(
-                        "SELECT signature,state FROM runtime_server_fetch WHERE id=?1",
-                        [&key_owned],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()?;
-                if let Some((saved, state)) = &prior {
-                    if *saved != signature_for_claim {
-                        return refuse("This request id has different content");
-                    }
-                    if state == "fetching" {
-                        return Ok(Err(json!({
-                            "requestId": key_owned,
-                            "outcome": "unknown",
-                            "detail": "The local Git fetch has no final receipt. Inspect FETCH_HEAD; do not repeat it.",
-                        })));
-                    }
+                let prior:Option<(String,ServerFetchState,Option<String>)>=tx.query_row("SELECT signature,state,result FROM runtime_server_fetch WHERE id=?1",[&key_owned],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+                if let Some((signature,state,raw))=prior {
+                    if signature!=signature_for_claim {return refuse("This request id has different content");}
+                    return Ok(match FetchPayload::decode(state,raw.as_deref())? {
+                        Some(saved)=>Ok(saved),
+                        None=>Err(json!({"requestId":key_owned,"outcome":"unknown","detail":"The original fetch inputs are unavailable. The operation will not be sent again."})),
+                    });
                 }
-                tx.execute(
-                    "INSERT OR IGNORE INTO runtime_server_fetch VALUES (?1,?2,?3,'preparing',NULL)",
-                    [&key_owned, &server_owned, &signature_for_claim],
-                )?;
-                let prior_export: Option<String> = tx
-                    .query_row(
-                        "SELECT body FROM runtime_server_outbox WHERE id=?1",
-                        [&export_key_for_claim],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                Ok(Ok(match prior_export {
-                    Some(body) => serde_json::from_str::<Value>(&body)
-                        .map_err(|_| Step::Refused("Stored cross-server envelope is invalid".into()))?
-                        ["payload"]
-                        .clone(),
-                    None => json!({"cwd": worker_cwd, "branch": branch_for_claim, "known": known_sorted}),
-                }))
+                let export=ExportRequest{cwd:worker_cwd,branch:branch_for_claim,known:known_sorted};
+                tx.execute("INSERT INTO runtime_server_fetch(id,server,signature,state,result,admission) VALUES(?1,?2,?3,?4,?5,?6)",params![key_owned,server_owned,signature_for_claim,ServerFetchState::Preparing,serde_json::to_string(&export).map_err(StoreError::from)?,serde_json::to_string(&admitted).map_err(StoreError::from)?])?;
+                Ok(Ok(FetchPayload::Preparing(export)))
             })
             .await?;
-        let export = match claim {
+        let preparation = match claim {
             Err(previous) => return Ok(previous),
-            Ok(export) => export,
+            Ok(preparation) => preparation,
         };
+        let export = serde_json::to_value(preparation.export()).map_err(StoreError::from)?;
         let receipt = self.deliver(server, "export", &export, &export_key).await?;
+        if matches!(preparation, FetchPayload::Fetching(_)) {
+            return Ok(
+                json!({"requestId":key,"outcome":"unknown","detail":"The local Git fetch has no final receipt. Inspect FETCH_HEAD; do not repeat it."}),
+            );
+        }
         if receipt["outcome"] != "applied" {
             return Ok(receipt);
         }
@@ -873,10 +870,11 @@ impl ServerTools {
         let mut data_file = std::fs::File::create(&bundle).map_err(io)?;
         let mut offset: u64 = 0;
         while offset < bytes {
-            let chunk_key = identity(&[key, "chunk", &offset.to_string()]);
+            let chunk_key = key.to_owned();
             let chunk_receipt = self
-                .deliver(
+                .deliver_operation(
                     server,
+                    &[offset.to_string()],
                     "chunk",
                     &json!({"export": metadata["export"], "offset": offset}),
                     &chunk_key,
@@ -979,7 +977,7 @@ impl ServerTools {
             "bytes": bytes,
             "destination": destination,
         });
-        let release_key = identity(&[key, "release"]);
+        let release_key = key.to_owned();
         let key_owned = key.to_owned();
         let value_for_write = value.clone();
         let server_owned = server.to_owned();
@@ -991,14 +989,17 @@ impl ServerTools {
         let now = crate::event_write::unix_time().unwrap_or_default() as i64;
         self.store
             .transaction_with(move |tx| -> Result<(), Step> {
-                ProjectsRepository::save_receipt(tx, &key_owned, &signature, &value_for_write)?;
-                tx.execute(
-                    "UPDATE runtime_server_fetch SET state='complete',result=?1 WHERE id=?2",
-                    [
-                        &canonical_json(&value_for_write).unwrap_or_default(),
-                        &key_owned,
-                    ],
+                let token: String = tx.query_row(
+                    "SELECT admission FROM runtime_server_fetch WHERE id=?1",
+                    [&key_owned],
+                    |row| row.get(0),
                 )?;
+                let admitted: AdmittedRequest =
+                    serde_json::from_str(&token).map_err(StoreError::from)?;
+                let reply: FetchReply =
+                    serde_json::from_value(value_for_write.clone()).map_err(StoreError::from)?;
+                crate::event_write::settle_request(tx, &admitted, None, &reply)?;
+                tx.execute("DELETE FROM runtime_server_fetch WHERE id=?1", [&key_owned])?;
                 if let Some(release) = &release_for_write {
                     crate::multi_server_orchestration::enqueue_in_transaction(
                         tx,
@@ -1073,7 +1074,7 @@ impl ServerTools {
         let (Some(home), Some(link)) = (home.map(str::to_owned), link.map(str::to_owned)) else {
             return refuse("Unknown remote-parent link");
         };
-        let key = identity(&[&actor.record().id.0, action, key]);
+        let key = key.to_owned();
         let actor_id = actor.record().id.0.clone();
         let epoch = actor.record().epoch;
         let link_for_read = link.clone();
@@ -1240,30 +1241,6 @@ fn checked_actor(
 }
 
 /// Python `expired_receipt`.
-fn expired_receipt(key: &str) -> Value {
-    json!({
-        "requestId": key,
-        "outcome": "unknown",
-        "expired": true,
-        "detail": "The receipt has expired. This identity cannot execute again.",
-    })
-}
-
-/// Python `live_receipt`: expired command output reads as an expired receipt.
-fn live_receipt(result: Value) -> Value {
-    let expires = result
-        .get("value")
-        .filter(|value| value.is_object())
-        .and_then(|value| value.get("outputExpiresAt"))
-        .and_then(Value::as_f64);
-    let now = crate::event_write::unix_time().unwrap_or(f64::MAX);
-    if expires.is_some_and(|at| at <= now) {
-        return expired_receipt(field(&result, "requestId"));
-    }
-    result
-}
-
-/// Python `Path(destination).expanduser().resolve()`.
 fn resolve(path: &str) -> String {
     let expanded = match path.strip_prefix('~') {
         Some(rest) if rest.is_empty() || rest.starts_with('/') => std::env::var_os("HOME")

@@ -41,7 +41,9 @@ application's managed capabilities are available.
 ## Managed delegation and completion
 
 Use `orchestration_spawn` for independent worker tasks. Give each batch a stable
-`request_id`. In worktree mode, set an agent's optional `base_ref` to the required branch, tag, or commit. Otherwise Studio uses the closest project's
+`request_id`. New request IDs must be UUIDv7, generated once before dispatch and
+retained across retries. Reuse saved IDs unchanged; an expired-ID error never
+authorizes generating a replacement for the same operation. In worktree mode, set an agent's optional `base_ref` to the required branch, tag, or commit. Otherwise Studio uses the closest project's
 worker base setting, then repository HEAD. Studio resolves and saves the commit
 before it creates workers. Check the spawn result for the commit and any warning
 that it is behind main. A retry with the same request_id keeps the same commit.

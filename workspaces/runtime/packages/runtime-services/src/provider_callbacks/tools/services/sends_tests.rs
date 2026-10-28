@@ -49,6 +49,7 @@ async fn message_ignores_invalid_parent_project_outside_sender_cwd() {
     let worker = oracle["agents"][1].clone();
     let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -73,6 +74,7 @@ async fn message_delivers_between_user_grouped_leads() {
     let worker = oracle["agents"][1].clone();
     let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -110,6 +112,7 @@ async fn message_with_unrelated_invalid(table: &'static str, record: Value) {
         .await
         .unwrap();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -171,6 +174,7 @@ async fn count_message_agent_rows(unrelated: usize) -> usize {
         .await
         .unwrap();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -234,6 +238,7 @@ async fn message_refuses_unknown_foreign_and_deleted_targets() {
     deleted["id"] = json!("deleted-target");
     deleted["deletedAt"] = json!(1);
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -281,6 +286,7 @@ async fn same_team_target_is_resolved_before_message_validation_without_project_
     let worker = oracle["agents"][1].clone();
     let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -327,6 +333,7 @@ async fn message_send_does_not_scan_agent_directory() {
     let worker = oracle["agents"][1].clone();
     let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -446,6 +453,7 @@ async fn try_send_args_with(
         .unwrap();
     let actor = oracle["agents"][sender_index].clone();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -498,6 +506,7 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
     let (_directory, store, oracle) = frozen::state().await;
     let actor = oracle["agents"][0].clone();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -562,6 +571,7 @@ async fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
     let (_directory, store, oracle) = frozen::state().await;
     let actor = oracle["agents"][0].clone();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -806,6 +816,7 @@ async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name()
     ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
         use crate::managed_host_tools::WatchMonitorPort;
         let context = CallbackContext {
+            stream_id: "default".into(),
             agent: caller["id"].as_str().unwrap().into(),
             account: "default".into(),
             connection: "connection".into(),
@@ -1112,6 +1123,7 @@ async fn radio_member_message_is_refused_only_during_its_shared_reply_turn() {
         let store = &store;
         async move {
             let context = CallbackContext {
+                stream_id: "default".into(),
                 agent: worker["id"].as_str().unwrap().into(),
                 account: "default".into(),
                 connection: "connection".into(),
@@ -1210,6 +1222,7 @@ async fn callback_blob_case(race: BlobRace) {
     let store = Arc::new(store);
     let actor = &oracle["agents"][0];
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -1536,6 +1549,7 @@ async fn callback_panel_returns_the_retired_progress_notice() {
     let (directory, store, oracle) = frozen::state().await;
     let store = Arc::new(store);
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: oracle["agents"][0]["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),

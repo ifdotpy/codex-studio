@@ -11,7 +11,8 @@
 // path and run marker. docs/testing.md, "Installed scenario smoke", owns the
 // contract.
 
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { requestId as randomUUID } from "../../../providers/apps/claude-bridge/request-id.ts";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
@@ -1219,7 +1220,7 @@ export class Smoke {
       await this.backend.post("/api/rename", {
         id,
         name: `Studio smoke ${this.runId} ${provider}`,
-        request_id: `smoke-name-${this.runId}-${provider}`,
+        request_id: randomUUID(),
       });
       const permission = await until(
         "idle chat permission record",
@@ -2047,7 +2048,7 @@ export class Smoke {
         await this.backend.post("/api/projects", {
           action: "remove",
           path: this.root,
-          request_id: `smoke-remove-${this.runId}`,
+          request_id: randomUUID(),
         });
       } catch (error) {
         problems.push(`project ${this.root}: ${(error as Error).message}`);

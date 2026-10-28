@@ -119,6 +119,83 @@ struct RecordingTransport {
     sent: Mutex<Vec<Value>>,
 }
 
+#[derive(Default)]
+struct LostExportReply {
+    sent: Mutex<Vec<Value>>,
+}
+impl PairedTransport for LostExportReply {
+    fn exchange<'a>(
+        &'a self,
+        _: &'a str,
+        envelope: &'a Value,
+        _: std::time::Duration,
+    ) -> BoxFuture<'a, Result<Value, AccessError>> {
+        Box::pin(async move {
+            self.sent.lock().unwrap().push(envelope.clone());
+            Ok(json!({"requestId":envelope["requestId"],"outcome":"unknown"}))
+        })
+    }
+}
+
+struct ResumeFetching {
+    store: Arc<RuntimeStore>,
+    tools: ServerTools,
+    input: Option<ExportRequest>,
+}
+impl MultiServerToolPort for ResumeFetching {
+    fn servers<'a>(
+        &'a self,
+        actor: &'a Actor,
+        args: &'a Value,
+        key: &'a str,
+        _: f64,
+    ) -> BoxFuture<'a, Result<DispatchedOperation, Error>> {
+        Box::pin(async move {
+            let key_owned = key.to_owned();
+            let actor_id = actor.record().id.0.clone();
+            let signature = request_signature(
+                &json!({"worker":args["agent_id"],"branch":args["branch"],"destination":resolve(field(args,"destination"))}),
+            );
+            let input = self.input.clone();
+            self.store.transaction_with(move|tx|->Result<(),Step>{
+                let token=task_admission(tx,&key_owned,&actor_id)?.derive_result("server-fetch",&[],&signature);
+                tx.execute("INSERT INTO runtime_server_fetch(id,server,signature,state,result,admission) VALUES(?1,?2,?3,?4,?5,?6)",params![key_owned,PEER,signature,ServerFetchState::Fetching,input.as_ref().map(serde_json::to_string).transpose().map_err(StoreError::from)?,serde_json::to_string(&token).map_err(StoreError::from)?])?;
+                Ok(())
+            }).await.map_err(|error|match error {Step::Store(error)=>Error::Store(error),Step::Refused(message)|Step::Failed(message)=>Error::StoredAt(message)})?;
+            let first = self.tools.fetch(actor, args, key, PEER).await;
+            if self.input.is_none() {
+                return settle(first);
+            }
+            assert_eq!(first.unwrap()["outcome"], "unknown");
+            let destination = Path::new(field(args, "destination"));
+            std::fs::write(destination.join("later.txt"), "new local reference").unwrap();
+            run_git(destination, &["add", "later.txt"]);
+            run_git(destination, &["commit", "-q", "-m", "change local refs"]);
+            assert_ne!(
+                run_git(destination, &["rev-parse", "HEAD"]),
+                self.input.as_ref().unwrap().known[0]
+            );
+            self.store
+                .transaction(|tx| {
+                    tx.execute("UPDATE runtime_server_outbox SET next_at=0", [])?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            settle(self.tools.fetch(actor, args, key, PEER).await)
+        })
+    }
+    fn worker_call<'a>(
+        &'a self,
+        actor: &'a Actor,
+        action: &'a str,
+        args: &'a Value,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<DispatchedOperation, Error>> {
+        self.tools.worker_call(actor, action, args, key)
+    }
+}
+
 impl PairedTransport for RecordingTransport {
     fn exchange<'a>(
         &'a self,
@@ -201,6 +278,7 @@ fn context(actor: &Value) -> CallbackContext {
         agent: actor["id"].as_str().unwrap().to_owned(),
         account: "default".into(),
         connection: "connection".into(),
+        stream_id: "host".into(),
         generation: 7,
         epoch: actor["epoch"].as_u64().unwrap(),
         thread: actor["threadId"].as_str().unwrap().to_owned(),
@@ -946,6 +1024,65 @@ async fn peer_store(home: &str) -> (tempfile::TempDir, Arc<RuntimeStore>) {
 
 #[tokio::test]
 #[allow(clippy::disallowed_methods)]
+async fn fetching_reuses_original_export_inputs_and_missing_inputs_never_send() {
+    let (_directory, home, seed) = seeded_store().await;
+    let destination = PathBuf::from(seed["projectId"].as_str().unwrap());
+    run_git(&destination, &["init", "-q", "-b", "main"]);
+    std::fs::write(destination.join("base.txt"), "base").unwrap();
+    run_git(&destination, &["add", "base.txt"]);
+    run_git(&destination, &["commit", "-q", "-m", "base"]);
+    let original = ExportRequest {
+        cwd: Some("/remote/original".into()),
+        branch: "worker".into(),
+        known: vec![run_git(&destination, &["rev-parse", "HEAD"])],
+    };
+    let mut worker = seed["worker"].clone();
+    worker["remoteWorker"] = json!({"server":PEER});
+    worker["cwd"] = json!("/remote/changed");
+    let worker_id = worker["id"].clone();
+    home.transaction(move |tx| {
+        AgentRepository::put(
+            tx,
+            &studio_runtime_store::AgentRecord::from_value(worker).unwrap(),
+        )
+    })
+    .await
+    .unwrap();
+    let transport = Arc::new(LostExportReply::default());
+    let driver = Arc::new(OrchestrationDriver::new(
+        home.clone(),
+        transport.clone(),
+        Arc::new(RuntimeOrchestrationEffects::new(home.clone())),
+    ));
+    let args = json!({"action":"fetch","server":PEER,"agent_id":worker_id,"branch":"worker","destination":destination});
+    for (name, input) in [
+        ("fetch-resume", Some(original.clone())),
+        ("fetch-missing", None),
+    ] {
+        let tools: Arc<dyn MultiServerToolPort> = Arc::new(ResumeFetching {
+            store: home.clone(),
+            tools: ServerTools::new(home.clone(), driver.clone(), false),
+            input,
+        });
+        let result = call_tool(&home, &seed["lead"], name, name, &args, Some(tools)).await;
+        assert_eq!(parsed(&result)["outcome"], "unknown", "{result}");
+    }
+    let sent = transport.sent.lock().unwrap();
+    assert_eq!(sent.len(), 2, "missing persisted inputs never send");
+    for envelope in sent.iter() {
+        assert_eq!(
+            serde_json::from_value::<ExportRequest>(envelope["payload"].clone()).unwrap(),
+            original
+        );
+    }
+    assert_eq!(
+        sent[0]["requestId"], sent[1]["requestId"],
+        "lost-response retry keeps the root"
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn fetch_copies_a_remote_worker_branch_through_a_verified_bundle_once() {
     let (_home_directory, home, seed) = seeded_store().await;
     let home_id = home.local_server_id().unwrap().unwrap();
@@ -1103,13 +1240,16 @@ impl crate::voice_runtime::VoiceRequestPort for RecordingVoice {
     fn request<'a>(
         &'a self,
         _scope: crate::voice_runtime::VoiceConnectionScope,
-        operation_id: String,
+        operation_id: crate::voice_runtime::VoiceOperation,
         _method: crate::voice_runtime::Method,
         params: Value,
         _deadline: std::time::Instant,
     ) -> crate::voice_runtime::VoiceFuture<'a, crate::voice_runtime::VoiceRequestReceipt> {
         Box::pin(async move {
-            self.requests.lock().unwrap().push((operation_id, params));
+            self.requests
+                .lock()
+                .unwrap()
+                .push((operation_id.id, params));
             crate::voice_runtime::VoiceRequestReceipt {
                 certainty: crate::voice_runtime::VoiceWriteCertainty::Written,
             }

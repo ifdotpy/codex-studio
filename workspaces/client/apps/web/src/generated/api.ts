@@ -9934,7 +9934,7 @@ export interface components {
       created: number;
       /** Deliveries */
       deliveries: {
-        [key: string]: string;
+        [key: string]: components["schemas"]["RecipientDelivery"];
       };
       /** Id */
       id: string;
@@ -12242,6 +12242,17 @@ export interface components {
       | "steer"
       | "after_tool"
       | "after_turn";
+    /** @enum {string} */
+    DeliveryStatus:
+      | "queued"
+      | "stored_only"
+      | "accepted"
+      | "sent"
+      | "cancelled"
+      | "pending"
+      | "delivered"
+      | "failed"
+      | "uncertain";
     /** DesktopEntityDto */
     DesktopEntityDto: {
       /** Application */
@@ -13577,6 +13588,8 @@ export interface components {
       hash: string;
       /** Id */
       id: string;
+      /** Format: uuid */
+      requestId: string;
     };
     /** FederationAckResult */
     FederationAckResult: {
@@ -13584,6 +13597,8 @@ export interface components {
       hash: string;
       /** Id */
       id: string;
+      /** Format: uuid */
+      requestId: string;
     };
     /** FederationIdentity */
     FederationIdentity: {
@@ -14587,7 +14602,7 @@ export interface components {
       author: string;
       /** Deliveries */
       deliveries: {
-        [key: string]: string;
+        [key: string]: components["schemas"]["RecipientDelivery"];
       };
       /**
        * Error
@@ -15621,6 +15636,11 @@ export interface components {
       action: components["schemas"]["NativeCommandAction"];
       /** Id */
       id: string;
+      /**
+       * Format: uuid
+       * @description UUIDv7 mutation root, retained across command retries.
+       */
+      request_id: string;
       /**
        * Text
        * @default null
@@ -18934,6 +18954,11 @@ export interface components {
        * @enum {string}
        */
       kind: "receipts";
+    };
+    /** @description One recipient's delivery state. Error text is separate from the closed status. */
+    RecipientDelivery: {
+      error?: string | null | undefined;
+      status: components["schemas"]["DeliveryStatus"];
     };
     /**
      * RecoveryConnectionGeneration
@@ -22435,7 +22460,7 @@ export interface components {
       /** Deliveries */
       deliveries?:
         | {
-            [key: string]: string;
+            [key: string]: components["schemas"]["RecipientDelivery"];
           }
         | null
         | undefined;
@@ -39903,6 +39928,18 @@ export const DeliveryMomentInput = {
   after_turn: "after_turn",
 } as const;
 export type DeliveryMomentInput = components["schemas"]["DeliveryMomentInput"];
+export const DeliveryStatus = {
+  queued: "queued",
+  stored_only: "stored_only",
+  accepted: "accepted",
+  sent: "sent",
+  cancelled: "cancelled",
+  pending: "pending",
+  delivered: "delivered",
+  failed: "failed",
+  uncertain: "uncertain",
+} as const;
+export type DeliveryStatus = components["schemas"]["DeliveryStatus"];
 export const ExecutionAction = {
   review: "review",
   compact: "compact",

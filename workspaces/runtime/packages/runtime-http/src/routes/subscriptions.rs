@@ -486,22 +486,13 @@ async fn content_fingerprint(state: HttpState, resource: ResourceRef) -> Option<
         ResourceRef::RenameProgressResource(resource) => state
             .store?
             .read_async("runtime-http/rename-progress", move |connection| {
-                let receipt = studio_runtime_store::EventWriteRepository::receipt(
+                let reply = studio_runtime_services::title_generation::progress(
                     connection,
+                    &resource.agent_id,
                     &resource.request_id,
-                )?;
-                let value = match receipt {
-                    Some(receipt) => serde_json::from_str::<Value>(&receipt.result)?,
-                    None => Value::Null,
-                };
-                let value = if value["id"] == resource.agent_id
-                    && value["request_id"] == resource.request_id
-                {
-                    value
-                } else {
-                    Value::Null
-                };
-                serde_json::to_vec(&value).map_err(studio_runtime_store::StoreError::from)
+                )
+                .map_err(|_| studio_runtime_store::StoreError::RecordContract("rename progress"))?;
+                serde_json::to_vec(&reply).map_err(studio_runtime_store::StoreError::from)
             })
             .await
             .ok(),

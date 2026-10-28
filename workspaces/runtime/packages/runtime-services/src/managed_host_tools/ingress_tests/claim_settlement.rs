@@ -183,7 +183,7 @@ async fn ports_with_wake(
     )
 }
 
-fn request_row(store: &RuntimeStore, call_id: &str) -> Value {
+pub(super) fn request_row(store: &RuntimeStore, call_id: &str) -> Value {
     studio_runtime_store::system_reads::all(&store.test_reader().unwrap(), "runtime_tool_requests")
         .unwrap()
         .into_iter()
@@ -192,12 +192,7 @@ fn request_row(store: &RuntimeStore, call_id: &str) -> Value {
 }
 
 fn saved_result(store: &RuntimeStore, id: &str) -> Option<Value> {
-    studio_runtime_store::system_reads::get(
-        &store.test_reader().unwrap(),
-        "runtime_tool_results",
-        id,
-    )
-    .unwrap()
+    crate::tool_requests::saved_result(&store.test_reader().unwrap(), id).unwrap()
 }
 
 fn assert_terminal(store: &RuntimeStore, call_id: &str, outcome: &str, certainty: Option<&str>) {
@@ -205,15 +200,17 @@ fn assert_terminal(store: &RuntimeStore, call_id: &str, outcome: &str, certainty
     assert_eq!(row["stage"], "failed", "{call_id}: {row}");
     assert_eq!(row["outcome"], outcome, "{call_id}: {row}");
     assert!(row["finished"].is_number(), "{call_id}: {row}");
-    assert_eq!(row["result"]["success"], false, "{call_id}: {row}");
+    let result = saved_result(store, row["id"].as_str().unwrap()).unwrap();
+    assert_eq!(result["success"], false, "{call_id}: {result}");
     if let Some(certainty) = certainty {
         assert_eq!(row["deliveryCertainty"], certainty, "{call_id}: {row}");
     }
-    assert_eq!(
-        saved_result(store, row["id"].as_str().unwrap()).as_ref(),
-        Some(&row["result"]),
-        "{call_id}: a replay answers from the saved result"
-    );
+    if outcome != "unknown" {
+        assert!(
+            row.get("result").is_none(),
+            "completed replies have one owner"
+        );
+    }
 }
 
 async fn replay_returns_saved_result(
@@ -272,7 +269,10 @@ async fn opaque_payload_does_not_change_fresh_applied_outcome() {
     assert!(matches!(decision, CallbackDecision::Answer(_)));
     let row = request_row(&store, call_id);
     assert_eq!(row["deliveryCertainty"], "written");
-    assert_eq!(row["result"]["success"], true);
+    assert_eq!(
+        saved_result(&store, row["id"].as_str().unwrap()).unwrap()["success"],
+        true
+    );
 }
 
 #[tokio::test]
@@ -367,7 +367,7 @@ async fn transient_catalog_refusal_settles_not_applied_with_retry_guidance() {
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[{"name":"Worker","prompt":"Task"}],"request_id":"catalog-try-1"}),
+        json!({"agents":[{"name":"Worker","prompt":"Task"}],"request_id":RequestIdentity::issue_root()}),
     );
     let decision = dispatch_with_managed_tools(
         Arc::clone(&store),
@@ -381,7 +381,8 @@ async fn transient_catalog_refusal_settles_not_applied_with_retry_guidance() {
     assert!(matches!(decision, CallbackDecision::Answer(_)));
     assert_terminal(&store, call_id, "not_applied", Some("not_sent"));
     let row = request_row(&store, call_id);
-    let text = row["result"]["contentItems"][0]["text"]
+    let result = saved_result(&store, row["id"].as_str().unwrap()).unwrap();
+    let text = result["contentItems"][0]["text"]
         .as_str()
         .expect("refusal text");
     assert!(
@@ -565,17 +566,12 @@ async fn startup_recovery_settles_stuck_rows_and_unblocks_context_repair() {
         (Some("running"), Some("pending"))
     );
     let mut queued = running.clone();
-    queued["id"] = json!(format!("{}-queued", running["id"].as_str().unwrap()));
     queued["callId"] = json!("settle-startup-queued");
     queued["stage"] = json!("queued");
     queued.as_object_mut().unwrap().remove("started");
-    let queued_id = queued["id"].as_str().unwrap().to_owned();
     store
         .transaction_with::<_, StoreError>(move |tx| {
-            tx.execute(
-                "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",
-                params![queued_id, queued.to_string()],
-            )?;
+            seed_tool_request(tx, queued);
             Ok(())
         })
         .await
@@ -679,12 +675,13 @@ async fn connection_recovery_leaves_an_in_flight_dispatch_to_record_its_real_out
         .await
         .expect("the real outcome's wake signal is released");
     let settled = request_row(&store, call_id);
-    assert_eq!(settled["result"]["success"], true, "{settled}");
-    assert_eq!(settled["deliveryCertainty"], "written", "{settled}");
     assert_eq!(
-        saved_result(&store, settled["id"].as_str().unwrap()).as_ref(),
-        Some(&settled["result"])
+        saved_result(&store, settled["id"].as_str().unwrap()).unwrap()["success"],
+        true,
+        "{settled}"
     );
+    assert_eq!(settled["deliveryCertainty"], "written", "{settled}");
+    assert!(settled.get("result").is_none(), "completed task stays slim");
 
     // Once the owner is gone, the settled row is no longer recovery's work.
     crate::provider_callbacks::recover_connection(
@@ -740,7 +737,9 @@ async fn connection_recovery_settles_a_claim_without_an_in_process_owner() {
                 "UPDATE runtime_tool_requests SET record=?1 WHERE id=?2",
                 params![row.to_string(), row_id],
             )?;
-            tx.execute("DELETE FROM runtime_tool_results WHERE id=?1", [&row_id])?;
+            let token: studio_runtime_store::request_results::AdmittedRequest =
+                serde_json::from_value(row["admitted"].clone()).unwrap();
+            tx.execute("DELETE FROM request_results WHERE id=?1", [token.id()])?;
             Ok(())
         })
         .await
@@ -814,10 +813,14 @@ async fn failed_finalize_still_records_the_real_operation_and_wakes_its_owner() 
         .await
         .expect("the recorded operation's wake signal is released");
     let settled = request_row(&store, call_id);
-    assert_eq!(settled["result"]["success"], true, "{settled}");
+    assert_eq!(
+        saved_result(&store, &id).unwrap()["success"],
+        true,
+        "{settled}"
+    );
     assert_eq!(settled["deliveryCertainty"], "written", "{settled}");
     assert!(settled["finished"].is_number(), "{settled}");
-    assert_eq!(saved_result(&store, &id).as_ref(), Some(&settled["result"]));
+    assert!(settled.get("result").is_none(), "completed task stays slim");
     assert_eq!(creation.calls.load(Ordering::SeqCst), 1);
 }
 
@@ -913,7 +916,11 @@ async fn managed_recovery_callback_uses_typed_receipt_and_replays() {
         };
         let row = request_row(&store, &call_id);
         assert_eq!(row["deliveryCertainty"], certainty, "{label}: {row}");
-        assert_eq!(row["result"]["success"], success, "{label}: {row}");
+        assert_eq!(
+            saved_result(&store, row["id"].as_str().unwrap()).unwrap()["success"],
+            success,
+            "{label}: {row}"
+        );
         let replay = dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports)
             .await
             .unwrap();
