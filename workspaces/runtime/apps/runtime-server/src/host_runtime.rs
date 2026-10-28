@@ -2763,7 +2763,12 @@ mod voice_composition_tests {
         });
         let (mut worker, session, _callbacks) =
             start_voice_worker(directory.path(), Arc::clone(&store), Arc::clone(&factory)).await;
-        let scope = session.current_scope("voice-account").unwrap();
+        let scope =
+            studio_runtime_services::account_session_runtime::AccountSessionPort::current_scope(
+                session.as_ref(),
+                "voice-account",
+            )
+            .unwrap();
         let sent_before_retry = factory.request_writes.load(Ordering::SeqCst);
         let result =
             studio_runtime_services::account_session_runtime::AccountSessionPort::provider_request(
