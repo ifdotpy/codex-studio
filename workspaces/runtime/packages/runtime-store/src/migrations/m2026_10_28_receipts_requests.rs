@@ -1,0 +1,978 @@
+//! Classify public request replay independently of provider and domain migrations.
+use rusqlite::{OptionalExtension, Transaction, params};
+use serde::Serialize;
+use serde_json::{Value, json};
+use studio_runtime_schema::persistence::{
+    DeliveryStatus, MigrationStatus, OutboxKind, OutboxStatus, OwnerKind, RecipientDelivery,
+    WorkEffectStatus,
+};
+
+use crate::outbox::{Outbox, OutboxRow};
+use crate::receipt_migration_contract::{
+    MigrationCheckpoint, ReceiptFamilyMigration, ReceiptMigrationError, ReceiptProjection, Result,
+    SourceReceipt, admitted_owner_token, delete_source, import_result, read_receipt_batch,
+    read_source_batch, unclassifiable, validate_completed_discard,
+};
+use crate::request_results::{AdmittedRequest, ResultEnvelope};
+
+pub(super) const ID: &str = "2026-10-28-receipts-requests";
+pub(super) const SOURCES: &[&str] = &[
+    "runtime_operation_receipts",
+    "messages",
+    "runtime_chat_messages",
+];
+const SOURCE: &str = "runtime_operation_receipts";
+/// Persistent count of classified completed settings markers without a replay body.
+pub(super) const DELETED_SETTINGS_REPORT: &str = "deleted-completed-c:settings";
+pub(super) struct Family;
+
+#[derive(Serialize)]
+struct PendingRequest {
+    request: AdmittedRequest,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum RulesEffect {
+    CancelMonitors { monitor_ids: Vec<String> },
+}
+
+impl ReceiptFamilyMigration for Family {
+    fn id(&self) -> &'static str {
+        ID
+    }
+    fn prepare(&self, _tx: &Transaction<'_>, _cutover_ms: i64) -> Result<()> {
+        Ok(())
+    }
+
+    fn move_batch(
+        &self,
+        tx: &Transaction<'_>,
+        source: &str,
+        checkpoint: &MigrationCheckpoint,
+    ) -> Result<MigrationCheckpoint> {
+        if !SOURCES.contains(&source) {
+            return Err(ReceiptMigrationError::Incomplete {
+                migration: ID.into(),
+                source_table: source.into(),
+            });
+        }
+        if checkpoint.status == MigrationStatus::Complete {
+            return Ok(checkpoint.clone());
+        }
+        if source != SOURCE {
+            return move_messages(tx, source, checkpoint);
+        }
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=?1 AND type='table')",
+            [source],
+            |r| r.get(0),
+        )?;
+        let rows = if exists {
+            read_receipt_batch(tx, source, checkpoint, "1")?
+        } else {
+            Vec::new()
+        };
+        let mut next = checkpoint.clone();
+        next.status = if rows.is_empty() {
+            MigrationStatus::Complete
+        } else {
+            MigrationStatus::Running
+        };
+        for row in rows {
+            next.cursor = row.rowid;
+            // A classified phase can consume its sibling in this same batch.
+            // The cursor still advances over the fetched page, including that sibling.
+            let live: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE rowid=?1)",
+                [row.rowid],
+                |r| r.get(0),
+            )?;
+            if !live {
+                continue;
+            }
+            if domain_owned(&row) {
+                continue;
+            }
+            let known_prefix = known_request_prefix(&row.id);
+            let hash_signature =
+                row.signature.len() == 64 && row.signature.bytes().all(|b| b.is_ascii_hexdigit());
+            let json_signature = row.signature.starts_with('{') || row.signature.starts_with('[');
+            if !known_prefix && !hash_signature && !json_signature {
+                continue;
+            }
+            let mut reply: Value = row.json(source)?;
+            if !reply.is_object() {
+                return Err(unclassifiable(source, &row.id, &row.signature));
+            }
+            if hash_signature && reply == json!({"applied":true}) {
+                validate_completed_discard(source, &row.id, checkpoint.cutover_ms)?;
+                let mut count = MigrationCheckpoint::begin(
+                    tx,
+                    ID,
+                    DELETED_SETTINGS_REPORT,
+                    checkpoint.cutover_ms,
+                )?;
+                count.cursor += 1;
+                count.status = MigrationStatus::Complete;
+                count.save(tx, ID, DELETED_SETTINGS_REPORT, checkpoint.cutover_ms)?;
+                delete_source(tx, source, row.rowid)?;
+                continue;
+            }
+            let mut actor = row
+                .id
+                .strip_prefix("queue:")
+                .and_then(|s| s.split_once(':'))
+                .map(|(actor, _)| actor.to_owned());
+            if row.id.starts_with("mcp-reconnect:") {
+                migrate_mcp(tx, &row, &reply, checkpoint.cutover_ms)?;
+                delete_source(tx, source, row.rowid)?;
+                continue;
+            }
+            if row.id.starts_with("project-registration:") {
+                migrate_registration(tx, &row, &reply, checkpoint.cutover_ms)?;
+                delete_source(tx, source, row.rowid)?;
+                continue;
+            }
+            if reply["requestId"] == row.id && reply["outcome"] == "unknown" {
+                migrate_location(tx, &row, &reply, checkpoint.cutover_ms)?;
+                delete_source(tx, source, row.rowid)?;
+                continue;
+            }
+            if row.id.starts_with("managed-rules:") {
+                actor = Some(migrate_rules(tx, &row, &mut reply, checkpoint.cutover_ms)?);
+            } else if !exact_reply(&row, &reply) {
+                if known_prefix {
+                    return Err(unclassifiable(source, &row.id, &row.signature));
+                }
+                // Another independently registered owner must classify this row.
+                continue;
+            }
+            if let Some(deliveries) = reply.get_mut("deliveries") {
+                *deliveries = delivery_map(source, &row, deliveries)?;
+            }
+            import_result(
+                tx,
+                &row.id,
+                &row.signature,
+                &ResultEnvelope {
+                    actor,
+                    reply,
+                    references: Vec::new(),
+                },
+                checkpoint.cutover_ms,
+            )?;
+            delete_source(tx, source, row.rowid)?;
+        }
+        Ok(next)
+    }
+
+    fn finish(&self, tx: &Transaction<'_>) -> Result<()> {
+        for source in SOURCES {
+            if !MigrationCheckpoint::load(tx, ID, source)?
+                .is_some_and(|c| c.status == MigrationStatus::Complete)
+            {
+                return Err(ReceiptMigrationError::Incomplete {
+                    migration: ID.into(),
+                    source_table: (*source).into(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+fn move_messages(
+    tx: &Transaction<'_>,
+    source: &str,
+    checkpoint: &MigrationCheckpoint,
+) -> Result<MigrationCheckpoint> {
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=?1 AND type='table')",
+        [source],
+        |r| r.get(0),
+    )?;
+    let rows = if exists {
+        read_source_batch(
+            tx,
+            source,
+            checkpoint,
+            &ReceiptProjection {
+                id: "source.id",
+                signature: "''",
+                result: "source.deliveries",
+            },
+            "1",
+        )?
+    } else {
+        Vec::new()
+    };
+    let mut next = checkpoint.clone();
+    next.status = if rows.is_empty() {
+        MigrationStatus::Complete
+    } else {
+        MigrationStatus::Running
+    };
+    for row in rows {
+        let deliveries: Value = row.json(source)?;
+        let deliveries = delivery_map(source, &row, &deliveries)?;
+        tx.execute(
+            &format!("UPDATE {source} SET deliveries=?1 WHERE rowid=?2"),
+            params![deliveries.to_string(), row.rowid],
+        )?;
+        next.cursor = row.rowid;
+    }
+    Ok(next)
+}
+
+fn delivery_map(source: &str, row: &SourceReceipt, deliveries: &Value) -> Result<Value> {
+    let invalid = || unclassifiable(source, &row.id, &row.signature);
+    let old: std::collections::BTreeMap<String, String> =
+        serde_json::from_value(deliveries.clone()).map_err(|_| invalid())?;
+    let typed = old
+        .into_iter()
+        .map(|(recipient, value)| {
+            let delivery = if let Some(error) = value.strip_prefix("failed:") {
+                RecipientDelivery {
+                    status: DeliveryStatus::Failed,
+                    error: Some(error.into()),
+                }
+            } else if let Some(error) = value.strip_prefix("cancelled:") {
+                RecipientDelivery {
+                    status: DeliveryStatus::Cancelled,
+                    error: Some(error.into()),
+                }
+            } else {
+                RecipientDelivery {
+                    status: serde_json::from_value(json!(value)).map_err(|_| invalid())?,
+                    error: None,
+                }
+            };
+            Ok((recipient, delivery))
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
+    serde_json::to_value(typed).map_err(|_| invalid())
+}
+
+fn domain_owned(row: &SourceReceipt) -> bool {
+    [
+        "aw:",
+        "account-worker:",
+        "provider-callback:",
+        "provider-notification:",
+        "provider-submission:",
+        "work-result-failures:",
+        "work-archive:",
+        "work-write-vm-intent:",
+        "project-destructive-removal:",
+        "idle-compaction:",
+        "title-generation:",
+        "liveness:",
+        "native-command:",
+        "monitor-http-input:",
+        "manual-management:",
+        "park-event:",
+        "studio-errors:",
+        "linux-vm-provider-start:",
+        "linux-vm-credential-copy:",
+        "voice-stop:",
+        "voice-delete:",
+        "context-terminal:",
+    ]
+    .iter()
+    .any(|prefix| row.id.starts_with(prefix))
+        || [
+            "provider-callback",
+            "accepted-archive-v1",
+            "idle-compaction",
+            "title-generation-effect-v1",
+            "liveness",
+            "work-result-failures",
+        ]
+        .contains(&row.signature.as_str())
+}
+
+fn known_request_prefix(id: &str) -> bool {
+    [
+        "plan-request:",
+        "plan:",
+        "queue:",
+        "user:",
+        "managed-rules:",
+        "park-request:",
+        "peer-team:",
+        "sidebar-order:",
+        "project-delete:",
+        "project-registration:",
+        "mcp-reconnect:",
+    ]
+    .iter()
+    .any(|p| id.starts_with(p))
+}
+
+fn schema(name: &str, reply: &Value) -> bool {
+    studio_runtime_schema::validate(name, reply).unwrap_or(false)
+}
+
+fn exact_reply(row: &SourceReceipt, reply: &Value) -> bool {
+    if row.id.starts_with("plan-request:") || row.id.starts_with("plan:") {
+        return schema("PersistedPlanRecord", reply);
+    }
+    if row.id.starts_with("queue:") {
+        return reply["status"] == "updated"
+            && reply["revision"].is_string()
+            && reply["capabilities"].is_object();
+    }
+    if row.id.starts_with("user:") {
+        return schema("PersistedComplaintRecord", reply);
+    }
+    if row.id.starts_with("park-request:") {
+        return reply["event"].is_string() && reply["count"].is_u64() && reply["woken"].is_array();
+    }
+    if row.id.starts_with("peer-team:") {
+        return reply["id"].is_string() && reply["name"].is_string();
+    }
+    if row.id.starts_with("sidebar-order:") {
+        return reply["revision"].is_number() && reply["groups"].is_array();
+    }
+    if row.id.starts_with("project-delete:") {
+        return reply["id"].is_string()
+            && reply["outcome"] == "deleted"
+            && reply["deletedAgentIds"].is_array()
+            && reply["deletedRoomIds"].is_array();
+    }
+    // Unprefixed public IDs need an identifiable response contract, never a generic object fallback.
+    (reply["id"].is_string() && reply["name"].is_string())
+        || (reply["id"].is_string()
+            && reply["concurrency"].is_number()
+            && reply["agentMode"].is_string()
+            && reply["agentModeRevision"].is_number()
+            && reply["maxAgents"].is_number())
+        || (reply["id"].is_string() && reply.get("defaultGate").is_some())
+        || (reply["path"].is_string()
+            && reply["line"].is_number()
+            && reply["text"].is_string()
+            && schema("PersistedAnnotationRecord", reply))
+        || (reply["title"].is_string() && reply["rootId"].is_string() && schema("WorkItem", reply))
+        || (reply["id"] == row.id
+            && serde_json::from_value::<DeliveryStatus>(reply["status"].clone()).is_ok()
+            && reply
+                .get("error")
+                .is_none_or(|e| e.is_null() || e.is_string()))
+        || (reply["requestId"] == row.id
+            && matches!(reply["outcome"].as_str(), Some("applied" | "not_applied")))
+        || (reply["id"].is_string()
+            && reply["room"].is_string()
+            && reply["author"].is_string()
+            && reply["deliveries"].is_object())
+}
+
+fn migrate_rules(
+    tx: &Transaction<'_>,
+    row: &SourceReceipt,
+    reply: &mut Value,
+    cutover: i64,
+) -> Result<String> {
+    let invalid = || unclassifiable(SOURCE, &row.id, &row.signature);
+    let tail = row.id.strip_prefix("managed-rules:").ok_or_else(invalid)?;
+    let (actor, _request) = tail.split_once(':').ok_or_else(invalid)?;
+    let monitors: Vec<String> =
+        serde_json::from_value(reply["cancelMonitorIds"].clone()).map_err(|_| invalid())?;
+    if reply.get("value").is_none() || monitors.windows(2).any(|p| p[0] >= p[1]) {
+        return Err(invalid());
+    }
+    if !monitors.is_empty() {
+        let id = Outbox::effect_id(
+            &row.id,
+            OutboxKind::ManagedTool,
+            OwnerKind::Agent,
+            actor,
+            &["rule-monitor-cancellation"],
+        );
+        crate::receipt_migration_contract::import_outbox(
+            tx,
+            &OutboxRow {
+                id,
+                kind: OutboxKind::ManagedTool,
+                owner_kind: OwnerKind::Agent,
+                owner_id: actor.into(),
+                request_id: Some(row.id.clone()),
+                signature: row.signature.clone(),
+                status: OutboxStatus::Pending,
+                account: None,
+                stream_id: None,
+                generation: None,
+                ordinal: None,
+                next_at: Some(cutover),
+                payload: RulesEffect::CancelMonitors {
+                    monitor_ids: monitors,
+                },
+                created: cutover,
+            },
+        )?;
+    }
+    *reply = json!({"value":reply["value"]});
+    Ok(actor.into())
+}
+
+fn migrate_mcp(
+    tx: &Transaction<'_>,
+    row: &SourceReceipt,
+    reply: &Value,
+    cutover: i64,
+) -> Result<()> {
+    let invalid = || unclassifiable(SOURCE, &row.id, &row.signature);
+    let signature: Value = serde_json::from_str(&row.signature).map_err(|_| invalid())?;
+    let actor = signature["id"].as_str().ok_or_else(invalid)?;
+    let key = row.id.strip_suffix(":result").unwrap_or(&row.id);
+    let result_key = format!("{key}:result");
+    let final_reply = if row.id.ends_with(":result") {
+        Some(reply.clone())
+    } else {
+        if reply["status"] != "submitted" {
+            return Err(invalid());
+        }
+        let saved: Option<(String, String)> = tx
+            .query_row(
+                "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
+                [&result_key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        saved
+            .map(|(signature, raw)| {
+                if signature != row.signature {
+                    return Err(invalid());
+                }
+                serde_json::from_str::<Value>(&raw)
+                    .map_err(|_| unclassifiable(SOURCE, &result_key, &signature))
+            })
+            .transpose()?
+    };
+    if let Some(reply) = &final_reply {
+        if !matches!(
+            reply["status"].as_str(),
+            Some("completed" | "failed" | "unknown")
+        ) || !reply["message"].is_string()
+        {
+            return Err(invalid());
+        }
+        import_result(
+            tx,
+            key,
+            &row.signature,
+            &ResultEnvelope {
+                actor: Some(actor.into()),
+                reply,
+                references: Vec::new(),
+            },
+            cutover,
+        )?;
+        let claim_signature: Option<String> = tx
+            .query_row(
+                "SELECT signature FROM runtime_operation_receipts WHERE id=?1",
+                [key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if claim_signature
+            .as_ref()
+            .is_some_and(|s| s != &row.signature)
+        {
+            return Err(invalid());
+        }
+        tx.execute(
+            "DELETE FROM runtime_operation_receipts WHERE id IN (?1,?2) AND signature=?3",
+            params![key, result_key, row.signature],
+        )?;
+    }
+    if final_reply
+        .as_ref()
+        .is_none_or(|reply| reply["status"] == "unknown")
+    {
+        crate::receipt_migration_contract::import_outbox(
+            tx,
+            &OutboxRow {
+                id: key.into(),
+                kind: OutboxKind::McpReconnect,
+                owner_kind: OwnerKind::Agent,
+                owner_id: actor.into(),
+                request_id: Some(key.into()),
+                signature: row.signature.clone(),
+                status: OutboxStatus::Unknown,
+                account: None,
+                stream_id: None,
+                generation: None,
+                ordinal: None,
+                next_at: None,
+                payload: PendingRequest {
+                    request: admitted_owner_token(key, &row.signature, cutover),
+                },
+                created: cutover,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_registration(
+    tx: &Transaction<'_>,
+    row: &SourceReceipt,
+    reply: &Value,
+    cutover: i64,
+) -> Result<()> {
+    let invalid = || unclassifiable(SOURCE, &row.id, &row.signature);
+    let project = row
+        .id
+        .strip_prefix("project-registration:")
+        .ok_or_else(invalid)?;
+    if reply["projectId"] != project || !reply["requestId"].is_string() {
+        return Err(invalid());
+    }
+    let status = match reply["outcome"].as_str() {
+        Some("applied") => WorkEffectStatus::Applied,
+        Some("not_applied") => WorkEffectStatus::Failed,
+        Some("unknown") => WorkEffectStatus::Unknown,
+        _ => return Err(invalid()),
+    };
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT record FROM runtime_projects WHERE id=?1",
+            [project],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let mut owner: Value = raw
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .ok_or_else(invalid)?;
+    if !owner["registration"].is_object() {
+        return Err(invalid());
+    }
+    owner["registration"]["signature"] = json!(row.signature);
+    owner["registration"]["requestId"] = reply["requestId"].clone();
+    owner["registration"]["status"] = json!(status);
+    tx.execute(
+        "UPDATE runtime_projects SET record=?1 WHERE id=?2",
+        params![owner.to_string(), project],
+    )?;
+    let _ = cutover;
+    Ok(())
+}
+
+fn migrate_location(
+    tx: &Transaction<'_>,
+    row: &SourceReceipt,
+    reply: &Value,
+    cutover: i64,
+) -> Result<()> {
+    let invalid = || unclassifiable(SOURCE, &row.id, &row.signature);
+    let project = if let Some(project) = reply["projectId"].as_str() {
+        Some(project.to_owned())
+    } else {
+        tx.query_row(
+            "SELECT json_extract(body,'$.payload.project') FROM runtime_server_outbox WHERE id=?1",
+            [&row.id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+    }
+    .ok_or_else(invalid)?;
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT record FROM runtime_projects WHERE id=?1",
+            [&project],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let mut owner: Value = raw
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .ok_or_else(invalid)?;
+    if !owner.is_object() {
+        return Err(invalid());
+    }
+    if owner.get("locationIntents").is_none() {
+        owner["locationIntents"] = json!({});
+    }
+    let intents = owner["locationIntents"]
+        .as_object_mut()
+        .ok_or_else(invalid)?;
+    intents.insert(
+        row.id.clone(),
+        json!(admitted_owner_token(&row.id, &row.signature, cutover)),
+    );
+    tx.execute(
+        "UPDATE runtime_projects SET record=?1 WHERE id=?2",
+        params![owner.to_string(), project],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::receipt_migration_contract::{MIGRATION_BATCH_ROWS, prepare_schema};
+    use rusqlite::Connection;
+    const CUTOVER: i64 = 1_000_000;
+    const SIGNATURE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn fixture(db: &mut Connection) {
+        db.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT); CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,body TEXT);").expect("old format");
+        let tx = db.transaction().expect("transaction");
+        prepare_schema(&tx).expect("schema");
+        tx.commit().expect("schema commit");
+    }
+    fn insert(db: &Connection, id: &str, reply: Value) {
+        db.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+            params![id, SIGNATURE, reply.to_string()],
+        )
+        .expect("source");
+    }
+    fn plan() -> Value {
+        json!({"id":"agent","rootId":"root","text":"original","version":1,"updated":1.0})
+    }
+    fn batch(db: &mut Connection, commit: bool) -> MigrationCheckpoint {
+        batch_source(db, SOURCE, commit)
+    }
+    fn batch_source(db: &mut Connection, source: &str, commit: bool) -> MigrationCheckpoint {
+        let tx = db.transaction().expect("transaction");
+        let checkpoint = MigrationCheckpoint::begin(&tx, ID, source, CUTOVER).expect("checkpoint");
+        let next = Family.move_batch(&tx, source, &checkpoint).expect("batch");
+        next.save(&tx, ID, source, CUTOVER)
+            .expect("checkpoint save");
+        if commit {
+            tx.commit().expect("commit");
+        } else {
+            tx.rollback().expect("crash");
+        }
+        next
+    }
+    fn migrate(db: &mut Connection) {
+        let tx = db.transaction().expect("transaction");
+        Family.prepare(&tx, CUTOVER).expect("prepare");
+        tx.commit().expect("prepare commit");
+        for source in SOURCES {
+            while batch_source(db, source, true).status != MigrationStatus::Complete {}
+        }
+        let tx = db.transaction().expect("transaction");
+        Family.finish(&tx).expect("finish");
+        tx.commit().expect("finish commit");
+    }
+
+    #[test]
+    fn receipts_requests_old_row_second_open_and_original_reply() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        insert(&db, "plan-request:old", plan());
+        migrate(&mut db);
+        let saved: (String, String, i64) = db
+            .query_row(
+                "SELECT signature,result,created FROM request_results WHERE id='plan-request:old'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("new result");
+        assert_eq!(saved.0, SIGNATURE);
+        assert_eq!(saved.2, CUTOVER);
+        let envelope: Value = serde_json::from_str(&saved.1).expect("envelope");
+        assert_eq!(envelope["reply"], plan());
+        migrate(&mut db);
+        assert_eq!(
+            db.query_row(
+                "SELECT signature,result,created FROM request_results WHERE id='plan-request:old'",
+                [],
+                |r| Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?
+                ))
+            )
+            .expect("same result"),
+            saved
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                .get::<_, i64>(0))
+                .expect("source gone"),
+            0
+        );
+    }
+
+    #[test]
+    fn receipts_requests_crash_between_batches_resumes() {
+        let root = tempfile::tempdir().expect("directory");
+        let path = root.path().join("canvas.sqlite3");
+        {
+            let mut db = Connection::open(&path).expect("database");
+            fixture(&mut db);
+            for n in 0..=MIGRATION_BATCH_ROWS {
+                insert(&db, &format!("plan-request:{n}"), plan());
+            }
+            assert_eq!(batch(&mut db, true).cursor, MIGRATION_BATCH_ROWS as i64);
+            batch(&mut db, false);
+        }
+        let mut db = Connection::open(&path).expect("reopen");
+        migrate(&mut db);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                .get::<_, i64>(0))
+                .expect("all results"),
+            (MIGRATION_BATCH_ROWS + 1) as i64
+        );
+    }
+
+    #[test]
+    fn receipts_requests_unclassifiable_rolls_back_and_completed_lossy_marker_is_counted() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        insert(&db, "old-settings", json!({"applied":true}));
+        insert(&db, "plan-request:bad", json!({"unexpected":true}));
+        let tx = db.transaction().expect("transaction");
+        let checkpoint = MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
+        assert!(
+            matches!(Family.move_batch(&tx,SOURCE,&checkpoint),Err(ReceiptMigrationError::Unclassifiable{table,key,signature}) if table==SOURCE && key=="plan-request:bad" && signature==SIGNATURE)
+        );
+        tx.rollback().expect("rollback");
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                .get::<_, i64>(0))
+                .expect("source retained"),
+            2
+        );
+        db.execute(
+            "DELETE FROM runtime_operation_receipts WHERE id='plan-request:bad'",
+            [],
+        )
+        .expect("remove malformed fixture");
+        migrate(&mut db);
+        let tx = db.transaction().expect("transaction");
+        let count = MigrationCheckpoint::load(&tx, ID, DELETED_SETTINGS_REPORT)
+            .expect("report")
+            .expect("count");
+        assert_eq!(count.cursor, 1);
+        assert_eq!(
+            tx.query_row(
+                "SELECT count(*) FROM request_results WHERE id='old-settings'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .expect("no marker reply"),
+            0
+        );
+        assert!(
+            studio_runtime_schema::persistence::RequestIdentity::new(
+                "settings",
+                &["actor"],
+                "old-settings",
+                &[]
+            )
+            .is_err()
+        );
+        tx.commit().expect("commit");
+        migrate(&mut db);
+        let tx = db.transaction().expect("transaction");
+        assert_eq!(
+            MigrationCheckpoint::load(&tx, ID, DELETED_SETTINGS_REPORT)
+                .expect("report")
+                .expect("count")
+                .cursor,
+            1
+        );
+    }
+
+    #[test]
+    fn receipts_requests_rules_reply_and_cancellation_obligation_share_commit() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        insert(
+            &db,
+            "managed-rules:actor:request",
+            json!({"value":{"status":"paused"},"cancelMonitorIds":["monitor"]}),
+        );
+        migrate(&mut db);
+        let raw: String = db
+            .query_row("SELECT result FROM request_results", [], |r| r.get(0))
+            .expect("reply");
+        let reply: Value = serde_json::from_str(&raw).expect("envelope");
+        assert_eq!(reply["reply"], json!({"value":{"status":"paused"}}));
+        let raw: String = db
+            .query_row("SELECT payload FROM runtime_outbox", [], |r| r.get(0))
+            .expect("obligation");
+        assert_eq!(
+            serde_json::from_str::<Value>(&raw).expect("payload"),
+            json!({"kind":"cancel_monitors","monitor_ids":["monitor"]})
+        );
+    }
+
+    #[test]
+    fn receipts_requests_unknown_mcp_never_authorizes_resend() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        let signature =
+            json!({"id":"actor","session":{"account":"account","generation":1}}).to_string();
+        db.execute("INSERT INTO runtime_operation_receipts VALUES('mcp-reconnect:old',?1,'{\"status\":\"submitted\"}')",[signature]).expect("claim");
+        migrate(&mut db);
+        let (status, next): (OutboxStatus, Option<i64>) = db
+            .query_row("SELECT status,next_at FROM runtime_outbox", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .expect("uncertain owner");
+        assert_eq!(status, OutboxStatus::Unknown);
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn receipts_requests_completed_lossy_uuid_is_expired_and_future_uuid_stops() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        let root = "0000000f-4240-7000-8000-000000000000";
+        insert(&db, root, json!({"applied":true}));
+        migrate(&mut db);
+        let identity = studio_runtime_schema::persistence::RequestIdentity::new(
+            "settings",
+            &["actor"],
+            root,
+            &[],
+        )
+        .expect("old UUIDv7");
+        let tx = db.transaction().expect("transaction");
+        assert!(matches!(
+            crate::request_results::RequestResults::admit(&tx, &identity, SIGNATURE, CUTOVER + 1),
+            Err(crate::request_results::RequestResultError::Identity(
+                studio_runtime_schema::persistence::RequestIdentityError::Expired { .. }
+            ))
+        ));
+        tx.rollback().expect("no new owner mutation");
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        let future = "0000000f-4241-7000-8000-000000000000";
+        insert(&db, future, json!({"applied":true}));
+        let tx = db.transaction().expect("transaction");
+        let checkpoint = MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
+        assert!(
+            matches!(Family.move_batch(&tx,SOURCE,&checkpoint),Err(ReceiptMigrationError::FutureDatedCompletedRequest{table,key,issued_ms,cutover_ms}) if table==SOURCE && key==future && issued_ms==CUTOVER+1 && cutover_ms==CUTOVER)
+        );
+        tx.rollback().expect("preserve source");
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                .get::<_, i64>(0))
+                .expect("future source retained"),
+            1
+        );
+    }
+
+    #[test]
+    fn receipts_requests_message_delivery_maps_preserve_errors_and_source_fields() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute_batch("CREATE TABLE messages(id TEXT PRIMARY KEY,deliveries TEXT,text TEXT);CREATE TABLE runtime_chat_messages(seq INTEGER PRIMARY KEY,id TEXT UNIQUE,deliveries TEXT,text TEXT);").expect("message owners");
+        let old = json!({"a":"pending","b":"failed:full: original error","c":"cancelled:reason","d":"sent"});
+        db.execute(
+            "INSERT INTO messages VALUES('message',?1,'original text')",
+            [old.to_string()],
+        )
+        .expect("message");
+        db.execute(
+            "INSERT INTO runtime_chat_messages VALUES(42,'chat',?1,'chat text')",
+            [old.to_string()],
+        )
+        .expect("chat message");
+        insert(&db, "input", json!({"id":"input","status":"queued"}));
+        migrate(&mut db);
+        for source in &SOURCES[1..] {
+            let (raw, text): (String, String) = db
+                .query_row(&format!("SELECT deliveries,text FROM {source}"), [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .expect("message");
+            let map: std::collections::BTreeMap<String, RecipientDelivery> =
+                serde_json::from_str(&raw).expect("typed delivery map");
+            assert_eq!(map["a"].status, DeliveryStatus::Pending);
+            assert_eq!(map["b"].error.as_deref(), Some("full: original error"));
+            assert_eq!(map["c"].status, DeliveryStatus::Cancelled);
+            assert_eq!(map["d"].status, DeliveryStatus::Sent);
+            assert!(text.ends_with("text"));
+        }
+        assert_eq!(
+            db.query_row("SELECT seq FROM runtime_chat_messages", [], |r| r
+                .get::<_, i64>(0))
+                .expect("original sequence"),
+            42
+        );
+        assert!(
+            db.query_row("SELECT 1 FROM request_results WHERE id='input'", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .is_ok()
+        );
+        migrate(&mut db);
+    }
+
+    #[test]
+    fn receipts_requests_unknown_message_delivery_aborts_its_batch() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute_batch("CREATE TABLE messages(id TEXT PRIMARY KEY,deliveries TEXT);INSERT INTO messages VALUES('good','{\"recipient\":\"pending\"}');INSERT INTO messages VALUES('bad','{\"recipient\":\"unexpected\"}');").expect("message fixtures");
+        let tx = db.transaction().expect("transaction");
+        let checkpoint =
+            MigrationCheckpoint::begin(&tx, ID, "messages", CUTOVER).expect("checkpoint");
+        assert!(
+            matches!(Family.move_batch(&tx,"messages",&checkpoint),Err(ReceiptMigrationError::Unclassifiable{table,key,..}) if table=="messages" && key=="bad")
+        );
+        tx.rollback().expect("rollback");
+        let old: String = db
+            .query_row("SELECT deliveries FROM messages WHERE id='good'", [], |r| {
+                r.get(0)
+            })
+            .expect("old map");
+        assert_eq!(
+            serde_json::from_str::<Value>(&old).expect("map"),
+            json!({"recipient":"pending"})
+        );
+    }
+
+    #[test]
+    fn receipts_requests_mcp_siblings_keep_uncertainty_in_either_keyset_order() {
+        for reverse in [false, true] {
+            for status in ["completed", "unknown"] {
+                let mut db = Connection::open_in_memory().expect("database");
+                fixture(&mut db);
+                let signature = json!({"id":"actor"}).to_string();
+                let mut rows = vec![
+                    ("mcp-reconnect:old", json!({"status":"submitted"})),
+                    (
+                        "mcp-reconnect:old:result",
+                        json!({"status":status,"message":"exact outcome"}),
+                    ),
+                ];
+                if reverse {
+                    rows.reverse();
+                }
+                for (id, reply) in rows {
+                    db.execute(
+                        "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+                        params![id, signature, reply.to_string()],
+                    )
+                    .expect("phase");
+                }
+                migrate(&mut db);
+                assert_eq!(
+                    db.query_row(
+                        "SELECT count(*) FROM request_results WHERE id='mcp-reconnect:old'",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .expect("one exact reply"),
+                    1
+                );
+                assert_eq!(
+                    db.query_row("SELECT count(*) FROM runtime_outbox", [], |r| r
+                        .get::<_, i64>(0))
+                        .expect("pending obligation"),
+                    i64::from(status == "unknown")
+                );
+            }
+        }
+    }
+}
