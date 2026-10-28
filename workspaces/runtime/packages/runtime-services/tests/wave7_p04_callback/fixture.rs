@@ -125,9 +125,6 @@ pub async fn pending(store: &Arc<RuntimeStore>, context: &CallbackContext) -> (S
     let decision = dispatch(Arc::clone(store), context, &frame, 10.0)
         .await
         .unwrap();
-    bind_journal(store, &decision, context, &RequestId::Number(42), 1)
-        .await
-        .unwrap();
     let CallbackDecision::Pending(id) = decision else {
         panic!("pending")
     };
@@ -310,7 +307,6 @@ pub async fn seed_admission(store: &RuntimeStore, before: &Value) {
                 studio_runtime_services::tool_requests::get_callback::<CallbackOwner>(tx, &key)?
                     .unwrap();
             owner.payload.card = Some(card);
-            owner.payload.journal_cursor = Some(1);
             studio_runtime_services::tool_requests::put_callback(tx, &owner)?;
             Ok(())
         })

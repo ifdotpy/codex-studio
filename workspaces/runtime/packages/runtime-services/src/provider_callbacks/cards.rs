@@ -43,13 +43,11 @@ pub enum NativeAdmission {
 /// transaction. Repeating it for the same request (a worker restart before its
 /// record retired) finds the first card and admits nothing new. The user's
 /// answer is sent only by the card's HTTP path, never from here, so a replay
-/// cannot send it a second time. `cursor` is the request's journal cursor: it
-/// lets the written answer's payload retire with the worker checkpoint.
+/// cannot send it a second time.
 pub async fn admit_native(
     store: std::sync::Arc<RuntimeStore>,
     context: &CallbackContext,
     frame: &studio_runtime_providers::Frame,
-    cursor: u64,
     now: f64,
 ) -> Result<NativeAdmission, CallbackError> {
     let request = Input::from_frame(frame)?
@@ -57,9 +55,6 @@ pub async fn admit_native(
         .ok_or(CallbackError::Invalid("Expected a native provider request"))?;
     if !now.is_finite() || now < 0.0 {
         return Err(CallbackError::Invalid("Invalid callback clock"));
-    }
-    if cursor == 0 {
-        return Err(CallbackError::Invalid("Invalid callback journal cursor"));
     }
     let context = context.clone();
     store
@@ -94,9 +89,6 @@ pub async fn admit_native(
             else {
                 return Err(CallbackError::Unknown);
             };
-            let mut owner = storage::owner(tx, &identity)?.ok_or(CallbackError::Unknown)?;
-            owner.payload.journal_cursor = Some(cursor);
-            storage::put_owner(tx, &owner)?;
             Ok(NativeAdmission::Card(id))
         })
         .await

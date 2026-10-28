@@ -22,7 +22,6 @@ pub struct CallbackOwner {
     pub signature: Option<String>,
     pub card: Option<String>,
     pub tool_request: Option<String>,
-    pub journal_cursor: Option<u64>,
     pub admission: Option<AdmittedRequest>,
     pub credential_refresh_admission: Option<AdmittedRequest>,
     pub reply_identity: Option<ReplyIdentity>,
@@ -139,7 +138,6 @@ pub(super) fn admit_owner(
             signature: Some(signature.into()),
             card: None,
             tool_request: None,
-            journal_cursor: None,
             admission: Some(admission),
             credential_refresh_admission: None,
             reply_identity: None,
@@ -464,41 +462,6 @@ fn delivery_in(
     Ok(true)
 }
 
-pub async fn bind_journal(
-    store: &RuntimeStore,
-    decision: &CallbackDecision,
-    context: &CallbackContext,
-    rpc_id: &studio_runtime_providers::RequestId,
-    cursor: u64,
-) -> Result<(), CallbackError> {
-    if cursor == 0 {
-        return Err(CallbackError::Invalid("Invalid callback journal cursor"));
-    }
-    let identity = match decision {
-        CallbackDecision::Answer(reply) => reply.identity.clone(),
-        CallbackDecision::Settled(identity) => identity.clone(),
-        CallbackDecision::Pending(_) => ReplyIdentity::new(context, rpc_id),
-        CallbackDecision::Unsupported => return Ok(()),
-    };
-    if identity.key() != ReplyIdentity::new(context, rpc_id).key() {
-        return Err(CallbackError::Stale);
-    }
-    let decision = decision.clone();
-    store
-        .transaction_with(move |tx| {
-            let mut owner = owner(tx, &identity)?.ok_or(CallbackError::Unknown)?;
-            if let CallbackDecision::Pending(card) = decision
-                && owner.payload.card.as_ref() != Some(&card)
-            {
-                return Err(CallbackError::Stale);
-            }
-            owner.payload.journal_cursor.get_or_insert(cursor);
-            put_owner(tx, &owner)?;
-            Ok(())
-        })
-        .await
-}
-
 pub(super) fn saved_decision(
     tx: &Transaction<'_>,
     identity: &ReplyIdentity,
@@ -691,7 +654,6 @@ pub(super) fn resolve_owner(
                 signature: signature.map(str::to_owned),
                 card: None,
                 tool_request: None,
-                journal_cursor: None,
                 admission: None,
                 credential_refresh_admission: None,
                 reply_identity: None,
@@ -759,7 +721,6 @@ pub(crate) fn seed_card_owner(
     };
     let mut owner = admit_owner(tx, identity, &input.signature())?;
     owner.payload.card = card["id"].as_str().map(str::to_owned);
-    owner.payload.journal_cursor = Some(1);
     put_owner(tx, &owner)
 }
 

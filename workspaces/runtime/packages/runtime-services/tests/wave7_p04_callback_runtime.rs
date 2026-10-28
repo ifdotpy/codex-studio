@@ -268,50 +268,6 @@ async fn committed_reply_rechecks_card_eligibility_before_provider_handoff() {
 }
 
 #[tokio::test]
-async fn binding_after_http_commit_still_retires_payload_and_preserves_attempt() {
-    use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
-    let (_root, store, context) = fixture().await;
-    let frame = Frame::Request(RequestFrame {
-        id: RequestId::Number(12),
-        method: Method::ItemToolRequestUserInput,
-        params: Some(json!({"threadId":context.thread,"turnId":context.turn,"questions":[]})),
-        fields: Default::default(),
-    });
-    let decision = dispatch(Arc::clone(&store), &context, &frame, 10.0)
-        .await
-        .unwrap();
-    let CallbackDecision::Pending(id) = &decision else {
-        panic!("pending")
-    };
-    let runtime = CallbackRuntime::new(store.clone(), Arc::new(Port::default()));
-    runtime
-        .answer(id, &json!({"answers":{}}), 20.0)
-        .await
-        .unwrap();
-    bind_journal(&store, &decision, &context, &RequestId::Number(12), 1)
-        .await
-        .unwrap();
-    let owner = callback_owner(&store, &context, &RequestId::Number(12));
-    assert_eq!(owner.status, ToolRequestStatus::Completed);
-    assert_eq!(owner.payload.journal_cursor, Some(1));
-    assert!(
-        Outbox::get::<CallbackResponse>(&store.test_reader().unwrap(), &owner.origin_key)
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(
-        callback_body(&store, &owner).unwrap().identity,
-        owner.payload.reply_identity.unwrap()
-    );
-    assert!(matches!(
-        dispatch(Arc::clone(&store), &context, &frame, 21.0)
-            .await
-            .unwrap(),
-        CallbackDecision::Settled(_)
-    ));
-}
-
-#[tokio::test]
 async fn tool_replay_rebuilds_the_same_reply_without_reexecuting_effect() {
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
     let (_root, store, context) = fixture().await;
@@ -480,22 +436,12 @@ async fn resolved_pending_or_prepared_callbacks_ack_without_resurrecting_approva
             .await
             .unwrap();
         assert!(matches!(decision, CallbackDecision::Settled(_)));
-        bind_journal(
-            &store,
-            &decision,
-            &context,
-            &studio_runtime_providers::RequestId::Number(42),
-            2,
-        )
-        .await
-        .unwrap();
         let owner = callback_owner(
             &store,
             &context,
             &studio_runtime_providers::RequestId::Number(42),
         );
         assert_eq!(owner.status, ToolRequestStatus::Completed);
-        assert_eq!(owner.payload.journal_cursor, Some(2));
         assert!(
             !serde_json::to_string(&owner)
                 .unwrap()

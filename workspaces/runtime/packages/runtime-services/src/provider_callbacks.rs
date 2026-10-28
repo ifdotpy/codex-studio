@@ -31,10 +31,9 @@ pub use recovery::{
 use serde_json::{Value, json};
 pub use storage::{
     CallbackBody, CallbackOwner, CallbackResponse, DeliveryOutcome, FrameAdmission,
-    admit_callback_request, begin_frame, bind_journal, callback_admission, callback_origin_key,
-    delivery, pending_callback_count, prepared_replies, record_frame_outcome,
-    reserve_credential_refresh, response_frame, save_frame_response, settle_response,
-    submission_ready,
+    admit_callback_request, begin_frame, callback_admission, callback_origin_key, delivery,
+    pending_callback_count, prepared_replies, record_frame_outcome, reserve_credential_refresh,
+    response_frame, save_frame_response, settle_response, submission_ready,
 };
 use studio_runtime_providers::{Frame, ResponseBody};
 use studio_runtime_store::RuntimeStore;
