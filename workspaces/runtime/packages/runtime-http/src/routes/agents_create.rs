@@ -1793,6 +1793,7 @@ mod title_http_tests {
             requested: Mutex::new(Some(requested_tx)),
         }));
         let app = crate::router::router(state).expect("HTTP routes register");
+        let request_id = uuid::Uuid::now_v7().to_string();
         let request = Request::builder()
             .method("POST")
             .uri("/api/rename")
@@ -1811,7 +1812,7 @@ mod title_http_tests {
                 json!({
                     "id":"title-http-agent",
                     "name":null,
-                    "request_id":"title-http-request"
+                    "request_id":request_id
                 })
                 .to_string(),
             ))
@@ -1831,7 +1832,7 @@ mod title_http_tests {
             .expect("HTTP finisher reaches title provider")
             .expect("title provider request delivered");
         assert_eq!(provider_request.agent_id, "title-http-agent");
-        assert_eq!(provider_request.request_id, "title-http-request");
+        assert_eq!(provider_request.request_id, request_id);
         assert_eq!(provider_request.model, "gpt-6-mini");
 
         let changed = Arc::new(Notify::new());

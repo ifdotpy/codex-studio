@@ -495,7 +495,7 @@ mod tests {
             "account_key":"default",
             "account_id":"account-A",
             "credit_id":"credit-A",
-            "request_id":"11000000-0000-4000-8000-000000000005"
+            "request_id":uuid::Uuid::now_v7().to_string()
         });
         let first = app
             .clone()
