@@ -601,7 +601,7 @@ async fn manual_restart_settlement_evidence(state: &State) -> Value {
         let attempt=studio_runtime_store::ExecutionHistoryRepository::attempt(tx,"manual-unknown-attempt")?.expect("exact original attempt");
         let mut outcomes=serde_json::Map::new();
         for (name,kind) in [("startResult",studio_runtime_schema::persistence::ExecutionReceiptKind::StartResult),("terminal",studio_runtime_schema::persistence::ExecutionReceiptKind::Terminal)] {
-            let saved=studio_runtime_store::ExecutionHistoryRepository::receipt(tx,"manual-unknown-attempt",kind)?.expect("exact execution result");
+            let saved=studio_runtime_store::ExecutionHistoryRepository::receipt::<serde_json::Value>(tx,"manual-unknown-attempt",kind)?.expect("exact execution result");
             outcomes.insert(name.into(),json!({"input":saved.input,"result":saved.result}));
         }
         Ok::<_,StoreError>(json!({"activeReceipt":receipts[0],"terminalReceipt":receipts[1],"events":events,"attempt":attempt.snapshot,"outcomes":outcomes}))

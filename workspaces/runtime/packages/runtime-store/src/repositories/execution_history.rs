@@ -12,8 +12,8 @@ use studio_runtime_schema::persistence::{
     AttemptSubmission, ExecutionReceiptKind, ExecutionStatus, RequestIdentity,
 };
 
-pub struct AttemptReceipt {
-    pub input: Value,
+pub struct AttemptReceipt<I> {
+    pub input: I,
     pub result: Value,
 }
 
@@ -233,7 +233,7 @@ impl ExecutionHistoryRepository {
         kind: ExecutionReceiptKind,
         input: &Value,
     ) -> StoreResult<Option<(bool, Value)>> {
-        let Some(receipt) = Self::receipt(tx, id, kind)? else {
+        let Some(receipt) = Self::receipt::<Value>(tx, id, kind)? else {
             return Ok(None);
         };
         Ok(Some((receipt.input == *input, receipt.result)))
@@ -242,11 +242,11 @@ impl ExecutionHistoryRepository {
         Self::admission_at(db, id, "$.admission")
     }
     /// Read exact cached suboperation evidence; the execution record carries no response bodies.
-    pub fn receipt(
+    pub fn receipt<I: serde::de::DeserializeOwned>(
         db: &rusqlite::Connection,
         id: &str,
         kind: ExecutionReceiptKind,
-    ) -> StoreResult<Option<AttemptReceipt>> {
+    ) -> StoreResult<Option<AttemptReceipt<I>>> {
         let Some(admission) = Self::admission(db, id)? else {
             return Ok(None);
         };

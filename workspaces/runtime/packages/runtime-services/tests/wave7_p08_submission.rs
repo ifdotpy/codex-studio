@@ -304,14 +304,14 @@ fn assert_current_receipts(db: &rusqlite::Connection) {
         admission: AdmittedRequest,
         publication_outcome: DispatchOutcome,
     }
-    let receipt = studio_runtime_store::ExecutionHistoryRepository::receipt(
+    let receipt = studio_runtime_store::ExecutionHistoryRepository::receipt::<Input>(
         db,
         "attempt",
         ExecutionReceiptKind::Submission,
     )
     .expect("read submission receipt")
     .expect("submission receipt exists");
-    let input: Input = serde_json::from_value(receipt.input).expect("typed receipt input");
+    let input = receipt.input;
     assert_eq!(
         (
             input.agent.as_str(),

@@ -702,7 +702,7 @@ pub async fn authorize_submission(
     let connection_id = connection_id.to_owned();
     let thread = thread.to_owned();
     Ok(lifecycle_transaction(store, move |tx| {
-        let replay = ExecutionHistoryRepository::receipt(
+        let replay = ExecutionHistoryRepository::receipt::<serde_json::Value>(
             tx,
             &attempt_id,
             studio_runtime_schema::persistence::ExecutionReceiptKind::Submission,
@@ -1543,7 +1543,7 @@ mod child_turn_parent_tests {
         store
             .transaction(move |tx| {
                 assert!(
-                    ExecutionHistoryRepository::receipt(
+                    ExecutionHistoryRepository::receipt::<serde_json::Value>(
                         tx,
                         &intent.attempt_id,
                         studio_runtime_schema::persistence::ExecutionReceiptKind::TerminalInput

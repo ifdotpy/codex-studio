@@ -1175,7 +1175,7 @@ impl SchedulerRepository {
         let Some(agent) = load_agent(transaction, &identity.agent_id)? else {
             return Ok(false);
         };
-        if ExecutionHistoryRepository::receipt(
+        if ExecutionHistoryRepository::receipt::<serde_json::Value>(
             transaction,
             &identity.attempt_id,
             ExecutionReceiptKind::StartResult,
@@ -1945,9 +1945,9 @@ impl SchedulerRepository {
             transaction,
             agent_id,
             turn_id,
-            serde_json::from_value::<studio_runtime_schema::persistence::ExecutionStatus>(json!(
-                native_status
-            ))?,
+            <studio_runtime_schema::persistence::ExecutionStatus as serde::Deserialize>::deserialize(
+                serde::de::value::StrDeserializer::<serde_json::Error>::new(native_status),
+            )?,
             native_error,
         )?;
         ExecutionHistoryRepository::save_receipt(

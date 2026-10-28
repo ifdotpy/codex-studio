@@ -450,7 +450,7 @@ impl AgentRecord {
             .ok_or(crate::StoreError::RecordContract(
                 "invalid active execution",
             ))?;
-        pointer.insert(field.into(), serde_json::to_value(value)?);
+        pointer.insert(field.into(), crate::projection_value(value));
         Ok(())
     }
     pub fn set_active_execution_run_id(&mut self, value: &str) -> StoreResult<()> {
@@ -474,7 +474,7 @@ impl AgentRecord {
             .get_mut("startAttempt")
             .and_then(|value| value.as_object_mut())
             .ok_or(crate::StoreError::RecordContract("missing start attempt"))?;
-        attempt.insert(field.into(), serde_json::to_value(value)?);
+        attempt.insert(field.into(), crate::projection_value(value));
         Ok(())
     }
 

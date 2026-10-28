@@ -1321,7 +1321,7 @@ pub(super) fn replay_claim(
     };
     let claim = claim_result(saved)?;
     let original = claim.agent;
-    let preparation = crate::ExecutionHistoryRepository::receipt(
+    let preparation = crate::ExecutionHistoryRepository::receipt::<serde_json::Value>(
         tx,
         saved.start.id.as_deref().ok_or_else(receipt_error)?,
         ExecutionReceiptKind::ThreadPrepared,
