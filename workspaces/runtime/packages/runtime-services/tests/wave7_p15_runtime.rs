@@ -15,8 +15,8 @@ use studio_runtime_services::{
     monitor_runtime_wiring::{Delivery, MonitorEvent, MonitorRuntime},
 };
 use studio_runtime_store::{
-    AgentRecord, AgentRepository, MonitorRecord, MonitorsRepository,
-    NotificationDispatchRepository, RuleRecord, RulesRepository, RuntimeStore, Table,
+    AgentRecord, AgentRepository, MonitorRecord, MonitorsRepository, RuleRecord, RulesRepository,
+    RuntimeStore, Table,
 };
 use tokio::sync::Notify;
 
@@ -1520,14 +1520,16 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
     let rejected_id = id.to_owned();
     let rejected_account = account.to_owned();
     let rejected_chunk = chunk.clone();
+    let rejected_identity =
+        studio_runtime_services::notification_dispatch::ProviderDeliveryIdentity {
+            provider_handle: format!("account:{account}"),
+            generation: 7,
+            cursor: 126,
+        };
+    let stored_identity = rejected_identity.clone();
     let rejected = store
         .transaction_with::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(move |tx| {
-            NotificationDispatchRepository::put_notification_receipt(
-                tx,
-                "provider-notification-capacity",
-                "same-notification",
-                "settled",
-            )?;
+            studio_runtime_services::account_worker::put_notification(tx,&rejected_identity,studio_runtime_services::notification_dispatch::NotificationSettlement {signature:"same-notification".into(),outcome:studio_runtime_services::notification_dispatch::DispatchOutcome::Written})?;
             monitor_event_queue::enqueue_output_in_transaction(
                 tx, &rejected_id, &rejected_account, 7, 126, &rejected_chunk,
             )?;
@@ -1541,16 +1543,13 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
     assert_eq!(record(&store, id), before);
     let receipt = store
         .transaction_with(move |tx| {
-            NotificationDispatchRepository::notification_receipt(
-                tx,
-                "provider-notification-capacity",
-            )
+            studio_runtime_services::account_worker::get_notification(tx, &stored_identity)
         })
         .await
         .expect("read notification receipt");
     assert!(
         receipt.is_none(),
-        "failed queue append rolls back its receipt"
+        "failed queue append rolls back its journal settlement"
     );
 
     let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
