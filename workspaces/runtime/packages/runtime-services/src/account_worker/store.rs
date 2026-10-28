@@ -15,7 +15,7 @@ use studio_runtime_schema::shared_values::{
     PROVIDER_THREAD_START_UNKNOWN_ERROR,
 };
 use studio_runtime_store::CachedSql;
-use studio_runtime_store::outbox::{Outbox, OutboxRow, Publication, PublicationClass};
+use studio_runtime_store::outbox::{Outbox, OutboxError, OutboxRow, Publication, PublicationClass};
 use studio_runtime_store::{AgentRecord, NotificationDispatchRepository};
 
 pub(super) const PUBLICATION_DRAIN_LIMIT: usize = 64;
@@ -48,12 +48,12 @@ pub(super) fn save_publication(
 ) -> Result<(), WorkerError> {
     type Effect = crate::notification_dispatch::NotificationPostCommit;
     let old = Outbox::get::<Publication<Effect>>(tx, operation).map_err(|error| match error {
-        studio_runtime_store::outbox::OutboxError::Json(_) => StoreError::InvalidStoredObject {
+        OutboxError::Json(_) => StoreError::InvalidStoredObject {
             table: "runtime_outbox",
             id: operation.to_owned(),
         }
         .into(),
-        error => outbox_error(error),
+        error @ (OutboxError::Sql(_) | OutboxError::Conflict(_)) => outbox_error(error),
     })?;
     if let Some(old) = old {
         let mut stored = old.payload;
