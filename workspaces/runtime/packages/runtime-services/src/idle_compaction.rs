@@ -17,7 +17,6 @@ use studio_runtime_store::{
 use tokio::sync::{Notify, watch};
 
 pub const NOTICE: &str = "Compacted while idle, before the prompt cache expired. To turn it off, set Claude idle compaction to Off in Settings > Agent orchestration.";
-pub const REQUEST_PREFIX: &str = "idle-compaction:";
 const FAILURE_RETRY_SECONDS: u64 = 30;
 
 pub use studio_runtime_schema::idle_compaction::CacheReport;
@@ -213,7 +212,7 @@ fn record(
 }
 
 /// Rechecks eligibility under the same writer transaction as native admission.
-/// The native receipt and this fire receipt commit together or neither commits.
+/// The native obligation and the current episode fire commit together or neither commits.
 pub struct IdleAdmission {
     pub inner: Arc<dyn Admission>,
     pub episode: Episode,
