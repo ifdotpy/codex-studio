@@ -196,8 +196,9 @@ fn put(db: &Transaction<'_>, table: &'static str, value: &Value) -> Result<(), P
     Ok(())
 }
 /// Shared idle gate for user actions that change a chat's owner or workspace.
-/// `uncertain_blocks` is true for a move to another owner, which must carry the
-/// unknown outcome; a switch in place keeps the thread and the event as they are.
+/// `uncertain_blocks` is true for a move to another owner, which must carry an
+/// unknown outcome (input or tool request); a switch in place keeps the thread
+/// and those records as they are.
 pub(crate) fn idle(
     db: &Connection,
     agents: &[Value],
@@ -265,7 +266,8 @@ pub(crate) fn idle(
                 "runtime_tool_requests" => {
                     belongs
                         && !truthy(r.get("readOnly"))
-                        && matches!(r["outcome"].as_str(), Some("pending" | "unknown"))
+                        && (r["outcome"] == "pending"
+                            || (uncertain_blocks && r["outcome"] == "unknown"))
                 }
                 "runtime_rules" => belongs && r["inFlight"] == true,
                 "runtime_workspace_operations" => {

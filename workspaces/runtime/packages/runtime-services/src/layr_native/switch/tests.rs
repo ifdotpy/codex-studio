@@ -96,6 +96,49 @@ async fn a_broken_row_of_another_chat_does_not_block_the_switch() {
     assert_eq!(result["workspaceMode"], "layr-native");
 }
 
+async fn with_tool_request(store: &RuntimeStore, outcome: &'static str) {
+    store
+        .transaction_with(move |tx| -> std::result::Result<(), StoreError> {
+            let record = json!({"id":"tool","agent":"wt-lead","threadId":"thread-kept",
+                "callId":"call","tool":"orchestration_servers","signature":"sig","epoch":0,
+                "created":1.0,"updated":2.0,"started":1.0,"finished":2.0,"stage":"failed",
+                "outcome":outcome,"cancelRequested":false,"readOnly":false});
+            tx.execute(
+                "INSERT INTO runtime_tool_requests(id,record) VALUES('tool',?1)",
+                [record.to_string()],
+            )
+            .map_err(StoreError::from)?;
+            Ok(())
+        })
+        .await
+        .expect("fixture tool request");
+}
+
+#[tokio::test]
+async fn an_unknown_past_tool_outcome_does_not_block_the_switch_in_place() {
+    // The switch keeps the record, so the unknown outcome stays as it is.
+    let (_directory, store) = store_with(&[wt_lead()]).await;
+    with_tool_request(&store, "unknown").await;
+    let result = switch_chat_with(Arc::clone(&store), "wt-lead", fake_effects)
+        .await
+        .expect("an unknown past tool outcome is not in flight");
+    assert_eq!(result["workspaceMode"], "layr-native");
+}
+
+#[tokio::test]
+async fn a_pending_tool_request_blocks_the_switch() {
+    let (_directory, store) = store_with(&[wt_lead()]).await;
+    with_tool_request(&store, "pending").await;
+    let error = switch_chat_with(Arc::clone(&store), "wt-lead", no_effects)
+        .await
+        .expect_err("a pending tool request refuses the switch");
+    assert!(
+        error
+            .to_string()
+            .contains("Finish pending operations first")
+    );
+}
+
 #[tokio::test]
 async fn input_still_in_flight_blocks_the_switch() {
     let (_directory, store) = store_with(&[wt_lead()]).await;
