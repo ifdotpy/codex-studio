@@ -104,6 +104,14 @@ async fn send_now_recovers_unsent_batch_after_result_gc() {
                     tx, &changed, &target
                 )?
             );
+            changed.extra.get_mut("startAttempt").expect("attempt")["observedTurnId"] = Value::Null;
+            changed.extra.get_mut("startAttempt").expect("attempt")["executionOutcome"] =
+                json!("unknown");
+            assert!(
+                !studio_runtime_store::SchedulerRepository::proven_unsent_pending_batch(
+                    tx, &changed, &target
+                )?
+            );
             tx.execute("UPDATE request_results SET created=0", [])?;
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)

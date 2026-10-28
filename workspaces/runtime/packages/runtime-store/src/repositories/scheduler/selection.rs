@@ -341,7 +341,6 @@ impl SchedulerRepository {
             || ["turnId", "observedTurnId", "nativeOperationId", "action"]
                 .iter()
                 .any(|key| saved.get(*key).is_some_and(|value| !value.is_null()))
-            || ExecutionHistoryRepository::receipt(tx, id, ExecutionReceiptKind::Unknown)?.is_some()
         {
             return Ok(false);
         }
