@@ -478,8 +478,8 @@ export function createSyncClient(options: SyncClientOptions) {
     return { ...handle, db, draftConflicts };
   }
 
-  /** The database of the outbox. The native core keeps the projections and the
-   * outbox stays in IndexedDB until it moves (step 3), so open it on demand. */
+  /** The database of the outbox. With the native core it holds only old rows
+   * that `native/outbox.ts` imports into the core, so open it on demand. */
   function outboxDatabase() {
     if (!options.projectionStore?.()) return syncDatabase();
     return (outboxPending ??= openOutboxDatabase().catch((error) => {

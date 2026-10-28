@@ -29,7 +29,9 @@ pub fn initialize(connection: &Connection) -> rusqlite::Result<()> {
         "CREATE TABLE IF NOT EXISTS client_outbox (
         workspace TEXT NOT NULL, id TEXT NOT NULL, room TEXT NOT NULL,
         payload TEXT NOT NULL, in_flight INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY(workspace,id));",
+        PRIMARY KEY(workspace,id));
+        CREATE TABLE IF NOT EXISTS client_outbox_removed (
+        workspace TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(workspace,id));",
     )?;
     // The previous process no longer owns an HTTP wait. Keep attempted=true so
     // restart cannot turn an uncertain delivery into a safe local cancellation.
@@ -65,7 +67,41 @@ pub fn list(connection: &Connection, workspace: &str) -> Result<Vec<Entry>, Stri
     Ok(entries)
 }
 
+/// Server receipt statuses (`MessageDelivery["status"]` in the web client).
+const RECEIPT_STATUSES: [&str; 11] = [
+    "queued",
+    "pending",
+    "reserved",
+    "dispatching",
+    "delivered",
+    "accepted",
+    "sent",
+    "uncertain",
+    "failed",
+    "cancelled",
+    "stored_only",
+];
+
+/// The device queue states of an entry.
+const ENTRY_STATUSES: [&str; 6] = [
+    "queued",
+    "paused",
+    "cancelled",
+    "accepted",
+    "uncertain",
+    "failed",
+];
+
 fn load(connection: &Connection, workspace: &str, id: &str) -> Result<(Entry, bool), String> {
+    find(connection, workspace, id)?
+        .ok_or_else(|| "This message is no longer on this device.".into())
+}
+
+fn find(
+    connection: &Connection,
+    workspace: &str,
+    id: &str,
+) -> Result<Option<(Entry, bool)>, String> {
     let row: Option<(String, bool)> = connection
         .query_row(
             "SELECT payload,in_flight FROM client_outbox WHERE workspace=?1 AND id=?2",
@@ -74,11 +110,122 @@ fn load(connection: &Connection, workspace: &str, id: &str) -> Result<(Entry, bo
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    let (payload, in_flight) = row.ok_or("This message is no longer on this device.")?;
-    Ok((
-        serde_json::from_str(&payload).map_err(|e| e.to_string())?,
-        in_flight,
-    ))
+    row.map(|(payload, in_flight)| {
+        Ok((
+            serde_json::from_str(&payload).map_err(|e| e.to_string())?,
+            in_flight,
+        ))
+    })
+    .transpose()
+}
+
+/// A removed message card fences its message identity: the message is
+/// cancelled while unsent, else paused, also when it is queued later.
+fn removed(connection: &Connection, workspace: &str, id: &str) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM client_outbox_removed WHERE workspace=?1 AND id=?2)",
+            params![workspace, id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())
+}
+
+fn stop_removed(entry: &mut Entry) {
+    if entry.attempted == Some(false) {
+        entry.status = "cancelled".into();
+        entry.receipt = Some(json!({"id":entry.id,"status":"cancelled"}));
+    } else {
+        entry.status = "paused".into();
+    }
+}
+
+/// `receiptOutgoing` in the web client: a server receipt updates only a message
+/// the server already acknowledged, and never replaces a delivered receipt.
+pub fn reconcile(
+    connection: &Connection,
+    workspace: &str,
+    room: &str,
+    receipt: &Value,
+) -> Result<bool, String> {
+    let (Some(id), Some(status)) = (
+        receipt.get("id").and_then(Value::as_str),
+        receipt.get("status").and_then(Value::as_str),
+    ) else {
+        return Ok(false);
+    };
+    if !RECEIPT_STATUSES.contains(&status) {
+        return Ok(false);
+    }
+    let Some((mut entry, in_flight)) = find(connection, workspace, id)? else {
+        return Ok(false);
+    };
+    if entry.body.get("room").and_then(Value::as_str) != Some(room)
+        || !["accepted", "uncertain"].contains(&entry.status.as_str())
+    {
+        return Ok(false);
+    }
+    let previous = serde_json::to_value(&entry).map_err(|e| e.to_string())?;
+    let current = match &entry.receipt {
+        Some(stored) if stored["status"] == "delivered" && status != "delivered" => stored.clone(),
+        _ => receipt.clone(),
+    };
+    entry.status = match current["status"].as_str() {
+        Some("uncertain") => "uncertain",
+        Some("failed") => "failed",
+        Some("cancelled") => "cancelled",
+        _ => "accepted",
+    }
+    .into();
+    entry.error = current
+        .get("error")
+        .and_then(Value::as_str)
+        .filter(|error| !error.is_empty())
+        .map(str::to_owned);
+    if entry.status == "accepted"
+        && current["status"] == "delivered"
+        && current["materialized"] == true
+    {
+        entry.display_pending = false;
+    }
+    entry.receipt = Some(current);
+    if serde_json::to_value(&entry).map_err(|e| e.to_string())? == previous {
+        return Ok(false);
+    }
+    save(connection, &entry, in_flight)?;
+    Ok(true)
+}
+
+/// One legacy browser queue row, kept as it was: its status and attempted
+/// marker decide whether the message may still be cancelled.
+fn import(connection: &Connection, workspace: &str, value: &Value) -> Result<bool, String> {
+    let id = text(value, "id")?;
+    let body = value.get("body").filter(|body| body.is_object());
+    let status = value.get("status").and_then(Value::as_str);
+    if body.and_then(|body| body.get("id")).and_then(Value::as_str) != Some(id)
+        || body
+            .map(|body| text(body, "room"))
+            .is_none_or(|room| room.is_err())
+        || !status.is_some_and(|status| ENTRY_STATUSES.contains(&status))
+        || !value.get("created").is_some_and(Value::is_u64)
+    {
+        return Err(format!("Saved message {id} could not be read."));
+    }
+    let mut record = value.clone();
+    record["workspace"] = json!(workspace);
+    if record.get("displayPending").is_none() {
+        record["displayPending"] = json!(true);
+    }
+    if record.get("attachments").is_none() {
+        record["attachments"] = json!([]);
+    }
+    let entry: Entry = serde_json::from_value(record)
+        .map_err(|_| format!("Saved message {id} could not be read."))?;
+    if find(connection, workspace, id)?.is_some() {
+        return Ok(false);
+    }
+    save(connection, &entry, false)?;
+    Ok(true)
 }
 
 fn save(connection: &Connection, entry: &Entry, in_flight: bool) -> Result<(), String> {
@@ -111,6 +258,27 @@ fn apply(connection: &Connection, method: &str, params: &Value) -> Result<Value,
         }
         return Ok(json!({"acknowledged":true}));
     }
+    if method == "outbox.import" {
+        let entries = params["entries"]
+            .as_array()
+            .ok_or("Saved messages are required.")?;
+        let mut imported = 0;
+        for value in entries {
+            imported += usize::from(import(connection, workspace, value)?);
+        }
+        return Ok(json!({"imported":imported}));
+    }
+    if method == "outbox.reconcile" {
+        let room = text(params, "room")?;
+        let receipts = params["receipts"]
+            .as_array()
+            .ok_or("Receipts are required.")?;
+        let mut changed = 0;
+        for receipt in receipts {
+            changed += usize::from(reconcile(connection, workspace, room, receipt)?);
+        }
+        return Ok(json!({"changed":changed}));
+    }
     if method == "outbox.enqueue" {
         let body = params
             .get("body")
@@ -135,7 +303,7 @@ fn apply(connection: &Connection, method: &str, params: &Value) -> Result<Value,
             }
             return serde_json::to_value(entry).map_err(|e| e.to_string());
         }
-        let entry = Entry {
+        let mut entry = Entry {
             id: id.into(),
             workspace: workspace.into(),
             body: body.clone(),
@@ -155,10 +323,29 @@ fn apply(connection: &Connection, method: &str, params: &Value) -> Result<Value,
             error: None,
             receipt: None,
         };
+        if removed(connection, workspace, id)? {
+            stop_removed(&mut entry);
+        }
         save(connection, &entry, false)?;
         return serde_json::to_value(entry).map_err(|e| e.to_string());
     }
     let id = text(params, "id")?;
+    if method == "outbox.stop" {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO client_outbox_removed(workspace,id) VALUES(?1,?2)",
+                params![workspace, id],
+            )
+            .map_err(|e| e.to_string())?;
+        let Some((mut entry, in_flight)) = find(connection, workspace, id)? else {
+            return Ok(json!({"cancelled":false}));
+        };
+        if ["queued", "paused"].contains(&entry.status.as_str()) {
+            stop_removed(&mut entry);
+            save(connection, &entry, in_flight)?;
+        }
+        return Ok(json!({"cancelled":entry.status == "cancelled"}));
+    }
     let (mut entry, mut in_flight) = load(connection, workspace, id)?;
     match method {
         "outbox.claim" => {
@@ -168,6 +355,11 @@ fn apply(connection: &Connection, method: &str, params: &Value) -> Result<Value,
             let first = list(connection, workspace)?.into_iter().find(|other| {
                 other.status == "queued" && other.body.get("room") == entry.body.get("room")
             });
+            if entry.status == "queued" && !in_flight && removed(connection, workspace, id)? {
+                stop_removed(&mut entry);
+                save(connection, &entry, false)?;
+                return Ok(json!({"claimed":false,"entry":entry}));
+            }
             if entry.status != "queued"
                 || in_flight
                 || occupied
@@ -196,7 +388,15 @@ fn apply(connection: &Connection, method: &str, params: &Value) -> Result<Value,
                     entry.receipt = Some(json!({"id":id,"status":"cancelled"}));
                 }
                 "pause" => entry.status = "paused".into(),
-                "resume" => entry.status = "queued".into(),
+                "resume" => {
+                    connection
+                        .execute(
+                            "DELETE FROM client_outbox_removed WHERE workspace=?1 AND id=?2",
+                            params![workspace, id],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    entry.status = "queued".into();
+                }
                 _ => return Err("Unknown queue action.".into()),
             }
         }
@@ -216,21 +416,7 @@ fn apply(connection: &Connection, method: &str, params: &Value) -> Result<Value,
                 return Err("The delivery response does not match this message.".into());
             }
             let status = receipt.get("status").and_then(Value::as_str);
-            let acknowledged = status.is_some_and(|value| {
-                [
-                    "queued",
-                    "pending",
-                    "reserved",
-                    "dispatching",
-                    "delivered",
-                    "accepted",
-                    "sent",
-                    "uncertain",
-                    "failed",
-                    "cancelled",
-                ]
-                .contains(&value)
-            });
+            let acknowledged = status.is_some_and(|value| RECEIPT_STATUSES.contains(&value));
             let legacy = status.is_none()
                 && receipt.get("room") == entry.body.get("room")
                 && receipt.get("text").and_then(Value::as_str)
@@ -297,6 +483,8 @@ pub fn dispatch(connection: &mut Connection, request: &Request) -> Response {
         let durable = matches!(
             request.method.as_str(),
             "outbox.enqueue"
+                | "outbox.import"
+                | "outbox.stop"
                 | "outbox.change"
                 | "outbox.display"
                 | "outbox.acknowledge"
@@ -471,5 +659,150 @@ mod tests {
                 .unwrap()["claimed"],
             false
         );
+    }
+
+    fn claim(db: &mut Connection, id: &str) -> Value {
+        command(db, "outbox.claim", json!({"workspace":"w","id":id}))
+            .result
+            .unwrap()
+    }
+    #[test]
+    fn a_removed_card_cancels_unsent_messages_and_pauses_attempted_ones() {
+        let mut db = database();
+        // Removed before the queue saved it: the later enqueue is cancelled.
+        command(&mut db, "outbox.stop", json!({"workspace":"w","id":"a"}));
+        enqueue(&mut db, "a", "one");
+        assert_eq!(list(&db, "w").unwrap()[0].status, "cancelled");
+        assert_eq!(claim(&mut db, "a")["claimed"], false);
+        // Removed after delivery started: paused, never cancelled.
+        enqueue(&mut db, "b", "two");
+        assert_eq!(claim(&mut db, "b")["claimed"], true);
+        command(
+            &mut db,
+            "outbox.failure",
+            json!({"workspace":"w","id":"b","error":"offline","retryable":true}),
+        );
+        let stopped = command(&mut db, "outbox.stop", json!({"workspace":"w","id":"b"}));
+        assert_eq!(stopped.result.unwrap()["cancelled"], false);
+        assert_eq!(list(&db, "w").unwrap()[1].status, "paused");
+        // Resume clears the fence; the same identity is delivered again.
+        command(
+            &mut db,
+            "outbox.change",
+            json!({"workspace":"w","id":"b","action":"resume"}),
+        );
+        assert_eq!(claim(&mut db, "b")["claimed"], true);
+    }
+    #[test]
+    fn import_keeps_the_legacy_attempted_marker_and_existing_rows() {
+        let mut db = database();
+        enqueue(&mut db, "a", "local");
+        let legacy = |id: &str, text: &str| json!({"id":id,"body":{"id":id,"room":"r","text":text},"status":"queued","created":5});
+        let result = command(
+            &mut db,
+            "outbox.import",
+            json!({"workspace":"w","entries":[legacy("a","old"),legacy("b","old")]}),
+        );
+        assert_eq!(result.result.unwrap()["imported"], 1);
+        let entries = list(&db, "w").unwrap();
+        assert_eq!(entries[1].body["text"], "local");
+        assert_eq!(entries[0].attempted, None);
+        // An old row without the marker may have reached the server.
+        let cancel = command(
+            &mut db,
+            "outbox.change",
+            json!({"workspace":"w","id":"b","action":"cancel"}),
+        );
+        assert!(cancel.error.is_some());
+        let bad = command(
+            &mut db,
+            "outbox.import",
+            json!({"workspace":"w","entries":[{"id":"c","body":{"id":"other","room":"r"},"status":"queued","created":1}]}),
+        );
+        assert!(bad.error.is_some());
+    }
+    #[test]
+    fn server_receipts_reconcile_only_acknowledged_messages_of_their_chat() {
+        let mut db = database();
+        enqueue(&mut db, "a", "one");
+        enqueue(&mut db, "b", "two");
+        claim(&mut db, "a");
+        let stored = command(
+            &mut db,
+            "outbox.receipt",
+            json!({"workspace":"w","id":"a","receipt":{"id":"a","status":"stored_only"}}),
+        );
+        assert_eq!(stored.result.unwrap()["status"], "accepted");
+        let reconcile = |db: &mut Connection, room: &str, receipt: Value| {
+            command(
+                db,
+                "outbox.reconcile",
+                json!({"workspace":"w","room":room,"receipts":[receipt]}),
+            )
+            .result
+            .unwrap()["changed"]
+                .clone()
+        };
+        // A queued message keeps the idempotent send path.
+        assert_eq!(
+            reconcile(&mut db, "r", json!({"id":"b","status":"delivered"})),
+            0
+        );
+        assert_eq!(
+            reconcile(&mut db, "other", json!({"id":"a","status":"delivered"})),
+            0
+        );
+        assert_eq!(
+            reconcile(
+                &mut db,
+                "r",
+                json!({"id":"a","status":"delivered","materialized":true})
+            ),
+            1
+        );
+        assert_eq!(
+            reconcile(&mut db, "r", json!({"id":"a","status":"pending"})),
+            0
+        );
+        let entry = list(&db, "w").unwrap().remove(0);
+        assert_eq!(entry.receipt.unwrap()["status"], "delivered");
+        assert!(!entry.display_pending);
+    }
+
+    #[test]
+    fn a_streamed_receipt_entity_settles_its_message() {
+        let mut db = database();
+        let workspace = "a".repeat(32);
+        let body = json!({"id":"m","room":"r","text":"one"});
+        command(
+            &mut db,
+            "outbox.enqueue",
+            json!({"workspace":workspace,"body":body}),
+        );
+        command(
+            &mut db,
+            "outbox.claim",
+            json!({"workspace":workspace,"id":"m"}),
+        );
+        command(
+            &mut db,
+            "outbox.receipt",
+            json!({"workspace":workspace,"id":"m","receipt":{"id":"m","status":"queued"}}),
+        );
+        let applied = crate::projections::dispatch(
+            &db,
+            &Request {
+                id: "entities".into(),
+                method: "projection.applyEntities".into(),
+                params: json!({"workspace":workspace,"replace":false,"changes":[{
+                    "op":"upsert","collection":"messageReceipt","id":"m","seq":1,
+                    "value":{"id":"m","agent":"r","status":"delivered","materialized":true}
+                }]}),
+            },
+        );
+        assert!(applied.error.is_none(), "{:?}", applied.error);
+        let entry = list(&db, &workspace).unwrap().remove(0);
+        assert_eq!(entry.receipt.unwrap()["status"], "delivered");
+        assert!(!entry.display_pending);
     }
 }

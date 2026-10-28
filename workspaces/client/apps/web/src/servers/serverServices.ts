@@ -21,7 +21,8 @@ import { createBrowserDrafts } from "../sync/drafts";
 import { createDraftJournal } from "../sync/draftJournal";
 import { createDraftStorage } from "../sync/draftStorage";
 import { useNativeDrafts } from "../native/useNativeDrafts";
-import { createOutbox } from "../sync/send";
+import { createOutbox, type OutboxService } from "../sync/send";
+import { createNativeOutbox } from "../native/outbox";
 import { createSyncClient } from "../sync/client";
 import { nativeProjectionStore } from "../sync/nativeProjections";
 import { createServerSubscriptions } from "../sync/subscriptions/server";
@@ -107,11 +108,13 @@ export function createServerServices(server: StudioServer) {
       stopName = watchServerName(transport.owner, resources);
     return runtime;
   };
-  const outbox = createOutbox({
-    api,
-    syncDatabase: () => synchronization().sync.outboxDatabase(),
-    storage,
-  });
+  const outbox: OutboxService = localNativeClient()
+    ? createNativeOutbox(() => synchronization().sync.outboxDatabase())
+    : createOutbox({
+        api,
+        syncDatabase: () => synchronization().sync.outboxDatabase(),
+        storage,
+      });
   let browserDrafts: ReturnType<typeof createBrowserDrafts> | undefined;
   const drafts = () => {
     if (transport.owner.id === "local" && hasNativeClient())

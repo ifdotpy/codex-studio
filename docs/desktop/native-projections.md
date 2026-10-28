@@ -41,7 +41,7 @@ The sync client takes an optional `projectionStore`. The local server in the
 desktop app and the default client pass the native store. Then:
 
 - `syncDatabase()` returns the workspace identity and the native projections. It opens no database.
-- `outboxDatabase()` opens the RxDB database of the outbox on demand (see below).
+- `outboxDatabase()` opens the old RxDB outbox on demand, only to import its rows into the core (see below).
 - RxDB and Dexie load on first use. The native path does not load them for projections.
 - `createResourceEvents` runs with `independent: true`: one page owns its stream, with no Web Locks owner election and no BroadcastChannel.
 - Large entity transfers stage in memory (`MemoryTransferStorage`).
@@ -57,7 +57,8 @@ A remote server in the desktop app and a plain browser keep the RxDB path.
 
 ## What stays on IndexedDB
 
-- The outbox and drafts of the local server (`send.ts`). Step 3 moves the outbox to `outbox.*`. The page opens that database on demand, so a slow database no longer blocks the stream or the projections.
+- The drafts of the local server.
+- The old outbox rows. The core owns the outbox of the local server (`native/outbox.ts`, `outbox.*`): queue states, delivery, retry, receipts, and remove and restore. When the queue view starts, the page imports each old row with its status and attempted marker, like `native/legacyDrafts.ts`. The core keeps its own copy of a row it already has. The old rows stay on disk.
 - Old IndexedDB projection databases from earlier builds stay on disk until the user clears them. The native path never reads them.
 - Remote servers and the plain browser path (RxDB, Dexie, Web Locks, BroadcastChannel).
 

@@ -994,6 +994,11 @@ export function createOutbox(options: {
     useOutbox,
   };
 }
+/** The queue commands a server's services expose; the native core implements the same set. */
+export type OutboxService = Omit<
+  ReturnType<typeof createOutbox>,
+  "deliver" | "recoverAcknowledgedOutbox"
+>;
 export const {
   deliver,
   durableSend,

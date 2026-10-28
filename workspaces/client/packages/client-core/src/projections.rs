@@ -385,7 +385,7 @@ fn apply_entities(
             .map_err(|e| e.to_string())?;
         for change in changes {
             let scope = entity_scope(change)?;
-            changed |= insert
+            let inserted = insert
                 .execute(params![
                     workspace,
                     scope,
@@ -394,6 +394,23 @@ fn apply_entities(
                 ])
                 .map_err(|e| e.to_string())?
                 != 0;
+            changed |= inserted;
+            // A delivery receipt also settles the queued message it names. An
+            // unreadable queue row must not stop projections; the outbox view
+            // reports its own storage errors.
+            if inserted
+                && change["op"] == "upsert"
+                && change["collection"] == "messageReceipt"
+                && let Some(room) = change["value"]["agent"].as_str()
+                && change["value"]["id"] == change["id"]
+            {
+                drop(crate::outbox::reconcile(
+                    &transaction,
+                    workspace,
+                    room,
+                    &change["value"],
+                ));
+            }
         }
     }
     if let Some(checkpoint) = params.get("checkpoint") {

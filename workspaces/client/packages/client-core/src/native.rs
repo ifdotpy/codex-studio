@@ -80,7 +80,11 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                         | "preferences.raw_remove"
                         | "identity.set"
                         | "projection.put"
+                        | "projection.applyEntities"
                         | "outbox.enqueue"
+                        | "outbox.import"
+                        | "outbox.stop"
+                        | "outbox.reconcile"
                         | "outbox.change"
                         | "outbox.display"
                         | "outbox.acknowledge"
@@ -256,7 +260,11 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 }
                 Ok(request) if request.method == "actions.submit" => Work::Action(request),
                 Ok(request) if request.method == "api.request" => Work::Network(request),
-                Ok(request) if request.method == "outbox.deliver" => Work::Delivery(request),
+                Ok(request)
+                    if matches!(request.method.as_str(), "outbox.deliver" | "outbox.recover") =>
+                {
+                    Work::Delivery(request)
+                }
                 Ok(request) if request.method == "outbox.activate" => {
                     active.store(true, Ordering::Relaxed);
                     Work::Immediate(Response::success(
