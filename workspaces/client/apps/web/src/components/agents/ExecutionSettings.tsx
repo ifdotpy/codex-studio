@@ -294,7 +294,7 @@ function ExecutionSettingsController(props: ControllerProps) {
     <Modal
       opened={statusOpen}
       onClose={() => setStatusOpen(false)}
-      title="Execution settings"
+      title="Settings change"
       centered
       zIndex={layerZIndex.modalAbovePopover}
     >
@@ -1402,7 +1402,7 @@ function ScopedExecutionSettings({
           effort: next.effort,
           fast_mode: next.fast_mode,
           daybreak_enabled: next.daybreak_enabled,
-          ...(active || queued || (agent.threadId && canQueueSettings)
+          ...(active || queued
             ? { next_turn: true, request_id: randomUUID() }
             : {}),
         };

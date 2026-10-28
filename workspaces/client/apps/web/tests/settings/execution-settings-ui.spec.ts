@@ -154,6 +154,14 @@ test("execution settings ui", async ({ browser: _browser }) => {
     }
     const state = async () =>
       (await readTestState(url, { agentDetails: true })).runtime.agents;
+    // A live settings change opens its status modal before the POST starts,
+    // so it is open whenever the acknowledged change belongs to one agent.
+    const closeChangeStatus = async () => {
+      const dialog = page.getByRole("dialog", { name: "Settings change" });
+      if (!(await dialog.isVisible())) return;
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "hidden" });
+    };
     const settingsResponse = (
       id: string,
       matches: (body: PostBody<"/api/conversation">) => boolean,
@@ -368,6 +376,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
       const row = (await state()).find((a) => a.id === lead.id);
       return (row!.pendingSettings?.model || row!.model) !== lead.model!;
     });
+    // The change status modal sits above the menu and takes the first Escape.
+    await page.getByRole("dialog", { name: "Settings change" }).waitFor();
+    await closeChangeStatus();
     await page.keyboard.press("Escape");
     await listBox.waitFor({ state: "hidden" });
     await expect(
@@ -383,6 +394,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       (await originalModelSaved).ok(),
       "original model save is acknowledged",
     );
+    await closeChangeStatus();
     await waitFor(async () => {
       const row = (await state()).find((a) => a.id === lead.id);
       return (row!.pendingSettings?.model || row!.model) === lead.model!;
@@ -398,6 +410,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await leadReasoning.selectOption("high");
     assert.ok((await leadReasoningSaved).ok());
+    await closeChangeStatus();
     await waitFor(
       async () =>
         (await state()).find((a) => a.id === lead.id)!.effort === "high",
@@ -419,6 +432,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       .getByText("Ask", { exact: true })
       .click();
     assert.ok((await yoloSaved).ok());
+    await closeChangeStatus();
     await waitFor(
       async () =>
         (await state()).find((a) => a.id === lead.id)!.yoloMode === false,
@@ -432,6 +446,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       .getByText("Full", { exact: true })
       .click();
     assert.ok((await fullSaved).ok());
+    await closeChangeStatus();
     await waitFor(
       async () =>
         (await state()).find((a) => a.id === lead.id)!.yoloMode === true,
@@ -448,6 +463,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await leadFastMode.check();
     assert.ok((await leadFastModeSaved).ok());
+    await closeChangeStatus();
     await waitFor(
       async () =>
         (await state()).find((a) => a.id === lead.id)!.fastMode === true,
@@ -509,6 +525,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await delegationDepth.selectOption("2");
     assert.ok((await nestedDelegationSaved).ok());
+    await closeChangeStatus();
     await waitFor(
       async () =>
         (await state()).find((a) => a.id === lead.id)!.workerDefaults!
@@ -544,6 +561,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await defaultReasoning.selectOption("low");
     assert.ok((await lowerWorkerReasoningSaved).ok());
+    await closeChangeStatus();
     await waitFor(() => defaultReasoning.isEnabled());
     const inheritedReasoningSaved = settingsResponse(
       lead.id,
@@ -551,6 +569,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await defaultReasoning.selectOption("high");
     assert.ok((await inheritedReasoningSaved).ok());
+    await closeChangeStatus();
     await waitFor(() => defaultReasoning.isEnabled());
     const defaultFastMode = setupToggle(
       dialog.getByRole("switch", { name: "Fast mode", exact: true }),
@@ -561,6 +580,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await defaultFastMode.check();
     assert.ok((await inheritedFastModeSaved).ok());
+    await closeChangeStatus();
     for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 960 });
 
@@ -646,6 +666,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await selectModel(defaultModel, "test-slow");
     assert.ok((await slowModelSaved).ok());
+    await closeChangeStatus();
     await dialog
       .getByRole("switch", { name: "Fast mode", exact: true })
       .waitFor({ state: "hidden" });
@@ -671,6 +692,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await selectModel(defaultModel, "gpt-5.6-sol");
     assert.ok((await solModelSaved).ok());
+    await closeChangeStatus();
     await waitFor(
       async () =>
         (await state()).find((a) => a.id === lead.id)!.workerDefaults!.model ===
@@ -690,6 +712,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await highReasoningOption.waitFor({ state: "visible" });
     await highReasoningOption.click();
     assert.ok((await higherWorkerReasoningSaved).ok());
+    await closeChangeStatus();
     await waitFor(() => defaultReasoning.isEnabled());
     await expect(defaultReasoning.locator('input[value="high"]')).toBeChecked();
     const lowReasoningSaved = settingsResponse(
@@ -700,6 +723,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await defaultReasoning.selectOption("low");
     assert.ok((await lowReasoningSaved).ok());
+    await closeChangeStatus();
     await waitFor(async () => {
       const defaults = (await state()).find(
         (a) => a.id === lead.id,
@@ -776,6 +800,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       .getByText("Ask", { exact: true })
       .click();
     assert.ok((await freshYoloOffSaved).ok());
+    await closeChangeStatus();
     await waitFor(
       async () =>
         (await state()).find((a) => a.id === fresh.id)!.yoloMode === false,
@@ -791,6 +816,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       .getByText("Full", { exact: true })
       .click();
     assert.ok((await freshYoloOnSaved).ok());
+    await closeChangeStatus();
     await waitFor(
       async () =>
         (await state()).find((a) => a.id === fresh.id)!.yoloMode === true,

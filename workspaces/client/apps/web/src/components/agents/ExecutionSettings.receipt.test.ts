@@ -742,24 +742,6 @@ for (const role of ["implementer", "reviewer"] as const) {
   });
 }
 
-test("an idle existing session queues the change until its next turn", async () => {
-  const agent: Agent = {
-    ...initial,
-    threadId: "existing-thread",
-    nextTurnSettingsSupported: true,
-  };
-  h.post.mockResolvedValue({
-    ...agent,
-    pendingSettings: { model: "gpt-6-luna", effort: "medium", fastMode: false },
-    pendingSettingsAccountKey: "default",
-  });
-  render(agent).picker.onModel("gpt-6-luna");
-  await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
-  expect(required(required(h.post.mock.calls[0])[1])).toMatchObject({
-    next_turn: true,
-  });
-});
-
 test("a direct settings save shows Saved instead of Queued", async () => {
   h.post.mockResolvedValue({ ...initial, model: "gpt-6-luna" });
   render(initial).picker.onModel("gpt-6-luna");
