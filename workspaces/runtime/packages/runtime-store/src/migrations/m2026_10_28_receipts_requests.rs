@@ -296,7 +296,21 @@ fn redundant_tool_result(tx: &Transaction<'_>, row: &SourceReceipt) -> Result<bo
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    let (signature, result) = saved.ok_or_else(invalid)?;
+    let Some((signature, result)) = saved else {
+        if task["kind"] == "managed_tool"
+            && task["id"] == row.id
+            && task["stage"] == "interrupted"
+            && task["outcome"] == "unknown"
+            && task["signature"] == token.signature()
+            && token.id() == row.id
+            && task["agent"]
+                .as_str()
+                .is_some_and(|agent| !agent.is_empty())
+        {
+            return Ok(false);
+        }
+        return Err(invalid());
+    };
     let outer: ResultEnvelope<Value> = serde_json::from_str(&result).map_err(|_| invalid())?;
     if task["kind"] != "managed_tool"
         || task["id"] != row.id
@@ -1311,6 +1325,60 @@ mod tests {
     }
     fn plan() -> Value {
         json!({"id":"agent","rootId":"root","text":"original","version":1,"updated":1.0})
+    }
+    #[test]
+    fn receipts_requests_missing_outer_keeps_unknown_owner_and_replays_inner() {
+        for (tool, reply) in [
+            (
+                "orchestration_message",
+                json!({"id":"message","room":"room","deliveries":{}}),
+            ),
+            (
+                "orchestration_task",
+                json!({"id":"task","rootId":"root","title":"Task","status":"ready","created":1.0,"updated":2.0,"version":1}),
+            ),
+        ] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            db.execute_batch(
+                "CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+            )
+            .expect("owner");
+            insert(&db, "tool-id", reply.clone());
+            let token = admitted_owner_token("tool-id", "outer-signature", CUTOVER);
+            let task = json!({"id":"tool-id","agent":"agent","tool":tool,"kind":"managed_tool","stage":"interrupted","outcome":"unknown","signature":"outer-signature","admitted":token});
+            let owner = task.to_string();
+            db.execute(
+                "INSERT INTO runtime_tool_requests VALUES('tool-id',?1)",
+                [&owner],
+            )
+            .expect("task");
+            let tx = db.transaction().expect("transaction");
+            let cp = MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
+            Family.move_batch(&tx, SOURCE, &cp).expect("import inner");
+            tx.commit().expect("commit");
+            let saved = crate::request_results::RequestResults::replay(
+                &db,
+                "tool-id",
+                SIGNATURE,
+                CUTOVER + 1,
+            )
+            .expect("replay")
+            .expect("inner");
+            assert_eq!(
+                serde_json::from_str::<Value>(&saved.result).expect("envelope")["reply"],
+                reply
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT record FROM runtime_tool_requests WHERE id='tool-id'",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .expect("owner"),
+                owner
+            );
+        }
     }
     #[test]
     fn receipts_requests_redundant_message_requires_matching_tool_proof() {
