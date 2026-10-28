@@ -33,7 +33,7 @@ fn add_request(tx: &rusqlite::Transaction<'_>, request: Value) {
 fn add_event(tx: &rusqlite::Transaction<'_>, id: &str, agent: &str, status: &str, epoch: i64) {
     tx.execute(
         "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) \
-         VALUES(?1,?2,'message','{}',?3,1000,?4,NULL,NULL)",
+         VALUES(?1,?2,'user','{}',?3,1000,?4,NULL,NULL)",
         (id, agent, status, epoch),
     )
     .expect("store event");

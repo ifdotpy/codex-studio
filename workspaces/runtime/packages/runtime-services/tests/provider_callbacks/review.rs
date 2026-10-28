@@ -1,6 +1,14 @@
 use super::*;
 
 async fn put_record(store: &RuntimeStore, table: &str, record: &Value) {
+    try_put_record(store, table, record).await.unwrap();
+}
+
+async fn try_put_record(
+    store: &RuntimeStore,
+    table: &str,
+    record: &Value,
+) -> Result<(), studio_runtime_store::StoreError> {
     let table = table.to_owned();
     let id = record["id"].as_str().unwrap().to_owned();
     let encoded = record.to_string();
@@ -13,7 +21,6 @@ async fn put_record(store: &RuntimeStore, table: &str, record: &Value) {
             Ok(())
         })
         .await
-        .unwrap();
 }
 fn record(store: &RuntimeStore, table: &str, id: &str) -> Value {
     let raw: String = store
@@ -87,6 +94,20 @@ async fn work_commands_match_python_arguments_bounds_and_provenance() {
         } else if case["args"]["action"] == "create" {
             let mut actual = tool_value(&result);
             let mut expected = case["expected"]["value"].clone();
+            let actual_root = actual.as_object_mut().unwrap().remove("requestId").unwrap();
+            let legacy_root = expected
+                .as_object_mut()
+                .unwrap()
+                .remove("requestId")
+                .unwrap();
+            assert_eq!(legacy_root, format!("thread-0:review-work-{index}"));
+            assert_eq!(
+                uuid::Uuid::parse_str(actual_root.as_str().unwrap())
+                    .unwrap()
+                    .get_version_num(),
+                7,
+                "created work uses an issued UUIDv7 root"
+            );
             let id = actual["id"].as_str().unwrap().to_owned();
             let mut stored = record(&store, "runtime_work", &id);
             let mut expected_stored = case["created"].clone();
@@ -159,19 +180,27 @@ async fn malformed_work_never_poison_store_writer() {
                 .expect("work fixture object")
                 .remove(field);
         }
-        put_record(&store, "runtime_work", &work).await;
-        let frame = call(
-            &context,
-            "bad-work",
-            "orchestration_task",
-            json!({"action":"history","task_id":work["id"]}),
-        );
-        let error = dispatch(std::sync::Arc::clone(&store), &context, &frame, 20.0)
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("runtime_work"), "{error}");
-        assert!(error.contains(work["id"].as_str().unwrap()), "{error}");
+        let inserted = try_put_record(&store, "runtime_work", &work).await;
+        if field == "status" && work.get("status").and_then(Value::as_str) == Some("unknown") {
+            assert!(
+                inserted.is_err(),
+                "invalid status is refused by the stored schema"
+            );
+        } else {
+            inserted.unwrap();
+            let frame = call(
+                &context,
+                "bad-work",
+                "orchestration_task",
+                json!({"action":"history","task_id":work["id"]}),
+            );
+            let error = dispatch(std::sync::Arc::clone(&store), &context, &frame, 20.0)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("runtime_work"), "{error}");
+            assert!(error.contains(work["id"].as_str().unwrap()), "{error}");
+        }
         store
             .transaction_with::<_, studio_runtime_store::StoreError>(|tx| {
                 tx.execute("DELETE FROM runtime_work", [])?;
@@ -290,9 +319,10 @@ async fn resolved_answering_unknown_and_blocked_match_python() {
             .unwrap();
         assert_eq!(record(&store, "runtime_agents", &context.agent), completed);
         assert!(
-            delivery(&store, &prepared.identity, DeliveryOutcome::Submitted)
+            !delivery(&store, &prepared.identity, DeliveryOutcome::Submitted)
                 .await
-                .is_err()
+                .unwrap(),
+            "a resolved callback cannot submit again"
         );
         assert!(
             delivery(&store, &prepared.identity, DeliveryOutcome::Written)
@@ -404,16 +434,12 @@ async fn model_projection_matches_python_and_keeps_full_result() {
     assert!(body(&result).to_string().len() < 16000);
     let preview = tool_value(&result);
     assert_eq!(preview["truncated"], true);
-    let raw: String = store
-        .test_reader()
-        .unwrap()
-        .query_row(
-            "SELECT result FROM runtime_tool_results WHERE id=?1",
-            [preview["outputRef"].as_str().unwrap()],
-            |r| r.get(0),
-        )
-        .unwrap();
-    let full: Value = serde_json::from_str(&raw).unwrap();
+    let full = studio_runtime_services::tool_requests::saved_result(
+        &store.test_reader().unwrap(),
+        preview["outputRef"].as_str().unwrap(),
+    )
+    .unwrap()
+    .expect("the current request result preserves the full reply");
     let value: Value =
         serde_json::from_str(full["contentItems"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(value["description"], work["description"]);
@@ -467,10 +493,11 @@ async fn archived_private_member_blocks_saved_chat_like_python() {
 
 #[tokio::test]
 async fn resolve_retirement_rolls_back_with_card_and_agent() {
-    for table in [
-        "runtime_operation_receipts",
-        "runtime_requests",
-        "runtime_agents",
+    for (table, operation) in [
+        ("runtime_tool_requests", "UPDATE"),
+        ("runtime_outbox", "DELETE"),
+        ("runtime_requests", "UPDATE"),
+        ("runtime_agents", "UPDATE"),
     ] {
         let (dir, store, context) = fixture().await;
         store
@@ -507,7 +534,7 @@ async fn resolve_retirement_rolls_back_with_card_and_agent() {
         actor["inFlight"] = json!(true);
         put_record(&store, "runtime_agents", &actor).await;
         store.transaction_with::<_,studio_runtime_store::StoreError>(move |tx| {
-            tx.execute_batch(&format!("CREATE TRIGGER resolve_failpoint AFTER UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'resolution failpoint'); END"))?; Ok(())
+            tx.execute_batch(&format!("CREATE TRIGGER resolve_failpoint AFTER {operation} ON {table} BEGIN SELECT RAISE(ABORT,'resolution failpoint'); END"))?; Ok(())
         }).await.unwrap();
         assert!(
             resolve(&store, &context, &prepared.identity.rpc_id, 12.0)
