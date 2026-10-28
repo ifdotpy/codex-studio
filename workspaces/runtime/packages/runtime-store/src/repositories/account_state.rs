@@ -25,7 +25,15 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
         },
         TableRequirement {
             name: "runtime_account_state",
-            columns: &["account", "limits_observation"],
+            columns: &[
+                "account",
+                "next_generation",
+                "connection_generation",
+                "journal_ack",
+                "recovery_required",
+                "streams",
+                "limits_observation",
+            ],
         },
     ],
     bootstrap_triggers: &[],

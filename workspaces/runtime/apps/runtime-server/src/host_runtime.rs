@@ -2796,68 +2796,48 @@ mod voice_composition_tests {
     }
 }
 
+#[cfg(test)]
+mod direct_generation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn direct_generation_uses_only_migrated_account_counter() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store.transaction(|tx| {
+            studio_runtime_store::receipt_schema::create(tx)?;
+            tx.execute("INSERT INTO runtime_account_state VALUES('alpha',41,NULL,NULL,0,0,'null',NULL,NULL)", [])?;
+            // Any accidental history query must fail, including on a seeded counter.
+            tx.execute_batch("DROP TABLE IF EXISTS runtime_operation_receipts")?;
+            Ok(())
+        }).await.expect("migrated fixture");
+        assert_eq!(
+            next_direct_generation(&store, "alpha").await.expect("next"),
+            Generation(42)
+        );
+        assert_eq!(
+            next_direct_generation(&store, "alpha").await.expect("next"),
+            Generation(43)
+        );
+        assert_eq!(
+            next_direct_generation(&store, "beta").await.expect("first"),
+            Generation(1)
+        );
+    }
+}
+
 async fn next_direct_generation(
     store: &RuntimeStore,
     account: &str,
 ) -> Result<Generation, WorkerError> {
     let account = account.to_owned();
-    store.transaction_with(move |tx| {
-        let invalid = || {
-            WorkerError::PreparationRefused("account-worker/direct-generation".into())
-        };
-        let counter_id = format!("account-worker:direct-generation:{account}:next");
-        let counter_exists = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id=?1)",
-            [&counter_id],
-            |row| row.get::<_, bool>(0),
-        )?;
-        let mut latest = if counter_exists {
-            let raw = tx.query_row(
-                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-                [&counter_id],
-                |row| row.get::<_, String>(0),
-            )?;
-            serde_json::from_str::<u64>(&raw).map_err(|_| invalid())?
-        } else {
-            0
-        };
-        for kind in ["cursor", "journal", "callback", "recovery", "account"] {
-            let prefix = format!("account-worker:{kind}:{account}:");
-            let upper = format!("{prefix}~");
-            let mut query = tx.prepare(
-                "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2",
-            )?;
-            let rows = query
-                .query_map((prefix.as_str(), upper.as_str()), |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            for (id, raw) in rows {
-                let value: serde_json::Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-                let generation = if kind == "account" {
-                    value
-                        .pointer("/request/generation")
-                        .or_else(|| value.get("generation"))
-                        .and_then(serde_json::Value::as_u64)
-                } else {
-                    id.strip_prefix(&prefix)
-                        .and_then(|tail| tail.split(':').next())
-                        .and_then(|number| number.parse::<u64>().ok())
-                };
-                if let Some(generation) = generation {
-                    latest = latest.max(generation);
-                }
-            }
-        }
-        let next = latest.checked_add(1).ok_or_else(invalid)?;
-        let result = serde_json::to_string(&next).map_err(|_| invalid())?;
-        tx.execute(
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'direct-provider-generation',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result",
-            (counter_id.as_str(), result.as_str()),
-        )?;
-        Ok(Generation(next))
-    })
-    .await
+    store
+        .transaction_with(move |tx| {
+            studio_runtime_store::account_state::allocate_next_generation(tx, &account)
+                .map(Generation)
+                .map_err(WorkerError::from)
+        })
+        .await
 }
 
 /// The home and isolation of a Codex account whose provider session may start:
