@@ -2095,7 +2095,7 @@ mod bounded_reconcile_tests {
                     transaction,
                     &AgentRecord {
                         id: id.clone(),
-                        root_id: id.clone(),
+                        root_id: id,
                         epoch: 1,
                         status: AgentStatus::Queued,
                         extra: BTreeMap::from([

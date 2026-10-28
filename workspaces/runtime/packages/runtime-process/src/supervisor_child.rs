@@ -476,7 +476,7 @@ mod tests {
                 handle: handle.to_owned(),
                 command,
                 env: BTreeMap::new(),
-                cwd: Some(cwd.clone()),
+                cwd: Some(cwd),
             },
             Arc::new(tokio::sync::Notify::new()),
             "exit-event-test".to_owned(),
