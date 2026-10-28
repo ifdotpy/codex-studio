@@ -35,6 +35,8 @@ fn parse_stage(value: &Value) -> Result<SafetyRetryStage, SafetyBufferingError> 
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum SafetyBufferingError {
+    #[error("Request id expired")]
+    Expired,
     #[error("Invalid stored safety retry state")]
     InvalidStoredState,
     #[error("This retry belongs to an earlier account or agent state")]

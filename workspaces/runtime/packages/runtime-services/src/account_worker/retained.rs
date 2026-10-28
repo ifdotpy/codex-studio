@@ -28,18 +28,6 @@ pub struct SessionRequest {
 /// provider query whose result is not worth a durable record.
 pub const DIAGNOSTICS_OPERATION_PREFIX: &str = "diagnostics:";
 
-/// Any retained transport evidence prevents a transfer from changing an old
-/// read intent. This includes an unknown result and a prepared submission.
-pub(crate) fn has_transport_evidence(
-    tx: &studio_runtime_store::Transaction<'_>,
-    account: &str,
-    operation: &str,
-    admitted: Option<&AdmittedRequest>,
-) -> Result<bool, WorkerError> {
-    let key = Call::operation_key(account, operation);
-    Ok(storage::recorded_operation(tx, &key, admitted.map(AdmittedRequest::id))?.is_some())
-}
-
 macro_rules! provider_reads {
     ($($method:ident),+ $(,)?)=>{
         /// The closed owner of side-effect-free provider reads.

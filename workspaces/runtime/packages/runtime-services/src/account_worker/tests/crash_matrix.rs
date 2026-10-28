@@ -396,8 +396,8 @@ async fn restart(context: &Context, label: &str) {
             .expect("unknown interrupt has a generation");
         let receipt_count = read_on_pool(bridge.store.clone(), move |db| {
             Ok(db.query_row(
-                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%:submitted' AND json_extract(result,'$.request.id')=?1 AND json_extract(result,'$.request.generation')=?2 AND json_extract(result,'$.request.method')='turn/interrupt'",
-                rusqlite::params![ticket, i64::try_from(interrupt_generation).unwrap()],
+                "SELECT COUNT(*) FROM runtime_outbox WHERE account='default' AND kind=?1 AND json_extract(payload,'$.payload.request.id')=?2 AND json_extract(payload,'$.payload.request.generation')=?3 AND json_extract(payload,'$.payload.request.method')=?4",
+                rusqlite::params![OutboxKind::ProviderCall,ticket, i64::try_from(interrupt_generation).unwrap(),Method::TurnInterrupt.as_str()],
                 |row| row.get::<_, i64>(0),
             )?)
         })
@@ -421,23 +421,19 @@ async fn restart(context: &Context, label: &str) {
     // their Unknown intent without writing a second response. The request's
     // cursor settled with its batch, so only its record holds the uncertainty.
     let frames = context.frames.lock().unwrap().clone();
-    let record_phases = |cursor: u64| {
+    let callback_owner = |cursor: u64| {
         let store = bridge.store.clone();
         async move {
             read_on_pool(store, move |db| {
-                let count = |phase: &str| {
-                    db.query_row(
-                        "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
-                        [format!(
-                            "account-worker:{}:{phase}",
-                            crate::account_worker::callback_record::operation(
-                                "default", generation, cursor
-                            )
-                        )],
-                        |row| row.get::<_, i64>(0),
-                    )
-                };
-                Ok((count("accepted")?, count("submitted")?))
+                Ok(crate::tool_requests::get_callback::<
+                    crate::account_worker::callback_record::CallbackObligation,
+                >(
+                    db,
+                    &crate::account_worker::callback_record::operation(
+                        "default", generation, cursor,
+                    ),
+                )
+                .expect("typed callback owner"))
             })
             .await
             .unwrap()
@@ -451,7 +447,10 @@ async fn restart(context: &Context, label: &str) {
         {
             continue;
         }
-        if record_phases(cursor).await == (1, 1) {
+        if callback_owner(cursor)
+            .await
+            .is_some_and(|task| task.payload.submitted.is_some())
+        {
             unresolved_callback = Some((cursor, frame));
             break;
         }
@@ -474,11 +473,19 @@ async fn restart(context: &Context, label: &str) {
                 peer.writes.try_recv().is_err(),
                 "{label}: unresolved callback was redelivered"
             );
+            let task = callback_owner(callback_cursor)
+                .await
+                .expect("callback identity fence survives");
             assert_eq!(
-                record_phases(callback_cursor).await,
-                (1, 1),
+                task.status,
+                studio_runtime_schema::persistence::ToolRequestStatus::Unknown,
                 "callback intent remains held as Unknown"
             );
+            assert!(
+                task.payload.submitted.is_some(),
+                "the exact submitted response remains held"
+            );
+            assert_eq!(task.payload.accepted.cursor, callback_cursor);
             (peer, worker)
         } else {
             let mut peer = reconnect_peer(&peer);

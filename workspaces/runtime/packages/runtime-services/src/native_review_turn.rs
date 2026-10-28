@@ -258,6 +258,7 @@ async fn finish(
             "The native review request was not sent.".to_owned()
         }
         other @ NativeError::Invalid(_)
+        | other @ NativeError::Expired
         | other @ NativeError::InvalidStored { .. }
         | other @ NativeError::Conflict
         | other @ NativeError::Changed
@@ -593,6 +594,7 @@ impl ReviewPreparation {
                 | ReceiptOutcome::NotHandedOff => (NativeReviewThreadStatus::NotSent, None),
                 ReceiptOutcome::Unknown { .. } => (NativeReviewThreadStatus::Unknown, None),
             },
+            Err(AccountSessionError::Expired) => return Err(NativeError::Expired),
             Err(_) => (NativeReviewThreadStatus::Unknown, None),
         };
         let resources = self

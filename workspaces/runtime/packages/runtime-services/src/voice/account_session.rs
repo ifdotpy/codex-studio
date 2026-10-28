@@ -325,6 +325,7 @@ async fn callback_request_matches(
 
 fn account_error(error: AccountSessionError) -> VoicePrepareFailure {
     match error {
+        AccountSessionError::Expired => VoicePrepareFailure::Expired,
         AccountSessionError::Requires(_) | AccountSessionError::Refused(_) => {
             VoicePrepareFailure::NotSent
         }

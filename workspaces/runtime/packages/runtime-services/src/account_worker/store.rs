@@ -3130,12 +3130,6 @@ fn compact(
     if cursor > before {
         super::retained::storage::checkpoint_covered(tx, journal_scope, generation, cursor)?;
         set_checkpoint(tx, journal_scope, generation, cursor)?;
-        crate::provider_callbacks::retire_checkpointed(tx, journal_scope, generation).map_err(
-            |error| match error {
-                crate::provider_callbacks::CallbackError::Store(error) => WorkerError::Store(error),
-                _ => invalid(journal_scope),
-            },
-        )?;
     }
     for id in covered {
         tx.execute_cached(

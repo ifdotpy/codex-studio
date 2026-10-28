@@ -627,8 +627,9 @@ fn only_vm_writers_get_the_host_exec_definition() {
 async fn an_interrupted_host_exec_receipt_names_its_operation() {
     let (_directory, store) = store().await;
     let id = operation(LEAD, "build");
+    let task_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let receipt = json!({
-        "id": "thread-0:call-1", "agent": LEAD, "threadId": "thread-0", "turnId": "turn-0",
+        "id": task_root, "agent": LEAD, "threadId": "thread-0", "turnId": "turn-0",
         "epoch": 3, "accountKey": "default", "connectionId": "connection", "callId": "call-1",
         "tool": TOOL, "signature": "signature", "readOnly": false, "stage": "running",
         "outcome": "pending", "cancelRequested": false, "created": 10.0, "updated": 10.0,
@@ -636,21 +637,20 @@ async fn an_interrupted_host_exec_receipt_names_its_operation() {
             "operationId": id}, "timeout": 3960.0},
     });
     store
-        .transaction_with(move |tx| -> Result<(), studio_runtime_store::StoreError> {
-            tx.execute(
-                "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",
-                rusqlite::params!["thread-0:call-1", receipt.to_string()],
-            )?;
-            Ok(())
-        })
+        .transaction_with(
+            move |tx| -> Result<(), crate::tool_requests::ToolRequestError> {
+                crate::tool_requests::admission::reserve(tx, receipt, "call-1", "thread-0:", None)?;
+                Ok(())
+            },
+        )
         .await
         .unwrap();
     crate::provider_callbacks::recover_tool_requests_on_startup(&store, 30.0)
         .await
         .unwrap();
     let result = store
-        .read_async("test", |tx| {
-            studio_runtime_store::system_reads::get(tx, "runtime_tool_results", "thread-0:call-1")
+        .read_async("test", move |tx| {
+            crate::tool_requests::saved_result(tx, &task_root)
         })
         .await
         .unwrap()

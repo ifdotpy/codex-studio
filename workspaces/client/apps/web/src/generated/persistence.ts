@@ -168,6 +168,7 @@ export const VoiceStopOutcomeValues = [
   "not_sent",
   "unknown",
   "rejected",
+  "expired",
 ] as const;
 export type VoiceStopOutcome = (typeof VoiceStopOutcomeValues)[number];
 export const TerminalInputDeliveryValues = ["sent", "uncertain"] as const;
@@ -232,6 +233,7 @@ export const MonitorInputStatusValues = [
   "Acknowledged",
   "Rejected",
   "Unknown",
+  "Expired",
 ] as const;
 export type MonitorInputStatus = (typeof MonitorInputStatusValues)[number];
 export const NativeActionAdmissionStatusValues = ["accepted"] as const;
@@ -369,6 +371,8 @@ export const ExecutionEffectStatusValues = [
   "uncertain",
   "resolved",
   "lost",
+  "expired",
+  "deleted",
 ] as const;
 export type ExecutionEffectStatus =
   (typeof ExecutionEffectStatusValues)[number];

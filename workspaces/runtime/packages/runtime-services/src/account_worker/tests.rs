@@ -54,9 +54,9 @@ use std::{
 };
 use studio_runtime_process::{EventCursor, ProviderLaunchSpec, provider_seam::*};
 use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
+use studio_runtime_store::AgentRecord;
 use studio_runtime_store::outbox::Outbox;
 use studio_runtime_store::path_identity::CanonicalPath;
-use studio_runtime_store::{AgentRecord, EventWriteRepository};
 use tokio::sync::oneshot;
 
 fn test_resources() -> Result<preparation::PreparationResources, WorkerError> {
@@ -898,19 +898,28 @@ impl State {
             .run(move |store| async move {
                 store
                     .transaction_with(move |tx| {
-                        annotate(
+                        // This fixture seeds domain input; public annotation ingress has its own UUID witnesses.
+                        let owner = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?
+                            .expect("fixture agent");
+                        let created = store::now();
+                        studio_runtime_store::EventWriteRepository::put_annotation(
                             tx,
-                            AnnotationWrite {
-                                agent_id: agent,
-                                id: Some(id.clone()),
-                                path: "README.md".into(),
-                                line: 1,
-                                text: id.clone(),
-                                turn_id: None,
-                                signature: id,
-                            },
+                            &id,
+                            &json!({
+                                "id":id,"agent":agent,"rootId":owner.root_id.0,
+                                "path":"README.md","line":1,"text":id,"created":created,
+                            }),
+                        )?;
+                        crate::event_write::enqueue_event(
+                            tx,
+                            &owner,
+                            format!("annotation:{id}"),
+                            "user",
+                            format!("Review comment at README.md:1\n{id}"),
+                            created,
                         )
-                        .map_err(|e| StoreError::SchemaMismatch(e.to_string()))
+                        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                        Ok(())
                     })
                     .await?;
                 Ok(())
@@ -1163,7 +1172,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
                         tx,
                         AnnotationWrite {
                             agent_id: write_good_id.clone(),
-                            id: Some("valid-neighbor-input".into()),
+                            id: Some(studio_runtime_schema::persistence::RequestIdentity::issue_root()),
                             path: "README.md".into(),
                             line: 1,
                             text: "valid neighbor input".into(),

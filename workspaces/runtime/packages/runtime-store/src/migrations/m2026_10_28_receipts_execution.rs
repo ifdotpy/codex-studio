@@ -152,10 +152,20 @@ impl ReceiptFamilyMigration for ExecutionMigration {
                     }
                 }
                 "runtime_agents" => {
-                    // Prefer the currently admitted start; otherwise the latest historical run.
-                    let pointer:Option<(String,Option<String>)>=tx.query_row("SELECT id,json_extract(record,'$.latestAttemptId') FROM runtime_execution_runs WHERE agent=?1 ORDER BY (id=(SELECT run FROM runtime_execution_attempts WHERE id=?2)) DESC,created DESC,rowid DESC LIMIT 1",params![id,record["startAttempt"]["id"].as_str()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+                    // A fork may retain source-thread provenance within this same owner scope.
+                    let account = match record.get("accountKey") {
+                        None => "default",
+                        Some(value) => value.as_str().ok_or_else(invalid)?,
+                    };
+                    let epoch = record["epoch"].as_i64().ok_or_else(invalid)?;
+                    let pointer:Option<(String,Option<String>)>=tx.query_row("SELECT id,json_extract(record,'$.latestAttemptId') FROM runtime_execution_runs WHERE agent=?1 AND account=?2 AND epoch=?3 ORDER BY (id=(SELECT run FROM runtime_execution_attempts WHERE id=?4)) DESC,created DESC,rowid DESC LIMIT 1",params![id,account,epoch,record["startAttempt"]["id"].as_str()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
                     if let Some((run, attempt)) = pointer {
                         record["activeExecution"] = json!({"runId":run,"attemptId":attempt});
+                    } else {
+                        record
+                            .as_object_mut()
+                            .ok_or_else(invalid)?
+                            .remove("activeExecution");
                     }
                 }
                 _ => return Err(invalid()),
@@ -193,11 +203,11 @@ mod tests {
     use crate::receipt_migration_contract::{MIGRATION_BATCH_ROWS, prepare_schema};
     use rusqlite::Connection;
     fn fixture(db: &Connection) {
-        db.execute_batch("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,created REAL,record TEXT); CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT,record TEXT); CREATE TABLE runtime_execution_effects(id TEXT PRIMARY KEY,kind TEXT,record TEXT); CREATE TABLE runtime_execution_nodes(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);").expect("tables");
-        db.execute("INSERT INTO runtime_execution_runs VALUES('run','agent',1,?1)",[json!({"id":"run","agent":"agent","status":"unknown","latestAttemptId":"attempt-0"}).to_string()]).expect("run");
+        db.execute_batch("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,created REAL,record TEXT); CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT,record TEXT); CREATE TABLE runtime_execution_effects(id TEXT PRIMARY KEY,run TEXT,kind TEXT,reference TEXT,record TEXT); CREATE TABLE runtime_execution_nodes(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);").expect("tables");
+        db.execute("INSERT INTO runtime_execution_runs VALUES('run','agent','account',1,1,?1)",[json!({"id":"run","agent":"agent","accountKey":"account","epoch":1,"created":1,"status":"unknown","latestAttemptId":"attempt-0"}).to_string()]).expect("run");
         db.execute(
             "INSERT INTO runtime_agents VALUES('agent',?1)",
-            [json!({"id":"agent","startAttempt":{"id":"attempt-0"}}).to_string()],
+            [json!({"id":"agent","rootId":"agent","status":"idle","epoch":1,"accountKey":"account","startAttempt":{"id":"attempt-0"}}).to_string()],
         )
         .expect("agent");
     }
@@ -288,7 +298,7 @@ mod tests {
         let mut db = Connection::open(path).expect("reopen");
         assert_eq!(batch(&mut db, SOURCES[1]).expect("resume").cursor, 501);
         db.execute(
-            "INSERT INTO runtime_execution_effects VALUES('bad','new-kind',?1)",
+            "INSERT INTO runtime_execution_effects(id,kind,record) VALUES('bad','new-kind',?1)",
             [json!({"kind":"new-kind","status":"pending"}).to_string()],
         )
         .expect("bad fixture");
@@ -302,5 +312,127 @@ mod tests {
             .expect("preserved"),
             1
         );
+    }
+    #[test]
+    fn receipts_execution_current_pointer_excludes_previous_account_and_epoch() {
+        for (account, epoch) in [("account", 2), ("moved-account", 1)] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&db);
+            db.execute("UPDATE runtime_agents SET record=?1 WHERE id='agent'",[json!({"id":"agent","rootId":"agent","status":"idle","accountKey":account,"epoch":epoch,"startAttempt":{"id":"old-attempt"}}).to_string()]).expect("advanced owner");
+            db.execute("INSERT INTO runtime_execution_attempts(id,run,record) VALUES('old-attempt','run','{}')",[]).expect("old start identity");
+            batch(&mut db, "runtime_agents").expect("pointer hydration");
+            let raw: String = db
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id='agent'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("owner");
+            let agent: Value = serde_json::from_str(&raw).expect("JSON");
+            let actor = crate::AgentRecord::from_value(agent.clone()).expect("current actor");
+            assert_eq!(
+                crate::WorkItemsRepository::submission_identity(&db, &actor)
+                    .expect("current identity has no history fallback"),
+                None
+            );
+            assert!(
+                agent.get("activeExecution").is_none(),
+                "previous account/epoch history cannot become current: {agent}"
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM runtime_execution_runs", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("history"),
+                1
+            );
+        }
+    }
+    #[test]
+    fn receipts_execution_current_pointer_retains_terminal_fork_provenance_and_nullable_attempt() {
+        for attempt in [Some("current-attempt"), None] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&db);
+            db.execute("UPDATE runtime_agents SET record=?1 WHERE id='agent'",[json!({"id":"agent","rootId":"agent","status":"idle","accountKey":"account","epoch":2,"threadId":"fork-thread","startAttempt":{"id":"old-attempt"}}).to_string()]).expect("owner after fork");
+            db.execute("INSERT INTO runtime_execution_attempts(id,run,record) VALUES('old-attempt','run','{}')",[]).expect("old start identity");
+            db.execute("INSERT INTO runtime_execution_runs VALUES('current','agent','account',2,2,?1)",[json!({"id":"current","agent":"agent","accountKey":"account","epoch":2,"threadId":"source-thread","created":2,"status":"completed","latestAttemptId":attempt}).to_string()]).expect("terminal current run");
+            db.execute("INSERT INTO runtime_execution_runs VALUES('other','agent','other-account',2,10,?1)",[json!({"id":"other","agent":"agent","accountKey":"other-account","epoch":2,"created":10,"status":"running","latestAttemptId":"other-attempt"}).to_string()]).expect("newer foreign-account history");
+            batch(&mut db, "runtime_agents").expect("current identity");
+            let raw: String = db
+                .query_row("SELECT record FROM runtime_agents", [], |r| r.get(0))
+                .expect("owner");
+            let owner: Value = serde_json::from_str(&raw).expect("JSON");
+            assert_eq!(
+                owner["activeExecution"],
+                json!({"runId":"current","attemptId":attempt})
+            );
+            let actor = crate::AgentRecord::from_value(owner).expect("current actor");
+            assert_eq!(
+                crate::WorkItemsRepository::submission_identity(&db, &actor)
+                    .expect("migrated pointer is usable by work submission"),
+                Some(("current".into(), attempt.map(str::to_owned)))
+            );
+        }
+    }
+    #[test]
+    fn receipts_execution_current_start_is_preferred_over_newer_same_scope_history() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        insert(&db, 0, "unknown");
+        db.execute("INSERT INTO runtime_execution_runs VALUES('newer','agent','account',1,10,?1)",[json!({"id":"newer","agent":"agent","accountKey":"account","epoch":1,"created":10,"status":"running","latestAttemptId":"other-attempt"}).to_string()]).expect("newer history");
+        batch(&mut db, "runtime_agents").expect("prefer exact admitted start");
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_agents", [], |r| r.get(0))
+            .expect("owner");
+        let actor = crate::AgentRecord::from_value(serde_json::from_str(&raw).expect("JSON"))
+            .expect("actor");
+        assert_eq!(
+            crate::WorkItemsRepository::submission_identity(&db, &actor)
+                .expect("submission identity"),
+            Some(("run".into(), Some("attempt-0".into())))
+        );
+    }
+    #[test]
+    fn receipts_execution_frozen_monitor_lost_history_is_preserved_on_reopen() {
+        let dir = tempfile::tempdir().expect("directory");
+        let path = dir.path().join("test.db");
+        let mut db = Connection::open(&path).expect("database");
+        fixture(&db);
+        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT)")
+            .expect("monitor owner");
+        let monitor = "6a1cbd51-e035-54ce-af5c-7fd9850e3065";
+        let id = format!("monitors:{monitor}");
+        let record = json!({"id":id,"runId":"run","kind":"monitors","referenceId":monitor,"status":"lost","outcome":null,"resultReference":null});
+        db.execute("INSERT INTO runtime_execution_effects(id,run,kind,reference,record) VALUES(?1,'run','monitors',?2,?3)",params![id,monitor,record.to_string()]).expect("frozen effect");
+        db.execute(
+            "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+            params![monitor, json!({"id":monitor,"status":"lost"}).to_string()],
+        )
+        .expect("conclusively unavailable owner");
+        batch(&mut db, "runtime_execution_effects").expect("classify frozen domains");
+        let before: (String, String) = db
+            .query_row(
+                "SELECT kind,record FROM runtime_execution_effects WHERE id=?1",
+                [&id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("preserved");
+        assert_eq!(before, ("monitors".into(), record.to_string()));
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM runtime_outbox", [], |r| r
+                .get::<_, i64>(0))
+                .expect("no runnable effect"),
+            0
+        );
+        drop(db);
+        let mut db = Connection::open(path).expect("reopen");
+        batch(&mut db, "runtime_execution_effects").expect("second open");
+        let after: (String, String) = db
+            .query_row(
+                "SELECT kind,record FROM runtime_execution_effects WHERE id=?1",
+                [&id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("same history");
+        assert_eq!(before, after);
     }
 }

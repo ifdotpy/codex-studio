@@ -1,6 +1,7 @@
 //! Manual worker recovery and tool release through the retained account owner.
 use crate::account_session_runtime::{
-    AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse, RequestCertainty,
+    AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
+    RequestCertainty,
 };
 use crate::account_worker::retained::RequestActor;
 use crate::managed_host_tools::{
@@ -461,6 +462,7 @@ pub(crate) async fn execute(
             Ok(value) => value,
             // The account worker still owns a possible late result. A lost
             // transport response must not finalize its pending receipt.
+            Err(AccountSessionError::Expired) => return Err(Error::Expired),
             Err(_) => return Ok(result(initial.1)),
         };
         return finish_recovery(&store, &auth, value).await.map(result);
@@ -509,7 +511,7 @@ pub(crate) async fn execute(
     let inspection = inspect(session.as_ref(), &auth, &release, &scope).await;
     let unloaded = match inspection {
         Ok(value) => value,
-        Err(reason) => {
+        Err(Error::Invalid(reason)) => {
             return finish_release(
                 &store,
                 &auth,
@@ -521,6 +523,7 @@ pub(crate) async fn execute(
             )
             .await;
         }
+        Err(error) => return Err(error),
     };
     if unloaded {
         return finish_release(
@@ -620,6 +623,7 @@ pub(crate) async fn execute(
         {
             (ReleaseStatus::Released, body["status"] == "notLoaded")
         }
+        Err(Error::Expired) => return Err(Error::Expired),
         _ => (ReleaseStatus::Unknown, false),
     };
     finish_release(
@@ -668,10 +672,12 @@ async fn request(
     method: Method,
     suffix: &str,
     params: Value,
-) -> Result<Value, &'static str> {
+) -> Result<Value, Error> {
     let operation = format!(
         "{}:{suffix}",
-        release["id"].as_str().ok_or("Invalid release identity")?
+        release["id"]
+            .as_str()
+            .ok_or(Error::Invalid("Invalid release identity"))?
     );
     let receipt = session
         .provider_request(ProviderRequest {
@@ -682,7 +688,7 @@ async fn request(
             },
             admitted_request: if method == Method::ThreadUnsubscribe {
                 serde_json::from_value(release["admittedRequest"].clone())
-                    .map_err(|_| "Invalid release admission")?
+                    .map_err(|_| Error::Invalid("Invalid release admission"))?
             } else {
                 None
             },
@@ -691,11 +697,11 @@ async fn request(
             actor: Some(RequestActor {
                 agent: auth.target["id"]
                     .as_str()
-                    .ok_or("Invalid worker identity")?
+                    .ok_or(Error::Invalid("Invalid worker identity"))?
                     .into(),
                 epoch: auth.target["epoch"]
                     .as_i64()
-                    .ok_or("Invalid worker epoch")?,
+                    .ok_or(Error::Invalid("Invalid worker epoch"))?,
             }),
             expected_scope: Some(scope.clone()),
             deleted_actor_session: None,
@@ -704,7 +710,10 @@ async fn request(
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(10),
         })
         .await
-        .map_err(|_| "The native result is not confirmed")?;
+        .map_err(|error| match error {
+            AccountSessionError::Expired => Error::Expired,
+            _ => Error::Invalid("The native result is not confirmed"),
+        })?;
     if receipt.operation != operation
         || receipt.scope != *scope
         || receipt.certainty() != RequestCertainty::Written
@@ -713,11 +722,13 @@ async fn request(
             .is_some_and(|ticket| ticket.method == method && ticket.generation == scope.generation)
         || session.current_scope(&scope.account).as_ref() != Some(scope)
     {
-        return Err("The native result is not confirmed");
+        return Err(Error::Invalid("The native result is not confirmed"));
     }
     match receipt.into_response() {
         Some(ProviderResponse::Reply(value)) => Ok(value),
-        Some(ProviderResponse::Rejected(_)) | None => Err("The native result is not confirmed"),
+        Some(ProviderResponse::Rejected(_)) | None => {
+            Err(Error::Invalid("The native result is not confirmed"))
+        }
     }
 }
 
@@ -726,7 +737,7 @@ async fn inspect(
     auth: &AuthorizedRecoveryRequest,
     release: &Value,
     scope: &ConnectionScope,
-) -> Result<bool, &'static str> {
+) -> Result<bool, Error> {
     let thread = &release["threadId"];
     let body = request(
         session,
@@ -739,12 +750,16 @@ async fn inspect(
     )
     .await?;
     if body["thread"]["id"] != *thread {
-        return Err("The native thread identity changed");
+        return Err(Error::Invalid("The native thread identity changed"));
     }
     match body["thread"]["status"]["type"].as_str() {
         Some("notLoaded") => return Ok(true),
         Some("idle") if !truthy(body["thread"]["status"].get("activeFlags")) => {}
-        _ => return Err("The native thread is active or its status is unknown"),
+        _ => {
+            return Err(Error::Invalid(
+                "The native thread is active or its status is unknown",
+            ));
+        }
     }
     for (method, suffix, params) in [
         (
@@ -756,7 +771,9 @@ async fn inspect(
     ] {
         let body = request(session, auth, release, scope, method, suffix, params).await?;
         if !body["data"].as_array().is_some_and(Vec::is_empty) || truthy(body.get("nextCursor")) {
-            return Err("Native commands or input still hold this session");
+            return Err(Error::Invalid(
+                "Native commands or input still hold this session",
+            ));
         }
     }
     session
@@ -766,7 +783,10 @@ async fn inspect(
             std::time::Instant::now() + std::time::Duration::from_secs(10),
         )
         .await
-        .map_err(|_| "The native notification barrier is not confirmed")?;
+        .map_err(|error| match error {
+            AccountSessionError::Expired => Error::Expired,
+            _ => Error::Invalid("The native notification barrier is not confirmed"),
+        })?;
     Ok(false)
 }
 
@@ -901,6 +921,7 @@ mod tests {
         store: Arc<RuntimeStore>,
         calls: Mutex<Vec<(Method, String)>>,
         unknown: bool,
+        expired: Option<Method>,
         unloaded: bool,
         stop_lead: bool,
         change_worker_epoch: bool,
@@ -986,6 +1007,9 @@ mod tests {
                     .lock()
                     .expect("calls")
                     .push((request.method, request.operation.clone()));
+                if self.expired == Some(request.method) {
+                    return Err(AccountSessionError::Expired);
+                }
                 if request.method == Method::ThreadUnsubscribe {
                     let actor = request.actor.clone().expect("worker identity");
                     let operation = request.operation.clone();
@@ -1269,6 +1293,7 @@ mod tests {
             store: Arc::clone(&store),
             calls: Mutex::new(Vec::new()),
             unknown: false,
+            expired: None,
             unloaded: false,
             stop_lead: false,
             change_worker_epoch: false,
@@ -1293,6 +1318,32 @@ mod tests {
             })
             .await
             .expect("worker read")
+    }
+
+    #[tokio::test]
+    async fn manual_release_propagates_expiry_without_renewing_the_obligation() {
+        for method in [Method::ThreadRead, Method::ThreadUnsubscribe] {
+            let (_directory, store, actor, mut session) = fixture().await;
+            session.expired = Some(method);
+            let session = Arc::new(session);
+            assert!(matches!(
+                execute(
+                    Arc::clone(&store),
+                    session.clone(),
+                    &actor,
+                    &args(),
+                    "expired",
+                    10.0
+                )
+                .await,
+                Err(Error::Expired)
+            ));
+            let calls = session.calls.lock().expect("calls").len();
+            execute(store, session.clone(), &actor, &args(), "expired", 11.0)
+                .await
+                .expect("retry reads unresolved owner");
+            assert_eq!(session.calls.lock().expect("calls").len(), calls);
+        }
     }
 
     #[tokio::test]

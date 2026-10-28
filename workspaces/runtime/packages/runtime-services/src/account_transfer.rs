@@ -120,6 +120,8 @@ fn valid_read_scope(scope: &Value, account: &Value) -> bool {
 
 #[derive(Debug, Error)]
 pub enum TransferError {
+    #[error("Request id expired")]
+    Expired,
     #[error("invalid stored {object} at {pointer}")]
     Stored {
         object: &'static str,
