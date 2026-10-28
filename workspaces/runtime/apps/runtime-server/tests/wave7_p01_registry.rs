@@ -1150,9 +1150,10 @@ async fn committed_input_reaches_one_retained_session_and_unknown_restart_does_n
     .unwrap();
     restarted.reconcile(None).await.unwrap();
     restarted.shutdown().await.unwrap();
+    let unexpected = writes.try_recv();
     assert!(
-        writes.try_recv().is_err(),
-        "uncertain request must not be resubmitted"
+        unexpected.is_err(),
+        "uncertain request must not be resubmitted: {unexpected:?}"
     );
 }
 
