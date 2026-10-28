@@ -33,6 +33,25 @@ pub struct ResultEnvelope<R> {
     pub references: Vec<String>,
 }
 
+/// Exact outbox identity authorized for abandonment by the domain owner.
+pub struct AbandonedOutbox<'a> {
+    pub id: &'a str,
+    pub signature: &'a str,
+    pub kind: studio_runtime_schema::persistence::OutboxKind,
+    pub owner_kind: studio_runtime_schema::persistence::OwnerKind,
+    pub owner_id: &'a str,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AbandonedResult {
+    Abandoned { outcome: AbandonedOutcome },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AbandonedOutcome {
+    Unknown,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredResult {
     pub id: String,
@@ -99,6 +118,44 @@ pub enum Admission {
 
 pub struct RequestResults;
 impl RequestResults {
+    /// Settle an explicitly authorized abandonment and remove its exact outbox
+    /// in the same owner transaction. The effect may have happened.
+    pub fn settle_abandoned(
+        tx: &Transaction<'_>,
+        effect: &AbandonedOutbox<'_>,
+        actor: Option<String>,
+    ) -> crate::StoreResult<()> {
+        let created: Option<i64> = tx.query_row(
+            "SELECT created FROM runtime_outbox WHERE id=?1 AND signature=?2 AND kind=?3 AND owner_kind=?4 AND owner_id=?5 AND status!=?6",
+            params![effect.id, effect.signature, effect.kind, effect.owner_kind, effect.owner_id, studio_runtime_schema::persistence::OutboxStatus::Unrecognized],
+            |row| row.get(0),
+        ).optional()?;
+        let created = created.ok_or(crate::StoreError::RecordContract(
+            "abandoned outbox identity mismatch",
+        ))?;
+        let result = ResultEnvelope {
+            actor,
+            reply: AbandonedResult::Abandoned {
+                outcome: AbandonedOutcome::Unknown,
+            },
+            references: vec![],
+        };
+        let saved = Self::settle_exact(tx, effect.id, effect.signature, created, &result)
+            .map_err(crate::StoreError::from)?;
+        if serde_json::from_str::<ResultEnvelope<AbandonedResult>>(&saved.result)? != result {
+            return Err(crate::StoreError::RecordContract(
+                "abandoned result conflicts with prior result",
+            ));
+        }
+        let removed = crate::outbox::Outbox::delete_settled(tx, effect.id, effect.signature)
+            .map_err(crate::StoreError::from)?;
+        if !removed {
+            return Err(crate::StoreError::RecordContract(
+                "abandoned outbox disappeared",
+            ));
+        }
+        Ok(())
+    }
     /// Authorized status recovery only: exact imported PK first, then canonical
     /// scope. A miss admits nothing; expired cache rows are ordinary misses.
     #[allow(clippy::too_many_arguments)]
@@ -219,19 +276,35 @@ impl RequestResults {
         admitted: &AdmittedRequest,
         result: &ResultEnvelope<R>,
     ) -> Result<StoredResult> {
-        if let Some(saved) = Self::stored(tx, &admitted.id, &admitted.signature)? {
+        Self::settle_exact(
+            tx,
+            &admitted.id,
+            &admitted.signature,
+            admitted.created,
+            result,
+        )
+    }
+
+    fn settle_exact<R: Serialize>(
+        tx: &Transaction<'_>,
+        id: &str,
+        signature: &str,
+        created: i64,
+        result: &ResultEnvelope<R>,
+    ) -> Result<StoredResult> {
+        if let Some(saved) = Self::stored(tx, id, signature)? {
             return Ok(saved);
         }
         let result = serde_json::to_string(result)?;
         tx.execute(
             "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)",
-            params![admitted.id, admitted.signature, result, admitted.created],
+            params![id, signature, result, created],
         )?;
         Ok(StoredResult {
-            id: admitted.id.clone(),
-            signature: admitted.signature.clone(),
+            id: id.into(),
+            signature: signature.into(),
             result,
-            created: admitted.created,
+            created,
         })
     }
 
@@ -251,6 +324,54 @@ mod tests {
     use crate::{Connection, RuntimeStore, StoreError};
     use std::sync::Arc;
     use studio_runtime_schema::persistence::REQUEST_ID_FUTURE_SKEW_MS;
+
+    #[test]
+    fn abandoned_result_and_exact_outbox_are_settled_together() {
+        use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        tx.execute("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,signature,status,payload,created) VALUES('effect',?1,?2,'owner','sig',?3,'{}',1)", params![OutboxKind::ProviderCall, OwnerKind::Agent, OutboxStatus::Unknown]).expect("outbox");
+        let token = AdmittedRequest::from_migration("effect", "sig", 1);
+        let mut effect = AbandonedOutbox {
+            id: "effect",
+            signature: "sig",
+            kind: OutboxKind::ProviderCall,
+            owner_kind: OwnerKind::Agent,
+            owner_id: "wrong",
+        };
+        assert!(RequestResults::settle_abandoned(&tx, &effect, None).is_err());
+        assert!(
+            RequestResults::admitted_result(&tx, &token)
+                .expect("result")
+                .is_none()
+        );
+        effect.owner_id = "owner";
+        RequestResults::settle_abandoned(&tx, &effect, None).expect("settle");
+        let saved = RequestResults::admitted_result(&tx, &token)
+            .expect("read")
+            .expect("saved");
+        let result: ResultEnvelope<AbandonedResult> =
+            serde_json::from_str(&saved.result).expect("typed result");
+        assert_eq!(
+            result.reply,
+            AbandonedResult::Abandoned {
+                outcome: AbandonedOutcome::Unknown
+            }
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_outbox", [], |row| row
+                .get::<_, i64>(0))
+                .expect("count"),
+            0
+        );
+        tx.rollback().expect("rollback");
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM request_results", [], |row| row
+                .get::<_, i64>(0))
+                .expect("count"),
+            0
+        );
+    }
 
     #[test]
     fn receipt_result_expired_stays_typed_without_synthetic_metadata() {

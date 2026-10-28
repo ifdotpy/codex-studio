@@ -177,7 +177,7 @@ pub fn revalidate_unresolved_context_tool_receipts(
 /// queued request was provably never dispatched and a running one is unknown.
 /// Both get a finished receipt and a saved result, so a replay with the same
 /// identity returns it and context repair no longer waits for the request.
-fn settle_abandoned(
+fn settle_tool_abandoned(
     tx: &Transaction<'_>,
     record: &mut Value,
     now: f64,
@@ -248,7 +248,7 @@ pub async fn recover_tool_requests_on_startup(
             for id in &ids {
                 let mut record = records::get(tx, "runtime_tool_requests", id)?
                     .ok_or(CallbackError::Stored("tool request id".into()))?;
-                settle_abandoned(tx, &mut record, now)?;
+                settle_tool_abandoned(tx, &mut record, now)?;
             }
             Ok(ids.len())
         })
@@ -288,7 +288,7 @@ pub async fn recover_connection(
                 let Some(_unowned) = tools::unowned_dispatch(&state_dir, id)? else {
                     continue;
                 };
-                settle_abandoned(tx, &mut record, now)?;
+                settle_tool_abandoned(tx, &mut record, now)?;
                 count += 1;
             }
             let rows =
