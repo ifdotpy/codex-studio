@@ -599,63 +599,23 @@ impl RetainedMonitorPort {
         deadline: Instant,
         actor: bool,
     ) -> futures_util::future::BoxFuture<'a, Result<SessionReceipt, AccountSessionError>> {
-        let Some(scope) = self.session.current_scope(&operation.account_key) else {
-            return Box::pin(async {
-                Err(AccountSessionError::Refused("No live provider session"))
-            });
-        };
-        if scope.account != operation.account_key {
-            return Box::pin(async {
-                Err(AccountSessionError::Refused(
-                    "Provider account scope changed",
-                ))
-            });
-        }
         Box::pin(async move {
-            let (root_request_id, admitted_request) =
-                if studio_runtime_services::account_worker::retained::ProviderReadMethod::from_request(method, &params).is_some() {
-                    (String::new(), None)
-                } else {
-                    let id = params["processId"]
-                        .as_str()
-                        .ok_or(AccountSessionError::Refused(
-                            "Monitor process identity is unavailable",
-                        ))?;
-                    studio_runtime_services::monitor_runtime::provider_request_identity(
-                        &self.store,
-                        id,
-                        None,
-                        operation,
-                        &request_operation,
-                        method,
-                        &params,
-                    )
-                    .await
-                    .map_err(|error| {
-                        if matches!(error, MonitorError::Expired) {
-                            AccountSessionError::Expired
-                        } else {
-                            AccountSessionError::Persistence
-                        }
-                    })?
-                };
-            self.session
-                .provider_request(ProviderRequest {
-                    root_request_id,
-                    admitted_request,
-                    account: operation.account_key.clone(),
-                    operation: request_operation,
-                    actor: actor.then(|| RequestActor {
-                        agent: operation.agent.clone(),
-                        epoch: operation.epoch,
-                    }),
-                    deleted_actor_session: None,
-                    expected_scope: Some(scope),
-                    method,
-                    params,
-                    deadline,
-                })
-                .await
+            let id = params["processId"].as_str().map(str::to_owned);
+            provider_request(
+                MonitorRequestOwner {
+                    session: self.session.as_ref(),
+                    store: &self.store,
+                    operation,
+                    id: id.as_deref(),
+                    probe_generation: None,
+                    actor,
+                },
+                request_operation,
+                method,
+                params,
+                deadline,
+            )
+            .await
         })
     }
 
@@ -1020,8 +980,9 @@ impl RetainedMonitorPort {
                 session: self.session.as_ref(),
                 store: &self.store,
                 operation: &operation,
-                id: &check.monitor_id,
+                id: Some(&check.monitor_id),
                 probe_generation: None,
+                actor: true,
             },
             format!("monitor-config:{}:{}", check.monitor_id, check.epoch),
             Method::ConfigRead,
@@ -1863,15 +1824,17 @@ async fn run_probe(
             session,
             store,
             operation,
-            id,
+            id: Some(id),
             probe_generation: Some(generation),
+            actor: true,
         },
         config_operation,
         Method::ConfigRead,
         json!({"cwd":cwd,"includeLayers":false}),
         Instant::now() + Duration::from_secs(20),
     )
-    .await?;
+    .await
+    .map_err(|error| error.to_string())?;
     let config = match config_receipt.into_response() {
         Some(ProviderResponse::Reply(value)) => value["config"].clone(),
         Some(ProviderResponse::Rejected(value)) => return Err(value.to_string()),
@@ -1895,15 +1858,17 @@ async fn run_probe(
             session,
             store,
             operation,
-            id,
+            id: Some(id),
             probe_generation: Some(generation),
+            actor: true,
         },
         format!("liveness:{id}:{generation}"),
         Method::CommandExec,
         params,
         Instant::now() + Duration::from_secs(65),
     )
-    .await?;
+    .await
+    .map_err(|error| error.to_string())?;
     if receipt.certainty() != RequestCertainty::Written {
         return Err("Liveness command outcome is unknown; it will not be resent".into());
     }
@@ -1938,8 +1903,9 @@ struct MonitorRequestOwner<'a> {
     session: &'a dyn AccountSessionPort,
     store: &'a RuntimeStore,
     operation: &'a Operation,
-    id: &'a str,
+    id: Option<&'a str>,
     probe_generation: Option<i64>,
+    actor: bool,
 }
 
 async fn provider_request(
@@ -1948,17 +1914,23 @@ async fn provider_request(
     method: Method,
     params: Value,
     deadline: Instant,
-) -> Result<SessionReceipt, String> {
+) -> Result<SessionReceipt, AccountSessionError> {
     let MonitorRequestOwner {
         session,
         store,
         operation,
         id,
         probe_generation,
+        actor,
     } = owner;
     let scope = session
         .current_scope(&operation.account_key)
-        .ok_or_else(|| "No live provider session".to_owned())?;
+        .ok_or(AccountSessionError::Refused("No live provider session"))?;
+    if scope.account != operation.account_key {
+        return Err(AccountSessionError::Refused(
+            "Provider account scope changed",
+        ));
+    }
     let expected_operation = identity.clone();
     let expected_scope = scope.clone();
     let (root_request_id, admitted_request) =
@@ -1971,7 +1943,9 @@ async fn provider_request(
         } else {
             studio_runtime_services::monitor_runtime::provider_request_identity(
                 store,
-                id,
+                id.ok_or(AccountSessionError::Refused(
+                    "Monitor process identity is unavailable",
+                ))?,
                 probe_generation,
                 operation,
                 &identity,
@@ -1979,7 +1953,13 @@ async fn provider_request(
                 &params,
             )
             .await
-            .map_err(|error| error.to_string())?
+            .map_err(|error| {
+                if matches!(error, MonitorError::Expired) {
+                    AccountSessionError::Expired
+                } else {
+                    AccountSessionError::Persistence
+                }
+            })?
         };
     let receipt = session
         .provider_request(ProviderRequest {
@@ -1987,7 +1967,7 @@ async fn provider_request(
             admitted_request,
             account: operation.account_key.clone(),
             operation: identity,
-            actor: Some(RequestActor {
+            actor: actor.then(|| RequestActor {
                 agent: operation.agent.clone(),
                 epoch: operation.epoch,
             }),
@@ -1997,10 +1977,9 @@ async fn provider_request(
             params,
             deadline,
         })
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
     if receipt.operation != expected_operation || receipt.scope != expected_scope {
-        return Err("Provider receipt identity is unknown".into());
+        return Err(AccountSessionError::Unknown);
     }
     Ok(receipt)
 }
