@@ -969,7 +969,7 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
         .expect("receipt identity");
         let receipt = json!({"id":root_id,"kind":"managed_tool","aliases":["item"],"agent":"agent","accountKey":"default","threadId":"thread","turnId":"turn","callId":"item","finished":2.,"stage":"completed","outcome":"applied","result":{"success":true,"contentItems":[]}});
         let task_to_save = task.clone();
-        let mut receipt_to_save = receipt.clone();
+        let receipt_to_save = receipt.clone();
         let saved_root = root_id.clone();
         let receipt = store
             .transaction_with(move |tx| {
@@ -985,21 +985,18 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
                 else {
                     panic!("fresh owner")
                 };
-                receipt_to_save
-                    .as_object_mut()
-                    .expect("receipt")
-                    .insert("admitted".into(), serde_json::to_value(&admitted)?);
                 tx.execute(
-                    "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",
-                    rusqlite::params![saved_root, receipt_to_save.to_string()],
+                    "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,json_set(?2,'$.admitted',json(?3)))",
+                    rusqlite::params![saved_root, receipt_to_save.to_string(), serde_json::to_string(&admitted)?],
                 )?;
+                let stored: String = tx.query_row("SELECT record FROM runtime_tool_requests WHERE id=?1", [&saved_root], |row| row.get(0))?;
                 studio_runtime_services::tool_requests::settle_result(
                     tx,
                     &saved_root,
                     &receipt_to_save["result"],
                 )
                 .expect("settle result");
-                Ok::<_, studio_runtime_store::StoreError>(receipt_to_save)
+                Ok::<_, studio_runtime_store::StoreError>(serde_json::from_str::<Value>(&stored)?)
             })
             .await
             .expect("seed");
@@ -1241,24 +1238,21 @@ async fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
     )
     .await
     .expect("accept");
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ActiveExecution {
-        attempt_id: String,
-        run_id: String,
-    }
+    let active = AgentRepository::get(&store.test_reader().expect("read"), &AgentId::from("agent"))
+        .expect("agent")
+        .expect("agent exists")
+        .active_execution()
+        .expect("typed active execution")
+        .expect("active execution");
     let mut actual = agent(&store);
-    let active: ActiveExecution = serde_json::from_value(
-        actual
-            .as_object_mut()
-            .expect("agent")
-            .remove("activeExecution")
-            .expect("active execution"),
-    )
-    .expect("typed active execution");
+    actual
+        .as_object_mut()
+        .expect("agent")
+        .remove("activeExecution")
+        .expect("active execution");
     assert_eq!(
-        (active.attempt_id.as_str(), active.run_id.as_str()),
-        ("attempt", "run:attempt")
+        (active.attempt_id.as_deref(), active.run_id.as_deref()),
+        (Some("attempt"), Some("run:attempt"))
     );
     assert_eq!(actual, case["after"]);
     let rows: Vec<Value> = store.test_reader().expect("read").prepare("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events ORDER BY id").expect("query")

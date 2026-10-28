@@ -6,12 +6,12 @@ use std::{
     time::SystemTime,
 };
 use studio_runtime_schema::persistence::{
-    OutboxKind, OutboxStatus, REQUEST_RESULT_TTL_MS, RequestIdentity,
+    OutboxKind, OutboxStatus, REQUEST_RESULT_TTL_MS, RequestIdentity, TitleStatus,
 };
 use studio_runtime_services::title_generation::{
-    TitleError, TitleReceipt, TitleRequest, TitleRequestPort, TitleResult, WriteOutcome,
-    admit_python_request, generate, generate_admitted, progress, settle_catalog_failure,
-    validate_dispatch,
+    TitleError, TitleReceipt, TitleReply, TitleRequest, TitleRequestPort, TitleResult,
+    WriteOutcome, admit_python_request, generate, generate_admitted, progress,
+    settle_catalog_failure, validate_dispatch,
 };
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, outbox::Outbox};
 use tokio::sync::{mpsc, oneshot};
@@ -57,13 +57,10 @@ fn row_count(store: &RuntimeStore, table: &str) -> i64 {
         })
         .expect("count")
 }
-fn reply(store: &RuntimeStore, id: &str) -> Value {
-    serde_json::to_value(
-        progress(&store.test_reader().expect("reader"), "title-agent", id)
-            .expect("progress")
-            .expect("known request"),
-    )
-    .expect("reply")
+fn reply(store: &RuntimeStore, id: &str) -> TitleReply {
+    progress(&store.test_reader().expect("reader"), "title-agent", id)
+        .expect("progress")
+        .expect("known request")
 }
 fn receipt(request: &TitleRequest, outcome: WriteOutcome, title: Option<String>) -> TitleReceipt {
     TitleReceipt {
@@ -228,7 +225,7 @@ async fn unknown_survives_restart_expiry_and_a_new_current_job() {
     settle_catalog_failure(&reopened, "title-agent", &id)
         .await
         .expect("catalog cannot settle unknown");
-    assert_eq!(reply(&reopened, &id)["status"], "pending");
+    assert_eq!(reply(&reopened, &id).status, TitleStatus::Pending);
     assert_eq!(never_send.calls(), 0);
     let rows = Outbox::for_owner::<Value>(
         &reopened.test_reader().expect("reader"),
@@ -275,7 +272,16 @@ async fn not_sent_retry_preserves_root_and_exact_reply_after_later_changes() {
     assert_eq!(requests[0].admitted_request, requests[1].admitted_request);
     let expected =
         json!({"id":"title-agent","request_id":id,"status":"applied","name":"Useful title"});
-    assert_eq!(reply(&store, &id), expected);
+    assert_eq!(
+        reply(&store, &id),
+        TitleReply {
+            id: "title-agent".into(),
+            request_id: id.clone(),
+            status: TitleStatus::Applied,
+            name: Some("Useful title".into()),
+            error: None
+        }
+    );
     assert_eq!(row_count(&store, "runtime_outbox"), 0);
     assert_eq!(row_count(&store, "request_results"), 1);
     store.transaction(|tx| {
@@ -436,7 +442,7 @@ async fn durable_written_title_recovers_after_final_transaction_failure() {
         settle_catalog_failure(&store, "title-agent", &id)
             .await
             .expect("catalog preserves written title");
-        assert_eq!(reply(&store, &id)["status"], "pending");
+        assert_eq!(reply(&store, &id).status, TitleStatus::Pending);
         store
             .transaction(|tx| {
                 tx.execute_batch("DROP TRIGGER title_final_fail")?;
@@ -482,7 +488,13 @@ async fn catalog_failure_settles_only_unsent_and_invalid_titles_complete() {
         .expect("catalog failure");
     assert_eq!(
         reply(&store, &id),
-        json!({"id":"title-agent","request_id":id,"status":"failed","error":"The title could not be generated. Try /rename again."})
+        TitleReply {
+            id: "title-agent".into(),
+            request_id: id.clone(),
+            status: TitleStatus::Failed,
+            name: None,
+            error: Some("The title could not be generated. Try /rename again.".into())
+        }
     );
     let second = request_id();
     let port = FixedPort::new(vec![(WriteOutcome::Written, Some("bad\ntitle"))]);
@@ -498,7 +510,7 @@ async fn catalog_failure_settles_only_unsent_and_invalid_titles_complete() {
         .await,
         Err(TitleError::InvalidTitle)
     ));
-    assert_eq!(reply(&store, &second)["status"], "failed");
+    assert_eq!(reply(&store, &second).status, TitleStatus::Failed);
     assert_eq!(row_count(&store, "runtime_outbox"), 0);
     assert_eq!(row_count(&store, "request_results"), 2);
 }
@@ -579,7 +591,7 @@ async fn late_name_epoch_or_deletion_changes_discard_without_renaming() {
             TitleResult::Discarded
         );
         assert_eq!(agent(&store)["name"], name);
-        assert_eq!(reply(&store, &id)["status"], "failed");
+        assert_eq!(reply(&store, &id).status, TitleStatus::Failed);
         assert_eq!(row_count(&store, "runtime_outbox"), 0);
     }
 }
@@ -638,7 +650,7 @@ async fn expired_not_sent_job_never_authorizes_a_new_provider_attempt() {
         Err(TitleError::RequestResult(_))
     ));
     assert_eq!(port.calls(), 1);
-    assert_eq!(reply(&store, &id)["status"], "pending");
+    assert_eq!(reply(&store, &id).status, TitleStatus::Pending);
     assert_eq!(row_count(&store, "runtime_outbox"), 1);
 }
 

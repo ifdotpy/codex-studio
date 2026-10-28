@@ -205,7 +205,7 @@ fn agent(state: &Value) -> &Value {
     &state["runtime_agents"][0]["record"]
 }
 fn transport() -> TransportSnapshot {
-    serde_json::from_value(json!({"accountKey":"account","connectionId":"connection","supervisorIdentity":null,"closed":false})).expect("transport")
+    serde_json::from_str(r#"{"accountKey":"account","connectionId":"connection","supervisorIdentity":null,"closed":false}"#).expect("transport")
 }
 fn binding(generation: u64) -> SubmittedBinding {
     SubmittedBinding {
@@ -266,10 +266,16 @@ fn compare(db: &rusqlite::Connection, expected: &Value, label: &str) {
             .expect("agents")
         {
             if let Some(record) = row.get_mut("record").and_then(Value::as_object_mut)
-                && let Some(pointer) = record.remove("activeExecution")
+                && record.contains_key("activeExecution")
             {
-                let pointer: studio_runtime_store::ActiveExecutionView =
-                    serde_json::from_value(pointer).expect("active execution");
+                let agent =
+                    studio_runtime_store::AgentRecord::from_value(Value::Object(record.clone()))
+                        .expect("agent record");
+                let pointer = agent
+                    .active_execution()
+                    .expect("active execution")
+                    .expect("pointer");
+                record.remove("activeExecution");
                 assert_eq!(pointer.run_id.as_deref(), Some("run:attempt"));
                 assert_eq!(pointer.attempt_id.as_deref(), Some("attempt"));
             }

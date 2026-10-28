@@ -1471,16 +1471,16 @@ async fn unresolved_receipt_for_held_invalid_agent_does_not_block_recovery() {
                     "runtime_agents/rootId invalid",
                 ).await?;
                 store.transaction(move |tx| {
-                    let context = json!({
-                        "intent": {
-                            "agent_id": agent_id, "epoch": 1, "attempt_id": "uncertain-start",
-                            "account_key": "default", "provider": "codex",
-                            "thread_id": "fake-thread-0", "cwd": null, "model": null,
-                            "events": [], "radio_authorized": false
+                    let context = Pending {
+                        intent: TurnIntent {
+                            agent_id, epoch: 1, attempt_id: "uncertain-start".into(),
+                            account_key: "default".into(), provider: studio_runtime_providers::ProviderKind::Codex,
+                            thread_id: Some("fake-thread-0".into()), cwd: None, model: None,
+                            events: vec![], radio_authorized: false,
                         },
-                        "method": "thread/start", "operation": "uncertain-start"
-                    });
-                    let context: Pending = serde_json::from_value(context)?;
+                        method: Method::ThreadStart, operation: "uncertain-start".into(),
+                        thread: None, compiled: None,
+                    };
                     let request = studio_runtime_schema::provider_call_contract::TransportRequest {
                         id: studio_runtime_providers::RequestId::String("uncertain-start".into()), generation: 1,
                         method: Method::ThreadStart, operation: "uncertain-start".into(), thread: None,

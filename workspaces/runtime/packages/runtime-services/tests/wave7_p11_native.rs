@@ -614,7 +614,7 @@ fn full_scoped_history_copy_matches_real_python_rewriter() {
     for case in corpus()["rewrites"].as_array().expect("rewrites") {
         let snapshot = HistoryRewrite::from_records(
             serde_json::from_value(case["records"].clone()).expect("records"),
-            serde_json::from_value(case["events"].clone()).expect("events"),
+            case["events"].as_array().expect("events").clone(),
             "thread".into(),
             "turn".into(),
         )
@@ -1155,7 +1155,19 @@ fn stored_native_action_errors_name_the_table_and_row() {
         [json!({"id":"lead","provider":studio_runtime_schema::ProviderKind::Codex}).to_string()],
     )
     .expect("corrupt agent fixture");
-    let request: Request = serde_json::from_value(case["request"].clone()).expect("request");
+    assert_eq!(case["request"]["action"], "compact");
+    let request = Request {
+        request_id: case["request"]["requestId"]
+            .as_str()
+            .expect("request id")
+            .into(),
+        agent: case["request"]["agent"]
+            .as_str()
+            .expect("request agent")
+            .into(),
+        action: Action::Compact,
+        context: case["request"]["context"].clone(),
+    };
     let tx = db.unchecked_transaction().expect("begin");
     let refusal = match reserve(&tx, &request, "attempt", 1.0, &Gate) {
         Ok(_) => panic!("malformed stored agent must be refused"),

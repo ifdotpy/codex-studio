@@ -389,8 +389,10 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             {
                 let path = case["body"]["path"].as_str().expect("project path");
                 fs::create_dir_all(path).expect("project directory");
-                let values: [Value; 2] = serde_json::from_value(case["drafts"].clone()).expect("Python drafts");
-                let drafts = values.map(|value| AgentRecord::from_value(value).expect("checked Python agent draft"));
+                let [first, second] = case["drafts"].as_array().expect("Python drafts").as_slice() else {
+                    panic!("expected two Python drafts");
+                };
+                let drafts = [first, second].map(|value| AgentRecord::from_value(value.clone()).expect("checked Python agent draft"));
                 radio_runtime::create_with(std::sync::Arc::clone(&store), &case["body"], Box::new(Creation(drafts))).await.map(|reply| serde_json::from_str(&serde_json::to_string(&reply).expect("reply encodes")).expect("reply decodes"))
             }
         },

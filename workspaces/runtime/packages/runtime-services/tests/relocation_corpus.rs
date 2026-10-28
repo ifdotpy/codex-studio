@@ -111,14 +111,10 @@ impl Fixture {
                     ProjectsRepository::put_project(tx,&project)?;
                     let identity = studio_runtime_schema::persistence::RequestIdentity::new("project-location", &["local-fixture","ui"], text(&case,"requestRoot"), &["location"]).expect("fixture identity");
                     let signature = studio_runtime_store::sha256_hex(studio_runtime_schema::json_compat::python_json_compact(&outbox["body"]["payload"]["request"]).as_bytes());
-                    // This token was admitted before the expiry watermark advanced.
-                    let fields = serde_json::Map::from_iter([
-                        ("id".into(), Value::String(identity.id().to_owned())),
-                        ("signature".into(), Value::String(signature)),
-                        ("created".into(), Value::Number(identity.issued_ms().into())),
-                    ]);
-                    let admitted: studio_runtime_store::request_results::AdmittedRequest = serde_json::from_value(Value::Object(fields)).expect("saved fixture admission");
-                    ProjectsRepository::put_location_request(tx,"/home-project",text(outbox,"id"),&admitted)?;
+                    // Recreate the historical owner recorded before the expiry watermark.
+                    tx.execute("UPDATE runtime_projects SET record=json_patch(record,json_object('locationIntents',json_object(?2,json_object('request',json_object('id',?3,'signature',?4,'created',?5))))) WHERE id=?1",
+                        params!["/home-project",text(outbox,"id"),identity.id(),signature,identity.issued_ms()])?;
+                    ProjectsRepository::location_request(tx,"/home-project",text(outbox,"id"))?.expect("saved fixture admission");
                 }
                 tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,?2,?3,?4,?5)",params![text(outbox,"id"),text(outbox,"server"),outbox["body"].to_string(),text(outbox,"state"),outbox.get("result").filter(|v|!v.is_null()).map(Value::to_string)])?;
             } else if case["family"] == "tool" {
@@ -131,9 +127,23 @@ impl Fixture {
                     owner.as_object_mut().expect("tool owner").remove("result");
                 }
                 tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",params![text(record,"id"),owner.to_string()])?;
-                let parent:studio_runtime_store::request_results::AdmittedRequest=serde_json::from_value(record["admitted"].clone()).expect("owner token");
+                #[derive(serde::Deserialize)]
+                struct ToolOwner { admitted: studio_runtime_store::request_results::AdmittedRequest }
+                let raw: String = tx.query_row("SELECT record FROM runtime_tool_requests WHERE id=?1", [text(record,"id")], |row| row.get(0))?;
+                let parent = serde_json::from_str::<ToolOwner>(&raw).expect("owner token").admitted;
                 let location=parent.derive_result("project-location", &["location"], &studio_runtime_store::sha256_hex(studio_runtime_schema::json_compat::python_json_compact(&outbox["body"]["payload"]["request"]).as_bytes()));
-                let receipt:project_locations::LocationResult=serde_json::from_value(outbox["result"].clone()).expect("typed receipt");
+                let result = &outbox["result"];
+                let outcome = match text(result, "outcome") {
+                    "applied" => project_locations::LocationOutcome::Applied,
+                    "not_applied" => project_locations::LocationOutcome::NotApplied,
+                    "unknown" => project_locations::LocationOutcome::Unknown,
+                    other => panic!("unexpected location outcome {other}"),
+                };
+                assert_eq!(result, &json!({"requestId":text(result,"requestId"),"outcome":text(result,"outcome"),"value":{"removed":true,"serverId":"peer"}}));
+                let receipt = project_locations::LocationResult {
+                    request_id: text(result,"requestId").into(), outcome, project_id: None, error: None,
+                    value: Some(project_locations::LocationValue { server_id: "peer".into(), removed: Some(true), path: None, canonical_path: None, project_id: None, git_origin: None, home_project_id: None, request_id: None }),
+                };
                 if receipt.outcome!=project_locations::LocationOutcome::Unknown {
                     studio_runtime_services::event_write::settle_request(tx,&location,Some(text(record,"agent")),&receipt).expect("location result");
                 }
