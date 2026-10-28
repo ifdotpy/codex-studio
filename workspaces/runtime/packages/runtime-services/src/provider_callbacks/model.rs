@@ -9,6 +9,8 @@ pub(super) const MAX_BYTES: usize = 1_000_000;
 pub(super) const MAX_PENDING: usize = 128;
 #[derive(Debug, Error)]
 pub enum CallbackError {
+    #[error("Request id expired")]
+    Expired,
     #[error("{0}")]
     Invalid(&'static str),
     #[error("{0}")]
@@ -61,7 +63,7 @@ impl From<studio_runtime_store::request_results::RequestResultError> for Callbac
             RequestResultError::Identity(
                 studio_runtime_schema::persistence::RequestIdentityError::Expired { .. }
                 | studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7(_),
-            ) => Self::Invalid("Request id expired"),
+            ) => Self::Expired,
         }
     }
 }
@@ -289,6 +291,23 @@ impl Input {
 #[cfg(test)]
 mod origin_tests {
     use super::*;
+
+    #[test]
+    fn callback_request_expiry_stays_typed() {
+        use studio_runtime_schema::persistence::RequestIdentityError;
+        use studio_runtime_store::request_results::RequestResultError;
+        for error in [
+            RequestIdentityError::Expired {
+                issued_ms: 1,
+                expired_before_ms: 2,
+            },
+            RequestIdentityError::InvalidUuidV7("opaque".into()),
+        ] {
+            let error = CallbackError::from(RequestResultError::Identity(error));
+            assert!(matches!(error, CallbackError::Expired));
+            assert_eq!(error.to_string(), "Request id expired");
+        }
+    }
 
     #[test]
     fn callback_origin_survives_reattach_and_fences_generation_and_agent() {
