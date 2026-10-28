@@ -197,6 +197,29 @@ async fn vm_notifications_commit_real_account_streams_and_preserve_scoped_acks()
     }
 }
 
+#[tokio::test]
+async fn vm_stream_persistence_preserves_agent_fields() {
+    let (state, _) = fixture("codex").await;
+    let actor = state.agent.clone();
+    state.bridge.run(move |store| async move {
+        store.transaction_with(move |tx| {
+            let before: String = tx.query_row("SELECT record FROM runtime_agents WHERE id=?1", [&actor], |r| r.get(0))?;
+            let mut streams = crate::notification_dispatch::NotificationStreamBuffer::default();
+            store::persist_streams(tx, "default", &mut streams)?;
+            let (after, raw): (String, String) = tx.query_row("SELECT record,json_extract(record,'$.providerStream.streams') FROM runtime_agents WHERE id=?1", [&actor], |r| Ok((r.get(0)?,r.get(1)?)))?;
+            let saved: store::AccountStreams = serde_json::from_str(&raw).expect("typed streams");
+            assert!(!saved.revision.is_empty());
+            let mut before: Value = serde_json::from_str(&before).expect("before record");
+            let mut after: Value = serde_json::from_str(&after).expect("after record");
+            before.as_object_mut().expect("object").remove("providerStream");
+            after.as_object_mut().expect("object").remove("providerStream");
+            assert_eq!(before, after);
+            Ok::<_, WorkerError>(())
+        }).await?;
+        Ok(())
+    }).await.expect("persist VM streams");
+}
+
 fn delta(actor: &str, text: &str) -> Frame {
     let payload = json!({"method":"item/agentMessage/delta","params":{
         "threadId":format!("thread-{actor}"),"turnId":"turn","itemId":"answer","delta":text}});

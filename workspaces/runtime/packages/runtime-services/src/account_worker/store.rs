@@ -3831,8 +3831,8 @@ async fn publish_pending(
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct AccountStreams {
-    revision: String,
+pub(super) struct AccountStreams {
+    pub(super) revision: String,
     metadata: NotificationStreamBuffer,
 }
 
@@ -3908,13 +3908,8 @@ pub(crate) fn persist_streams(
         let lane = host.take_owner(&actor);
         let scope = super::vm_journal_scope(account, &actor);
         let saved = persist_stream_lane(tx, account, &scope, Some(&actor), &revision, &lane)?;
-        let mut agent = stored_agent(tx, &actor)?;
-        let state = agent
-            .extra
-            .entry("providerStream".into())
-            .or_insert_with(|| json!({}));
-        state["streams"] = serde_json::to_value(saved).map_err(StoreError::from)?;
-        AgentRepository::put(tx, &agent)?;
+        stored_agent(tx, &actor)?;
+        tx.execute_cached("UPDATE runtime_agents SET record=json_set(record,'$.providerStream.streams',json(?2)) WHERE id=?1", params![actor, serde_json::to_string(&saved).map_err(StoreError::from)?])?;
     }
     let saved = persist_stream_lane(tx, account, account, None, &revision, &host)?;
     studio_runtime_store::account_state::put_streams(
