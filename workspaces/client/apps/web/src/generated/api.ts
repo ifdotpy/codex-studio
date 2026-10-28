@@ -15637,6 +15637,11 @@ export interface components {
       /** Id */
       id: string;
       /**
+       * Format: uuid
+       * @description UUIDv7 mutation root, retained across command retries.
+       */
+      request_id: string;
+      /**
        * Text
        * @default null
        */

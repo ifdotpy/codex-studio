@@ -31980,6 +31980,11 @@
             "title": "Id",
             "type": "string"
           },
+          "request_id": {
+            "description": "UUIDv7 mutation root, retained across command retries.",
+            "format": "uuid",
+            "type": "string"
+          },
           "text": {
             "anyOf": [
               {
@@ -31996,7 +32001,8 @@
         },
         "required": [
           "id",
-          "action"
+          "action",
+          "request_id"
         ],
         "title": "NativeCommandRequest",
         "type": "object"

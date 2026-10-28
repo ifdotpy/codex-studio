@@ -1189,6 +1189,16 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     }
     crate::records::refresh_openapi(&mut openapi)?;
     crate::multi_server_protocol::refresh_openapi(&mut openapi);
+    let native_command = &mut openapi["components"]["schemas"]["NativeCommandRequest"];
+    native_command["properties"]["request_id"] = serde_json::json!({
+        "type":"string", "format":"uuid",
+        "description":"UUIDv7 mutation root, retained across command retries."
+    });
+    if let Some(required) = native_command["required"].as_array_mut()
+        && !required.iter().any(|field| field == "request_id")
+    {
+        required.push(serde_json::json!("request_id"));
+    }
     let mut delivery_generator = schemars::generate::SchemaSettings::draft2020_12()
         .with(|settings| settings.definitions_path = "/components/schemas".into())
         .into_generator();
