@@ -1,11 +1,20 @@
 //! Task gates use monitor admission, execution, output bounds, and approvals.
 //! Submission and monitor admission commit together. A restart never certifies a gate.
 use crate::event_write::{self, EventWriteError};
+use crate::event_write::{CallerAdmission, RequestKey};
 use crate::monitor_policy::MonitorError;
 use crate::monitor_runtime::{MonitorAdmission, WorkspaceAdmission};
 use serde_json::{Value, json};
 use std::path::Path;
+use studio_runtime_schema::persistence::RequestIdentity;
 use studio_runtime_store::{AgentRecord, AgentRepository, Transaction, WorkItemsRepository};
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DefaultGateReply {
+    id: String,
+    default_gate: Option<studio_runtime_schema::task_gate::Gate>,
+}
 
 pub fn normalize(value: &Value) -> Result<Value, EventWriteError> {
     let gate =
@@ -29,17 +38,31 @@ pub fn set_default(
         ));
     }
     let gate = normalize(gate)?;
-    if let Some(saved) =
-        event_write::read_receipt(tx, request_id, signature, "runtime_agents", actor_id, |v| {
-            v["id"] == actor_id && v.get("defaultGate").is_some()
-        })?
-    {
-        return Ok(saved);
-    }
+    let admitted = if let Some(root) = request_id {
+        match event_write::begin_request::<DefaultGateReply>(
+            tx,
+            RequestKey::new("work-default-gate", &[actor_id], root),
+            signature,
+            (event_write::unix_time()? * 1000.0) as i64,
+        )? {
+            CallerAdmission::Replay(reply) => {
+                return serde_json::to_value(reply)
+                    .map_err(studio_runtime_store::StoreError::from)
+                    .map_err(Into::into);
+            }
+            CallerAdmission::Fresh(admitted) => Some(admitted),
+        }
+    } else {
+        None
+    };
     actor.extra.insert("taskDefaultGate".into(), gate.clone());
     AgentRepository::put(tx, &actor)?;
     let receipt = json!({"id":actor_id,"defaultGate":gate});
-    event_write::save_receipt(tx, request_id, signature, &receipt)?;
+    if let Some(admitted) = admitted {
+        let reply: DefaultGateReply = serde_json::from_value(receipt.clone())
+            .map_err(studio_runtime_store::StoreError::from)?;
+        event_write::settle_request(tx, &admitted, Some(actor_id), &reply)?;
+    }
     Ok(receipt)
 }
 
@@ -89,7 +112,8 @@ pub fn admit(
         evidence["error"] =
             json!("Acceptance gates require a Git workspace and its full commit ID");
     } else if let Some(workspace) = workspace {
-        let request_id = format!("task-gate:{result_id}");
+        let request_id = RequestIdentity::issue_root();
+        evidence["requestId"] = json!(request_id);
         let request = json!({"command":command,"timeout_ms":config["timeout_ms"],"stall_timeout_seconds":0,"success_exit_codes":[0]});
         let log_root = crate::monitor_output::log_root(state_dir)
             .to_string_lossy()
