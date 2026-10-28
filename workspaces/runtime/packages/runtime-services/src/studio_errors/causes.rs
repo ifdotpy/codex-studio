@@ -23,11 +23,16 @@ pub fn store_error_kind(error: &studio_runtime_store::StoreError) -> InternalErr
         | StoreError::Json(_)
         | StoreError::SchemaValidation(_) => K::StoreData,
         StoreError::Sqlite(_)
+        | StoreError::RequestResult(
+            studio_runtime_store::request_results::RequestResultError::Sql(_),
+        )
+        | StoreError::Outbox(studio_runtime_store::outbox::OutboxError::Sql(_))
         | StoreError::CommitOutcomeUnknown(_)
         | StoreError::CommitActorOutcomeUnknown(_)
         | StoreError::WriterActorInitialization(_)
         | StoreError::WriterActorControl(_) => K::StoreDatabase,
         StoreError::WriterPoisoned | StoreError::ReadTaskFailed => K::StoreConcurrency,
+        StoreError::RequestResult(_) | StoreError::Outbox(_) => K::StoreData,
     }
 }
 
@@ -96,11 +101,36 @@ pub fn store_causes(error: &studio_runtime_store::StoreError) -> Vec<Cause> {
         StoreError::SchemaObjectMismatch { object, .. } => Some(Cause::SchemaObject {
             object: object.clone(),
         }),
-        StoreError::Json(error) => Some(json_cause(error)),
+        StoreError::Json(error)
+        | StoreError::RequestResult(
+            studio_runtime_store::request_results::RequestResultError::Json(error),
+        )
+        | StoreError::Outbox(studio_runtime_store::outbox::OutboxError::Json(error)) => {
+            Some(json_cause(error))
+        }
+        StoreError::RequestResult(
+            studio_runtime_store::request_results::RequestResultError::Conflict { id },
+        ) => Some(Cause::StoredRecord {
+            object: "request_results".into(),
+            id: id.clone(),
+            pointer: None,
+        }),
+        StoreError::Outbox(studio_runtime_store::outbox::OutboxError::Conflict(id)) => {
+            Some(Cause::StoredRecord {
+                object: "runtime_outbox".into(),
+                id: id.clone(),
+                pointer: None,
+            })
+        }
         StoreError::StateDirectory(error) => Some(Cause::Io {
             os_code: error.raw_os_error(),
         }),
-        StoreError::Sqlite(error) | StoreError::CommitOutcomeUnknown(error) => {
+        StoreError::Sqlite(error)
+        | StoreError::CommitOutcomeUnknown(error)
+        | StoreError::RequestResult(
+            studio_runtime_store::request_results::RequestResultError::Sql(error),
+        )
+        | StoreError::Outbox(studio_runtime_store::outbox::OutboxError::Sql(error)) => {
             if let rusqlite::Error::SqliteFailure(error, _) = error {
                 Some(Cause::Sqlite {
                     primary_code: error.extended_code & SQLITE_PRIMARY_CODE_MASK,
@@ -111,6 +141,9 @@ pub fn store_causes(error: &studio_runtime_store::StoreError) -> Vec<Cause> {
             }
         }
         StoreError::AlreadyOwned
+        | StoreError::RequestResult(
+            studio_runtime_store::request_results::RequestResultError::Identity(_),
+        )
         | StoreError::MissingDatabase(_)
         | StoreError::UnsafeStateDirectory
         | StoreError::SchemaMismatch(_)
