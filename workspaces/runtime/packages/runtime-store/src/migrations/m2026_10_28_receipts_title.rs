@@ -152,9 +152,23 @@ fn effect_id(request: &str) -> String {
 }
 fn public_reply(row: &contract::SourceReceipt) -> Result<TitleReply> {
     let reply: TitleReply = row.json(TABLE)?;
+    let python_signature = |name: Option<&str>| {
+        crate::sha256_hex(
+            studio_runtime_schema::json_compat::python_json(
+                &json!({"chat": reply.id, "name": name, "operation": "rename"}),
+            )
+            .as_bytes(),
+        )
+    };
     if reply.request_id != row.id
         || reply.id.is_empty()
-        || row.signature != rename_signature(&reply.id)
+        || (row.signature != rename_signature(&reply.id)
+            && row.signature != python_signature(None)
+            && !(reply.status == TitleStatus::Applied
+                && reply
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| row.signature == python_signature(Some(name)))))
     {
         return Err(contract::unclassifiable(TABLE, &row.id, &row.signature));
     }
@@ -253,16 +267,12 @@ fn save_job(tx: &Transaction<'_>, job: &TitleJob, replace_current: bool) -> Resu
         },
     )
 }
-fn new_job(request: &str, agent: &str, cutover_ms: i64) -> TitleJob {
+fn new_job(request: &str, agent: &str, signature: &str, cutover_ms: i64) -> TitleJob {
     TitleJob {
         request_id: request.into(),
         agent_id: agent.into(),
         root_request_id: RequestIdentity::issue_root(),
-        admitted_request: contract::admitted_owner_token(
-            request,
-            &rename_signature(agent),
-            cutover_ms,
-        ),
+        admitted_request: contract::admitted_owner_token(request, signature, cutover_ms),
         status: TitleStatus::Unknown,
         fingerprint: None,
         epoch: None,
@@ -284,7 +294,12 @@ fn move_effect(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
     if reply.id != effect.agent_id {
         return Err(invalid());
     }
-    let mut job = new_job(&effect.request_id, &effect.agent_id, cutover_ms);
+    let mut job = new_job(
+        &effect.request_id,
+        &effect.agent_id,
+        &public.signature,
+        cutover_ms,
+    );
     job.status = effect.state;
     job.fingerprint = effect.fingerprint;
     job.epoch = effect.epoch;
@@ -364,7 +379,11 @@ fn move_public(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
     let existing = Outbox::get::<TitleJob>(tx, &id)
         .map_err(|_| contract::unclassifiable(TABLE, &row.id, &row.signature))?;
     if existing.is_none() {
-        save_job(tx, &new_job(&row.id, &reply.id, cutover_ms), false)?;
+        save_job(
+            tx,
+            &new_job(&row.id, &reply.id, &row.signature, cutover_ms),
+            false,
+        )?;
     }
     Ok(())
 }
@@ -488,6 +507,95 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn receipts_title_historical_rename_signatures_preserve_applied_replies() {
+        for (id, name, body) in [
+            (
+                "chat-1",
+                "Manual",
+                r#"{"chat": "chat-1", "name": "Manual", "operation": "rename"}"#,
+            ),
+            (
+                "chat-1",
+                "Café",
+                r#"{"chat": "chat-1", "name": "Caf\u00e9", "operation": "rename"}"#,
+            ),
+            (
+                "café",
+                "Generated",
+                r#"{"chat": "caf\u00e9", "name": null, "operation": "rename"}"#,
+            ),
+            (
+                "café",
+                "Generated",
+                r#"{"chat": "café", "name": null, "operation": "rename"}"#,
+            ),
+        ] {
+            let mut db = fixture();
+            let sig = crate::sha256_hex(body.as_bytes());
+            let reply = json!({"id":id,"request_id":"public-id","status":"applied","name":name});
+            put(&db, "public-id", &sig, reply.clone());
+            migrate(&mut db);
+            let (saved_sig, result): (String, String) = db
+                .query_row(
+                    "SELECT signature,result FROM request_results WHERE id='public-id'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .expect("migrated reply");
+            assert_eq!(saved_sig, sig);
+            assert_eq!(
+                serde_json::from_str::<Value>(&result).expect("result")["reply"],
+                reply
+            );
+        }
+    }
+    #[test]
+    fn receipts_title_unmatched_applied_signature_refuses_and_keeps_source() {
+        let mut db = fixture();
+        let sig =
+            crate::sha256_hex(br#"{"chat": "chat-1", "name": "Other", "operation": "rename"}"#);
+        let reply =
+            json!({"id":"chat-1","request_id":"public-id","status":"applied","name":"Original"});
+        put(&db, "public-id", &sig, reply.clone());
+        assert!(matches!(
+            batch(&mut db, SOURCES[1]),
+            Err(contract::ReceiptMigrationError::Unclassifiable { .. })
+        ));
+        let source: String = db
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id='public-id'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("source preserved");
+        assert_eq!(
+            serde_json::from_str::<Value>(&source).expect("source"),
+            reply
+        );
+    }
+    #[test]
+    fn receipts_title_pending_python_signature_is_preserved_in_owner_token() {
+        let mut db = fixture();
+        let sig =
+            crate::sha256_hex(br#"{"chat": "caf\u00e9", "name": null, "operation": "rename"}"#);
+        put(
+            &db,
+            "public-id",
+            &sig,
+            json!({"id":"café","request_id":"public-id","status":"pending"}),
+        );
+        migrate(&mut db);
+        let payload: String = db
+            .query_row(
+                "SELECT payload FROM runtime_outbox WHERE request_id='public-id'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("held job");
+        let job: super::TitleJob = serde_json::from_str(&payload).expect("job");
+        assert_eq!(job.admitted_request.signature(), sig);
     }
     #[test]
     fn receipts_title_completed_reply_keeps_raw_identity_signature_and_optional_nulls() {
