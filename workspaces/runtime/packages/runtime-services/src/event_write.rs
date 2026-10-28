@@ -1347,9 +1347,12 @@ mod tests {
         let root = body["requestId"].as_str().expect("root");
         assert_eq!(uuid::Uuid::parse_str(root).unwrap().get_version_num(), 7);
         assert_eq!(
-            QueueWriteRepository::metadata(&connection, "message-1")
-                .unwrap()
-                .unwrap()["remoteRequestId"],
+            with_transaction(&mut connection, |tx| Ok(QueueWriteRepository::metadata(
+                tx,
+                "message-1"
+            )?))
+            .unwrap()
+            .unwrap()["remoteRequestId"],
             root
         );
         with_transaction(&mut connection, |tx| {
@@ -1382,9 +1385,11 @@ mod tests {
         })
         .expect("public root forwards");
         assert_eq!(
-            QueueWriteRepository::metadata(&connection, &public)
-                .unwrap()
-                .unwrap()["remoteRequestId"],
+            with_transaction(&mut connection, |tx| Ok(QueueWriteRepository::metadata(
+                tx, &public
+            )?))
+            .unwrap()
+            .unwrap()["remoteRequestId"],
             public
         );
         for preserved in [
