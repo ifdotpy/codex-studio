@@ -1059,6 +1059,7 @@ class StartupDeliveryTests(unittest.TestCase):
                 desktop_process.recovery_interpreter_facts(99)
 
     @unittest.skipUnless(sys.platform == 'darwin', 'The production kernel image reader uses the native process API.')
+    @unittest.skipUnless(os.environ.get('STUDIO_REAL_PROCESS_TESTS') == '1', 'Manual tier: just test-real-process-probe (real lsof times out under load).')
     def test_owned_launcher_probe_observes_its_real_kernel_companion_without_runtime_state(self):
         import shlex
         launcher = self.root / 'owned-python-launcher'

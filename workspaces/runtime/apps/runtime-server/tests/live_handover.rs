@@ -271,6 +271,7 @@ async fn log_has(site: &Site, name: &str, text: &str) -> bool {
 }
 
 #[tokio::test]
+#[ignore = "manual process tier: just test-live-handover"]
 async fn a_new_server_takes_the_port_and_the_old_one_drains_its_stream() {
     let site = site().await;
     let mut old = server(&site, "old", &[]);
@@ -301,6 +302,7 @@ async fn a_new_server_takes_the_port_and_the_old_one_drains_its_stream() {
 /// A new server that is gone before `DRAINED` (B1) or after it but before it opens the
 /// state: the old build serves again on the same port.
 #[tokio::test]
+#[ignore = "manual process tier: just test-live-handover"]
 async fn a_new_server_that_dies_before_it_opens_the_state_gives_the_socket_back() {
     let site = site().await;
     let mut old = server(&site, "old", &[]);
@@ -340,6 +342,7 @@ async fn a_new_server_that_dies_before_it_opens_the_state_gives_the_socket_back(
 
 /// After `OPEN` the state may have migrated: the standby must not start the old build.
 #[tokio::test]
+#[ignore = "manual process tier: just test-live-handover"]
 async fn a_new_server_that_fails_after_it_opens_the_state_fails_forward() {
     let site = site().await;
     let mut old = server(&site, "old", &[]);
@@ -377,6 +380,7 @@ async fn a_new_server_that_fails_after_it_opens_the_state_fails_forward() {
 
 /// The old server ends without a standby (B2): the new server holds the socket and serves.
 #[tokio::test]
+#[ignore = "manual process tier: just test-live-handover"]
 async fn a_new_server_serves_when_the_old_one_is_killed_during_the_drain() {
     let site = site().await;
     let mut old = server(&site, "old", &[]);
