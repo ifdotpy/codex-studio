@@ -831,8 +831,10 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                     .await
                 {
                     match error {
-                        studio_runtime_services::linux_vm_provider::GuestProviderError::Task
-                        | studio_runtime_services::linux_vm_provider::GuestProviderError::Persistence(_) => {
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::Persistence(error) => return Err(WorkerError::Store(error)),
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::Outbox(error) => return Err(WorkerError::Store(error.into())),
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::RequestResult(error) => return Err(WorkerError::Store(error.into())),
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::Task => {
                             return Err(WorkerError::TaskFailed);
                         }
                         studio_runtime_services::linux_vm_provider::GuestProviderError::Invalid | studio_runtime_services::linux_vm_provider::GuestProviderError::Unknown | studio_runtime_services::linux_vm_provider::GuestProviderError::Refused | studio_runtime_services::linux_vm_provider::GuestProviderError::InvalidResponse | studio_runtime_services::linux_vm_provider::GuestProviderError::Guest(_) | studio_runtime_services::linux_vm_provider::GuestProviderError::Json(_) => profile_copy_failed = true,
