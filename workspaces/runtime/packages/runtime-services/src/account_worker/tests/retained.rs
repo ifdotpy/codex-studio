@@ -3552,8 +3552,25 @@ async fn deleted_voice_stop_requires_the_exact_committed_session() {
         let owner=match RequestResults::admit(tx,&identity,"voice-delete",chrono::Utc::now().timestamp_millis()).map_err(|error|WorkerError::PreparationRefused(error.to_string()))?{Admission::Fresh(owner)=>owner,Admission::Replay(_)=>return Err(WorkerError::Capacity)};
         let intent=crate::account_worker::retained::ProviderCallIntent {root_request_id:fixture_root.clone(),admitted_request:None,scope:fixture_scope.clone(),operation:"voice:delete-stop:voice-session-7".into(),actor:Some(RequestActor{agent:fixture_actor.clone(),epoch}),transfer:None,deleted_actor_session:Some("voice-session-7".into()),method:Method::ThreadRealtimeStop,params:json!({"threadId":"fake-thread-0"})};
         let token=crate::account_worker::retained::reserve_provider_call(tx,&owner,intent)?;
-        let session=json!({"sessionId":"voice-session-7","agentId":fixture_actor,"epoch":epoch,"accountKey":fixture_scope.account,"threadId":"fake-thread-0","connectionId":fixture_scope.connection,"generation":fixture_scope.generation,"admittedRequest":token});
-        Outbox::put(tx,&OutboxRow {id:"voice-delete-fixture".into(),kind:OutboxKind::VoiceDelete,owner_kind:OwnerKind::Agent,owner_id:fixture_actor.clone(),request_id:Some(owner.id().into()),signature:"voice-agent-delete-v1".into(),status:OutboxStatus::Pending,account:Some(fixture_scope.account.clone()),stream_id:None,generation:None,ordinal:None,next_at:Some(0),created:owner.created(),payload:json!({"agent":fixture_actor,"epoch":epoch,"rootRequestId":fixture_root,"admission":owner,"voiceEndSessions":[session],"voiceEndHeldUncertain":[],"voiceEndResults":{}})}).map_err(|error|WorkerError::PreparationRefused(error.to_string()))?;
+        let effect = studio_runtime_store::VoiceEffect {
+            session_id: "voice-session-7".into(),
+            agent: fixture_actor.clone(),
+            epoch,
+            account: fixture_scope.account.clone(),
+            thread: "fake-thread-0".into(),
+            disposition: studio_runtime_store::VoiceEffectDisposition::Deleted { epoch },
+            authority: studio_runtime_store::VoiceEffectAuthority::Admitted {
+                scope: studio_runtime_schema::persistence::ProviderScope {
+                    connection: fixture_scope.connection.clone(),
+                    generation: fixture_scope.generation,
+                },
+                root_request_id: fixture_root,
+                owner: owner.clone(),
+                admission: token.clone(),
+                outcome: studio_runtime_schema::persistence::VoiceStopOutcome::NotSent,
+            },
+        };
+        Outbox::put(tx,&OutboxRow {id:Outbox::effect_id(owner.id(), OutboxKind::VoiceDelete, OwnerKind::Agent, &fixture_actor, &["voice-session-7"]),kind:OutboxKind::VoiceDelete,owner_kind:OwnerKind::Agent,owner_id:fixture_actor.clone(),request_id:Some(token.id().into()),signature:"voice-agent-delete-v1".into(),status:OutboxStatus::Pending,account:None,stream_id:None,generation:None,ordinal:None,next_at:Some(0),created:owner.created(),payload:effect}).map_err(|error|WorkerError::PreparationRefused(error.to_string()))?;
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?1",[&fixture_actor])?;
         Ok::<_,WorkerError>(token)
     }).await.unwrap();
