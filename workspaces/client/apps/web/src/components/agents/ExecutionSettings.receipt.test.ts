@@ -694,6 +694,39 @@ test("queued settings and account changes keep their canonical scope", async () 
   expect(render(initial).model).toBe("Astra 6");
 });
 
+for (const role of ["implementer", "reviewer"] as const) {
+  test(`${role} queued settings update its own summary before SSE`, async () => {
+    const agent: Agent = {
+      ...initial,
+      id: role,
+      isLead: false,
+      role,
+      yoloMode: false,
+      status: AgentStatus.running,
+      nextTurnSettingsSupported: true,
+    };
+    const queued: Agent = {
+      ...agent,
+      pendingSettings: { model: "gpt-6-luna", effort: "high", fastMode: true },
+      pendingSettingsAccountKey: "default",
+    };
+    h.post.mockResolvedValue(queued);
+    render(agent).picker.onModel("gpt-6-luna");
+    await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+    expect(required(h.post.mock.calls[0])[0]).toBe("/api/conversation");
+    expect(required(required(h.post.mock.calls[0])[1])).toMatchObject({
+      id: role,
+      next_turn: true,
+    });
+    expect(required(required(h.post.mock.calls[0])[1])).not.toHaveProperty(
+      "yolo_mode",
+    );
+    expect(render(agent).triggerAgent.yoloMode).toBe(false);
+    expect(render(agent).model).toBe("Luna 6");
+    expect(render(agent).label).toContain("Agent Luna 6 High");
+  });
+}
+
 test("switching picker roles keeps acknowledged worker defaults in the summary", async () => {
   h.read.mockResolvedValue({
     data: [
