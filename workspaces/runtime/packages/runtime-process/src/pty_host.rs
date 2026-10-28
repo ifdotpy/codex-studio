@@ -1051,7 +1051,7 @@ while IFS= read -r line; do :; done
     /// as `npm run dev &` does. Returns the session and the job PID.
     #[cfg(target_os = "macos")]
     fn zsh_with_background_job(
-        host: &LocalPtyHost,
+        host: LocalPtyHost,
         cwd: &std::path::Path,
     ) -> (super::PtySession, u32) {
         let command = [
@@ -1116,7 +1116,7 @@ while IFS= read -r line; do :; done
     fn macos_close_stops_a_background_job_in_another_group_of_the_session() {
         let cwd = tempfile::tempdir().expect("temporary working directory");
         let host = LocalPtyHost;
-        let (session, job) = zsh_with_background_job(&host, cwd.path());
+        let (session, job) = zsh_with_background_job(host, cwd.path());
         let leader = session.identity().expect("macOS identity").clone();
         assert_eq!(leader.pid, leader.session);
         assert_eq!(leader.pid, leader.process_group);
@@ -1158,7 +1158,7 @@ while IFS= read -r line; do :; done
     fn macos_orphan_cleanup_verifies_the_leader_and_stops_every_group() {
         let cwd = tempfile::tempdir().expect("temporary working directory");
         let host = LocalPtyHost;
-        let (session, job) = zsh_with_background_job(&host, cwd.path());
+        let (session, job) = zsh_with_background_job(host, cwd.path());
         let identity = session.identity().expect("macOS identity").clone();
         let job_identity = super::start_time(job, false)
             .expect("job identity")
