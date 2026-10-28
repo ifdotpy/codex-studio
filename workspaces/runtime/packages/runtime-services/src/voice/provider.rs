@@ -296,12 +296,18 @@ fn pending_session(payload: &VoiceStopPayload, session: &VoiceDeleteSession) -> 
     )
 }
 
+fn voice_signature(kind: OutboxKind) -> Result<&'static str, VoiceProviderError> {
+    if kind == OutboxKind::VoiceStop {
+        Ok(VOICE_STOP_SIGNATURE)
+    } else if kind == OutboxKind::VoiceDelete {
+        Ok(DELETE_VOICE_RECEIPT_SIGNATURE)
+    } else {
+        Err(VoiceProviderError::ContextChanged)
+    }
+}
+
 fn validate_voice_row(row: &OutboxRow<VoiceStopPayload>) -> Result<(), VoiceProviderError> {
-    let signature = match row.kind {
-        OutboxKind::VoiceStop => VOICE_STOP_SIGNATURE,
-        OutboxKind::VoiceDelete => DELETE_VOICE_RECEIPT_SIGNATURE,
-        _ => return Err(VoiceProviderError::ContextChanged),
-    };
+    let signature = voice_signature(row.kind)?;
     if row.signature != signature
         || row.owner_kind != OwnerKind::Agent
         || row.owner_id != row.payload.agent
@@ -368,10 +374,12 @@ fn voice_operation_id(
     kind: OutboxKind,
     session: &VoiceDeleteSession,
 ) -> Result<String, VoiceProviderError> {
-    match kind {
-        OutboxKind::VoiceStop => Ok(format!("voice:stop:{}", session.session_id)),
-        OutboxKind::VoiceDelete => Ok(format!("voice:delete-stop:{}", session.session_id)),
-        _ => Err(VoiceProviderError::ContextChanged),
+    if kind == OutboxKind::VoiceStop {
+        Ok(format!("voice:stop:{}", session.session_id))
+    } else if kind == OutboxKind::VoiceDelete {
+        Ok(format!("voice:delete-stop:{}", session.session_id))
+    } else {
+        Err(VoiceProviderError::ContextChanged)
     }
 }
 
@@ -422,11 +430,7 @@ fn new_voice_row(
     let root_request_id = RequestIdentity::issue_root();
     let identity = RequestIdentity::new("voice", &[agent], &root_request_id, &[kind.as_str(), &id])
         .map_err(|_| VoiceProviderError::ContextChanged)?;
-    let signature = if kind == OutboxKind::VoiceStop {
-        VOICE_STOP_SIGNATURE
-    } else {
-        DELETE_VOICE_RECEIPT_SIGNATURE
-    };
+    let signature = voice_signature(kind)?;
     let admission = match RequestResults::admit(tx, &identity, signature, identity.issued_ms())? {
         Admission::Fresh(admitted) => admitted,
         Admission::Replay(_) => return Err(VoiceProviderError::ContextChanged),
@@ -898,11 +902,7 @@ pub(crate) async fn end_voice_sessions_tracked(
         let Some(root_request_id) = admission else {
             continue;
         };
-        let operation_id = match kind {
-            OutboxKind::VoiceStop => format!("voice:stop:{}", session.session_id),
-            OutboxKind::VoiceDelete => format!("voice:delete-stop:{}", session.session_id),
-            _ => return Err(VoiceProviderError::ContextChanged),
-        };
+        let operation_id = voice_operation_id(kind, &session)?;
         let receipt = request(
             provider.as_ref(),
             VoiceRpcCall {
