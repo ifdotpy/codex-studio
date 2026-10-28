@@ -66,17 +66,117 @@ Desktop window (Tauri)          Phone (PWA) or UI-only computer
 Today one agent record mixes three things. They become separate entities, each with an
 enum state:
 
-| Entity      | Meaning                                                              | Examples of state                                                       |
-| ----------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| **Chat**    | The conversation that the user sees, with its settings and its queue | `Active`, `Paused`, `Archived`                                          |
-| **Turn**    | One provider run inside a chat                                       | `Starting`, `Running { session }`, `Completed`, `Failed`, `Interrupted` |
-| **Session** | One provider process or thread that runs turns                       | `Starting`, `Ready`, `Lost`                                             |
-| **Message** | Input from the user, an agent, or a peer, with its delivery state    | `Delivery` (see Types)                                                  |
-| **Item**    | One record of the conversation that a turn produced                  | Final, or hidden by a rewind                                            |
+| Entity         | Meaning                                                                 | Examples of state                                                          |
+| -------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| **Chat**       | The conversation that the user sees, with its settings and its queue    | `Active`, `Paused`, `Archived`                                             |
+| **Turn**       | One provider run inside a chat                                          | `Starting`, `Running { session }`, `Completed`, `Failed`, `Interrupted`    |
+| **Session**    | One provider process or thread that runs turns                          | `Starting`, `Ready`, `Lost`                                                |
+| **Message**    | Input from the user, an agent, or a peer, with its delivery state       | `Delivery` (see Types)                                                     |
+| **Item**       | One record of the conversation that a turn produced                     | Final, or hidden by a rewind                                               |
+| **Approval**   | A provider request for permission or an answer, inside a turn           | See Approvals                                                              |
+| **Process**    | A command that Studio starts and watches for an agent (today a monitor) | `Starting`, `Running`, `Completed { exit }`, `Failed`, `Cancelled`, `Lost` |
+| **Work**       | An assignment from a lead to a worker, with its result                  | `Ready`, `Running`, `Review`, `Blocked`, `Accepted`, `Cancelled`           |
+| **Checkpoint** | A git restore point of a turn                                           | Immutable                                                                  |
+| **Attachment** | An uploaded file of a message                                           | Immutable; the file on disk is the owner                                   |
 
 - Commands point to real rows: `interrupt(turn)`, `edit(turn)`, `Delivery::Submitted { turn }`.
 - A chat has at most one turn that is not finished. Its state, not fields inside a JSON
   record, says whether the chat is busy.
+
+Other tables today, measured on 2026-10-28:
+
+| Table today                                                  | Rows        | Target                                                                                                                                                            |
+| ------------------------------------------------------------ | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runtime_tasks`                                              | 1.12M       | Not an entity. One row for each command or tool call item, with the command, status and output tail (estimate about 5 GB). The status becomes a field of the Item |
+| `runtime_tool_requests`, `runtime_tool_results`              | 218k each   | The tool call Item and its result                                                                                                                                 |
+| `runtime_monitors`                                           | 126k        | Process                                                                                                                                                           |
+| `runtime_completed_turns`                                    | 94k         | The `Completed` state of Turn                                                                                                                                     |
+| `runtime_execution_attempts`, `_effects`, `_inputs`, `_runs` | 57k to 112k | Turn attempts and the outbox                                                                                                                                      |
+| `runtime_rooms`                                              | 2.6k        | Derived from the chat tree (two agents, or one root). Not stored                                                                                                  |
+| `runtime_user_tasks`                                         | 56          | No writer or reader was found. Remove after a check                                                                                                               |
+| Drafts in `sync_documents`                                   | 1.3k        | A draft field of Chat                                                                                                                                             |
+
+The data-loss rules apply: a table that is a copy is removed only after a check shows
+that its owner holds the same data. For `runtime_tasks` this is not proven yet: in a
+sample of 6 rows, the output tail matched the item text only in part.
+
+### Approvals
+
+Today approvals and provider questions share `runtime_requests` (297 rows) with string
+states and one answer route. The target makes it one entity, a child of Turn:
+
+```rust
+enum Request {             // fixed at creation, decides the allowed answer
+    Exec { command, cwd, reason },
+    Patch { item: ItemId, files },
+    Permissions { requested },
+    Elicitation { schema },
+    Question { questions },
+    ToolUse { tool, input },   // Claude
+    AgentQuestion { .. },      // today agent/asyncQuestion
+    MonitorStart { .. },       // today monitor/approve
+    BrowserOpen { .. },        // today browser/open
+}
+enum ApprovalState {
+    Pending,
+    Answering { answer: Answer, command: CommandId },  // outbox entry exists
+    Answered { answer: Answer, by: Principal, at: Timestamp },
+    Unknown { answer: Answer, since: Timestamp },      // delivery lost
+    Closed { reason: CloseReason, at: Timestamp },     // turn ended, provider resolved, session lost, chat deleted, expired
+}
+```
+
+- The command `answer(approval, answer)` checks that the answer fits the request kind.
+  The same answer again replays. A different answer is a conflict.
+- An answer is never inferred. When the turn ends or the session is lost, `Pending`
+  becomes `Closed` and `Answering` becomes `Unknown`.
+- An automatic answer by policy (full access mode) is also a row, created as `Answered`
+  with `by: Policy`. Today it leaves no record.
+- The Claude timeout in full access mode (10 min today, in the bridge) moves to the
+  server as a `Closed { reason: Expired }` with a decline effect.
+- All approvals stay in history. Today `deleted` hides a row; it becomes a hidden flag,
+  not a state.
+
+### Permissions
+
+Today every UI client, the phone, and a paired device act as the owner. The signed path
+checks the device and then runs the handler as the owner, so the handler does not know
+the caller. Agents and peer servers have their own checks in three different places.
+
+Target: the edge checks the signature or token and gives one `Principal`. The decide
+function checks the command against the rows, without I/O.
+
+```rust
+enum Principal {
+    Owner,                                  // loopback desktop window
+    Device { id: DeviceId, grant: Grant },  // phone, other laptop
+    Peer { server: ServerId },
+    Agent { id: AgentId, epoch: Epoch },    // tree position comes from the rows
+    Federated { peer: PeerId },
+    Policy,                                 // automatic answers
+}
+enum Grant { Full, Observe }                // Observe: read commands only
+```
+
+| Command class                               | Who may run it                                                                        |
+| ------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Read                                        | Everyone, within their own data                                                       |
+| Chat control (send, stop, answer, withdraw) | Owner, Device Full. An agent only on its descendants. A peer only on its link workers |
+| Spawn                                       | Owner, Device Full, a root lead, a peer for its own link                              |
+| Host (exec, git, folders, file write)       | Owner, Device Full, Peer                                                              |
+| Pairing, grants, revoke, settings           | Owner only                                                                            |
+| Federation                                  | Federated, only in rooms that the peer approved                                       |
+
+- The grant lives in the shared trust list. A server reads the grant from its own copy,
+  never from the request.
+- The descendant check exists twice today (`managed_host_tools.rs`, `services.rs`). It
+  becomes one function.
+- Known gap today: a request through Tailscale Serve is trusted when its source is a
+  tailnet address (`middleware.rs`, `trusted`). It can read `/api/session`, which returns
+  the owner token. The Tailscale login is not compared with the owner, as it is on the
+  signed path. Target: Serve requests use device keys and get no owner token.
+- A process on the server host can read the owner token through loopback. Agent shells
+  therefore have owner rights outside the agent tools.
 
 ### One command path
 
@@ -120,9 +220,24 @@ event store:
    entries are written together. A half-written command cannot exist.
 3. **Effects in a worker.** A worker reads the outbox and does the I/O (provider, files,
    peer servers). It reports the result as a new command through the same path.
-4. **Raw provider frames go to rotating log files**, not to tables. They help debugging
+4. **Recovery after a crash.** The worker marks an outbox entry `Sending` in a commit
+   before the I/O. On restart, each `Sending` entry follows the rule of its effect kind:
+
+   | Rule            | Restart action                                                           | Effects                                                                                                                  |
+   | --------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+   | `TargetDedupes` | Send again with the same id                                              | Claude turn start and steer, reset credit (idempotency key), federation, replay-safe peer actions, file writes by rename |
+   | `AskTarget`     | Ask the target. Found: done. Proven absent: queue again. Else: `Unknown` | Codex turn start (history by `clientId`), peer `exec` (`exec_receipt`)                                                   |
+   | `None`          | `Unknown`                                                                | Interrupt, rollback, fork, other peer actions                                                                            |
+   - Only the worker sets `Unknown`, in the same transaction as the row state.
+   - The user resolves it with one of three commands: `retry`, `mark_delivered`, or
+     `discard`. `retry` of an `AskTarget` entry asks the target first and refuses
+     while the answer is unclear. `discard` returns a message text to the composer.
+   - Without the supervisor (Windows), provider processes end with the server. Their
+     `Sending` entries become `Unknown` unless the target answers.
+
+5. **Raw provider frames go to rotating log files**, not to tables. They help debugging
    and replay. They are not a source of state.
-5. **Replay tests.** A test feeds recorded commands and provider frames to the decide
+6. **Replay tests.** A test feeds recorded commands and provider frames to the decide
    function and compares the resulting rows.
 
 **Rejected: an event store as the source of truth** (t3 keeps state as an append-only
@@ -349,3 +464,11 @@ BEGIN SELECT RAISE(ABORT, 'invalid delivery state'); END;
   about 4 GB. Measure `dbstat` on an APFS clone before any analytics change.
 - **Ownership:** Sasha handed the typed storage work to Claude. Most other parts also
   change backend code that he owns (#37). Agree each part with him.
+- **Phone grant:** should a newly paired phone get `Full` (as today) or `Observe`?
+- **Agent shells:** should agents lose the owner token on loopback? Agents with full
+  access can also change files and the database directly, so the gain is small.
+- **Codex turn start:** does Codex ignore a repeated `turn/start` with the same
+  `clientUserMessageId` when the thread is idle? It duplicates input when a turn is
+  active (`docs/orchestration.md`). Measure before the rule moves to `TargetDedupes`.
+- **Probes:** no read was found that proves whether an interrupt or a rollback was
+  applied. Until one exists, both stay `None`.
