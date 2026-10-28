@@ -1,9 +1,9 @@
 use super::*;
 use rusqlite::OptionalExtension;
-use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind, RequestIdentity};
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
 use studio_runtime_store::{
     outbox::{Outbox, OutboxRow},
-    request_results::{Admission, AdmittedRequest, RequestResults, ResultEnvelope},
+    request_results::{AdmittedRequest, RequestResults, ResultEnvelope},
 };
 
 /// The exact prepared transport request. Method stays in the provider enum owner.
@@ -66,7 +66,7 @@ pub(in crate::account_worker) struct RetainedOutcome {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(in crate::account_worker) struct RetainedCall {
     pub call: Call,
-    pub request: TransportRequest,
+    pub request: Option<TransportRequest>,
     pub admitted: AdmittedRequest,
     pub written: bool,
     pub outcome: Option<RetainedOutcome>,
@@ -157,7 +157,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 && call.params.get("threadId").and_then(Value::as_str)
                     == Some(transfer.thread_id.as_str())
                 && crate::account_transfer::valid_source_preflight_params(
-                    &call.method,
+                    call.method.as_str(),
                     &transfer.thread_id,
                     &call.params,
                 )
@@ -166,18 +166,22 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                     transfer.transfer_id, transfer.member
                 ))
                 && matches!(
-                    call.method.as_str(),
-                    "thread/queue/list" | "thread/backgroundTerminals/list" | "thread/unsubscribe"
+                    call.method,
+                    Method::ThreadQueueList
+                        | Method::ThreadBackgroundTerminalsList
+                        | Method::ThreadUnsubscribe
                 ));
         }
-        return Ok(Method::from_wire(&call.method).is_some_and(|method| {
-            super::valid_actorless_request_shape(method, &call.params, &call.operation)
-        }));
+        return Ok(super::valid_actorless_request_shape(
+            call.method,
+            &call.params,
+            &call.operation,
+        ));
     };
     let Some(agent_record) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
         return Ok(false);
     };
-    if call.method == "thread/unsubscribe" {
+    if call.method == Method::ThreadUnsubscribe {
         return crate::agent_management_recovery::authorize_release(
             tx,
             actor,
@@ -196,7 +200,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         && !studio_runtime_store::truthy(agent_record.extra.get("deletedAt"))
         && agent_record.extra.get("deleted") != Some(&json!(true));
     let actor_identity = common_identity && agent_record.epoch == actor.epoch;
-    if call.method == "claude/shellPolicy" {
+    if call.method == Method::ClaudeShellPolicy {
         let settings = studio_runtime_store::OrchestrationSettingsRepository::shell_policy(tx)?;
         if call.params["settings"] != serde_json::to_value(settings).map_err(StoreError::from)?
             || call.params["eligible"].as_bool().is_none()
@@ -206,13 +210,13 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
             return Ok(false);
         }
     }
-    if call.method == "claude/shellPolicy"
+    if call.method == Method::ClaudeShellPolicy
         && call.params["eligible"] == true
         && !crate::shell_policy::eligible(tx, &agent_record.value())?
     {
         return Ok(false);
     }
-    if call.method == "command/exec/terminate"
+    if call.method == Method::CommandExecTerminate
         && let Some(process) = call.params["processId"].as_str()
         && let Some(monitor) = studio_runtime_store::MonitorsRepository::get(tx, process)?
         && !crate::shell_policy::monitor_cleanup_allowed(
@@ -225,7 +229,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         return Ok(false);
     }
     let deleted_voice_stop = authorize_deleted_voice_stop(tx, call, actor, &agent_record.extra)?;
-    let repair_fork = if call.method == "thread/fork" {
+    let repair_fork = if call.method == Method::ThreadFork {
         let repair = agent_record
             .extra
             .get("contextRepair")
@@ -279,16 +283,16 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
     // turn and its commands running; it grants nothing else to a deleted actor.
     let stopped_turn_cleanup = agent_account == call.scope.account
         && matches!(
-            call.method.as_str(),
-            "turn/interrupt" | "thread/backgroundTerminals/clean"
+            call.method,
+            Method::TurnInterrupt | Method::ThreadBackgroundTerminalsClean
         )
         && actor.epoch.checked_add(1) == Some(agent_record.epoch)
         && agent_record.extra.get("autoWake") == Some(&json!(false));
     let thread_matches = call.params["threadId"].as_str().is_some_and(|thread| {
         agent_record.extra.get("threadId").and_then(Value::as_str) == Some(thread)
     });
-    let thread_start = call.method == "thread/start" && call.params.get("threadId").is_none();
-    let ephemeral_turn = if call.method == "turn/start" {
+    let thread_start = call.method == Method::ThreadStart && call.params.get("threadId").is_none();
+    let ephemeral_turn = if call.method == Method::TurnStart {
         match call.params["threadId"].as_str() {
             Some(thread) => thread_started_for_actor(tx, call, thread)?,
             None => false,
@@ -298,7 +302,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
     };
     let config_operation = call.operation.strip_prefix("monitor-config:");
     let config_monitor_id = config_operation.and_then(|rest| rest.split(':').next());
-    let config_read = call.method == "config/read"
+    let config_read = call.method == Method::ConfigRead
         && config_operation.is_some_and(|rest| rest.split(':').count() == 2)
         && config_monitor_id.is_some_and(|id| !id.is_empty())
         && call.params.get("includeLayers") == Some(&json!(false))
@@ -322,8 +326,11 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
             false
         };
     let monitor_method = matches!(
-        call.method.as_str(),
-        "command/exec" | "command/exec/write" | "command/exec/resize" | "command/exec/terminate"
+        call.method,
+        Method::CommandExec
+            | Method::CommandExecWrite
+            | Method::CommandExecResize
+            | Method::CommandExecTerminate
     );
     let process_id = call.params.get("processId").and_then(Value::as_str);
     let (monitor_id, liveness_generation) = match call.operation.strip_prefix("liveness:") {
@@ -363,8 +370,8 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 agent.as_deref() == Some(actor.agent.as_str())
                     && epoch == Some(actor.epoch)
                     && account.as_deref().unwrap_or("default") == call.scope.account
-                    && match call.method.as_str() {
-                        "command/exec" => {
+                    && match call.method {
+                        Method::CommandExec => {
                             let regular = call.operation == format!("monitor:{monitor_id}")
                                 && process_id == Some(monitor_id)
                                 && matches!(status.as_deref(), Some("starting" | "running"));
@@ -376,14 +383,14 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                             (regular || liveness)
                                 && call.params.get("cwd").and_then(Value::as_str) == cwd.as_deref()
                         }
-                        "command/exec/write" | "command/exec/resize" => {
+                        Method::CommandExecWrite | Method::CommandExecResize => {
                             call.operation
                                 .starts_with(&format!("monitor-input:{monitor_id}:"))
                                 && call.operation.len()
                                     > format!("monitor-input:{monitor_id}:").len()
                                 && status.as_deref() == Some("running")
                         }
-                        "command/exec/terminate" => {
+                        Method::CommandExecTerminate => {
                             call.operation == format!("monitor-cancel:{monitor_id}")
                                 && status.as_deref() == Some("running")
                         }
@@ -419,8 +426,8 @@ fn authorize_retained_monitor_control(
     current: &studio_runtime_store::AgentRecord,
 ) -> Result<bool, WorkerError> {
     if !matches!(
-        call.method.as_str(),
-        "command/exec/terminate" | "command/exec/write" | "command/exec/resize"
+        call.method,
+        Method::CommandExecTerminate | Method::CommandExecWrite | Method::CommandExecResize
     ) {
         return Ok(false);
     }
@@ -454,7 +461,7 @@ fn authorize_retained_monitor_control(
     if original.account != call.scope.account || original.generation != call.scope.generation {
         return Ok(false);
     }
-    if call.method == "command/exec/terminate" {
+    if call.method == Method::CommandExecTerminate {
         return Ok(record["cancelRequested"] == true
             && call.operation == format!("monitor-cancel:{id}")
             && call.params == json!({"processId":id}));
@@ -473,7 +480,7 @@ fn authorize_retained_monitor_control(
         && !ticket.is_empty()
         && attempt["status"] == "submitted"
         && exact_operation
-        && attempt["method"] == call.method
+        && attempt["method"] == call.method.as_str()
         && attempt["params"] == call.params
         && call.operation == format!("monitor-input:{id}:{ticket}"))
 }
@@ -490,7 +497,7 @@ fn authorize_recovered_monitor_cancel(
         || current.extra.get("autoWake") != Some(&json!(true))
         || studio_runtime_store::truthy(current.extra.get("deletedAt"))
         || current.extra.get("deleted") == Some(&json!(true));
-    if call.method != "command/exec/terminate" || !inactive {
+    if call.method != Method::CommandExecTerminate || !inactive {
         return Ok(false);
     }
     #[derive(serde::Deserialize)]
@@ -547,7 +554,7 @@ fn authorize_deleted_voice_stop(
     let deleted = studio_runtime_store::truthy(agent_extra.get("deletedAt"))
         || agent_extra.get("deleted") == Some(&json!(true));
     if session_id.is_empty()
-        || call.method != "thread/realtime/stop"
+        || call.method != Method::ThreadRealtimeStop
         || call.operation != format!("voice:delete-stop:{session_id}")
         || call
             .params
@@ -576,6 +583,13 @@ fn authorize_deleted_voice_stop(
     }))
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(in crate::account_worker) struct ThreadProvenance {
+    pub scope: ConnectionScope,
+    pub actor: RequestActor,
+    pub operation: String,
+}
+
 fn thread_started_for_actor(
     tx: &rusqlite::Transaction<'_>,
     call: &Call,
@@ -594,12 +608,7 @@ fn thread_started_for_actor(
     else {
         return Ok(false);
     };
-    #[derive(serde::Deserialize)]
-    struct Provenance {
-        scope: ConnectionScope,
-        actor: RequestActor,
-    }
-    let provenance: Provenance =
+    let provenance: ThreadProvenance =
         serde_json::from_value(provenance.clone()).map_err(StoreError::from)?;
     Ok(provenance.actor == *actor
         && provenance.scope.account == call.scope.account
@@ -640,21 +649,24 @@ pub(super) fn replay_in_transaction(
     replay_recorded(tx, call)
 }
 pub(super) enum Replay {
-    Miss,
+    Ready,
     Return(SessionReceipt),
     Retry(RequestTicket),
 }
 fn same_replay_identity(prior: &Call, current: &Call) -> bool {
     prior.signature() == current.signature()
-        && prior.root_request_id == current.root_request_id
-        && prior.admitted_request == current.admitted_request
+        && result_id(prior)
+            .ok()
+            .is_some_and(|id| result_id(current).as_ref() == Ok(&id))
 }
 fn result_id(call: &Call) -> Result<String, PortError> {
-    match &call.admitted_request {
-        Some(token) => Ok(token.id().into()),
-        None => Ok(call.identity()?.id().into()),
-    }
+    call.admitted_request
+        .as_ref()
+        .filter(|token| token.signature() == call.signature())
+        .map(|token| token.id().to_owned())
+        .ok_or(PortError::Unknown)
 }
+
 fn saved_reply(
     tx: &rusqlite::Connection,
     id: &str,
@@ -695,24 +707,7 @@ pub(super) fn replay_recorded(
         Err(error) => return Err(result_error(error)),
     };
     let Some(saved) = saved else {
-        if call.admitted_request.is_some() {
-            // A token proves admission, never that the external attempt was NotSent.
-            return Ok(Err(PortError::Unknown));
-        }
-        if call
-            .identity()
-            .and_then(|id| {
-                id.validate(
-                    now_ms(),
-                    RequestResults::expired_before_ms(tx).map_err(|_| PortError::Unknown)?,
-                )
-                .map_err(|_| PortError::Invalid)
-            })
-            .is_err()
-        {
-            return Ok(Err(PortError::Invalid));
-        }
-        return Ok(Ok(Replay::Miss));
+        return Ok(Err(PortError::Unknown));
     };
     let saved: ResultEnvelope<RetainedReply> =
         serde_json::from_str(&saved.result).map_err(StoreError::from)?;
@@ -731,18 +726,102 @@ pub(super) fn replay_submitted(
     prior_call: &Call,
     prior: &RetainedCall,
 ) -> Result<Result<Replay, PortError>, WorkerError> {
-    let result = prior.outcome.as_ref().map(|outcome| &outcome.result);
-    if result == Some(&RequestResult::NotSent)
-        && prior
-            .outcome
-            .as_ref()
-            .is_some_and(|outcome| outcome.cursor == 0)
+    let Some(request) = &prior.request else {
+        return Ok(Ok(Replay::Ready));
+    };
+    if prior
+        .outcome
+        .as_ref()
+        .is_some_and(|outcome| outcome.result == RequestResult::NotSent && outcome.cursor == 0)
     {
-        return Ok(Ok(Replay::Retry(prior.request.recovered().ticket)));
+        return Ok(Ok(Replay::Retry(request.recovered().ticket)));
     }
-    let mut receipt = prior_call.receipt(prior.request.recovered().ticket, RequestResult::Unknown);
+    let mut receipt = prior_call.receipt(request.recovered().ticket, RequestResult::Unknown);
     receipt.replayed = true;
     Ok(Ok(Replay::Return(receipt)))
+}
+
+pub(super) fn reserve(
+    tx: &rusqlite::Transaction<'_>,
+    call: Call,
+    admitted: AdmittedRequest,
+) -> Result<(), WorkerError> {
+    if let Some(row) = row(tx, &call.key())? {
+        if !same_replay_identity(&retained(&row)?.call, &call) {
+            return Err(WorkerError::PreparationRefused(
+                "retained-session/identity-changed".into(),
+            ));
+        }
+        return Ok(());
+    }
+    if RequestResults::replay(tx, admitted.id(), &call.signature(), now_ms())
+        .map_err(result_error)?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let actor_id = match &call.actor {
+        Some(actor) if vm_actor(tx, &actor.agent)? => Some(actor.agent.as_str()),
+        _ => None,
+    };
+    let stream = actor_id.map_or_else(
+        || call.scope.account.clone(),
+        |actor| super::super::vm_journal_scope(&call.scope.account, actor),
+    );
+    let row = OutboxRow {
+        id: call.key(),
+        kind: OutboxKind::ProviderCall,
+        owner_kind: if call.actor.is_some() {
+            OwnerKind::Agent
+        } else {
+            OwnerKind::Account
+        },
+        owner_id: call
+            .actor
+            .as_ref()
+            .map_or_else(|| call.scope.account.clone(), |actor| actor.agent.clone()),
+        request_id: Some(admitted.id().into()),
+        signature: call.signature(),
+        status: OutboxStatus::Pending,
+        account: Some(call.scope.account.clone()),
+        stream_id: Some(stream),
+        generation: Some(i64::try_from(call.scope.generation).map_err(|_| WorkerError::Capacity)?),
+        ordinal: None,
+        next_at: None,
+        created: admitted.created(),
+        payload: store::ProviderCall::Retained(RetainedCall {
+            call,
+            request: None,
+            admitted,
+            written: false,
+            outcome: None,
+        }),
+    };
+    put(tx, &row)
+}
+
+pub(super) fn discard_unsent(
+    tx: &rusqlite::Transaction<'_>,
+    admitted: &AdmittedRequest,
+) -> Result<(), WorkerError> {
+    let rows =
+        Outbox::for_request::<store::ProviderCall>(tx, admitted.id()).map_err(outbox_error)?;
+    for row in rows {
+        let payload = retained(&row)?;
+        if row.signature != admitted.signature()
+            || row.status != OutboxStatus::Pending
+            || (payload.request.is_some()
+                && !payload.outcome.as_ref().is_some_and(|outcome| {
+                    outcome.result == RequestResult::NotSent && outcome.cursor == 0
+                }))
+        {
+            return Err(WorkerError::PreparationRefused(
+                "retained-session/unknown".into(),
+            ));
+        }
+        Outbox::delete_settled(tx, &row.id, &row.signature).map_err(outbox_error)?;
+    }
+    Ok(())
 }
 
 pub(super) async fn submitted(
@@ -758,97 +837,34 @@ pub(super) async fn submitted(
         if !authorize(tx, &call)? {
             return Ok(Err(PortError::Identity));
         }
-        if let Some(mut row) = row(tx, &call.key())? {
-            let mut prior = retained(&row)?.clone();
-            if !same_replay_identity(&prior.call, &call) {
-                return Ok(Err(PortError::Identity));
-            }
-            let Some(expected) = retry_ticket else {
-                return Ok(Err(PortError::Unknown));
-            };
-            if prior.request.recovered().ticket != expected
-                || request.recovered().ticket != expected
+        let Some(mut row) = row(tx, &call.key())? else {
+            return Ok(Err(PortError::Unknown));
+        };
+        let mut prior = retained(&row)?.clone();
+        if !same_replay_identity(&prior.call, &call) {
+            return Ok(Err(PortError::Identity));
+        }
+        if row.status != OutboxStatus::Pending {
+            return Ok(Err(PortError::Unknown));
+        }
+        if let Some(original) = &prior.request {
+            if retry_ticket.as_ref() != Some(&original.recovered().ticket)
+                || request.recovered().ticket != original.recovered().ticket
                 || !prior.outcome.as_ref().is_some_and(|outcome| {
                     outcome.result == RequestResult::NotSent && outcome.cursor == 0
                 })
             {
                 return Ok(Err(PortError::Unknown));
             }
-            prior.request = request;
-            prior.outcome = None;
-            prior.written = false;
-            row.payload = store::ProviderCall::Retained(prior);
-            row.status = OutboxStatus::Unknown;
-            row.next_at = None;
-            put(tx, &row)?;
-            return Ok(Ok(()));
-        }
-        if retry_ticket.is_some() {
+        } else if retry_ticket.is_some() {
             return Ok(Err(PortError::Unknown));
         }
-        let signature = call.signature();
-        let admitted = match &call.admitted_request {
-            Some(token) if token.signature() == signature => token.clone(),
-            Some(_) => return Ok(Err(PortError::Identity)),
-            None => {
-                let identity = match call.identity() {
-                    Ok(identity) => identity,
-                    Err(error) => return Ok(Err(error)),
-                };
-                match RequestResults::admit(tx, &identity, &signature, now_ms())
-                    .map_err(result_error)?
-                {
-                    Admission::Fresh(token) => token,
-                    Admission::Replay(_) => return Ok(Err(PortError::Unknown)),
-                }
-            }
-        };
-        // Recheck result in the same writer transaction as admission.
-        if RequestResults::replay(tx, admitted.id(), &signature, now_ms())
-            .map_err(result_error)?
-            .is_some()
-        {
-            return Ok(Err(PortError::Unknown));
-        }
-        let actor_id = match &call.actor {
-            Some(actor) if vm_actor(tx, &actor.agent)? => Some(actor.agent.as_str()),
-            _ => None,
-        };
-        let stream_id = actor_id.map_or_else(
-            || call.scope.account.clone(),
-            |actor| super::super::vm_journal_scope(&call.scope.account, actor),
-        );
-        let row = OutboxRow {
-            id: call.key(),
-            kind: OutboxKind::ProviderCall,
-            owner_kind: if call.actor.is_some() {
-                OwnerKind::Agent
-            } else {
-                OwnerKind::Account
-            },
-            owner_id: call
-                .actor
-                .as_ref()
-                .map_or_else(|| call.scope.account.clone(), |actor| actor.agent.clone()),
-            request_id: Some(admitted.id().into()),
-            signature,
-            status: OutboxStatus::Unknown,
-            account: Some(call.scope.account.clone()),
-            stream_id: Some(stream_id),
-            generation: Some(
-                i64::try_from(call.scope.generation).map_err(|_| WorkerError::Capacity)?,
-            ),
-            ordinal: None,
-            next_at: None,
-            created: admitted.created(),
-            payload: store::ProviderCall::Retained(RetainedCall {
-                call,
-                request,
-                admitted,
-                written: false,
-                outcome: None,
-            }),
-        };
+        prior.request = Some(request);
+        prior.outcome = None;
+        prior.written = false;
+        row.payload = store::ProviderCall::Retained(prior);
+        row.status = OutboxStatus::Unknown;
+        row.next_at = None;
         put(tx, &row)?;
         Ok(Ok(()))
     })
@@ -917,7 +933,7 @@ fn settle(
     ) {
         return Ok(());
     }
-    if payload.call.method == Method::ThreadStart.as_str()
+    if payload.call.method == Method::ThreadStart
         && let RequestResult::Reply(reply) = &outcome.result
         && let Some(thread) = reply["thread"]["id"].as_str()
         && let Some(actor) = &payload.call.actor
@@ -930,13 +946,18 @@ fn settle(
         let map = provenance.as_object_mut().ok_or(WorkerError::Capacity)?;
         map.insert(
             thread.into(),
-            json!({"scope":payload.call.scope,"actor":actor,"operation":payload.call.operation}),
+            serde_json::to_value(ThreadProvenance {
+                scope: payload.call.scope.clone(),
+                actor: actor.clone(),
+                operation: payload.call.operation.clone(),
+            })
+            .map_err(StoreError::from)?,
         );
         AgentRepository::put(tx, &agent)?;
     }
     let reply = RetainedReply {
         call: payload.call.clone(),
-        request: payload.request.clone(),
+        request: payload.request.clone().ok_or(WorkerError::Capacity)?,
         written: payload.written,
         result: outcome.result.clone(),
         ack: CommittedAck {
@@ -971,7 +992,7 @@ pub(super) fn record_outcome(
     };
     let mut payload = retained(&row)?.clone();
     if let Some(written) = written {
-        payload.request = TransportRequest::from(&written);
+        payload.request = Some(TransportRequest::from(&written));
         payload.written = true;
     }
     if let Some(value) = value {
@@ -1047,10 +1068,13 @@ pub(in crate::account_worker) async fn recover(
                 }) {
                     continue;
                 }
-                let mut request = payload.request.recovered();
+                let Some(prepared) = payload.request.as_ref() else {
+                    continue;
+                };
+                let mut request = prepared.recovered();
                 request.lightweight =
                     !studio_runtime_schema::provider_method_policy::is_recovered_thread_serialized(
-                        &payload.call.method,
+                        payload.call.method.as_str(),
                         &payload.call.params,
                     );
                 let actor_id = match &payload.call.actor {
@@ -1098,10 +1122,10 @@ impl RecordedCall {
             Self::Final(value) => &value.call,
         }
     }
-    pub(super) fn request(&self) -> &TransportRequest {
+    pub(super) fn request(&self) -> Option<&TransportRequest> {
         match self {
-            Self::Pending(value) => &value.request,
-            Self::Final(value) => &value.request,
+            Self::Pending(value) => value.request.as_ref(),
+            Self::Final(value) => Some(&value.request),
         }
     }
     pub(super) fn written(&self) -> bool {
@@ -1112,17 +1136,18 @@ impl RecordedCall {
     }
     pub(super) fn replay(&self) -> Replay {
         match self {
-            Self::Pending(value)
+            Self::Pending(value) => {
+                let Some(request) = &value.request else {
+                    return Replay::Ready;
+                };
                 if value.outcome.as_ref().is_some_and(|outcome| {
                     outcome.result == RequestResult::NotSent && outcome.cursor == 0
-                }) =>
-            {
-                Replay::Retry(value.request.recovered().ticket)
-            }
-            Self::Pending(value) => {
+                }) {
+                    return Replay::Retry(request.recovered().ticket);
+                }
                 let mut receipt = value
                     .call
-                    .receipt(value.request.recovered().ticket, RequestResult::Unknown);
+                    .receipt(request.recovered().ticket, RequestResult::Unknown);
                 receipt.replayed = true;
                 Replay::Return(receipt)
             }
@@ -1179,7 +1204,7 @@ mod replay_identity_tests {
             }),
             transfer: None,
             deleted_actor_session: None,
-            method: "thread/read".into(),
+            method: Method::ThreadRead,
             params: json!({"threadId":"thread-1","includeTurns":false}),
         }
     }
@@ -1190,7 +1215,7 @@ mod replay_identity_tests {
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         store.transaction(|tx| {
             let mut request = call();
-            request.method = "claude/shellPolicy".into();
+            request.method = Method::ClaudeShellPolicy;
             request.operation = "shell-policy:agent-1:tick".into();
             request.params = json!({"threadId":"thread-1","settings":studio_runtime_schema::shell_policy::Settings::default(),"eligible":true,"critical":true});
             let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"threadId":"thread-1","status":"idle","autoWake":true}))?;
@@ -1229,7 +1254,7 @@ mod replay_identity_tests {
                     let mut call = call();
                     call.actor = None;
                     call.operation = format!("legacy:{index}");
-                    call.method = method.as_str().into();
+                    call.method = method;
                     call.params = params;
                     let key = call.key();
                     let request = RecoveredRequest {
@@ -1390,7 +1415,7 @@ mod replay_identity_tests {
                             agent: agent.into(),
                             epoch: 7,
                         });
-                        exact.method = (*method).into();
+                        exact.method = Method::from_wire(method).expect("method");
                         exact.params = params.clone();
                         assert!(authorize(tx, &exact)?, "{agent} ends {method}");
                         let mut invalid = exact.clone();
@@ -1415,7 +1440,7 @@ mod replay_identity_tests {
                     agent: "deleted".into(),
                     epoch: 8,
                 });
-                deleted_current.method = "turn/interrupt".into();
+                deleted_current.method = Method::TurnInterrupt;
                 deleted_current.params = json!({"threadId":"thread-1","turnId":"turn-1"});
                 assert!(!authorize(tx, &deleted_current)?);
                 for (method, params) in &work {
@@ -1424,7 +1449,7 @@ mod replay_identity_tests {
                         agent: "woken".into(),
                         epoch: 7,
                     });
-                    woken.method = (*method).into();
+                    woken.method = Method::from_wire(method).expect("method");
                     woken.params = params.clone();
                     assert!(
                         !authorize(tx, &woken)?,
@@ -1451,7 +1476,7 @@ mod replay_identity_tests {
                 let mut exact = call();
                 exact.scope.connection = "new-connection".into();
                 exact.operation = "monitor-cancel:watch".into();
-                exact.method = "command/exec/terminate".into();
+                exact.method = Method::CommandExecTerminate;
                 exact.params = json!({"processId":"watch"});
                 assert!(authorize(tx, &exact)?);
                 for method in [
@@ -1461,7 +1486,7 @@ mod replay_identity_tests {
                     "thread/read",
                 ] {
                     let mut invalid = exact.clone();
-                    invalid.method = method.into();
+                    invalid.method = Method::from_wire(method).expect("method");
                     assert!(
                         !authorize(tx, &invalid)?,
                         "deleted actor must not resume {method}"
@@ -1523,7 +1548,7 @@ mod replay_identity_tests {
         changed.deleted_actor_session = Some("voice-session-1".into());
         assert!(!same_replay_identity(&prior, &changed));
         let mut changed = prior.clone();
-        changed.method = "thread/turns/list".into();
+        changed.method = Method::ThreadTurnsList;
         assert!(!same_replay_identity(&prior, &changed));
         let mut changed = prior;
         changed.params["threadId"] = json!("thread-2");
@@ -1538,7 +1563,7 @@ mod replay_identity_tests {
         let cwd = root.path().to_owned();
         store.transaction_with(move |tx| {
             AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(json!({"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"accountKey":"target","status":"queued","autoWake":true})).expect("actor"))?;
-            let original = Call {operation:"monitor:watch".into(),method:"command/exec".into(),params:json!({"processId":"watch","command":["true"],"cwd":cwd}),..call()};
+            let original = Call {operation:"monitor:watch".into(),method:Method::CommandExec,params:json!({"processId":"watch","command":["true"],"cwd":cwd}),..call()};
             let key=original.key();
             store::save(tx,&key,"submitted",json!({"call":original,"request":{"id":key,"generation":4,"method":"command/exec","operation":key,"thread":null,"lightweight":true,"deadline":60000,"remoteId":null}}))?;
             studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","interactive":true,"cancelRequested":true,"reattachedConnectionId":"reconnected-source","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old-connection"}})).expect("monitor"))?;
@@ -1548,7 +1573,7 @@ mod replay_identity_tests {
             let mut exact = call();
             exact.scope.connection="reconnected-source".into();
             exact.operation="monitor-cancel:watch".into();
-            exact.method="command/exec/terminate".into();
+            exact.method=Method::CommandExecTerminate;
             exact.params=json!({"processId":"watch"});
             assert!(!authorize(tx,&exact)?,"a submitted-only intent does not prove a running native process");
             let original_key=Call::operation_key("default","monitor:watch");
@@ -1576,7 +1601,7 @@ mod replay_identity_tests {
                     "epoch"=>invalid.actor.as_mut().expect("request actor").epoch+=1,
                     "process"=>invalid.params=json!({"processId":"other"}),
                     "operation"=>invalid.operation="monitor-cancel:other".into(),
-                    "method"=>invalid.method="command/exec".into(),
+                    "method"=>invalid.method=Method::CommandExec,
                     "shape"=>invalid.params=json!({"processId":"watch","command":["true"]}),
                     _=>unreachable!(),
                 }
@@ -1610,7 +1635,7 @@ mod replay_identity_tests {
             actor: None,
             transfer: None,
             deleted_actor_session: None,
-            method: "thread/read".into(),
+            method: Method::ThreadRead,
             params: json!({"threadId":"source-thread","includeTurns":false}),
         };
         let conflicting = Call {
@@ -1641,14 +1666,14 @@ mod replay_identity_tests {
                 .await
                 .expect("read first replay state")
                 .expect("first replay should miss"),
-            Replay::Miss
+            Replay::Ready
         ));
         assert!(matches!(
             replay(&store, &conflicting)
                 .await
                 .expect("read conflicting replay state")
                 .expect("conflicting replay should miss before admission"),
-            Replay::Miss
+            Replay::Ready
         ));
         assert_eq!(
             submitted(&store, &first, &recovered(&first), None)
@@ -1689,14 +1714,14 @@ mod replay_identity_tests {
                 .await
                 .expect("read exact operation replay state")
                 .expect("first exact operation replay should miss"),
-            Replay::Miss
+            Replay::Ready
         ));
         assert!(matches!(
             replay(&store, &exact_retry)
                 .await
                 .expect("read exact retry replay state")
                 .expect("concurrent exact retry should miss before admission"),
-            Replay::Miss
+            Replay::Ready
         ));
         assert_eq!(
             submitted(&store, &exact, &recovered(&exact), None)

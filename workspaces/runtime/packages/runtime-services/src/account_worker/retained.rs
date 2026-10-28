@@ -4,6 +4,7 @@ use super::*;
 use crate::recovery_history::ConnectionScope;
 use std::time::Instant;
 use studio_runtime_providers::RequestTicket;
+#[cfg(test)]
 use studio_runtime_schema::persistence::RequestIdentity;
 use studio_runtime_store::request_results::AdmittedRequest;
 use tokio::sync::oneshot;
@@ -1090,17 +1091,70 @@ fn valid_voice_speech(request: &SessionRequest) -> bool {
         })
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub(in crate::account_worker) struct Call {
-    root_request_id: String,
-    admitted_request: Option<AdmittedRequest>,
-    scope: ConnectionScope,
-    operation: String,
-    actor: Option<RequestActor>,
-    transfer: Option<TransferAuthorization>,
-    deleted_actor_session: Option<String>,
-    method: String,
-    params: Value,
+pub struct ProviderCallIntent {
+    pub root_request_id: String,
+    pub admitted_request: Option<AdmittedRequest>,
+    pub scope: ConnectionScope,
+    pub operation: String,
+    pub actor: Option<RequestActor>,
+    pub transfer: Option<TransferAuthorization>,
+    pub deleted_actor_session: Option<String>,
+    pub method: Method,
+    pub params: Value,
 }
+pub(in crate::account_worker) type Call = ProviderCallIntent;
+
+/// Reserve a provider obligation in the transaction admitting its owning work.
+/// Repeating this call never turns submitted or unknown work back into sendable work.
+pub fn reserve_provider_call(
+    tx: &studio_runtime_store::Transaction<'_>,
+    owner: &AdmittedRequest,
+    mut intent: ProviderCallIntent,
+) -> Result<AdmittedRequest, WorkerError> {
+    let signature = intent.signature();
+    let actor = intent
+        .actor
+        .as_ref()
+        .map_or("", |actor| actor.agent.as_str());
+    let epoch = intent
+        .actor
+        .as_ref()
+        .map(|actor| actor.epoch.to_string())
+        .unwrap_or_default();
+    let admitted = owner.derive_result(
+        "provider-call",
+        &[&intent.scope.account, actor, &epoch, &intent.operation],
+        &signature,
+    );
+    intent.admitted_request = Some(admitted.clone());
+    storage::reserve(tx, intent, admitted.clone())?;
+    Ok(admitted)
+}
+
+/// The owning transaction must commit the cancellation or replacement before deleting this row.
+pub fn discard_unsent_provider_call(
+    tx: &studio_runtime_store::Transaction<'_>,
+    admitted: &AdmittedRequest,
+) -> Result<(), WorkerError> {
+    storage::discard_unsent(tx, admitted)
+}
+
+impl From<&SessionRequest> for ProviderCallIntent {
+    fn from(request: &SessionRequest) -> Self {
+        Self {
+            root_request_id: request.root_request_id.clone(),
+            admitted_request: request.admitted_request.clone(),
+            scope: request.scope.clone(),
+            operation: request.operation.clone(),
+            actor: request.actor.clone(),
+            transfer: request.transfer.clone(),
+            deleted_actor_session: request.deleted_actor_session.clone(),
+            method: request.method,
+            params: request.params.clone(),
+        }
+    }
+}
+
 /// The retained `command/exec` call of monitor `id`, checked against its
 /// operation identity. `None` when no request was submitted for it.
 fn monitor_call(
@@ -1117,31 +1171,7 @@ fn monitor_call(
         .map(serde_json::from_value::<AdmittedRequest>)
         .transpose()
         .map_err(StoreError::from)?;
-    let root = operation
-        .evidence
-        .get("rootRequestId")
-        .and_then(Value::as_str);
-    let result_id = if let Some(token) = admitted {
-        Some(token.id().to_owned())
-    } else if let Some(root) = root {
-        Some(
-            RequestIdentity::new(
-                "provider-call",
-                &[
-                    &operation.account_key,
-                    &operation.agent,
-                    &operation.epoch.to_string(),
-                ],
-                root,
-                &[&identity],
-            )
-            .map_err(|_| WorkerError::Capacity)?
-            .id()
-            .to_owned(),
-        )
-    } else {
-        None
-    };
+    let result_id = admitted.as_ref().map(|token| token.id().to_owned());
     let Some(value) = storage::recorded_operation(tx, &key, result_id.as_deref())? else {
         return Ok(None);
     };
@@ -1149,7 +1179,7 @@ fn monitor_call(
     if call.operation != identity
         || call.scope.account != operation.account_key
         || call.scope.connection != operation.connection_id
-        || call.method != Method::CommandExec.as_str()
+        || call.method != Method::CommandExec
         || call.params.get("processId").and_then(Value::as_str) != Some(id)
         || call
             .actor
@@ -1182,7 +1212,10 @@ pub(crate) fn monitor_command_scope(
     if !submitted.written() {
         return Ok(None);
     }
-    let written = submitted.request().recovered();
+    let Some(prepared) = submitted.request() else {
+        return Ok(None);
+    };
+    let written = prepared.recovered();
     if written.ticket.id != studio_runtime_providers::RequestId::String(call.key())
         || written.ticket.generation != call.scope.generation
         || written.ticket.method != Method::CommandExec
@@ -1192,7 +1225,7 @@ pub(crate) fn monitor_command_scope(
     }
     Ok(match submitted.replay() {
         storage::Replay::Return(receipt) => Some(receipt.scope),
-        storage::Replay::Miss | storage::Replay::Retry(_) => None,
+        storage::Replay::Ready | storage::Replay::Retry(_) => None,
     })
 }
 
@@ -1239,7 +1272,7 @@ pub async fn monitor_result(
     let operation = operation.clone();
     store
         .read_async("runtime-services/retained_monitor_result", move |tx| {
-            let Some((call, submitted)) = monitor_call(tx, &id, &operation)? else {
+            let Some((_call, submitted)) = monitor_call(tx, &id, &operation)? else {
                 return Ok(None);
             };
             if studio_runtime_store::MonitorsRepository::get(tx, &id)?
@@ -1249,7 +1282,7 @@ pub async fn monitor_result(
             }
             let receipt = match Ok::<_, PortError>(submitted.replay()) {
                 Ok(storage::Replay::Return(receipt)) => receipt,
-                Ok(storage::Replay::Miss | storage::Replay::Retry(_)) => return Ok(None),
+                Ok(storage::Replay::Ready | storage::Replay::Retry(_)) => return Ok(None),
                 Err(_) => {
                     return Err(WorkerError::PreparationRefused(
                         "monitor retained receipt authorization changed".into(),
@@ -1293,7 +1326,7 @@ pub async fn monitor_late_result(
             if !snapshot.deadline_lost() || snapshot.operation() != Some(&operation) {
                 return Ok(None);
             }
-            let Some((call, submitted)) = monitor_call(tx, &id, &operation)? else {
+            let Some((_call, submitted)) = monitor_call(tx, &id, &operation)? else {
                 return Ok(None);
             };
             let Ok(storage::Replay::Return(receipt)) = Ok::<_, PortError>(submitted.replay())
@@ -1331,21 +1364,6 @@ pub async fn monitor_request_generation(
 }
 
 impl Call {
-    fn identity(&self) -> Result<RequestIdentity, PortError> {
-        let agent = self.actor.as_ref().map_or("", |actor| actor.agent.as_str());
-        let epoch = self
-            .actor
-            .as_ref()
-            .map(|actor| actor.epoch.to_string())
-            .unwrap_or_default();
-        RequestIdentity::new(
-            "provider-call",
-            &[&self.scope.account, agent, &epoch],
-            &self.root_request_id,
-            &[&self.operation],
-        )
-        .map_err(|_| PortError::Invalid)
-    }
     fn signature(&self) -> String {
         crate::event_write::request_signature(&json!((
             &self.scope.account,

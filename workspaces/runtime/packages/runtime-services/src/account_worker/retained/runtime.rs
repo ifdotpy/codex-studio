@@ -66,7 +66,7 @@ impl Worker {
             actor: request.actor,
             transfer: request.transfer,
             deleted_actor_session: request.deleted_actor_session,
-            method: request.method.as_str().into(),
+            method: request.method,
             params: request.params,
         };
         // A safe read may overlap a retry after its caller loses the response.
@@ -82,7 +82,7 @@ impl Worker {
             self.db("retained_read_authorize", move |store| async move {
                 storage::authorize_volatile_read(&store, &check)
                     .await
-                    .map(|authorized| authorized.map(|()| Replay::Miss))
+                    .map(|authorized| authorized.map(|()| Replay::Ready))
             })
             .await?
         } else {
@@ -100,13 +100,13 @@ impl Worker {
                 let _ignored = reply.send(Ok(receipt));
                 return Ok(());
             }
-            Ok(Replay::Miss) if stale_scope => {
+            Ok(Replay::Ready) if stale_scope => {
                 // The recorded connection is gone. Without a durable submitted
                 // receipt, never send its request through a replacement worker.
                 let _ignored = reply.send(Err(PortError::Unknown));
                 return Ok(());
             }
-            Ok(Replay::Miss) => None,
+            Ok(Replay::Ready) => None,
             Ok(Replay::Retry(ticket)) if stale_scope => {
                 // Retry is permitted only on the connection that proved the
                 // prior attempt NotSent. Preserve that certainty across restart.
@@ -633,7 +633,7 @@ mod tests {
                     actor: None,
                     transfer: None,
                     deleted_actor_session: None,
-                    method: Method::ThreadRead.as_str().into(),
+                    method: Method::ThreadRead,
                     params: Value::Null,
                 },
                 ticket: RequestTicket {
