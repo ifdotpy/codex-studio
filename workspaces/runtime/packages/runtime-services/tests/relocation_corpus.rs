@@ -68,6 +68,7 @@ impl Fixture {
                         &mut case["expected"]["record"]
                     };
                     target["admitted"] = admitted.clone();
+                    target["kind"] = json!("managed_tool");
                     target["arguments"] = arguments.clone();
                     target["aliases"] = json!([]);
                 }
