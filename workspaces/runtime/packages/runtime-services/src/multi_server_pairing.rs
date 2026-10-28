@@ -801,7 +801,7 @@ fn pairing_reply(
     {
         return Err(invalid());
     }
-    serde_json::to_value(result).map_err(|_| invalid())
+    serde_json::from_slice(&bytes).map_err(|_| invalid())
 }
 
 fn save_receipt(

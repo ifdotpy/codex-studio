@@ -1,6 +1,21 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+
+#[test]
+fn export_request_keeps_canonical_wire_bytes() {
+    let request = ExportRequest {
+        cwd: Some("/workspace".into()),
+        branch: "main".into(),
+        known: vec!["abc".into(), "def".into()],
+    };
+    let bytes = serde_json::to_vec(&request).expect("export request");
+    let value: Value = serde_json::from_slice(&bytes).expect("wire payload");
+    assert_eq!(
+        canonical_json(&value).expect("canonical payload"),
+        r#"{"branch":"main","cwd":"/workspace","known":["abc","def"]}"#
+    );
+}
 use crate::multi_server_orchestration::{PairedTransport, RuntimeOrchestrationEffects};
 use crate::provider_callbacks::{
     CallbackContext, CallbackDecision, ManagedToolPortsConfig, ManagedToolRuntimePorts,

@@ -207,10 +207,9 @@ fn task_admission(
     key: &str,
     actor: &str,
 ) -> Result<AdmittedRequest, Step> {
-    let task = crate::tool_requests::resolve(tx, actor, key)
+    crate::tool_requests::resolve_admission(tx, actor, key)
         .map_err(|error| Step::Refused(error.to_string()))?
-        .ok_or_else(|| Step::Refused("The admitted tool request is unavailable".into()))?;
-    serde_json::from_value(task["admitted"].clone()).map_err(|error| Step::Store(error.into()))
+        .ok_or_else(|| Step::Refused("The admitted tool request is unavailable".into()))
 }
 
 fn refuse<T>(message: impl Into<String>) -> Result<T, Step> {
@@ -502,8 +501,9 @@ impl ServerTools {
                 }
                 let parent=task_admission(tx,&key_for_write,&actor_id)?;
                 let admitted=parent.derive_result("project-location",&["location"],&signature);
-                if let Some(saved)=crate::event_write::replay_request::<crate::project_locations::LocationResult>(tx,admitted.id(),admitted.signature(),(crate::event_write::unix_time().map_err(|_|Step::Refused("The system clock is unavailable".into()))?*1000.0) as i64)? {
-                    return Ok(Err(serde_json::to_value(saved.reply).map_err(StoreError::from)?));
+                if let Some(saved)=crate::event_write::replay_request::<Box<serde_json::value::RawValue>>(tx,admitted.id(),admitted.signature(),(crate::event_write::unix_time().map_err(|_|Step::Refused("The system clock is unavailable".into()))?*1000.0) as i64)? {
+                    let _: crate::project_locations::LocationResult = serde_json::from_str(saved.reply.get()).map_err(StoreError::from)?;
+                    return Ok(Err(serde_json::from_str(saved.reply.get()).map_err(StoreError::from)?));
                 }
                 let Some((_, mut project)) = ProjectsRepository::get(tx, &project_id)? else {
                     return refuse("Select an existing project");
@@ -790,8 +790,9 @@ impl ServerTools {
                 let parent=task_admission(tx,&key_owned,&actor_for_fetch)?;
                 let admitted=parent.derive_result("server-fetch",&[],&signature_for_claim);
                 let now=(crate::event_write::unix_time().map_err(|_|Step::Refused("The system clock is unavailable".into()))?*1000.0) as i64;
-                if let Some(saved)=crate::event_write::replay_request::<FetchReply>(tx,&key_owned,&signature_for_claim,now)?.or(crate::event_write::replay_request::<FetchReply>(tx,admitted.id(),&signature_for_claim,now)?) {
-                    return Ok(Err(serde_json::to_value(saved.reply).map_err(StoreError::from)?));
+                if let Some(saved)=crate::event_write::replay_request::<Box<serde_json::value::RawValue>>(tx,&key_owned,&signature_for_claim,now)?.or(crate::event_write::replay_request::<Box<serde_json::value::RawValue>>(tx,admitted.id(),&signature_for_claim,now)?) {
+                    let _: FetchReply = serde_json::from_str(saved.reply.get()).map_err(StoreError::from)?;
+                    return Ok(Err(serde_json::from_str(saved.reply.get()).map_err(StoreError::from)?));
                 }
                 let prior:Option<(String,ServerFetchState,Option<String>)>=tx.query_row("SELECT signature,state,result FROM runtime_server_fetch WHERE id=?1",[&key_owned],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
                 if let Some((signature,state,raw))=prior {
@@ -810,7 +811,8 @@ impl ServerTools {
             Err(previous) => return Ok(previous),
             Ok(preparation) => preparation,
         };
-        let export = serde_json::to_value(preparation.export()).map_err(StoreError::from)?;
+        let export = serde_json::to_vec(preparation.export()).map_err(StoreError::from)?;
+        let export = serde_json::from_slice(&export).map_err(StoreError::from)?;
         let receipt = self.deliver(server, "export", &export, &export_key).await?;
         if matches!(preparation, FetchPayload::Fetching(_)) {
             return Ok(
@@ -974,9 +976,16 @@ impl ServerTools {
             "bytes": bytes,
             "destination": destination,
         });
+        let reply = FetchReply {
+            request_id: key.to_owned(),
+            server: server.to_owned(),
+            branch,
+            commit,
+            bytes,
+            destination,
+        };
         let release_key = key.to_owned();
         let key_owned = key.to_owned();
-        let value_for_write = value.clone();
         let server_owned = server.to_owned();
         let release = already
             .is_none()
@@ -993,8 +1002,6 @@ impl ServerTools {
                 )?;
                 let admitted: AdmittedRequest =
                     serde_json::from_str(&token).map_err(StoreError::from)?;
-                let reply: FetchReply =
-                    serde_json::from_value(value_for_write.clone()).map_err(StoreError::from)?;
                 crate::event_write::settle_request(tx, &admitted, None, &reply)?;
                 tx.execute("DELETE FROM runtime_server_fetch WHERE id=?1", [&key_owned])?;
                 if let Some(release) = &release_for_write {
