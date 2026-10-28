@@ -27,7 +27,7 @@ use studio_runtime_store::{
 
 use studio_runtime_store::{
     outbox::{Outbox, OutboxRow},
-    request_results::{Admission, AdmittedRequest, ResultEnvelope},
+    request_results::AdmittedRequest,
 };
 
 use crate::event_write::{self, EventWriteError as Error};
@@ -132,6 +132,7 @@ struct ArchiveIntent {
     outcome: Option<Value>,
     public_request_id: Option<String>,
     public_admission: Option<AdmittedRequest>,
+    public_response: Option<WorkItemRecord>,
 }
 
 /// Retry accepted-result archives whose Python-compatible retry deadline has
@@ -219,6 +220,8 @@ pub async fn accepted_archive_tick(
                     };
                     intent["status"] = json!(WorkEffectStatus::Unknown);
                     intent["attemptStartedAt"] = json!(now);
+                    intent["nextAttemptAt"] =
+                        json!(now + ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS as f64);
                     record["archiveIntent"] = intent;
                     WorkItemsRepository::update_work(tx, &task_id_for_claim, &record)?;
                     Ok(Some((actor_epoch, prior_status)))
@@ -332,6 +335,18 @@ pub async fn accepted_archive_tick(
                 }
                 current["archiveIntent"] = final_intent;
                 WorkItemsRepository::update_work(tx, &task_id_for_settlement, &current)?;
+                if let Some(root) = current["archiveIntent"]["publicRequestId"].as_str() {
+                    let mut response: WorkItemRecord =
+                        serde_json::from_value(current["archiveIntent"]["publicResponse"].clone())
+                            .map_err(studio_runtime_store::StoreError::from)?;
+                    response
+                        .set("archive", current["archive"].clone())
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                    response
+                        .set("archivePending", json!(retryable))
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                    settle_accepted_archive(tx, &task_id_for_settlement, root, &response)?;
+                }
                 Ok(())
             })
             .await?;
@@ -1765,10 +1780,20 @@ pub fn settle_accepted_archive(
     let token: AdmittedRequest =
         serde_json::from_value(work["archiveIntent"]["publicAdmission"].clone())
             .map_err(studio_runtime_store::StoreError::from)?;
-    event_write::settle_request(tx, &token, None, reply).map_err(Error::from)?;
+    let mut original: WorkItemRecord =
+        serde_json::from_value(work["archiveIntent"]["publicResponse"].clone())
+            .map_err(studio_runtime_store::StoreError::from)?;
+    original
+        .set("archive", reply.value()["archive"].clone())
+        .map_err(studio_runtime_store::StoreError::from)?;
+    original
+        .set("archivePending", reply.value()["archivePending"].clone())
+        .map_err(studio_runtime_store::StoreError::from)?;
+    event_write::settle_request(tx, &token, None, &original).map_err(Error::from)?;
     if let Some(intent) = work["archiveIntent"].as_object_mut() {
         intent.remove("publicAdmission");
         intent.remove("publicRequestId");
+        intent.remove("publicResponse");
     }
     WorkItemsRepository::update_work(tx, task, &work)?;
     let id = Outbox::effect_id(
@@ -1914,6 +1939,8 @@ fn write_internal(
             work["archiveIntent"]["publicAdmission"] =
                 serde_json::to_value(&token).map_err(studio_runtime_store::StoreError::from)?;
             work["archiveIntent"]["publicRequestId"] = json!(request_id);
+            work["archiveIntent"]["publicResponse"] =
+                serde_json::to_value(&typed).map_err(studio_runtime_store::StoreError::from)?;
             WorkItemsRepository::update_work(tx, typed.id().as_ref(), &work)?;
             reserve_work_request(
                 tx,
