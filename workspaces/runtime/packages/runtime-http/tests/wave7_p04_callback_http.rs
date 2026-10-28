@@ -598,11 +598,12 @@ async fn live_permissions_codex_switch_settles_pending_once_and_ask_prompts_agai
     ));
     let ask = json!({"id":context.agent,"yolo_mode":false,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"expected_account_key":"default"});
     assert_eq!(call(&app, "/api/conversation", ask, "token").await.0, 200);
-    // Replaying the old Full save must not override the later Ask save.
+    // Replay returns the original response without overriding the later Ask save.
     assert_eq!(
         call(&app, "/api/conversation", body, "token").await.1["yoloMode"],
-        false
+        true
     );
+    assert_eq!(actor(&store, &context)["yoloMode"], false);
     if let studio_runtime_providers::Frame::Request(ref mut request) = later {
         request.id = studio_runtime_providers::RequestId::Number(89);
     }
