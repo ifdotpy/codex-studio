@@ -243,6 +243,7 @@ impl Fixture {
             agent: actor.to_owned(),
             account: "default".into(),
             connection: "connection".into(),
+            stream_id: "default".into(),
             generation: 7,
             epoch: 3,
             thread: record["threadId"].as_str().unwrap().to_owned(),
