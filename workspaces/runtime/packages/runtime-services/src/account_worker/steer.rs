@@ -218,30 +218,6 @@ fn verify_frozen_context(raw: &str, context: &Pending) -> Result<(), WorkerError
     Ok(())
 }
 
-#[cfg(test)]
-mod frozen_context_tests {
-    use super::*;
-
-    #[test]
-    fn legacy_sorted_keys_compare_as_typed_context() {
-        let legacy = json!({
-            "intent": {
-                "agent_id": "agent", "epoch": 1, "attempt_id": "steer",
-                "account_key": "default", "provider": "codex", "thread_id": "thread",
-                "cwd": null, "model": null, "events": [], "radio_authorized": false
-            },
-            "method": "turn/steer", "operation": "account:default:steer:turn/steer",
-            "thread": null, "compiled": null
-        })
-        .to_string();
-        let mut context: Pending = serde_json::from_str(&legacy).expect("legacy context");
-        assert!(verify_frozen_context(&legacy, &context).is_ok());
-        context.operation.push_str(":changed");
-        assert!(verify_frozen_context(&legacy, &context).is_err());
-        assert!(verify_frozen_context("{}", &context).is_err());
-    }
-}
-
 /// Apply a transport or reply outcome of a steer request. Returns the agent
 /// and epoch to wake when the turn had already ended and the returned input
 /// queued the agent again; nothing else would start its next turn.
@@ -487,4 +463,28 @@ pub(super) async fn claim_for_wake(
     Ok(claimed.map_or(WakeClaim::Busy, |(intent, turn)| {
         WakeClaim::Steer(Box::new(intent), turn)
     }))
+}
+
+#[cfg(test)]
+mod frozen_context_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_sorted_keys_compare_as_typed_context() {
+        let legacy = json!({
+            "intent": {
+                "agent_id": "agent", "epoch": 1, "attempt_id": "steer",
+                "account_key": "default", "provider": "codex", "thread_id": "thread",
+                "cwd": null, "model": null, "events": [], "radio_authorized": false
+            },
+            "method": "turn/steer", "operation": "account:default:steer:turn/steer",
+            "thread": null, "compiled": null
+        })
+        .to_string();
+        let mut context: Pending = serde_json::from_str(&legacy).expect("legacy context");
+        assert!(verify_frozen_context(&legacy, &context).is_ok());
+        context.operation.push_str(":changed");
+        assert!(verify_frozen_context(&legacy, &context).is_err());
+        assert!(verify_frozen_context("{}", &context).is_err());
+    }
 }
