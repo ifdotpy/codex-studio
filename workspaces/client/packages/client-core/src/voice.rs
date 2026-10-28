@@ -514,7 +514,7 @@ async fn create(params: &Value) -> Result<Value, String> {
                 crate::voice_audio::mac::start(
                     id,
                     microphone,
-                    device_playback,
+                    &device_playback,
                     device_muted,
                     Box::new(move |_| {
                         // A canceled voice subscriber no longer needs this final device event.
