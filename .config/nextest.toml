@@ -110,6 +110,11 @@ default-filter = '''
     (package(=studio-runtime-server) & test(startup_registry_migrates_version_one_before_policy_reads)) |
     ((package(=studio-runtime-services) | package(=studio-runtime-store)) & kind(test) & binary(=integration) & test(::provider_identity_)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(only_a_claude_worker_turns_user_mcp_servers_off)) |
+    (package(=studio-runtime-services) & test(/^idle_compaction::/)) |
+    (package(=studio-runtime-services) & kind(lib) & test(/^turn_prepare::budget_tests::/)) |
+    (package(=studio-runtime-services) & kind(lib) & test(/^account_worker::preparation::team_restore::idle_return_tests::/)) |
+    (package(=studio-runtime-services) & kind(lib) & test(/^account_worker::idle_unload::tests::/)) |
+    (package(=studio-runtime-schema) & kind(lib) & test(/^idle_compaction::tests::/)) |
     (package(=studio-runtime-services) & kind(lib) & (test(usage::tests::codex_session_fixture_) | test(restored_claude_query_total_keeps_the_pending_estimate_until_response))) |
     (package(=studio-runtime-services) & ((kind(lib) & test(analytics_projection::tests::projection_equals_the_direct_capture_of_a_turn)) | (kind(test) & binary(=integration) & test(session_cost_golden::session_cost_matches_the_row_scanning_golden_answers)))) |
     (package(=studio-runtime-store) & kind(lib) & test(repositories::analytics_capture::cost_hint_tests::)) |

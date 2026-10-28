@@ -27851,9 +27851,9 @@
         "additionalProperties": false,
         "properties": {
           "minTokens": {
-            "default": 200000,
+            "default": 150000,
             "maximum": 9007199254740991,
-            "minimum": 100000,
+            "minimum": 60000,
             "type": "integer"
           },
           "mode": {
@@ -27861,7 +27861,8 @@
             "enum": [
               "off",
               "log",
-              "compact"
+              "compact",
+              "compact_on_return"
             ],
             "type": "string"
           }
