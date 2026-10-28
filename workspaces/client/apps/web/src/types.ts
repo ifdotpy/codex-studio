@@ -46,6 +46,8 @@ export type Work = WorkEntityDto;
 export type Edge = EdgeEntityDto;
 
 type SnapshotRuntime = WorkspaceEntityDto & {
+  /** Projects of paired servers, published by this server and shown read-only. */
+  remoteProjects?: Project[] | undefined;
   modelsByAccount?:
     | Record<string, components["schemas"]["ModelEntityDto"][]>
     | undefined;

@@ -17909,6 +17909,8 @@ export interface components {
         | components["schemas"]["ProjectAliasDto"][]
         | null
         | undefined;
+      /** Serverlabel */
+      serverLabel?: null | string | undefined;
       /** Updated */
       updated?: null | number | undefined;
       vault?: components["schemas"]["ProjectVaultDto"] | null | undefined;
