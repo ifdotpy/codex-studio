@@ -69,40 +69,99 @@ fn callback_task(
 }
 
 /// Prepare the canonical response outbox and the exact handoff metadata used by recovery.
-async fn saved_response(state: &State, operation: &str, response: Value) -> Value {
+async fn saved_response(
+    state: &State,
+    operation: &str,
+    response: Value,
+) -> callback_record::SavedReply {
     let operation = operation.to_owned();
-    state.bridge.store.transaction_with(move|tx| {
-        let task:CallbackTask<callback_record::CallbackObligation>=tool_requests::get_callback(tx,&operation).map_err(|error|WorkerError::PreparationRefused(error.to_string()))?.expect("accepted callback");
-        let raw:String=tx.query_row("SELECT record FROM runtime_tool_requests WHERE id=?1",[&task.payload.root_request_id],|row|row.get(0))?;
-        let owner:CallbackTask<crate::provider_callbacks::CallbackOwner>=serde_json::from_str(&raw).expect("logical callback owner");
-        let mut canonical=response.clone();canonical["id"]=task.payload.accepted.request_id.clone();
-        let DecodedJournalPayload::Frame(frame)=decode_journal_value(task.payload.accepted.cursor,task.payload.accepted.generation,&canonical).payload else { panic!("response frame") };
-        let identity=crate::provider_callbacks::save_frame_response(tx,&owner.payload.identity.context,&task.payload.accepted.frame()?,&frame).map_err(|error|WorkerError::PreparationRefused(error.to_string()))?;
-        assert_eq!(crate::provider_callbacks::begin_frame(tx,&identity.context.stream_id,identity.context.generation,&identity.operation_id(),&frame).map_err(|error|WorkerError::PreparationRefused(error.to_string()))?,crate::provider_callbacks::FrameAdmission::Send);
-        let key=crate::provider_callbacks::callback_origin_key(&identity.context,&identity.rpc_id);
-        let encoded=format!("{}\n",response);
-        let digest=studio_runtime_store::sha256_hex(encoded.as_bytes());
-        if response["id"]!=canonical["id"] {
-            let mut row=Outbox::get::<crate::provider_callbacks::CallbackResponse>(tx,&key).map_err(StoreError::from)?.expect("response outbox");
-            row.payload.identity.rpc_id=serde_json::from_value(response["id"].clone()).expect("corrupt RPC id fixture");
-            row.payload.frame_fingerprint=Some(digest.clone());
-            Outbox::put(tx,&row).map_err(StoreError::from)?;
-        }
-        Ok::<_,WorkerError>(json!({"handle":"account:default","generation":task.payload.accepted.generation,"pid":1,"response_key":key,"sha256":digest,"authority":null}))
-    }).await.expect("canonical saved response")
+    state
+        .bridge
+        .store
+        .transaction_with(move |tx| {
+            let task: CallbackTask<callback_record::CallbackObligation> =
+                tool_requests::get_callback(tx, &operation)
+                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+                    .expect("accepted callback");
+            let raw: String = tx.query_row(
+                "SELECT record FROM runtime_tool_requests WHERE id=?1",
+                [&task.payload.root_request_id],
+                |row| row.get(0),
+            )?;
+            let owner: CallbackTask<crate::provider_callbacks::CallbackOwner> =
+                serde_json::from_str(&raw).expect("logical callback owner");
+            let mut canonical = response.clone();
+            canonical["id"] = task.payload.accepted.request_id.clone();
+            let DecodedJournalPayload::Frame(frame) = decode_journal_value(
+                task.payload.accepted.cursor,
+                task.payload.accepted.generation,
+                &canonical,
+            )
+            .payload
+            else {
+                panic!("response frame")
+            };
+            let identity = crate::provider_callbacks::save_frame_response(
+                tx,
+                &owner.payload.identity.context,
+                &task.payload.accepted.frame()?,
+                &frame,
+            )
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+            assert_eq!(
+                crate::provider_callbacks::begin_frame(
+                    tx,
+                    &identity.context.stream_id,
+                    identity.context.generation,
+                    &identity.operation_id(),
+                    &frame
+                )
+                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?,
+                crate::provider_callbacks::FrameAdmission::Send
+            );
+            let key =
+                crate::provider_callbacks::callback_origin_key(&identity.context, &identity.rpc_id);
+            let encoded = format!("{}\n", response);
+            let digest = studio_runtime_store::sha256_hex(encoded.as_bytes());
+            if response["id"] != canonical["id"] {
+                let mut row = Outbox::get::<crate::provider_callbacks::CallbackResponse>(tx, &key)
+                    .map_err(StoreError::from)?
+                    .expect("response outbox");
+                let DecodedJournalPayload::Frame(Frame::Response { id, .. }) =
+                    decode_journal_value(
+                        task.payload.accepted.cursor,
+                        task.payload.accepted.generation,
+                        &response,
+                    )
+                    .payload
+                else {
+                    panic!("corrupt response frame")
+                };
+                row.payload.identity.rpc_id = id;
+                row.payload.frame_fingerprint = Some(digest.clone());
+                Outbox::put(tx, &row).map_err(StoreError::from)?;
+            }
+            Ok::<_, WorkerError>(callback_record::SavedReply::for_test(
+                task.payload.accepted.generation,
+                key,
+                digest,
+            ))
+        })
+        .await
+        .expect("canonical saved response")
 }
 
 fn store_submitted(
     tx: &studio_runtime_store::Transaction<'_>,
     operation: &str,
-    saved: Value,
+    saved: callback_record::SavedReply,
 ) -> Result<(), WorkerError> {
     let mut task: CallbackTask<callback_record::CallbackObligation> =
         tool_requests::get_callback(tx, operation)
             .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
             .expect("accepted callback");
     task.status = ToolRequestStatus::Running;
-    task.payload.submitted = Some(serde_json::from_value(saved).expect("typed response proof"));
+    task.payload.submitted = Some(saved);
     tool_requests::put_callback(tx, &task)
         .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
 }
@@ -613,13 +672,7 @@ async fn saved_callback_recovery_refuses_changed_identity_digest_and_direct_tran
             json!({"id":id,"result":{"success":true}}),
         )
         .await;
-        match case {
-            "handle" => saved["handle"] = json!("account:other"),
-            "generation" => saved["generation"] = json!(GENERATION + 1),
-            "pid" | "recoverable-pid" => saved["pid"] = json!(2),
-            "digest" => saved["sha256"] = json!("incorrect"),
-            _ => {}
-        }
+        saved.corrupt_for_test(case);
         state
             .bridge
             .store
@@ -918,12 +971,23 @@ async fn managed_saved_callback_cannot_resume_a_stopped_changed_or_deleted_actor
             let operation = callback_record::operation(SCOPE, GENERATION, 1);
             let mut saved = saved_response(&state,&operation,json!({"id":"managed-reply","result":{"existingChild":"already-created","success":true}})).await;
             if captured {
-                saved["authority"] = json!({"context":{"agent":state.agent,"account":"default","connection":"original-connection",
-                    "stream_id":"default","generation":GENERATION,"epoch":epoch,"thread":"managed-thread","turn":"managed-turn"},"provider":"claude","root":state.agent,
-                    "parent":null,"role":"implementer","isLead":true,"executionMode":null,"moving":false});
-                if case == "move-before" {
-                    saved["authority"]["moving"] = json!(true);
-                }
+                let context = crate::provider_callbacks::CallbackContext {
+                    agent: state.agent.clone(),
+                    account: "default".into(),
+                    connection: "original-connection".into(),
+                    stream_id: "default".into(),
+                    generation: GENERATION,
+                    epoch: epoch as u64,
+                    thread: "managed-thread".into(),
+                    turn: "managed-turn".into(),
+                };
+                saved.set_authority_for_test(
+                    super::super::callback::ManagedReplyAuthority::for_test(
+                        context,
+                        state.agent.clone(),
+                        case == "move-before",
+                    ),
+                );
             }
             let actor = state.agent.clone();
             state
@@ -1007,18 +1071,15 @@ async fn managed_callback_first_handoff_captures_the_current_actor_authority() {
                 tool_requests::get_callback(tx, &operation)
                     .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
                     .unwrap();
-            Ok::<_, WorkerError>(
-                task.payload
-                    .submitted
-                    .map(|submitted| serde_json::to_value(submitted).unwrap()),
-            )
+            Ok::<_, WorkerError>(task.payload.submitted)
         })
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(submitted["authority"]["context"]["agent"], actor["id"]);
-    assert_eq!(submitted["authority"]["context"]["epoch"], actor["epoch"]);
-    assert_eq!(submitted["authority"]["context"]["turn"], actor["turnId"]);
+    let context = submitted.authority_context_for_test();
+    assert_eq!(context.agent, actor["id"].as_str().unwrap());
+    assert_eq!(context.epoch, actor["epoch"].as_u64().unwrap());
+    assert_eq!(context.turn, actor["turnId"].as_str().unwrap());
     answer
         .receipt
         .send(CommandReceipt::Written {

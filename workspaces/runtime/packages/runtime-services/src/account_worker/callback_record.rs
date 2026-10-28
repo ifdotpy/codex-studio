@@ -31,6 +31,45 @@ pub(super) struct SavedReply {
     #[serde(skip)]
     frame: String,
 }
+#[cfg(test)]
+impl SavedReply {
+    pub(super) fn for_test(generation: u64, response_key: String, sha256: String) -> Self {
+        Self {
+            handle: "account:default".into(),
+            generation,
+            pid: 1,
+            response_key,
+            sha256,
+            authority: None,
+            frame: String::new(),
+        }
+    }
+
+    pub(super) fn corrupt_for_test(&mut self, case: &str) {
+        match case {
+            "handle" => self.handle = "account:other".into(),
+            "generation" => self.generation += 1,
+            "pid" | "recoverable-pid" => self.pid = 2,
+            "digest" => self.sha256 = "incorrect".into(),
+            _ => {}
+        }
+    }
+
+    pub(super) fn set_authority_for_test(
+        &mut self,
+        authority: super::callback::ManagedReplyAuthority,
+    ) {
+        self.authority = Some(authority);
+    }
+
+    pub(super) fn authority_context_for_test(&self) -> &crate::provider_callbacks::CallbackContext {
+        self.authority
+            .as_ref()
+            .expect("captured authority")
+            .context_for_test()
+    }
+}
+
 impl SavedReply {
     pub(super) fn new(frame: &Frame, status: &SessionStatus) -> Result<Self, WorkerError> {
         let info = status

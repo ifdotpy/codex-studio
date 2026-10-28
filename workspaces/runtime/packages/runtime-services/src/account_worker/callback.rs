@@ -443,6 +443,30 @@ pub(super) struct ManagedReplyAuthority {
     moving: bool,
 }
 
+#[cfg(test)]
+impl ManagedReplyAuthority {
+    pub(super) fn for_test(
+        context: crate::provider_callbacks::CallbackContext,
+        root: String,
+        moving: bool,
+    ) -> Self {
+        Self {
+            context,
+            root,
+            provider: "claude".into(),
+            parent: None,
+            role: Some("implementer".into()),
+            is_lead: true,
+            execution_mode: None,
+            moving,
+        }
+    }
+
+    pub(super) fn context_for_test(&self) -> &crate::provider_callbacks::CallbackContext {
+        &self.context
+    }
+}
+
 impl ManagedReplyAuthority {
     pub(super) fn same_actor(&self, current: &Self) -> bool {
         let mut expected = self.clone();
