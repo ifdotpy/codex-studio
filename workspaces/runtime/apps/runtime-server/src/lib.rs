@@ -2,6 +2,7 @@
 
 #[cfg(unix)]
 pub mod account_registry;
+pub mod handover;
 #[cfg(unix)]
 pub mod host_runtime;
 pub mod provider_ports;

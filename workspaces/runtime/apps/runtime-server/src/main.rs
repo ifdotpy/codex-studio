@@ -35,6 +35,7 @@ use studio_runtime_store::path_identity::CanonicalPath;
 use axum::Extension;
 use rusqlite::OptionalExtension;
 use studio_runtime_http::{HttpState, VaultJobOwner, router};
+use studio_runtime_server::handover;
 use studio_runtime_services::account_driver::{
     AccountDriver, create_default_registry, resolve_codex_home,
 };
@@ -42,7 +43,6 @@ use studio_runtime_services::account_policy::AccountPolicyState;
 use studio_runtime_services::account_session_runtime::AccountSessionPort;
 use studio_runtime_services::diagnostics::log_stderr;
 use studio_runtime_store::{ObservedTable, RuntimeStore, account_state};
-use tokio::net::TcpListener;
 use tokio::sync::{Notify, watch};
 
 const SERVER_SHUTDOWN_GRACE: Duration = Duration::from_secs(20);
@@ -129,6 +129,10 @@ fn main() -> std::process::ExitCode {
     if let Some(code) = studio_runtime_services::host_exec_service::main(env::args_os()) {
         std::process::exit(code);
     }
+    // The standby copy of a live handover holds the socket and no state (src/handover.rs).
+    if env::args().nth(1).as_deref() == Some(handover::STANDBY_ARG) {
+        return handover::standby_main();
+    }
     if let Some(code) = operator_cli::dispatch() {
         return code;
     }
@@ -166,18 +170,27 @@ fn main() -> std::process::ExitCode {
     eprintln!("runtime server stopping without waiting for uncancellable blocking-pool work");
     runtime.shutdown_timeout(Duration::ZERO);
     let _finished = shutdown_finished.send(());
-    if let Err(error) = result {
-        if let Some(store) = error.downcast_ref::<studio_runtime_store::StoreError>()
-            && matches!(store, studio_runtime_store::StoreError::Migration { .. })
-        {
-            match serde_json::to_string(&studio_runtime_services::studio_errors::store_causes(
-                store,
-            )) {
-                Ok(causes) => eprintln!("runtime migration diagnostic: {causes}"),
-                Err(_) => eprintln!("runtime migration diagnostic could not be encoded"),
+    let handed = match result {
+        Ok(handed) => handed,
+        Err(error) => {
+            if let Some(store) = error.downcast_ref::<studio_runtime_store::StoreError>()
+                && matches!(store, studio_runtime_store::StoreError::Migration { .. })
+            {
+                match serde_json::to_string(&studio_runtime_services::studio_errors::store_causes(
+                    store,
+                )) {
+                    Ok(causes) => eprintln!("runtime migration diagnostic: {causes}"),
+                    Err(_) => eprintln!("runtime migration diagnostic could not be encoded"),
+                }
             }
+            eprintln!("{}", error_exit_log(&error.to_string()));
+            std::process::exit(1);
         }
-        eprintln!("{}", error_exit_log(&error.to_string()));
+    };
+    if let Some(handed) = handed
+        && let Err(error) = handed.hand_off()
+    {
+        eprintln!("live handover could not start its standby: {error}");
         std::process::exit(1);
     }
     std::process::exit(0);
@@ -350,15 +363,23 @@ fn vault_configure(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(
+    shutdown_requested: Sender<()>,
+) -> Result<Option<handover::Handed>, Box<dyn std::error::Error>> {
     studio_runtime_process::child_priority::ChildPriority::from_environment();
     studio_runtime_services::diagnostics::mark_startup_memory(
         studio_runtime_services::diagnostics::StartupMemoryMark::ProcessStarted,
     );
-    let args = env::args().skip(1).collect::<Vec<_>>();
+    let mut args = env::args().skip(1).collect::<Vec<_>>();
+    // Start modes of a live handover (src/handover.rs).
+    let takeover = args
+        .iter()
+        .any(|argument| argument == handover::TAKEOVER_ARG);
+    let resume = args.iter().any(|argument| argument == handover::RESUME_ARG);
+    args.retain(|argument| argument != handover::TAKEOVER_ARG && argument != handover::RESUME_ARG);
     #[cfg(unix)]
     if args.first().map(String::as_str) == Some(studio_runtime_services::vault::WRITER_SUBCOMMAND) {
-        return vault_configure(&args[1..]);
+        return vault_configure(&args[1..]).map(|()| None);
     }
     if args.first().map(String::as_str) == Some("state-check") {
         let state_dir = args
@@ -370,7 +391,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         let report =
             studio_runtime_store::check_state_readonly(PathBuf::from(state_dir).as_path())?;
         println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
+        return Ok(None);
     }
     let port = parse_port(args.into_iter())?;
     studio_runtime_schema::initialize()?;
@@ -385,6 +406,26 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     getrandom::fill(&mut token).map_err(|error| std::io::Error::other(error.to_string()))?;
     let token = data_encoding::HEXLOWER.encode(&token);
     let configured_state_dir = env::var_os("CODEX_AGENTS_STATE_DIR").map(PathBuf::from);
+    // The old server has drained and closed the state before this returns.
+    let mut taken = if takeover {
+        let state_dir = studio_runtime_store::resolve_state_dir()?.to_path_buf();
+        Some(
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/handover",
+                move || handover::take(&state_dir),
+            )
+            .await??,
+        )
+    } else if resume {
+        Some(handover::from_parent()?)
+    } else {
+        None
+    };
+    // A taken or resumed socket names the port, whatever `--port` says.
+    let port = match &taken {
+        Some(taken) => taken.listener.local_addr()?.port(),
+        None => port,
+    };
     startup_trace("store-open-started");
     // Serving claims the state for Rust before the first write, whatever launched this process.
     let owner = studio_runtime_store::state_owner::StateOwnerClaim { backend_build };
@@ -479,7 +520,16 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     startup_trace("account-registry-open-started");
     let account_driver = Arc::new(AccountDriver::open(&registry_path)?);
     startup_trace("account-registry-open-completed");
-    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await?;
+    let (listener, kept_listener) = handover::listener(
+        port,
+        taken
+            .as_ref()
+            .map(|taken| taken.listener.try_clone())
+            .transpose()?,
+    )?;
+    let handover_requested = handover::requested(handover::offer(&state_root, kept_listener)?);
+    let handed: Arc<Mutex<Option<handover::Handed>>> = Arc::default();
+    let handed_in_shutdown = Arc::clone(&handed);
     let address = listener.local_addr()?;
     startup_trace("listener-bound");
 
@@ -1289,6 +1339,9 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     });
     startup_trace("readiness-output-started");
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
+    if let Some(taken) = taken.as_mut() {
+        taken.ready()?;
+    }
     #[cfg(unix)]
     let stop_runtime = runtime.shutdown_handle();
     let mutation_shutdown = state.clone();
@@ -1299,10 +1352,18 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
-        let reason = shutdown_signal().await;
+        let log = tokio::select! {
+            reason = shutdown_signal() => shutdown_exit_log(reason),
+            requested = handover_requested => {
+                if let Ok(mut slot) = handed_in_shutdown.lock() {
+                    *slot = Some(requested);
+                }
+                "runtime server shutdown requested by a live handover"
+            }
+        };
         mutation_shutdown.close_mutation_admission();
         shutdown_sync_changes.close();
-        eprintln!("{}", shutdown_exit_log(reason));
+        eprintln!("{log}");
         shutdown_cost_scans.store(true, std::sync::atomic::Ordering::Release);
         if let Err(error) = shutdown_requested.send(()) {
             eprintln!("runtime server shutdown watchdog could not start: {error}");
@@ -1399,7 +1460,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     }
     drained?;
     result?;
-    Ok(())
+    Ok(handed.lock().map_err(|_| "handover state poisoned")?.take())
 }
 
 async fn continuation_scheduler(

@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import time
 
@@ -28,6 +29,8 @@ DESKTOP_INTENT = "desktop-recovery.json"
 # Owner: CLOSE_SIGNAL in workspaces/client/apps/native/src-tauri/src/desktop_recovery.rs. A window
 # that records it as `closeSignal` closes on SIGTERM through its save check.
 CLOSE_SIGNAL = "SIGTERM"
+# Offer socket of a backend that supports a live handover. Owner: runtime-server src/handover.rs.
+HANDOVER_SOCKET = "handover.sock"
 NATIVE_EXECUTABLE = "Contents/MacOS/studio-native-client"
 
 
@@ -137,6 +140,27 @@ def verify_backend(config, state):
     return {"pid": data["pid"], "started": started} if started else None
 
 
+def handover_backend(config, state, backend):
+    """Start the new build with --takeover (runtime-server src/handover.rs): it takes the
+    listening socket, the old server drains and exits, and the port never closes. If the new
+    build fails before it serves, the old build resumes and this reports it."""
+    env = recovery.launch_environment(config, state)
+    log_fd = os.open(state / "canvas.log", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    with os.fdopen(log_fd, "ab", buffering=0) as log:
+        child = subprocess.Popen([str(recovery.rust_server(config)), "--takeover"], cwd=Path.home(), env=env,
+                                 stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    deadline = time.monotonic() + BACKEND_EXIT_SECONDS * 2
+    while time.monotonic() < deadline:
+        code = child.poll()
+        if code is not None:
+            raise RuntimeError(f"live handover failed (exit {code}); the old build serves again")
+        data = recovery.identity(config["port"], state)
+        if data and data["pid"] == child.pid:
+            return "handed over"
+        time.sleep(.2)
+    return "handing over"
+
+
 def stop_backend(config, state, backend):
     """After the swap: SIGTERM the backend that verify_backend proved, only while the same
     process (PID and start time) reports this state directory and owns the listener.
@@ -149,6 +173,8 @@ def stop_backend(config, state, backend):
     if data["pid"] != backend["pid"] or recovery.process_start_time(backend["pid"]) != backend["started"]:
         raise RuntimeError("The backend changed during the install; it was not verified.")
     recovery.verify_listener(backend["pid"], config)
+    if (state / HANDOVER_SOCKET).exists():
+        return handover_backend(config, state, backend)
     os.kill(backend["pid"], signal.SIGTERM)
     deadline = time.monotonic() + BACKEND_EXIT_SECONDS
     while time.monotonic() < deadline:

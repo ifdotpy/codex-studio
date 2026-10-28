@@ -1175,7 +1175,7 @@ with (state / 'runtime.lock').open('r') as lease:
         command = main.split('if args.first().map(String::as_str) == Some("state-check")', 1)[1].split('let port = parse_port(', 1)[0]
         self.assertIn('if args.len() != 2', command)
         self.assertIn('studio_runtime_store::check_state_readonly(PathBuf::from(state_dir).as_path())', command)
-        self.assertIn('return Ok(())', command)
+        self.assertIn('return Ok(None)', command)
 
     def test_native_reader_exposes_only_fixed_noncredential_launch_facts(self):
         import struct
