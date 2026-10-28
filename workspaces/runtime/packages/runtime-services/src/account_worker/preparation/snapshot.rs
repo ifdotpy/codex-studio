@@ -537,18 +537,6 @@ fn lead_complaints(tx: &rusqlite::Connection, lead: &str) -> Result<Vec<String>,
         .query_map([lead], |r| r.get(0))?
         .collect::<Result<_, _>>()?)
 }
-pub(super) fn records(
-    tx: &rusqlite::Connection,
-    table: &str,
-) -> Result<BTreeMap<String, String>, WorkerError> {
-    if !table_exists(tx, table)? {
-        return Ok(BTreeMap::new());
-    }
-    let mut query = tx.prepare(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
-    Ok(query
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<Result<_, _>>()?)
-}
 /// Stored rows for exactly `ids`, keyed by id; absent ids are skipped.
 pub(super) fn records_by_ids(
     db: &rusqlite::Connection,
@@ -629,7 +617,12 @@ pub(in crate::account_worker) fn event_authorization_inputs(
             "runtime_agents",
             &scope.agents,
         )?),
-        projects: crate::submit_gates::decode_authority_rows(records(db, "runtime_projects")?),
+        projects: crate::submit_gates::decode_authority_rows(
+            studio_runtime_store::ProjectsRepository::owned(db)?
+                .into_iter()
+                .map(|(id, project)| (id, project.to_string()))
+                .collect(),
+        ),
         resolved_paths: BTreeMap::new(),
         rooms,
         complaints: records_by_ids(db, "runtime_complaints", &scope.complaints)?,
@@ -1694,6 +1687,30 @@ fn can_delegate(tx: &Transaction<'_>, record: &Value, root: &Value) -> Result<bo
 
 #[cfg(test)]
 mod resource_tests {
+    #[test]
+    fn authorization_projects_exclude_destructive_removal_fences() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+            INSERT INTO runtime_projects VALUES('/deleted','{\"id\":\"/deleted\",\"removal\":{\"reason\":\"delete\",\"sequence\":1,\"requestId\":\"remove\",\"deletedAt\":1}}');
+            INSERT INTO runtime_projects VALUES('/active','{\"id\":\"/active\",\"path\":\"/active\",\"peerTeams\":[]}');")
+            .expect("project rows");
+        let mut rows = super::event_authorization_inputs(&db, "agent", vec![]).expect("inputs");
+        assert_eq!(
+            rows.projects.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["/active"]
+        );
+        rows.resolved_paths
+            .insert("/active".into(), "/active".into());
+        crate::submit_gates::AuthorizationSnapshot::from_records(&rows)
+            .expect("live project authorizes");
+        db.execute(
+            "UPDATE runtime_projects SET record='{' WHERE id='/active'",
+            [],
+        )
+        .expect("malformed live row");
+        assert!(super::event_authorization_inputs(&db, "agent", vec![]).is_err());
+    }
+
     #[test]
     fn native_release_phases_hold_only_unsettled_releases() {
         for (patch, held) in [
