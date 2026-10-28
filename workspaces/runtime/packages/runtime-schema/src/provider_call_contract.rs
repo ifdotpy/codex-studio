@@ -4,6 +4,13 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ConnectionScope {
+    pub account: String,
+    pub connection: String,
+    pub generation: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RequestActor {
     pub agent: String,
     pub epoch: i64,
@@ -26,7 +33,7 @@ pub enum RequestResult {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct ProviderCallIntent<M, A, S> {
+pub struct ProviderCallIntent<M, A, S = ConnectionScope> {
     pub root_request_id: String,
     pub admitted_request: Option<A>,
     pub scope: S,
@@ -59,7 +66,7 @@ pub struct RetainedOutcome {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct RetainedCall<M, A, S> {
+pub struct RetainedCall<M, A, S = ConnectionScope> {
     pub call: ProviderCallIntent<M, A, S>,
     pub request: Option<TransportRequest<M>>,
     pub admitted: A,
@@ -75,7 +82,7 @@ pub struct CommittedAck {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct RetainedReply<M, A, S> {
+pub struct RetainedReply<M, A, S = ConnectionScope> {
     pub call: ProviderCallIntent<M, A, S>,
     pub request: TransportRequest<M>,
     pub written: bool,
@@ -84,7 +91,7 @@ pub struct RetainedReply<M, A, S> {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ThreadProvenance<S> {
+pub struct ThreadProvenance<S = ConnectionScope> {
     pub scope: S,
     pub actor: RequestActor,
     pub operation: String,
