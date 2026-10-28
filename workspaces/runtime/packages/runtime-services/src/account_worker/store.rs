@@ -15,7 +15,7 @@ use studio_runtime_schema::shared_values::{
     PROVIDER_THREAD_START_UNKNOWN_ERROR,
 };
 use studio_runtime_store::CachedSql;
-use studio_runtime_store::outbox::{Outbox, OutboxRow};
+use studio_runtime_store::outbox::{Outbox, OutboxRow, Publication, PublicationClass};
 use studio_runtime_store::{AgentRecord, NotificationDispatchRepository};
 
 pub(super) const PUBLICATION_DRAIN_LIMIT: usize = 64;
@@ -41,59 +41,30 @@ const PUBLICATION_INVALIDATION: PublicationClass = PublicationClass::Invalidatio
 /// Signature of every other pending publication receipt.
 const PUBLICATION_PENDING: PublicationClass = PublicationClass::Pending;
 
-#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
-enum PublicationClass {
-    #[serde(rename = "token-rate")]
-    TokenRate,
-    #[serde(rename = "invalidation")]
-    Invalidation,
-    #[default]
-    #[serde(rename = "pending")]
-    Pending,
-}
-impl PublicationClass {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::TokenRate => "token-rate",
-            Self::Invalidation => "invalidation",
-            Self::Pending => "pending",
-        }
-    }
-}
-
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Publication {
-    account: String,
-    sequence: u64,
-    index: usize,
-    #[serde(default)]
-    class: PublicationClass,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    effect: Option<crate::notification_dispatch::NotificationPostCommit>,
-    #[serde(default)]
-    coalesced_effects: Vec<crate::notification_dispatch::NotificationPostCommit>,
-    #[serde(default)]
-    analytics_overflow: u64,
-    #[serde(default)]
-    publication_overflow: u64,
-    #[serde(default)]
-    state_invalidation: bool,
-    #[serde(default)]
-    state_invalidation_generation: u64,
-    #[serde(default)]
-    token_rate_coalesced: bool,
-}
-
-fn save_publication(
+pub(super) fn save_publication(
     tx: &studio_runtime_store::Transaction<'_>,
     operation: &str,
     payload: Publication,
 ) -> Result<(), WorkerError> {
-    if let Some(old) = Outbox::get::<Publication>(tx, operation).map_err(outbox_error)? {
-        if serde_json::to_string(&old.payload).map_err(StoreError::from)?
-            != serde_json::to_string(&payload).map_err(StoreError::from)?
-        {
+    type Effect = crate::notification_dispatch::NotificationPostCommit;
+    let old = Outbox::get::<Publication<Effect>>(tx, operation).map_err(|error| match error {
+        studio_runtime_store::outbox::OutboxError::Json(_) => StoreError::InvalidStoredObject {
+            table: "runtime_outbox",
+            id: operation.to_owned(),
+        }
+        .into(),
+        error => outbox_error(error),
+    })?;
+    if let Some(old) = old {
+        let mut stored = old.payload;
+        let mut incoming: Publication<Effect> =
+            serde_json::from_str(&serde_json::to_string(&payload).map_err(StoreError::from)?)
+                .map_err(StoreError::from)?;
+        for value in [&mut stored, &mut incoming] {
+            value.analytics_overflow = Some(value.analytics_overflow.unwrap_or_default());
+            value.publication_overflow = Some(value.publication_overflow.unwrap_or_default());
+        }
+        if stored != incoming {
             return Err(invalid(operation));
         }
         return Ok(());
@@ -3522,8 +3493,8 @@ fn persist_publication_batch_in(
                     account: account.to_owned(),
                     sequence: batch.sequence,
                     index: batch.effects.len(),
-                    analytics_overflow: overflow,
-                    publication_overflow,
+                    analytics_overflow: Some(overflow),
+                    publication_overflow: Some(publication_overflow),
                     ..Default::default()
                 },
             )?;
@@ -3596,7 +3567,7 @@ fn save_publication_effect(
             sequence: batch.sequence,
             index,
             class: signature,
-            effect: Some(effect.clone()),
+            effect: Some(serde_json::value::to_raw_value(effect).map_err(StoreError::from)?),
             ..Default::default()
         },
     )?;
@@ -3643,42 +3614,22 @@ fn coalesce_token_rate_receipt(
         })
         .transpose()?;
     if let Some((id, result)) = row {
-        let typed: Publication = serde_json::from_str(&result).map_err(|_| invalid(&id))?;
-        let mut value = serde_json::to_value(typed).map_err(StoreError::from)?;
-        let mut effects: Vec<crate::notification_dispatch::NotificationPostCommit> = Vec::new();
-        if let Some(primary) = value.get("effect") {
-            effects.push(serde_json::from_value(primary.clone()).map_err(|_| invalid(&id))?);
-        }
-        if let Some(additional) = value.get("coalescedEffects") {
-            let additional = additional.as_array().ok_or_else(|| invalid(&id))?;
-            effects.extend(
-                additional
-                    .iter()
-                    .cloned()
-                    .map(serde_json::from_value)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|_| invalid(&id))?,
-            );
-        }
-        if effects.len().saturating_sub(1) >= MAX_COALESCED_TOKEN_RATE_EFFECTS {
+        let mut publication: Publication =
+            serde_json::from_str(&result).map_err(|_| invalid(&id))?;
+        let count = publication.coalesced_effects.len() + usize::from(publication.effect.is_some());
+        if count.saturating_sub(1) >= MAX_COALESCED_TOKEN_RATE_EFFECTS {
             return Ok(false);
         }
         // Keep each provider delivery identity intact. Rewriting earlier deltas
         // under a later cursor can double-project them after a partial drain.
-        effects.push(effect.clone());
-        let primary = effects.first().ok_or_else(|| invalid(&id))?;
-        value["effect"] = serde_json::to_value(primary).map_err(|_| invalid(&id))?;
-        if effects.len() > 1 {
-            value["coalescedEffects"] =
-                serde_json::to_value(&effects[1..]).map_err(|_| invalid(&id))?;
-        } else {
-            value
-                .as_object_mut()
-                .ok_or_else(|| invalid(&id))?
-                .remove("coalescedEffects");
+        publication
+            .coalesced_effects
+            .push(serde_json::value::to_raw_value(effect).map_err(StoreError::from)?);
+        if publication.effect.is_none() {
+            publication.effect = Some(publication.coalesced_effects.remove(0));
         }
-        value["tokenRateCoalesced"] = json!(true);
-        let serialized = value.to_string();
+        publication.token_rate_coalesced = true;
+        let serialized = serde_json::to_string(&publication).map_err(StoreError::from)?;
         if serialized.len() > MAX_COALESCED_TOKEN_RATE_BYTES {
             return Ok(false);
         }
@@ -3826,15 +3777,9 @@ async fn publish_pending(
     result: &str,
     after_publish: &mut (impl FnMut() -> Result<(), WorkerError> + Send),
 ) -> Result<(), WorkerError> {
-    let value: Value = serde_json::from_str(result).map_err(|_| invalid(id))?;
-    let analytics_overflow = value
-        .get("analyticsOverflow")
-        .and_then(Value::as_u64)
-        .unwrap_or_default();
-    let publication_overflow = value
-        .get("publicationOverflow")
-        .and_then(Value::as_u64)
-        .unwrap_or_default();
+    let publication: Publication = serde_json::from_str(result).map_err(|_| invalid(id))?;
+    let analytics_overflow = publication.analytics_overflow.unwrap_or_default();
+    let publication_overflow = publication.publication_overflow.unwrap_or_default();
     if analytics_overflow > 0 || publication_overflow > 0 {
         crate::analytics_capture::record_publication_overflow(
             store,
@@ -3845,25 +3790,19 @@ async fn publish_pending(
         .await
         .map_err(|_| WorkerError::Capacity)?;
     }
-    let mut effects = Vec::new();
-    if let Some(effect) = value.get("effect") {
-        effects.push(serde_json::from_value(effect.clone()).map_err(|_| invalid(id))?);
-    }
-    if let Some(coalesced) = value.get("coalescedEffects") {
-        let coalesced = coalesced.as_array().ok_or_else(|| invalid(id))?;
-        effects.extend(
-            coalesced
-                .iter()
-                .cloned()
-                .map(serde_json::from_value)
-                .collect::<Result<Vec<crate::notification_dispatch::NotificationPostCommit>, _>>()
-                .map_err(|_| invalid(id))?,
-        );
-    }
-    if !effects.is_empty() {
+    if publication.effect.is_some() || !publication.coalesced_effects.is_empty() {
         // The sink's delivery identity is the effect's provider identity.
         // It must make a replay after a crash between publish and delete safe.
-        for effect in effects {
+        for raw in publication
+            .effect
+            .iter()
+            .chain(&publication.coalesced_effects)
+        {
+            let effect: crate::notification_dispatch::NotificationPostCommit =
+                serde_json::from_str(raw.get()).map_err(|_| StoreError::InvalidStoredObject {
+                    table: "runtime_outbox",
+                    id: id.to_owned(),
+                })?;
             if let crate::notification_dispatch::NotificationPostCommit::TokenRateUsage(observation) =
                 &effect
                 && observation.method == "turn/completed"
@@ -3879,15 +3818,12 @@ async fn publish_pending(
             }
             sink.publish(&effect).await?;
         }
-    } else if value.get("analyticsOverflow").is_none() && value.get("publicationOverflow").is_none()
+    } else if publication.analytics_overflow.is_none() && publication.publication_overflow.is_none()
     {
         return Err(invalid(id));
     }
-    if value.get("stateInvalidation") == Some(&Value::Bool(true)) {
-        let generation = value
-            .get("stateInvalidationGeneration")
-            .and_then(Value::as_u64)
-            .unwrap_or_default();
+    if publication.state_invalidation {
+        let generation = publication.state_invalidation_generation;
         let request_id = format!("coalesced-state-invalidation:{id}:{generation}");
         sink.invalidate_state(&request_id).await?;
     }

@@ -180,6 +180,37 @@ async fn test_store() -> (PathBuf, Arc<RuntimeStore>) {
     (root, Arc::new(store))
 }
 
+#[tokio::test]
+async fn migrated_publication_replay_compares_semantically() {
+    let (_root, store) = test_store().await;
+    let effect = publication_effect(7);
+    let raw = serde_json::value::to_raw_value(&effect).expect("effect JSON");
+    let legacy: Value = serde_json::from_str(&format!(
+        r#"{{"index":0,"effect":{},"sequence":1,"account":"default","class":"token-rate"}}"#,
+        raw.get()
+    ))
+    .expect("legacy publication");
+    stage(&store, 1, 0, legacy).await;
+    store
+        .transaction_with(move |tx| {
+            let id = store::publication_operation("default", 1, 0);
+            store::save_publication(
+                tx,
+                &id,
+                studio_runtime_store::outbox::Publication {
+                    account: "default".into(),
+                    sequence: 1,
+                    index: 0,
+                    class: studio_runtime_store::outbox::PublicationClass::TokenRate,
+                    effect: Some(raw),
+                    ..Default::default()
+                },
+            )
+        })
+        .await
+        .expect("semantically identical publication replays");
+}
+
 pub(super) async fn stage(store: &RuntimeStore, sequence: u64, index: usize, value: Value) {
     store
         .transaction_with(move |tx| {

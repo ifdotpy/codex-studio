@@ -277,3 +277,67 @@ mod tests {
         assert!(Outbox::delete_settled(&tx, &row.id, "signature").expect("settled"));
     }
 }
+#[derive(Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum PublicationClass {
+    #[serde(rename = "token-rate")]
+    TokenRate,
+    #[serde(rename = "invalidation")]
+    Invalidation,
+    #[default]
+    #[serde(rename = "pending")]
+    Pending,
+}
+impl PublicationClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TokenRate => "token-rate",
+            Self::Invalidation => "invalidation",
+            Self::Pending => "pending",
+        }
+    }
+}
+
+#[derive(PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    bound(deserialize = "T: serde::Deserialize<'de>")
+)]
+pub struct Publication<T = Box<serde_json::value::RawValue>> {
+    pub account: String,
+    pub sequence: u64,
+    pub index: usize,
+    #[serde(default)]
+    pub class: PublicationClass,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<T>,
+    #[serde(default)]
+    pub coalesced_effects: Vec<T>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analytics_overflow: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_overflow: Option<u64>,
+    #[serde(default)]
+    pub state_invalidation: bool,
+    #[serde(default)]
+    pub state_invalidation_generation: u64,
+    #[serde(default)]
+    pub token_rate_coalesced: bool,
+}
+
+impl<T> Default for Publication<T> {
+    fn default() -> Self {
+        Self {
+            account: String::new(),
+            sequence: 0,
+            index: 0,
+            class: PublicationClass::default(),
+            effect: None,
+            coalesced_effects: Vec::new(),
+            analytics_overflow: Some(0),
+            publication_overflow: Some(0),
+            state_invalidation: false,
+            state_invalidation_generation: 0,
+            token_rate_coalesced: false,
+        }
+    }
+}
