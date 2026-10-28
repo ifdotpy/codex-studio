@@ -171,10 +171,9 @@ enum Grant { Full, Observe }                // Observe: read commands only
   never from the request.
 - The descendant check exists twice today (`managed_host_tools.rs`, `services.rs`). It
   becomes one function.
-- Known gap today: a request through Tailscale Serve is trusted when its source is a
-  tailnet address (`middleware.rs`, `trusted`). It can read `/api/session`, which returns
-  the owner token. The Tailscale login is not compared with the owner, as it is on the
-  signed path. Target: Serve requests use device keys and get no owner token.
+- The tailnet is the trusted perimeter (owner decision, 2026-10-28). A request through
+  Tailscale Serve from a tailnet address acts as `Owner`, as today (`middleware.rs`,
+  `trusted`). Device keys and grants are for devices that connect directly.
 - A process on the server host can read the owner token through loopback. Agent shells
   therefore have owner rights outside the agent tools.
 
