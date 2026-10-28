@@ -1591,6 +1591,7 @@ async fn receive_remote_input(
 fn callback_error(error: crate::provider_callbacks::CallbackError) -> AccessError {
     use crate::provider_callbacks::CallbackError as Callback;
     match error {
+        Callback::Expired => refused(410, "request_expired", "The request ID expired"),
         Callback::Store(error) => AccessError::Store(error),
         Callback::InvalidResultSchema(_) => {
             refused(400, "invalid_result_schema", "Invalid result_schema")
