@@ -1602,7 +1602,7 @@ fn work_receipt_in(
         saved
     } else {
         let identity =
-            RequestIdentity::new("work", &[&agent.root_id.0], request_id, &[]).map_err(|_| {
+            studio_runtime_schema::persistence::RequestIdentity::new("work", &[&agent.root_id.0], request_id, &[]).map_err(|_| {
                 Error::RequestResult(
                     studio_runtime_store::request_results::RequestResultError::Identity(
                         studio_runtime_schema::persistence::RequestIdentityError::Expired {
