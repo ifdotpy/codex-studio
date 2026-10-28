@@ -7,8 +7,7 @@ use super::{
 };
 use std::ops::{Deref, DerefMut};
 use std::{
-    collections::{HashMap, HashSet},
-    hash::{Hash, Hasher},
+    collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -32,9 +31,8 @@ thread_local! {
     static DELTA_SIZE_INPUT_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub(super) struct StreamKey {
-    #[serde(default)]
     pub agent_id: String,
     pub account: String,
     pub generation: u64,
@@ -42,30 +40,6 @@ pub(super) struct StreamKey {
     pub turn: Option<String>,
     pub item: String,
     pub method: String,
-}
-
-impl PartialEq for StreamKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.account == other.account
-            && self.generation == other.generation
-            && self.thread == other.thread
-            && self.turn == other.turn
-            && self.item == other.item
-            && self.method == other.method
-    }
-}
-
-impl Eq for StreamKey {}
-
-impl Hash for StreamKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.account.hash(state);
-        self.generation.hash(state);
-        self.thread.hash(state);
-        self.turn.hash(state);
-        self.item.hash(state);
-        self.method.hash(state);
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -304,9 +278,69 @@ pub(super) enum EnqueueResult {
 }
 
 impl NotificationStreamBuffer {
+    pub(crate) fn owners(&self) -> BTreeSet<String> {
+        self.entries
+            .iter()
+            .map(|entry| &entry.key)
+            .chain(self.closed.iter().map(|key| key.value()))
+            .chain(self.analytics.iter().map(|capture| &capture.key))
+            .chain(self.analytics_skipped.iter().map(|key| key.value()))
+            .map(|key| key.agent_id.clone())
+            .collect()
+    }
+
+    /// Move one actor's stream state to its owner; account publication bookkeeping stays here.
+    pub(crate) fn take_owner(&mut self, actor: &str) -> Self {
+        let mut owner = Self {
+            entries: self
+                .entries
+                .extract_if(.., |entry| entry.key.agent_id == actor)
+                .collect(),
+            closed: self
+                .closed
+                .extract_if(.., |key| key.agent_id == actor)
+                .collect(),
+            analytics: self
+                .analytics
+                .extract_if(.., |capture| capture.key.agent_id == actor)
+                .collect(),
+            analytics_skipped: self
+                .analytics_skipped
+                .extract_if(.., |key| key.agent_id == actor)
+                .collect(),
+            ..Self::default()
+        };
+        self.rebuild_runtime_state();
+        owner.rebuild_runtime_state();
+        owner
+    }
+
+    pub(crate) fn merge_owner(&mut self, mut owner: Self) -> Result<(), NotificationDispatchError> {
+        if owner.publication_sequence != 0
+            || owner.analytics_overflow != 0
+            || !owner.post_commit.is_empty()
+            || owner.entries.iter().any(|entry| {
+                self.indexes.entries.contains_key(&entry.key)
+                    || self.indexes.closed.contains(&entry.key)
+            })
+            || owner.closed.iter().any(|key| {
+                self.indexes.entries.contains_key(key.value())
+                    || self.indexes.closed.contains(key.value())
+            })
+        {
+            return Err(NotificationDispatchError::invalid_account());
+        }
+        self.entries.append(&mut owner.entries);
+        self.closed.append(&mut owner.closed);
+        self.analytics.append(&mut owner.analytics);
+        self.analytics_skipped.append(&mut owner.analytics_skipped);
+        self.rebuild_runtime_state();
+        Ok(())
+    }
+
     /// Only intermediate stream statistics are best-effort. Complete analytics
-    /// notifications are durable publication receipts and never enter the stream
-    /// bounds. The store's receipt policy uses this same owner.
+    /// notifications are durable publication obligations and never enter the stream
+    /// bounds. The publication policy uses this same owner.
     pub(crate) fn is_best_effort_analytics(effect: &NotificationPostCommit) -> bool {
         matches!(effect, NotificationPostCommit::AnalyticsStream { .. })
     }
@@ -627,16 +661,6 @@ impl NotificationStreamBuffer {
     }
     /// The durable JSON text of this buffer: its metadata, and its entries
     /// with pending deltas (`None` when nothing is pending).
-    pub(crate) fn persisted_text(&self) -> serde_json::Result<(String, Option<String>)> {
-        let (metadata, pending) = self.persisted_parts()?;
-        Ok((
-            metadata,
-            pending
-                .map(|pending| serde_json::to_string(&pending))
-                .transpose()?,
-        ))
-    }
-
     pub(crate) fn persisted_parts(
         &self,
     ) -> serde_json::Result<(String, Option<NotificationPendingStreams>)> {
@@ -696,12 +720,13 @@ impl NotificationStreamBuffer {
     pub(crate) fn pending_bytes(&self) -> usize {
         self.pending_bytes
     }
-    pub(crate) fn threads(&self) -> Vec<(String, u64, String)> {
+    pub(crate) fn threads(&self) -> Vec<(String, String, u64, String)> {
         self.entries
             .iter()
             .filter(|entry| entry.count > 0)
             .map(|entry| {
                 (
+                    entry.key.agent_id.clone(),
                     entry.key.account.clone(),
                     entry.key.generation,
                     entry.key.thread.clone(),
@@ -816,7 +841,8 @@ impl NotificationStreamBuffer {
             .iter()
             .filter(|entry| {
                 terminal.is_none_or(|key| {
-                    entry.key.account == key.account
+                    entry.key.agent_id == key.agent_id
+                        && entry.key.account == key.account
                         && entry.key.thread == key.thread
                         && entry.key.item == key.item
                         && key
@@ -915,9 +941,10 @@ impl NotificationStreamBuffer {
     /// The turn ended: its finished streams no longer need a closed key, because
     /// dispatch drops a delta of a turn that is not in progress by the turn alone.
     /// Keys without a turn settle with any turn of their thread.
-    pub(crate) fn settle_turn(&mut self, account: &str, thread: &str, turn: &str) {
+    pub(crate) fn settle_turn(&mut self, actor: &str, account: &str, thread: &str, turn: &str) {
         self.retain_closed(|key| {
-            !(key.account == account
+            !(key.agent_id == actor
+                && key.account == account
                 && key.thread == thread
                 && key.turn.as_deref().is_none_or(|key_turn| key_turn == turn))
         });
@@ -1089,7 +1116,7 @@ mod tests {
                 streams.close(&key);
             }
             assert_eq!(streams.closed.len(), 3);
-            streams.settle_turn("default", "thread", &format!("turn-{turn}"));
+            streams.settle_turn("agent", "default", "thread", &format!("turn-{turn}"));
             assert!(streams.closed.is_empty());
             assert!(streams.indexes.closed.is_empty());
         }
@@ -1239,7 +1266,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_text_matches_the_blanked_value_form() {
+    fn persisted_parts_match_the_blanked_value_form() {
         let key = |item: &str, turn: Option<&str>| StreamKey {
             agent_id: "agent".into(),
             account: "default".into(),
@@ -1260,7 +1287,7 @@ mod tests {
             EnqueueResult::Buffered
         ));
         streams.flush(&key("b", None), "base").expect("flushes");
-        streams.preserve_base(&key("b", None), "hash".into());
+        streams.preserve_base(&key("b", None), "baseflushed".into());
         assert!(matches!(
             streams.enqueue_delta(key("c", Some("turn")), "closed", &params),
             EnqueueResult::Buffered
@@ -1282,16 +1309,19 @@ mod tests {
         };
         let parse = |text: &str| serde_json::from_str::<Value>(text).expect("JSON text");
         for buffer in [streams.clone(), NotificationStreamBuffer::default()] {
-            let (metadata, pending) = buffer.persisted_text().expect("encodes");
+            let (metadata, pending) = buffer.persisted_parts().expect("encodes");
             let (expected_metadata, expected_pending) = former(&buffer);
             assert_eq!(parse(&metadata), expected_metadata);
-            assert_eq!(pending.as_deref().map(parse), expected_pending);
+            assert_eq!(
+                pending.map(|pending| serde_json::to_value(pending).expect("pending state")),
+                expected_pending
+            );
         }
     }
 
     #[test]
-    fn legacy_closed_stream_matches_owner_enriched_key() {
-        let mut streams: NotificationStreamBuffer = serde_json::from_value(serde_json::json!({
+    fn unowned_stream_state_is_rejected_after_migration() {
+        let result = serde_json::from_value::<NotificationStreamBuffer>(serde_json::json!({
             "entries": [],
             "closed": [{
                 "account": "default",
@@ -1301,21 +1331,8 @@ mod tests {
                 "item": "answer",
                 "method": "item/agentMessage/delta"
             }]
-        }))
-        .expect("legacy stream metadata");
-        let key = StreamKey {
-            agent_id: "agent".into(),
-            account: "default".into(),
-            generation: 1,
-            thread: "thread".into(),
-            turn: Some("turn".into()),
-            item: "answer".into(),
-            method: "item/agentMessage/delta".into(),
-        };
-        assert!(matches!(
-            streams.enqueue_delta(key, "late text", &Value::Null),
-            EnqueueResult::Closed
-        ));
+        }));
+        assert!(result.is_err());
     }
 
     #[test]

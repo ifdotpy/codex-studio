@@ -1,4 +1,4 @@
-//! Transactional provider notifications with replay-safe receipts and checked stored state.
+//! Transactional provider notifications with journal-owned replay and checked state.
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::OptionalExtension;
@@ -406,7 +406,7 @@ pub struct NotificationDispatchResult {
 /// Use scheduler::lifecycle_transaction_with to publish changed agents in the same
 /// SQLite transaction, then apply `stream_update` (when present) to that buffer. On
 /// rollback or commit failure discard the update. This call never mutates the
-/// supplied buffer; a saved receipt returns the saved outcome and no update.
+/// supplied buffer; journal replay returns the saved outcome and no update.
 /// `observed_at` is never part of delivery identity.
 pub fn dispatch_notification(
     transaction: &Transaction<'_>,
@@ -592,7 +592,8 @@ pub fn dispatch_notification_with_effects(
                     .selected(None)
                     .into_iter()
                     .filter(|key| {
-                        key.thread == thread
+                        key.agent_id == agent_id
+                            && key.thread == thread
                             && (unload || turn.is_none_or(|turn| key.turn.as_deref() == Some(turn)))
                     })
                     .collect();
@@ -1555,8 +1556,8 @@ fn stream_turn_active(
     key: &StreamKey,
 ) -> Result<bool, NotificationDispatchError> {
     Ok(transaction.query_row_cached(
-        "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE account_key=?1 AND thread_id=?2 AND (?3 IS NULL OR turn_id=?3) AND deleted_at IS NULL AND (in_flight=1 OR status IN ('running','starting','approval')))",
-        rusqlite::params![key.account, key.thread, key.turn],
+        "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE id=?4 AND account_key=?1 AND thread_id=?2 AND (?3 IS NULL OR turn_id=?3) AND deleted_at IS NULL AND (in_flight=1 OR status IN ('running','starting','approval')))",
+        rusqlite::params![key.account, key.thread, key.turn, key.agent_id],
         |row| row.get(0),
     ).map_err(StoreError::from)?)
 }
@@ -1630,23 +1631,13 @@ fn stream_owner(
     transaction: &Transaction<'_>,
     key: &StreamKey,
 ) -> Result<Option<(String, String)>, NotificationDispatchError> {
-    let owner = if key.agent_id.is_empty() {
-        transaction
-            .query_row_cached(
-                "SELECT id,record FROM runtime_agents WHERE account_key=?1 AND thread_id=?2",
-                rusqlite::params![key.account, key.thread],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()
-    } else {
-        transaction
-            .query_row_cached(
-                "SELECT id,record FROM runtime_agents WHERE id=?1 AND account_key=?2",
-                rusqlite::params![key.agent_id, key.account],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()
-    };
+    let owner = transaction
+        .query_row_cached(
+            "SELECT id,record FROM runtime_agents WHERE id=?1 AND account_key=?2",
+            rusqlite::params![key.agent_id, key.account],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional();
     let owner = owner.map_err(StoreError::from)?;
     Ok(owner
         .map(|(id, raw)| {
@@ -1785,7 +1776,8 @@ fn flush_keys(
     observed_at: f64,
 ) -> Result<(), NotificationDispatchError> {
     for key in keys {
-        if agent.get("threadId").and_then(Value::as_str) != Some(key.thread.as_str())
+        if key.agent_id != agent_id
+            || agent.get("threadId").and_then(Value::as_str) != Some(key.thread.as_str())
             || agent
                 .get("accountKey")
                 .and_then(Value::as_str)
@@ -3304,12 +3296,9 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            tx.query_row(
-                "SELECT count(*) FROM runtime_operation_receipts",
-                [],
-                |row| row.get::<_, i64>(0)
-            )
-            .expect("receipt count"),
+            tx.query_row("SELECT count(*) FROM runtime_outbox", [], |row| row
+                .get::<_, i64>(0))
+                .expect("receipt count"),
             1
         );
         tx.commit().expect("caller catches error and commits");
@@ -3325,7 +3314,7 @@ mod tests {
                     "runtime_agents",
                     "runtime_items",
                     "sync_entities",
-                    "runtime_operation_receipts",
+                    "runtime_outbox",
                 ]
                 .map(|table| {
                     let mut statement = tx
@@ -3589,11 +3578,7 @@ mod tests {
         .expect("agent exists");
         assert_eq!(agent["events"], 0);
         let receipts: i64 = connection
-            .query_row(
-                "SELECT count(*) FROM runtime_operation_receipts",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT count(*) FROM runtime_outbox", [], |row| row.get(0))
             .expect("receipt count reads");
         assert_eq!(receipts, 0);
         connection
@@ -3959,7 +3944,7 @@ mod tests {
             .expect("unauthorized submission leaves transaction committable");
         let writes: i64 = connection
             .query_row(
-                "SELECT (SELECT count(*) FROM runtime_items)+(SELECT count(*) FROM runtime_operation_receipts)",
+                "SELECT (SELECT count(*) FROM runtime_items)+(SELECT count(*) FROM runtime_outbox)+(SELECT count(*) FROM request_results)",
                 [],
                 |row| row.get(0),
             )
