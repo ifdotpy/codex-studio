@@ -98,7 +98,10 @@ pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Resul
     if let Some(previous) = agent.get("idleCompactionEpisode") {
         let previous: Episode = serde_json::from_value(previous.clone())
             .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
-        if previous.cache.request_id == cache.request_id && previous.identity == identity(agent) {
+        if previous.cache.request_id == cache.request_id
+            && previous.cache.ttl == cache.ttl
+            && previous.identity == identity(agent)
+        {
             return Ok(());
         }
     }
