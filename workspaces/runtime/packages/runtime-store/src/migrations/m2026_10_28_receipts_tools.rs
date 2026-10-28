@@ -162,15 +162,15 @@ impl ReceiptFamilyMigration for Family {
                         let object = task
                             .as_object_mut()
                             .ok_or_else(|| unclassifiable(source, &row.id, &row.signature))?;
-                        object.insert("kind".into(), json!(ToolRequestKind::ManagedTool));
+                        object.insert("kind".into(), json!(ToolRequestKind::ManagedTool.as_str()));
                         object.entry("originKey").or_insert(Value::Null);
                         object.entry("aliases").or_insert(json!([]));
                         object.insert(
                             "admitted".into(),
-                            json!(admitted_owner_token(
+                            crate::projection_value(&admitted_owner_token(
                                 &row.id,
                                 &row.signature,
-                                checkpoint.cutover_ms
+                                checkpoint.cutover_ms,
                             )),
                         );
                         object.remove("result");
@@ -303,8 +303,9 @@ fn hydrate_location_arguments(
             |r| r.get(0),
         )
         .optional()?;
-    let mut owner: Value = raw
-        .and_then(|raw| serde_json::from_str(&raw).ok())
+    let raw = raw.ok_or_else(invalid)?;
+    let mut owner: Value = serde_json::from_str(&raw)
+        .ok()
         .filter(Value::is_object)
         .ok_or_else(invalid)?;
     if owner.get("locationIntents").is_none() {
@@ -320,9 +321,14 @@ fn hydrate_location_arguments(
         &["location"],
         &signature,
     );
-    if let Some(saved) = intents.get(&id) {
+    if intents.contains_key(&id) {
+        let path = format!("$.locationIntents.\"{id}\".request");
+        let saved: Option<String> =
+            tx.query_row("SELECT json_extract(?1,?2)", params![raw, path], |r| {
+                r.get(0)
+            })?;
         let saved: crate::request_results::AdmittedRequest =
-            serde_json::from_value(saved["request"].clone()).map_err(|_| invalid())?;
+            serde_json::from_str(&saved.ok_or_else(invalid)?).map_err(|_| invalid())?;
         if (saved.signature() != original_signature && saved.signature() != signature)
             || (saved.id() != id && saved.id() != token.id())
         {
@@ -333,7 +339,14 @@ fn hydrate_location_arguments(
             ));
         }
     }
-    intents.insert(id, json!({"request":token}));
+    #[derive(serde::Serialize)]
+    struct LocationIntent {
+        request: crate::request_results::AdmittedRequest,
+    }
+    intents.insert(
+        id,
+        crate::projection_value(&LocationIntent { request: token }),
+    );
     tx.execute(
         "UPDATE runtime_projects SET record=?1 WHERE id=?2",
         params![owner.to_string(), project],
@@ -495,31 +508,35 @@ fn classify(source: &str, row: &SourceReceipt, task: &Value) -> Result<()> {
     {
         return Err(invalid());
     }
-    let status: ToolRequestStatus =
-        serde_json::from_value(task["stage"].clone()).map_err(|_| invalid())?;
-    let outcome: ToolRequestOutcome =
-        serde_json::from_value(task["outcome"].clone()).map_err(|_| invalid())?;
-    let valid = matches!(
-        (status, outcome),
-        (
-            ToolRequestStatus::Queued | ToolRequestStatus::Running,
-            ToolRequestOutcome::Pending
-        ) | (
-            ToolRequestStatus::Running
-                | ToolRequestStatus::Failed
-                | ToolRequestStatus::Unknown
-                | ToolRequestStatus::Interrupted,
-            ToolRequestOutcome::Unknown
-        ) | (
+    let status = task["stage"].as_str().ok_or_else(invalid)?;
+    let outcome = task["outcome"].as_str().ok_or_else(invalid)?;
+    let valid = match outcome {
+        s if s == ToolRequestOutcome::Pending.as_str() => {
+            [ToolRequestStatus::Queued, ToolRequestStatus::Running]
+                .iter()
+                .any(|v| v.as_str() == status)
+        }
+        s if s == ToolRequestOutcome::Unknown.as_str() => [
+            ToolRequestStatus::Running,
+            ToolRequestStatus::Failed,
+            ToolRequestStatus::Unknown,
+            ToolRequestStatus::Interrupted,
+        ]
+        .iter()
+        .any(|v| v.as_str() == status),
+        s if s == ToolRequestOutcome::Applied.as_str() => {
+            status == ToolRequestStatus::Completed.as_str()
+        }
+        s if s == ToolRequestOutcome::NotApplied.as_str() => [
             ToolRequestStatus::Completed,
-            ToolRequestOutcome::Applied | ToolRequestOutcome::NotApplied
-        ) | (
-            ToolRequestStatus::Failed
-                | ToolRequestStatus::Cancelled
-                | ToolRequestStatus::Interrupted,
-            ToolRequestOutcome::NotApplied
-        )
-    );
+            ToolRequestStatus::Failed,
+            ToolRequestStatus::Cancelled,
+            ToolRequestStatus::Interrupted,
+        ]
+        .iter()
+        .any(|v| v.as_str() == status),
+        _ => false,
+    };
     if !valid {
         return Err(invalid());
     }
@@ -1096,6 +1113,7 @@ mod tests {
             .query_row("SELECT record FROM runtime_tool_requests", [], |r| r.get(0))
             .expect("task");
         let task: Value = serde_json::from_str(&raw).expect("task JSON");
+        let task_raw = raw;
         assert_eq!(task["arguments"], args);
         assert_eq!(task["outcome"], "unknown");
         assert_eq!(task["admitted"]["id"], "old-task");
@@ -1107,14 +1125,23 @@ mod tests {
             )
             .expect("project");
         let project: Value = serde_json::from_str(&raw).expect("project JSON");
-        let parent: crate::request_results::AdmittedRequest =
-            serde_json::from_value(task["admitted"].clone()).expect("parent admission");
+        #[derive(serde::Deserialize)]
+        struct TaskAdmission {
+            admitted: crate::request_results::AdmittedRequest,
+        }
+        let parent = serde_json::from_str::<TaskAdmission>(&task_raw)
+            .expect("parent admission")
+            .admitted;
         let signature = crate::sha256_hex(
             studio_runtime_schema::json_compat::python_json_compact(&args).as_bytes(),
         );
         assert_eq!(
             project["locationIntents"][&id]["request"],
-            json!(parent.derive_result("project-location", &["location"], &signature))
+            crate::projection_value(&parent.derive_result(
+                "project-location",
+                &["location"],
+                &signature
+            ))
         );
         let preserved: String = db
             .query_row(
