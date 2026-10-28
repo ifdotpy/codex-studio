@@ -1,7 +1,7 @@
 //! One durable stop effect per voice session.
 use std::sync::Arc;
 
-use serde_json::json;
+use serde_json::{Value, json};
 use studio_runtime_providers::Method;
 use studio_runtime_schema::persistence::{
     CapturedScope, OutboxKind, OutboxStatus, OwnerKind, RequestIdentity, VoiceStopOutcome,
@@ -84,34 +84,28 @@ pub fn capture_delete_sessions(
 ) -> Result<Vec<VoiceEffect>, VoiceProviderError> {
     let agent = AgentRepository::get(connection, &AgentId::from(agent_id))?
         .ok_or(VoiceProviderError::ContextUnavailable)?;
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Identity {
-        #[serde(default = "default_account")]
-        account_key: String,
-        thread_id: Option<String>,
-    }
-    fn default_account() -> String {
-        "default".into()
-    }
-    let identity: Identity = serde_json::from_value(agent.value())
-        .map_err(|_| VoiceProviderError::ContextUnavailable)?;
-    let Some(thread) = identity.thread_id else {
-        return Ok(Vec::new());
+    let account = match agent.extra.get("accountKey") {
+        None => "default",
+        Some(value) => value
+            .as_str()
+            .ok_or(VoiceProviderError::ContextUnavailable)?,
+    };
+    let thread = match agent.extra.get("threadId") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(value) => value
+            .as_str()
+            .ok_or(VoiceProviderError::ContextUnavailable)?,
     };
     let mut query = connection.prepare("SELECT id,account_key,native_thread,connection_id FROM voice_sessions WHERE agent=?1 AND ended IS NULL AND state IS NOT NULL AND account_key=?2 AND native_thread=?3 ORDER BY created,id")?;
     let rows = query
-        .query_map(
-            rusqlite::params![agent_id, identity.account_key, thread],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            },
-        )?
+        .query_map(rusqlite::params![agent_id, account, thread], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     rows.into_iter().map(|(session_id, account, thread, connection_id)| {
         let scope = saved_scope(connection, &session_id)?;
@@ -496,13 +490,13 @@ fn settle_outcome(
     } else {
         return Ok(());
     };
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct StopParams {
-        thread_id: String,
-    }
-    let params: StopParams = serde_json::from_value(call.params.clone())
-        .map_err(|_| VoiceProviderError::ContextChanged)?;
+    let thread = call
+        .params
+        .as_object()
+        .filter(|params| params.len() == 1)
+        .and_then(|params| params.get("threadId"))
+        .and_then(Value::as_str)
+        .ok_or(VoiceProviderError::ContextChanged)?;
     for mut row in Outbox::for_owner::<VoiceEffect>(tx, OwnerKind::Agent, &actor.agent, kind)? {
         let VoiceEffectAuthority::Admitted {
             scope,
@@ -520,7 +514,7 @@ fn settle_outcome(
             || scope.generation != call.scope.generation
             || operation(kind, &row.payload.session_id)? != call.operation
             || call.admitted_request.as_ref() != Some(admission)
-            || params.thread_id != row.payload.thread
+            || thread != row.payload.thread
         {
             continue;
         }

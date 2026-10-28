@@ -2247,6 +2247,17 @@ mod tests {
         }).await.expect("capture");
     }
     #[tokio::test]
+    async fn voice_outbox_capture_rejects_invalid_identity_fields() {
+        let (_directory, store) = voice_outbox_fixture().await;
+        store.transaction_with_error(|tx| -> Result<(), VoiceProviderError> {
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.accountKey',NULL) WHERE id='agent'", [])?;
+            assert!(matches!(capture_delete_sessions(tx, "agent"), Err(VoiceProviderError::ContextUnavailable)));
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.accountKey','account','$.threadId',NULL) WHERE id='agent'", [])?;
+            assert!(capture_delete_sessions(tx, "agent")?.is_empty());
+            Ok(())
+        }).await.expect("capture identities");
+    }
+    #[tokio::test]
     async fn voice_outbox_late_not_sent_after_agent_removal_is_abandoned() {
         use studio_runtime_store::request_results::{
             AbandonedOutcome, AbandonedResult, ResultEnvelope,
