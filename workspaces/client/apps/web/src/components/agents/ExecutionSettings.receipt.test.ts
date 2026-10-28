@@ -7,6 +7,8 @@ import {
 } from "../../generated/api";
 import { Button, NativeSelect, Switch, Textarea } from "@mantine/core";
 import type { PostBody, PostResult } from "../../apiTypes";
+import { ApiError } from "../../api";
+import * as appLog from "../../appLog";
 import { AccountTransferStatus } from "../Accounts";
 import { required, type ComponentHookCell } from "../componentTestFixtures";
 import type { EffectCallback, PropsWithChildren, ComponentProps } from "react";
@@ -190,7 +192,7 @@ function render(
   label: unknown;
   picker: ComponentProps<typeof AgentSetupPicker>;
   triggerAgent: Agent;
-  statusModal?: ReactNode;
+  statusModal: ReactNode;
 };
 function render(
   agent: Agent,
@@ -201,13 +203,20 @@ function render(
   label: string;
   picker: Partial<ComponentProps<typeof AgentSetupPicker>>;
   triggerAgent: Agent;
-  statusModal?: ReactNode;
+  statusModal: ReactNode;
 };
 function render(
   agent = initial,
   permissions = false,
   onDraftChange?: ComponentProps<typeof ExecutionSettings>["onDraftChange"],
-) {
+): {
+  controls: ReturnType<typeof invoke>;
+  model: ReactNode;
+  label: unknown;
+  picker: Partial<ComponentProps<typeof AgentSetupPicker>>;
+  triggerAgent: Agent;
+  statusModal: ReactNode;
+} {
   const controller = invoke(
     createElement(permissions ? ExecutionPermissions : ExecutionSettings, {
       agent,
@@ -253,6 +262,7 @@ function render(
       model: "",
       label: "",
       picker: {},
+      statusModal: null,
       triggerAgent: agent,
     };
   const picker = children(controls).find(
@@ -732,6 +742,24 @@ for (const role of ["implementer", "reviewer"] as const) {
   });
 }
 
+test("an idle existing session queues the change until its next turn", async () => {
+  const agent: Agent = {
+    ...initial,
+    threadId: "existing-thread",
+    nextTurnSettingsSupported: true,
+  };
+  h.post.mockResolvedValue({
+    ...agent,
+    pendingSettings: { model: "gpt-6-luna", effort: "medium", fastMode: false },
+    pendingSettingsAccountKey: "default",
+  });
+  render(agent).picker.onModel("gpt-6-luna");
+  await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+  expect(required(required(h.post.mock.calls[0])[1])).toMatchObject({
+    next_turn: true,
+  });
+});
+
 test("a live change opens a modal and follows agent updates", async () => {
   const agent: Agent = {
     ...initial,
@@ -770,6 +798,28 @@ test("a live change opens a modal and follows agent updates", async () => {
   expect(children(modal).map((node) => node.props.children)).toContain(
     "Applied",
   );
+});
+
+test("a refused live settings change appears in App errors", async () => {
+  const agent: Agent = {
+    ...initial,
+    status: AgentStatus.running,
+    nextTurnSettingsSupported: true,
+  };
+  const logged = vi.spyOn(appLog, "appendAppLog");
+  h.post.mockRejectedValue(new ApiError("Model unavailable", 400));
+  render(agent).picker.onModel("gpt-6-luna");
+  await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+  render(agent);
+  render(agent);
+  expect(logged).toHaveBeenCalledWith(
+    expect.objectContaining({
+      level: "error",
+      title: "Execution settings change failed",
+      reason: "Model unavailable",
+    }),
+  );
+  logged.mockRestore();
 });
 
 test("switching picker roles keeps acknowledged worker defaults in the summary", async () => {

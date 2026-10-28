@@ -64,7 +64,6 @@ import { useMediaQuery } from "@mantine/hooks";
 import { AgentSetupPicker, type SetupRole } from "./AgentSetupPicker";
 import "./execution-settings.css";
 import { SettingsSection } from "../ui/primitives";
-import { appendAppLog } from "../../appLog";
 import {
   observeSettingsChange,
   type SettingsChange,
@@ -284,6 +283,7 @@ function ExecutionSettingsController(props: ControllerProps) {
       loggedFailure.current = changeStatus;
       appendAppLog({
         at: Date.now(),
+        level: "error",
         title: "Execution settings change failed",
         reason: changeStatus.error || "The settings change failed.",
       });
@@ -1024,8 +1024,17 @@ function ScopedExecutionSettings({
           if (mounted.current) setUnconfirmed(null);
         }
       }
-      if (!teamDefaults && !confirmed)
-        onSettingsFailure(errorText(failure), !!request.next_turn && !rejected);
+      if (!teamDefaults && !confirmed) {
+        const uncertain = !!request.next_turn && !rejected;
+        if (uncertain)
+          appendAppLog({
+            at: Date.now(),
+            level: "error",
+            title: "Execution settings save unconfirmed",
+            reason: errorText(failure),
+          });
+        onSettingsFailure(errorText(failure), uncertain);
+      }
       if (!mounted.current) return;
       setStatus(null);
       setError(
@@ -1376,7 +1385,7 @@ function ScopedExecutionSettings({
           effort: next.effort,
           fast_mode: next.fast_mode,
           daybreak_enabled: next.daybreak_enabled,
-          ...(active || queued
+          ...(active || queued || (agent.threadId && canQueueSettings)
             ? { next_turn: true, request_id: randomUUID() }
             : {}),
         };
