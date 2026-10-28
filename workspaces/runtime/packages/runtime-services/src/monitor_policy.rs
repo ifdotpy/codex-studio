@@ -27,6 +27,8 @@ pub struct Operation {
 
 #[derive(Debug, Error)]
 pub enum MonitorError {
+    #[error("Request id expired")]
+    Expired,
     #[error("Invalid stored object monitors/{id} at {location}")]
     InvalidStored { id: String, location: String },
     #[error("Invalid persisted monitor result receipt: {0}")]
@@ -65,6 +67,14 @@ pub enum MonitorError {
     Io(#[from] std::io::Error),
 }
 
+impl From<studio_runtime_schema::persistence::RequestIdentityError> for MonitorError {
+    fn from(error: studio_runtime_schema::persistence::RequestIdentityError) -> Self {
+        Self::Store(studio_runtime_store::StoreError::RequestResult(
+            error.into(),
+        ))
+    }
+}
+
 impl MonitorError {
     /// A failure at the durable store boundary, retryable or not.
     pub fn store_failure_for_task(&self) -> bool {
@@ -100,6 +110,7 @@ impl MonitorError {
             | Self::InvalidDeliveryIdentity(_)
             | Self::InvalidOutputReceipt(_)
             | Self::TaskFailed
+            | Self::Expired
             | Self::InputOutcomeUnknown
             | Self::Refused(_)
             | Self::Unavailable(_)
@@ -147,6 +158,7 @@ impl MonitorError {
                 crate::event_write::EventWriteError::Store(error),
             )) => fatal_store_error(error),
             Self::Refused(_)
+            | Self::Expired
             | Self::InputOutcomeUnknown
             | Self::Unavailable(_)
             | Self::ProviderRequest { .. }
@@ -850,6 +862,7 @@ pub fn begin_input(
 
 #[derive(Clone)]
 pub enum InputOutcome {
+    Expired,
     Acknowledged,
     Rejected(String),
     Unknown(String),
@@ -887,12 +900,13 @@ pub fn settle_input(
     receipt["finished"] = json!(now);
     receipt["status"] = json!(match outcome {
         InputOutcome::Acknowledged => "acknowledged",
-        InputOutcome::Rejected(_) => "failed",
+        InputOutcome::Rejected(_) | InputOutcome::Expired => "failed",
         InputOutcome::Unknown(_) => "uncertain",
     });
     let error = match &outcome {
         InputOutcome::Acknowledged => None,
-        InputOutcome::Rejected(error) | InputOutcome::Unknown(error) => Some(error),
+        InputOutcome::Expired => Some("Request id expired"),
+        InputOutcome::Rejected(error) | InputOutcome::Unknown(error) => Some(error.as_str()),
     };
     if let Some(error) = error {
         if error.chars().count() > 12000 {

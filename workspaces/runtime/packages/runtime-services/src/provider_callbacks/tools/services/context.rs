@@ -53,6 +53,7 @@ fn resources(preparation: Option<&PreparationResources>) -> Result<&PreparationR
 
 fn worker_error(error: WorkerError) -> Error {
     match error {
+        WorkerError::Expired => Error::Expired,
         WorkerError::Store(error)
         | WorkerError::Recovery(crate::recovery::RecoveryError::Store(error)) => {
             Error::Store(error)

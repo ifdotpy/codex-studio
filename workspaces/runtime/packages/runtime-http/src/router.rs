@@ -1419,7 +1419,7 @@ mod tests {
         for (table, statement) in [
             (
                 "runtime_events",
-                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('event','agent','message','text','done',1,1)",
+                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('event','agent','agent_message','text','delivered',1,1)",
             ),
             (
                 "runtime_event_meta",
@@ -1456,7 +1456,7 @@ mod tests {
                 )?;
                 transaction.execute(
                     "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                    ("event", "agent", "message", "text", "done", 1, 1),
+                    ("event", "agent", "agent_message", "text", "delivered", 1, 1),
                 )?;
                 Ok(())
             })

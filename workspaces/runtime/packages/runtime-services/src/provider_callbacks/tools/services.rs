@@ -181,6 +181,7 @@ fn monitor_cancel_owner(
 /// a stored value. Other failures keep their generic text.
 fn callback_refusal(error: CallbackError) -> crate::managed_host_tools::Error {
     match error {
+        CallbackError::Expired => crate::managed_host_tools::Error::Expired,
         CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
         CallbackError::Dependency(name) => crate::managed_host_tools::Error::Unavailable(name),
         CallbackError::Invalid(message) => crate::managed_host_tools::Error::Invalid(message),
@@ -255,6 +256,7 @@ impl crate::managed_host_tools::InterruptPort for ProductionPorts {
         let snapshot = super::super::storage::snapshot(tx, &self.context)
             .map_err(|_| crate::managed_host_tools::Error::Stale)?;
         messages::resolve_target(tx, &snapshot, supplied).map_err(|error| match error {
+            CallbackError::Expired => crate::managed_host_tools::Error::Expired,
             CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
             CallbackError::Stored(location) => crate::managed_host_tools::Error::StoredAt(location),
             CallbackError::Invalid(message) => crate::managed_host_tools::Error::Invalid(message),
@@ -381,6 +383,9 @@ impl crate::managed_host_tools::ComplaintPort for ProductionPorts {
             crate::notification_dispatch::NotificationDispatchError::Store(error) => {
                 crate::managed_host_tools::Error::Store(error)
             }
+            crate::notification_dispatch::NotificationDispatchError::RequestResult(error) => {
+                crate::managed_host_tools::Error::Store(error.into())
+            }
             crate::notification_dispatch::NotificationDispatchError::ConflictingInput => {
                 crate::managed_host_tools::Error::Invalid(if args["action"] == "submit" {
                     "This complaint id has different content"
@@ -457,6 +462,9 @@ impl crate::managed_host_tools::WatchMonitorPort for ProductionPorts {
         let owner = monitor_cancel_owner(tx, &actor.record().id.0, id)?;
         let (value, operation) = crate::monitor_driver::reserve_cancel(tx, id, Some(&owner), now)
             .map_err(|error| match error {
+            crate::monitor_policy::MonitorError::Expired => {
+                crate::managed_host_tools::Error::Expired
+            }
             crate::monitor_policy::MonitorError::Store(error) => {
                 crate::managed_host_tools::Error::Store(error)
             }
@@ -526,6 +534,9 @@ impl crate::managed_host_tools::ReviewPort for ProductionPorts {
             |error| match error {
                 crate::native_actions::NativeError::Unavailable(name) => {
                     crate::managed_host_tools::Error::Unavailable(name)
+                }
+                crate::native_actions::NativeError::Expired => {
+                    crate::managed_host_tools::Error::Expired
                 }
                 crate::native_actions::NativeError::Store(error) => {
                     crate::managed_host_tools::Error::Store(error)
@@ -633,6 +644,7 @@ pub(super) async fn resolve_interrupt_target(
             let target =
                 messages::resolve_target(tx, &snapshot, &supplied).map_err(
                     |error| match error {
+                        CallbackError::Expired => crate::managed_host_tools::Error::Expired,
                         CallbackError::Store(error) => {
                             crate::managed_host_tools::Error::Store(error)
                         }
@@ -677,6 +689,7 @@ pub(super) async fn resolve_send_target(
             let target =
                 messages::resolve_target(tx, &snapshot, &supplied).map_err(
                     |error| match error {
+                        CallbackError::Expired => crate::managed_host_tools::Error::Expired,
                         CallbackError::Store(error) => {
                             crate::managed_host_tools::Error::Store(error)
                         }
@@ -827,6 +840,7 @@ pub(super) fn execute(
             monitor_cancel_owner(tx, &snapshot.context().agent, monitor_id).map_err(|error| {
                 match error {
                     crate::managed_host_tools::Error::Store(error) => CallbackError::Store(error),
+                    crate::managed_host_tools::Error::Expired => CallbackError::Expired,
                     crate::managed_host_tools::Error::Invalid(_)
                     | crate::managed_host_tools::Error::Stale
                     | crate::managed_host_tools::Error::InvalidStored { .. }
@@ -843,6 +857,7 @@ pub(super) fn execute(
             now,
         )
         .map_err(|error| match error {
+            crate::monitor_policy::MonitorError::Expired => CallbackError::Expired,
             crate::monitor_policy::MonitorError::Store(error) => CallbackError::Store(error),
             crate::monitor_policy::MonitorError::Unavailable(name) => {
                 CallbackError::Dependency(name)
@@ -1001,6 +1016,7 @@ pub(super) fn managed_error(error: crate::managed_host_tools::Error) -> Callback
     use crate::managed_host_tools::Error as E;
     match error {
         E::Invalid(message) => CallbackError::Invalid(message),
+        E::Expired => CallbackError::Expired,
         E::Stale => CallbackError::Stale,
         E::InvalidStored {
             table,
@@ -1011,6 +1027,7 @@ pub(super) fn managed_error(error: crate::managed_host_tools::Error) -> Callback
         E::Unavailable(name) => CallbackError::Dependency(name),
         E::Store(error) => CallbackError::Store(error),
         E::Sqlite(error) => CallbackError::Store(error.into()),
+        E::Work(crate::work_write::WorkWriteError::Expired) => CallbackError::Expired,
         E::Work(crate::work_write::WorkWriteError::Event(error)) => error.into(),
         E::Work(crate::work_write::WorkWriteError::Store(error)) => CallbackError::Store(error),
         E::Work(crate::work_write::WorkWriteError::NotImplemented(name)) => {
@@ -1057,6 +1074,7 @@ fn monitor_context_error(
     use crate::monitor_policy::MonitorError as M;
     match error {
         M::Store(error) => E::Store(error),
+        M::Expired => E::Expired,
         M::InvalidStored { id, location } => E::InvalidStored {
             table: "runtime_monitors",
             id,

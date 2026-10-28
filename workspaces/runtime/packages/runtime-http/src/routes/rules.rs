@@ -331,6 +331,8 @@ fn located(field: &str) -> ApiError {
 fn monitor_api_error(error: studio_runtime_services::monitor_policy::MonitorError) -> ApiError {
     use studio_runtime_services::monitor_policy::MonitorError;
     match error {
+        MonitorError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
+        MonitorError::Store(error) => ApiError::stored(error),
         MonitorError::Refused(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         MonitorError::Unavailable(name) => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
@@ -351,7 +353,6 @@ fn monitor_api_error(error: studio_runtime_services::monitor_policy::MonitorErro
         | MonitorError::ProviderRequest { .. }
         | MonitorError::ConfigurationRejected { .. }
         | MonitorError::ConfigurationReceipt { .. }
-        | MonitorError::Store(_)
         | MonitorError::Event(_)
         | MonitorError::Rules(_)
         | MonitorError::Io(_) => ApiError::internal(),

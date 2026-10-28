@@ -135,7 +135,8 @@ pub fn launch_hold_reason(error: &crate::account_worker::WorkerError) -> Option<
         {
             Some(adapter(ProviderKind::Claude).sign_in_message())
         }
-        crate::account_worker::WorkerError::Recovery(_)
+        crate::account_worker::WorkerError::Expired
+        | crate::account_worker::WorkerError::Recovery(_)
         | crate::account_worker::WorkerError::Store(_)
         | crate::account_worker::WorkerError::Scheduler(_)
         | crate::account_worker::WorkerError::Session(_)

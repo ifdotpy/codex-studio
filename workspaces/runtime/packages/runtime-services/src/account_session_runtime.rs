@@ -28,6 +28,8 @@ pub type AccountSessionFuture<'a, T> =
 
 #[derive(Debug, Error)]
 pub enum AccountSessionError {
+    #[error("Request id expired")]
+    Expired,
     #[error("Not implemented: requires {0}")]
     Requires(&'static str),
     #[error("{0}")]
@@ -2865,8 +2867,9 @@ mod limits_runtime_tests {
             true,
         )
         .await;
+        let login_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let request = LoginRequest {
-            login_id: "11000000-0000-4000-8000-000000000009".into(),
+            login_id: login_id.clone(),
             account_key: Some("default".into()),
             email: None,
             label: None,
@@ -2908,7 +2911,7 @@ mod limits_runtime_tests {
         let replay = AccountSessionPort::login(
             fixture.runtime.as_ref(),
             LoginRequest {
-                login_id: "11000000-0000-4000-8000-000000000009".into(),
+                login_id,
                 account_key: Some("default".into()),
                 email: None,
                 label: None,

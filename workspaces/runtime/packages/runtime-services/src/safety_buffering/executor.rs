@@ -359,6 +359,7 @@ async fn drive(
                     }
                     break receipt;
                 }
+                Err(AccountSessionError::Expired) => return Err(Error::Expired),
                 Err(AccountSessionError::Requires(name)) => return Err(Error::Requires(name)),
                 Err(AccountSessionError::Unknown) => {
                     if !persist_unknown_receipt(
@@ -1239,6 +1240,7 @@ fn request_id_string(id: &RequestId) -> String {
 
 fn lifecycle_error(error: crate::agent_management::ManagementError) -> Error {
     match error {
+        crate::agent_management::ManagementError::Expired => Error::Expired,
         crate::agent_management::ManagementError::Unavailable(dependency) => {
             Error::Requires(dependency)
         }

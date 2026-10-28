@@ -117,6 +117,7 @@ impl From<crate::notification_dispatch::NotificationDispatchError> for RecoveryE
         use crate::notification_dispatch::NotificationDispatchError;
         match error {
             NotificationDispatchError::Store(error) => Self::Store(error),
+            NotificationDispatchError::RequestResult(error) => Self::Store(error.into()),
             NotificationDispatchError::InvalidNotification { check } => {
                 Self::History(HistoryError::Notification { check })
             }
@@ -133,7 +134,6 @@ impl From<crate::notification_dispatch::NotificationDispatchError> for RecoveryE
             | NotificationDispatchError::ConflictingInput
             | NotificationDispatchError::UnauthorizedSubmission
             | NotificationDispatchError::Move(_)
-            | NotificationDispatchError::RequestResult(_)
             | NotificationDispatchError::Json(_) => Self::CommitFailed,
         }
     }

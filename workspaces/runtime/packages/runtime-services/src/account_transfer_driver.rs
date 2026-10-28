@@ -887,6 +887,7 @@ fn check_durable_blockers(tx: &Transaction<'_>, agent: &str) -> Result<(), Trans
         if !crate::account_worker::retained::monitor_survives_account_transfer(tx, &id, agent)
             .map_err(|error| match error {
                 crate::account_worker::WorkerError::Store(error) => TransferError::Store(error),
+                crate::account_worker::WorkerError::Expired => TransferError::Expired,
                 crate::account_worker::WorkerError::Recovery(_)
                 | crate::account_worker::WorkerError::Scheduler(_)
                 | crate::account_worker::WorkerError::Session(_)
@@ -1562,15 +1563,34 @@ mod request_tests {
     fn a_running_retained_monitor_does_not_block_its_owners_account_transfer() {
         let (root, store) = store_with_agents();
         let cwd = root.path().to_owned();
-        run_async(store.transaction(move |tx| {
+        run_async(store.transaction_with_error(move |tx| {
+            use crate::account_worker::retained::{ProviderCallIntent, RequestActor, reserve_provider_call};
+            use studio_runtime_schema::persistence::{OutboxStatus, RequestIdentity};
+            use studio_runtime_store::request_results::{Admission, RequestResults};
+            let root = RequestIdentity::issue_root();
+            let owner_id = RequestIdentity::new("monitor-fixture", &[], &root, &[]).expect("root");
+            let owner = match RequestResults::admit(tx,&owner_id,"fixture",chrono::Utc::now().timestamp_millis()).map_err(studio_runtime_store::StoreError::from)? {
+                Admission::Fresh(owner) => owner,
+                Admission::Replay(_) => panic!("fresh fixture root"),
+            };
+            let method = studio_runtime_providers::Method::CommandExec;
+            let admitted = reserve_provider_call(tx,&owner,ProviderCallIntent {
+                root_request_id: root.clone(),admitted_request:None,
+                scope: crate::account_session_runtime::ConnectionScope {account:"source".into(),connection:"original".into(),generation:4},
+                operation:"monitor:watch".into(),actor:Some(RequestActor {agent:"lead".into(),epoch:1}),
+                transfer:None,deleted_actor_session:None,method,
+                params:json!({"processId":"watch","cwd":cwd,"command":["true"]}),
+            })?;
             tx.execute("INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
-                [json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original"}}).to_string()])?;
-            let key=format!("retained:source:{}",studio_runtime_store::sha256_hex(b"monitor:watch"));
-            let submitted=json!({"call":{"scope":{"account":"source","connection":"original","generation":4},"operation":"monitor:watch","actor":{"agent":"lead","epoch":1},"transfer":null,"deleted_actor_session":null,"method":"command/exec","params":{"processId":"watch","cwd":cwd,"command":["true"]}},
-                "request":{"id":key,"generation":4,"method":"command/exec","operation":key,"thread":null,"lightweight":true,"deadline":60000,"remoteId":null}});
-            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'test',?2)",(format!("account-worker:{key}:submitted"),submitted.to_string()))?;
-            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'test',?2)",(format!("account-worker:{key}:written"),submitted["request"].to_string()))?;
-            Ok(())
+                [json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original","rootRequestId":root,"providerRequest":admitted}}).to_string()])?;
+            let key=studio_runtime_schema::provider_call_contract::transport_key("source","monitor:watch");
+            let prepared = studio_runtime_schema::provider_call_contract::TransportRequest {
+                id:studio_runtime_schema::provider_input::RequestId::String(key.clone()),generation:4,method,
+                operation:key.clone(),thread:None,lightweight:true,deadline:60000,unknown:false,remote_id:None,
+            };
+            tx.execute("UPDATE runtime_outbox SET status=?2,payload=json_set(payload,'$.payload.request',json(?3),'$.payload.written',json('true')) WHERE id=?1",
+                (key,OutboxStatus::Unknown,serde_json::to_string(&prepared).expect("transport request")))?;
+            Ok::<_,crate::account_worker::WorkerError>(())
         })).expect("persist the original written command");
         let transfer = "5a300f72-4ea6-4d30-8a0e-9b2c13c4a001";
         request(&store, transfer, "lead", "target", "team", "codex", 1.0)

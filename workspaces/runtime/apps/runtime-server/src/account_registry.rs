@@ -719,6 +719,9 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                 Err(studio_runtime_services::account_worker::retained::PortError::Unknown) => {
                     Err(AccountSessionError::Unknown)
                 }
+                Err(studio_runtime_services::account_worker::retained::PortError::Expired) => {
+                    Err(AccountSessionError::Expired)
+                }
                 Err(_) => Err(AccountSessionError::Refused(
                     "Account transfer source request was rejected",
                 )),
@@ -749,6 +752,9 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                 .barrier(&expected_scope, deadline)
                 .await
                 .map_err(|error| match error {
+                    studio_runtime_services::account_worker::retained::PortError::Expired => {
+                        studio_runtime_services::account_session_runtime::AccountSessionError::Expired
+                    }
                     studio_runtime_services::account_worker::retained::PortError::Unknown => {
                         studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
                     }
@@ -778,6 +784,9 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                 );
             };
             session.recover_connection(agent_id).await.map_err(|error| match error {
+                studio_runtime_services::account_worker::retained::PortError::Expired => {
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Expired
+                }
                 studio_runtime_services::account_worker::retained::PortError::Unknown => {
                     studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
                 }
@@ -886,6 +895,9 @@ async fn dispatch_request(
         }
         Err(error) => {
             return Err(match error {
+                studio_runtime_services::account_worker::retained::PortError::Expired => {
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Expired
+                }
                 studio_runtime_services::account_worker::retained::PortError::Unknown => {
                     studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
                 }
@@ -2226,20 +2238,17 @@ mod bounded_reconcile_tests {
                 .expect("retained row"),
             raw
         );
-        let held: i64 = connection
+        let held: studio_runtime_schema::persistence::HoldStatus = connection
             .query_row(
-                "SELECT count(*) FROM runtime_operation_receipts WHERE id=?1 AND signature=?2",
-                rusqlite::params![
-                    format!(
-                        "{}bad-mode",
-                        studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
-                    ),
-                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
-                ],
+                "SELECT hold_status FROM runtime_agents WHERE id='bad-mode'",
+                [],
                 |row| row.get(0),
             )
             .expect("invalid-agent hold");
-        assert_eq!(held, 1);
+        assert_eq!(
+            held,
+            studio_runtime_schema::persistence::HoldStatus::Invalid
+        );
         assert_eq!(
             connection
                 .query_row(

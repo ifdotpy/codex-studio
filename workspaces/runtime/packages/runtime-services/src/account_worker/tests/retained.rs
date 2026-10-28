@@ -19,7 +19,16 @@ const FIRST_PASS_TEST_DEADLINE: std::time::Duration = std::time::Duration::from_
 
 struct ResetBrokerSession {
     port: RetainedSessionPort,
-    requests: Arc<Mutex<Vec<(String, Value)>>>,
+    requests: Arc<
+        Mutex<
+            Vec<(
+                String,
+                Value,
+                String,
+                Option<studio_runtime_store::request_results::AdmittedRequest>,
+            )>,
+        >,
+    >,
     lose_response: Arc<tokio::sync::Notify>,
 }
 
@@ -57,13 +66,15 @@ impl AccountSessionPort for ResetBrokerSession {
         request: ProviderRequest,
     ) -> crate::account_session_runtime::AccountSessionFuture<'_, SessionReceipt> {
         Box::pin(async move {
-            self.requests
-                .lock()
-                .unwrap()
-                .push((request.operation.clone(), request.params.clone()));
+            self.requests.lock().unwrap().push((
+                request.operation.clone(),
+                request.params.clone(),
+                request.root_request_id.clone(),
+                request.admitted_request.clone(),
+            ));
             let call = SessionRequest {
-                root_request_id: retained_root(&request.operation),
-                admitted_request: None,
+                root_request_id: request.root_request_id,
+                admitted_request: request.admitted_request,
                 scope: self.port.scope().clone(),
                 expected_scope: request.expected_scope,
                 operation: request.operation,
@@ -81,10 +92,10 @@ impl AccountSessionPort for ResetBrokerSession {
             }
             .map_err(|error| match error {
                 PortError::Unknown => AccountSessionError::Unknown,
+                PortError::Expired => AccountSessionError::Expired,
                 PortError::Identity
                 | PortError::ScopeMismatch
                 | PortError::Invalid
-                | PortError::Expired
                 | PortError::NotSent
                 | PortError::Deadline
                 | PortError::Capacity => {
@@ -146,12 +157,91 @@ fn durable_request(state: &State, port: &RetainedSessionPort, operation: &str) -
     call
 }
 
+fn manual_fixture_id(label: &str) -> studio_runtime_schema::persistence::RequestIdentity {
+    studio_runtime_schema::persistence::RequestIdentity::new(
+        "manual-management",
+        &["lead-00000000", "1"],
+        &retained_root(label),
+        &[],
+    )
+    .unwrap()
+}
+
+fn seed_manual_authorization(
+    tx: &studio_runtime_store::Transaction<'_>,
+    lead: Value,
+    target: Value,
+    label: &str,
+    signature: &str,
+) -> Result<crate::agent_management_recovery::AuthorizedRecoveryRequest, StoreError> {
+    use studio_runtime_schema::persistence::{
+        OutboxKind, OutboxStatus, OwnerKind, ToolRequestOutcome,
+    };
+    use studio_runtime_store::{
+        outbox::{Outbox, OutboxRow},
+        request_results::{Admission, RequestResults},
+    };
+    let identity = manual_fixture_id(label);
+    let admission = match RequestResults::admit(
+        tx,
+        &identity,
+        signature,
+        chrono::Utc::now().timestamp_millis(),
+    )? {
+        Admission::Fresh(admission) => admission,
+        Admission::Replay(_) => panic!("fresh fixture admission"),
+    };
+    let auth = crate::agent_management_recovery::AuthorizedRecoveryRequest {
+        lead,
+        target,
+        request_id: admission.id().into(),
+        signature: signature.into(),
+        root_request_id: retained_root(label),
+        admission,
+    };
+    Outbox::put(
+        tx,
+        &OutboxRow {
+            id: auth.request_id.clone(),
+            kind: OutboxKind::ManagedTool,
+            owner_kind: OwnerKind::Agent,
+            owner_id: auth.target["id"].as_str().unwrap().into(),
+            request_id: Some(auth.request_id.clone()),
+            signature: signature.into(),
+            status: OutboxStatus::Unknown,
+            account: Some("default".into()),
+            stream_id: None,
+            generation: None,
+            ordinal: None,
+            next_at: None,
+            created: auth.admission.created(),
+            payload: json!({"authorization":auth,"reply":{"outcome":ToolRequestOutcome::Unknown,"value":{"status":"unconfirmed"}}}),
+        },
+    )?;
+    Ok(auth)
+}
+
+async fn new_manual_authorization(
+    state: &State,
+    auth: &crate::agent_management_recovery::AuthorizedRecoveryRequest,
+    label: &'static str,
+    signature: &'static str,
+) -> crate::agent_management_recovery::AuthorizedRecoveryRequest {
+    let lead = auth.lead.clone();
+    let target = auth.target.clone();
+    state
+        .bridge
+        .store
+        .transaction(move |tx| seed_manual_authorization(tx, lead, target, label, signature))
+        .await
+        .unwrap()
+}
+
 async fn manual_start_authorization(
     state: &State,
     scope: &ConnectionScope,
     restart: bool,
 ) -> crate::agent_management_recovery::AuthorizedRecoveryRequest {
-    use crate::agent_management_recovery::AuthorizedRecoveryRequest;
     let scope = scope.clone();
     let target_id = state.agent.clone();
     let epoch = state.epoch;
@@ -180,8 +270,7 @@ async fn manual_start_authorization(
         }
         AgentRepository::put(tx, &AgentRecord::from_value(target.clone())?)?;
         tx.execute("UPDATE runtime_events SET status='uncertain',error='Unknown native input outcome' WHERE id='annotation:input'", [])?;
-        EventWriteRepository::replace_receipt(tx, "manual-no-replay", "signature", "{\"status\":\"unconfirmed\"}")?;
-        Ok(AuthorizedRecoveryRequest { lead, target, request_id:"manual-no-replay".into(), signature:"signature".into() })
+        seed_manual_authorization(tx,lead,target,"manual-no-replay","signature")
     }).await.expect("manual recovery intent")
 }
 
@@ -310,21 +399,8 @@ async fn manual_recovery_reads_new_native_history_for_a_new_request_identity() {
         .await
         .expect("first read task")
         .expect("unconfirmed first read");
-    auth.request_id = "new-manual-history-request".into();
-    auth.signature = "new-signature".into();
-    state
-        .bridge
-        .store
-        .transaction(|tx| {
-            EventWriteRepository::replace_receipt(
-                tx,
-                "new-manual-history-request",
-                "new-signature",
-                "{\"status\":\"unconfirmed\"}",
-            )
-        })
-        .await
-        .expect("new explicit manual request");
+    auth = new_manual_authorization(&state, &auth, "new-manual-history-request", "new-signature")
+        .await;
     let mut second = tokio::spawn(async move { port.recover_managed_agent(auth).await });
     let next = tokio::select! {
         wire = peer.write("thread/turns/list") => Some(wire),
@@ -410,21 +486,13 @@ async fn manual_recovery_accepts_a_restart_exact_start_and_tracks_its_terminal_n
     // A new explicit request must read new history, not replay the active result.
     let mut terminal_auth = auth;
     terminal_auth.target = held;
-    terminal_auth.request_id = "manual-terminal-proof".into();
-    terminal_auth.signature = "terminal-signature".into();
-    state
-        .bridge
-        .store
-        .transaction(|tx| {
-            EventWriteRepository::replace_receipt(
-                tx,
-                "manual-terminal-proof",
-                "terminal-signature",
-                "{\"status\":\"unconfirmed\"}",
-            )
-        })
-        .await
-        .expect("new explicit manual request");
+    terminal_auth = new_manual_authorization(
+        &state,
+        &terminal_auth,
+        "manual-terminal-proof",
+        "terminal-signature",
+    )
+    .await;
     let sender = port.clone();
     let terminal_request = terminal_auth.clone();
     let terminal =
@@ -462,16 +530,10 @@ async fn manual_recovery_accepts_a_restart_exact_start_and_tracks_its_terminal_n
     );
     assert_eq!(&evidence["terminalReceipt"]["result"], accepted.value());
     for (receipt, turn_field) in [("startResult", "accepted"), ("terminal", "turn")] {
+        assert_eq!(evidence["outcomes"][receipt]["input"]["agent"], state.agent);
+        assert_eq!(evidence["outcomes"][receipt]["input"]["epoch"], state.epoch);
         assert_eq!(
-            evidence["attempt"]["receipts"][receipt]["input"]["agent"],
-            state.agent
-        );
-        assert_eq!(
-            evidence["attempt"]["receipts"][receipt]["input"]["epoch"],
-            state.epoch
-        );
-        assert_eq!(
-            evidence["attempt"]["receipts"][receipt]["input"][turn_field],
+            evidence["outcomes"][receipt]["input"][turn_field],
             "manual-running-turn"
         );
     }
@@ -525,15 +587,26 @@ async fn manual_recovery_accepts_a_restart_exact_start_and_tracks_its_terminal_n
 async fn manual_restart_settlement_evidence(state: &State) -> Value {
     state.bridge.store.transaction(|tx| {
         let mut receipts = Vec::new();
-        for id in ["manual-no-replay", "manual-terminal-proof"] {
-            let receipt = EventWriteRepository::receipt(tx, id)?.expect("exact manual receipt");
-            receipts.push(json!({"signature":receipt.signature,"result":serde_json::from_str::<Value>(&receipt.result)?}));
+        for (label,signature) in [("manual-no-replay","signature"),("manual-terminal-proof","terminal-signature")] {
+            let identity=manual_fixture_id(label);
+            let result=if let Some(row)=studio_runtime_store::request_results::RequestResults::replay(tx,identity.id(),signature,chrono::Utc::now().timestamp_millis())? {
+                serde_json::from_str::<Value>(&row.result)?["reply"]["value"].clone()
+            } else {
+                let row=studio_runtime_store::outbox::Outbox::get::<Value>(tx,identity.id())?.expect("current manual owner");
+                row.payload["reply"]["value"].clone()
+            };
+            receipts.push(json!({"signature":signature,"result":result}));
         }
         let events = tx.prepare("SELECT id,agent,epoch,status,turn_id FROM runtime_events WHERE id IN ('annotation:input','annotation:new-input') ORDER BY id")?
             .query_map([], |row| Ok(json!({"id":row.get::<_,String>(0)?,"agent":row.get::<_,String>(1)?,"epoch":row.get::<_,i64>(2)?,"status":row.get::<_,String>(3)?,"turn":row.get::<_,Option<String>>(4)?})))?
             .collect::<Result<Vec<_>,_>>()?;
-        let attempt = studio_runtime_store::ExecutionHistoryRepository::attempt(tx, "manual-unknown-attempt")?.expect("exact original attempt");
-        Ok::<_,StoreError>(json!({"activeReceipt":receipts[0],"terminalReceipt":receipts[1],"events":events,"attempt":attempt}))
+        let attempt=studio_runtime_store::ExecutionHistoryRepository::attempt(tx,"manual-unknown-attempt")?.expect("exact original attempt");
+        let mut outcomes=serde_json::Map::new();
+        for (name,kind) in [("startResult",studio_runtime_schema::persistence::ExecutionReceiptKind::StartResult),("terminal",studio_runtime_schema::persistence::ExecutionReceiptKind::Terminal)] {
+            let saved=studio_runtime_store::ExecutionHistoryRepository::receipt(tx,"manual-unknown-attempt",kind)?.expect("exact execution result");
+            outcomes.insert(name.into(),json!({"input":saved.input,"result":saved.result}));
+        }
+        Ok::<_,StoreError>(json!({"activeReceipt":receipts[0],"terminalReceipt":receipts[1],"events":events,"attempt":attempt,"outcomes":outcomes}))
     }).await.expect("manual settlement evidence")
 }
 
@@ -716,8 +789,8 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
     // The first broker operation remains Unknown. Recovery used a fresh transport
     // identity, and replaying or rebinding either identity cannot send another write.
     let old = SessionRequest {
-        root_request_id: retained_root(&recorded[0].0),
-        admitted_request: None,
+        root_request_id: recorded[0].2.clone(),
+        admitted_request: recorded[0].3.clone(),
         scope: port.scope().clone(),
         expected_scope: None,
         operation: recorded[0].0.clone(),
@@ -739,6 +812,8 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
         PortError::Invalid
     );
     let mut changed_body = SessionRequest {
+        root_request_id: recorded[1].2.clone(),
+        admitted_request: recorded[1].3.clone(),
         operation: recorded[1].0.clone(),
         params: recorded[1].1.clone(),
         ..old
@@ -862,9 +937,23 @@ async fn retained_reply_replays_without_resending_and_rejects_changed_payload() 
         assert_eq!(final_results,1,"the exact response owns committed ACK provenance");
         Ok(())
     }).await.unwrap();
+    state
+        .bridge
+        .store
+        .transaction(|tx| {
+            studio_runtime_store::receipt_migration_contract::seed_expired_before_ms(
+                tx,
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .expect("advance only the fresh-admission watermark");
+            Ok(())
+        })
+        .await
+        .unwrap();
     assert_eq!(
         port.request(call.clone()).await.unwrap().result,
-        receipt.result
+        receipt.result,
+        "a retained reply uses its created TTL after the ingress watermark advances"
     );
     let mut altered = call;
     altered.params["limit"] = json!(2);
@@ -1124,8 +1213,6 @@ async fn retained_uncheckpointed_not_sent_is_unknown_and_not_retried() {
 
 #[tokio::test]
 async fn retained_retry_intent_crash_before_transport_replays_unknown_without_sending() {
-    use crate::account_worker::retained::Call;
-
     let state = State::new().await;
     retained_schema(&state).await;
     let mut first_peer = Peer::new();
@@ -2926,7 +3013,7 @@ async fn monitor_completion_config_read_finishes_before_an_unrelated_journal_che
         .bridge
         .run(|store| async move {
             store
-                .transaction_with::<_, WorkerError>(|tx| store::checkpoint(tx, "default", 1))
+                .transaction_with::<_, WorkerError>(|tx| Ok(store::checkpoint(tx, "default", 1)?))
                 .await
         })
         .await
@@ -3912,7 +3999,7 @@ async fn retained_committed_callback_keeps_exact_response_and_sends_once() {
         stream_id: port.scope().account.clone(),
         connection: port.scope().connection.clone(),
         generation: port.scope().generation,
-        epoch: state.epoch,
+        epoch: state.epoch.try_into().unwrap(),
         thread: "fake-thread-0".into(),
         turn: "turn".into(),
     };
@@ -4551,4 +4638,158 @@ async fn retained_malformed_monitor_reply_does_not_block_another_agent_ack() {
 async fn retained_malformed_monitor_owner_keeps_unknown_proof_without_resending() {
     malformed_monitor_keeps_proof_without_blocking_other_agent(MalformedMonitorWitness::Owner)
         .await;
+}
+
+#[tokio::test]
+async fn retained_vm_thread_start_provenance_survives_next_generation_attach() {
+    use studio_runtime_schema::persistence::{OutboxStatus, RequestIdentity};
+    use studio_runtime_schema::provider_call_contract::{
+        CommittedAck, RetainedOutcome, RetainedReply, transport_key,
+    };
+    use studio_runtime_store::{
+        outbox::Outbox,
+        request_results::{Admission, RequestResults, ResultEnvelope},
+    };
+    let state = State::new().await;
+    retained_schema(&state).await;
+    let actor = state.agent.clone();
+    let epoch = state.epoch;
+    let fixture_actor = actor.clone();
+    let operation = "vm-thread-start-provenance";
+    let key = transport_key("default", operation);
+    let fixture_key = key.clone();
+    let root = retained_root(operation);
+    let admitted = state
+        .bridge
+        .store
+        .transaction_with(move |tx| {
+            let mut agent =
+                AgentRepository::get(tx, &AgentId::from(fixture_actor.as_str()))?.unwrap();
+            agent.extra.insert("executionMode".into(), json!("vm"));
+            agent.extra.insert(
+                "providerStream".into(),
+                json!({"generation":7,"connection":"old-vm-connection","ack":12,"streams":null}),
+            );
+            AgentRepository::put(tx, &agent)?;
+            let identity =
+                RequestIdentity::new("vm-thread-start-fixture", &[&fixture_actor], &root, &[])
+                    .unwrap();
+            let owner = match RequestResults::admit(
+                tx,
+                &identity,
+                "fixture",
+                chrono::Utc::now().timestamp_millis(),
+            )? {
+                Admission::Fresh(owner) => owner,
+                Admission::Replay(_) => panic!("fresh owner"),
+            };
+            let call = crate::account_worker::retained::ProviderCallIntent {
+                root_request_id: root,
+                admitted_request: None,
+                scope: ConnectionScope {
+                    account: "default".into(),
+                    connection: "old-vm-connection".into(),
+                    generation: 7,
+                },
+                operation: operation.into(),
+                actor: Some(RequestActor {
+                    agent: fixture_actor.clone(),
+                    epoch,
+                }),
+                transfer: None,
+                deleted_actor_session: None,
+                method: Method::ThreadStart,
+                params: json!({"ephemeral":true}),
+            };
+            let admitted = crate::account_worker::retained::reserve_provider_call(tx, &owner, call)
+                .expect("valid retained VM reservation");
+            let mut row =
+                Outbox::get::<crate::account_worker::store::ProviderCall>(tx, &fixture_key)?
+                    .unwrap();
+            let crate::account_worker::store::ProviderCall::Retained(payload) = &mut row.payload
+            else {
+                panic!("retained owner")
+            };
+            let request = crate::provider_session_task::RecoveredRequest {
+                ticket: studio_runtime_providers::RequestTicket {
+                    generation: 7,
+                    id: RequestId::String(fixture_key.clone()),
+                    method: Method::ThreadStart,
+                },
+                operation_id: OperationId(fixture_key),
+                thread_id: None,
+                lightweight: true,
+                deadline_ms: 1000,
+                unknown: true,
+                remote_id: None,
+            };
+            payload.request =
+                Some(crate::account_worker::retained::storage::TransportRequest::from(&request));
+            payload.written = true;
+            payload.outcome = Some(RetainedOutcome {
+                result: RequestResult::Reply(json!({"thread":{"id":"started-vm-thread"}})),
+                cursor: 12,
+                committed_ack: None,
+            });
+            row.status = OutboxStatus::Unknown;
+            row.next_at = None;
+            Outbox::put(tx, &row)?;
+            Ok::<_, StoreError>(admitted)
+        })
+        .await
+        .unwrap();
+    store::attach_provider_stream(
+        &state.bridge.store,
+        "default",
+        Some(&actor),
+        8,
+        "new-vm-connection",
+    )
+    .await
+    .unwrap();
+    let expected_actor = actor.clone();
+    state
+        .bridge
+        .store
+        .transaction(move |tx| {
+            let agent = AgentRepository::get(tx, &AgentId::from(actor.as_str()))?.unwrap();
+            assert_eq!(agent.extra["providerStream"]["generation"], 8);
+            assert_eq!(agent.extra["providerStream"]["ack"], 0);
+            assert_eq!(
+                agent.extra["providerStream"]["connection"],
+                "new-vm-connection"
+            );
+            let provenance = &agent.extra["threadProvenance"]["started-vm-thread"];
+            assert_eq!(
+                provenance["actor"],
+                json!({"agent":expected_actor,"epoch":epoch})
+            );
+            assert_eq!(
+                provenance["scope"],
+                json!({"account":"default","connection":"old-vm-connection","generation":7})
+            );
+            assert_eq!(provenance["operation"], operation);
+            assert!(Outbox::get::<crate::account_worker::store::ProviderCall>(tx, &key)?.is_none());
+            let saved = RequestResults::replay(
+                tx,
+                admitted.id(),
+                admitted.signature(),
+                chrono::Utc::now().timestamp_millis(),
+            )?
+            .unwrap();
+            let envelope: ResultEnvelope<
+                RetainedReply<Method, studio_runtime_store::request_results::AdmittedRequest>,
+            > = serde_json::from_str(&saved.result)?;
+            assert_eq!(
+                envelope.reply.ack,
+                CommittedAck {
+                    stream_id: crate::account_worker::vm_journal_scope("default", &expected_actor),
+                    generation: 7,
+                    cursor: 12
+                }
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
 }

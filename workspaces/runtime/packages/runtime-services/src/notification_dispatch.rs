@@ -52,7 +52,7 @@ pub enum DispatchOutcome {
 
 /// Notification application proof stored in the owning journal gap until ACK.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct NotificationSettlement {
+pub struct NotificationSettlement {
     pub signature: String,
     pub outcome: DispatchOutcome,
 }
@@ -351,12 +351,7 @@ pub(crate) fn record_acknowledged_steer_submission(
             .event_ids
             .iter()
             .map(String::as_str)
-            .collect::<Vec<_>>()
-            != submission
-                .inputs
-                .iter()
-                .map(|input| input.id.as_str())
-                .collect::<Vec<_>>()
+            .ne(submission.inputs.iter().map(|input| input.id.as_str()))
     {
         return Err(NotificationDispatchError::UnauthorizedSubmission);
     }
@@ -2561,7 +2556,6 @@ mod tests {
                  CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT NOT NULL,record TEXT NOT NULL,created REAL NOT NULL);
                  CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT NOT NULL);
-                 CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
                  CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT NOT NULL,record TEXT NOT NULL);
                  CREATE TABLE sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
@@ -2580,7 +2574,7 @@ mod tests {
         fixture_attempt(&connection, "attempt");
         connection
             .execute(
-                "INSERT INTO runtime_agents VALUES('agent',?1)",
+                "INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",
                 [
                     json!({"id":"agent","provider":studio_runtime_schema::ProviderKind::Codex,
                     "rootId":"agent","epoch":1,"status":"running","threadId":"thread",
@@ -3417,7 +3411,7 @@ mod tests {
         .expect("agent reads")
         .expect("agent exists");
         assert_eq!(agent["events"], 1);
-        let old_rows: i64 = connection.query_row("SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'provider-notification:%'", [], |row| row.get(0)).expect("old notification rows");
+        let old_rows: i64 = connection.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='runtime_operation_receipts'", [], |row| row.get(0)).expect("old notification rows");
         assert_eq!(old_rows, 0, "journal state owns notification dedup");
         let tx = connection.transaction().expect("ACK transaction");
         studio_runtime_store::account_state::set_provider_checkpoint(&tx, "default", 7, 1)
@@ -3904,7 +3898,7 @@ mod tests {
         let mut connection = database();
         connection
             .execute(
-                "INSERT INTO runtime_agents VALUES(?1,?2)",
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 [
                     "foreign",
                     &json!({"id":"foreign","provider":studio_runtime_schema::ProviderKind::Codex,"rootId":"other-team","epoch":1,"status":"running","threadId":"other","accountKey":"default","events":0}).to_string(),
@@ -4150,7 +4144,7 @@ mod tests {
         assert_eq!(saved["entries"][0]["base"], "before");
         let bases: i64 = transaction
             .query_row(
-                "SELECT count(*) FROM runtime_operation_receipts WHERE signature='stream-base'",
+                "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='runtime_operation_receipts'",
                 [],
                 |row| row.get(0),
             )
@@ -4176,7 +4170,7 @@ mod tests {
         let delta = |item: &str, text: &str| json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":item,"delta":text}});
         let base_rows = |tx: &rusqlite::Transaction<'_>| -> i64 {
             tx.query_row(
-                "SELECT count(*) FROM runtime_operation_receipts WHERE signature='stream-base'",
+                "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='runtime_operation_receipts'",
                 [],
                 |r| r.get(0),
             )

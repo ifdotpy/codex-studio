@@ -146,8 +146,8 @@ pub(crate) struct JournalSettlement {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "family", content = "payload", rename_all = "snake_case")]
 pub(super) enum ProviderCall {
-    Account(AccountCall),
-    Retained(super::retained::storage::RetainedCall),
+    Account(Box<AccountCall>),
+    Retained(Box<super::retained::storage::RetainedCall>),
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -187,7 +187,7 @@ pub(super) fn account_submission(
         Some(OutboxRow {
             payload: ProviderCall::Account(call),
             ..
-        }) => Ok(Some(call)),
+        }) => Ok(Some(*call)),
         Some(_) => Err(invalid(operation)),
         None => Ok(None),
     }
@@ -230,12 +230,12 @@ pub(super) fn save_account_submission(
             generation: Some(request.generation as i64),
             ordinal: None,
             next_at: None,
-            payload: ProviderCall::Account(AccountCall {
+            payload: ProviderCall::Account(Box::new(AccountCall {
                 context: context.clone(),
                 request,
                 written: None,
                 restarted: false,
-            }),
+            })),
             created: (now() * 1000.0) as i64,
         },
     )
@@ -331,15 +331,10 @@ pub(crate) fn notification_acknowledged(
     identity: &ProviderDeliveryIdentity,
 ) -> studio_runtime_store::StoreResult<bool> {
     let scope = notification_scope(identity)?;
-    checkpoint(tx, scope, identity.generation)
-        .map(|cursor| identity.cursor <= cursor)
-        .map_err(|error| match error {
-            WorkerError::Store(error) => error,
-            _ => StoreError::RecordContract("notification checkpoint could not be read"),
-        })
+    checkpoint(tx, scope, identity.generation).map(|cursor| identity.cursor <= cursor)
 }
 
-pub(crate) fn get_notification(
+pub fn get_notification(
     tx: &rusqlite::Connection,
     identity: &ProviderDeliveryIdentity,
 ) -> studio_runtime_store::StoreResult<Option<crate::notification_dispatch::NotificationSettlement>>
@@ -353,7 +348,7 @@ pub(crate) fn get_notification(
     .and_then(|row| row.payload.notification))
 }
 
-pub(crate) fn put_notification(
+pub fn put_notification(
     tx: &studio_runtime_store::Transaction<'_>,
     identity: &ProviderDeliveryIdentity,
     notification: crate::notification_dispatch::NotificationSettlement,
@@ -555,6 +550,7 @@ pub(super) async fn recover(
         crate::provider_callbacks::expire_ended_generations(tx, &account, generation.0).map_err(
             |error| match error {
                 crate::provider_callbacks::CallbackError::Store(error) => WorkerError::Store(error),
+                crate::provider_callbacks::CallbackError::Expired => WorkerError::Expired,
                 crate::provider_callbacks::CallbackError::Invalid(_) | crate::provider_callbacks::CallbackError::InvalidResultSchema(_) | crate::provider_callbacks::CallbackError::Dependency(_) | crate::provider_callbacks::CallbackError::Stale | crate::provider_callbacks::CallbackError::Conflict | crate::provider_callbacks::CallbackError::Unknown | crate::provider_callbacks::CallbackError::Stored(_) => invalid(&account),
             },
         )?;
@@ -589,7 +585,7 @@ pub(super) async fn recover(
                 continue;
             }
             if context.method == Method::TurnStart {
-                uncertain(tx, &context, Some(&request.ticket), false, false)?;
+                uncertain(tx, &context, Some(&request.ticket), false)?;
             }
             if matches!(
                 context.method,
@@ -1439,13 +1435,11 @@ fn settle_outcome(
             }
             true
         }
-        SessionOutcome::Write { ticket, .. } => {
-            uncertain(tx, &context, ticket.as_ref(), false, session_closed)?
-        }
+        SessionOutcome::Write { ticket, .. } => uncertain(tx, &context, ticket.as_ref(), false)?,
         SessionOutcome::Resolved {
             outcome: RequestOutcome::Unknown,
             ticket,
-        } => uncertain(tx, &context, Some(&ticket), false, session_closed)?,
+        } => uncertain(tx, &context, Some(&ticket), false)?,
         SessionOutcome::Resolved {
             ticket,
             outcome: RequestOutcome::Reply { body, .. },
@@ -1545,7 +1539,7 @@ fn settle_outcome(
                             }
                             preparation::accept_turn(tx, &context, &ticket, turn)?;
                         } else {
-                            uncertain(tx, &context, Some(&ticket), false, session_closed)?;
+                            uncertain(tx, &context, Some(&ticket), false)?;
                             return Ok(SettledOutcome::default());
                         }
                     }
@@ -1830,7 +1824,7 @@ fn settle_not_sent(
 ) -> Result<Option<(String, i64)>, WorkerError> {
     let method = context.method;
     if method == Method::TurnInterrupt {
-        uncertain(tx, context, ticket, true, session_closed)?;
+        uncertain(tx, context, ticket, true)?;
         return Ok(None);
     }
     let identity = context.intent.identity();
@@ -1884,18 +1878,12 @@ fn session_missing(error: &Value) -> bool {
         == Some(true)
 }
 
-/// The stored reason of a thread/resume whose input went back to the queue.
-const UNKNOWN_THREAD_RESUME_RETRY: &str =
-    "Provider thread resume outcome is unknown; the input returned to the queue once.";
-
-/// Settle a request whose provider outcome is unknown. Returns true when the
-/// request is retired because its attempt went back to the queue.
+/// Preserve uncertainty on the source attempt until exact provider evidence arrives.
 fn uncertain(
     tx: &studio_runtime_store::Transaction<'_>,
     context: &Pending,
     ticket: Option<&studio_runtime_providers::RequestTicket>,
     not_sent: bool,
-    session_closed: bool,
 ) -> Result<bool, WorkerError> {
     if context.method == Method::TurnInterrupt {
         let ticket = ticket.ok_or_else(|| invalid(&context.operation))?;
@@ -2992,7 +2980,7 @@ pub(crate) fn checkpoint(
     tx: &rusqlite::Connection,
     journal_scope: &str,
     generation: u64,
-) -> Result<u64, WorkerError> {
+) -> Result<u64, StoreError> {
     if let Some((account, actor)) = journal_scope.rsplit_once(":vm:")
         && let Some(agent) = AgentRepository::get(tx, &AgentId::from(actor))?
         && account_key(&agent) == account
@@ -3057,16 +3045,21 @@ pub(super) async fn attach_provider_stream(
     let connection = connection.to_owned();
     store.transaction_with(move|tx| {
         if let Some(actor)=actor {
-            let mut agent=stored_agent(tx,&actor)?;
-            if account_key(&agent)!=account || agent.extra.get("executionMode").and_then(Value::as_str)!=Some("vm") {return Err(invalid(&actor));}
-            let state=agent.extra.entry("providerStream".into()).or_insert_with(||json!({}));
-            if let Some(previous)=state["generation"].as_u64() {
-                if previous>generation{return Err(invalid(&actor));}
-                if previous!=generation {super::retained::storage::checkpoint_covered(tx,&super::vm_journal_scope(&account,&actor),previous,state["ack"].as_u64().unwrap_or(0))?;state["ack"]=json!(0);}
+            let agent = stored_agent(tx, &actor)?;
+            if account_key(&agent) != account || agent.extra.get("executionMode").and_then(Value::as_str) != Some("vm") { return Err(invalid(&actor)); }
+            let previous = agent.extra.get("providerStream").and_then(|stream| stream["generation"].as_u64());
+            if previous.is_some_and(|old| old > generation) { return Err(invalid(&actor)); }
+            if let Some(previous) = previous && previous != generation {
+                let ack = agent.extra["providerStream"]["ack"].as_u64().unwrap_or(0);
+                super::retained::storage::checkpoint_covered(tx, &super::vm_journal_scope(&account, &actor), previous, ack)?;
             }
-            if state.get("ack").is_none(){state["ack"]=json!(0);}
-            state["generation"]=json!(generation);state["connection"]=json!(connection);
-            AgentRepository::put(tx,&agent)?;
+            // Settlement above can update this same source owner.
+            let mut agent = stored_agent(tx, &actor)?;
+            let state = agent.extra.entry("providerStream".into()).or_insert_with(|| json!({}));
+            if previous != Some(generation) || state.get("ack").is_none() { state["ack"] = json!(0); }
+            state["generation"] = json!(generation);
+            state["connection"] = json!(connection);
+            AgentRepository::put(tx, &agent)?;
         } else {
             studio_runtime_store::account_state::ensure_account(tx,&account)?;
             let (previous,ack):(Option<i64>,i64)=tx.query_row_cached("SELECT connection_generation,journal_ack FROM runtime_account_state WHERE account=?1",[&account],|row|Ok((row.get(0)?,row.get(1)?)))?;
@@ -3133,12 +3126,6 @@ fn compact(
     if cursor > before {
         super::retained::storage::checkpoint_covered(tx, journal_scope, generation, cursor)?;
         set_checkpoint(tx, journal_scope, generation, cursor)?;
-        crate::provider_callbacks::retire_checkpointed(tx, journal_scope, generation).map_err(
-            |error| match error {
-                crate::provider_callbacks::CallbackError::Store(error) => WorkerError::Store(error),
-                _ => invalid(journal_scope),
-            },
-        )?;
     }
     for id in covered {
         tx.execute_cached(
@@ -3342,10 +3329,6 @@ fn persist_publication_batch_in(
                 )?;
             }
             outbox.invalidation = Some(pending_invalidation.or(Some(id)));
-        } else {
-            // The only reachable case is a legacy database already beyond the
-            // named cap with no publication rows to annotate. Preserve the
-            // provider commit; the cap remains in force for all new receipts.
         }
     }
     outbox.pending = Some(pending + retained);
@@ -3870,11 +3853,10 @@ pub(super) async fn flush_streams(
         let mut streams = load_streams(tx, &account)?;
         crate::notification_dispatch::prune_inactive_streams(tx, &mut streams, now(), false)?;
         for (actor, owner, generation, thread) in streams.threads() {
-            let (_, identity) = SchedulerRepository::find_attempt_for_thread(
-                tx, &owner, generation, &thread, None,
+            let identity = SchedulerRepository::find_attempt_for_actor(
+                tx, &actor, &owner, generation, &thread, None,
             )?;
-            if let Some((identity, _)) = identity
-                && identity.agent_id == actor
+            if let Some(identity) = identity
                 && let Some(next) = flush_notification_streams(
                     tx,
                     &identity.agent_id,
@@ -4295,12 +4277,12 @@ mod pending_thread_start_tests {
                 generation: Some(1),
                 ordinal: None,
                 next_at: None,
-                payload: ProviderCall::Account(AccountCall {
+                payload: ProviderCall::Account(Box::new(AccountCall {
                     context,
                     request: super::super::retained::storage::TransportRequest::from(&request),
                     written: None,
                     restarted: true,
-                }),
+                })),
                 created: 1,
             },
         )

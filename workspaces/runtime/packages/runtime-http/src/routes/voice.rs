@@ -355,6 +355,7 @@ fn voice_provider_unavailable() -> ApiError {
 fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
     use voice::provider::VoiceProviderError as E;
     match error {
+        E::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         E::RequestResult(error) => error.into(),
         E::Outbox(error) => error.into(),
         E::Provider(_) => ApiError::internal(),
@@ -386,6 +387,12 @@ fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
         },
         E::Voice(error) => voice_error(error),
         E::Monitor(error) => match error {
+            studio_runtime_services::monitor_policy::MonitorError::Expired => {
+                ApiError::new(StatusCode::GONE, error.to_string())
+            }
+            studio_runtime_services::monitor_policy::MonitorError::Store(error) => {
+                ApiError::stored(error)
+            }
             studio_runtime_services::monitor_policy::MonitorError::Refused(message) => {
                 ApiError::new(StatusCode::BAD_REQUEST, message)
             }
@@ -411,7 +418,6 @@ fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
             | studio_runtime_services::monitor_policy::MonitorError::ConfigurationReceipt {
                 ..
             }
-            | studio_runtime_services::monitor_policy::MonitorError::Store(_)
             | studio_runtime_services::monitor_policy::MonitorError::Event(_)
             | studio_runtime_services::monitor_policy::MonitorError::Rules(_)
             | studio_runtime_services::monitor_policy::MonitorError::Io(_) => ApiError::internal(),
@@ -439,6 +445,9 @@ fn voice_error(error: VoiceError) -> ApiError {
             format!("Not implemented: requires {dependency}"),
         ),
         VoiceError::Coordination(error) => match error {
+            studio_runtime_services::coordination::CoordinationError::RequestResult(error) => {
+                error.into()
+            }
             studio_runtime_services::coordination::CoordinationError::RequiresDependency(dep) => {
                 ApiError::new(
                     StatusCode::NOT_IMPLEMENTED,

@@ -141,14 +141,45 @@ async fn native_action(
     repair: Option<Extension<Arc<dyn NativeContextRepairPort>>>,
     ApiJson(body): ApiJson<generated::NativeActionRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    if serde_json::to_value(&body).map_err(|_| ApiError::internal())?["request_id"]
-        .as_str()
-        .is_some_and(|id| id.starts_with(studio_runtime_services::idle_compaction::REQUEST_PREFIX))
-    {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "This request ID uses the reserved idle compaction namespace.",
-        ));
+    let value = serde_json::to_value(&body).map_err(|_| ApiError::internal())?;
+    if let Some(root) = value["request_id"].as_str() {
+        let root = root.to_owned();
+        let agent_id = value["id"]
+            .as_str()
+            .ok_or_else(ApiError::internal)?
+            .to_owned();
+        let reserved = state
+            .store
+            .as_ref()
+            .ok_or_else(ApiError::internal)?
+            .read_async("runtime-http/native-action-purpose", move |connection| {
+                let agent =
+                    studio_runtime_services::event_write::checked_agent(connection, &agent_id)
+                        .map_err(super::work_items::write_error)?;
+                let episode = agent
+                    .extra
+                    .get("idleCompactionEpisode")
+                    .filter(|value| !value.is_null())
+                    .cloned()
+                    .map(
+                        serde_json::from_value::<studio_runtime_services::idle_compaction::Episode>,
+                    )
+                    .transpose()
+                    .map_err(ApiError::json)?;
+                Ok::<_, ApiError>(
+                    episode.is_some_and(|episode| episode.id == root)
+                        || native_actions::idle_provenance(connection, &root)
+                            .map_err(native_error)?
+                            .is_some(),
+                )
+            })
+            .await?;
+        if reserved {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "This request ID is reserved for idle compaction.",
+            ));
+        }
     }
     run_native_action(
         State(state),
@@ -605,10 +636,14 @@ impl native_actions::Preparation for NativeActionPreparationRun {
                 params,
             )
             .await?;
-            if request
-                .request_id
-                .starts_with(studio_runtime_services::idle_compaction::REQUEST_PREFIX)
-            {
+            let idle_root = request.request_id.clone();
+            let idle = self
+                .store
+                .read_async("runtime-http/native-action-purpose", move |connection| {
+                    native_actions::idle_provenance(connection, &idle_root)
+                })
+                .await?;
+            if idle.is_some() {
                 let port =
                     self.preparation
                         .account_session
@@ -629,6 +664,7 @@ impl native_actions::Preparation for NativeActionPreparationRun {
 
 fn native_error(error: NativeError) -> ApiError {
     match error {
+        NativeError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         NativeError::Unavailable(_) => {
             ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
         }
@@ -648,6 +684,7 @@ fn safety_error(
 ) -> ApiError {
     use studio_runtime_services::safety_buffering::SafetyBufferingError as SafetyError;
     match error {
+        SafetyError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         SafetyError::Requires(name) => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             format!("Not implemented: requires {name}"),
@@ -690,6 +727,7 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
         None => agent_management_store::execute(Arc::clone(&store), &action, now).await,
     }
     .map_err(|error| match error {
+        ManagementError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         ManagementError::Unavailable(_) => {
             ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
         }

@@ -697,6 +697,9 @@ fn send_to_user(
             crate::notification_dispatch::NotificationDispatchError::Store(error) => {
                 CallbackError::Store(error)
             }
+            crate::notification_dispatch::NotificationDispatchError::RequestResult(error) => {
+                error.into()
+            }
             crate::notification_dispatch::NotificationDispatchError::ConflictingInput => {
                 CallbackError::Invalid("This complaint id has different content")
             }

@@ -1,6 +1,7 @@
 //! Manual worker recovery and tool release through the retained account owner.
 use crate::account_session_runtime::{
-    AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse, RequestCertainty,
+    AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
+    RequestCertainty,
 };
 use crate::account_worker::retained::RequestActor;
 use crate::managed_host_tools::{
@@ -12,7 +13,7 @@ use std::sync::Arc;
 use studio_runtime_providers::Method;
 use studio_runtime_schema::persistence::{
     NativeReleasePhase, OutboxKind, OutboxStatus, OwnerKind, RecoveryReceiptStatus,
-    ToolRequestOutcome,
+    RequestIdentity, ToolRequestOutcome,
 };
 use studio_runtime_store::outbox::{Outbox, OutboxRow};
 use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
@@ -286,7 +287,7 @@ fn release_result(status: ReleaseStatus, reason: Option<&str>) -> crate::recover
     }
 }
 
-fn read_saved(
+fn read_pending(
     tx: &Transaction<'_>,
     id: &str,
     signature: &str,
@@ -299,17 +300,7 @@ fn read_saved(
         }
         return row.payload.reply.into_receipt().map(Some);
     }
-    RequestResults::replay(tx, id, signature, now_ms())
-        .map_err(studio_runtime_store::StoreError::from)?
-        .map(|receipt| {
-            if receipt.signature != signature {
-                return Err(Error::Invalid("This request id has different content"));
-            }
-            let envelope: ResultEnvelope<ManualReply> = serde_json::from_str(&receipt.result)
-                .map_err(|_| Error::Invalid("Invalid manual management receipt"))?;
-            envelope.reply.into_receipt()
-        })
-        .transpose()
+    Ok(None)
 }
 
 fn save(
@@ -416,14 +407,16 @@ pub(crate) async fn execute(
         let resolved = crate::provider_callbacks::tools::services::manage::resolved_args(tx, &actor, &args).map_err(|_| Error::Invalid("Unknown managed agent"))?;
         let target = resolved["agent_id"].as_str().ok_or(Error::Invalid("Supply agent_id"))?;
         let (lead, mut worker) = authorize(tx, &actor, target)?;
-        if let Some(saved) = read_saved(tx, &id, &sig)? { return Ok((None,saved)); }
+        if let Some(saved) = read_pending(tx, &id, &sig)? { return Ok((None,saved)); }
         let epoch=lead["epoch"].to_string();
-        let admission=match crate::event_write::begin_request::<ManualReply>(tx,crate::event_write::RequestKey::new("manual-management",&[lead["id"].as_str().ok_or(Error::Stale)?,&epoch],&root_request_id).raw(&id),&sig,now_ms()).map_err(studio_runtime_store::StoreError::from)? {
+        let authority = [lead["id"].as_str().ok_or(Error::Stale)?, &epoch];
+        if let Ok(identity) = RequestIdentity::new("manual-management", &authority, &root_request_id, &[])
+            && let Some(saved) = read_pending(tx, identity.id(), &sig)? { return Ok((None, saved)); }
+        let admission=match crate::event_write::begin_request::<ManualReply>(tx,crate::event_write::RequestKey::new("manual-management",&authority,&root_request_id).raw(&id),&sig,now_ms()).map_err(studio_runtime_store::StoreError::from)? {
             crate::event_write::CallerAdmission::Fresh(token)=>token,
             crate::event_write::CallerAdmission::Replay(reply)=>return Ok((None,reply.into_receipt()?)),
         };
         let id=admission.id().to_owned();
-        if let Some(saved)=read_saved(tx,&id,&sig)? {return Ok((None,saved))}
         let auth = AuthorizedRecoveryRequest { lead: stable(&lead), target: stable(&worker), request_id:id.clone(),signature:sig.clone(),root_request_id,admission };
         if recovery {
             let pending = json!({"status":"unconfirmed","next":"Inspect the worker. Do not replay input with an unknown outcome."});
@@ -461,6 +454,7 @@ pub(crate) async fn execute(
             Ok(value) => value,
             // The account worker still owns a possible late result. A lost
             // transport response must not finalize its pending receipt.
+            Err(AccountSessionError::Expired) => return Err(Error::Expired),
             Err(_) => return Ok(result(initial.1)),
         };
         return finish_recovery(&store, &auth, value).await.map(result);
@@ -509,7 +503,7 @@ pub(crate) async fn execute(
     let inspection = inspect(session.as_ref(), &auth, &release, &scope).await;
     let unloaded = match inspection {
         Ok(value) => value,
-        Err(reason) => {
+        Err(Error::Invalid(reason)) => {
             return finish_release(
                 &store,
                 &auth,
@@ -521,6 +515,7 @@ pub(crate) async fn execute(
             )
             .await;
         }
+        Err(error) => return Err(error),
     };
     if unloaded {
         return finish_release(
@@ -620,6 +615,7 @@ pub(crate) async fn execute(
         {
             (ReleaseStatus::Released, body["status"] == "notLoaded")
         }
+        Err(Error::Expired) => return Err(Error::Expired),
         _ => (ReleaseStatus::Unknown, false),
     };
     finish_release(
@@ -642,7 +638,17 @@ pub(crate) async fn finish_recovery(
     let auth = auth.clone();
     store
         .transaction_with(move |tx| {
-            let saved = read_saved(tx, &auth.request_id, &auth.signature)?.ok_or(Error::Stale)?;
+            let saved = match read_pending(tx, &auth.request_id, &auth.signature)? {
+                Some(saved) => saved,
+                None => {
+                    let saved = RequestResults::admitted_result(tx, &auth.admission)
+                        .map_err(studio_runtime_store::StoreError::from)?
+                        .ok_or(Error::Stale)?;
+                    let saved: ResultEnvelope<ManualReply> = serde_json::from_str(&saved.result)
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                    saved.reply.into_receipt()?
+                }
+            };
             // The account worker can finish after the callback caller disappears.
             // Its committed result, not a retry's transport state, remains the receipt.
             if saved.value()["manualRecoveryComplete"] == true {
@@ -668,10 +674,12 @@ async fn request(
     method: Method,
     suffix: &str,
     params: Value,
-) -> Result<Value, &'static str> {
+) -> Result<Value, Error> {
     let operation = format!(
         "{}:{suffix}",
-        release["id"].as_str().ok_or("Invalid release identity")?
+        release["id"]
+            .as_str()
+            .ok_or(Error::Invalid("Invalid release identity"))?
     );
     let receipt = session
         .provider_request(ProviderRequest {
@@ -682,7 +690,7 @@ async fn request(
             },
             admitted_request: if method == Method::ThreadUnsubscribe {
                 serde_json::from_value(release["admittedRequest"].clone())
-                    .map_err(|_| "Invalid release admission")?
+                    .map_err(|_| Error::Invalid("Invalid release admission"))?
             } else {
                 None
             },
@@ -691,11 +699,11 @@ async fn request(
             actor: Some(RequestActor {
                 agent: auth.target["id"]
                     .as_str()
-                    .ok_or("Invalid worker identity")?
+                    .ok_or(Error::Invalid("Invalid worker identity"))?
                     .into(),
                 epoch: auth.target["epoch"]
                     .as_i64()
-                    .ok_or("Invalid worker epoch")?,
+                    .ok_or(Error::Invalid("Invalid worker epoch"))?,
             }),
             expected_scope: Some(scope.clone()),
             deleted_actor_session: None,
@@ -704,7 +712,10 @@ async fn request(
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(10),
         })
         .await
-        .map_err(|_| "The native result is not confirmed")?;
+        .map_err(|error| match error {
+            AccountSessionError::Expired => Error::Expired,
+            _ => Error::Invalid("The native result is not confirmed"),
+        })?;
     if receipt.operation != operation
         || receipt.scope != *scope
         || receipt.certainty() != RequestCertainty::Written
@@ -713,11 +724,13 @@ async fn request(
             .is_some_and(|ticket| ticket.method == method && ticket.generation == scope.generation)
         || session.current_scope(&scope.account).as_ref() != Some(scope)
     {
-        return Err("The native result is not confirmed");
+        return Err(Error::Invalid("The native result is not confirmed"));
     }
     match receipt.into_response() {
         Some(ProviderResponse::Reply(value)) => Ok(value),
-        Some(ProviderResponse::Rejected(_)) | None => Err("The native result is not confirmed"),
+        Some(ProviderResponse::Rejected(_)) | None => {
+            Err(Error::Invalid("The native result is not confirmed"))
+        }
     }
 }
 
@@ -726,7 +739,7 @@ async fn inspect(
     auth: &AuthorizedRecoveryRequest,
     release: &Value,
     scope: &ConnectionScope,
-) -> Result<bool, &'static str> {
+) -> Result<bool, Error> {
     let thread = &release["threadId"];
     let body = request(
         session,
@@ -739,12 +752,16 @@ async fn inspect(
     )
     .await?;
     if body["thread"]["id"] != *thread {
-        return Err("The native thread identity changed");
+        return Err(Error::Invalid("The native thread identity changed"));
     }
     match body["thread"]["status"]["type"].as_str() {
         Some("notLoaded") => return Ok(true),
         Some("idle") if !truthy(body["thread"]["status"].get("activeFlags")) => {}
-        _ => return Err("The native thread is active or its status is unknown"),
+        _ => {
+            return Err(Error::Invalid(
+                "The native thread is active or its status is unknown",
+            ));
+        }
     }
     for (method, suffix, params) in [
         (
@@ -756,7 +773,9 @@ async fn inspect(
     ] {
         let body = request(session, auth, release, scope, method, suffix, params).await?;
         if !body["data"].as_array().is_some_and(Vec::is_empty) || truthy(body.get("nextCursor")) {
-            return Err("Native commands or input still hold this session");
+            return Err(Error::Invalid(
+                "Native commands or input still hold this session",
+            ));
         }
     }
     session
@@ -766,7 +785,10 @@ async fn inspect(
             std::time::Instant::now() + std::time::Duration::from_secs(10),
         )
         .await
-        .map_err(|_| "The native notification barrier is not confirmed")?;
+        .map_err(|error| match error {
+            AccountSessionError::Expired => Error::Expired,
+            _ => Error::Invalid("The native notification barrier is not confirmed"),
+        })?;
     Ok(false)
 }
 
@@ -901,6 +923,7 @@ mod tests {
         store: Arc<RuntimeStore>,
         calls: Mutex<Vec<(Method, String)>>,
         unknown: bool,
+        expired: Option<Method>,
         unloaded: bool,
         stop_lead: bool,
         change_worker_epoch: bool,
@@ -986,6 +1009,9 @@ mod tests {
                     .lock()
                     .expect("calls")
                     .push((request.method, request.operation.clone()));
+                if self.expired == Some(request.method) {
+                    return Err(AccountSessionError::Expired);
+                }
                 if request.method == Method::ThreadUnsubscribe {
                     let actor = request.actor.clone().expect("worker identity");
                     let operation = request.operation.clone();
@@ -1269,6 +1295,7 @@ mod tests {
             store: Arc::clone(&store),
             calls: Mutex::new(Vec::new()),
             unknown: false,
+            expired: None,
             unloaded: false,
             stop_lead: false,
             change_worker_epoch: false,
@@ -1293,6 +1320,43 @@ mod tests {
             })
             .await
             .expect("worker read")
+    }
+
+    #[tokio::test]
+    async fn manual_release_propagates_expiry_without_renewing_the_obligation() {
+        for method in [Method::ThreadRead, Method::ThreadUnsubscribe] {
+            let (_directory, store, actor, mut session) = fixture().await;
+            session.expired = Some(method);
+            let session = Arc::new(session);
+            assert!(matches!(
+                execute(
+                    Arc::clone(&store),
+                    session.clone(),
+                    &actor,
+                    &args(),
+                    "expired",
+                    10.0
+                )
+                .await,
+                Err(Error::Expired)
+            ));
+            let calls = session.calls.lock().expect("calls").len();
+            store
+                .transaction(|tx| {
+                    RequestResults::gc(
+                        tx,
+                        now_ms() + studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS + 1,
+                    )
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                    Ok(())
+                })
+                .await
+                .expect("expire ingress without deleting the pending owner");
+            execute(store, session.clone(), &actor, &args(), "expired", 11.0)
+                .await
+                .expect("retry reads unresolved owner");
+            assert_eq!(session.calls.lock().expect("calls").len(), calls);
+        }
     }
 
     #[tokio::test]

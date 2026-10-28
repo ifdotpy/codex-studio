@@ -2,6 +2,10 @@
 //! failing frame, reply or effect is rolled back for that agent, the agent is
 //! held visibly, and every other agent of the account keeps working.
 use super::*;
+use studio_runtime_schema::persistence::{
+    ExecutionReceiptKind, HoldStatus, OutboxKind, OutboxStatus, OwnerKind,
+};
+use studio_runtime_store::outbox::{Outbox, OutboxRow};
 
 /// Bounds a wait for progress that a stalled journal would never make;
 /// unit: wall time.
@@ -284,11 +288,10 @@ async fn native_layr_receipt_capture_faults_stay_inside_each_agents_settlement()
             if !via_journal {
                 let context: Pending = {
                     let reader = state.bridge.store.test_reader().unwrap();
-                    let raw: String = reader.query_row(
-                        "SELECT json_extract(result,'$.context') FROM runtime_operation_receipts WHERE signature='submitted' AND json_extract(result,'$.context.method')='thread/resume'",
-                        [], |row| row.get(0),
-                    ).unwrap();
-                    serde_json::from_str(&raw).unwrap()
+                    store::account_submission(&reader, resume["id"].as_str().unwrap())
+                        .unwrap()
+                        .expect("submitted account call")
+                        .context
                 };
                 if corruption.contains("layrStoreRoot") {
                     let mut interrupt = context.clone();
@@ -350,21 +353,20 @@ async fn native_layr_receipt_capture_faults_stay_inside_each_agents_settlement()
             if corruption.contains("layrStoreRoot") {
                 assert_held(&held, "native-layr/store");
             } else {
-                // Undecodable rows retain their bytes; the existing hold receipt fences them.
+                // Quarantine is independent of decoding the malformed agent record.
                 assert_eq!(held["status"], 7);
                 let reader = state.bridge.store.test_reader().unwrap();
-                let hold = EventWriteRepository::receipt(
-                    &reader,
-                    &format!(
-                        "{}{a}",
-                        studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
-                    ),
-                )
-                .unwrap()
-                .expect("invalid agent hold receipt");
-                assert_eq!(
-                    hold.signature,
-                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
+                let (hold, incident): (HoldStatus, Option<String>) = reader
+                    .query_row(
+                        "SELECT hold_status,hold_incident FROM runtime_agents WHERE id=?1",
+                        [&a],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .unwrap();
+                assert_eq!(hold, HoldStatus::Invalid);
+                assert!(
+                    incident.as_deref().is_some_and(|id| !id.is_empty()),
+                    "quarantine names its diagnostic incident"
                 );
             }
             let b_start = start_agent(&state, &mut peer, &worker, "agent-b", "fake-thread-1").await;
@@ -392,13 +394,10 @@ async fn poisoned_durable_effect_is_parked_once_and_does_not_end_the_worker() {
         .bridge
         .run(move |store| async move {
             scheduler::lifecycle_transaction_with(&store, move |tx| {
-                EventWriteRepository::put_receipt(
-                    tx,
-                    "account-worker:account:other:broken-attempt:thread/resume:submitted",
-                    "submitted",
-                    &json!({"context":{"intent":{"agent_id":receipt_agent},"method":"thread/resume"}})
-                        .to_string(),
-                )?;
+                Outbox::put(tx,&OutboxRow {
+                    id:"account:other:broken-attempt:thread/resume".into(),kind:OutboxKind::ProviderCall,owner_kind:OwnerKind::Agent,owner_id:receipt_agent.clone(),request_id:None,signature:"malformed-account-call-fixture".into(),status:OutboxStatus::Unknown,account:Some("other".into()),stream_id:Some("other".into()),generation:Some(1),ordinal:None,next_at:None,created:1,
+                    payload:json!({"family":"account","payload":{"context":{"intent":{"agent_id":receipt_agent},"method":"thread/resume"}}}),
+                }).map_err(StoreError::from)?;
                 store::persist_effect(tx, "default", &Effect::Wake(receipt_agent, epoch))?;
                 Ok::<_, WorkerError>(())
             })
@@ -412,8 +411,8 @@ async fn poisoned_durable_effect_is_parked_once_and_does_not_end_the_worker() {
             .bridge
             .run(|store| async move {
                 Ok(store.test_reader()?.query_row(
-                    "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:effect:default:%'",
-                    [],
+                    "SELECT count(*) FROM runtime_outbox WHERE account=?1 AND kind=?2",
+                    rusqlite::params!["default", OutboxKind::FollowupEffect],
                     |row| row.get::<_, i64>(0),
                 )?)
             })
@@ -501,11 +500,13 @@ async fn publications(state: &State) -> Vec<String> {
         .run(|store| async move {
             let reader = store.test_reader()?;
             let mut statement = reader.prepare(
-                "SELECT id FROM runtime_operation_receipts \
-                 WHERE id LIKE 'account-worker:notification-publication:default:%' ORDER BY id",
+                "SELECT id FROM runtime_outbox WHERE account=?1 AND kind=?2 ORDER BY id",
             )?;
             let ids = statement
-                .query_map([], |row| row.get::<_, String>(0))?
+                .query_map(
+                    rusqlite::params!["default", OutboxKind::Publication],
+                    |row| row.get::<_, String>(0),
+                )?
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(ids)
         })
@@ -617,11 +618,13 @@ async fn held_agent_keeps_its_unsent_input_and_a_message_starts_it_once() {
         .run(move |store| async move {
             store
                 .transaction_with(move |tx| {
-                    let changed = tx.execute(
-                        "UPDATE runtime_execution_attempts SET record=json_set(record,'$.receipts.threadPrepared',json('{\"input\":{\"thread\":\"elsewhere\"},\"result\":false}')) WHERE id=?1",
-                        [attempt],
+                    studio_runtime_store::ExecutionHistoryRepository::save_receipt(
+                        tx,
+                        &attempt,
+                        ExecutionReceiptKind::ThreadPrepared,
+                        json!({"thread":"elsewhere"}),
+                        json!(false),
                     )?;
-                    assert_eq!(changed, 1);
                     Ok::<_, StoreError>(())
                 })
                 .await?;
@@ -957,13 +960,13 @@ async fn an_exhausted_account_publication_counter_ends_the_worker_and_holds_nobo
         .run(|store| async move {
             store
                 .transaction_with(|tx| {
-                    tx.execute(
-                        "INSERT INTO runtime_operation_receipts(id,signature,result) \
-                         VALUES('account-worker:streams:default:metadata','fixture',?1)",
-                        [format!(
+                    studio_runtime_store::account_state::put_streams(
+                        tx,
+                        "default",
+                        &format!(
                             "{{\"entries\":[],\"closed\":[],\"publication_sequence\":{}}}",
                             u64::MAX
-                        )],
+                        ),
                     )?;
                     Ok::<_, StoreError>(())
                 })

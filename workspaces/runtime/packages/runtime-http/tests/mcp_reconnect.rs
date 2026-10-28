@@ -462,10 +462,11 @@ async fn mcp_reconnect_concurrent_replay_and_crash_receipt_never_resend() {
     let canonical: studio_runtime_http::generated::McpReconnectRequest =
         serde_json::from_value(pending.clone()).unwrap();
     let signature = serde_json::to_value(canonical).unwrap().to_string();
-    store.transaction_with_error(move |tx| -> Result<(), studio_runtime_store::request_results::RequestResultError> {
-        let request = match studio_runtime_services::event_write::admit_request(tx, "mcp-reconnect", &["agent"], &pending_root, &["reconnect"], &signature, (studio_runtime_services::event_write::unix_time().unwrap() * 1000.0) as i64)? {
-            studio_runtime_store::request_results::Admission::Fresh(request) => request,
-            _ => panic!("fresh request"),
+    store.transaction_with_error(move |tx| -> Result<(), studio_runtime_store::StoreError> {
+        use studio_runtime_services::event_write::{begin_request, CallerAdmission, RequestKey};
+        let request = match begin_request::<studio_runtime_http::generated::McpReconnectResponse>(tx, RequestKey::new("mcp-reconnect", &["agent"], &pending_root).operation(&["reconnect"]), &signature, (studio_runtime_services::event_write::unix_time().unwrap() * 1000.0) as i64)? {
+            CallerAdmission::Fresh(request) => request,
+            CallerAdmission::Replay(_) => panic!("fresh request"),
         };
         tx.execute("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,request_id,signature,status,next_at,payload,created) VALUES(?1,'mcp_reconnect','agent','agent',?2,?3,'unknown',NULL,?4,?5)", rusqlite::params![format!("mcp-reconnect:{pending_root}"),request.id(),signature,json!({"request":request}).to_string(),request.created()])?;
         Ok(())

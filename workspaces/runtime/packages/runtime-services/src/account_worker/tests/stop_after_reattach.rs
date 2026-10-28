@@ -49,6 +49,8 @@ impl RetainedAccountSession for WorkerSession {
             }
             let receipt = port
                 .request(SessionRequest {
+                    root_request_id: request.root_request_id,
+                    admitted_request: request.admitted_request,
                     scope,
                     expected_scope: request.expected_scope,
                     operation: request.operation,
@@ -61,6 +63,7 @@ impl RetainedAccountSession for WorkerSession {
                 })
                 .await
                 .map_err(|error| match error {
+                    PortError::Expired => AccountSessionError::Refused("Provider request expired"),
                     PortError::Unknown => AccountSessionError::Unknown,
                     PortError::Identity
                     | PortError::ScopeMismatch

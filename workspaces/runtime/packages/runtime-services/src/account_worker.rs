@@ -48,6 +48,7 @@ pub mod retained_frame;
 mod steer;
 mod stopped_turns;
 pub(crate) mod store;
+pub use store::{get_notification, put_notification};
 pub use store::hold_invalid_agent_record;
 mod submission;
 mod turn_preparation;
@@ -166,6 +167,8 @@ impl std::fmt::Display for PreparationBlock {
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
+    #[error("Request id expired")]
+    Expired,
     #[error(transparent)]
     Recovery(#[from] crate::recovery::RecoveryError),
     #[error(transparent)]
@@ -223,7 +226,7 @@ fn vm_credential_maintenance_error(error: &WorkerError) -> Option<&'static str> 
         WorkerError::PreparationPending(_) | WorkerError::PreparationAwaitsAgent(_) => {
             Some("pending")
         }
-        WorkerError::PreparationRefused(_) => Some("stale-or-unavailable"),
+        WorkerError::Expired | WorkerError::PreparationRefused(_) => Some("stale-or-unavailable"),
         WorkerError::Store(_)
         | WorkerError::Recovery(_)
         | WorkerError::Scheduler(_)
@@ -2367,7 +2370,7 @@ impl Worker {
             // Boxed: the VM path stays out of this future, which every
             // submission polls on the worker's stack.
             submission::Committed::Vm(commit, launch) => {
-                Box::pin(self.committed_vm(*commit, launch)).await?
+                Box::pin(self.committed_vm(*commit, *launch)).await?
             }
         };
         match ready {
@@ -5123,7 +5126,8 @@ fn invalid_agent_record_details(error: &WorkerError) -> Option<(&str, &str, &str
                 reason,
             },
         )) if scope == "runtime_agents" => Some((id.as_str(), pointer.as_str(), reason.as_str())),
-        WorkerError::Recovery(_)
+        WorkerError::Expired
+        | WorkerError::Recovery(_)
         | WorkerError::Store(_)
         | WorkerError::Scheduler(_)
         | WorkerError::Session(_)

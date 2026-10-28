@@ -142,6 +142,7 @@ pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
         | WorkerError::Scheduler(_)
         | WorkerError::Session(_)
         | WorkerError::Notification(_)
+        | WorkerError::Expired
         | WorkerError::PreparationRefused(_)
         | WorkerError::StaleVmActor
         | WorkerError::PreparationPending(_)

@@ -137,6 +137,9 @@ impl From<studio_runtime_store::request_results::RequestResultError> for ApiErro
                 StatusCode::CONFLICT,
                 "This request ID has different content",
             ),
+            RequestResultError::Expired => {
+                Self::new(StatusCode::GONE, "This request ID has expired")
+            }
             RequestResultError::Identity(
                 RequestIdentityError::Expired { .. } | RequestIdentityError::InvalidUuidV7(_),
             ) => Self::new(StatusCode::GONE, "This request ID has expired"),

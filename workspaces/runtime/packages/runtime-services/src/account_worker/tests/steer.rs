@@ -195,7 +195,7 @@ async fn steer(state: &State, peer: &mut Peer, worker: &AccountHandle) -> Value 
         .run(move |store| async move {
             store
                 .transaction_with(move |tx| {
-                    assert!(store::receipt(tx, &operation, "submitted")?.is_some());
+                    assert!(store::account_submission(tx, &operation)?.is_some());
                     Ok::<_, WorkerError>(())
                 })
                 .await?;
@@ -427,15 +427,19 @@ async fn restart_recovery_unconfirms_a_written_steer_and_keeps_its_receipt() {
         .run(move |store| async move {
             store::recover(&store, "default", Generation(2), true).await?;
             Ok(store.test_reader()?.query_row(
-                "SELECT json_extract(result,'$.stage') FROM runtime_operation_receipts \
-                 WHERE signature='claude-steer'",
-                [],
-                |row| row.get::<_, String>(0),
+                "SELECT json_extract(payload,'$.stage') FROM runtime_outbox \
+                 WHERE account='default' AND kind=?1",
+                [OutboxKind::Steer],
+                |row| row.get::<_, studio_runtime_schema::persistence::SteerStage>(0),
             )?)
         })
         .await
         .unwrap();
-    assert_eq!(stage, "unconfirmed", "a late acknowledgement can repair it");
+    assert_eq!(
+        stage,
+        studio_runtime_schema::persistence::SteerStage::Unconfirmed,
+        "a late acknowledgement can repair it"
+    );
     let (status, _, error) = input(&state).await;
     assert_eq!(status, "failed");
     assert_eq!(
@@ -603,7 +607,7 @@ async fn mixed_batch_is_compiled_acknowledged_once_and_deferred_input_waits(
                 store
                     .transaction_with(move |tx| {
                         assert!(
-                            store::receipt(tx, &operation, "submitted")?.is_none(),
+                            store::account_submission(tx, &operation)?.is_none(),
                             "ordinary request receipt was retired before input acknowledgement"
                         );
                         Ok::<_, WorkerError>(())

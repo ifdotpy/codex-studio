@@ -179,13 +179,23 @@ fn put(tx: &Transaction<'_>, task: &Task) -> Result<(), WorkerError> {
 fn tool_error(error: tool_requests::ToolRequestError) -> WorkerError {
     match error {
         tool_requests::ToolRequestError::Store(error) => WorkerError::Store(error),
-        _ => WorkerError::CallbackUnknown,
+        tool_requests::ToolRequestError::RequestResult(error) => WorkerError::Store(error.into()),
+        tool_requests::ToolRequestError::InvalidRequest(_)
+        | tool_requests::ToolRequestError::RequiresDependency(_)
+        | tool_requests::ToolRequestError::Payload(_) => WorkerError::CallbackUnknown,
     }
 }
 fn callback_error(error: callbacks::CallbackError) -> WorkerError {
     match error {
+        callbacks::CallbackError::Expired => WorkerError::Expired,
         callbacks::CallbackError::Store(error) => WorkerError::Store(error),
-        _ => WorkerError::CallbackUnknown,
+        callbacks::CallbackError::Invalid(_)
+        | callbacks::CallbackError::InvalidResultSchema(_)
+        | callbacks::CallbackError::Dependency(_)
+        | callbacks::CallbackError::Stale
+        | callbacks::CallbackError::Conflict
+        | callbacks::CallbackError::Unknown
+        | callbacks::CallbackError::Stored(_) => WorkerError::CallbackUnknown,
     }
 }
 pub(super) fn operation(scope: &str, generation: u64, cursor: u64) -> String {
@@ -270,11 +280,6 @@ pub(super) async fn retire_async(store: &RuntimeStore, operation: &str) -> Resul
         .transaction_with(move |tx| retire(tx, &operation))
         .await
 }
-#[cfg(test)]
-pub(super) async fn admit(store: &RuntimeStore, operation: &str) -> Result<bool, WorkerError> {
-    admit_reply(store, operation, None).await
-}
-
 fn accepted_context(
     tx: &Transaction<'_>,
     accepted: &Accepted,
@@ -284,7 +289,7 @@ fn accepted_context(
     let params = match &frame {
         Frame::Request(request) => request.params.as_ref(),
         Frame::UnknownMethod(request) => request.fields.get("params"),
-        _ => None,
+        Frame::Notification(_) | Frame::Response { .. } => None,
     };
     let thread = params
         .and_then(|params| params["threadId"].as_str())
@@ -379,10 +384,10 @@ pub(super) async fn expired(
                 return Ok(());
             }
             let mut accepted = task.payload.accepted.clone();
-            if let Some(mut saved) = task.payload.submitted.clone() {
-                if saved.hydrate(tx).is_ok() {
-                    accepted.submitted = Some(saved);
-                }
+            if let Some(mut saved) = task.payload.submitted.clone()
+                && saved.hydrate(tx).is_ok()
+            {
+                accepted.submitted = Some(saved);
             }
             let recoverable = task.status != ToolRequestStatus::Unknown
                 && !task.payload.recovery_attempted
@@ -449,16 +454,7 @@ pub(super) async fn written(
                 .map_err(callback_error)?;
             }
             match outcome {
-                WriteOutcome::Written => {
-                    retire(tx, &operation)?;
-                    callbacks::retire_checkpointed(
-                        tx,
-                        &task.payload.accepted.journal_scope,
-                        task.payload.accepted.generation,
-                    )
-                    .map_err(callback_error)?;
-                    Ok(())
-                }
+                WriteOutcome::Written => retire(tx, &operation),
                 WriteOutcome::NotSent
                     if !task.payload.recovery_attempted
                         && task.status != ToolRequestStatus::Unknown =>

@@ -614,6 +614,7 @@ pub(super) async fn provider_call(
         })
         .await
         .map_err(|error| match error {
+            studio_runtime_services::account_session_runtime::AccountSessionError::Expired => ApiError::new(axum::http::StatusCode::GONE, error.to_string()),
             studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
                 name,
             ) => ApiError::dependency(name),
@@ -696,9 +697,12 @@ impl studio_runtime_services::native_actions::CommandAdmission for NativeCommand
     }
 }
 
-fn native_command_error(error: studio_runtime_services::native_actions::NativeError) -> ApiError {
+pub(super) fn native_command_error(
+    error: studio_runtime_services::native_actions::NativeError,
+) -> ApiError {
     use studio_runtime_services::native_actions::NativeError;
     match error {
+        NativeError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         NativeError::Invalid(_) | NativeError::Changed => ApiError::new(
             StatusCode::BAD_REQUEST,
             "This native command has no active session",

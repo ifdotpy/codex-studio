@@ -222,6 +222,7 @@ async fn provider_request(
         .provider_request(request)
         .await
         .map_err(|error| match error {
+            AccountSessionError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
             AccountSessionError::Requires(name) => ApiError::dependency(name),
             AccountSessionError::Unknown => ApiError::new(
                 StatusCode::SERVICE_UNAVAILABLE,

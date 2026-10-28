@@ -60,10 +60,6 @@ impl ProjectLocationsRepository {
         .transpose()
     }
 
-    pub fn delete_settled(tx: &Transaction<'_>, id: &str) -> StoreResult<()> {
-        tx.execute("DELETE FROM runtime_server_outbox WHERE id=?1", [id])?;
-        Ok(())
-    }
     pub fn tool(db: &Connection, id: &str) -> StoreResult<Option<Value>> {
         let raw: Option<String> = db
             .query_row(

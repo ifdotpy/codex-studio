@@ -72,13 +72,20 @@ async fn saved_start_effect_of_a_held_attempt_does_not_end_the_restarted_worker(
         .bridge
         .run(move |store| async move {
             scheduler::lifecycle_transaction_with(&store, move |tx| {
-                let saved = store::receipt(tx, &operation, "submitted")?
-                    .expect("the held thread request keeps its receipt");
-                let pending: Pending = serde_json::from_value(saved["context"].clone()).unwrap();
-                tx.execute(
-                    "DELETE FROM runtime_operation_receipts WHERE id LIKE ?1",
-                    [format!("account-worker:{operation}:%")],
+                let call =
+                    store::account_submission(tx, &operation)?.expect("held provider obligation");
+                let pending = call.context;
+                let removed = tx.execute(
+                    "DELETE FROM runtime_outbox WHERE id=?1 AND kind=?2",
+                    rusqlite::params![
+                        operation,
+                        studio_runtime_schema::persistence::OutboxKind::ProviderCall
+                    ],
                 )?;
+                assert_eq!(
+                    removed, 1,
+                    "only the stale account request obligation is removed"
+                );
                 store::persist_effect(tx, "default", &Effect::Submit(pending.intent))?;
                 let mut agent =
                     AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();

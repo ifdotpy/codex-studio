@@ -213,22 +213,38 @@ async fn vm_existing_reattach_refuses_unproved_native_identity_and_authority_rac
 
 #[tokio::test]
 async fn vm_existing_reattach_refuses_missing_or_unfinished_start_receipts() {
-    for result in [None, Some("reserved"), Some("not_sent")] {
+    use studio_runtime_schema::persistence::WorkEffectStatus;
+    for result in [
+        None,
+        Some(WorkEffectStatus::Submitted),
+        Some(WorkEffectStatus::NotSent),
+    ] {
         let (state, guest) = existing_actor(false).await;
         let actor = state.agent.clone();
         let epoch = state.epoch;
-        state.bridge.run(move |store| async move {
-            store.transaction(move |tx| {
-                let key = format!("linux-vm-provider-start:{actor}:{epoch}");
-                if let Some(phase) = result {
-                    tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.phase',?1) WHERE id=?2", rusqlite::params![phase,key])?;
-                } else {
-                    tx.execute("DELETE FROM runtime_operation_receipts WHERE id=?1", [key])?;
-                }
+        state
+            .bridge
+            .run(move |store| async move {
+                store
+                    .transaction(move |tx| {
+                        let mut agent = AgentRepository::get(tx, &AgentId::from(actor.as_str()))?
+                            .expect("VM actor");
+                        assert_eq!(agent.epoch, epoch);
+                        if let Some(status) = result {
+                            agent
+                                .extra
+                                .get_mut("vmLaunch")
+                                .expect("current launch owner")["status"] = json!(status);
+                        } else {
+                            agent.extra.remove("vmLaunch");
+                        }
+                        AgentRepository::put(tx, &agent)
+                    })
+                    .await?;
                 Ok(())
-            }).await?;
-            Ok(())
-        }).await.unwrap();
+            })
+            .await
+            .unwrap();
         let (_peer, mut worker) = existing_worker(&state, guest.clone()).await;
         worker_barrier(&worker).await;
         assert_eq!(
@@ -628,6 +644,8 @@ async fn vm_existing_reattach_on_demand_read_reuses_the_existing_actor_connectio
     *guest.info_override.lock().unwrap() = None;
     let port = worker.retained_session();
     let request = SessionRequest {
+        root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+        admitted_request: None,
         scope: port.scope().clone(),
         expected_scope: None,
         operation: "existing-vm-read".into(),
@@ -670,6 +688,8 @@ async fn vm_reattach_read_waits_for_handshake_and_rechecks_authority() {
         *guest.reattach_gate.lock().unwrap() = Some((held.clone(), release.clone()));
         let port = worker.retained_session();
         let request = SessionRequest {
+            root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+            admitted_request: None,
             scope: port.scope().clone(),
             expected_scope: None,
             operation: "held-vm-read".into(),

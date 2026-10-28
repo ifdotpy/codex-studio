@@ -68,29 +68,7 @@ pub async fn recover_on_startup(
                             "startup scheduler reservation skipped row id={id}: invalid batch"
                         );
                     }
-                    error @ studio_runtime_store::StoreError::StateDirectory(_)
-                    | error @ studio_runtime_store::StoreError::AlreadyOwned
-                    | error @ studio_runtime_store::StoreError::MissingDatabase(_)
-                    | error @ studio_runtime_store::StoreError::Migration { .. }
-                    | error @ studio_runtime_store::StoreError::UnsafeStateDirectory
-                    | error @ studio_runtime_store::StoreError::SchemaMismatch(_)
-                    | error @ studio_runtime_store::StoreError::InvalidSyncObject { .. }
-                    | error @ studio_runtime_store::StoreError::InvalidSyncObjectField { .. }
-                    | error @ studio_runtime_store::StoreError::InvalidStoredRecord { .. }
-                    | error @ studio_runtime_store::StoreError::SchemaObjectMismatch { .. }
-                    | error @ studio_runtime_store::StoreError::Sqlite(_)
-                    | error @ studio_runtime_store::StoreError::CommitOutcomeUnknown(_)
-                    | error @ studio_runtime_store::StoreError::Json(_)
-                    | error @ studio_runtime_store::StoreError::InvalidStoredObject { .. }
-                    | error @ studio_runtime_store::StoreError::SchemaValidation(_)
-                    | error @ studio_runtime_store::StoreError::RecordContract(_)
-                    | error @ studio_runtime_store::StoreError::WriterPoisoned
-                    | error @ studio_runtime_store::StoreError::WriterActorInitialization(_)
-                    | error @ studio_runtime_store::StoreError::WriterActorControl(_)
-                    | error @ studio_runtime_store::StoreError::CommitActorOutcomeUnknown(_)
-                    | error @ studio_runtime_store::StoreError::ReadTaskFailed
-                    | error @ studio_runtime_store::StoreError::RequestResult(_)
-                    | error @ studio_runtime_store::StoreError::Outbox(_) => {
+                    error => {
                         return Err(MonitorError::Store(error));
                     }
                 }
@@ -328,6 +306,7 @@ pub(crate) fn startup_store_failure(error: &MonitorError) -> bool {
         | MonitorError::InvalidDeliveryIdentity(_)
         | MonitorError::InvalidOutputReceipt(_)
         | MonitorError::TaskFailed
+        | MonitorError::Expired
         | MonitorError::InputOutcomeUnknown
         | MonitorError::Refused(_)
         | MonitorError::Unavailable(_)
@@ -1157,7 +1136,8 @@ pub async fn provider_root(store: &RuntimeStore, id: &str) -> Result<String, Mon
             let mut record = snapshot.record().clone();
             record["rootRequestId"] = json!(root);
             // The root is owner state; no delivery or status transition is implied.
-            let typed = studio_runtime_store::MonitorRecord::from_value(record)?;
+            let typed = studio_runtime_store::MonitorRecord::from_value(record)
+                .map_err(studio_runtime_store::StoreError::from)?;
             studio_runtime_store::Table::new(tx).put(&typed)?;
             drop(actor);
             Ok(root)
@@ -1240,7 +1220,7 @@ pub async fn provider_request_identity(
             if record["stallProbeGeneration"].as_i64()!=Some(generation) {return Err(MonitorError::Refused("Monitor liveness generation changed"));}
             if record["livenessProbe"]["generation"].as_i64()!=Some(generation) {
                 record["livenessProbe"]=json!({"generation":generation,"rootRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
-                Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(record.clone())?)?;
+                Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(record.clone()).map_err(studio_runtime_store::StoreError::from)?)?;
             }
             record["livenessProbe"].clone()
         } else if method==Method::CommandExecWrite || method==Method::CommandExecResize {

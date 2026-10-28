@@ -187,6 +187,7 @@ pub async fn dispatch_reserved_via_broker(
         })
         .await
         .map_err(|error| match error {
+            AccountSessionError::Expired => NativeError::Expired,
             AccountSessionError::Requires(name) => NativeError::Unavailable(name),
             AccountSessionError::Refused(_) => NativeError::Changed,
             AccountSessionError::Unknown => NativeError::Unknown,

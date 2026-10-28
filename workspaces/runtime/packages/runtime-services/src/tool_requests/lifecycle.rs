@@ -99,6 +99,9 @@ fn operation(state: &State) -> Result<&Operation, ToolRequestError> {
 
 pub(crate) fn apply(record: &mut Value, state: &State) -> Result<bool, ToolRequestError> {
     let operation = operation(state)?;
+    if classify(record)? == operation.state {
+        return Ok(false);
+    }
     let (stage, outcome, cancel) = match operation.state {
         OperationState::Reserved => (S::Queued, O::Pending, false),
         OperationState::Dispatched => (S::Running, O::Pending, false),

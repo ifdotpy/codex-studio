@@ -54,9 +54,9 @@ use std::{
 };
 use studio_runtime_process::{EventCursor, ProviderLaunchSpec, provider_seam::*};
 use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
+use studio_runtime_store::AgentRecord;
 use studio_runtime_store::outbox::Outbox;
 use studio_runtime_store::path_identity::CanonicalPath;
-use studio_runtime_store::{AgentRecord, EventWriteRepository};
 use tokio::sync::oneshot;
 
 fn test_resources() -> Result<preparation::PreparationResources, WorkerError> {
@@ -898,19 +898,28 @@ impl State {
             .run(move |store| async move {
                 store
                     .transaction_with(move |tx| {
-                        annotate(
+                        // This fixture seeds domain input; public annotation ingress has its own UUID witnesses.
+                        let owner = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?
+                            .expect("fixture agent");
+                        let created = super::now();
+                        studio_runtime_store::EventWriteRepository::put_annotation(
                             tx,
-                            AnnotationWrite {
-                                agent_id: agent,
-                                id: Some(id.clone()),
-                                path: "README.md".into(),
-                                line: 1,
-                                text: id.clone(),
-                                turn_id: None,
-                                signature: id,
-                            },
+                            &id,
+                            &json!({
+                                "id":id,"agent":agent,"rootId":owner.root_id.0,
+                                "path":"README.md","line":1,"text":id,"created":created,
+                            }),
+                        )?;
+                        crate::event_write::enqueue_event(
+                            tx,
+                            &owner,
+                            format!("annotation:{id}"),
+                            "user",
+                            format!("Review comment at README.md:1\n{id}"),
+                            created,
                         )
-                        .map_err(|e| StoreError::SchemaMismatch(e.to_string()))
+                        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                        Ok::<_, StoreError>(())
                     })
                     .await?;
                 Ok(())
@@ -1020,7 +1029,7 @@ impl State {
                 store
                     .transaction_with(move |tx| {
                         assert!(
-                            store::receipt(tx, &operation, "submitted")?.is_some(),
+                            store::account_submission(tx, &operation)?.is_some(),
                             "Submitted must commit before transport admission"
                         );
                         Ok::<_, WorkerError>(())
@@ -1163,7 +1172,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
                         tx,
                         AnnotationWrite {
                             agent_id: write_good_id.clone(),
-                            id: Some("valid-neighbor-input".into()),
+                            id: Some(studio_runtime_schema::persistence::RequestIdentity::issue_root()),
                             path: "README.md".into(),
                             line: 1,
                             text: "valid neighbor input".into(),
@@ -1218,19 +1227,13 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
                     [&bad_id],
                     |row| row.get(0),
                 )?;
-                let receipt_id = format!(
-                    "{}{bad_id}",
-                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
-                );
                 let diagnostic: String = db.query_row(
-                    "SELECT result FROM runtime_operation_receipts WHERE id=?1 AND json_valid(result)",
-                    [receipt_id],
-                    |row| row.get(0),
+                    "SELECT hold_incident FROM runtime_agents WHERE id=?1",
+                    [&bad_id], |row| row.get(0),
                 )?;
                 let json_extract_safe: bool = db.query_row(
-                    "SELECT json_extract(result,'$.held')=1 AND json_extract(result,'$.diagnostic') IS NOT NULL FROM runtime_operation_receipts WHERE id=?1",
-                    [format!("{}{bad_id}", studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX)],
-                    |row| row.get(0),
+                    "SELECT hold_status='invalid' AND hold_incident IS NOT NULL FROM runtime_agents WHERE id=?1",
+                    [&bad_id], |row| row.get(0),
                 )?;
                 let projected: String = db.query_row(
                     "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?1",
@@ -1244,7 +1247,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
         .expect("read original agent row and separate hold");
     assert!(
         json_extract_safe,
-        "held receipt remains safe for JSON SQL consumers"
+        "held owner remains safe for SQL consumers"
     );
     let projected: Value = serde_json::from_str(&projected).expect("held agent projection JSON");
     assert_eq!(projected["value"]["status"], "failed");
@@ -1261,12 +1264,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
         "held row bytes remain untouched"
     );
     let held: Value = serde_json::from_str(&stored_record).expect("original JSON row");
-    let receipt_result: Value =
-        serde_json::from_str(&diagnostic).expect("held result remains valid JSON");
-    assert_eq!(receipt_result["held"], true);
-    let message = receipt_result["diagnostic"]
-        .as_str()
-        .expect("diagnostic text");
+    let message = diagnostic;
     assert!(
         message.contains(&format!("runtime_agents/{bad_id}")),
         "{message}"
@@ -1403,14 +1401,11 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
     let reader = store.test_reader().expect("read connection opens");
     let receipt: bool = reader
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id=?1)",
-            [format!(
-                "{}racy",
-                studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
-            )],
+            "SELECT hold_status!='clear' FROM runtime_agents WHERE id='racy'",
+            [],
             |row| row.get(0),
         )
-        .expect("hold receipt query succeeds");
+        .expect("hold query succeeds");
     assert!(!receipt, "a repaired row must not receive a stale hold");
     assert!(
         AgentRepository::get(&reader, &AgentId::from("racy"))
@@ -1482,21 +1477,26 @@ async fn unresolved_receipt_for_held_invalid_agent_does_not_block_recovery() {
                         },
                         "method": "thread/start", "operation": "uncertain-start"
                     });
-                    let result = json!({"context":context,"request":{}});
-                    tx.execute(
-                        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'submitted',?2)",
-                        rusqlite::params![
-                            "account-worker:account:default:uncertain-start:submitted",
-                            result.to_string()
-                        ],
-                    )?;
+                    let context: Pending = serde_json::from_value(context)?;
+                    let request = studio_runtime_schema::provider_call_contract::TransportRequest {
+                        id: studio_runtime_providers::RequestId::String("uncertain-start".into()), generation: 1,
+                        method: Method::ThreadStart, operation: "uncertain-start".into(), thread: None,
+                        lightweight: false, deadline: 60_000, unknown: true, remote_id: None,
+                    };
+                    studio_runtime_store::outbox::Outbox::put(tx, &studio_runtime_store::outbox::OutboxRow {
+                        id: "uncertain-start".into(), kind: studio_runtime_schema::persistence::OutboxKind::ProviderCall,
+                        owner_kind: studio_runtime_schema::persistence::OwnerKind::Agent, owner_id: context.intent.agent_id.clone(),
+                        account: Some("default".into()), stream_id: Some("default".into()), generation: Some(1),
+                        request_id: None, signature: "held-call".into(), status: studio_runtime_schema::persistence::OutboxStatus::Unknown,
+                        ordinal: None, next_at: None, created: 1,
+                        payload: store::ProviderCall::Account(Box::new(store::AccountCall { context, request, written: None, restarted: false })),
+                    })?;
                     Ok(())
                 }).await?;
 
                 let recovered = store::recover(&store, "default", Generation(1), true).await?;
                 let unresolved: i64 = store.test_reader()?.query_row(
-                    "SELECT COUNT(*) FROM runtime_operation_receipts \
-                     WHERE id='account-worker:account:default:uncertain-start:submitted'",
+                    "SELECT COUNT(*) FROM runtime_outbox WHERE id='uncertain-start' AND kind='provider_call' AND status='unknown'",
                     [],
                     |row| row.get(0),
                 )?;
@@ -1966,8 +1966,16 @@ async fn unsupported_callback(method: &str) {
                             let operation = format!("callback:default:1:{cursor}");
                             Ok((
                                 store::checkpoint(tx, "default", 1)?,
-                                store::receipt(tx, &operation, "accepted")?.is_some(),
-                                store::receipt(tx, &operation, "submitted")?.is_some(),
+                                crate::tool_requests::get_callback::<
+                                    callback_record::CallbackObligation,
+                                >(tx, &operation)
+                                .map_err(|e| StoreError::SchemaMismatch(e.to_string()))?
+                                .is_some(),
+                                crate::tool_requests::get_callback::<
+                                    callback_record::CallbackObligation,
+                                >(tx, &operation)
+                                .map_err(|e| StoreError::SchemaMismatch(e.to_string()))?
+                                .is_some_and(|task| task.payload.submitted.is_some()),
                             ))
                         })
                         .await
@@ -2083,6 +2091,8 @@ impl crate::provider_callbacks::tools::StatusWatchPort for SameAccountProviderSt
 
             let scope = self.session.scope().clone();
             let request = super::retained::SessionRequest {
+                root_request_id: String::new(),
+                admitted_request: None,
                 scope: scope.clone(),
                 expected_scope: Some(scope),
                 operation: "managed-callback-same-account-provider-request".into(),
@@ -2440,11 +2450,17 @@ async fn scenario_callback_unknown_write_is_not_resent_on_replay() {
             store
                 .transaction_with(|tx| {
                     let operation = "callback:default:1:1";
-                    Ok(["accepted", "submitted", "unknown"].map(|phase| {
-                        store::receipt(tx, operation, phase)
-                            .expect("callback phase")
-                            .is_some()
-                    }))
+                    let task = crate::tool_requests::get_callback::<
+                        callback_record::CallbackObligation,
+                    >(tx, operation)
+                    .map_err(|e| StoreError::SchemaMismatch(e.to_string()))?
+                    .expect("uncertain callback owner");
+                    Ok([
+                        true,
+                        task.payload.submitted.is_some(),
+                        task.status
+                            == studio_runtime_schema::persistence::ToolRequestStatus::Unknown,
+                    ])
                 })
                 .await
         })
@@ -3162,7 +3178,7 @@ async fn rejected_start_restarts_without_unresolved_transport_receipts() {
     worker.shutdown().await.unwrap();
     let peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
-    let unresolved = state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:account:%:submitted'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
+    let unresolved = state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_outbox WHERE kind='provider_call' AND json_extract(payload,'$.family')='account'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(unresolved, 0);
     assert_ne!(state.event_status("input").await, "uncertain");
     worker.shutdown().await.unwrap();
@@ -3376,7 +3392,7 @@ async fn committed_batch_replay_after_mid_batch_ack_loss_is_exactly_once() {
             .run(move |store| async move {
                 store.transaction_with(move |tx| {
                     let saved = studio_runtime_store::account_state::streams(tx,"default")?
-                        .map(|raw|serde_json::from_str::<Value>(&raw)).transpose()?
+                        .map(|raw|serde_json::from_str::<Value>(&raw)).transpose().map_err(StoreError::from)?
                         .unwrap_or_else(||json!({"metadata":{"entries":[],"closed":[]}}));
                     let metadata = &saved["metadata"];
                     Ok(json!({
@@ -3650,7 +3666,7 @@ async fn scenario_stream_base_survives_replaced_visible_item() {
             let raw =
                 studio_runtime_store::account_state::streams(&store.test_reader()?, "default")?
                     .expect("current stream owner");
-            let saved: Value = serde_json::from_str(&raw)?;
+            let saved: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
             Ok(saved["metadata"]["entries"]
                 .as_array()
                 .expect("stream entries")
@@ -4583,6 +4599,8 @@ impl preparation::VmProviderLaunchResolver for VmTurnResolver {
         _actor_id: String,
         _actor_epoch: i64,
         _generation: u64,
+        _root_request_id: String,
+        _source: studio_runtime_store::request_results::AdmittedRequest,
     ) -> preparation::VmProviderAuthFuture<'_> {
         let reconnect_generation = self.reconnect_generation.clone();
         Box::pin(async move {
@@ -5753,6 +5771,8 @@ async fn retained_vm_reply_uses_its_actor_cursor_when_host_cursor_is_zero() {
     let retained = worker.retained_session();
     let receipt = retained
         .request(super::retained::SessionRequest {
+            root_request_id: String::new(),
+            admitted_request: None,
             scope: retained.scope().clone(),
             expected_scope: None,
             operation: "vm-retained-thread-read-cursor-one".into(),
@@ -5859,8 +5879,11 @@ async fn retained_unknown_replay_precedes_changed_vm_session_fence() {
 
     guest.state.lock().unwrap().unknown_write_once = true;
     let retained = worker.retained_session();
+    let root_request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let make_request =
         |scope: crate::recovery_history::ConnectionScope| super::retained::SessionRequest {
+            root_request_id: root_request_id.clone(),
+            admitted_request: None,
             scope,
             expected_scope: None,
             operation: "vm-unknown-profile-change".into(),
@@ -5870,7 +5893,7 @@ async fn retained_unknown_replay_precedes_changed_vm_session_fence() {
             }),
             transfer: None,
             deleted_actor_session: None,
-            method: Method::ThreadRead,
+            method: Method::ThreadCompactStart,
             params: json!({"threadId":"fake-thread-0"}),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(10),
         };
@@ -6178,33 +6201,15 @@ async fn vm_worker_restart_reconciles_uncertain_provider_start_without_resending
     worker_barrier(&first_worker).await;
     let first_recovery = state.record().await;
     assert_eq!(first_recovery["status"], "starting", "{first_recovery}");
-    let agent_id = state.agent.clone();
-    let receipt_id = format!(
-        "linux-vm-provider-start:{agent_id}:{}",
-        first_recovery["epoch"].as_i64().expect("VM actor epoch")
-    );
-    let receipt = state
-        .bridge
-        .run(move |store| async move {
-            let connection = store.test_reader()?;
-            Ok(EventWriteRepository::receipt(&connection, &receipt_id)?
-                .expect("uncertain start keeps its durable reservation"))
-        })
-        .await
-        .expect("read provider start receipt");
-    let receipt_prefix = format!(
-        "agent={agent_id};epoch={};launch=",
-        first_recovery["epoch"].as_i64().expect("VM actor epoch")
-    );
-    assert!(
-        receipt
-            .signature
-            .strip_prefix(&receipt_prefix)
-            .is_some_and(|fingerprint| fingerprint.len() == 64)
-    );
+    let launch = &first_recovery["vmLaunch"];
+    assert_eq!(launch["identity"]["epoch"], first_recovery["epoch"]);
+    assert_eq!(launch["status"], "submitted");
     assert_eq!(
-        serde_json::from_str::<Value>(&receipt.result).unwrap()["phase"],
-        "reserved"
+        launch["identity"]["launchFingerprint"]
+            .as_str()
+            .expect("launch signature")
+            .len(),
+        64
     );
     {
         let guest_state = guest.state.lock().unwrap();
@@ -6512,7 +6517,7 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
                 },
             ).await?, "{mutation}");
             scheduler::lifecycle_transaction_with(&store, move |tx| {
-                assert!(store::receipt(tx, &operation, "submitted")?.is_none());
+                assert!(store::account_submission(tx, &operation)?.is_none());
                 let row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap().value();
                 assert_ne!(row["startAttempt"]["settingsFixed"], true, "freeze must roll back: {mutation}");
                 let meta = studio_runtime_store::NotificationDispatchRepository::event_metadata(tx, "annotation:input")?;

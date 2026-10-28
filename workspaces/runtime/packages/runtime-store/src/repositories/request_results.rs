@@ -1,6 +1,6 @@
 //! Immutable exact replies. Call only after authorization, inside the owner's writer transaction.
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use studio_runtime_schema::persistence::{
     REQUEST_RESULT_TTL_MS, RequestIdentity, RequestIdentityError,
 };
@@ -11,6 +11,8 @@ pub(crate) const TABLE: &str = "request_results";
 
 #[derive(Debug, thiserror::Error)]
 pub enum RequestResultError {
+    #[error("Request id expired")]
+    Expired,
     #[error(transparent)]
     Sql(#[from] rusqlite::Error),
     #[error(transparent)]
@@ -38,6 +40,12 @@ pub struct StoredResult {
     /// Exact stored JSON bytes, never reconstructed from mutable owner state.
     pub result: String,
     pub created: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredReply<R> {
+    pub signature: String,
+    pub reply: R,
 }
 
 /// Persist this with the admitted owner/outbox for asynchronous settlement.
@@ -91,6 +99,44 @@ pub enum Admission {
 
 pub struct RequestResults;
 impl RequestResults {
+    /// Authorized status recovery only: exact imported PK first, then canonical
+    /// scope. A miss admits nothing; expired cache rows are ordinary misses.
+    #[allow(clippy::too_many_arguments)]
+    pub fn read<R: DeserializeOwned>(
+        conn: &Connection,
+        raw_id: &str,
+        namespace: &str,
+        authority: &[&str],
+        root: &str,
+        operation: &[&str],
+        now_ms: i64,
+    ) -> crate::StoreResult<Option<StoredReply<R>>> {
+        let lookup = |id: &str| -> rusqlite::Result<Option<(String, String)>> {
+            conn.query_row(
+                "SELECT signature,result FROM request_results WHERE id=?1 AND created>?2",
+                params![id, now_ms.saturating_sub(REQUEST_RESULT_TTL_MS)],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+        };
+        let saved = match lookup(raw_id)? {
+            Some(saved) => Some(saved),
+            None => match RequestIdentity::new(namespace, authority, root, operation) {
+                Ok(identity) => lookup(identity.id())?,
+                Err(_) => None,
+            },
+        };
+        saved
+            .map(|(signature, result)| {
+                let envelope: ResultEnvelope<R> = serde_json::from_str(&result)?;
+                Ok(StoredReply {
+                    signature,
+                    reply: envelope.reply,
+                })
+            })
+            .transpose()
+    }
+
     /// Completion-only lookup using the persisted owner token. Age does not
     /// invalidate already admitted work; a miss grants no new effect/admission.
     pub fn admitted_result(
@@ -205,6 +251,64 @@ mod tests {
     use crate::{Connection, RuntimeStore, StoreError};
     use std::sync::Arc;
     use studio_runtime_schema::persistence::REQUEST_ID_FUTURE_SKEW_MS;
+
+    #[test]
+    fn receipt_result_expired_stays_typed_without_synthetic_metadata() {
+        let error: StoreError = RequestResultError::Expired.into();
+        assert!(matches!(
+            error,
+            StoreError::RequestResult(RequestResultError::Expired)
+        ));
+        assert_eq!(error.to_string(), "Request id expired");
+    }
+
+    #[test]
+    fn receipt_result_typed_read_exact_canonical_ttl_and_decode() {
+        let db = database();
+        let now = REQUEST_RESULT_TTL_MS * 2;
+        let root = uuid::Uuid::from_u128(((now as u128) << 80) | (7 << 76) | (2 << 62)).to_string();
+        let canonical = RequestIdentity::new("read", &["actor"], &root, &["op"]).unwrap();
+        let envelope = serde_json::to_string(&ResultEnvelope {
+            actor: None,
+            reply: "exact reply",
+            references: vec![],
+        })
+        .unwrap();
+        for id in ["raw pk", canonical.id()] {
+            db.execute(
+                "INSERT INTO request_results VALUES(?1,'sig',?2,?3)",
+                params![id, envelope, now],
+            )
+            .unwrap();
+        }
+        let read = |raw, at| {
+            RequestResults::read::<String>(&db, raw, "read", &["actor"], &root, &["op"], at)
+        };
+        let exact = read("raw pk", now).unwrap().unwrap();
+        assert_eq!(
+            (exact.signature.as_str(), exact.reply.as_str()),
+            ("sig", "exact reply")
+        );
+        assert_eq!(read("missing", now).unwrap().unwrap().reply, "exact reply");
+        assert!(
+            read("raw pk", now + REQUEST_RESULT_TTL_MS)
+                .unwrap()
+                .is_none()
+        );
+        db.execute(
+            "UPDATE request_results SET result=json_object('actor',NULL,'reply',5,'references',json_array()) WHERE id='raw pk'",
+            [],
+        )
+        .unwrap();
+        assert!(matches!(read("raw pk", now), Err(StoreError::Json(_))));
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2,
+            "reads admit nothing"
+        );
+    }
 
     #[test]
     fn receipt_result_admitted_schema_matches_store_owner() {

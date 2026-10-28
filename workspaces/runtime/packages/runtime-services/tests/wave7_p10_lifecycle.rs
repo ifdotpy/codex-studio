@@ -1599,6 +1599,12 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.threadId','voice-thread','$.accountKey','voice-account') WHERE id='lead'",[])?;
         tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES('delete-unknown-voice','lead',1,'voice-thread','voice-account','6','unknown'),('delete-active-voice','lead',2,'voice-thread','voice-account','6','ready')",[])?;
         let session=provider::capture_delete_sessions(tx,"lead")?.into_iter().find(|session|session.session_id=="delete-unknown-voice").expect("unknown session");
+        let root_request_id = RequestIdentity::issue_root();
+        let identity = RequestIdentity::new("voice-fixture", &["lead"], &root_request_id, &[]).expect("fixture identity");
+        let admission = match studio_runtime_store::request_results::RequestResults::admit(tx, &identity, "fixture", identity.issued_ms())? {
+            studio_runtime_store::request_results::Admission::Fresh(admitted) => admitted,
+            studio_runtime_store::request_results::Admission::Replay(_) => panic!("fresh fixture identity"),
+        };
         Outbox::put(tx,&OutboxRow {
             id:"held-stop:lead".into(),kind:OutboxKind::VoiceStop,owner_kind:OwnerKind::Agent,owner_id:"lead".into(),request_id:None,
             signature:"lifecycle.voice-stop.v1".into(),status:OutboxStatus::Unknown,account:None,stream_id:None,generation:None,ordinal:None,next_at:None,created:1,
@@ -1661,7 +1667,7 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
             .expect("pending index")
             .is_empty()
     );
-    ports.drain().await.expect("repeat drain");
+    ports.committed().await.expect("repeat delivery");
     let calls = voice.calls.lock().expect("calls");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0, "voice:delete-stop:delete-active-voice");

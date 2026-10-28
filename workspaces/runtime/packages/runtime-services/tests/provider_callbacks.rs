@@ -24,11 +24,21 @@ async fn fixture() -> (
     std::sync::Arc<RuntimeStore>,
     CallbackContext,
 ) {
+    let (directory, store, context, _) = fixture_with_oracle().await;
+    (directory, store, context)
+}
+async fn fixture_with_oracle() -> (
+    tempfile::TempDir,
+    std::sync::Arc<RuntimeStore>,
+    CallbackContext,
+    Value,
+) {
     let t = template();
-    let (directory, store, _) = frozen::state().await;
+    let (directory, store, oracle) = frozen::state().await;
     let store = std::sync::Arc::new(store);
     let actor = &t.value["agents"][0];
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -37,7 +47,7 @@ async fn fixture() -> (
         thread: "thread-0".into(),
         turn: "turn-0".into(),
     };
-    (directory, store, context)
+    (directory, store, context, oracle)
 }
 fn request(method: Method, id: RequestId, params: Value) -> Frame {
     Frame::Request(RequestFrame {
@@ -261,6 +271,8 @@ async fn provider_callbacks_stale_and_worker_authority() {
 
 #[tokio::test]
 async fn provider_callbacks_transaction_failpoint_matrix() {
+    const DOMAIN_REPLY: &str = "json_type(NEW.result,'$.reply.contentItems') IS NULL";
+    const TOOL_REPLY: &str = "json_type(NEW.result,'$.reply.contentItems')='array'";
     // Admission and claim failpoints leave no committed running claim, so retry
     // may execute. Execution failpoints happen after claim commit: they roll
     // back effects and result, and replay must not execute the call again.
@@ -273,24 +285,16 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
                 "json_extract(NEW.record,'$.stage')='running'",
             ),
             ("runtime_work", "INSERT", "1"),
-            (
-                "runtime_operation_receipts",
-                "INSERT",
-                "NEW.id NOT LIKE 'provider-callback:%'",
-            ),
+            ("request_results", "INSERT", DOMAIN_REPLY),
             (
                 "runtime_tool_requests",
                 "UPDATE",
                 "json_extract(NEW.record,'$.stage')='completed'",
             ),
-            ("runtime_tool_results", "INSERT", "1"),
+            ("request_results", "INSERT", TOOL_REPLY),
         ] {
             if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_none()
-                && !(timing == "AFTER"
-                    && matches!(
-                        table,
-                        "runtime_work" | "runtime_tool_results" | "runtime_operation_receipts"
-                    ))
+                && !(timing == "AFTER" && matches!(table, "runtime_work" | "request_results"))
             {
                 continue;
             }
@@ -348,7 +352,7 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
                         .unwrap(),
                     1
                 );
-            } else if table != "runtime_tool_results" {
+            } else if predicate != TOOL_REPLY {
                 // The execution transaction body failed and rolled back, so
                 // the claim was settled as not applied with a saved result.
                 assert_eq!(body(&result)["success"], false);
@@ -587,7 +591,12 @@ async fn provider_callbacks_worker_versioned_progress_reaches_the_parent_once() 
             .unwrap(),
     );
     assert_eq!(body(&first)["success"], true, "{:?}", body(&first));
-    assert_eq!(tool_value(&first)["deliveries"][lead], "queued");
+    let delivery: studio_runtime_schema::persistence::RecipientDelivery =
+        serde_json::from_value(tool_value(&first)["deliveries"][lead].clone()).unwrap();
+    assert_eq!(
+        delivery.status,
+        studio_runtime_schema::persistence::DeliveryStatus::Queued
+    );
     // A retried callback answers from its receipt and delivers nothing again.
     assert_eq!(
         reply(
@@ -661,11 +670,11 @@ async fn provider_callbacks_worker_versioned_progress_reaches_the_parent_once() 
 
 #[tokio::test]
 async fn provider_callbacks_python_reservations_and_restart() {
-    let (_dir, store, context) = fixture().await;
+    let (_dir, store, context, oracle) = fixture_with_oracle().await;
     recover_connection(&store, &context.account, &context.connection, 20.0)
         .await
         .unwrap();
-    for (index, case) in template().value["reservations"]
+    for (index, case) in oracle["reservations"]
         .as_array()
         .unwrap()
         .iter()
@@ -690,12 +699,11 @@ async fn provider_callbacks_python_reservations_and_restart() {
     store
         .transaction_with::<_, studio_runtime_store::StoreError>(|tx| {
             tx.execute("DELETE FROM runtime_tool_requests", [])?;
-            tx.execute("DELETE FROM runtime_tool_request_aliases", [])?;
             Ok(())
         })
         .await
         .unwrap();
-    for case in template().value["reservations"].as_array().unwrap() {
+    for case in oracle["reservations"].as_array().unwrap() {
         let frame = Frame::Request(RequestFrame {
             id: serde_json::from_value(case["message"]["id"].clone()).unwrap(),
             method: Method::ItemToolCall,
@@ -709,12 +717,19 @@ async fn provider_callbacks_python_reservations_and_restart() {
             .test_reader()
             .unwrap()
             .query_row(
-                "SELECT record FROM runtime_tool_requests WHERE id=?1",
-                [case["record"]["id"].as_str().unwrap()],
+                "SELECT record FROM runtime_tool_requests WHERE kind='managed_tool' AND json_extract(record,'$.callId')=?1",
+                [case["record"]["callId"].as_str().unwrap()],
                 |r| r.get(0),
             )
             .unwrap();
         let actual: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            uuid::Uuid::parse_str(actual["id"].as_str().unwrap())
+                .unwrap()
+                .get_version_num(),
+            7
+        );
+        assert_ne!(actual["id"], actual["callId"]);
         assert_eq!(
             actual["outcome"],
             if actual["tool"] == "orchestration_task" {
@@ -724,7 +739,6 @@ async fn provider_callbacks_python_reservations_and_restart() {
             }
         );
         for field in [
-            "id",
             "agent",
             "threadId",
             "callId",
@@ -883,9 +897,20 @@ async fn provider_callbacks_answer_commit_failpoint() {
             .unwrap(),
         "pending"
     );
-    assert_eq!(store.test_reader().unwrap().query_row("SELECT count(*) FROM runtime_operation_receipts WHERE json_extract(result,'$.delivery') IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(
+        store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM runtime_outbox WHERE kind='provider_callback'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
     store.transaction_with::<_,studio_runtime_store::StoreError>(|tx| {
-        tx.execute_batch("DROP TRIGGER answer_fail; CREATE TRIGGER submitted_fail AFTER UPDATE ON runtime_operation_receipts WHEN json_extract(NEW.result,'$.delivery')='submitted' BEGIN SELECT RAISE(ABORT,'submission failpoint'); END")?; Ok(())
+        tx.execute_batch("DROP TRIGGER answer_fail; CREATE TRIGGER submitted_fail AFTER UPDATE ON runtime_outbox WHEN NEW.kind='provider_callback' AND NEW.status='submitted' BEGIN SELECT RAISE(ABORT,'submission failpoint'); END")?; Ok(())
     }).await.unwrap();
     let prepared = answer(&store, &context, &id, AnswerAuthority::User, &data, 12.0)
         .await

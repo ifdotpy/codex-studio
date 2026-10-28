@@ -1,4 +1,4 @@
-//! Required Python-owned tables for incoming pairing and durable delivery.
+//! Typed replies and retained table requirements for durable transport.
 use crate::request_results::{
     Admission, AdmittedRequest, RequestResultError, RequestResults, ResultEnvelope,
 };
@@ -49,23 +49,15 @@ pub struct AccessPending {
 /// Immutable federation content fingerprint, including the original domain ID.
 /// The signed UUID root is transport provenance and does not change old content hashes.
 pub fn federation_envelope_signature(envelope: &serde_json::Value) -> crate::StoreResult<String> {
-    let fields = envelope
+    let mut immutable = envelope
         .as_object()
+        .cloned()
         .ok_or(crate::StoreError::RecordContract("federation envelope"))?;
-    let immutable = serde_json::Value::Object(
-        fields
-            .iter()
-            .filter(|(key, _)| {
-                !matches!(
-                    key.as_str(),
-                    "timestamp" | "nonce" | "signature" | "requestId"
-                )
-            })
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect(),
-    );
+    for key in ["timestamp", "nonce", "signature", "requestId"] {
+        immutable.remove(key);
+    }
     Ok(crate::sha256_hex(
-        crate::python_json_compact(&immutable).as_bytes(),
+        crate::python_json_compact(&serde_json::Value::Object(immutable)).as_bytes(),
     ))
 }
 
@@ -80,6 +72,9 @@ pub fn remote_operation_key(
     root: &str,
     operation: &[&str],
 ) -> String {
+    if let Ok(identity) = RequestIdentity::new(namespace, authority, root, operation) {
+        return identity.id().to_owned();
+    }
     serde_json::to_string(&(namespace, authority, root, operation))
         .expect("string tuple serializes")
 }
@@ -92,12 +87,8 @@ pub fn admit_remote(
     signature: &str,
     now_ms: i64,
 ) -> Result<Admission, RequestResultError> {
-    let identity = RequestIdentity::new(namespace, authority, root, &[]).map_err(|_| {
-        studio_runtime_schema::persistence::RequestIdentityError::Expired {
-            issued_ms: 0,
-            expired_before_ms: now_ms,
-        }
-    })?;
+    let identity = RequestIdentity::new(namespace, authority, root, &[])
+        .map_err(|_| RequestResultError::Expired)?;
     RequestResults::admit(tx, &identity, signature, now_ms)
 }
 

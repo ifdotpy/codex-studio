@@ -28,18 +28,6 @@ pub struct SessionRequest {
 /// provider query whose result is not worth a durable record.
 pub const DIAGNOSTICS_OPERATION_PREFIX: &str = "diagnostics:";
 
-/// Any retained transport evidence prevents a transfer from changing an old
-/// read intent. This includes an unknown result and a prepared submission.
-pub(crate) fn has_transport_evidence(
-    tx: &studio_runtime_store::Transaction<'_>,
-    account: &str,
-    operation: &str,
-    admitted: Option<&AdmittedRequest>,
-) -> Result<bool, WorkerError> {
-    let key = Call::operation_key(account, operation);
-    Ok(storage::recorded_operation(tx, &key, admitted.map(AdmittedRequest::id))?.is_some())
-}
-
 macro_rules! provider_reads {
     ($($method:ident),+ $(,)?)=>{
         /// The closed owner of side-effect-free provider reads.
@@ -1200,7 +1188,7 @@ fn monitor_call(
     tx: &rusqlite::Transaction<'_>,
     id: &str,
     operation: &crate::monitor_policy::Operation,
-) -> Result<Option<(Call, storage::RecordedCall)>, WorkerError> {
+) -> Result<Option<storage::RecordedCall>, WorkerError> {
     let identity = format!("monitor:{id}");
     let key = Call::operation_key(&operation.account_key, &identity);
     let admitted = operation
@@ -1238,7 +1226,7 @@ fn monitor_call(
     let Some(value) = storage::recorded_operation(tx, &key, result_id.as_deref())? else {
         return Ok(None);
     };
-    let call = value.call().clone();
+    let call = value.call();
     if call.operation != identity
         || call.scope.account != operation.account_key
         || call.scope.connection != operation.connection_id
@@ -1253,7 +1241,7 @@ fn monitor_call(
             "monitor retained receipt identity changed".into(),
         ));
     }
-    Ok(Some((call, value)))
+    Ok(Some(value))
 }
 
 /// The original host command's durable scope. Account transfer never changes
@@ -1269,20 +1257,20 @@ pub(crate) fn monitor_command_scope(
     if record.value().get("operation") != Some(&json!(operation)) {
         return Ok(None);
     }
-    let Some((call, submitted)) = monitor_call(tx, id, operation)? else {
+    let Some(submitted) = monitor_call(tx, id, operation)? else {
         return Ok(None);
     };
+    let call = submitted.call();
     if !submitted.written() {
         return Ok(None);
     }
     let Some(prepared) = submitted.request() else {
         return Ok(None);
     };
-    let written = prepared.recovered();
-    if written.ticket.id != studio_runtime_providers::RequestId::String(call.key())
-        || written.ticket.generation != call.scope.generation
-        || written.ticket.method != Method::CommandExec
-        || written.operation_id.0 != call.key()
+    if prepared.id != studio_runtime_providers::RequestId::String(call.key())
+        || prepared.generation != call.scope.generation
+        || prepared.method != Method::CommandExec
+        || prepared.operation != call.key()
     {
         return Ok(None);
     }
@@ -1335,7 +1323,7 @@ pub async fn monitor_result(
     let operation = operation.clone();
     store
         .read_async("runtime-services/retained_monitor_result", move |tx| {
-            let Some((_call, submitted)) = monitor_call(tx, &id, &operation)? else {
+            let Some(submitted) = monitor_call(tx, &id, &operation)? else {
                 return Ok(None);
             };
             if studio_runtime_store::MonitorsRepository::get(tx, &id)?
@@ -1343,19 +1331,7 @@ pub async fn monitor_result(
             {
                 return Ok(None);
             }
-            let receipt = match submitted.replay() {
-                storage::Replay::Return(receipt) => receipt,
-                storage::Replay::Ready | storage::Replay::Retry(_) => return Ok(None),
-            };
-            Ok(match receipt.result {
-                RequestResult::Reply(value) => Some(
-                    crate::account_session_runtime::ProviderResponse::Reply(value),
-                ),
-                RequestResult::Rejected(value) => Some(
-                    crate::account_session_runtime::ProviderResponse::Rejected(value),
-                ),
-                RequestResult::Unknown | RequestResult::NotSent => None,
-            })
+            Ok(monitor_response(submitted))
         })
         .await
 }
@@ -1384,23 +1360,25 @@ pub async fn monitor_late_result(
             if !snapshot.deadline_lost() || snapshot.operation() != Some(&operation) {
                 return Ok(None);
             }
-            let Some((_call, submitted)) = monitor_call(tx, &id, &operation)? else {
+            let Some(submitted) = monitor_call(tx, &id, &operation)? else {
                 return Ok(None);
             };
-            let storage::Replay::Return(receipt) = submitted.replay() else {
-                return Ok(None);
-            };
-            Ok(match receipt.result {
-                RequestResult::Reply(value) => Some(
-                    crate::account_session_runtime::ProviderResponse::Reply(value),
-                ),
-                RequestResult::Rejected(value) => Some(
-                    crate::account_session_runtime::ProviderResponse::Rejected(value),
-                ),
-                RequestResult::Unknown | RequestResult::NotSent => None,
-            })
+            Ok(monitor_response(submitted))
         })
         .await
+}
+fn monitor_response(
+    submitted: storage::RecordedCall,
+) -> Option<crate::account_session_runtime::ProviderResponse> {
+    use crate::account_session_runtime::ProviderResponse;
+    let storage::Replay::Return(receipt) = submitted.replay() else {
+        return None;
+    };
+    match receipt.result {
+        RequestResult::Reply(value) => Some(ProviderResponse::Reply(value)),
+        RequestResult::Rejected(value) => Some(ProviderResponse::Rejected(value)),
+        RequestResult::Unknown | RequestResult::NotSent => None,
+    }
 }
 /// The provider generation that received monitor `id`'s retained
 /// `command/exec`. While that generation's provider process runs, its answer

@@ -27,6 +27,8 @@ const WAIT_PREFIX: &str = "Context repair waits for a confirmed input receipt: "
 
 #[derive(Debug, Error)]
 pub enum RepairError {
+    #[error("Request id expired")]
+    Expired,
     #[error("invalid context recovery object at {0}")]
     Invalid(&'static str),
     #[error("Unknown agent")]
@@ -1540,6 +1542,7 @@ async fn repair_idle_with_broker_inner(
         crate::thread_fork_runtime::dispatch_reserved_via_broker(&request, broker, deadline)
             .await
             .map_err(|error| match error {
+                crate::native_actions::NativeError::Expired => RepairError::Expired,
                 crate::native_actions::NativeError::Unknown => RepairError::ProviderUnknown,
                 crate::native_actions::NativeError::Unavailable(_)
                 | crate::native_actions::NativeError::Changed
@@ -1708,6 +1711,7 @@ async fn broker_read(
         Ok(receipt) if receipt.certainty() == RequestCertainty::NotSent => {
             Err(RepairError::AccountSession)
         }
+        Err(AccountSessionError::Expired) => Err(RepairError::Expired),
         Ok(_) | Err(AccountSessionError::Unknown) => Err(RepairError::ProviderUnknown),
         Err(_) => Err(RepairError::AccountSession),
     }
@@ -2008,7 +2012,7 @@ mod item_read_identity_tests {
 
 #[cfg(test)]
 mod repair_history_tests {
-    use super::archive_previous_repair;
+    use super::{ContextRepairPhase, archive_previous_repair};
     use serde_json::json;
 
     #[test]

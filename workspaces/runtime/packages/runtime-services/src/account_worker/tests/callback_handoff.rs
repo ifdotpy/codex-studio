@@ -6,7 +6,7 @@ use super::*;
 use crate::account_worker::callback_record;
 use crate::tool_requests::{self, CallbackTask};
 use studio_runtime_providers::{DecodedJournalPayload, decode_journal_value};
-use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, ToolRequestStatus};
+use studio_runtime_schema::persistence::ToolRequestStatus;
 use studio_runtime_store::outbox::Outbox;
 
 const GENERATION: u64 = 1;

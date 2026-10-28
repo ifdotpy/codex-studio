@@ -721,7 +721,10 @@ export function createApiScope(options: ApiScopeOptions) {
         body:
           path === "/api/native-command" && mutation
             ? ({
-                ...(body as PostBody<"/api/native-command">),
+                ...(body as Omit<
+                  PostBody<"/api/native-command">,
+                  "request_id"
+                >),
                 request_id: mutation.requestId,
               } satisfies PostBody<"/api/native-command">)
             : body,

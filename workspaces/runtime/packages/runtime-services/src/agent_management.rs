@@ -31,6 +31,8 @@ const BRIEF_FIELDS: &[&str] = &[
 
 #[derive(Debug, Error)]
 pub enum ManagementError {
+    #[error("Request id expired")]
+    Expired,
     #[error("{0}")]
     Invalid(&'static str),
     #[error("Invalid stored object {table}/{id}")]

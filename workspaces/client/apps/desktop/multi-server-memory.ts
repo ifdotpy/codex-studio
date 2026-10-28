@@ -1,5 +1,6 @@
 // Hidden product-renderer measurement. Test keys never enter the OS key store.
 import assert from "node:assert/strict";
+import { requestId } from "../../../providers/apps/claude-bridge/request-id.ts";
 import type { ElectronApplication } from "playwright-core";
 import { _electron as electron } from "playwright-core";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -13,6 +14,9 @@ const servers = await Promise.all([
   fixture("Third", true),
   fixture("Fourth", true),
 ]);
+const pairRequestIds = new Map(
+  servers.map((server) => [server.invitation.serverId, requestId()]),
+);
 let desktop!: ElectronApplication;
 function memory(pid: number | undefined) {
   const rows = execFileSync("ps", ["-axo", "pid=,ppid=,rss=,args="], {
@@ -106,12 +110,12 @@ try {
   const pair = async (server: (typeof servers)[number]) => {
     await page.locator("body").click({ position: { x: 1, y: 1 }, force: true });
     await page.evaluate(
-      async ({ invitation }) => {
+      async ({ invitation, requestId }) => {
         const server = (await window.codexDesktop!.serverCredentialAction!({
           action: "pair",
           origin: invitation.origin,
           invitation,
-          requestId: crypto.randomUUID(),
+          requestId,
         })) as import("./server-credentials.ts").PairReceipt;
         const rows: unknown[] = JSON.parse(
           localStorage.getItem("studio-paired-servers-v1") || "[]",
@@ -126,7 +130,10 @@ try {
           .querySelector<HTMLButtonElement>('button[aria-label="Close"]')
           ?.click();
       },
-      { invitation: server.invitation },
+      {
+        invitation: server.invitation,
+        requestId: pairRequestIds.get(server.invitation.serverId)!,
+      },
     );
     await page
       .locator(`[data-server="${server.invitation.serverId}"] .server-chat`)

@@ -244,7 +244,12 @@ pub(super) fn save(tx: &Transaction<'_>, card: &Value) -> Result<(), CallbackErr
         .transpose()?
         .flatten();
     if let Some(actor) = actor {
-        crate::tool_requests::reconcile_effect(tx, "requests", card, &actor)?;
+        crate::tool_requests::reconcile_effect(
+            tx,
+            studio_runtime_schema::persistence::ExecutionEffectKind::Requests,
+            card,
+            &actor,
+        )?;
     }
     let deleted = status(card)? != RequestCardStatus::Pending;
     let value = if deleted {
@@ -624,7 +629,8 @@ fn provider_context(tx: &Transaction<'_>, card: &Value) -> Result<CallbackContex
         CallbackError::Stored(_) | CallbackError::Stale => {
             CallbackError::Dependency("provider-session/question-answer")
         }
-        error @ CallbackError::Invalid(_)
+        error @ CallbackError::Expired
+        | error @ CallbackError::Invalid(_)
         | error @ CallbackError::InvalidResultSchema(_)
         | error @ CallbackError::Dependency(_)
         | error @ CallbackError::Conflict

@@ -1,12 +1,14 @@
 //! Pure project-location completion and receipt reconciliation, with atomic adapters.
-use crate::event_write::{python_json, request_signature, truthy};
+use crate::event_write::{python_json, truthy};
 pub use crate::relocation::RelocationError as LocationError;
 use crate::relocation::{checked, invalid, timestamp};
 use rusqlite::{OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use studio_runtime_schema::json_compat::python_json_compact as canonical_json;
 pub use studio_runtime_schema::persistence::RemoteOutcome as LocationOutcome;
 use studio_runtime_schema::persistence::ServerDeliveryState as OutboxState;
+use studio_runtime_store::sha256_hex;
 use studio_runtime_store::{
     ProjectLocationsRepository as Repository, ProjectsRepository, RuntimeStore,
 };
@@ -86,12 +88,9 @@ mod receipt_tests {
         let fixture: Value =
             serde_json::from_str(include_str!("../tests/relocation/oracle.json")).expect("fixture");
         let case = &fixture["cases"][0];
-        let mut raw = case["outbox"].clone();
+        let raw = case["outbox"].clone();
         let key = raw["id"].as_str().expect("operation").to_owned();
-        let signature = raw["body"]["payload"]["signature"]
-            .as_str()
-            .expect("signature")
-            .to_owned();
+        let signature = sha256_hex(canonical_json(&raw["body"]["payload"]["request"]).as_bytes());
         let identity = RequestIdentity::new(
             "project-location",
             &["local-fixture", "ui"],
@@ -114,7 +113,6 @@ mod receipt_tests {
         else {
             panic!("fresh request")
         };
-        raw["body"]["payload"]["resultId"] = json!(admitted.id());
         ProjectsRepository::put_project(&tx, &case["project"]).expect("project");
         ProjectsRepository::put_location_request(&tx, "/home-project", &key, &admitted)
             .expect("intent");
@@ -125,11 +123,9 @@ mod receipt_tests {
         .expect("transport");
         ProjectsRepository::remove(&tx, "/home-project").expect("hide");
         let unknown = json!({"requestId":key,"outcome":"unknown"});
-        complete_in_transaction(
+        complete_snapshot_in_transaction(
             &tx,
-            &key,
-            "peer",
-            &raw["body"],
+            &raw,
             &unknown,
             "local-fixture",
             now_ms as f64 / 1000.0,
@@ -140,11 +136,9 @@ mod receipt_tests {
                 .expect("intent")
                 .is_some()
         );
-        complete_in_transaction(
+        complete_snapshot_in_transaction(
             &tx,
-            &key,
-            "peer",
-            &raw["body"],
+            &raw,
             &case["receipt"],
             "local-fixture",
             now_ms as f64 / 1000.0,
@@ -174,14 +168,17 @@ mod receipt_tests {
         .expect("replay")
         .expect("reply");
         assert_eq!(json!(result.reply), case["receipt"]);
-        complete_snapshot_in_transaction(
-            &tx,
-            &raw,
-            &case["receipt"],
-            "local-fixture",
-            now_ms as f64 / 1000.0,
-        )
-        .expect("repeat");
+        assert!(
+            complete_snapshot_in_transaction(
+                &tx,
+                &raw,
+                &case["receipt"],
+                "local-fixture",
+                now_ms as f64 / 1000.0
+            )
+            .is_err(),
+            "the internal callback consumes its token once"
+        );
         assert_eq!(
             ProjectsRepository::get(&tx, "/home-project")
                 .expect("owner")
@@ -209,7 +206,6 @@ struct Envelope {
 struct Payload {
     project: String,
     path: Option<String>,
-    signature: String,
     request: Value,
 }
 #[derive(Deserialize)]
@@ -218,7 +214,7 @@ struct Outbox {
     server: String,
     body: Envelope,
     state: OutboxState,
-    result: Option<Value>,
+    result: Option<LocationResult>,
 }
 
 /// Only this constructor accepts raw persisted rows; fields remain private.
@@ -228,7 +224,6 @@ pub struct CompletionSnapshot {
 }
 pub struct CompletionDecision {
     project: Option<Value>,
-    receipt: Value,
     apply: bool,
 }
 impl CompletionSnapshot {
@@ -241,7 +236,6 @@ impl CompletionSnapshot {
             || outbox.body.payload.request["path"] != json!(outbox.body.payload.path)
             || (outbox.body.payload.request["action"] == "add_location")
                 != (outbox.body.action == Action::AddLocation)
-            || request_signature(&outbox.body.payload.request) != outbox.body.payload.signature
         {
             return Err(invalid("runtime_server_outbox", "body/payload/request"));
         }
@@ -258,52 +252,45 @@ impl CompletionSnapshot {
     }
     pub fn decide(
         &self,
-        receipt: &Value,
+        receipt: &LocationResult,
         local_server: &str,
         now: f64,
     ) -> Result<CompletionDecision, LocationError> {
         timestamp(now)?;
-        checked::<Value>("relocation/RelocationReceipt", "location receipt", receipt)?;
-        if receipt["requestId"] != self.outbox.body.request_id {
+        if receipt.request_id != self.outbox.body.request_id {
             return Err(LocationError::Refused(
                 "The paired server returned a different request identity",
             ));
         }
-        if matches!(self.outbox.state, OutboxState::Complete) {
-            let prior = self
-                .outbox
-                .result
-                .as_ref()
-                .ok_or_else(|| invalid("runtime_server_outbox", "/result"))?;
-            if prior != receipt {
-                return Err(LocationError::Refused(
-                    "The completed location receipt has different content",
-                ));
-            }
+        if matches!(self.outbox.state, OutboxState::Complete)
+            && self.outbox.result.as_ref() != Some(receipt)
+        {
+            return Err(LocationError::Refused(
+                "The completed location receipt has different content",
+            ));
+        }
+        if receipt.outcome == LocationOutcome::Unknown {
             return Ok(CompletionDecision {
                 project: None,
-                receipt: prior.clone(),
                 apply: false,
             });
         }
-        if receipt["outcome"] == "unknown" {
-            return Ok(CompletionDecision {
-                project: None,
-                receipt: receipt.clone(),
-                apply: false,
-            });
-        }
-        let applied = receipt["outcome"] == "applied";
+        let applied = receipt.outcome == LocationOutcome::Applied;
         let envelope = &self.outbox.body;
         if applied && envelope.action == Action::AddLocation {
-            let location = &receipt["value"];
-            let canonical = location.get("canonicalPath").and_then(Value::as_str);
-            if location["serverId"] != self.outbox.server
-                || location["homeProjectId"] != envelope.payload.project
-                || location["path"] != json!(envelope.payload.path)
-                || location["requestId"] != self.outbox.body.request_id
-                || canonical.is_none_or(|path| !canonical_absolute(path))
-                || location["projectId"] != location["canonicalPath"]
+            let location = receipt
+                .value
+                .as_ref()
+                .ok_or_else(|| invalid("location receipt", "/value"))?;
+            if location.server_id != self.outbox.server
+                || location.home_project_id.as_deref() != Some(envelope.payload.project.as_str())
+                || location.path != envelope.payload.path
+                || location.request_id.as_deref() != Some(envelope.request_id.as_str())
+                || location
+                    .canonical_path
+                    .as_deref()
+                    .is_none_or(|path| !canonical_absolute(path))
+                || location.project_id != location.canonical_path
             {
                 return Err(LocationError::Refused(
                     "The server returned a different project location",
@@ -318,13 +305,16 @@ impl CompletionSnapshot {
                 .ok_or_else(|| invalid("runtime_projects", "/locations"))?;
             locations.retain(|location| location["serverId"] != self.outbox.server);
             if envelope.action == Action::AddLocation {
-                let value = &receipt["value"];
-                let mut location = json!({"serverId":value["serverId"],"projectId":value["projectId"],"path":value["canonicalPath"]});
-                if let Some(origin) = value.get("gitOrigin") {
-                    location["gitOrigin"] = origin.clone();
+                let value = receipt
+                    .value
+                    .as_ref()
+                    .ok_or_else(|| invalid("location receipt", "/value"))?;
+                let mut location = json!({"serverId":value.server_id,"projectId":value.project_id,"path":value.canonical_path});
+                if let Some(origin) = &value.git_origin {
+                    location["gitOrigin"] = json!(origin);
                 }
-                if value["path"] != value["canonicalPath"] {
-                    location["requestedPath"] = value["path"].clone();
+                if value.path != value.canonical_path {
+                    location["requestedPath"] = json!(value.path);
                 }
                 locations.push(location);
             }
@@ -334,67 +324,12 @@ impl CompletionSnapshot {
                 .unwrap_or(0);
             row["locationsRevision"] = json!(revision + 1);
             row["updated"] = json!(now);
-            checked::<Value>("relocation/RelocationProject", "runtime_projects", row)?;
         }
         Ok(CompletionDecision {
             project,
-            receipt: receipt.clone(),
             apply: true,
         })
     }
-}
-
-/// Authenticated paired-delivery caller supplies the exact saved envelope. No network I/O.
-/// Completion, project revision, sync projection and receipts share one store commit.
-pub async fn complete(
-    store: &RuntimeStore,
-    key: String,
-    server: String,
-    envelope: Value,
-    receipt: Value,
-    local_server: String,
-    now: f64,
-) -> Result<Value, LocationError> {
-    store
-        .transaction_with(move |tx| {
-            complete_in_transaction(tx, &key, &server, &envelope, &receipt, &local_server, now)
-        })
-        .await
-}
-pub fn complete_in_transaction(
-    tx: &Transaction<'_>,
-    key: &str,
-    server: &str,
-    envelope: &Value,
-    receipt: &Value,
-    local_server: &str,
-    now: f64,
-) -> Result<Value, LocationError> {
-    let raw = match Repository::outbox(tx, key)? {
-        Some(raw) => raw,
-        None => {
-            let raw = json!({"id":key,"server":server,"body":envelope,"state":OutboxState::Complete,"result":receipt});
-            let snapshot = CompletionSnapshot::from_records(&raw, None)?;
-            snapshot.decide(receipt, local_server, now)?;
-            return if replayed_location(tx, &raw, receipt, now)? {
-                Ok(receipt.clone())
-            } else {
-                Err(LocationError::Refused("Unknown location request"))
-            };
-        }
-    };
-    if raw["server"] != server || raw["body"] != *envelope {
-        return Err(LocationError::Refused(
-            "The location transport ticket has different content",
-        ));
-    }
-    let reply = complete_snapshot_in_transaction(tx, &raw, receipt, local_server, now)?;
-    let result: LocationResult =
-        serde_json::from_value(receipt.clone()).map_err(studio_runtime_store::StoreError::from)?;
-    if result.outcome != LocationOutcome::Unknown {
-        Repository::delete_settled(tx, key)?;
-    }
-    Ok(reply)
 }
 
 /// The delivery owner calls this with its exact saved envelope and completion
@@ -412,27 +347,20 @@ pub fn complete_snapshot_in_transaction(
         .ok_or_else(|| invalid("runtime_server_outbox", "/body/payload/project"))?;
     let project = ProjectsRepository::get(tx, project_id)?;
     let snapshot = CompletionSnapshot::from_records(raw, project.as_ref().map(|(_, value)| value))?;
-    snapshot.decide(receipt, local_server, now)?;
-    if replayed_location(tx, raw, receipt, now)? {
-        return Ok(receipt.clone());
-    }
-    let mut pending = raw.clone();
-    pending["state"] = json!(OutboxState::Queued);
-    pending["result"] = Value::Null;
-    let snapshot =
-        CompletionSnapshot::from_records(&pending, project.as_ref().map(|(_, value)| value))?;
-    let decision = snapshot.decide(receipt, local_server, now)?;
+    let typed: LocationResult =
+        serde_json::from_value(receipt.clone()).map_err(studio_runtime_store::StoreError::from)?;
+    let decision = snapshot.decide(&typed, local_server, now)?;
     if decision.apply {
         settle_location(
             tx,
             project_id,
             &snapshot.outbox.body.request_id,
-            raw,
-            receipt,
+            &snapshot.outbox.body.payload.request,
+            &typed,
             decision.project,
         )?;
     }
-    Ok(decision.receipt)
+    Ok(receipt.clone())
 }
 
 /// Python `normalize` for a caller that holds a project row.
@@ -443,85 +371,23 @@ pub(crate) fn normalize_project(
     normalize(project, local_server)
 }
 
-fn request_error(
-    error: studio_runtime_store::request_results::RequestResultError,
-) -> LocationError {
-    use studio_runtime_store::request_results::RequestResultError;
-    match error {
-        RequestResultError::Sql(error) => LocationError::Sqlite(error),
-        RequestResultError::Json(error) => LocationError::Store(error.into()),
-        RequestResultError::Identity(_) => {
-            LocationError::Refused("The location result has expired")
-        }
-        RequestResultError::Conflict { .. } => {
-            LocationError::Refused("This request ID has different content")
-        }
-    }
-}
-
-fn replayed_location(
-    tx: &Transaction<'_>,
-    raw: &Value,
-    receipt: &Value,
-    now: f64,
-) -> Result<bool, LocationError> {
-    let result_id = raw
-        .pointer("/body/payload/resultId")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("runtime_server_outbox", "/body/payload/resultId"))?;
-    let signature = raw
-        .pointer("/body/payload/signature")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("runtime_server_outbox", "/body/payload/signature"))?;
-    let Some(saved) = crate::event_write::replay_request::<LocationResult>(
-        tx,
-        result_id,
-        signature,
-        (now * 1000.0) as i64,
-    )
-    .map_err(request_error)?
-    else {
-        return Ok(false);
-    };
-    let mut expected: LocationResult =
-        serde_json::from_value(receipt.clone()).map_err(studio_runtime_store::StoreError::from)?;
-    if expected.project_id.is_none() {
-        expected.project_id = saved.reply.project_id.clone();
-    }
-    if saved.reply != expected {
-        return Err(LocationError::Refused(
-            "This request ID has different content",
-        ));
-    }
-    Ok(true)
-}
-
 fn settle_location(
     tx: &Transaction<'_>,
     project_id: &str,
     key: &str,
-    raw: &Value,
-    receipt: &Value,
+    original_request: &Value,
+    receipt: &LocationResult,
     project: Option<Value>,
 ) -> Result<(), LocationError> {
     let request = ProjectsRepository::location_request(tx, project_id, key)?.ok_or(
         LocationError::Refused("The location request has no admitted project intent"),
     )?;
-    if raw
-        .pointer("/body/payload/resultId")
-        .and_then(Value::as_str)
-        != Some(request.id())
-        || raw
-            .pointer("/body/payload/signature")
-            .and_then(Value::as_str)
-            != Some(request.signature())
-    {
+    if request.signature() != sha256_hex(canonical_json(original_request).as_bytes()) {
         return Err(LocationError::Refused(
             "The location request has different admitted content",
         ));
     }
-    let mut reply: LocationResult =
-        serde_json::from_value(receipt.clone()).map_err(studio_runtime_store::StoreError::from)?;
+    let mut reply = receipt.clone();
     let mut project = project
         .or(ProjectsRepository::get(tx, project_id)?.map(|(_, project)| project))
         .ok_or(LocationError::Refused("The project no longer exists"))?;
@@ -548,7 +414,8 @@ fn settle_location(
         intents.remove(key);
     }
     ProjectsRepository::put_project(tx, &project)?;
-    crate::event_write::settle_request(tx, &request, None, &reply).map_err(request_error)?;
+    crate::event_write::settle_request(tx, &request, None, &reply)
+        .map_err(studio_runtime_store::StoreError::from)?;
     Ok(())
 }
 
@@ -615,7 +482,7 @@ pub fn tool_location_receipt(
         admitted.signature(),
         (now * 1000.0) as i64,
     )
-    .map_err(request_error)?
+    .map_err(studio_runtime_store::StoreError::from)?
     .map(|saved| saved.reply))
 }
 
@@ -658,8 +525,11 @@ fn task_location_request(
     } else {
         None
     };
-    let signature = request_signature(
-        &json!({"action":args.action,"project":args.project,"server":server,"path":path}),
+    let signature = sha256_hex(
+        canonical_json(
+            &json!({"action":args.action,"project":args.project,"server":server,"path":path}),
+        )
+        .as_bytes(),
     );
     let parent: studio_runtime_store::request_results::AdmittedRequest =
         serde_json::from_value(task["admitted"].clone())
@@ -705,7 +575,7 @@ pub fn refresh_tool_receipt(
         request.signature(),
         (now * 1000.0) as i64,
     )
-    .map_err(request_error)?
+    .map_err(studio_runtime_store::StoreError::from)?
     else {
         return Ok(false);
     };

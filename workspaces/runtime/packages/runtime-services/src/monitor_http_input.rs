@@ -5,13 +5,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, MonitorsRepository, StoreError};
 
+use crate::event_write::settle_request;
 use crate::monitor_policy::{self, Effect, Input, InputOutcome, MonitorError, Operation};
 use crate::monitor_runtime;
 use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind, RequestIdentity};
 use studio_runtime_store::outbox::{Outbox, OutboxRow};
-use studio_runtime_store::request_results::{
-    Admission, AdmittedRequest, RequestResults, ResultEnvelope,
-};
+use studio_runtime_store::request_results::{Admission, AdmittedRequest, RequestResults};
 
 const PREFIX: &str = "monitor-http-input:";
 const TICKET_PREFIX: &str = "http:";
@@ -29,6 +28,7 @@ pub(crate) use studio_runtime_schema::persistence::MonitorInputStatus as Status;
 pub(crate) fn replay_status(status: Status) -> Result<(), MonitorError> {
     match status {
         Status::Acknowledged => Ok(()),
+        Status::Expired => Err(MonitorError::Expired),
         Status::Rejected => Err(MonitorError::Refused("Monitor input rejected")),
         Status::Pending | Status::Unknown => Err(MonitorError::InputOutcomeUnknown),
     }
@@ -44,9 +44,8 @@ impl From<studio_runtime_store::outbox::OutboxError> for MonitorError {
     fn from(error: studio_runtime_store::outbox::OutboxError) -> Self {
         use studio_runtime_store::outbox::OutboxError;
         match error {
-            OutboxError::Sql(error) => Self::Store(error.into()),
-            OutboxError::Json(error) => Self::Store(error.into()),
             OutboxError::Conflict(_) => Self::Refused("Monitor input request content changed"),
+            error => Self::Store(error.into()),
         }
     }
 }
@@ -54,14 +53,10 @@ impl From<studio_runtime_store::request_results::RequestResultError> for Monitor
     fn from(error: studio_runtime_store::request_results::RequestResultError) -> Self {
         use studio_runtime_store::request_results::RequestResultError;
         match error {
-            RequestResultError::Sql(error) => Self::Store(error.into()),
-            RequestResultError::Json(error) => Self::Store(error.into()),
             RequestResultError::Conflict { .. } => {
                 Self::Refused("Monitor input request content changed")
             }
-            RequestResultError::Identity(error) => {
-                Self::Store(StoreError::RequestResult(error.into()))
-            }
+            error => Self::Store(error.into()),
         }
     }
 }
@@ -86,33 +81,16 @@ fn saved(connection: &Connection, root: &str) -> Result<Option<(String, Receipt)
         }
         return Ok(Some((saved.signature, saved.payload.receipt)));
     }
-    let canonical = identity(root).ok();
-    for id in std::iter::once(key.as_str()).chain(canonical.as_ref().map(RequestIdentity::id)) {
-        use rusqlite::OptionalExtension;
-        let signature: Option<String> = connection
-            .query_row(
-                "SELECT signature FROM request_results WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(StoreError::from)?;
-        if let Some(signature) = signature {
-            let Some(row) = RequestResults::replay(
-                connection,
-                id,
-                &signature,
-                chrono::Utc::now().timestamp_millis(),
-            )?
-            else {
-                continue;
-            };
-            let result: ResultEnvelope<Receipt> =
-                serde_json::from_str(&row.result).map_err(StoreError::from)?;
-            return Ok(Some((signature, result.reply)));
-        }
-    }
-    Ok(None)
+    Ok(RequestResults::read(
+        connection,
+        &key,
+        "monitor-http-input",
+        &[],
+        root,
+        &[],
+        chrono::Utc::now().timestamp_millis(),
+    )?
+    .map(|saved| (saved.signature, saved.reply)))
 }
 
 struct RequestContext {
@@ -164,6 +142,7 @@ pub(crate) fn read(connection: &Connection, query: &Value) -> Result<Value, Moni
     let (status, terminal) = match receipt.status {
         Status::Acknowledged => ("acknowledged", true),
         Status::Rejected => ("rejected", true),
+        Status::Expired => ("expired", true),
         Status::Pending => ("pending", false),
         Status::Unknown => ("unknown", false),
     };
@@ -244,16 +223,11 @@ fn put_receipt(
             ));
         }
     };
-    if matches!(status, Status::Acknowledged | Status::Rejected) {
-        RequestResults::settle(
-            tx,
-            &admitted,
-            &ResultEnvelope {
-                actor: Some(receipt.operation.agent.clone()),
-                reply: receipt,
-                references: vec![context.snapshot.id().into()],
-            },
-        )?;
+    if matches!(
+        status,
+        Status::Acknowledged | Status::Rejected | Status::Expired
+    ) {
+        settle_request(tx, &admitted, Some(&receipt.operation.agent), &receipt)?;
     } else {
         Outbox::put(
             tx,
@@ -346,23 +320,27 @@ pub(crate) fn settle(
             "Monitor input receipt identity changed",
         ));
     }
-    if matches!(receipt.status, Status::Acknowledged | Status::Rejected) {
+    if matches!(
+        receipt.status,
+        Status::Acknowledged | Status::Rejected | Status::Expired
+    ) {
         return Ok(());
     }
     receipt.status = match outcome {
         InputOutcome::Acknowledged => Status::Acknowledged,
+        InputOutcome::Expired => Status::Expired,
         InputOutcome::Rejected(_) => Status::Rejected,
         InputOutcome::Unknown(_) => Status::Unknown,
     };
-    if matches!(receipt.status, Status::Acknowledged | Status::Rejected) {
-        RequestResults::settle(
+    if matches!(
+        receipt.status,
+        Status::Acknowledged | Status::Rejected | Status::Expired
+    ) {
+        settle_request(
             tx,
             &saved.payload.admitted,
-            &ResultEnvelope {
-                actor: Some(receipt.operation.agent.clone()),
-                reply: receipt,
-                references: vec![id.into()],
-            },
+            Some(&receipt.operation.agent),
+            &receipt,
         )?;
         Outbox::delete_settled(tx, &key, &saved.signature)?;
     } else {
@@ -376,6 +354,81 @@ pub(crate) fn settle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn receipt_pivot_monitor_expired_input_replays_permanent_result() {
+        let mut db = Connection::open_in_memory().expect("database");
+        studio_runtime_store::receipt_schema::create(&db).expect("schema");
+        db.execute_batch(
+            "CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .expect("policy");
+        let root = RequestIdentity::issue_root();
+        let identity = identity(&root).expect("identity");
+        let operation: Operation = serde_json::from_value(
+            json!({"agent":"agent","epoch":1,"accountKey":"account","connectionId":"connection"}),
+        )
+        .expect("operation");
+        let tx = db.transaction().expect("transaction");
+        let admitted =
+            match RequestResults::admit(&tx, &identity, "signature", identity.issued_ms())
+                .expect("admit")
+            {
+                Admission::Fresh(admitted) => admitted,
+                Admission::Replay(_) => panic!("fresh"),
+            };
+        let key = outbox_id(&root);
+        Outbox::put(
+            &tx,
+            &OutboxRow {
+                id: key.clone(),
+                kind: OutboxKind::MonitorInput,
+                owner_kind: OwnerKind::Monitor,
+                owner_id: "monitor".into(),
+                request_id: Some(admitted.id().into()),
+                signature: "signature".into(),
+                status: OutboxStatus::Unknown,
+                account: Some("account".into()),
+                stream_id: None,
+                generation: None,
+                ordinal: None,
+                next_at: None,
+                created: admitted.created(),
+                payload: InputIntent {
+                    admitted,
+                    receipt: Receipt {
+                        operation: operation.clone(),
+                        monitor: "monitor".into(),
+                        status: Status::Unknown,
+                    },
+                },
+            },
+        )
+        .expect("input owner");
+        let ticket = format!("{TICKET_PREFIX}{root}");
+        settle(&tx, "monitor", &operation, &ticket, &InputOutcome::Expired)
+            .expect("permanent refusal");
+        settle(
+            &tx,
+            "monitor",
+            &operation,
+            &ticket,
+            &InputOutcome::Unknown("lost response".into()),
+        )
+        .expect("no resurrection");
+        let (_, receipt) = saved(&tx, &root)
+            .expect("read")
+            .expect("exact final result");
+        assert!(matches!(
+            replay_status(receipt.status),
+            Err(MonitorError::Expired)
+        ));
+        assert!(
+            Outbox::get::<InputIntent>(&tx, &key)
+                .expect("outbox")
+                .is_none()
+        );
+    }
+
     #[test]
     fn receipt_pivot_monitor_unknown_survives_time_and_late_exact_ack_settles() {
         let mut db = Connection::open_in_memory().expect("database");

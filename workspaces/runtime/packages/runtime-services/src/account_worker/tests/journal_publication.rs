@@ -202,7 +202,7 @@ async fn journal_projection_failure_rolls_back_sources_and_receipts() {
                 "projection failure rolls back current stream metadata"
             );
             assert_eq!(
-                store::checkpoint(tx, "default", 7)?,
+                studio_runtime_store::account_state::provider_checkpoint(tx, "default", 7)?,
                 0,
                 "projection failure cannot advance journal ACK"
             );

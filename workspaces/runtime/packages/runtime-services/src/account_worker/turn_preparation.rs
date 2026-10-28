@@ -427,7 +427,8 @@ async fn prepare(
 fn transfer_error(error: crate::account_transfer::TransferError) -> WorkerError {
     match error {
         crate::account_transfer::TransferError::Store(error) => WorkerError::Store(error),
-        error @ crate::account_transfer::TransferError::Stored { .. }
+        error @ crate::account_transfer::TransferError::Expired
+        | error @ crate::account_transfer::TransferError::Stored { .. }
         | error @ crate::account_transfer::TransferError::Refused(_)
         | error @ crate::account_transfer::TransferError::Requires(_) => {
             WorkerError::PreparationRefused(error.to_string())

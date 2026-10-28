@@ -39,31 +39,6 @@ pub fn replay_request<R: serde::de::DeserializeOwned>(
     .transpose()
 }
 
-/// A replay miss never authorizes an opaque or expired identity.
-pub fn admit_request(
-    transaction: &Transaction<'_>,
-    namespace: &str,
-    authority: &[&str],
-    root_request_id: &str,
-    operation: &[&str],
-    signature: &str,
-    now_ms: i64,
-) -> Result<
-    studio_runtime_store::request_results::Admission,
-    studio_runtime_store::request_results::RequestResultError,
-> {
-    use studio_runtime_schema::persistence::{RequestIdentity, RequestIdentityError};
-    use studio_runtime_store::request_results::RequestResults;
-    let identity =
-        RequestIdentity::new(namespace, authority, root_request_id, operation).map_err(|_| {
-            RequestIdentityError::Expired {
-                issued_ms: 0,
-                expired_before_ms: now_ms,
-            }
-        })?;
-    RequestResults::admit(transaction, &identity, signature, now_ms)
-}
-
 pub fn settle_request<R: serde::Serialize>(
     transaction: &Transaction<'_>,
     admitted: &studio_runtime_store::request_results::AdmittedRequest,
@@ -125,12 +100,9 @@ pub fn begin_request<R: serde::de::DeserializeOwned>(
         return Ok(CallerAdmission::Replay(saved.reply));
     }
     Ok(
-        match admit_request(
+        match studio_runtime_store::request_results::RequestResults::admit(
             transaction,
-            key.namespace,
-            key.authority,
-            key.root,
-            key.operation,
+            &request_identity(&key, now_ms)?,
             signature,
             now_ms,
         )? {
@@ -153,16 +125,27 @@ pub fn saved_request<R: serde::de::DeserializeOwned>(
     signature: &str,
     now_ms: i64,
 ) -> Result<Option<R>, studio_runtime_store::request_results::RequestResultError> {
-    use studio_runtime_schema::persistence::{RequestIdentity, RequestIdentityError};
     if let Some(saved) = replay_request(connection, key.raw, signature, now_ms)? {
         return Ok(Some(saved.reply));
     }
-    let identity = RequestIdentity::new(key.namespace, key.authority, key.root, key.operation)
-        .map_err(|_| RequestIdentityError::Expired {
+    let identity = request_identity(&key, now_ms)?;
+    Ok(replay_request(connection, identity.id(), signature, now_ms)?.map(|saved| saved.reply))
+}
+
+fn request_identity(
+    key: &RequestKey<'_>,
+    now_ms: i64,
+) -> Result<
+    studio_runtime_schema::persistence::RequestIdentity,
+    studio_runtime_schema::persistence::RequestIdentityError,
+> {
+    use studio_runtime_schema::persistence::{RequestIdentity, RequestIdentityError};
+    RequestIdentity::new(key.namespace, key.authority, key.root, key.operation).map_err(|_| {
+        RequestIdentityError::Expired {
             issued_ms: 0,
             expired_before_ms: now_ms,
-        })?;
-    Ok(replay_request(connection, identity.id(), signature, now_ms)?.map(|saved| saved.reply))
+        }
+    })
 }
 
 /// Python `str.strip()` includes four ASCII separators Rust's whitespace predicate omits.
@@ -443,12 +426,12 @@ fn enqueue(
         QueueWriteRepository::metadata(transaction, &id)?.unwrap_or_else(|| json!({}));
     let delivery = DeliveryMoment::for_event(kind, &text, Some(&metadata))
         .map_err(|_| EventWriteError::InvalidRequest("Invalid delivery moment"))?;
-    if studio_runtime_store::QueueEventRepository::get(
+    let existing = studio_runtime_store::QueueEventRepository::get(
         transaction,
         &QueueEventId::from(id.as_str()),
     )?
-    .is_none()
-    {
+    .is_some();
+    if !existing {
         metadata["delivery"] = json!(delivery);
         QueueWriteRepository::put_metadata(transaction, &id, &metadata)?;
     }
@@ -471,6 +454,26 @@ fn enqueue(
         error: None,
     };
     if let Some((server, link, is_anchor)) = remote_owner(agent)? {
+        let request_id = match metadata.get("remoteRequestId") {
+            Some(Value::String(root)) if !root.is_empty() => root.clone(),
+            Some(_) => return Err(EventWriteError::Conflict("Remote event outcome is unknown")),
+            None if existing => {
+                return Err(EventWriteError::Conflict("Remote event outcome is unknown"));
+            }
+            None => {
+                let root = uuid::Uuid::parse_str(&id)
+                    .ok()
+                    .filter(|id| id.get_version_num() == 7)
+                    .map(|_| id.clone())
+                    .unwrap_or_else(
+                        studio_runtime_schema::persistence::RequestIdentity::issue_root,
+                    );
+                metadata["remoteRequestId"] = json!(root);
+                QueueWriteRepository::put_metadata(transaction, &id, &metadata)?;
+                root
+            }
+        };
+
         // Remote anchors forward user input through the paired input protocol;
         // remote workers use its worker form. Neither proxy queues native work
         // on this server.
@@ -520,7 +523,6 @@ fn enqueue(
                 .get("remoteEpoch")
                 .and_then(Value::as_i64)
                 .unwrap_or(0);
-            let request_id = crate::relocation::identity(&["input", &id]);
             let payload = json!({
                 "link":link,
                 "worker":agent.id.0,
@@ -579,7 +581,6 @@ fn enqueue(
             let mut stored = event.clone();
             stored.status = "stored_only".to_owned();
             EventWriteRepository::insert_event(transaction, &stored)?;
-            let request_id = crate::relocation::identity(&["anchor-input", &id]);
             let mut payload = json!({
                 "link": link,
                 "parentEpoch": parent_epoch,
@@ -600,11 +601,6 @@ fn enqueue(
             .map_err(|_| EventWriteError::Conflict("Remote anchor input could not be queued"))?;
             return Ok(true);
         }
-        let request_id = uuid::Uuid::new_v5(
-            &uuid::Uuid::NAMESPACE_URL,
-            format!("studio-cross-server:event:{id}").as_bytes(),
-        )
-        .to_string();
         let payload = json!({
             "link": link,
             "parentEpoch": parent_epoch,
@@ -785,12 +781,6 @@ pub fn recovery_pending(agent: &AgentRecord) -> bool {
     recovery || truthy(extra.get("moveImportPending"))
 }
 
-fn serialize(value: &Value) -> Result<String, EventWriteError> {
-    serde_json::to_string(value)
-        .map_err(studio_runtime_store::StoreError::from)
-        .map_err(EventWriteError::from)
-}
-
 fn invalid_stored(object: &'static str, id: &str) -> EventWriteError {
     EventWriteError::InvalidStoredObject {
         object,
@@ -832,7 +822,7 @@ mod tests {
                  CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_server_links(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,server TEXT NOT NULL,body TEXT NOT NULL,state TEXT NOT NULL,result TEXT,attempts INTEGER NOT NULL DEFAULT 0,next_at REAL NOT NULL DEFAULT 0,error TEXT,created_at REAL NOT NULL DEFAULT 0,completed_at REAL NOT NULL DEFAULT 0,fingerprint TEXT);
+                 CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,server TEXT NOT NULL,body TEXT NOT NULL,state TEXT NOT NULL,result TEXT,attempts INTEGER NOT NULL DEFAULT 0,next_at REAL NOT NULL DEFAULT 0,error TEXT,created_at REAL NOT NULL DEFAULT 0,completed_at REAL NOT NULL DEFAULT 0,fingerprint TEXT,admission TEXT);
                  CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
@@ -1239,11 +1229,13 @@ mod tests {
         let before = counts(&connection);
         assert!(matches!(
             with_transaction(&mut connection, |tx| save_plan(tx, plan_input(0, "x", "s"))),
-            Err(EventWriteError::InvalidStoredObject { .. })
+            Err(EventWriteError::Store(
+                studio_runtime_store::StoreError::InvalidStoredObject { .. }
+            ))
         ));
         assert!(matches!(
             with_transaction(&mut connection, |tx| annotate(tx, annotation("n"))),
-            Err(EventWriteError::InvalidStoredObject { .. })
+            Err(EventWriteError::RequestResult(RequestResultError::Json(_)))
         ));
         assert_eq!(counts(&connection), before);
     }
@@ -1326,13 +1318,91 @@ mod tests {
         .expect("paired input queues");
         assert!(result);
         let (server, body): (String, String) = connection
-            .query_row(
-                "SELECT server,body FROM runtime_server_outbox WHERE id=?1",
-                [crate::relocation::identity(&["input", "message-1"])],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+            .query_row("SELECT server,body FROM runtime_server_outbox", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
             .expect("stable outbox row");
         let body: Value = serde_json::from_str(&body).expect("outbox envelope JSON");
+        let root = body["requestId"].as_str().expect("root");
+        assert_eq!(uuid::Uuid::parse_str(root).unwrap().get_version_num(), 7);
+        assert_eq!(
+            with_transaction(&mut connection, |tx| Ok(QueueWriteRepository::metadata(
+                tx,
+                "message-1"
+            )?))
+            .unwrap()
+            .unwrap()["remoteRequestId"],
+            root
+        );
+        with_transaction(&mut connection, |tx| {
+            enqueue_event(
+                tx,
+                &agent,
+                "message-1".into(),
+                "user",
+                unicode_text.clone(),
+                101.0,
+            )
+        })
+        .expect("lost response retry");
+        let retry: String = connection
+            .query_row("SELECT body FROM runtime_server_outbox", [], |r| r.get(0))
+            .expect("same outbox");
+        assert_eq!(
+            serde_json::from_str::<Value>(&retry).unwrap()["requestId"],
+            root
+        );
+        let count: i64 = connection
+            .query_row("SELECT count(*) FROM runtime_server_outbox", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+        let public = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        with_transaction(&mut connection, |tx| {
+            enqueue_event(tx, &agent, public.clone(), "user", "public".into(), 102.0)
+        })
+        .expect("public root forwards");
+        assert_eq!(
+            with_transaction(&mut connection, |tx| Ok(QueueWriteRepository::metadata(
+                tx, &public
+            )?))
+            .unwrap()
+            .unwrap()["remoteRequestId"],
+            public
+        );
+        for preserved in [
+            json!(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"imported").to_string()),
+            Value::Null,
+        ] {
+            with_transaction(&mut connection, |tx| {
+                QueueWriteRepository::put_metadata(
+                    tx,
+                    "imported-event",
+                    &json!({"remoteRequestId":preserved}),
+                )?;
+                Ok(())
+            })
+            .unwrap();
+            let before = counts(&connection);
+            assert!(
+                with_transaction(&mut connection, |tx| enqueue_event(
+                    tx,
+                    &agent,
+                    "imported-event".into(),
+                    "user",
+                    "old".into(),
+                    103.0
+                ))
+                .is_err()
+            );
+            assert_eq!(
+                counts(&connection),
+                before,
+                "an imported miss cannot mint or send"
+            );
+        }
+
         assert_eq!(server, "remote");
         assert_eq!(body["action"], "input");
         assert_eq!(body["payload"]["worker"], "a");

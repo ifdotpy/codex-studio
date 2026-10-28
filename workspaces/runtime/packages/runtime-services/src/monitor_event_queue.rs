@@ -99,6 +99,11 @@ pub fn enqueue_output_with_scope_in_transaction(
         let original =
             crate::account_worker::retained::monitor_command_scope(tx, process_id, &operation)
                 .map_err(|error| match error {
+                    crate::account_worker::WorkerError::Expired => {
+                        NotificationDispatchError::RequestResult(
+                            studio_runtime_store::request_results::RequestResultError::Expired,
+                        )
+                    }
                     crate::account_worker::WorkerError::Store(error) => {
                         NotificationDispatchError::Store(error)
                     }

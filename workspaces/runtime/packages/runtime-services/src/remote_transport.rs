@@ -55,10 +55,8 @@ pub enum RemoteTransportError {
     InvalidResponse,
     #[error("remote peer refused the signed request")]
     PeerRejected,
-    #[error("remote request identity was reused with different content")]
-    RequestConflict,
     #[error(transparent)]
-    RequestIdentity(studio_runtime_schema::persistence::RequestIdentityError),
+    RequestResult(#[from] studio_runtime_store::request_results::RequestResultError),
     #[error("remote peer response exceeds the size limit")]
     ResponseTooLarge,
     #[error("remote transport state operation failed")]
@@ -742,7 +740,7 @@ pub async fn exchange_multi_server(
                 &fingerprint_for_reservation,
                 now as f64,
             )
-            .map_err(|error| map_outbound_error(error, &server_id, &request_id))
+            .map_err(map_outbound_error)
         })
         .await?;
     match reserved {
@@ -861,7 +859,7 @@ pub async fn exchange_multi_server(
                         now as f64,
                     )
                 };
-                result.map_err(|error| map_outbound_error(error, &server_id, &request_id))
+                result.map_err(map_outbound_error)
             })
             .await?;
     }
@@ -920,7 +918,7 @@ async fn exchange_multi_server_with(
                 &fingerprint_for_reservation,
                 now as f64,
             )
-            .map_err(|error| map_outbound_error(error, &server_id, &request_id))
+            .map_err(map_outbound_error)
         })
         .await?;
     match reserved {
@@ -1012,52 +1010,20 @@ async fn exchange_multi_server_with(
                         now as f64,
                     )
                 }
-                .map_err(|error| map_outbound_error(error, &server_id, &request_id))
+                .map_err(map_outbound_error)
             })
             .await?;
     }
     Ok(value)
 }
 
-fn map_outbound_error(
-    error: StoreError,
-    _server_id: &str,
-    _request_id: &str,
-) -> RemoteTransportError {
-    match &error {
-        StoreError::RequestResult(
-            studio_runtime_store::request_results::RequestResultError::Identity(identity),
-        ) => RemoteTransportError::RequestIdentity(identity.clone()),
-        StoreError::RequestResult(
-            studio_runtime_store::request_results::RequestResultError::Conflict { .. },
-        ) => RemoteTransportError::RequestConflict,
+fn map_outbound_error(error: StoreError) -> RemoteTransportError {
+    match error {
+        StoreError::RequestResult(error) => RemoteTransportError::RequestResult(error),
         StoreError::InvalidStoredObject { table, id } => {
-            RemoteTransportError::InvalidStoredObject {
-                table,
-                key: id.clone(),
-            }
+            RemoteTransportError::InvalidStoredObject { table, key: id }
         }
-        StoreError::StateDirectory(_)
-        | StoreError::AlreadyOwned
-        | StoreError::MissingDatabase(_)
-        | StoreError::Migration { .. }
-        | StoreError::UnsafeStateDirectory
-        | StoreError::SchemaMismatch(_)
-        | StoreError::InvalidSyncObject { .. }
-        | StoreError::InvalidSyncObjectField { .. }
-        | StoreError::InvalidStoredRecord { .. }
-        | StoreError::SchemaObjectMismatch { .. }
-        | StoreError::Sqlite(_)
-        | StoreError::CommitOutcomeUnknown(_)
-        | StoreError::Json(_)
-        | StoreError::SchemaValidation(_)
-        | StoreError::RecordContract(_)
-        | StoreError::WriterPoisoned
-        | StoreError::WriterActorInitialization(_)
-        | StoreError::WriterActorControl(_)
-        | StoreError::CommitActorOutcomeUnknown(_)
-        | StoreError::ReadTaskFailed => RemoteTransportError::Store(error),
-        StoreError::RequestResult(_) | StoreError::Outbox(_) => RemoteTransportError::Store(error),
+        error => RemoteTransportError::Store(error),
     }
 }
 

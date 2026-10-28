@@ -318,7 +318,7 @@ fn post_managed_message(
         "assets": input.assets,
     }));
     let now_ms = (crate::event_write::unix_time().map_err(event_write_error)? * 1000.0) as i64;
-    let admission = crate::event_write::begin_request::<ManagedMessageReply>(
+    let result_admission = crate::event_write::begin_request::<ManagedMessageReply>(
         transaction,
         crate::event_write::RequestKey::new("message", &[input.room, "user"], input.id),
         &signature,
@@ -338,7 +338,7 @@ fn post_managed_message(
             ));
         }
     }
-    let admitted = match admission {
+    let admitted = match result_admission {
         crate::event_write::CallerAdmission::Replay(reply) => {
             return Ok(PostMessageResult {
                 receipt: serde_json::to_value(reply).map_err(StoreError::from)?,
@@ -620,14 +620,6 @@ fn send_followup_inner(
         receipt,
         event_inserted: inserted,
     })
-}
-
-fn valid_message_receipt(value: &Value, id: &str) -> bool {
-    value.get("id").and_then(Value::as_str) == Some(id)
-        && value.get("status").and_then(Value::as_str).is_some()
-        && value
-            .get("error")
-            .is_none_or(|error| error.is_null() || error.is_string())
 }
 
 fn safety_retry_active(agent: &studio_runtime_store::AgentRecord) -> bool {
@@ -1437,7 +1429,7 @@ mod tests {
                 Ok(crate::queue_write::QueueSnapshot {
                     items: vec![json!({"id":event.id.0,"kind":event.kind,"text":event.text,"created":event.created})],
                     revision: event.created.to_string(),
-                    capabilities: json!({}),
+                    capabilities: json!({"reorder":true,"receipts":true}),
                 })
             },
         )
@@ -2104,12 +2096,14 @@ mod tests {
             "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('old-message','lead','user','saved','delivered',1.0,0)",
             [],
         ).expect("migrated event");
-        QueueWriteRepository::put_metadata(
-            &connection,
+        let tx = connection.transaction().expect("migration fixture");
+        studio_runtime_store::QueueWriteRepository::put_metadata(
+            &tx,
             "old-message",
             &json!({"assets":[],"delivery":DeliveryMoment::CurrentTurn,"sendNow":true}),
         )
         .expect("lossy timing");
+        tx.commit().expect("migration committed");
         let before = count(&connection, "runtime_events");
         let tx = connection.transaction().expect("transaction");
         let result = post_message_with_admission(

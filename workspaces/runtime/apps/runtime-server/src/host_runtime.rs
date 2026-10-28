@@ -831,8 +831,10 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                     .await
                 {
                     match error {
-                        studio_runtime_services::linux_vm_provider::GuestProviderError::Task
-                        | studio_runtime_services::linux_vm_provider::GuestProviderError::Persistence(_) => {
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::Persistence(error) => return Err(WorkerError::Store(error)),
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::Outbox(error) => return Err(WorkerError::Store(error.into())),
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::RequestResult(error) => return Err(WorkerError::Store(error.into())),
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::Task => {
                             return Err(WorkerError::TaskFailed);
                         }
                         studio_runtime_services::linux_vm_provider::GuestProviderError::Invalid | studio_runtime_services::linux_vm_provider::GuestProviderError::Unknown | studio_runtime_services::linux_vm_provider::GuestProviderError::Refused | studio_runtime_services::linux_vm_provider::GuestProviderError::InvalidResponse | studio_runtime_services::linux_vm_provider::GuestProviderError::Guest(_) | studio_runtime_services::linux_vm_provider::GuestProviderError::Json(_) => profile_copy_failed = true,
@@ -2486,7 +2488,7 @@ mod voice_composition_tests {
                     })
                     .await
                     .map_err(|error| match error {
-                        PortError::Expired => AccountSessionError::Refused("Request id expired"),
+                        PortError::Expired => AccountSessionError::Expired,
                         PortError::Unknown => AccountSessionError::Unknown,
                         PortError::Capacity => AccountSessionError::Persistence,
                         PortError::Identity
@@ -2761,7 +2763,12 @@ mod voice_composition_tests {
         });
         let (mut worker, session, _callbacks) =
             start_voice_worker(directory.path(), Arc::clone(&store), Arc::clone(&factory)).await;
-        let scope = session.current_scope("voice-account").unwrap();
+        let scope =
+            studio_runtime_services::account_session_runtime::AccountSessionPort::current_scope(
+                session.as_ref(),
+                "voice-account",
+            )
+            .unwrap();
         let sent_before_retry = factory.request_writes.load(Ordering::SeqCst);
         let result =
             studio_runtime_services::account_session_runtime::AccountSessionPort::provider_request(
@@ -2780,10 +2787,7 @@ mod voice_composition_tests {
                 },
             )
             .await;
-        assert!(matches!(
-            result,
-            Err(AccountSessionError::Refused("Request id expired"))
-        ));
+        assert!(matches!(result, Err(AccountSessionError::Expired)));
         assert_eq!(
             factory.request_writes.load(Ordering::SeqCst),
             sent_before_retry

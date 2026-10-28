@@ -735,12 +735,51 @@ impl SchedulerRepository {
         thread_id: &str,
         turn_id: Option<&str>,
     ) -> StoreResult<(bool, Option<(TurnAttemptIdentity, bool)>)> {
+        Self::find_scoped_attempt(
+            connection,
+            None,
+            account_key,
+            generation,
+            thread_id,
+            turn_id,
+        )
+    }
+
+    /// Resolve a provider stream whose exact actor is already known.
+    pub fn find_attempt_for_actor(
+        connection: &Connection,
+        actor: &str,
+        account_key: &str,
+        generation: u64,
+        thread_id: &str,
+        turn_id: Option<&str>,
+    ) -> StoreResult<Option<TurnAttemptIdentity>> {
+        Ok(Self::find_scoped_attempt(
+            connection,
+            Some(actor),
+            account_key,
+            generation,
+            thread_id,
+            turn_id,
+        )?
+        .1
+        .map(|(identity, _)| identity))
+    }
+
+    fn find_scoped_attempt(
+        connection: &Connection,
+        actor: Option<&str>,
+        account_key: &str,
+        generation: u64,
+        thread_id: &str,
+        turn_id: Option<&str>,
+    ) -> StoreResult<(bool, Option<(TurnAttemptIdentity, bool)>)> {
         let mut statement = connection.prepare_cached(
             "SELECT id,record FROM runtime_agents \
-             WHERE thread_id=?1 AND account_key=?2 ORDER BY rowid LIMIT 2",
+             WHERE thread_id=?1 AND account_key=?2 AND (?3 IS NULL OR id=?3) ORDER BY rowid LIMIT 2",
         )?;
         let rows = statement
-            .query_map(params![thread_id, account_key], |row| {
+            .query_map(params![thread_id, account_key, actor], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
             .collect::<Result<Vec<_>, _>>()?;

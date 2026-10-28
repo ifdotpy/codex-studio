@@ -184,11 +184,12 @@ async fn ports_with_wake(
 }
 
 pub(super) fn request_row(store: &RuntimeStore, call_id: &str) -> Value {
-    studio_runtime_store::system_reads::all(&store.test_reader().unwrap(), "runtime_tool_requests")
-        .unwrap()
-        .into_iter()
-        .find(|row| row["callId"] == call_id)
-        .unwrap()
+    let connection = store.test_reader().unwrap();
+    let (id, raw): (String, String) = connection.query_row(
+        "SELECT id,record FROM runtime_tool_requests WHERE kind='managed_tool' AND json_extract(record,'$.callId')=?1",
+        [call_id], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    studio_runtime_store::system_reads::decode("runtime_tool_requests", &id, &raw).unwrap()
 }
 
 fn saved_result(store: &RuntimeStore, id: &str) -> Option<Value> {

@@ -969,6 +969,7 @@ impl MonitorRuntime {
                 | error @ MonitorError::InvalidDeliveryIdentity(_)
                 | error @ MonitorError::InvalidOutputReceipt(_)
                 | error @ MonitorError::TaskFailed
+                | error @ MonitorError::Expired
                 | error @ MonitorError::InputOutcomeUnknown
                 | error @ MonitorError::Refused(_)
                 | error @ MonitorError::Unavailable(_)
@@ -1057,6 +1058,10 @@ impl MonitorRuntime {
         };
         if !matches!(submitted, Submission::Written) {
             return Err(match submitted {
+                Submission::NotSent {
+                    reason: monitor_driver::NotSentReason::Expired,
+                    ..
+                } => MonitorError::Expired,
                 Submission::NotSent { .. } => MonitorError::Refused("Monitor input rejected"),
                 Submission::Written | Submission::Unknown => MonitorError::InputOutcomeUnknown,
             });
@@ -1171,6 +1176,7 @@ impl MonitorRuntime {
                             | MonitorError::InvalidDeliveryIdentity(_)
                             | MonitorError::InvalidOutputReceipt(_)
                             | MonitorError::TaskFailed
+                            | MonitorError::Expired
                             | MonitorError::InputOutcomeUnknown
                             | MonitorError::Refused(_)
                             | MonitorError::Unavailable(_)

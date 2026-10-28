@@ -111,6 +111,14 @@ impl AccountSessionPort for Port {
                     json!({"status":"backgrounded"})
                 }
                 "thread/backgroundTerminals/list" => {
+                    if self.behavior == "expired_after_claim" {
+                        self.store.transaction_with(|tx| {
+                            studio_runtime_store::request_results::RequestResults::gc(tx,
+                                (studio_runtime_services::event_write::unix_time().unwrap() * 1000.0) as i64
+                                    + 2 * studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS)?;
+                            Ok::<_, StoreError>(())
+                        }).await.unwrap();
+                    }
                     if let Some((cursor, page)) = self.pages.lock().unwrap().pop_front() {
                         assert_eq!(request.params["cursor"].as_str(), cursor);
                         return Ok(SessionReceipt {
@@ -150,6 +158,45 @@ impl AccountSessionPort for Port {
                     json!({"data":[{"itemId":if self.behavior=="wrong_pair" {"other"} else {"command"},"processId":"42"}],"nextCursor":null})
                 }
                 "thread/backgroundTerminals/terminate" => {
+                    if self.behavior == "expired_after_claim" {
+                        let token = request
+                            .admitted_request
+                            .as_ref()
+                            .expect("reserved final provider token");
+                        let connection = self.store.test_reader().unwrap();
+                        let floor = studio_runtime_store::request_results::RequestResults::expired_before_ms(&connection).unwrap();
+                        assert!(
+                            token.created() < floor,
+                            "send must continue its admitted owner beyond TTL"
+                        );
+                        assert!(
+                            studio_runtime_schema::persistence::RequestIdentity::new(
+                                "process-action",
+                                &[],
+                                &request.root_request_id,
+                                &[]
+                            )
+                            .unwrap()
+                            .validate(
+                                (studio_runtime_services::event_write::unix_time().unwrap()
+                                    * 1000.0) as i64,
+                                floor
+                            )
+                            .is_err()
+                        );
+                        assert!(
+                            studio_runtime_store::outbox::Outbox::get::<Value>(
+                                &connection,
+                                &studio_runtime_schema::provider_call_contract::transport_key(
+                                    "default",
+                                    &request.operation
+                                )
+                            )
+                            .unwrap()
+                            .is_some(),
+                            "reserve the exact effect before provider dispatch"
+                        );
+                    }
                     assert_eq!(
                         request.params,
                         json!({"threadId":"thread","processId":"42"})
@@ -351,7 +398,7 @@ async fn transferred_monitor_fixture(
     port.store.transaction(move |tx| {
         use studio_runtime_schema::persistence::{RequestIdentity, OutboxKind, OutboxStatus, OwnerKind};
         use studio_runtime_schema::provider_call_contract::{ProviderCallIntent, RetainedCall, TransportRequest, RequestActor};
-        use studio_runtime_store::request_results::Admission;
+        use studio_runtime_services::event_write::{begin_request, CallerAdmission, RequestKey};
         tx.execute("DELETE FROM runtime_tasks", [])?;
         let operation = format!("monitor:{}", receipt_monitor["id"].as_str().unwrap());
         let root = RequestIdentity::issue_root();
@@ -363,9 +410,9 @@ async fn transferred_monitor_fixture(
             params:json!({"processId":receipt_monitor["id"],"cwd":receipt_monitor["cwd"],"command":["true"]}),
         };
         let signature = call.fingerprint("default", call.method.as_str());
-        let admitted = match studio_runtime_services::event_write::admit_request(tx,"provider-call", &["default","owner","1"], &root, &[&operation], &signature, (studio_runtime_services::event_write::unix_time().unwrap()*1000.0) as i64)? {
-            Admission::Fresh(admitted) => admitted,
-            Admission::Replay(_) => panic!("fresh command"),
+        let admitted = match begin_request::<()>(tx, RequestKey::new("provider-call", &["default","owner","1"], &root).operation(&[&operation]), &signature, (studio_runtime_services::event_write::unix_time().unwrap()*1000.0) as i64)? {
+            CallerAdmission::Fresh(admitted) => admitted,
+            CallerAdmission::Replay(_) => panic!("fresh command"),
         };
         let key = studio_runtime_schema::provider_call_contract::transport_key("default", &operation);
         let request = TransportRequest { id:studio_runtime_providers::RequestId::String(key.clone()), generation:7, method:call.method, operation:key.clone(), thread:None,lightweight:true,deadline:60000,unknown:false,remote_id:None };
@@ -843,6 +890,7 @@ async fn process_stop_pagination_requires_valid_cursors_before_certifying_absenc
 async fn exact_process_stop_and_lost_reply_never_repeat_the_native_effect() {
     for (behavior, expected, stops) in [
         ("success", "stopped", 1),
+        ("expired_after_claim", "stopped", 1),
         ("lost_reply", "uncertain", 1),
         ("wrong_pair", "already_finished", 0),
         ("owner_changed", "uncertain", 0),

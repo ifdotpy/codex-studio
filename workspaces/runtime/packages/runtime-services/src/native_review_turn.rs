@@ -15,10 +15,10 @@
 //! - The thread start is saved as `submitted` before the provider write. A
 //!   saved `submitted` or `unknown` start is never sent again.
 
-use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
+use crate::account_session_runtime::{AccountSessionError, SessionOutcome as ReceiptOutcome};
 use crate::{
     account_session_runtime::{
-        AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
+        AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
     },
     account_worker::{WorkerError, preparation, retained::RequestActor},
     native_action_ports::{MessageNativeAdmission, NativeActionAcceptance},
@@ -258,6 +258,7 @@ async fn finish(
             "The native review request was not sent.".to_owned()
         }
         other @ NativeError::Invalid(_)
+        | other @ NativeError::Expired
         | other @ NativeError::InvalidStored { .. }
         | other @ NativeError::Conflict
         | other @ NativeError::Changed
@@ -409,6 +410,7 @@ impl native_actions::Preparation for ReviewPreparation {
 
 fn worker_error(error: WorkerError) -> NativeError {
     match error {
+        WorkerError::Expired => NativeError::Expired,
         WorkerError::PreparationPending(reason)
             if reason.reason == crate::account_worker::PreparationWaitReason::ModelCatalog =>
         {
@@ -593,6 +595,7 @@ impl ReviewPreparation {
                 | ReceiptOutcome::NotHandedOff => (NativeReviewThreadStatus::NotSent, None),
                 ReceiptOutcome::Unknown { .. } => (NativeReviewThreadStatus::Unknown, None),
             },
+            Err(AccountSessionError::Expired) => return Err(NativeError::Expired),
             Err(_) => (NativeReviewThreadStatus::Unknown, None),
         };
         let resources = self

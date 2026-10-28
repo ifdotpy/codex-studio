@@ -8,7 +8,6 @@ use studio_runtime_schema::persistence::{
     AttemptSubmission, ExecutionReceiptKind, ExecutionStatus, RequestIdentity,
 };
 
-#[derive(serde::Deserialize)]
 pub struct AttemptReceipt {
     pub input: Value,
     pub result: Value,
@@ -62,13 +61,13 @@ impl ExecutionHistoryRepository {
         db: &rusqlite::Connection,
         id: &str,
     ) -> StoreResult<Option<AdmittedRequest>> {
-        Self::vm_admission(db, id, VmAdmission::AuthBootstrap)
+        Self::admission_at(db, id, VmAdmission::AuthBootstrap.path())
     }
     pub fn vm_credential_refresh_admission(
         db: &rusqlite::Connection,
         id: &str,
     ) -> StoreResult<Option<AdmittedRequest>> {
-        Self::vm_admission(db, id, VmAdmission::CredentialRefresh)
+        Self::admission_at(db, id, VmAdmission::CredentialRefresh.path())
     }
     pub fn set_vm_auth_bootstrap_admission(
         tx: &Transaction<'_>,
@@ -86,14 +85,14 @@ impl ExecutionHistoryRepository {
     ) -> StoreResult<()> {
         Self::set_vm_admission(tx, id, VmAdmission::CredentialRefresh, source, admitted)
     }
-    fn vm_admission(
+    fn admission_at(
         db: &rusqlite::Connection,
         id: &str,
-        kind: VmAdmission,
+        path: &str,
     ) -> StoreResult<Option<AdmittedRequest>> {
         db.query_row(
             "SELECT json_extract(record,?1) FROM runtime_execution_attempts WHERE id=?2",
-            params![kind.path(), id],
+            params![path, id],
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()?
@@ -111,7 +110,7 @@ impl ExecutionHistoryRepository {
         if Self::admission(tx, id)?.as_ref() != Some(source) {
             return Err(Self::invalid("runtime_execution_attempts", id));
         }
-        if let Some(saved) = Self::vm_admission(tx, id, kind)? {
+        if let Some(saved) = Self::admission_at(tx, id, kind.path())? {
             return if saved == *admitted {
                 Ok(())
             } else {
@@ -160,6 +159,8 @@ impl ExecutionHistoryRepository {
         Self::record(tx, agent)?;
         if let Some(pointer) = Self::current_pointer(tx, agent)? {
             agent.extra.insert("activeExecution".into(), pointer);
+        } else {
+            agent.extra.remove("activeExecution");
         }
         Ok(())
     }
@@ -203,15 +204,7 @@ impl ExecutionHistoryRepository {
         Ok(Some((receipt.input == *input, receipt.result)))
     }
     pub fn admission(db: &rusqlite::Connection, id: &str) -> StoreResult<Option<AdmittedRequest>> {
-        db.query_row(
-            "SELECT json_extract(record,'$.admission') FROM runtime_execution_attempts WHERE id=?1",
-            [id],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()?
-        .flatten()
-        .map(|raw| serde_json::from_str(&raw).map_err(StoreError::from))
-        .transpose()
+        Self::admission_at(db, id, "$.admission")
     }
     /// Read exact cached suboperation evidence; the execution record carries no response bodies.
     pub fn receipt(
@@ -271,7 +264,7 @@ impl ExecutionHistoryRepository {
         }
         Ok(())
     }
-    pub fn attempt(tx: &Transaction<'_>, id: &str) -> StoreResult<Option<Value>> {
+    pub fn attempt(tx: &rusqlite::Connection, id: &str) -> StoreResult<Option<Value>> {
         tx.query_row(
             "SELECT record FROM runtime_execution_attempts WHERE id=?1",
             [id],
@@ -310,14 +303,48 @@ impl ExecutionHistoryRepository {
         tx: &Transaction<'_>,
         agent: &AgentRecord,
     ) -> StoreResult<Option<Value>> {
-        let Some(id) = agent
+        let pointer = if let Some(id) = agent
             .extra
             .get("startAttempt")
             .and_then(|attempt| attempt["id"].as_str())
-        else {
-            return Ok(agent.extra.get("activeExecution").cloned());
+        {
+            Self::attempt(tx, id)?.map(|attempt| json!({"runId":attempt["runId"],"attemptId":id}))
+        } else {
+            agent
+                .extra
+                .get("activeExecution")
+                .filter(|value| !value.is_null())
+                .cloned()
         };
-        Ok(Self::attempt(tx, id)?.map(|attempt| json!({"runId":attempt["runId"],"attemptId":id})))
+        let Some(pointer) = pointer else {
+            return Ok(None);
+        };
+        let run = pointer["runId"]
+            .as_str()
+            .ok_or_else(|| Self::invalid("runtime_agents", &agent.id.0))?;
+        let scope = tx
+            .query_row(
+                "SELECT agent,account,epoch FROM runtime_execution_runs WHERE id=?1",
+                [run],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| Self::invalid("runtime_execution_runs", run))?;
+        let account = agent
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        Ok(
+            (scope.0 == agent.id.0 && scope.1 == account && scope.2 == agent.epoch)
+                .then_some(pointer),
+        )
     }
     pub(crate) fn invalid(table: &str, id: &str) -> StoreError {
         StoreError::InvalidSyncObject {
@@ -697,6 +724,43 @@ inventory::submit! { crate::repositories::SchemaRegistration { repository: "exec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_execution_pointer_follows_account_and_epoch_but_preserves_source_thread() {
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);
+            CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,record TEXT);").expect("owners");
+        let run = json!({"id":"run","agent":"agent","accountKey":"default","epoch":1,"status":"completed","created":1.0,"threadId":"source","turnId":"turn","firstAttemptId":null,"rootAttemptId":null,"latestAttemptId":null});
+        db.execute(
+            "INSERT INTO runtime_execution_runs VALUES('run','agent','default',1,?1)",
+            [run.to_string()],
+        )
+        .expect("history");
+        let tx = db.transaction().expect("transaction");
+        let pointer = json!({"runId":"run","attemptId":null});
+        let mut agent=AgentRecord::from_value(json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","threadId":"destination","activeExecution":pointer})).expect("current owner");
+        ExecutionHistoryRepository::record_current(&tx, &mut agent).expect("same account/epoch");
+        assert_eq!(
+            agent.extra["activeExecution"], pointer,
+            "a repaired thread retains its source execution identity"
+        );
+        agent.epoch = 2;
+        ExecutionHistoryRepository::record_current(&tx, &mut agent).expect("epoch advances");
+        assert!(!agent.extra.contains_key("activeExecution"));
+        agent.epoch = 1;
+        agent.extra.insert("activeExecution".into(), pointer);
+        agent
+            .extra
+            .insert("accountKey".into(), json!("another-account"));
+        ExecutionHistoryRepository::record_current(&tx, &mut agent).expect("account advances");
+        assert!(!agent.extra.contains_key("activeExecution"));
+        assert_eq!(
+            tx.query_row("SELECT COUNT(*) FROM runtime_execution_runs", [], |row| row
+                .get::<_, i64>(0))
+                .expect("history retained"),
+            1
+        );
+    }
 
     #[test]
     fn attempt_replay_lives_in_request_results_and_keeps_exact_outcome() {

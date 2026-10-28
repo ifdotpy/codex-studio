@@ -880,7 +880,11 @@ async fn federation_user_message_uses_the_local_lead_and_stable_idempotency_key(
                 corpus.now() + 2.0,
             )
             .await,
-            Err(crate::federation_messaging::FederationMessageError::Conflict(_))
+            Err(
+                crate::federation_messaging::FederationMessageError::RequestResult(
+                    studio_runtime_store::request_results::RequestResultError::Conflict { .. }
+                )
+            )
         ),
         "changed timing must remain a caller-visible conflict"
     );
@@ -1586,7 +1590,7 @@ async fn oversized_batches() {
         let (_, store) = corpus
             .store(&format!("oversized-{}", table.name()), false)
             .await;
-        let raw=json!({"status":"queued","nextAt":0,"created":0,"ack":"pending","padding":"x".repeat(512*1024+1)}).to_string();
+        let raw=json!({"status":"queued","kind":"chat-message","nextAt":0,"created":0,"ack":"pending","padding":"x".repeat(512*1024+1)}).to_string();
         let peer_id = corpus.peer().to_owned();
         store.transaction(move |tx| {
             match table {

@@ -139,6 +139,7 @@ async fn account_catalog_read(
                 }
                 match error {
                 // A refusal is a stable verdict about the account, not a transient fault.
+                studio_runtime_services::account_session_runtime::AccountSessionError::Expired => (StatusCode::GONE, json!({"error":error.to_string()})),
                 studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
                     message,
                 ) => (StatusCode::BAD_REQUEST, json!({"error": message})),
