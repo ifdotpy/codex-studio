@@ -121,6 +121,8 @@ pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
             | StoreError::SchemaObjectMismatch { .. }
             | StoreError::Sqlite(_)
             | StoreError::CommitOutcomeUnknown(_)
+            | StoreError::RequestResult(_)
+            | StoreError::Outbox(_)
             | StoreError::Json(_)
             | StoreError::SchemaValidation(_)
             | StoreError::RecordContract(_)
