@@ -371,7 +371,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
     // Binding callers resolve the client path to a project key before SQL.
     let project_key = host_key(case["body"]["path"].as_str().expect("project path"));
     match mode.as_str() {
-        "convert" => studio_runtime_services::peer_conversion::convert(std::sync::Arc::clone(&store), &case["body"]).await,
+        "convert" => studio_runtime_services::peer_conversion::convert(std::sync::Arc::clone(&store), &case["body"]).await.map(|reply| serde_json::from_slice(&serde_json::to_vec(&reply).expect("serialize reply")).expect("reply")),
         "project" => studio_runtime_services::projects::write(
             std::sync::Arc::clone(&store),
             case["body"].clone(),

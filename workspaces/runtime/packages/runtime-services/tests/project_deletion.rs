@@ -148,7 +148,7 @@ async fn delete_with_ports(
         .expect("seq");
     let workspace = SyncDocumentsRepository::workspace_id(&reader).expect("workspace");
     drop(reader);
-    project_deletion::execute(
+    let reply = project_deletion::execute(
         store,
         project_deletion::Request {
             id,
@@ -160,7 +160,8 @@ async fn delete_with_ports(
         ports,
     )
     .await
-    .expect("delete")
+    .expect("delete");
+    serde_json::from_slice(&serde_json::to_vec(&reply).expect("serialize reply")).expect("reply")
 }
 fn creation(path: &str, bound: bool) -> agents_create::Creation {
     agents_create::Creation {
@@ -310,6 +311,9 @@ async fn project_deletion_receipt_survives_store_restart() {
     )
     .await
     .expect("replay after restart");
+    let result: Value =
+        serde_json::from_slice(&serde_json::to_vec(&result).expect("serialize reply"))
+            .expect("reply");
     assert_eq!(result, first);
 }
 

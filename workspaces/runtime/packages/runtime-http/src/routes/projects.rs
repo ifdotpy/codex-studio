@@ -350,8 +350,7 @@ async fn delete_project(
     .await;
     let error = match result {
         Ok(reply) => {
-            return super::generated_json::<crate::generated::ProjectDeleteResponse>(reply)
-                .map(|reply| Json(reply).into_response());
+            return Ok(Json(reply).into_response());
         }
         Err(error) => error,
     };
@@ -1261,22 +1260,17 @@ async fn peer_teams(
         state.event_wake.notify_one();
         return Ok(Json(PeerTeamWriteResponse::Raw(value)));
     }
-    let is_radio = body.get("action").and_then(Value::as_str) == Some("radio");
-    let action = body["action"].as_str().unwrap_or_default().to_owned();
+    if body.get("action").and_then(Value::as_str) == Some("convert") {
+        let reply = studio_runtime_services::peer_conversion::convert(store, &body)
+            .await
+            .map_err(projects_error)?;
+        return Ok(Json(PeerTeamWriteResponse::Conversion(reply)));
+    }
     let value = projects::peer_team_write(store.clone(), body, default_account, known)
         .await
         .map_err(projects_error)?;
-    let result = match action.as_str() {
-        "radio" => super::generated_json::<crate::generated::PeerRadioResponse>(value)
-            .map(PeerTeamWriteResponse::Radio)?,
-        "convert" => super::generated_json::<crate::generated::PeerConversionResponse>(value)
-            .map(PeerTeamWriteResponse::Conversion)?,
-        _ => super::generated_json::<crate::generated::PeerProjectResponse>(value)
-            .map(PeerTeamWriteResponse::Project)?,
-    };
-    if is_radio {
-        state.event_wake.notify_one();
-    }
+    let result = super::generated_json::<crate::generated::PeerProjectResponse>(value)
+        .map(PeerTeamWriteResponse::Project)?;
     Ok(Json(result))
 }
 
@@ -1284,8 +1278,7 @@ async fn peer_teams(
 #[serde(untagged)]
 enum PeerTeamWriteResponse {
     Raw(Value),
-    Radio(crate::generated::PeerRadioResponse),
-    Conversion(crate::generated::PeerConversionResponse),
+    Conversion(studio_runtime_services::peer_conversion::ConversionReply),
     Project(crate::generated::PeerProjectResponse),
 }
 

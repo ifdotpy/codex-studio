@@ -16,7 +16,7 @@ use studio_runtime_store::{
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ConversionReply {
+pub struct ConversionReply {
     id: String,
     parent_id: String,
     root_id: String,
@@ -34,7 +34,10 @@ const MOVE_FIELDS: &[(&str, &[&str])] = &[
 ];
 
 /// Called only by the authenticated user HTTP route, never by model tools.
-pub async fn convert(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, ProjectsError> {
+pub async fn convert(
+    store: Arc<RuntimeStore>,
+    body: &Value,
+) -> Result<ConversionReply, ProjectsError> {
     let allowed = [
         "action",
         "path",
@@ -81,9 +84,7 @@ pub async fn convert(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, Pr
         })
         .await?
     {
-        return serde_json::to_value(result)
-            .map_err(studio_runtime_store::StoreError::from)
-            .map_err(Into::into);
+        return Ok(result);
     }
     let next_revision = revision
         .checked_add(1)

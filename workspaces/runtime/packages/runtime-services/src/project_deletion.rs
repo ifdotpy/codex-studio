@@ -25,7 +25,7 @@ pub struct Request {
     pub expected_project_seq: i64,
 }
 #[derive(Serialize, Deserialize)]
-struct DeleteReply {
+pub struct DeleteReply {
     id: String,
     request_id: String,
     outcome: DeleteOutcome,
@@ -69,7 +69,7 @@ pub async fn execute(
     request: Request,
     now: f64,
     ports: Arc<dyn LifecyclePorts>,
-) -> Result<Value, Error> {
+) -> Result<DeleteReply, Error> {
     let adapter = ports.clone();
     let (reply, applied) = store
         .transaction_with(move |tx| delete_in_transaction(tx, &request, now, adapter.as_ref()))

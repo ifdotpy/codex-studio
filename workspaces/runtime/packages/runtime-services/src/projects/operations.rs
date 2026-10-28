@@ -13,9 +13,6 @@ pub async fn peer_team_write(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    if action == "convert" {
-        return crate::peer_conversion::convert(Arc::clone(&store), &body).await;
-    }
     if !matches!(action.as_str(), "save" | "delete" | "move") {
         return Err(ProjectsError::Invalid("unknown peer team action"));
     }
