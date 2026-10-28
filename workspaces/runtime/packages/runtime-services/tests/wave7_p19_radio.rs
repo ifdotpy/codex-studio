@@ -175,6 +175,18 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
     store
         .transaction(move |db| {
             for (table, rows) in snapshot.as_object().expect("snapshot") {
+                if table == "operation_receipts" {
+                    db.execute("DELETE FROM request_results", [])?;
+                    for row in rows.as_array().expect("receipts") {
+                        let reply: Value = serde_json::from_str(row["result"].as_str().expect("result"))
+                            .expect("saved reply");
+                        db.execute(
+                            "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)",
+                            rusqlite::params![row["id"].as_str(), row["signature"].as_str(), json!({"actor":null,"reply":reply,"references":[]}).to_string(), chrono::Utc::now().timestamp_millis()],
+                        )?;
+                    }
+                    continue;
+                }
                 let table_name = match table.as_str() {
                     "sync_entities" => "sync_entities".to_owned(),
                     "sidebar_order" => "runtime_sidebar_order".to_owned(),
