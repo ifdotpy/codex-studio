@@ -365,6 +365,9 @@ pub(super) async fn dispatch_with_ports(
             if let Some(saved) = cached {
                 return Ok(DispatchState::Result(saved));
             }
+            if lifecycle::terminal(&record)? {
+                return Err(CallbackError::Unknown);
+            }
             if record["connectionId"] != context.connection
                 || record
                     .pointer("/supervisor/generation")

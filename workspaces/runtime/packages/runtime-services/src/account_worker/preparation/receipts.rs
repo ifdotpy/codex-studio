@@ -51,12 +51,12 @@ pub(crate) fn accept_thread(
     let Some(attempt) = &context.thread else {
         return Ok(Err(ThreadRejection::NoAttempt));
     };
-    let saved = super::super::store::receipt(tx, &context.operation, "submitted")?
+    let saved = super::super::store::account_submission(tx, &context.operation)?
         .ok_or_else(|| invalid("thread submission receipt"))?;
-    if saved["request"]["id"] != json!(ticket.id)
-        || saved["request"]["generation"] != ticket.generation
-        || saved["request"]["method"] != ticket.method.as_str()
-        || saved["request"]["operation"] != context.operation
+    if saved.request.id != ticket.id
+        || saved.request.generation != ticket.generation
+        || saved.request.method != ticket.method
+        || saved.request.operation != context.operation
     {
         return Ok(Err(ThreadRejection::SubmissionReceipt));
     }
@@ -115,7 +115,7 @@ pub(crate) fn accept_thread(
     studio_runtime_store::ExecutionHistoryRepository::save_receipt(
         tx,
         &context.intent.attempt_id,
-        "threadPrepared",
+        studio_runtime_schema::persistence::ExecutionReceiptKind::ThreadPrepared,
         json!({"agent":context.intent.agent_id,"epoch":context.intent.epoch,"account":context.intent.account_key,"previousThread":context.intent.thread_id,"thread":loaded.thread_id}),
         json!(true),
     )?;
@@ -152,10 +152,10 @@ pub(crate) fn accept_turn(
     let Some(prepared) = &context.compiled else {
         return Ok(());
     };
-    let saved = super::super::store::receipt(tx, &context.operation, "submitted")?
+    let saved = super::super::store::account_submission(tx, &context.operation)?
         .ok_or_else(|| invalid("turn submission receipt"))?;
-    if saved["request"]["id"] != json!(ticket.id)
-        || saved["request"]["generation"] != ticket.generation
+    if saved.request.id != ticket.id
+        || saved.request.generation != ticket.generation
         || ticket.method != Method::TurnStart
     {
         return Ok(());

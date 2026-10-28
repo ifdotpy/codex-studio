@@ -169,7 +169,7 @@ pub(super) fn submitted(
     prepared: &preparation::PreparedSteer,
 ) -> Result<bool, WorkerError> {
     let intent = &context.intent;
-    if store::receipt(tx, &context.operation, "submitted")?.is_some() {
+    if store::account_submission(tx, &context.operation)?.is_some() {
         return Ok(false);
     }
     if !SchedulerRepository::reconcile_obsolete_steer_before_submit(
@@ -202,12 +202,7 @@ pub(super) fn submitted(
         &intent.attempt_id,
         &json!(context),
     )?;
-    store::save(
-        tx,
-        &context.operation,
-        "submitted",
-        json!({"context":context,"request":store::record(request)}),
-    )?;
+    store::save_account_submission(tx, context, request)?;
     Ok(true)
 }
 

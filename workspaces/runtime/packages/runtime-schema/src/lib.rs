@@ -19,6 +19,7 @@ pub mod multi_server_protocol;
 pub mod persistence;
 pub mod pricing;
 pub mod process_controls;
+pub mod provider_call_contract;
 pub mod provider_diagnostics;
 pub mod provider_errors;
 pub mod provider_input;

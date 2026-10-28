@@ -25,6 +25,10 @@ const VM_GUEST_SKILLS_ROOT: &str = "/opt/codex-studio/.agents/skills";
 /// through its private guest boundary and never returns or logs their values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VmProviderLaunchRequest {
+    pub root_request_id: String,
+    pub source: studio_runtime_store::request_results::AdmittedRequest,
+    pub final_effect: Option<studio_runtime_store::request_results::AdmittedRequest>,
+    pub attempt_id: String,
     pub agent_id: String,
     pub epoch: i64,
     pub generation: u64,
@@ -62,6 +66,8 @@ pub trait VmProviderLaunchResolver: Send + Sync {
         _actor_id: String,
         _actor_epoch: i64,
         _generation: u64,
+        _root_request_id: String,
+        _admitted_request: studio_runtime_store::request_results::AdmittedRequest,
     ) -> VmProviderAuthFuture<'_> {
         Box::pin(async {
             Err(WorkerError::PreparationPending(
