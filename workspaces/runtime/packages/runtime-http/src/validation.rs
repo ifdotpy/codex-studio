@@ -1947,7 +1947,7 @@ mod tests {
 
         for integer in integers {
             let raw_body = format!(
-                "{{\"requestId\":\"r\",\"action\":\"x\",\"payload\":{{\"key\":{integer}}}}}"
+                "{{\"requestId\":\"r\",\"action\":\"event\",\"operation\":[],\"payload\":{{\"key\":{integer}}}}}"
             );
             let raw: &serde_json::value::RawValue =
                 serde_json::from_slice(raw_body.as_bytes()).expect("raw body parses");
@@ -1991,7 +1991,7 @@ mod tests {
         }
 
         let safe_raw_body =
-            format!(r#"{{"requestId":"r","action":"x","payload":{{"key":{MAX_SAFE_INTEGER}}}}}"#);
+            format!(r#"{{"requestId":"r","action":"event","operation":[],"payload":{{"key":{MAX_SAFE_INTEGER}}}}}"#);
         let safe_body = serde_json::from_str(&safe_raw_body).expect("safe integer parses");
         assert!(
             registry
@@ -2007,7 +2007,7 @@ mod tests {
                 .is_ok()
         );
         let large_fraction =
-            r#"{"requestId":"r","action":"x","payload":{"key":18446744073709551616.5}}"#;
+            r#"{"requestId":"r","action":"event","operation":[],"payload":{"key":18446744073709551616.5}}"#;
         let fractional_body =
             serde_json::from_str(large_fraction).expect("large fractional JSON number parses");
         assert!(
