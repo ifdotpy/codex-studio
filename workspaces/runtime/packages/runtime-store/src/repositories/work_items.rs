@@ -97,7 +97,8 @@ impl WorkItemsRepository {
             id: agent.id.0.clone(),
         };
         let id = pointer["runId"].as_str().ok_or_else(invalid)?;
-        let attempt = pointer["attemptId"].as_str().ok_or_else(invalid)?;
+        let attempt: Option<String> =
+            serde_json::from_value(pointer["attemptId"].clone()).map_err(|_| invalid())?;
         let raw: Option<String> = connection
             .query_row(
                 "SELECT record FROM runtime_execution_runs WHERE id=?1",
@@ -120,7 +121,7 @@ impl WorkItemsRepository {
         {
             return Err(invalid());
         }
-        Ok(Some((id.into(), Some(attempt.into()))))
+        Ok(Some((id.into(), attempt)))
     }
 
     pub fn work_record(connection: &Connection, id: &str) -> StoreResult<Option<WorkItemRecord>> {
@@ -687,6 +688,15 @@ mod receipt_domain_tests {
         assert_eq!(
             WorkItemsRepository::submission_identity(&db, &agent).expect("current identity"),
             Some(("old".into(), Some("old-attempt".into())))
+        );
+        agent.extra.insert(
+            "activeExecution".into(),
+            json!({"runId":"old","attemptId":null}),
+        );
+        assert_eq!(
+            WorkItemsRepository::submission_identity(&db, &agent)
+                .expect("current run without attempt"),
+            Some(("old".into(), None))
         );
     }
 }
