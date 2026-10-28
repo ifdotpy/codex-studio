@@ -163,7 +163,7 @@
           "type": "string"
         }
       },
-      "required": ["project", "name", "path", "request", "signature"],
+      "required": ["project", "name", "path", "request"],
       "title": "LocationPayload",
       "type": "object"
     },
