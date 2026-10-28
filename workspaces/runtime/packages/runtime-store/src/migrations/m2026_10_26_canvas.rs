@@ -219,19 +219,3 @@ pub(super) fn unix_now() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |elapsed| elapsed.as_secs_f64())
 }
-
-/// Managed tool replies keep no row: the durable tool result rebuilds the
-/// answer. Delete the rows and cursor links that earlier versions kept. They
-/// were only a replay cache, so deleting them sends and repeats nothing.
-pub(super) fn delete_prepared_callback_cache(tx: &Transaction<'_>) -> StoreResult<()> {
-    let replies = tx.execute(
-        "DELETE FROM runtime_operation_receipts WHERE signature='provider-callback' AND json_extract(result,'$.delivery')='prepared' AND json_extract(result,'$.toolRequest') IS NOT NULL",
-        [],
-    )?;
-    let links = tx.execute(
-        "DELETE FROM runtime_operation_receipts WHERE id>='account-worker:callback:' AND id<'account-worker:callback;' AND id LIKE '%:reply'",
-        [],
-    )?;
-    let _removed = replies + links;
-    Ok(())
-}
