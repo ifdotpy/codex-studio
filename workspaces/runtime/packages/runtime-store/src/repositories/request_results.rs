@@ -761,7 +761,9 @@ mod tests {
             })
             .await
             .expect("caller schema");
-        let now = REQUEST_RESULT_TTL_MS * 2;
+        let now = RequestResults::expired_before_ms(&store.test_reader().expect("reader"))
+            .expect("migration watermark")
+            + 1;
         let id = identity(now, "concurrent");
         let mut tasks = Vec::new();
         for _ in 0..2 {
