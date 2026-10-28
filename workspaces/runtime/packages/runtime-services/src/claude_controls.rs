@@ -6,32 +6,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 /// Seconds for a dry-run, a history fork, and the SDK file restore.
 pub(crate) const FILE_RESTORE_TIMEOUT_SECONDS: u64 = 90;
+pub use studio_runtime_schema::claude_controls::{ControlError, ControlOutcome};
 pub(crate) use studio_runtime_schema::claude_permissions::PERMISSION_MODES;
-#[derive(Debug, thiserror::Error)]
-pub enum ControlError {
-    #[error("Invalid Claude control record at {0}")]
-    Invalid(String),
-    #[error("Claude session changed before the action")]
-    Changed,
-    #[error("Pause Claude before changing its session")]
-    Busy,
-    #[error("This request identity has different content")]
-    Conflict,
-    #[error("Claude control outcome is unknown; workspace recovery is required")]
-    Unknown,
-    #[error("Claude file restore requires recovery: {0}")]
-    RewindRejected(String),
-    #[error("{0}")]
-    RewindNotApplied(String),
-    #[error("{0}")]
-    SettingsNotApplied(String),
-    #[error("Claude control request was not sent")]
-    NotSent,
-    #[error("Claude control service is unavailable")]
-    Unavailable,
-    #[error("Invalid Claude settings or action")]
-    Request,
-}
 pub type Result<T> = std::result::Result<T, ControlError>;
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +34,8 @@ struct Operation {
     source: Value,
     phase: String,
     submitted: Option<bool>,
+    final_response: Option<ControlOutcome>,
+    result: Option<Box<serde_json::value::RawValue>>,
 }
 #[derive(Clone)]
 pub struct ControlSnapshot {
@@ -86,6 +64,27 @@ fn signature(request: &ControlRequest) -> String {
     request_signature(&value)
 }
 impl ControlSnapshot {
+    fn replay(&self, request: &ControlRequest) -> Result<Option<Result<Value>>> {
+        let Some(op) = &self.operation else {
+            return Ok(None);
+        };
+        if op.id != request.operation_id()
+            || op.request_id != request.request_id()
+            || op.agent != request.id()
+            || op.kind != format!("claude_{}", request.action_name())
+            || op.signature != signature(request)
+        {
+            return Err(ControlError::Conflict);
+        }
+        Ok(match &op.final_response {
+            Some(ControlOutcome::Ok) => Some(Ok(serde_json::from_str(
+                op.result.as_ref().ok_or(ControlError::Unknown)?.get(),
+            )
+            .map_err(|_| ControlError::Unknown)?)),
+            Some(ControlOutcome::Err(error)) => Some(Err(error.clone())),
+            None => None,
+        })
+    }
     pub fn from_records(agent: Value, operation: Option<Value>) -> Result<Self> {
         validate("PersistedAgentRecord", &agent)?;
         let typed: Agent = serde_json::from_value(agent.clone())

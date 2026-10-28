@@ -21,6 +21,53 @@ pub const CLAUDE_SETTINGS_WIRE_FIELDS: [&str; 4] = [
     "autoCompactWindow",
 ];
 
+/// The exact terminal control error retained with its operation.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Deserialize,
+    Serialize,
+    JsonSchema,
+    thiserror::Error,
+    strum::VariantNames,
+)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum ControlError {
+    #[error("Invalid Claude control record at {0}")]
+    Invalid(String),
+    #[error("Claude session changed before the action")]
+    Changed,
+    #[error("Pause Claude before changing its session")]
+    Busy,
+    #[error("This request identity has different content")]
+    Conflict,
+    #[error("Claude control outcome is unknown; workspace recovery is required")]
+    Unknown,
+    #[error("Claude file restore requires recovery: {0}")]
+    RewindRejected(String),
+    #[error("{0}")]
+    RewindNotApplied(String),
+    #[error("{0}")]
+    SettingsNotApplied(String),
+    #[error("Claude control request was not sent")]
+    NotSent,
+    #[error("Claude control service is unavailable")]
+    Unavailable,
+    #[error("Invalid Claude settings or action")]
+    Request,
+}
+
+/// A success uses the existing provider result; an error preserves its exact type and detail.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "status", content = "error", rename_all = "snake_case")]
+pub enum ControlOutcome {
+    Ok,
+    Err(ControlError),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ControlId(#[schemars(length(min = 1, max = CONTROL_ID_MAX_CODEPOINTS))] String);
 
@@ -183,6 +230,45 @@ pub(crate) fn check_schema_parity(openapi: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_outcome_persisted_schema_accepts_every_typed_error() {
+        use strum::VariantNames;
+        let schema: Value =
+            serde_json::from_str(include_str!("schemas/persisted-claude-control.schema.json"))
+                .expect("persisted schema");
+        let validator = jsonschema::validator_for(&schema["properties"]["finalResponse"])
+            .expect("outcome schema");
+        let mut schema_kinds: Vec<_> =
+            schema["properties"]["finalResponse"]["oneOf"][1]["properties"]["error"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|variant| variant["properties"]["kind"]["enum"].as_array().unwrap())
+                .map(|kind| kind.as_str().unwrap())
+                .collect();
+        schema_kinds.sort_unstable();
+        let mut owner_kinds = ControlError::VARIANTS.to_vec();
+        owner_kinds.sort_unstable();
+        assert_eq!(schema_kinds, owner_kinds);
+        for outcome in [
+            ControlOutcome::Ok,
+            ControlOutcome::Err(ControlError::Invalid("x".into())),
+            ControlOutcome::Err(ControlError::Changed),
+            ControlOutcome::Err(ControlError::Busy),
+            ControlOutcome::Err(ControlError::Conflict),
+            ControlOutcome::Err(ControlError::Unknown),
+            ControlOutcome::Err(ControlError::RewindRejected("x".into())),
+            ControlOutcome::Err(ControlError::RewindNotApplied("x".into())),
+            ControlOutcome::Err(ControlError::SettingsNotApplied("x".into())),
+            ControlOutcome::Err(ControlError::NotSent),
+            ControlOutcome::Err(ControlError::Unavailable),
+            ControlOutcome::Err(ControlError::Request),
+        ] {
+            assert!(validator.is_valid(&serde_json::to_value(outcome).unwrap()));
+        }
+        assert!(!validator.is_valid(&json!({"status":"err","error":{"kind":"future"}})));
+    }
 
     fn check(value: Value, expected: bool) {
         let schema = schemars::generate::SchemaSettings::draft2020_12()

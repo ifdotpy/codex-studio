@@ -307,6 +307,7 @@ pub enum FailureEvidence {
     NotApplied,
 }
 pub trait ControlStorage: Send + Sync {
+    fn replay(&self, request: ControlRequest) -> ControlFuture<'_, Option<Result<Value>>>;
     fn execution_key(&self, request: &ControlRequest) -> String {
         format!("{:p}:{}", self, request.id())
     }
@@ -332,8 +333,12 @@ pub trait ControlStorage: Send + Sync {
         expected: ControlSnapshot,
         request: ControlRequest,
     ) -> ControlFuture<'_, Value>;
-    fn failed(&self, expected: ControlSnapshot, evidence: FailureEvidence)
-    -> ControlFuture<'_, ()>;
+    fn failed(
+        &self,
+        expected: ControlSnapshot,
+        evidence: FailureEvidence,
+        error: ControlError,
+    ) -> ControlFuture<'_, ()>;
 }
 pub struct Controls {
     store: Arc<dyn ControlStorage>,
@@ -344,9 +349,15 @@ impl Controls {
         Self { store, session }
     }
     pub async fn execute(&self, request: ControlRequest) -> Result<Value> {
+        if let Some(result) = self.store.replay(request.clone()).await? {
+            return result;
+        }
         let _running =
             crate::checkpoints::RestoreExecution::acquire(self.store.execution_key(&request))
                 .map_err(|_| ControlError::Busy)?;
+        if let Some(result) = self.store.replay(request.clone()).await? {
+            return result;
+        }
         let binding = self.session.binding();
         let mut snapshot = self.store.reserve(request.clone(), binding.clone()).await?;
         if snapshot.agent.account_key != binding.account {
@@ -364,7 +375,7 @@ impl Controls {
         let result = self
             .perform(&request, &binding, &mut snapshot, &mut uncertain)
             .await;
-        if result.is_err() {
+        if let Err(error) = &result {
             let evidence = if matches!(&result, Err(ControlError::NotSent)) {
                 FailureEvidence::NotSent
             } else if matches!(
@@ -377,7 +388,7 @@ impl Controls {
             } else {
                 FailureEvidence::BeforeSubmission
             };
-            self.store.failed(snapshot, evidence).await?;
+            self.store.failed(snapshot, evidence, error.clone()).await?;
         }
         result
     }

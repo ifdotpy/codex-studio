@@ -463,6 +463,12 @@ impl Cut {
     }
 }
 impl ControlStorage for Cut {
+    fn replay(
+        &self,
+        request: ControlRequest,
+    ) -> ControlFuture<'_, Option<Result<Value, ControlError>>> {
+        self.inner.replay(request)
+    }
     fn reserve(
         &self,
         request: ControlRequest,
@@ -517,10 +523,11 @@ impl ControlStorage for Cut {
         &self,
         expected: studio_runtime_services::claude_controls::ControlSnapshot,
         evidence: FailureEvidence,
+        error: ControlError,
     ) -> ControlFuture<'_, ()> {
         Box::pin(async move {
             self.at("failed", false).await;
-            self.inner.failed(expected, evidence).await?;
+            self.inner.failed(expected, evidence, error).await?;
             self.at("failed", true).await;
             Ok(())
         })
@@ -901,12 +908,18 @@ async fn stale_failure_cannot_clear_a_newer_durable_submission() {
     let submitted=adapter.submitted(stale.clone(),request,NativeProof::Rollback { state: serde_json::from_value(json!({"tasks":[],"turns":[{"id":"one","status":"completed","canRestoreFiles":true},{"id":"two","status":"completed","canRestoreFiles":true},{"id":"three","status":"completed","canRestoreFiles":true}]})).expect("state"), queue: serde_json::from_value(json!({"data":[]})).expect("queue") }).await.expect("rewind submission persists");
     assert!(matches!(
         adapter
-            .failed(stale.clone(), FailureEvidence::BeforeSubmission)
+            .failed(
+                stale.clone(),
+                FailureEvidence::BeforeSubmission,
+                ControlError::Request
+            )
             .await,
         Err(ControlError::Changed)
     ));
     assert!(matches!(
-        adapter.failed(stale, FailureEvidence::NotSent).await,
+        adapter
+            .failed(stale, FailureEvidence::NotSent, ControlError::NotSent)
+            .await,
         Err(ControlError::Changed)
     ));
     let agent = AgentRepository::get(
@@ -920,7 +933,11 @@ async fn stale_failure_cannot_clear_a_newer_durable_submission() {
     assert!(!agent["workspaceReservationId"].is_null());
     // Even a caller that reports certainty cannot discard durable submitted evidence.
     adapter
-        .failed(submitted, FailureEvidence::BeforeSubmission)
+        .failed(
+            submitted,
+            FailureEvidence::BeforeSubmission,
+            ControlError::Request,
+        )
         .await
         .expect("failure settlement succeeds");
     let agent = AgentRepository::get(

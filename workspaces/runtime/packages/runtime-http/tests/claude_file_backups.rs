@@ -423,6 +423,26 @@ async fn quota_reason_crosses_retained_adapter_and_http_release_allows_same_requ
     );
     assert!(agent(&store)["workspaceReservationId"].is_null());
     assert!(agent(&store)["workspaceOperation"].is_null());
+    let cwd = _root.path().join("cwd");
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_monitors VALUES('retry-blocker',?1)",
+                [json!({"id":"retry-blocker","cwd":cwd,"status":"running"}).to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let replay = post(&app, "/api/claude/session", rewind(&quota_id)).await;
+    assert_eq!(replay, rejected, "replay must bypass fresh idle checks");
+    store
+        .transaction(|tx| {
+            tx.execute("DELETE FROM runtime_monitors WHERE id='retry-blocker'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     let usage = post(
         &app,
         "/api/claude/file-backups",

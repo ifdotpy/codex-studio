@@ -78,6 +78,62 @@
       ],
       "title": "Error"
     },
+    "finalResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": { "status": { "const": "ok" } },
+          "required": ["status"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": { "const": "err" },
+            "error": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "invalid",
+                        "rewind_rejected",
+                        "rewind_not_applied",
+                        "settings_not_applied"
+                      ]
+                    },
+                    "detail": { "type": "string" }
+                  },
+                  "required": ["kind", "detail"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "changed",
+                        "busy",
+                        "conflict",
+                        "unknown",
+                        "not_sent",
+                        "unavailable",
+                        "request"
+                      ]
+                    }
+                  },
+                  "required": ["kind"],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": ["status", "error"],
+          "additionalProperties": false
+        }
+      ]
+    },
     "id": {
       "maxLength": 1024,
       "minLength": 1,

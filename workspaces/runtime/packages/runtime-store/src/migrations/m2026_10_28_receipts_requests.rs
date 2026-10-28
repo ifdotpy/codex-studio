@@ -35,12 +35,14 @@ const CHANGED_SYNCHRONOUS_SIGNATURES: &[(&str, &str)] = &[
 ];
 pub(super) struct Family;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct WorkspaceKindView {
     kind: WorkspaceKind,
+    #[serde(flatten)]
+    fields: serde_json::Map<String, Value>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[cfg_attr(test, derive(strum::VariantNames))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(test, strum(serialize_all = "snake_case"))]
@@ -440,29 +442,30 @@ fn move_workspace_operations(
     let mut budget = BatchBudget::default();
     for row in rows {
         let invalid = || unclassifiable(TABLE, &row.id, &row.signature);
-        let mut owner: Value = row.json(TABLE)?;
+        let mut view: WorkspaceKindView =
+            serde_json::from_str(&row.result).map_err(|_| invalid())?;
+        let mut owner = serde_json::to_value(&view).map_err(|_| invalid())?;
         if !schema("PersistedWorkspaceOperationRecord", &owner) || owner["id"] != row.id {
             return Err(invalid());
         }
-        let view: WorkspaceKindView = serde_json::from_str(&row.result).map_err(|_| invalid())?;
         if matches!(
             view.kind,
             WorkspaceKind::ClaudeSettings | WorkspaceKind::ClaudeRollback
-        ) && owner.get("controlAttempt").is_some()
+        ) && view.fields.contains_key("controlAttempt")
         {
             if !budget.include(row.result.len() + row.id.len() + row.signature.len()) {
                 break;
             }
-            owner
-                .as_object_mut()
-                .ok_or_else(invalid)?
-                .remove("controlAttempt");
+            view.fields.remove("controlAttempt");
             tx.execute(
                 "UPDATE runtime_workspace_operations SET record=?1 WHERE rowid=?2",
-                params![owner.to_string(), row.rowid],
+                params![
+                    serde_json::to_string(&view).map_err(|_| invalid())?,
+                    row.rowid
+                ],
             )?;
         }
-        if !matches!(owner["kind"].as_str(), Some("branch" | "restore"))
+        if !matches!(view.kind, WorkspaceKind::Branch | WorkspaceKind::Restore)
             || owner["phase"] == "completed"
         {
             next.cursor = row.rowid;
@@ -477,7 +480,7 @@ fn move_workspace_operations(
         let operation = format!(
             "{}:{}",
             row.id,
-            if owner["kind"] == "branch" {
+            if matches!(view.kind, WorkspaceKind::Branch) {
                 "fork"
             } else {
                 "provider"
