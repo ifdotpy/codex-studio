@@ -21,7 +21,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use studio_runtime_providers::{Method, RequestId};
-use studio_runtime_schema::persistence::{RequestIdentity, SafetyRetryDispatch};
+use studio_runtime_schema::persistence::{
+    RequestIdentity, SafetyRetryCertainty, SafetyRetryDispatch,
+};
 use studio_runtime_store::request_results::{Admission, AdmittedRequest, RequestResults};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, RuntimeStore, SchedulerRepository, StoreError,
@@ -364,7 +366,7 @@ async fn drive(
                         &mut operation,
                         stage,
                         &operation_id,
-                        "unknown",
+                        SafetyRetryCertainty::Unknown,
                     )
                     .await?
                     {
@@ -382,7 +384,7 @@ async fn drive(
                         &mut operation,
                         stage,
                         &operation_id,
-                        "refused",
+                        SafetyRetryCertainty::Refused,
                     )
                     .await?
                     {
@@ -411,7 +413,7 @@ async fn drive(
                         &mut operation,
                         stage,
                         &operation_id,
-                        "unknown",
+                        SafetyRetryCertainty::Unknown,
                     )
                     .await?
                     {
@@ -1006,9 +1008,9 @@ async fn persist_stage_receipt(
             "method":ticket.method.as_str()
         })),
         "certainty":match receipt.certainty() {
-            RequestCertainty::Written => "written",
-            RequestCertainty::NotSent => "not_sent",
-            RequestCertainty::Unknown => "unknown"
+            RequestCertainty::Written => SafetyRetryCertainty::Written,
+            RequestCertainty::NotSent => SafetyRetryCertainty::NotSent,
+            RequestCertainty::Unknown => SafetyRetryCertainty::Unknown
         },
         "notSentReason":receipt.not_sent_reason().map(|reason| format!("{reason:?}")),
         "result":result
@@ -1113,7 +1115,10 @@ fn operation_has_unknown_receipt(operation: &Value, stage: Stage) -> Result<bool
     };
     let expected = format!("{}:{}", required_str(operation, "id")?, stage.as_str());
     for receipt in receipts {
-        if receipt.get("certainty").and_then(Value::as_str) == Some("unknown") {
+        if serde_json::from_value::<SafetyRetryCertainty>(receipt["certainty"].clone())
+            .map_err(|_| Error::InvalidStoredState)?
+            == SafetyRetryCertainty::Unknown
+        {
             if receipt.get("operation").and_then(Value::as_str) != Some(expected.as_str()) {
                 return Err(Error::InvalidStoredState);
             }
@@ -1140,7 +1145,10 @@ fn recorded_written_response(
     let Some(last) = receipts.last() else {
         return Ok(None);
     };
-    if last.get("certainty").and_then(Value::as_str) != Some("written") {
+    if serde_json::from_value::<SafetyRetryCertainty>(last["certainty"].clone())
+        .map_err(|_| Error::InvalidStoredState)?
+        != SafetyRetryCertainty::Written
+    {
         return Ok(None);
     }
     if last.get("operation").and_then(Value::as_str) != Some(operation_id)
@@ -1161,11 +1169,10 @@ async fn persist_unknown_receipt(
     operation: &mut Value,
     stage: Stage,
     operation_id: &str,
-    certainty: &str,
+    certainty: SafetyRetryCertainty,
 ) -> Result<bool, Error> {
     let id = required_str(operation, "id")?.to_owned();
     let operation_id = operation_id.to_owned();
-    let certainty = certainty.to_owned();
     let (current, still_active) = store
         .transaction_with::<_, Error>(move |tx| {
             let mut current = read_retry(tx, &id)?.ok_or(Error::InvalidStoredState)?;
@@ -1181,7 +1188,7 @@ async fn persist_unknown_receipt(
             let stage_active = current.get("stage").and_then(Value::as_str) == Some(stage.as_str());
             let mut still_active = stage_active;
             if stage_active {
-                if certainty == "unknown" {
+                if certainty == SafetyRetryCertainty::Unknown {
                     current["stage"] = json!(Stage::Unknown.as_str());
                     current["dispatch"] = json!(SafetyRetryDispatch::Unknown);
                     current["error"] = json!("Provider request outcome is unknown");
