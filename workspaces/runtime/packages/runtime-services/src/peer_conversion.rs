@@ -324,3 +324,15 @@ fn idle(db: &Connection, agents: &[Value]) -> Result<(), ProjectsError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::ConversionReply;
+
+    #[test]
+    fn conversion_receipt_keeps_persisted_fields() {
+        let raw = r#"{"id":"source","parentId":"target","rootId":"target","movedAgents":["source"],"peerTeamsRevision":2}"#;
+        let reply: ConversionReply = serde_json::from_str(raw).expect("receipt");
+        assert_eq!(serde_json::to_string(&reply).expect("serialize"), raw);
+    }
+}
