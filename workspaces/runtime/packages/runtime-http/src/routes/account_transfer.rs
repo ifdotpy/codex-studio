@@ -1,6 +1,6 @@
 //! Durable transfer requests, worker selection, and receipt replay.
 use super::{
-    extractors::ApiJson,
+    extractors::{ApiJson, ApiRawJson},
     manifest::{OperationStatus, RouteGroup, post},
 };
 use crate::{error::ApiError, generated, router::HttpState};
@@ -70,30 +70,20 @@ async fn selection(
     super::generated_json::<generated::AgentResponse>(value).map(Json)
 }
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Request {
     request_id: String,
-    action: Option<String>,
+    action: Option<Action>,
     id: Option<String>,
     account_key: Option<String>,
     scope: Option<String>,
 }
 async fn transfer(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Request>,
+    ApiRawJson(body): ApiRawJson<Request>,
 ) -> Result<Json<generated::TransferResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = if let Some(action) = body.action {
-        let action = match action.as_str() {
-            "cancel" => Action::Cancel,
-            "retry" => Action::Retry,
-            "finish_history" => Action::FinishHistory,
-            _ => {
-                return Err(ApiError::validation(vec![
-                    Value::String("body".into()),
-                    Value::String("action".into()),
-                ]));
-            }
-        };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| ApiError::internal())?

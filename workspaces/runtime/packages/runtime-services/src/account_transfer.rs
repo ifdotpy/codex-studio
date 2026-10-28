@@ -159,7 +159,8 @@ impl Phase {
         )
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum Action {
     Cancel,
     Retry,
