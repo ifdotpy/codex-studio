@@ -406,7 +406,24 @@ async fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
 
     assert!(runtime.tick(now + 1.0).await.is_err());
     assert_eq!(rule_record(&store, &rule_id)["inFlight"], true);
-    let reserved = rule_record(&store, &rule_id)["launchIntent"].clone();
+    let reserved_json: String = store
+        .test_reader()
+        .expect("read")
+        .query_row(
+            "SELECT json_extract(record, '$.launchIntent') FROM runtime_rules WHERE id=?1",
+            [&rule_id],
+            |row| row.get(0),
+        )
+        .expect("saved launch intent");
+    #[derive(serde::Deserialize)]
+    struct Reserved {
+        #[serde(flatten)]
+        check: studio_runtime_services::rules_engine::RuleCheck,
+        #[serde(flatten)]
+        extra: std::collections::BTreeMap<String, Value>,
+    }
+    let reserved: Reserved = serde_json::from_str(&reserved_json).expect("typed launch intent");
+    assert!(reserved.extra.is_empty());
     assert!(runtime.last_tick_error().is_some());
 
     *port
@@ -420,10 +437,7 @@ async fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
     assert!(runtime.last_tick_error().is_none());
     let launches = port.rule_checks.lock().expect("rule checks");
     assert_eq!(launches.len(), 1);
-    assert_eq!(
-        serde_json::to_value(&launches[0]).expect("check JSON"),
-        reserved
-    );
+    assert_eq!(launches[0], reserved.check);
 }
 
 #[tokio::test]
@@ -1350,12 +1364,18 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
         &query,
     )
     .expect("read durable refusal");
-    let receipt = serde_json::to_value(receipt).expect("receipt JSON");
+    let studio_runtime_schema::process_controls::ProcessReceipt::Found(receipt) = receipt else {
+        panic!("refusal must commit before HTTP failure");
+    };
+    let Some(studio_runtime_schema::process_controls::ProcessResponse::MonitorInput(response)) =
+        &receipt.result.response
+    else {
+        panic!("monitor input response");
+    };
     assert_eq!(
-        receipt["found"], true,
-        "refusal must commit before HTTP failure"
+        response.status,
+        studio_runtime_schema::process_controls::MonitorInputStatus::Rejected
     );
-    assert_eq!(receipt["result"]["response"]["status"], "rejected");
     assert_eq!(
         record(&store, &id)["lastInputAttempt"]["id"],
         format!("http:{}", input_request_id("active-request")),
@@ -1734,8 +1754,16 @@ async fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
     let store = fixtures::store(root.path(), "probe-terminal-reserve").await;
     fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("id");
-    let operation =
-        serde_json::from_value(case["before"]["operation"].clone()).expect("monitor operation");
+    let operation_json: String = store
+        .test_reader()
+        .expect("read")
+        .query_row(
+            "SELECT json_extract(record, '$.operation') FROM runtime_monitors WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .expect("saved operation");
+    let operation = serde_json::from_str(&operation_json).expect("monitor operation");
     let id_for_queue_reset = id.to_owned();
     store
         .transaction_with(move |tx| {
