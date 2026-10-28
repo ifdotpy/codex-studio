@@ -354,6 +354,10 @@ fn delivery_in(
 ) -> Result<bool, CallbackError> {
     let mut owner = owner(tx, identity)?.ok_or(CallbackError::Unknown)?;
     if owner.status == ToolRequestStatus::Completed {
+        if matches!(outcome, DeliveryOutcome::Written) && owner.payload.frame_fingerprint.is_none()
+        {
+            return Err(CallbackError::Unknown);
+        }
         return Ok(false);
     }
     let Some(mut saved) = response(tx, identity)? else {
@@ -369,7 +373,9 @@ fn delivery_in(
         }
         return Err(CallbackError::Stale);
     }
-    if matches!(outcome, DeliveryOutcome::Unknown) && saved.status == OutboxStatus::Unknown {
+    if matches!(outcome, DeliveryOutcome::Unknown | DeliveryOutcome::NotSent)
+        && saved.status == OutboxStatus::Unknown
+    {
         return Ok(false);
     }
     if matches!(outcome, DeliveryOutcome::Submitted)
