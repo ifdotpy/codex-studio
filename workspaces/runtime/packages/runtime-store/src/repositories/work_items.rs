@@ -108,7 +108,7 @@ impl WorkItemsRepository {
         let raw = raw.ok_or_else(invalid)?;
         let run = serde_json::from_str::<ExecutionRunRecord>(&raw).map_err(|_| invalid())?;
         Table::<ExecutionRunRecord>::new(connection).validate(&run)?;
-        if run.id().as_ref() != id
+        if run.id().as_str() != id
             || run.value()["agent"] != agent.id.0
             || run.value()["accountKey"]
                 != agent
