@@ -29,6 +29,17 @@ pub fn fixture() -> &'static Fixture {
         serde_json::from_str(include_str!("fixture.json")).expect("frozen multi-server fixture")
     })
 }
+/// Decode each typed corpus directly from the frozen fixture bytes.
+pub fn typed_data<T: serde::de::DeserializeOwned>() -> T {
+    #[derive(serde::Deserialize)]
+    struct Data<T> {
+        data: T,
+    }
+    serde_json::from_str::<Data<T>>(include_str!("fixture.json"))
+        .expect("typed frozen fixture")
+        .data
+}
+
 pub async fn store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
     let root = test_directory();
     let store = Arc::new(
@@ -92,12 +103,23 @@ pub struct FixtureRequest {
 }
 
 pub fn request(case: &Value) -> Result<SignedRequest, AccessError> {
-    let case: FixtureRequest = serde_json::from_value(case.clone()).expect("fixture request");
+    let headers: Vec<(String, String)> = case["headers"]
+        .as_array()
+        .expect("headers")
+        .iter()
+        .map(|header| {
+            let pair = header.as_array().expect("header pair");
+            (
+                pair[0].as_str().expect("header name").to_owned(),
+                pair[1].as_str().expect("header value").to_owned(),
+            )
+        })
+        .collect();
     SignedRequest::from_headers(
-        &case.method,
-        &case.target,
-        &case.headers,
-        case.raw.as_bytes(),
+        case["method"].as_str().expect("method"),
+        case["target"].as_str().expect("target"),
+        &headers,
+        case["raw"].as_str().expect("raw").as_bytes(),
     )
 }
 

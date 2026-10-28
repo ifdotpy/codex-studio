@@ -9,7 +9,14 @@ use studio_runtime_services::multi_server_auth::{
     AccessSnapshot, OwnerObservation, SignedRequest, authorize_at,
 };
 use studio_runtime_services::multi_server_discovery::DiscoverySnapshot;
-use studio_runtime_store::RuntimeStore;
+use studio_runtime_services::multi_server_orchestration::{AppliedReply, ExchangeOutcome};
+use studio_runtime_store::{RuntimeStore, multi_server_delivery::RemoteReply};
+
+fn applied(value: Value) -> ExchangeOutcome {
+    ExchangeOutcome::Applied(AppliedReply::new(
+        serde_json::value::to_raw_value(&value).unwrap(),
+    ))
+}
 
 /// Restore classifiable frozen transport rows in their source-era tables and
 /// run the real receipt migration. The unproven python-location row has its
@@ -80,7 +87,7 @@ struct SigningData {
 
 /// Sign a current UUIDv7 root with the frozen test identity.
 pub fn current_pair(root: &str, nonce: &str, now: i64) -> SignedRequest {
-    let data: SigningData = serde_json::from_value(fixture().data.clone()).expect("fixture cases");
+    let data: SigningData = typed_data();
     let mut body: PairBody =
         serde_json::from_str(&data.auth.first().expect("pair case").raw).expect("pair body");
     body.request_id = root.to_owned();
@@ -96,7 +103,7 @@ pub fn current_pair(root: &str, nonce: &str, now: i64) -> SignedRequest {
 }
 
 pub fn current_auto_pair(root: &str, nonce: &str, now: i64) -> SignedRequest {
-    let data: SigningData = serde_json::from_value(fixture().data.clone()).expect("fixture cases");
+    let data: SigningData = typed_data();
     let case = data
         .auth
         .iter()
@@ -286,7 +293,7 @@ async fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once
             server: &'a str,
             envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move {
                 assert_eq!(server, "peer-server");
                 let id = envelope["requestId"]
@@ -309,7 +316,7 @@ async fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once
                 if *count == 1 {
                     return Err(refused(503, "exchange_unknown", "reply was lost"));
                 }
-                Ok(json!({"requestId":id,"outcome":"applied","value":{"stored":true}}))
+                Ok(applied(json!({"stored":true})).to_reply(&id))
             })
         }
     }
@@ -404,7 +411,7 @@ async fn received_remote_event_replays_cached_receipt_after_restart_without_dupl
             _server: &'a str,
             _envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move { Err(refused(503, "unused", "transport unused in receive test")) })
         }
     }
@@ -512,7 +519,7 @@ async fn paired_project_location_read_uses_the_fake_peer_transport() {
             _server: &'a str,
             _envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move { Err(refused(503, "unused", "peer transport not expected")) })
         }
     }
@@ -523,7 +530,7 @@ async fn paired_project_location_read_uses_the_fake_peer_transport() {
             server: &'a str,
             envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move {
                 assert_eq!(server, "peer-server");
                 let key = envelope["requestId"]
@@ -533,7 +540,7 @@ async fn paired_project_location_read_uses_the_fake_peer_transport() {
                     .0
                     .receive("local-server", envelope, chrono::Utc::now().timestamp())
                     .await?
-                    .to_value(key))
+                    .to_reply(key))
             })
         }
     }
@@ -594,6 +601,7 @@ async fn paired_project_location_read_uses_the_fake_peer_transport() {
     let ExchangeOutcome::Applied(value) = outcome else {
         panic!("expected applied location read")
     };
+    let value: Value = serde_json::from_str(value.value.get()).unwrap();
     assert_eq!(value["gitOrigin"], "example.invalid/team/repo");
     assert_eq!(value["matches"], json!([]));
     // A browsed folder is reported in its resolved form.
@@ -615,6 +623,7 @@ async fn paired_project_location_read_uses_the_fake_peer_transport() {
     let ExchangeOutcome::Applied(folders) = folders else {
         panic!("expected applied folder browse")
     };
+    let folders: Value = serde_json::from_str(folders.value.get()).unwrap();
     assert_eq!(folders["path"], browse.to_string_lossy().as_ref());
     assert_eq!(folders["directories"].as_array().unwrap().len(), 1);
     assert_eq!(folders["directories"][0]["name"], "visible-child");
@@ -637,7 +646,7 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
             _server: &'a str,
             _envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move { Err(refused(503, "unused", "transport unused in receive test")) })
         }
     }
@@ -859,9 +868,7 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
     use studio_runtime_services::{
         agent_lifecycle_runtime::{LifecycleEffect, LifecyclePorts},
         agent_management::ManagementError,
-        multi_server_orchestration::{
-            ExchangeOutcome, OrchestrationEffects, RuntimeOrchestrationEffects,
-        },
+        multi_server_orchestration::{OrchestrationEffects, RuntimeOrchestrationEffects},
     };
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus, Transaction};
 
@@ -953,18 +960,12 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
         .execute("home-server", &envelope)
         .await
         .expect("remote stop");
-    assert_eq!(
-        first,
-        ExchangeOutcome::Applied(json!({"stopped":["remote-worker"]}))
-    );
+    assert_eq!(first, applied(json!({"stopped":["remote-worker"]})));
     let replay = effects
         .execute("home-server", &envelope)
         .await
         .expect("same request replay");
-    assert_eq!(
-        replay,
-        ExchangeOutcome::Applied(json!({"stopped":["remote-worker"]}))
-    );
+    assert_eq!(replay, applied(json!({"stopped":["remote-worker"]})));
     let reader = store.test_reader().expect("read replayed worker");
     let current = AgentRepository::get(&reader, &AgentId::from("remote-worker"))
         .expect("worker row")
@@ -1044,20 +1045,32 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
             server: &'a str,
             envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move {
                 assert_eq!(server, "peer-server");
-                let envelope: StopEnvelope =
-                    serde_json::from_value(envelope.clone()).expect("typed stop envelope");
+                let payload = &envelope["payload"];
+                let envelope = StopEnvelope {
+                    request_id: envelope["requestId"].as_str().unwrap().to_owned(),
+                    action: envelope["action"].as_str().unwrap().to_owned(),
+                    operation: envelope["operation"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.as_str().unwrap().to_owned())
+                        .collect(),
+                    payload: StopPayload {
+                        worker: payload["worker"].as_str().unwrap().to_owned(),
+                        link: payload["link"].as_str().unwrap().to_owned(),
+                        reason: payload["reason"].as_str().unwrap().to_owned(),
+                        control_epoch: payload["controlEpoch"].as_i64().unwrap(),
+                    },
+                };
                 self.calls.lock().unwrap().push(envelope.clone());
                 if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
                     return Err(refused(503, "exchange_unknown", "reply was lost"));
                 }
-                Ok(json!({
-                    "requestId": envelope.request_id,
-                    "outcome": "applied",
-                    "value": {"stopped": [envelope.payload.worker]},
-                }))
+                Ok(applied(json!({"stopped": [envelope.payload.worker]}))
+                    .to_reply(&envelope.request_id))
             })
         }
     }
@@ -1302,7 +1315,7 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
             _server: &'a str,
             _envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move { Err(refused(503, "unused", "transport unused in receive test")) })
         }
     }
@@ -1370,7 +1383,9 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
         .await
         .expect("valid callback relayed");
     let expected_result = expected["valid"].clone();
-    assert_eq!(first.to_value(&root_id)["value"], expected_result);
+    let actual_result: Value =
+        serde_json::from_str(first.to_reply(&root_id).value.unwrap().get()).unwrap();
+    assert_eq!(actual_result, expected_result);
     let replay = driver
         .receive("peer-server", &envelope, now + 1)
         .await
@@ -1461,7 +1476,7 @@ async fn rust_remote_event_outbox_row_matches_python_queue_writer() {
         parent_epoch: 3,
         text: "owner monitor exit".into(),
     };
-    let payload_value = serde_json::to_value(&payload).unwrap();
+    let payload_value = json!({"kind":payload.kind,"link":payload.link,"parentEpoch":payload.parent_epoch,"text":payload.text});
     store
         .transaction_with({
             let request_id = request_id.clone();
@@ -1506,11 +1521,11 @@ async fn rust_remote_event_outbox_row_matches_python_queue_writer() {
 
 /// Records each envelope and answers it with one fixed reply; `None` loses it.
 struct ExecWire {
-    reply: Option<Value>,
+    reply: Option<RemoteReply>,
     sent: std::sync::Mutex<Vec<Value>>,
 }
 impl ExecWire {
-    fn new(reply: Option<Value>) -> Arc<Self> {
+    fn new(reply: Option<RemoteReply>) -> Arc<Self> {
         Arc::new(Self {
             reply,
             sent: std::sync::Mutex::new(Vec::new()),
@@ -1528,7 +1543,7 @@ impl studio_runtime_services::multi_server_orchestration::PairedTransport for Ex
         _timeout: Duration,
     ) -> futures_util::future::BoxFuture<
         'a,
-        Result<Value, studio_runtime_services::multi_server_auth::AccessError>,
+        Result<RemoteReply, studio_runtime_services::multi_server_auth::AccessError>,
     > {
         Box::pin(async move {
             assert_eq!(server, "peer-server");
@@ -1576,14 +1591,7 @@ async fn python_exec_receipt_row_probes_once_and_settles_from_the_reply() {
     struct ReplyCase {
         reply: RemoteReply,
     }
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Probe {
-        request_id: String,
-        action: String,
-        operation: Vec<String>,
-    }
-    let corpus: Corpus = serde_json::from_value(fixture().data.clone()).expect("receipt cases");
+    let corpus: Corpus = typed_data();
     assert_eq!(corpus.exec_receipt.replies.len(), 5);
     for (name, case) in corpus.exec_receipt.replies {
         let (_root, store) = migrated_store().await;
@@ -1605,16 +1613,22 @@ async fn python_exec_receipt_row_probes_once_and_settles_from_the_reply() {
         } else {
             None
         };
-        let wire = ExecWire::new(Some(serde_json::to_value(reply).unwrap()));
+        let wire = ExecWire::new(Some(reply));
         let driver = exec_driver(&store, Arc::clone(&wire));
         let now = chrono::Utc::now().timestamp();
         assert_eq!(driver.pump_due(now).await.unwrap(), 1, "{name}");
-        let probe: Probe = serde_json::from_value(wire.sent().into_iter().next().unwrap()).unwrap();
+        let probe = wire.sent().into_iter().next().unwrap();
         assert_eq!(
             (
-                probe.request_id.as_str(),
-                probe.action.as_str(),
-                probe.operation.as_slice()
+                probe["requestId"].as_str().unwrap(),
+                probe["action"].as_str().unwrap(),
+                probe["operation"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap().to_owned())
+                    .collect::<Vec<_>>()
+                    .as_slice()
             ),
             (
                 "python-exec",
@@ -1647,10 +1661,29 @@ async fn python_exec_receipt_row_probes_once_and_settles_from_the_reply() {
             assert_eq!(pending, 0, "{name}: settled row removed");
             let saved: ResultEnvelope<SavedRemoteReply> =
                 serde_json::from_str(&saved.expect("saved reply")).unwrap();
+            let actual = saved.reply.response;
             assert_eq!(
-                serde_json::to_string(&saved.reply.response).unwrap(),
-                serde_json::to_string(&expected).unwrap(),
+                (
+                    &actual.request_id,
+                    actual.outcome,
+                    &actual.error,
+                    &actual.waiting_for
+                ),
+                (
+                    &expected.request_id,
+                    expected.outcome,
+                    &expected.error,
+                    &expected.waiting_for
+                ),
                 "{name}: exact reply"
+            );
+            let json = |raw: Option<Box<serde_json::value::RawValue>>| {
+                raw.map(|value| serde_json::from_str::<Value>(value.get()).unwrap())
+            };
+            assert_eq!(
+                json(actual.value),
+                json(expected.value),
+                "{name}: exact reply value"
             );
         } else {
             assert_eq!(pending, 1, "{name}: uncertainty stays pending");
@@ -1677,20 +1710,6 @@ async fn rust_exec_attempt_writes_the_python_receipt_form_and_never_resends() {
     struct ReceiptPayload {
         actor: String,
         receipt_digest: String,
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Probe {
-        request_id: String,
-        action: String,
-        operation: Vec<String>,
-        payload: ProbePayload,
-    }
-    #[derive(serde::Deserialize)]
-    struct ProbePayload {
-        handle: String,
-        actor: String,
-        digest: String,
     }
     let (_root, store) = store().await;
     let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
@@ -1731,37 +1750,45 @@ async fn rust_exec_attempt_writes_the_python_receipt_form_and_never_resends() {
 
     // The same admitted root now only probes; the command never repeats.
     let receipt = json!({"requestId":root,"outcome":"applied","value":{"status":"exited"}});
-    let wire = ExecWire::new(Some(
-        json!({"requestId":root,"outcome":"applied","value":receipt}),
-    ));
+    let wire = ExecWire::new(Some(applied(receipt).to_reply(&root)));
     let driver = exec_driver(&store, Arc::clone(&wire));
     let outcome = driver
         .exchange("peer-server", "exec", &payload, &root, now + 5)
         .await
         .unwrap();
-    assert_eq!(
-        outcome,
-        ExchangeOutcome::Applied(json!({"status":"exited"}))
-    );
+    assert_eq!(outcome, applied(json!({"status":"exited"})));
     let sent = wire.sent();
     assert_eq!(sent.len(), 1);
-    let probe: Probe =
-        serde_json::from_value(sent.into_iter().next().unwrap()).expect("typed probe");
+    let probe = &sent[0];
     assert_eq!(
         (
-            &probe.request_id,
-            probe.action.as_str(),
-            probe.operation.as_slice()
+            probe["requestId"].as_str().unwrap(),
+            probe["action"].as_str().unwrap(),
+            probe["operation"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+                .as_slice()
         ),
-        (&root, "exec_receipt", &["exec-receipt".to_owned()][..])
+        (
+            root.as_str(),
+            "exec_receipt",
+            &["exec-receipt".to_owned()][..]
+        )
     );
     assert_eq!(
         (
-            &probe.payload.handle,
-            &probe.payload.actor,
-            &probe.payload.digest
+            probe["payload"]["handle"].as_str().unwrap(),
+            probe["payload"]["actor"].as_str().unwrap(),
+            probe["payload"]["digest"].as_str().unwrap()
         ),
-        (&root, &body.payload.actor, &body.payload.receipt_digest)
+        (
+            root.as_str(),
+            body.payload.actor.as_str(),
+            body.payload.receipt_digest.as_str()
+        )
     );
     let (pending, complete): (i64,i64) = store.test_reader().unwrap().query_row(
         "SELECT (SELECT count(*) FROM runtime_server_outbox WHERE id=?1),(SELECT count(*) FROM request_results WHERE id=?1)", [&key], |row| Ok((row.get(0)?,row.get(1)?)),
@@ -1806,7 +1833,7 @@ async fn exec_receipt_probes_are_answered_like_the_python_receiver() {
         name: String,
         principal: String,
         at: i64,
-        envelope: ProbeEnvelope,
+        envelope: Value,
         result: Expected,
         insert_exec: Option<bool>,
     }
@@ -1840,23 +1867,7 @@ async fn exec_receipt_probes_are_answered_like_the_python_receiver() {
         exit_code: Option<i64>,
         output_expires_at: Option<f64>,
     }
-    #[derive(serde::Serialize, serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ProbeEnvelope {
-        request_id: String,
-        action: String,
-        payload: ProbePayload,
-        #[serde(default)]
-        operation: Vec<String>,
-    }
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct ProbePayload {
-        handle: String,
-        actor: String,
-        digest: String,
-    }
-    let data: Corpus =
-        serde_json::from_str(&fixture().data.to_string()).expect("typed probe cases");
+    let data: Corpus = typed_data();
     let (_root, store) = migrated_store().await;
     store
         .set_local_server_id(Some("local-server".to_owned()))
@@ -1887,9 +1898,9 @@ async fn exec_receipt_probes_are_answered_like_the_python_receiver() {
         } else {
             studio_runtime_schema::persistence::RequestIdentity::issue_root()
         };
-        envelope.request_id = key.clone();
-        envelope.operation = vec!["exec-receipt".into()];
-        let value = serde_json::to_value(envelope).unwrap();
+        envelope["requestId"] = json!(key);
+        envelope["operation"] = json!(["exec-receipt"]);
+        let value = envelope;
         let reply = driver.receive(&case.principal, &value, case.at).await;
         if name == "conflict" {
             let studio_runtime_services::multi_server_orchestration::ExchangeOutcome::NotApplied(
@@ -1909,8 +1920,10 @@ async fn exec_receipt_probes_are_answered_like_the_python_receiver() {
                     if name == "legacy" {
                         assert!(matches!(outcome, studio_runtime_services::multi_server_orchestration::ExchangeOutcome::NotApplied(_)), "unproven principal is refused");
                     } else {
-                        let actual: ExpectedReply =
-                            serde_json::from_value(outcome.to_value(&key)).unwrap();
+                        let actual: ExpectedReply = serde_json::from_str(
+                            &serde_json::to_string(&outcome.to_reply(&key)).unwrap(),
+                        )
+                        .unwrap();
                         assert_eq!(actual, expected, "{name}: exact outcome");
                     }
                 }
@@ -1952,7 +1965,7 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
     struct Case {
         name: String,
         principal: String,
-        envelope: EventEnvelope,
+        envelope: Value,
         result: RemoteReply,
         lead: Option<Lead>,
     }
@@ -1961,31 +1974,7 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
     struct Lead {
         deleted_at: Option<f64>,
     }
-    #[derive(serde::Serialize, serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct EventEnvelope {
-        request_id: String,
-        action: String,
-        payload: EventPayload,
-        #[serde(default)]
-        operation: Vec<String>,
-    }
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct EventPayload {
-        actor: String,
-        handle: String,
-        record: ExecRecord,
-    }
-    #[derive(serde::Serialize, serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ExecRecord {
-        handle: String,
-        status: String,
-        exit_code: Option<i64>,
-        duration: Option<f64>,
-        error: Option<String>,
-    }
-    let data: Corpus = serde_json::from_value(fixture().data.clone()).expect("typed exec corpus");
+    let data: Corpus = typed_data();
     let now = chrono::Utc::now().timestamp();
     let (_root, store) = migrated_store().await;
     store
@@ -2036,21 +2025,37 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
         } else {
             studio_runtime_schema::persistence::RequestIdentity::issue_root()
         };
-        envelope.request_id = key.clone();
+        envelope["requestId"] = json!(key);
+        envelope["operation"] = json!([]);
         let mut expected = case.result;
         expected.request_id = key.clone();
         let outcome = driver
-            .receive(
-                &case.principal,
-                &serde_json::to_value(envelope).unwrap(),
-                now,
-            )
+            .receive(&case.principal, &envelope, now)
             .await
             .unwrap();
+        let actual = outcome.to_reply(&key);
         assert_eq!(
-            outcome.to_value(&key),
-            serde_json::to_value(expected).unwrap(),
+            (
+                &actual.request_id,
+                actual.outcome,
+                &actual.error,
+                &actual.waiting_for
+            ),
+            (
+                &expected.request_id,
+                expected.outcome,
+                &expected.error,
+                &expected.waiting_for
+            ),
             "{name}"
+        );
+        let json = |raw: Option<Box<serde_json::value::RawValue>>| {
+            raw.map(|value| serde_json::from_str::<Value>(value.get()).unwrap())
+        };
+        assert_eq!(
+            json(actual.value),
+            json(expected.value),
+            "{name}: reply value"
         );
     }
     let event = data.exec_receipt.event;
@@ -2093,8 +2098,12 @@ async fn python_authentication_outputs_match_complete_principal_and_writes() {
                 case["invite"].as_str(),
                 true,
             )?;
-            let logins: Vec<String> =
-                serde_json::from_value(case["logins"].clone()).expect("logins");
+            let logins: Vec<String> = case["logins"]
+                .as_array()
+                .expect("logins")
+                .iter()
+                .map(|login| login.as_str().expect("login").to_owned())
+                .collect();
             let owner = OwnerObservation::from_json(
                 case["address"].as_str().expect("address"),
                 &logins,
@@ -2148,8 +2157,12 @@ async fn python_authentication_outputs_match_complete_principal_and_writes() {
             .expect("boundary");
             let incoming = async {
                 let request = request(case)?;
-                let logins: Vec<String> =
-                    serde_json::from_value(case["logins"].clone()).expect("logins");
+                let logins: Vec<String> = case["logins"]
+                    .as_array()
+                    .expect("logins")
+                    .iter()
+                    .map(|login| login.as_str().expect("login").to_owned())
+                    .collect();
                 boundary
                     .handle_incoming(
                         Arc::clone(&store),
@@ -2340,10 +2353,6 @@ fn discovery_includes_local_other_port_and_only_online_owner_nodes() {
 }
 #[tokio::test]
 async fn pairing_is_atomic_at_every_write_and_replays_after_restart() {
-    #[derive(serde::Deserialize)]
-    struct PairReply {
-        paired: bool,
-    }
     for (table, operation) in [
         ("runtime_access_nonces", "INSERT"),
         ("runtime_access_invites", "UPDATE"),
@@ -2388,11 +2397,7 @@ async fn pairing_is_atomic_at_every_write_and_replays_after_restart() {
             .handle(&reopened, &first, &owner(), None, now)
             .await
             .expect("first apply after rollback");
-        assert!(
-            serde_json::from_value::<PairReply>(result.clone())
-                .expect("pair reply")
-                .paired
-        );
+        assert!(result["paired"].as_bool().expect("pair reply"));
         let status: String = reopened
             .test_reader()
             .expect("read")
@@ -2457,7 +2462,7 @@ async fn unknown_peer_input_claim_is_not_reopened_as_waiting() {
             _server: &'a str,
             _envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move { panic!("inbound input must not call the transport") })
         }
     }
@@ -2552,7 +2557,7 @@ async fn only_typed_pre_effect_waiting_reopens_peer_input() {
                 if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
                     Ok(ExchangeOutcome::PreEffectWaiting)
                 } else {
-                    Ok(ExchangeOutcome::Applied(json!({"applied":true})))
+                    Ok(applied(json!({"applied":true})))
                 }
             })
         }
@@ -2564,7 +2569,7 @@ async fn only_typed_pre_effect_waiting_reopens_peer_input() {
             _server: &'a str,
             _envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move { panic!("inbound input must not call the transport") })
         }
     }
@@ -2597,7 +2602,7 @@ async fn only_typed_pre_effect_waiting_reopens_peer_input() {
             .receive("peer-server", &envelope, now + 1)
             .await
             .expect("retry after known pre-effect waiting"),
-        ExchangeOutcome::Applied(json!({"applied":true}))
+        applied(json!({"applied":true}))
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
@@ -2672,7 +2677,7 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
         ) -> futures_util::future::BoxFuture<'a, Result<ExchangeOutcome, AccessError>> {
             Box::pin(async move {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                Ok(ExchangeOutcome::Applied(json!({"applied":true})))
+                Ok(applied(json!({"applied":true})))
             })
         }
     }
@@ -2683,18 +2688,11 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
             _: &'a str,
             envelope: &'a Value,
             _: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
-            #[derive(serde::Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct Request {
-                request_id: String,
-            }
-            let request: Request = serde_json::from_value(envelope.clone()).expect("typed request");
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
+            let request_id = envelope["requestId"].as_str().expect("request id");
             Box::pin(async move {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                Ok(
-                    json!({"requestId":request.request_id,"outcome":"applied","value":{"applied":true}}),
-                )
+                Ok(applied(json!({"applied":true})).to_reply(request_id))
             })
         }
     }
@@ -2748,7 +2746,7 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
             assert_eq!(
                 result,
                 if stage == "claim" {
-                    ExchangeOutcome::Applied(json!({"applied":true}))
+                    applied(json!({"applied":true}))
                 } else {
                     ExchangeOutcome::Unknown
                 },
@@ -2805,7 +2803,7 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
         if completed {
             assert_eq!(
                 result.expect("migrated reply"),
-                ExchangeOutcome::Applied(json!({"applied":true})),
+                applied(json!({"applied":true})),
                 "legacy cache hit replays"
             );
         } else {
@@ -2893,7 +2891,7 @@ async fn migrated_pending_pairing_remains_unknown_without_reapplying() {
         fresh_pair: FixtureRequest,
         now: i64,
     }
-    let cases: PairCases = serde_json::from_value(fixture().data.clone()).expect("pair cases");
+    let cases: PairCases = typed_data();
     let first = cases.auth.first().expect("pair case");
     let signed = studio_runtime_services::multi_server_auth::SignedRequest::from_headers(
         &first.method,
@@ -2967,10 +2965,6 @@ async fn nonce_capacity_is_rate_limited_without_committing_access_writes() {
 
 #[tokio::test]
 async fn fractional_invitation_boundary_matches_python() {
-    #[derive(serde::Deserialize)]
-    struct PairReply {
-        paired: bool,
-    }
     for (offset, accepted) in [(0.75, true), (0.5, true), (0.25, false)] {
         let (_root, store) = store().await;
         let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
@@ -3000,9 +2994,9 @@ async fn fractional_invitation_boundary_matches_python() {
             assert_eq!(rows(&store), before);
         } else {
             assert!(
-                serde_json::from_value::<PairReply>(result.expect("not expired"))
-                    .expect("reply")
-                    .paired,
+                result.expect("not expired")["paired"]
+                    .as_bool()
+                    .expect("reply"),
                 "fractional boundary permits pairing"
             );
         }
@@ -3068,57 +3062,15 @@ async fn signatures_precede_owner_lookups_and_probes() {
     #[derive(serde::Deserialize)]
     struct Cases {
         auth: Vec<Case>,
-        identity: Identity,
     }
-    #[derive(serde::Serialize, serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Identity {
-        server_id: String,
-        public_key: String,
-        label: String,
-        origin: String,
-        tailscale_user: Option<String>,
-    }
-    #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(serde::Deserialize)]
     struct Case {
         name: String,
         #[serde(flatten)]
         request: FixtureRequest,
-        whois: Whois,
-        probe: Option<Probe>,
         now: f64,
     }
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct Whois {
-        #[serde(rename = "Node")]
-        node: Node,
-        #[serde(rename = "UserProfile")]
-        user: User,
-    }
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct Node {
-        #[serde(rename = "Name")]
-        name: String,
-        #[serde(rename = "Tags")]
-        tags: Vec<String>,
-    }
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct User {
-        #[serde(rename = "LoginName")]
-        login_name: String,
-    }
-    #[derive(serde::Serialize, serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Probe {
-        protocol: i64,
-        server_id: String,
-        label: String,
-        origin: String,
-        public_key: String,
-        tailscale_user: String,
-        auto_pair: bool,
-    }
-    let data: Cases = serde_json::from_value(fixture().data.clone()).expect("signed cases");
+    let data: Cases = typed_data();
     for bad in ["bad-signature", "bad-auto-signature"] {
         let (_root, store) = store().await;
         let case = data
@@ -3126,12 +3078,16 @@ async fn signatures_precede_owner_lookups_and_probes() {
             .iter()
             .find(|c| c.name == bad)
             .expect("bad signature");
-        let lookup = CountingOwner::new(serde_json::to_value(case).unwrap());
-        let boundary = MultiServerBoundary::new(
-            serde_json::to_value(&data.identity).unwrap(),
-            lookup.clone(),
-        )
-        .expect("boundary");
+        let raw = &fixture().data;
+        let raw_case = raw["auth"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .find(|candidate| candidate["name"] == bad)
+            .expect("bad signature");
+        let lookup = CountingOwner::new(raw_case.clone());
+        let boundary =
+            MultiServerBoundary::new(raw["identity"].clone(), lookup.clone()).expect("boundary");
         let before = rows(&store);
         let invalid = studio_runtime_services::multi_server_auth::SignedRequest::from_headers(
             &case.request.method,
@@ -3229,11 +3185,11 @@ async fn a_row_that_cannot_be_delivered_does_not_hold_back_later_rows() {
             _server: &'a str,
             envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move {
                 let id = envelope["requestId"].as_str().unwrap().to_owned();
                 self.delivered.lock().unwrap().push(id.clone());
-                Ok(json!({"requestId":id,"outcome":"applied","value":{"stored":true}}))
+                Ok(applied(json!({"stored":true})).to_reply(&id))
             })
         }
     }
