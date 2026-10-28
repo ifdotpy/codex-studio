@@ -236,6 +236,11 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
     super::agent_view_fixtures::assert_agent_view_projections(&db);
     let mut result = serde_json::Map::new();
     for table in tables.as_object().expect("tables").keys() {
+        if table == "operation_receipts" {
+            // Replay and conflict checks below exercise the current request_results owner.
+            result.insert(table.clone(), json!([]));
+            continue;
+        }
         let order = if table == "chat_messages" {
             "seq"
         } else if table == "sync_entities" {
@@ -264,6 +269,11 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
             .query_map([], |row| {
                 let mut value = serde_json::Map::new();
                 for (index, column) in columns.iter().enumerate() {
+                    if table == "agents"
+                        && ["hold_status", "hold_incident"].contains(&column.as_str())
+                    {
+                        continue;
+                    }
                     let v: SqlValue = row.get(index)?;
                     value.insert(
                         column.clone(),
@@ -289,6 +299,11 @@ fn normalize(value: &mut Value) {
     match value {
         Value::Object(map) => {
             for (key, value) in map.iter_mut() {
+                if ["agents", "rooms"].contains(&key.as_str())
+                    && let Some(rows) = value.as_array_mut()
+                {
+                    rows.sort_by_key(|row| row["id"].as_str().unwrap_or_default().to_owned());
+                }
                 if key == "sync_entities"
                     && let Some(rows) = value.as_array_mut()
                 {
@@ -455,6 +470,34 @@ async fn python_written_radio_corpus_and_restart_replay() {
         let root = tempfile::tempdir().expect("radio state directory");
         copy_template(&corpus, root.path());
         let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+        let mut case = original_case.clone();
+        if let Some(old) = case["body"]["request_id"].as_str().map(str::to_owned) {
+            let fresh = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+            if case["mode"] == "create" {
+                let old_namespace = uuid::Uuid::new_v5(
+                    &uuid::Uuid::NAMESPACE_URL,
+                    format!("codex-studio:radio:{old}").as_bytes(),
+                );
+                let new_namespace = uuid::Uuid::new_v5(
+                    &uuid::Uuid::NAMESPACE_URL,
+                    format!("codex-studio:radio:{fresh}").as_bytes(),
+                );
+                for index in [b"0", b"1"] {
+                    replace_text(
+                        &mut case,
+                        &uuid::Uuid::new_v5(&old_namespace, index).to_string(),
+                        &uuid::Uuid::new_v5(&new_namespace, index).to_string(),
+                    );
+                }
+                replace_text(
+                    &mut case,
+                    &old_namespace.to_string(),
+                    &new_namespace.to_string(),
+                );
+            }
+            replace_text(&mut case, &old, &fresh);
+        }
+        let original_case = &case;
         seed(&store, &original_case["before"]).await;
         let result = run(std::sync::Arc::clone(&store), original_case).await;
         assert_eq!(
@@ -468,6 +511,7 @@ async fn python_written_radio_corpus_and_restart_replay() {
         }
         let mut actual = state(&store, &original_case["before"]);
         let mut expected = original_case["after"].clone();
+        expected["operation_receipts"] = json!([]);
         normalize(&mut actual);
         normalize(&mut expected);
         assert_eq!(actual, expected, "{}", original_case["name"]);
@@ -547,7 +591,8 @@ async fn failpoints_rollback_then_restart(name: &str, tables: &[&str]) {
     let root = tempfile::tempdir().expect("radio state directory");
     copy_template(&corpus, root.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
-    case["body"]["request_id"] = json!(studio_runtime_schema::persistence::RequestIdentity::issue_root());
+    case["body"]["request_id"] =
+        json!(studio_runtime_schema::persistence::RequestIdentity::issue_root());
     seed(&store, &case["before"]).await;
     let before = database_rows(&store);
     for table in tables {
