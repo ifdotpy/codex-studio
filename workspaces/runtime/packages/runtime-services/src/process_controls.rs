@@ -9,6 +9,7 @@ use studio_runtime_schema::process_controls::{
     ProcessActionResult, ProcessActionStatus, ProcessControlRequest, ProcessEntry, ProcessOutcome,
     ProcessReceipt, Request,
 };
+use studio_runtime_store::request_results::{Admission, AdmittedRequest, RequestResults};
 use studio_runtime_store::{StoreError, Transaction};
 
 use crate::account_session_runtime::ConnectionScope;
@@ -589,6 +590,14 @@ pub enum Claim {
         result: ProcessActionResult,
     },
 }
+
+/// The owning claim admits this token once; continuations derive their provider
+/// completions from it without reapplying ingress age checks.
+pub fn admitted_request(record: &Value) -> Result<AdmittedRequest, Error> {
+    serde_json::from_value(record["admittedRequest"].clone())
+        .map_err(StoreError::from)
+        .map_err(Error::from)
+}
 pub fn claim(
     tx: &Transaction<'_>,
     request: &Request,
@@ -704,7 +713,37 @@ pub fn claim(
         processes: entries,
         response: None,
     };
-    let record = json!({"requestId":id,"rootRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"signature":signature,"phase":"dispatching","scopeAgent":scope,"scopeAccountKey":request["accountKey"],"scopeEpoch":request["epoch"],"action":action,"responseTarget":response,"processes":result.processes,"created":now,"result":result});
+    let root_request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let identity = studio_runtime_schema::persistence::RequestIdentity::new(
+        "process-action",
+        &[
+            scope,
+            text(request, "accountKey", ""),
+            &request["epoch"].to_string(),
+        ],
+        &root_request_id,
+        &[id],
+    )
+    .map_err(studio_runtime_store::request_results::RequestResultError::from)
+    .map_err(StoreError::from)?;
+    let admitted = match RequestResults::admit(
+        tx,
+        &identity,
+        &signature,
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .map_err(StoreError::from)?
+    {
+        Admission::Fresh(admitted) => admitted.derive_result("process-action", &[id], &signature),
+        Admission::Replay(_) => {
+            return Err(Error::Store(StoreError::RequestResult(
+                studio_runtime_store::request_results::RequestResultError::Conflict {
+                    id: identity.id().into(),
+                },
+            )));
+        }
+    };
+    let record = json!({"requestId":id,"rootRequestId":root_request_id,"admittedRequest":admitted,"signature":signature,"phase":"dispatching","scopeAgent":scope,"scopeAccountKey":request["accountKey"],"scopeEpoch":request["epoch"],"action":action,"responseTarget":response,"processes":result.processes,"created":now,"result":result});
     tx.execute(
         "INSERT INTO runtime_process_actions(id,signature,record) VALUES(?,?,?)",
         params![id, signature, canonical(&record)],
@@ -808,15 +847,19 @@ mod claim_identity_tests {
     use studio_runtime_schema::persistence::RequestIdentity;
 
     #[test]
-    fn process_claim_persists_one_broker_root_without_changing_the_domain_request() {
+    fn process_claim_reuses_its_admitted_token_after_expiry_without_another_effect() {
         let mut db = Connection::open_in_memory().expect("database");
         db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT,parent_id TEXT,deleted_at REAL);
             CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT);
             CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(id);
             CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT);
             CREATE INDEX runtime_task_agent_created_id ON runtime_tasks(id);
-            CREATE TABLE runtime_process_actions(id TEXT PRIMARY KEY,signature TEXT,record TEXT);")
+            CREATE TABLE runtime_process_actions(id TEXT PRIMARY KEY,signature TEXT,record TEXT);
+            CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT);
+            CREATE TABLE effects(count INTEGER);
+            INSERT INTO effects VALUES(0);")
             .expect("claim tables");
+        studio_runtime_store::receipt_schema::create(&db).expect("receipt schema");
         let owner = json!({"id":"owner","epoch":3,"accountKey":"account","inFlight":true,
             "threadId":"thread","turnId":"turn"});
         db.execute(
@@ -843,8 +886,24 @@ mod claim_identity_tests {
             .expect("persisted broker root");
         RequestIdentity::new("process-action", &[], root, &[]).expect("UUIDv7 root");
         assert_eq!(record["requestId"], "opaque-action-id");
+        tx.execute("UPDATE effects SET count=count+1", [])
+            .expect("first dispatch");
+        let token = admitted_request(&record).expect("admitted owner token");
+        let after_ttl =
+            token.created() + studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS + 1;
+        RequestResults::gc(&tx, after_ttl).expect("expire fresh ingress");
+        assert!(
+            RequestIdentity::new("process-action", &[], root, &[])
+                .expect("identity")
+                .validate(
+                    after_ttl,
+                    RequestResults::expired_before_ms(&tx).expect("floor")
+                )
+                .is_err()
+        );
         assert!(matches!(
-            claim(&tx, &request, &connections, 2.0).expect("replay"),
+            claim(&tx, &request, &connections, after_ttl as f64 / 1000.0)
+                .expect("admitted replay never reenters ingress"),
             Claim::Replay(_)
         ));
         let persisted: String = tx
@@ -854,9 +913,13 @@ mod claim_identity_tests {
                 |row| row.get(0),
             )
             .expect("owner record");
+        let persisted: Value = serde_json::from_str(&persisted).expect("record");
+        assert_eq!(persisted["rootRequestId"], root);
+        assert_eq!(admitted_request(&persisted).expect("same token"), token);
         assert_eq!(
-            serde_json::from_str::<Value>(&persisted).expect("record")["rootRequestId"],
-            root
+            tx.query_row("SELECT count FROM effects", [], |row| row.get::<_, i64>(0))
+                .expect("effects"),
+            1
         );
     }
 }
