@@ -697,12 +697,16 @@ impl LifecyclePorts for ProductionLifecyclePorts {
                 .await?;
                 measure_runtime_stage_async(
                     "ports.committed.dispatch_deleted_voice",
-                    self.dispatch_deleted_voice_sessions(),
+                    self.dispatch_voice_stops(
+                        studio_runtime_schema::persistence::OutboxKind::VoiceDelete,
+                    ),
                 )
                 .await?;
                 measure_runtime_stage_async(
                     "ports.committed.dispatch_active_voice",
-                    self.dispatch_active_voice_stops(),
+                    self.dispatch_voice_stops(
+                        studio_runtime_schema::persistence::OutboxKind::VoiceStop,
+                    ),
                 )
                 .await?;
                 measure_runtime_stage_async(
@@ -789,64 +793,11 @@ impl ProductionLifecyclePorts {
 }
 
 impl ProductionLifecyclePorts {
-    async fn dispatch_active_voice_stops(&self) -> Result<(), ManagementError> {
-        let intents = crate::voice::provider::pending_voice_intents(
-            &self.store,
-            studio_runtime_schema::persistence::OutboxKind::VoiceStop,
-        )
-        .await
-        .map_err(voice_effect_error)?;
-        if intents.is_empty() {
-            return Ok(());
-        }
-        let provider = self
-            .voice_provider
-            .clone()
-            .ok_or(ManagementError::Unavailable("voice-driver/agent-stop"))?;
-        let handle = tokio::runtime::Handle::try_current()
-            .map_err(|_| ManagementError::Unavailable("voice-driver/agent-stop"))?;
-        for intent in intents {
-            let dispatch_key = intent.id.clone();
-            let agent_id = intent.agent_id.clone();
-            let already_dispatching = !self
-                .voice_dispatching
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(dispatch_key.clone());
-            if already_dispatching {
-                continue;
-            }
-            let store = Arc::clone(&self.store);
-            let provider = Arc::clone(&provider);
-            let dispatching = Arc::clone(&self.voice_dispatching);
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_secs_f64())
-                .unwrap_or_default();
-            handle.spawn(async move {
-                if let Err(error) = crate::voice::provider::end_voice_sessions_tracked(
-                    store,
-                    provider,
-                    intent.id,
-                    studio_runtime_schema::persistence::OutboxKind::VoiceStop,
-                    intent.session,
-                    now,
-                )
-                .await
-                {
-                    eprintln!("voice sessions remain stopped-pending for {agent_id}: {error}");
-                }
-                dispatching
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&dispatch_key);
-            });
-        }
-        Ok(())
-    }
-
-    async fn dispatch_deleted_voice_sessions(&self) -> Result<(), ManagementError> {
-        let intents = crate::voice::provider::pending_delete_intents(&self.store)
+    async fn dispatch_voice_stops(
+        &self,
+        kind: studio_runtime_schema::persistence::OutboxKind,
+    ) -> Result<(), ManagementError> {
+        let intents = crate::voice::provider::pending_voice_intents(&self.store, kind)
             .await
             .map_err(voice_effect_error)?;
         if intents.is_empty() {
@@ -870,7 +821,13 @@ impl ProductionLifecyclePorts {
             let store = Arc::clone(&self.store);
             let dispatching = Arc::clone(&self.voice_dispatching);
             handle.spawn(async move {
-                for attempt in 0..VOICE_DELETE_RETRY_ATTEMPTS {
+                let attempts =
+                    if kind == studio_runtime_schema::persistence::OutboxKind::VoiceDelete {
+                        VOICE_DELETE_RETRY_ATTEMPTS
+                    } else {
+                        1
+                    };
+                for attempt in 0..attempts {
                     let pending = match crate::voice::provider::pending_voice_intent(
                         &store,
                         intent.id.clone(),
@@ -880,7 +837,7 @@ impl ProductionLifecyclePorts {
                         Ok(Some(pending)) => pending,
                         Ok(_) => break,
                         Err(error) => {
-                            eprintln!("deleted voice sessions remain pending: {error}");
+                            eprintln!("voice sessions remain pending: {error}");
                             break;
                         }
                     };
@@ -888,19 +845,20 @@ impl ProductionLifecyclePorts {
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|duration| duration.as_secs_f64())
                         .unwrap_or_default();
-                    if let Err(error) = crate::voice::provider::end_deleted_sessions_tracked(
+                    if let Err(error) = crate::voice::provider::end_voice_sessions_tracked(
                         Arc::clone(&store),
                         Arc::clone(&provider),
                         pending.id,
+                        kind,
                         pending.session,
                         now,
                     )
                     .await
                     {
-                        eprintln!("deleted voice sessions remain pending: {error}");
+                        eprintln!("voice sessions remain pending: {error}");
                         break;
                     }
-                    if attempt + 1 < VOICE_DELETE_RETRY_ATTEMPTS {
+                    if attempt + 1 < attempts {
                         tokio::time::sleep(voice_delete_retry_delay(attempt)).await;
                     }
                 }

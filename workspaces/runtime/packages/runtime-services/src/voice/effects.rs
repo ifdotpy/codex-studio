@@ -34,8 +34,6 @@ pub struct VoiceDeleteSession {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VoiceDeleteIntent {
     pub id: String,
-    pub agent_id: String,
-    pub epoch: i64,
     pub session: VoiceDeleteSession,
 }
 
@@ -240,10 +238,6 @@ fn held_row(
     })
 }
 
-fn store_row(tx: &Transaction<'_>, row: &OutboxRow<VoiceEffect>) -> Result<(), VoiceProviderError> {
-    Outbox::put(tx, row)?;
-    Ok(())
-}
 fn remove_unsent(
     tx: &Transaction<'_>,
     row: &OutboxRow<VoiceEffect>,
@@ -253,10 +247,6 @@ fn remove_unsent(
             .map_err(|error| VoiceProviderError::Provider(Box::new(error)))?;
     }
     Outbox::delete_settled(tx, &row.id, &row.signature)?;
-    Ok(())
-}
-fn abandon(tx: &Transaction<'_>, row: &OutboxRow<VoiceEffect>) -> Result<(), VoiceProviderError> {
-    RequestResults::settle_abandoned(tx, row)?;
     Ok(())
 }
 
@@ -276,12 +266,12 @@ pub(crate) fn stage_ordinary_stop(
         .ok_or(VoiceProviderError::ContextUnavailable)?;
     if !current(tx, &agent, &captured(&effect))? {
         let row = held_row(effect, OutboxKind::VoiceStop)?;
-        store_row(tx, &row)?;
+        Outbox::put(tx, &row)?;
         tx.execute("UPDATE voice_sessions SET state='unknown',error='Voice stop outcome is unresolved' WHERE id=?1 AND agent=?2", rusqlite::params![session_id,agent_id])?;
         return Ok(None);
     }
     let row = new_row(tx, effect, OutboxKind::VoiceStop)?;
-    store_row(tx, &row)?;
+    Outbox::put(tx, &row)?;
     Ok(Some(intent(&row)?))
 }
 
@@ -342,7 +332,7 @@ pub(crate) fn stage_voice_stop_sessions(
         } else {
             held_row(effect, OutboxKind::VoiceStop)?
         };
-        store_row(tx, &row)?;
+        Outbox::put(tx, &row)?;
     }
     Ok(())
 }
@@ -371,7 +361,7 @@ pub fn stage_delete_sessions(
                     crate::account_worker::retained::discard_unsent_provider_call(tx, admission)
                         .map_err(|error| VoiceProviderError::Provider(Box::new(error)))?;
                 }
-                abandon(tx, old)?;
+                RequestResults::settle_abandoned(tx, old)?;
                 continue;
             }
             if matches!(
@@ -385,7 +375,7 @@ pub fn stage_delete_sessions(
             } else {
                 let mut held = old.clone();
                 held.payload.disposition = VoiceEffectDisposition::Deleted { epoch: agent.epoch };
-                store_row(tx, &held)?;
+                Outbox::put(tx, &held)?;
                 continue;
             }
         }
@@ -393,12 +383,12 @@ pub fn stage_delete_sessions(
         effect.disposition = VoiceEffectDisposition::Deleted { epoch: agent.epoch };
         if !current(tx, &agent, &captured(&effect))? {
             let row = held_row(effect, OutboxKind::VoiceDelete)?;
-            store_row(tx, &row)?;
-            abandon(tx, &row)?;
+            Outbox::put(tx, &row)?;
+            RequestResults::settle_abandoned(tx, &row)?;
             continue;
         }
         let row = new_row(tx, effect, OutboxKind::VoiceDelete)?;
-        store_row(tx, &row)?;
+        Outbox::put(tx, &row)?;
         intents.push(intent(&row)?);
     }
     Ok(intents)
@@ -410,8 +400,6 @@ fn intent(row: &OutboxRow<VoiceEffect>) -> Result<VoiceDeleteIntent, VoiceProvid
     };
     Ok(VoiceDeleteIntent {
         id: row.id.clone(),
-        agent_id: row.payload.agent.clone(),
-        epoch: row.payload.epoch,
         session: VoiceDeleteSession {
             session_id: row.payload.session_id.clone(),
             agent_id: row.payload.agent.clone(),
@@ -570,7 +558,7 @@ fn settle_outcome(
             if !scope_current {
                 crate::account_worker::retained::discard_unsent_provider_call(tx, admission)
                     .map_err(|error| VoiceProviderError::Provider(Box::new(error)))?;
-                abandon(tx, &row)?;
+                RequestResults::settle_abandoned(tx, &row)?;
                 continue;
             }
             remove_unsent(tx, &row)?;
@@ -579,7 +567,7 @@ fn settle_outcome(
                 scope: CapturedScope::Known(scope),
             };
             let replacement = reserved(tx, row.payload, OutboxKind::VoiceDelete, root, owner)?;
-            store_row(tx, &replacement)?;
+            Outbox::put(tx, &replacement)?;
         } else if matches!(next, VoiceStopOutcome::Written | VoiceStopOutcome::Rejected) {
             Outbox::delete_settled(tx, &row.id, &row.signature)?;
         } else {
@@ -590,7 +578,7 @@ fn settle_outcome(
                 OutboxStatus::Unknown
             };
             row.next_at = (row.status == OutboxStatus::Pending).then_some(0);
-            store_row(tx, &row)?;
+            Outbox::put(tx, &row)?;
         }
     }
     Ok(())
@@ -649,7 +637,7 @@ pub(crate) async fn end_voice_sessions_tracked(
             *outcome = VoiceStopOutcome::Submitted;
             row.status = OutboxStatus::Unknown;
             row.next_at = None;
-            store_row(tx, &row)?;
+            Outbox::put(tx, &row)?;
             Ok(Some(call))
         })
         .await?;

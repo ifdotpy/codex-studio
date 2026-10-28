@@ -497,8 +497,8 @@ async fn delete_voice_stop_intent_is_staged_before_voice_rows_are_removed() {
         .expect("deletion transaction stages voice stop before deleting its rows");
     assert_eq!(first.len(), 1);
     let first = &first[0];
-    assert_eq!(first.agent_id, "agent");
-    assert_eq!(first.epoch, 0);
+    assert_eq!(first.session.agent_id, "agent");
+    assert_eq!(first.session.epoch, 0);
     assert_eq!(first.session.session_id, "delete-voice-session");
     assert_eq!(first.session.generation, 7);
     let before = studio_runtime_store::outbox::Outbox::get::<studio_runtime_store::VoiceEffect>(
