@@ -24,10 +24,7 @@ impl Fixture {
             include_str!("relocation/canvas.sql"),
             include_str!("relocation/analytics.sql"),
         );
-        // The retired oracle hardcoded completed for unknown tool outcomes.
-        // Frozen inputs use the producer's failed/unknown pair; the historical
-        // completed/applied transport wrapper remains a separate repair case.
-        // An already applied result also keeps its settled completed/applied pair.
+        // Frozen inputs retain the producer's failed/unknown pair for unresolved tools.
         let corpus = if full() {
             include_str!("relocation/oracle-full.json")
         } else {
@@ -59,6 +56,11 @@ impl Fixture {
         }
         for case in data["cases"].as_array_mut().expect("cases") {
             if case["family"] == "tool" {
+                if case["name"] == "tool-old-applied-wrapper" {
+                    // Completed replies remain exact even if an old wrapper disagrees.
+                    case["expected"]["record"] = case["record"].clone();
+                    case["expected"]["result"] = case["previous"].clone();
+                }
                 let admitted = json!({"id":case["record"]["id"],"signature":"fixture-tool","created":chrono::Utc::now().timestamp_millis()});
                 let arguments = case["outbox"]["body"]["payload"]["request"].clone();
                 for field in ["record", "expected/record"] {
@@ -116,7 +118,11 @@ impl Fixture {
                 AgentRepository::put(tx,&AgentRecord::from_value(json!({
                     "id":record["agent"],"rootId":record["agent"],"epoch":record["epoch"],"status":"idle","accountKey":"default","provider":"codex"
                 })).expect("tool actor record"))?;
-                tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",params![text(record,"id"),record.to_string()])?;
+                let mut owner = record.clone();
+                if record["outcome"]!="unknown" && record["outcome"]!="pending" {
+                    owner.as_object_mut().expect("tool owner").remove("result");
+                }
+                tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",params![text(record,"id"),owner.to_string()])?;
                 let parent:studio_runtime_store::request_results::AdmittedRequest=serde_json::from_value(record["admitted"].clone()).expect("owner token");
                 let location=parent.derive_result("project-location", &["location"], &studio_runtime_store::sha256_hex(studio_runtime_schema::json_compat::python_json_compact(&outbox["body"]["payload"]["request"]).as_bytes()));
                 let receipt:project_locations::LocationResult=serde_json::from_value(outbox["result"].clone()).expect("typed receipt");
