@@ -238,8 +238,8 @@ pub(crate) async fn state() -> (tempfile::TempDir, RuntimeStore, Value) {
             tx.execute("INSERT INTO runtime_execution_effects(id,run,kind,reference,record) VALUES(?1,?2,?3,?4,?5)",params![record["id"].as_str(),record["runId"].as_str(),record["kind"].as_str(),record["referenceId"].as_str(),record.to_string()])?;
         }
         for record in seed.execution_nodes {
-            let id = record["id"].as_str().expect("node id");
-            let record = studio_runtime_store::system_reads::validate("runtime_execution_nodes",id,record.clone())?;
+            // Nodes have no record schema or typed writer; the shared status enum owns validation.
+            let _: studio_runtime_schema::persistence::ExecutionNodeStatus = serde_json::from_value(record["status"].clone())?;
             tx.execute("INSERT INTO runtime_execution_nodes(id,run,record) VALUES(?1,?2,?3)",params![record["id"].as_str(),record["runId"].as_str(),record.to_string()])?;
         }
         for item in seed.transcript_items { assert_eq!(item.record.value()["id"],item.id); Table::new(tx).put_with_columns(&item.record,&[("agent",SqlValue::Text(item.agent)),("created",SqlValue::Real(item.created))])?; }
