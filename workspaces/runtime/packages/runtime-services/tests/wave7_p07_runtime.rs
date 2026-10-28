@@ -1099,7 +1099,7 @@ async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
                 if bad_for_tx == "receipt" {
                     tx.execute(
                         "INSERT INTO runtime_tool_requests(id,record) VALUES('thread:item',?1)",
-                        [json!({"id":"thread:item","agent":"agent","callId":8}).to_string()],
+                        [json!({"id":"thread:item","kind":"managed_tool","aliases":["item"],"agent":"agent","callId":8}).to_string()],
                     )?;
                 }
                 Ok(())
