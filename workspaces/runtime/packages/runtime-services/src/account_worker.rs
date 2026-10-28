@@ -50,6 +50,8 @@ mod stopped_turns;
 pub(crate) mod store;
 pub use store::hold_invalid_agent_record;
 pub use store::{get_notification, put_notification};
+pub use studio_runtime_schema::persistence::ProviderScope;
+pub use studio_runtime_store::account_state::{ScopeError, current_provider_scope};
 mod submission;
 mod turn_preparation;
 mod vm_reattach;

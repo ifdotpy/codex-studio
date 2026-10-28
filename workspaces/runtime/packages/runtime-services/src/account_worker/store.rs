@@ -3028,10 +3028,11 @@ pub(super) async fn attach_provider_stream(
         if let Some(actor)=actor {
             let agent = stored_agent(tx, &actor)?;
             if account_key(&agent) != account || agent.extra.get("executionMode").and_then(Value::as_str) != Some("vm") { return Err(invalid(&actor)); }
-            let previous = agent.extra.get("providerStream").and_then(|stream| stream["generation"].as_u64());
+            let current = studio_runtime_store::account_state::vm_provider_state(&agent)?;
+            let previous = current.as_ref().map(|(state, _)| state.generation());
             if previous.is_some_and(|old| old > generation) { return Err(invalid(&actor)); }
             if let Some(previous) = previous && previous != generation {
-                let ack = agent.extra["providerStream"]["ack"].as_u64().unwrap_or(0);
+                let ack = current.as_ref().map_or(0, |(_, ack)| *ack);
                 super::retained::storage::checkpoint_covered(tx, &super::vm_journal_scope(&account, &actor), previous, ack)?;
             }
             // Settlement above can update this same source owner.
@@ -3043,11 +3044,13 @@ pub(super) async fn attach_provider_stream(
             AgentRepository::put(tx, &agent)?;
         } else {
             studio_runtime_store::account_state::ensure_account(tx,&account)?;
-            let (previous,ack):(Option<i64>,i64)=tx.query_row_cached("SELECT connection_generation,journal_ack FROM runtime_account_state WHERE account=?1",[&account],|row|Ok((row.get(0)?,row.get(1)?)))?;
+            let current=studio_runtime_store::account_state::host_provider_state(tx,&account)?;
+            let previous=current.as_ref().map(|(state,_)|state.generation());
+            let ack=current.as_ref().map_or(0,|(_,ack)|*ack);
             let generation=i64::try_from(generation).map_err(|_|invalid(&account))?;
             let next_generation=generation.checked_add(1).ok_or_else(||invalid(&account))?;
-            if previous.is_some_and(|old|old>generation){return Err(invalid(&account));}
-            if let Some(previous)=previous && previous!=generation {super::retained::storage::checkpoint_covered(tx,&account,previous as u64,ack as u64)?;}
+            if previous.is_some_and(|old|old>generation as u64){return Err(invalid(&account));}
+            if let Some(previous)=previous && previous!=generation as u64 {super::retained::storage::checkpoint_covered(tx,&account,previous,ack)?;}
             tx.execute_cached("UPDATE runtime_account_state SET connection_generation=?2,connection_id=?3,journal_ack=CASE WHEN connection_generation=?2 THEN journal_ack ELSE 0 END,recovery_required=0,next_generation=MAX(next_generation,?4) WHERE account=?1",params![account,generation,connection,next_generation])?;
         }
         Ok(())

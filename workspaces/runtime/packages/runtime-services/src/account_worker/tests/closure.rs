@@ -5,6 +5,63 @@ use studio_runtime_store::path_identity::CanonicalPath;
 const FLUSH_OPERATION_PROGRESS_GUARD: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[tokio::test]
+async fn current_provider_scope_reads_host_and_vm_owners() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+        .await
+        .unwrap();
+    store.transaction(|tx| {
+        for (id, mode) in [("host", "native"), ("vm", "vm")] {
+            let agent = studio_runtime_store::AgentRecord::from_value(json!({"id":id,"rootId":id,"epoch":0,"status":"idle","provider":"codex","accountKey":"default","executionMode":mode})).unwrap();
+            assert!(studio_runtime_store::account_state::current_provider_scope(tx, &agent).is_err());
+            studio_runtime_store::AgentRepository::put(tx, &agent)?;
+        }
+        Ok(())
+    }).await.unwrap();
+    store::attach_provider_stream(&store, "default", None, 4, "host-connection")
+        .await
+        .unwrap();
+    store::attach_provider_stream(&store, "default", Some("vm"), 7, "vm-connection")
+        .await
+        .unwrap();
+    store
+        .transaction(|tx| {
+            for (id, generation, connection) in
+                [("host", 4, "host-connection"), ("vm", 7, "vm-connection")]
+            {
+                let agent = studio_runtime_store::AgentRepository::get(tx, &id.into())?.unwrap();
+                let scope = studio_runtime_store::account_state::current_provider_scope(tx, &agent)
+                    .unwrap();
+                assert_eq!(scope.generation, generation);
+                assert_eq!(scope.connection, connection);
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_account_state SET connection_id=NULL WHERE account='default'",
+                [],
+            )?;
+            let host = studio_runtime_store::AgentRepository::get(tx, &"host".into())?.unwrap();
+            assert!(matches!(
+                studio_runtime_store::account_state::current_provider_scope(tx, &host),
+                Err(studio_runtime_store::account_state::ScopeError::Unavailable)
+            ));
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(
+        store::attach_provider_stream(&store, "default", None, 3, "stale")
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn new_supervisor_generation_after_direct_does_not_reuse_ack() {
     let root = tempfile::tempdir().unwrap();
     let state = root.path().join("state");

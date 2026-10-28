@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::records::{RecordOrder, RecordPredicate, Table, UsageResumeRecord};
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult, Transaction};
+use studio_runtime_schema::persistence::ProviderScope;
 
 pub const MAX_PERSISTED_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PERSISTED_DOCUMENT_DEPTH: usize = 128;
@@ -74,6 +75,136 @@ pub fn apply_limits_observation(snapshot: &mut Value, observation: &mut Value) {
         } else {
             snapshot.remove(*field);
         }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ScopeError {
+    #[error("Provider scope is unavailable")]
+    Unavailable,
+    #[error(transparent)]
+    Store(#[from] StoreError),
+}
+
+/// Current generation remains fenced even when its connection is unknown.
+#[derive(Debug)]
+pub enum ProviderState {
+    Connected { generation: u64, connection: String },
+    Held { generation: u64 },
+}
+
+impl ProviderState {
+    pub fn generation(&self) -> u64 {
+        match self {
+            Self::Connected { generation, .. } | Self::Held { generation } => *generation,
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentScopeFields {
+    account_key: Option<String>,
+    execution_mode: Option<ExecutionMode>,
+    provider_stream: Option<StreamFields>,
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ExecutionMode {
+    Native,
+    Host,
+    Vm,
+}
+#[derive(serde::Deserialize)]
+struct StreamFields {
+    generation: u64,
+    connection: Option<String>,
+    #[serde(default)]
+    ack: u64,
+}
+impl StreamFields {
+    fn into_state(self) -> (ProviderState, u64) {
+        (state(self.generation, self.connection), self.ack)
+    }
+}
+
+fn agent_scope_fields(agent: &crate::AgentRecord) -> StoreResult<AgentScopeFields> {
+    use serde::Deserialize;
+    use serde::de::IntoDeserializer;
+    let fields = serde::de::value::MapDeserializer::<_, serde_json::Error>::new(
+        agent
+            .extra
+            .iter()
+            .map(|(key, value)| (key.as_str().into_deserializer(), value)),
+    );
+    Ok(AgentScopeFields::deserialize(fields)?)
+}
+
+fn state(generation: u64, connection: Option<String>) -> ProviderState {
+    match connection {
+        Some(connection) if !connection.is_empty() => ProviderState::Connected {
+            generation,
+            connection,
+        },
+        _ => ProviderState::Held { generation },
+    }
+}
+
+/// Read the account host generation and contiguous journal ACK together.
+pub fn host_provider_state(
+    db: &Connection,
+    account: &str,
+) -> StoreResult<Option<(ProviderState, u64)>> {
+    let row: Option<(Option<i64>, Option<String>, i64)> = db.query_row(
+        "SELECT connection_generation,connection_id,journal_ack FROM runtime_account_state WHERE account=?1",
+        [account], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).optional()?;
+    match row {
+        None | Some((None, None, _)) => Ok(None),
+        Some((None, Some(_), _)) => Err(StoreError::RecordContract(
+            "provider connection has no generation",
+        )),
+        Some((Some(generation), connection, ack)) => Ok(Some((
+            state(
+                u64::try_from(generation)
+                    .map_err(|_| StoreError::RecordContract("provider generation is negative"))?,
+                connection,
+            ),
+            u64::try_from(ack)
+                .map_err(|_| StoreError::RecordContract("provider journal ACK is negative"))?,
+        ))),
+    }
+}
+
+/// Read a VM actor's current provider generation and journal ACK.
+pub fn vm_provider_state(agent: &crate::AgentRecord) -> StoreResult<Option<(ProviderState, u64)>> {
+    Ok(agent_scope_fields(agent)?
+        .provider_stream
+        .map(StreamFields::into_state))
+}
+
+/// Read the current host or VM provider identity in the owner's transaction.
+pub fn current_provider_scope(
+    tx: &Transaction<'_>,
+    agent: &crate::AgentRecord,
+) -> Result<ProviderScope, ScopeError> {
+    let fields = agent_scope_fields(agent)?;
+    let current = match fields.execution_mode {
+        Some(ExecutionMode::Vm) => fields.provider_stream.map(StreamFields::into_state).map(|(state, _)| state),
+        Some(ExecutionMode::Native | ExecutionMode::Host) | None => {
+            host_provider_state(tx, fields.account_key.as_deref().unwrap_or("default"))?
+                .map(|(state, _)| state)
+        }
+    };
+    match current {
+        Some(ProviderState::Connected {
+            generation,
+            connection,
+        }) => Ok(ProviderScope {
+            generation,
+            connection,
+        }),
+        Some(ProviderState::Held { .. }) | None => Err(ScopeError::Unavailable),
     }
 }
 
