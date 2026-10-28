@@ -341,6 +341,7 @@ export const ExecutionEffectKindValues = [
   "spawn",
   "tool_requests",
   "requests",
+  "monitors",
   "unrecognized",
 ] as const;
 export type ExecutionEffectKind = (typeof ExecutionEffectKindValues)[number];
@@ -367,6 +368,7 @@ export const ExecutionEffectStatusValues = [
   "answered",
   "uncertain",
   "resolved",
+  "lost",
 ] as const;
 export type ExecutionEffectStatus =
   (typeof ExecutionEffectStatusValues)[number];
