@@ -289,20 +289,19 @@ pub async fn seed_admission(store: &RuntimeStore, before: &Value) {
             .unwrap_or_default()
             .into(),
     };
-    let frame = Frame::Request(RequestFrame {
-        id: serde_json::from_value(before["rpcId"].clone()).unwrap(),
-        method: serde_json::from_value(before["method"].clone()).unwrap(),
-        params: Some(before["params"].clone()),
-        fields: Default::default(),
-    });
+    let request =
+        json!({"id": before["rpcId"], "method": before["method"], "params": before["params"]});
+    let studio_runtime_providers::DecodedJournalPayload::Frame(frame) =
+        studio_runtime_providers::decode_journal_value(1, context.generation, &request).payload
+    else {
+        panic!("callback request frame")
+    };
     let card = before["id"].as_str().unwrap().to_owned();
     store
         .transaction_with::<_, CallbackError>(move |tx| {
             admit_callback_request(tx, &context, &frame)?;
-            let Frame::Request(request) = &frame else {
-                unreachable!()
-            };
-            let key = callback_origin_key(&context, &request.id);
+            let rpc_id = serde_json::from_value(request["id"].clone())?;
+            let key = callback_origin_key(&context, &rpc_id);
             let mut owner =
                 studio_runtime_services::tool_requests::get_callback::<CallbackOwner>(tx, &key)?
                     .unwrap();

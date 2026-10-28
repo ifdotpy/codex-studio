@@ -215,13 +215,11 @@ async fn send_acceptance_and_resolution_are_serialized_without_holding_a_store_t
         .await
         .unwrap()
         .unwrap();
-    delivery(&store, &reply.identity, DeliveryOutcome::Submitted)
-        .await
-        .unwrap();
     let runtime = CallbackRuntime::new(store.clone(), Arc::new(Port::default()));
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let submit = runtime.submit_committed(&reply, || async {
+        delivery(&store, &reply.identity, DeliveryOutcome::Submitted).await?;
         // The store transaction ends, but transport acceptance still holds the lifecycle gate.
         store
             .transaction_with::<_, CallbackError>(|_| Ok(()))
@@ -370,7 +368,7 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
                 }
                 .unwrap()
                 .unwrap();
-                if boundary >= 3 {
+                if (3..5).contains(&boundary) {
                     delivery(&store, &reply.identity, DeliveryOutcome::Submitted)
                         .await
                         .unwrap();
@@ -393,6 +391,8 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
                     if boundary >= 5 {
                         runtime
                             .submit_committed(&queued.reply, || async {
+                                delivery(&store, &reply.identity, DeliveryOutcome::Submitted)
+                                    .await?;
                                 native_tx.send(queued.reply.frame()).unwrap();
                                 Ok(())
                             })
