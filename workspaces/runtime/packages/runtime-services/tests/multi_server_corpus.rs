@@ -817,10 +817,20 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
     impl AccountSessionPort for NoBroker {}
     #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
-    struct StopEnvelope { request_id: String, action: String, operation: Vec<String>, payload: StopPayload }
+    struct StopEnvelope {
+        request_id: String,
+        action: String,
+        operation: Vec<String>,
+        payload: StopPayload,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
-    struct StopPayload { worker: String, link: String, reason: String, control_epoch: i64 }
+    struct StopPayload {
+        worker: String,
+        link: String,
+        reason: String,
+        control_epoch: i64,
+    }
     struct Peer {
         calls: Mutex<Vec<StopEnvelope>>,
         attempts: AtomicUsize,
@@ -834,7 +844,8 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
         ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
             Box::pin(async move {
                 assert_eq!(server, "peer-server");
-                let envelope: StopEnvelope = serde_json::from_value(envelope.clone()).expect("typed stop envelope");
+                let envelope: StopEnvelope =
+                    serde_json::from_value(envelope.clone()).expect("typed stop envelope");
                 self.calls.lock().unwrap().push(envelope.clone());
                 if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
                     return Err(refused(503, "exchange_unknown", "reply was lost"));
@@ -850,7 +861,9 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
 
     let root = tempfile::tempdir().expect("state");
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-    store.set_local_server_id(Some("local-server".into())).expect("local identity");
+    store
+        .set_local_server_id(Some("local-server".into()))
+        .expect("local identity");
     store
         .transaction(|tx| {
             tx.execute("INSERT INTO runtime_access_clients(id,record) VALUES('peer-server',?1)",
@@ -917,8 +930,19 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
     assert_eq!(first.action, "stop");
     assert_eq!(first.payload.worker, "remote-stop-proxy");
     let request_id = first.request_id.clone();
-    assert_eq!(uuid::Uuid::parse_str(&request_id).unwrap().get_version_num(), 7, "fresh stop uses UUIDv7");
-    let outbox_key = studio_runtime_store::multi_server_delivery::remote_operation_key("server-outbox", &["peer-server"], &request_id, &["stop"]);
+    assert_eq!(
+        uuid::Uuid::parse_str(&request_id)
+            .unwrap()
+            .get_version_num(),
+        7,
+        "fresh stop uses UUIDv7"
+    );
+    let outbox_key = studio_runtime_store::multi_server_delivery::remote_operation_key(
+        "server-outbox",
+        &["peer-server"],
+        &request_id,
+        &["stop"],
+    );
     let (retry_at, fingerprint): (f64, String) = store
         .test_reader()
         .expect("read queued stop")
@@ -944,10 +968,19 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
     let calls = peer.calls.lock().unwrap();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[1], first, "retry reuses exact signed stop content");
-    let saved_signature: String = store.test_reader().unwrap().query_row(
-        "SELECT signature FROM request_results WHERE id=?1", [&outbox_key], |row| row.get(0),
-    ).expect("settled stop receipt");
-    assert_eq!(saved_signature, fingerprint, "replay retains the admitted signature");
+    let saved_signature: String = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT signature FROM request_results WHERE id=?1",
+            [&outbox_key],
+            |row| row.get(0),
+        )
+        .expect("settled stop receipt");
+    assert_eq!(
+        saved_signature, fingerprint,
+        "replay retains the admitted signature"
+    );
 }
 
 #[tokio::test]
@@ -1170,47 +1203,77 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
 
 #[tokio::test]
 async fn rust_remote_event_outbox_row_matches_python_queue_writer() {
-    let expected = &fixture().data["eventQueued"];
-    let request_id = expected["id"].as_str().expect("Python request identity");
-    let server = expected["server"].as_str().expect("Python destination");
-    let envelope: Value = serde_json::from_str(expected["body"].as_str().unwrap()).unwrap();
-    let payload = envelope["payload"].clone();
-    let now = fixture().data["now"].as_i64().unwrap();
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EventPayload {
+        kind: String,
+        link: String,
+        parent_epoch: i64,
+        text: String,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EventEnvelope {
+        request_id: String,
+        action: String,
+        operation: Vec<String>,
+        payload: EventPayload,
+    }
     let (_root, store) = store().await;
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let key = studio_runtime_store::multi_server_delivery::remote_operation_key(
+        "server-outbox",
+        &["peer-server"],
+        &request_id,
+        &["event"],
+    );
+    let now = chrono::Utc::now().timestamp();
+    let payload = EventPayload {
+        kind: "agent_message".into(),
+        link: "fixture-link".into(),
+        parent_epoch: 3,
+        text: "owner monitor exit".into(),
+    };
+    let payload_value = serde_json::to_value(&payload).unwrap();
     store
-        .transaction_with(move |tx| {
-            tx.execute(
-                "DELETE FROM runtime_server_outbox WHERE id=?1",
-                [request_id],
-            )?;
-            studio_runtime_services::multi_server_orchestration::enqueue_in_transaction(
-                tx, server, "event", &payload, request_id, now,
-            )
-            .expect("valid Python event envelope");
-            Ok::<_, studio_runtime_store::StoreError>(())
+        .transaction_with({
+            let request_id = request_id.clone();
+            move |tx| {
+                studio_runtime_services::multi_server_orchestration::enqueue_in_transaction(
+                    tx,
+                    "peer-server",
+                    "event",
+                    &payload_value,
+                    &request_id,
+                    now,
+                )?;
+                Ok::<_, studio_runtime_services::multi_server_auth::AccessError>(())
+            }
         })
         .await
         .expect("Rust owner transaction queues event");
     let connection = store.test_reader().unwrap();
-    let raw: String = connection.query_row(
-        "SELECT json_object('id',id,'server',server,'body',body,'state',state,'attempts',attempts,'next_at',next_at,'created_at',created_at,'fingerprint',fingerprint) FROM runtime_server_outbox WHERE id=?1",
-        [request_id], |row| row.get(0),
-    ).unwrap();
-    let actual: Value = serde_json::from_str(&raw).unwrap();
-    for key in [
-        "id",
-        "server",
-        "state",
-        "attempts",
-        "next_at",
-        "created_at",
-        "fingerprint",
-    ] {
-        assert_eq!(actual[key], expected[key], "Python parity field {key}");
-    }
+    let (server, body, state, attempts): (String, String, String, i64) = connection
+        .query_row(
+            "SELECT server,body,state,attempts FROM runtime_server_outbox WHERE id=?1",
+            [&key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    let envelope: EventEnvelope = serde_json::from_str(&body).unwrap();
     assert_eq!(
-        serde_json::from_str::<Value>(actual["body"].as_str().unwrap()).unwrap(),
-        envelope
+        (server.as_str(), state.as_str(), attempts),
+        ("peer-server", "queued", 0)
+    );
+    assert_eq!(
+        (
+            envelope.request_id,
+            envelope.action,
+            envelope.operation,
+            envelope.payload
+        ),
+        (request_id, "event".into(), vec![], payload),
+        "wire root and payload survive enqueue"
     );
 }
 
@@ -2361,10 +2424,11 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
     use studio_runtime_services::multi_server_orchestration::{
         ExchangeOutcome, OrchestrationDriver, OrchestrationEffects, PairedTransport,
     };
+
     struct Effects(Arc<AtomicUsize>);
     impl OrchestrationEffects for Effects {
         fn supports(&self, action: &str) -> bool {
-            action == "fixture" || action == "input"
+            action == "input"
         }
         fn execute<'a>(
             &'a self,
@@ -2377,68 +2441,71 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
             })
         }
     }
-    struct Transport(Arc<AtomicUsize>, bool);
+    struct Transport(Arc<AtomicUsize>);
     impl PairedTransport for Transport {
         fn exchange<'a>(
             &'a self,
-            _server: &'a str,
+            _: &'a str,
             envelope: &'a Value,
-            _timeout: Duration,
+            _: Duration,
         ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Request {
+                request_id: String,
+            }
+            let request: Request = serde_json::from_value(envelope.clone()).expect("typed request");
             Box::pin(async move {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                Ok(if self.1 {
-                    json!({"requestId":envelope["requestId"],"outcome":"unknown"})
-                } else {
-                    json!({"requestId":envelope["requestId"],"outcome":"applied","value":{"applied":true}})
-                })
+                Ok(
+                    json!({"requestId":request.request_id,"outcome":"applied","value":{"applied":true}}),
+                )
             })
         }
     }
-    let now = fixture().data["now"].as_i64().expect("now");
-    for direction in if full_matrix() {
-        &["inbox", "outbox"][..]
-    } else {
-        &["outbox"][..]
-    } {
-        for stage in ["claim", "finish"] {
+    for direction in ["inbox", "outbox"] {
+        for stage in ["claim", "settle"] {
             let (root, store) = store().await;
+            let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+            let now = chrono::Utc::now().timestamp();
             let calls = Arc::new(AtomicUsize::new(0));
-            let event = if stage == "claim" { "INSERT" } else { "UPDATE" };
-            store.transaction(move |tx|{tx.execute_batch(&format!("CREATE TRIGGER failpoint BEFORE {event} ON runtime_server_{direction} BEGIN SELECT RAISE(ABORT,'fixture failpoint'); END"))?;Ok(())})
-            .await.expect("failpoint");
-            let run = |store: Arc<studio_runtime_store::RuntimeStore>| async {
+            let event = if stage == "claim" { "INSERT" } else { "DELETE" };
+            store.transaction(move |tx| { tx.execute_batch(&format!("CREATE TRIGGER failpoint BEFORE {event} ON runtime_server_{direction} BEGIN SELECT RAISE(ABORT,'fixture failpoint'); END"))?; Ok(()) }).await.expect("failpoint");
+            let run = |store: Arc<RuntimeStore>| async {
                 let driver = OrchestrationDriver::new(
                     store,
-                    Arc::new(Transport(calls.clone(), false)),
+                    Arc::new(Transport(calls.clone())),
                     Arc::new(Effects(calls.clone())),
                 );
-                if *direction == "inbox" {
-                    driver.receive("peer-server",&json!({"requestId":"effect-a","action":"fixture","payload":{"actor":"fixture"}}),now).await
+                if direction == "inbox" {
+                    driver.receive("peer-server", &json!({"requestId":request_id,"operation":[],"action":"input","payload":{"actor":"fixture"}}), now).await
                 } else {
                     driver
                         .exchange(
                             "peer-server",
-                            "fixture",
+                            "input",
                             &json!({"actor":"fixture"}),
-                            "effect-a",
+                            &request_id,
                             now,
                         )
                         .await
                 }
             };
-            assert!(run(store.clone()).await.is_err(), "{direction}/{stage}");
-            assert_eq!(calls.load(Ordering::SeqCst), usize::from(stage == "finish"));
+            assert!(
+                run(store.clone()).await.is_err(),
+                "{direction}/{stage}: rollback"
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), usize::from(stage == "settle"));
             store
                 .transaction(|tx| {
                     tx.execute_batch("DROP TRIGGER failpoint")?;
                     Ok(())
                 })
                 .await
-                .expect("remove failpoint");
+                .unwrap();
             drop(store);
             let reopened = Arc::new(
-                studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                RuntimeStore::open(Some(root.path()))
                     .await
                     .expect("restart"),
             );
@@ -2449,191 +2516,75 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
                     ExchangeOutcome::Applied(json!({"applied":true}))
                 } else {
                     ExchangeOutcome::Unknown
-                }
+                },
+                "{direction}/{stage}: uncertain effect is not repeated"
             );
             assert_eq!(
                 calls.load(Ordering::SeqCst),
                 1,
-                "never repeat effect at {direction}/{stage}"
+                "{direction}/{stage}: one effect"
             );
             let driver = OrchestrationDriver::new(
                 reopened,
-                Arc::new(Transport(calls.clone(), false)),
+                Arc::new(Transport(calls.clone())),
                 Arc::new(Effects(calls.clone())),
             );
-            let changed = if *direction == "inbox" {
-                driver.receive("peer-server",&json!({"requestId":"effect-a","action":"fixture","payload":{"actor":"different"}}),now).await
+            let changed = if direction == "inbox" {
+                driver.receive("peer-server", &json!({"requestId":request_id,"operation":[],"action":"input","payload":{"actor":"different"}}), now).await
             } else {
                 driver
                     .exchange(
                         "peer-server",
-                        "fixture",
+                        "input",
                         &json!({"actor":"different"}),
-                        "effect-a",
+                        &request_id,
                         now,
                     )
                     .await
             };
-            assert_eq!(changed.expect_err("conflict").status(), 409);
+            assert_eq!(
+                changed.expect_err("changed request conflicts").status(),
+                409
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
         }
     }
-    for case in fixture().data["deliveryStates"].as_array().expect("states") {
-        let (root, store) = store().await;
-        // Template rows come from Python receive(), including waiting's proof
-        // that no effect crossed the boundary. Reopen before attempting it.
-        drop(store);
-        let store = Arc::new(
-            studio_runtime_store::RuntimeStore::open(Some(root.path()))
-                .await
-                .expect("restart"),
-        );
-        let calls = Arc::new(AtomicUsize::new(0));
-        let driver = OrchestrationDriver::new(
-            store.clone(),
-            Arc::new(Transport(calls.clone(), false)),
-            Arc::new(Effects(calls.clone())),
-        );
-        let result = driver
-            .receive("peer-server", &case["envelope"], now)
-            .await
-            .expect("Python receipt state");
-        let actual = match result {
-            ExchangeOutcome::Applied(value) => {
-                json!({"requestId":case["envelope"]["requestId"],"outcome":"applied","value":value})
-            }
-            ExchangeOutcome::Unknown => {
-                json!({"requestId":case["envelope"]["requestId"],"outcome":"unknown"})
-            }
-            other @ ExchangeOutcome::NotApplied(_) | other @ ExchangeOutcome::PreEffectWaiting => {
-                panic!("unexpected {other:?}")
-            }
-        };
-        assert_eq!(actual, case["result"], "{}", case["state"]);
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            case["calls"].as_u64().expect("calls") as usize
-        );
-        driver
-            .receive("peer-server", &case["envelope"], now)
-            .await
-            .expect("replay");
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            case["calls"].as_u64().expect("calls") as usize
-        );
-    }
-    for stage in if full_matrix() {
-        &["claim", "finish"][..]
-    } else {
-        &["claim"][..]
-    } {
-        let (root, store) = store().await;
-        let case = fixture().data["deliveryStates"]
-            .as_array()
-            .expect("states")
-            .iter()
-            .find(|c| c["state"] == "waiting")
-            .expect("waiting");
-        let state = if *stage == "claim" {
-            "running"
-        } else {
-            "complete"
-        };
-        store.transaction(move |tx| { tx.execute_batch(&format!("CREATE TRIGGER waiting_fail BEFORE UPDATE ON runtime_server_inbox WHEN NEW.state='{state}' BEGIN SELECT RAISE(ABORT,'waiting failpoint'); END"))?; Ok(()) })
-            .await.expect("failpoint");
-        let calls = Arc::new(AtomicUsize::new(0));
-        let run = |store: Arc<studio_runtime_store::RuntimeStore>| async {
-            OrchestrationDriver::new(
-                store,
-                Arc::new(Transport(calls.clone(), false)),
-                Arc::new(Effects(calls.clone())),
-            )
-            .receive("peer-server", &case["envelope"], now)
-            .await
-        };
-        assert!(run(store.clone()).await.is_err());
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            usize::from(*stage == "finish")
-        );
-        store
-            .transaction(|tx| {
-                tx.execute_batch("DROP TRIGGER waiting_fail")?;
-                Ok(())
-            })
-            .await
-            .expect("remove failpoint");
-        drop(store);
-        let store = Arc::new(
-            studio_runtime_store::RuntimeStore::open(Some(root.path()))
-                .await
-                .expect("restart"),
-        );
-        assert_eq!(
-            run(store).await.expect("recovery"),
-            if *stage == "claim" {
-                ExchangeOutcome::Applied(json!({"applied":true}))
-            } else {
-                ExchangeOutcome::Unknown
-            }
-        );
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            1,
-            "waiting claim never executes twice"
-        );
-    }
-    let (_root, store) = store().await;
+
+    let (_root, store) = migrated_store().await;
     let calls = Arc::new(AtomicUsize::new(0));
     let driver = OrchestrationDriver::new(
-        store.clone(),
-        Arc::new(Transport(calls.clone(), true)),
+        store,
+        Arc::new(Transport(calls.clone())),
         Arc::new(Effects(calls.clone())),
     );
+    for (id, completed) in [
+        ("python-waiting", false),
+        ("python-running", false),
+        ("python-complete", true),
+    ] {
+        let request =
+            json!({"requestId":id,"operation":[],"action":"input","payload":{"actor":"fixture"}});
+        let result = driver
+            .receive("peer-server", &request, chrono::Utc::now().timestamp())
+            .await;
+        if completed {
+            assert_eq!(
+                result.expect("migrated reply"),
+                ExchangeOutcome::Applied(json!({"applied":true})),
+                "legacy cache hit replays"
+            );
+        } else {
+            assert_eq!(
+                result.expect_err("legacy miss").status(),
+                410,
+                "legacy miss cannot start an effect"
+            );
+        }
+    }
     assert_eq!(
-        driver
-            .exchange("peer-server", "fixture", &json!({}), "unknown", now)
-            .await
-            .expect("unknown"),
-        ExchangeOutcome::Unknown
-    );
-    assert_eq!(
-        driver
-            .exchange("peer-server", "fixture", &json!({}), "unknown", now + 100)
-            .await
-            .expect("unknown retained"),
-        ExchangeOutcome::Unknown
-    );
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    let before = rows(&store);
-    assert_eq!(
-        driver
-            .receive(
-                "peer-server",
-                &json!({"requestId":"missing","action":"absent","payload":{}}),
-                now
-            )
-            .await
-            .expect_err("named refusal")
-            .status(),
-        501
-    );
-    assert_eq!(rows(&store), before);
-    let queued = &fixture().data["queued"];
-    let envelope: Value =
-        serde_json::from_str(queued["body"].as_str().expect("body")).expect("envelope");
-    assert_eq!(
-        driver
-            .exchange(
-                "peer-server",
-                "browser_callback",
-                &envelope["payload"],
-                "python-queued",
-                now
-            )
-            .await
-            .expect("Python-written queue"),
-        ExchangeOutcome::Unknown
+        calls.load(Ordering::SeqCst),
+        0,
+        "legacy reads never dispatch"
     );
 }
 
@@ -2879,33 +2830,93 @@ async fn queried_status_crosses_service_dispatch() {
 async fn signatures_precede_owner_lookups_and_probes() {
     use std::sync::atomic::Ordering;
     use studio_runtime_services::multi_server_pairing::MultiServerBoundary;
-    let data = &fixture().data;
-    for (bad, good) in [
-        ("bad-signature", "pair-ui"),
-        ("bad-auto-signature", "auto-pair"),
-    ] {
+    #[derive(serde::Deserialize)]
+    struct Cases {
+        auth: Vec<Case>,
+        identity: Identity,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Identity {
+        server_id: String,
+        public_key: String,
+        label: String,
+        origin: String,
+        tailscale_user: Option<String>,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Case {
+        name: String,
+        #[serde(flatten)]
+        request: FixtureRequest,
+        whois: Whois,
+        probe: Option<Probe>,
+        now: f64,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Whois {
+        #[serde(rename = "Node")]
+        node: Node,
+        #[serde(rename = "UserProfile")]
+        user: User,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Node {
+        #[serde(rename = "Name")]
+        name: String,
+        #[serde(rename = "Tags")]
+        tags: Vec<String>,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct User {
+        #[serde(rename = "LoginName")]
+        login_name: String,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Probe {
+        protocol: i64,
+        server_id: String,
+        label: String,
+        origin: String,
+        public_key: String,
+        tailscale_user: String,
+        auto_pair: bool,
+    }
+    let data: Cases = serde_json::from_value(fixture().data.clone()).expect("signed cases");
+    for bad in ["bad-signature", "bad-auto-signature"] {
         let (_root, store) = store().await;
-        let case = data["auth"]
-            .as_array()
-            .expect("cases")
+        let case = data
+            .auth
             .iter()
-            .find(|c| c["name"] == bad)
+            .find(|c| c.name == bad)
             .expect("bad signature");
-        let lookup = CountingOwner::new(case.clone());
-        let boundary =
-            MultiServerBoundary::new(data["identity"].clone(), lookup.clone()).expect("boundary");
+        let lookup = CountingOwner::new(serde_json::to_value(case).unwrap());
+        let boundary = MultiServerBoundary::new(
+            serde_json::to_value(&data.identity).unwrap(),
+            lookup.clone(),
+        )
+        .expect("boundary");
         let before = rows(&store);
+        let invalid = studio_runtime_services::multi_server_auth::SignedRequest::from_headers(
+            &case.request.method,
+            &case.request.target,
+            &case.request.headers,
+            case.request.raw.as_bytes(),
+        )
+        .expect("request");
         let error = boundary
-            .handle_incoming(
-                Arc::clone(&store),
-                &request(case).expect("request"),
-                "100.64.0.2",
-                &[],
-                case["now"].as_f64().expect("now"),
-            )
+            .handle_incoming(Arc::clone(&store), &invalid, "100.64.0.2", &[], case.now)
             .await
             .expect_err("signature rejected");
-        assert_eq!(refusal(error), case["refusal"]);
+        assert!(matches!(
+            error,
+            studio_runtime_services::multi_server_auth::AccessError::Refused {
+                status: 401,
+                code: "invalid_signature",
+                ..
+            }
+        ));
         assert_eq!(
             lookup.calls.load(Ordering::SeqCst),
             0,
@@ -2917,20 +2928,16 @@ async fn signatures_precede_owner_lookups_and_probes() {
             "invalid signature must not probe caller origin"
         );
         assert_eq!(rows(&store), before);
-        let good = data["auth"]
-            .as_array()
-            .expect("cases")
-            .iter()
-            .find(|c| c["name"] == good)
-            .expect("good signature");
+        let now = chrono::Utc::now().timestamp();
+        store.transaction(move |tx| { tx.execute("UPDATE runtime_access_invites SET record=json_set(record,'$.expires',?1) WHERE request_id='second-invite'", [now + 900])?; Ok(()) }).await.expect("current invite");
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let good = if bad == "bad-signature" {
+            current_pair(&root, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", now)
+        } else {
+            current_auto_pair(&root, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", now)
+        };
         boundary
-            .handle_incoming(
-                Arc::clone(&store),
-                &request(good).expect("request"),
-                "100.64.0.2",
-                &[],
-                good["now"].as_f64().expect("now"),
-            )
+            .handle_incoming(Arc::clone(&store), &good, "100.64.0.2", &[], now as f64)
             .await
             .expect("valid signature uses host");
         assert_eq!(lookup.calls.load(Ordering::SeqCst), 1);

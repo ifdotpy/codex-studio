@@ -115,7 +115,7 @@ pub fn signing_identity() -> &'static studio_runtime_services::remote_transport:
     })
 }
 /// Request fields shared by the service corpus and HTTP caller; cases also carry expectations.
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct FixtureRequest {
     pub method: String,
     pub target: String,
@@ -147,46 +147,96 @@ struct PairBody {
     token: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoPairBody {
+    label: String,
+    origin: String,
+    protocol: u64,
+    public_key: String,
+    request_id: String,
+    server_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct SigningCase {
+    name: String,
+    raw: String,
+}
+#[derive(serde::Deserialize)]
+struct SigningData {
+    auth: Vec<SigningCase>,
+}
+
 /// Sign a current UUIDv7 root with the frozen test identity.
 pub fn current_pair(root: &str, nonce: &str, now: i64) -> SignedRequest {
-    use studio_runtime_services::remote_transport::{
-        MultiServerSigningInput, multi_server_signing_bytes,
-    };
-    #[derive(serde::Deserialize)]
-    struct PairCase {
-        raw: String,
-    }
-    #[derive(serde::Deserialize)]
-    struct Data {
-        auth: Vec<PairCase>,
-    }
-    let data: Data = serde_json::from_value(fixture().data.clone()).expect("fixture cases");
+    let data: SigningData = serde_json::from_value(fixture().data.clone()).expect("fixture cases");
     let mut body: PairBody =
         serde_json::from_str(&data.auth.first().expect("pair case").raw).expect("pair body");
     body.request_id = root.to_owned();
     let raw = serde_json::to_vec(&body).expect("pair JSON");
+    current_signed(
+        "/api/multi-server/v1/pair",
+        &body.client_id,
+        root,
+        nonce,
+        now,
+        &raw,
+    )
+}
+
+pub fn current_auto_pair(root: &str, nonce: &str, now: i64) -> SignedRequest {
+    let data: SigningData = serde_json::from_value(fixture().data.clone()).expect("fixture cases");
+    let case = data
+        .auth
+        .iter()
+        .find(|case| case.name == "auto-pair")
+        .expect("auto pair case");
+    let mut body: AutoPairBody = serde_json::from_str(&case.raw).expect("auto pair body");
+    body.request_id = root.to_owned();
+    let raw = serde_json::to_vec(&body).expect("auto pair JSON");
+    current_signed(
+        "/api/multi-server/v1/auto-pair",
+        &body.server_id,
+        root,
+        nonce,
+        now,
+        &raw,
+    )
+}
+
+fn current_signed(
+    target: &str,
+    client: &str,
+    root: &str,
+    nonce: &str,
+    now: i64,
+    raw: &[u8],
+) -> SignedRequest {
+    use studio_runtime_services::remote_transport::{
+        MultiServerSigningInput, multi_server_signing_bytes,
+    };
     let timestamp = now.to_string();
-    let target = "/api/multi-server/v1/pair";
     let bytes = multi_server_signing_bytes(MultiServerSigningInput {
         method: "POST",
         target,
         server_id: "local-server",
-        client_id: &body.client_id,
+        client_id: client,
         timestamp: &timestamp,
         nonce,
         request_id: root,
-        body: &raw,
+        body: raw,
     });
     let signature = signing_identity().sign(&bytes);
     let headers = vec![
-        ("X-Studio-Client".into(), body.client_id),
+        ("X-Studio-Client".into(), client.into()),
         ("X-Studio-Server".into(), "local-server".into()),
         ("X-Studio-Timestamp".into(), timestamp),
         ("X-Studio-Nonce".into(), nonce.into()),
         ("X-Studio-Request-Id".into(), root.into()),
         ("X-Studio-Signature".into(), signature),
     ];
-    SignedRequest::from_headers("POST", target, &headers, &raw).expect("signed request")
+    SignedRequest::from_headers("POST", target, &headers, raw).expect("signed request")
 }
 pub struct Owner;
 impl OwnerLookup for Owner {
