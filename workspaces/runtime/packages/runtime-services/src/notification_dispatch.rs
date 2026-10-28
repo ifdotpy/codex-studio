@@ -2613,7 +2613,8 @@ mod tests {
             "INSERT INTO runtime_execution_attempts VALUES(?1,'run',?2)",
             params![
                 attempt,
-                json!({"id":attempt,"admission":admission}).to_string()
+                json!({"id":attempt,"runId":"run","epoch":1,"events":[],"admission":admission})
+                    .to_string()
             ],
         )
         .expect("attempt owner");
