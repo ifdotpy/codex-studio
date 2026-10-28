@@ -184,7 +184,8 @@ fn delete_in_transaction(
     }
     let rooms = retire_rooms(tx, &project_ids, &paths, &selected, now)?;
     for id in &project_ids {
-        if ProjectsRepository::remove(tx, id)? {
+        if ProjectsRepository::get(tx, id)?.is_some() {
+            ProjectsRepository::remove(tx, id)?;
             ProjectsRepository::record_destructive_removal(tx, id, &request.request_id, now_ms)?;
         }
         prune_sidebar(tx, id, &paths, &selected)?;
