@@ -913,8 +913,11 @@ fn settle(
         return Ok(());
     };
     if outcome.result == RequestResult::NotSent {
-        let mut row = row.clone();
+        let mut row: RetainedRow = Outbox::get(tx, &row.id)
+            .map_err(outbox_error)?
+            .ok_or(WorkerError::Capacity)?;
         let mut payload = payload.clone();
+        let call = payload.call.clone();
         payload
             .outcome
             .as_mut()
@@ -922,7 +925,9 @@ fn settle(
             .cursor = 0;
         row.status = OutboxStatus::Pending;
         row.payload = store::ProviderCall::Retained(payload);
-        return put(tx, &row);
+        put(tx, &row)?;
+        return crate::voice::provider::settle_voice_stop(tx, &call, &RequestResult::NotSent)
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()));
     }
     if !matches!(
         outcome.result,
@@ -973,6 +978,8 @@ fn settle(
         },
     )
     .map_err(result_error)?;
+    crate::voice::provider::settle_voice_stop(tx, &payload.call, &outcome.result)
+        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
     Outbox::delete_settled(tx, &row.id, &row.signature).map_err(outbox_error)?;
     Ok(())
 }
@@ -1185,6 +1192,47 @@ pub(super) fn recorded_operation(
 mod replay_identity_tests {
     use super::*;
 
+    async fn database(path: &std::path::Path) -> RuntimeStore {
+        let store = RuntimeStore::open(Some(path)).await.expect("store");
+        store
+            .transaction(|tx| {
+                studio_runtime_store::receipt_schema::create(tx)?;
+                Ok(())
+            })
+            .await
+            .expect("target schema");
+        store
+    }
+    fn seed(
+        tx: &rusqlite::Transaction<'_>,
+        mut call: Call,
+        request: &RecoveredRequest,
+        written: bool,
+        outcome: Option<RetainedOutcome>,
+    ) -> Result<Call, WorkerError> {
+        let owner_id = RequestIdentity::new("retained-fixture", &[], &call.root_request_id, &[])
+            .expect("root");
+        let owner = match RequestResults::admit(tx, &owner_id, "fixture", now_ms())
+            .map_err(result_error)?
+        {
+            Admission::Fresh(owner) => owner,
+            Admission::Replay(_) => return Err(WorkerError::Capacity),
+        };
+        let admitted = super::super::reserve_provider_call(tx, &owner, call.clone())?;
+        call.admitted_request = Some(admitted.clone());
+        let mut row = row(tx, &call.key())?.ok_or(WorkerError::Capacity)?;
+        row.status = OutboxStatus::Unknown;
+        row.payload = store::ProviderCall::Retained(RetainedCall {
+            call: call.clone(),
+            request: Some(TransportRequest::from(request)),
+            admitted,
+            written,
+            outcome,
+        });
+        put(tx, &row)?;
+        Ok(call)
+    }
+
     fn call() -> Call {
         Call {
             root_request_id: RequestIdentity::issue_root(),
@@ -1209,7 +1257,7 @@ mod replay_identity_tests {
     #[tokio::test]
     async fn shell_policy_handoff_rechecks_activity_and_stored_settings() {
         let root = tempfile::tempdir().expect("root");
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = database(root.path()).await;
         store.transaction(|tx| {
             let mut request = call();
             request.method = Method::ClaudeShellPolicy;
@@ -1228,10 +1276,10 @@ mod replay_identity_tests {
     }
 
     #[tokio::test]
-    async fn legacy_lightweight_mutations_recover_all_owners_without_replay() {
+    async fn unknown_serialized_mutations_recover_all_owners_without_sending() {
         use studio_runtime_providers::{Action, Frame, ResponseBody, SessionState};
         let root = tempfile::tempdir().expect("root");
-        let database = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let database = database(root.path()).await;
         database
             .transaction_with(|tx| {
                 for (index, (method, params)) in [
@@ -1250,7 +1298,7 @@ mod replay_identity_tests {
                 {
                     let mut call = call();
                     call.actor = None;
-                    call.operation = format!("legacy:{index}");
+                    call.operation = format!("unknown:{index}");
                     call.method = method;
                     call.params = params;
                     let key = call.key();
@@ -1267,23 +1315,15 @@ mod replay_identity_tests {
                         unknown: true,
                         remote_id: None,
                     };
-                    store::save(
-                        tx,
-                        &key,
-                        "submitted",
-                        json!({"call":call,"request":store::record(&request)}),
-                    )?;
-                    if index == 1 {
-                        store::save(tx, &key, "written", store::record(&request))?;
-                    }
+                    seed(tx, call, &request, index == 1, None)?;
                 }
                 Ok::<_, WorkerError>(())
             })
             .await
-            .expect("persist legacy submitted and written receipts");
+            .expect("persist typed unknown calls");
         let restored = recover(&database, "default", 4)
             .await
-            .expect("recover legacy records");
+            .expect("recover unknown calls");
         assert_eq!(restored.len(), 6);
         assert_eq!(
             restored
@@ -1340,7 +1380,7 @@ mod replay_identity_tests {
             .expect("fresh work");
         assert!(
             actions.is_empty(),
-            "legacy lightweight flags must not bypass restored ownership"
+            "stored lightweight flags must not bypass restored ownership"
         );
         for (index, (_, request)) in restored.into_iter().rev().enumerate() {
             let actions = session
@@ -1367,7 +1407,7 @@ mod replay_identity_tests {
                 assert_eq!(writes.len(), 1);
                 assert_eq!(
                     writes[0].id, fresh.id,
-                    "only fresh work writes; legacy identities never replay"
+                    "only fresh work writes; unknown identities never replay"
                 );
             }
         }
@@ -1376,7 +1416,7 @@ mod replay_identity_tests {
     #[tokio::test]
     async fn stopped_and_deleted_prior_epoch_may_only_end_its_turn_work() {
         let root = tempfile::tempdir().expect("root");
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = database(root.path()).await;
         store
             .transaction(|tx| {
                 for record in [
@@ -1462,7 +1502,7 @@ mod replay_identity_tests {
     #[tokio::test]
     async fn monitor_completion_recovered_cancel_authority_is_exact_and_cannot_resume() {
         let root = tempfile::tempdir().expect("root");
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = database(root.path()).await;
         store.transaction(|tx| {
             AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"id":"agent-1","rootId":"agent-1","epoch":9,"deletedAt":1,"status":"interrupted","autoWake":false,"provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
             studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","cancelRequested":true,"reattachedConnectionId":"new-connection","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old"}}))?)?;
@@ -1556,13 +1596,14 @@ mod replay_identity_tests {
     async fn transferred_monitor_controls_require_the_original_retained_generation() {
         thread_local! { static SUBMITTED_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
         let root = tempfile::tempdir().expect("root");
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = database(root.path()).await;
         let cwd = root.path().to_owned();
         store.transaction_with(move |tx| {
             AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(json!({"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"accountKey":"target","status":"queued","autoWake":true})).expect("actor"))?;
             let original = Call {operation:"monitor:watch".into(),method:Method::CommandExec,params:json!({"processId":"watch","command":["true"],"cwd":cwd}),..call()};
             let key=original.key();
-            store::save(tx,&key,"submitted",json!({"call":original,"request":{"id":key,"generation":4,"method":"command/exec","operation":key,"thread":null,"lightweight":true,"deadline":60000,"remoteId":null}}))?;
+            let request=RecoveredRequest{ticket:RequestTicket{id:RequestId::String(key.clone()),generation:4,method:Method::CommandExec},operation_id:OperationId(key),thread_id:None,lightweight:true,deadline_ms:60000,unknown:true,remote_id:None};
+            seed(tx,original,&request,false,None)?;
             studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","interactive":true,"cancelRequested":true,"reattachedConnectionId":"reconnected-source","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old-connection"}})).expect("monitor"))?;
             Ok::<_,WorkerError>(())
         }).await.expect("original command and transferred owner");
@@ -1574,13 +1615,14 @@ mod replay_identity_tests {
             exact.params=json!({"processId":"watch"});
             assert!(!authorize(tx,&exact)?,"a submitted-only intent does not prove a running native process");
             let original_key=Call::operation_key("default","monitor:watch");
-            let submitted=store::receipt(tx,&original_key,"submitted")?.expect("original submission");
-            store::save(tx,&original_key,"written",submitted["request"].clone())?;
+            let mut saved=row(tx,&original_key)?.expect("original submission");
+            let store::ProviderCall::Retained(payload)=&mut saved.payload else {return Err(WorkerError::Capacity)};
+            payload.written=true;put(tx,&saved)?;
             SUBMITTED_READS.with(|count| count.set(0));
             tx.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, Some(|event| {
                 if let rusqlite::trace::TraceEvent::Stmt(statement, _) = event
-                    && statement.sql().starts_with("SELECT signature,result FROM runtime_operation_receipts")
-                    && statement.expanded_sql().is_some_and(|sql| sql.contains(":submitted'"))
+                    && statement.sql().starts_with("SELECT id,kind,owner_kind")
+                    && statement.expanded_sql().is_some_and(|sql| sql.contains("retained:default:"))
                 {
                     SUBMITTED_READS.with(|count| count.set(count.get() + 1));
                 }
@@ -1617,9 +1659,7 @@ mod replay_identity_tests {
     async fn concurrent_submissions_with_different_call_identity_are_refused_without_replacing_intent()
      {
         let state = tempfile::tempdir().expect("retained receipt test state directory");
-        let store = RuntimeStore::open(Some(state.path()))
-            .await
-            .expect("open retained receipt test store");
+        let store = database(state.path()).await;
         let first = Call {
             root_request_id: RequestIdentity::issue_root(),
             admitted_request: None,

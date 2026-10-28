@@ -1133,20 +1133,9 @@ pub fn reserve_provider_call(
     mut intent: ProviderCallIntent,
 ) -> Result<AdmittedRequest, WorkerError> {
     let signature = intent.signature();
-    let actor = intent
-        .actor
-        .as_ref()
-        .map_or("", |actor| actor.agent.as_str());
-    let epoch = intent
-        .actor
-        .as_ref()
-        .map(|actor| actor.epoch.to_string())
-        .unwrap_or_default();
-    let admitted = owner.derive_result(
-        "provider-call",
-        &[&intent.scope.account, actor, &epoch, &intent.operation],
-        &signature,
-    );
+    let discriminator = intent.effect_discriminator(&intent.scope.account);
+    let parts = discriminator.each_ref().map(String::as_str);
+    let admitted = owner.derive_result("provider-call", &parts, &signature);
     intent.admitted_request = Some(admitted.clone());
     storage::reserve(tx, intent, admitted.clone())?;
     Ok(admitted)
@@ -1301,14 +1290,9 @@ pub async fn monitor_result(
             {
                 return Ok(None);
             }
-            let receipt = match Ok::<_, PortError>(submitted.replay()) {
-                Ok(storage::Replay::Return(receipt)) => receipt,
-                Ok(storage::Replay::Ready | storage::Replay::Retry(_)) => return Ok(None),
-                Err(_) => {
-                    return Err(WorkerError::PreparationRefused(
-                        "monitor retained receipt authorization changed".into(),
-                    ));
-                }
+            let receipt = match submitted.replay() {
+                storage::Replay::Return(receipt) => receipt,
+                storage::Replay::Ready | storage::Replay::Retry(_) => return Ok(None),
             };
             Ok(match receipt.result {
                 RequestResult::Reply(value) => Some(
@@ -1350,8 +1334,7 @@ pub async fn monitor_late_result(
             let Some((_call, submitted)) = monitor_call(tx, &id, &operation)? else {
                 return Ok(None);
             };
-            let Ok(storage::Replay::Return(receipt)) = Ok::<_, PortError>(submitted.replay())
-            else {
+            let storage::Replay::Return(receipt) = submitted.replay() else {
                 return Ok(None);
             };
             Ok(match receipt.result {
