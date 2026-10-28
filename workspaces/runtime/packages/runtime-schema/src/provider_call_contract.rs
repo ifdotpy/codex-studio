@@ -101,10 +101,9 @@ impl<M, A, S> ProviderCallIntent<M, A, S> {
             method,
             &self.params
         ));
-        format!(
-            "{:x}",
-            Sha256::digest(crate::json_compat::python_json(&value).as_bytes())
-        )
+        data_encoding::HEXLOWER.encode(&Sha256::digest(
+            crate::json_compat::python_json(&value).as_bytes(),
+        ))
     }
     pub fn effect_discriminator(&self, account: &str) -> [String; 4] {
         [
@@ -123,8 +122,8 @@ impl<M, A, S> ProviderCallIntent<M, A, S> {
 }
 pub fn transport_key(account: &str, operation: &str) -> String {
     format!(
-        "retained:{account}:{:x}",
-        Sha256::digest(operation.as_bytes())
+        "retained:{account}:{}",
+        data_encoding::HEXLOWER.encode(&Sha256::digest(operation.as_bytes()))
     )
 }
 
