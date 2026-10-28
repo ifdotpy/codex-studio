@@ -1,5 +1,14 @@
 use super::*;
 use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+/// The soft limit is one value per process, and `cargo test` runs these tests as threads
+/// of one process. Each test holds this lock while it sets or reads the limit.
+static RLIMIT_LOCK: Mutex<()> = Mutex::new(());
+
+fn rlimit_lock() -> MutexGuard<'static, ()> {
+    RLIMIT_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// The soft limit that `raise_open_file_limit` can reach on this machine.
 fn reachable(hard: Option<u64>) -> u64 {
@@ -8,6 +17,7 @@ fn reachable(hard: Option<u64>) -> u64 {
 
 #[test]
 fn a_launchd_soft_limit_of_256_is_raised_and_the_hard_limit_is_kept() {
+    let _limit = rlimit_lock();
     let before = getrlimit(Resource::Nofile);
     // launchd starts the server and the supervisor with a soft limit of 256.
     setrlimit(
@@ -39,6 +49,7 @@ fn a_launchd_soft_limit_of_256_is_raised_and_the_hard_limit_is_kept() {
 
 #[test]
 fn a_higher_soft_limit_is_never_lowered() {
+    let _limit = rlimit_lock();
     let before = getrlimit(Resource::Nofile);
     let Some(high) = before
         .maximum
@@ -69,6 +80,7 @@ fn a_higher_soft_limit_is_never_lowered() {
     reason = "the test reads the limit of a real child process"
 )]
 fn a_child_process_inherits_the_raised_limit() {
+    let _limit = rlimit_lock();
     let before = getrlimit(Resource::Nofile);
     setrlimit(
         Resource::Nofile,
