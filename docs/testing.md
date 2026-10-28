@@ -217,19 +217,22 @@ switch is on.
 Measured on one warm line (Apple silicon, load 20 to 60, 4 build jobs, 4 test
 threads), crate `studio-runtime-process` (146 tests, `ci` profile):
 
-| Run                                              | Selected | Wall time            |
-| ------------------------------------------------ | -------- | -------------------- |
-| Current path (`cargo nextest run`)               | 146      | 14.7 s               |
-| Retest, first run (full, builds `target/retest`) | 146      | 533 s                |
-| Retest, no change                                | 0        | 121 s                |
-| Retest, one line added inside `spawn_process`    | 10       | 242 s                |
-| Current path, same change                        | 146      | 33 s (18 s of tests) |
+| Run                                              | Selected | layr-retest before PR #50 | layr-retest d730ca3 (new) |
+| ------------------------------------------------ | -------- | ------------------------- | ------------------------- |
+| Current path (`cargo nextest run`)               | 146      | 14.7 s                    | same, no layr-retest      |
+| Retest, first run (full, builds `target/retest`) | 146      | 533 s                     | 321 s                     |
+| Retest, no change                                | 0        | 121 s                     | 66 s                      |
+| Retest, one line added inside `spawn_process`    | 10       | 242 s                     | 109 s                     |
+| Current path, same change                        | 146      | 33 s (18 s of tests)      | 23 s                      |
+
+The old-binary column was measured 2026-10-28 16:22 to 16:58, before the 18:27
+replacement. The new column used layr main d730ca3 (2x faster coverage export).
 
 Limits:
 
 - The current path is faster for every case measured. Studio's tests are quick
   (146 tests in 12 s), so coverage export and the instrumented build cost more than
-  the tests they skip. Even "no change" costs 121 s here.
+  the tests they skip. Even "no change" costs 66 s with the new binary.
 - The workspace is too large for a first run today: for `studio-runtime-http`
   alone (465 tests) the first run did not finish inside the 30 minute gate
   command limit, and the whole workspace (4582 tests, `ci` profile) did not
