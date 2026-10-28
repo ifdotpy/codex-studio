@@ -92,6 +92,8 @@ impl From<StoreError> for TranscriptError {
             | StoreError::SchemaObjectMismatch { .. }
             | StoreError::Sqlite(_)
             | StoreError::CommitOutcomeUnknown(_)
+            | StoreError::RequestResult(_)
+            | StoreError::Outbox(_)
             | StoreError::Json(_)
             | StoreError::SchemaValidation(_)
             | StoreError::RecordContract(_)
