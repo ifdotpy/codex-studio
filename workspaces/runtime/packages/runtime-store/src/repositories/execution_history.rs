@@ -5,6 +5,7 @@ use crate::request_results::{
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{AgentRecord, StoreError, StoreResult};
 use rusqlite::{OptionalExtension, Transaction, params};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_schema::persistence::{
     AttemptSubmission, ExecutionReceiptKind, ExecutionStatus, RequestIdentity,
@@ -134,15 +135,6 @@ impl ExecutionHistoryRepository {
         let Some((submission, outcome, turn)) = row else {
             return Ok(false);
         };
-        let terminal = |status| {
-            matches!(
-                status,
-                ExecutionStatus::Completed
-                    | ExecutionStatus::Failed
-                    | ExecutionStatus::Interrupted
-                    | ExecutionStatus::Cancelled
-            )
-        };
         Ok(matches!(
             submission,
             AttemptSubmission::Accepted | AttemptSubmission::Observed | AttemptSubmission::Rejected
@@ -154,8 +146,8 @@ impl ExecutionHistoryRepository {
                     | ExecutionStatus::Observed
                     | ExecutionStatus::Rejected
             )
-        ) || outcome.is_some_and(terminal)
-            || turn.is_some_and(terminal))
+        ) || outcome.is_some_and(execution_terminal)
+            || turn.is_some_and(execution_terminal))
     }
     pub fn record_current(tx: &Transaction<'_>, agent: &mut AgentRecord) -> StoreResult<()> {
         Self::record(tx, agent)?;
@@ -668,12 +660,15 @@ fn save_run(tx: &Transaction<'_>, run: &Value) -> StoreResult<()> {
     Ok(())
 }
 fn terminal(status: &Value) -> bool {
+    ExecutionStatus::deserialize(status).is_ok_and(execution_terminal)
+}
+fn execution_terminal(status: ExecutionStatus) -> bool {
     matches!(
-        serde_json::from_value::<ExecutionStatus>(status.clone()),
-        Ok(ExecutionStatus::Completed
+        status,
+        ExecutionStatus::Completed
             | ExecutionStatus::Failed
             | ExecutionStatus::Interrupted
-            | ExecutionStatus::Cancelled)
+            | ExecutionStatus::Cancelled
     )
 }
 fn invalid(id: &str) -> StoreError {
