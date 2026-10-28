@@ -2,6 +2,8 @@ import {
   AgentStatus as GeneratedApiAgentStatus,
   AgentSource as GeneratedApiAgentSource,
   RequestStatus as GeneratedApiRequestStatus,
+  AgentRole as GeneratedApiAgentRole,
+  WorkspaceMode as GeneratedApiWorkspaceMode,
 } from "./generated/api.ts";
 import { useSubscription } from "./sync/subscriptions";
 import { ProviderKind } from "./generated/providerKind.ts";
@@ -118,6 +120,7 @@ import { useMediaQuery } from "@mantine/hooks";
 import {
   Activity,
   ArrowLeft,
+  Layers,
   Terminal,
   BookOpen,
   Clock3,
@@ -2678,6 +2681,30 @@ export default function App({ active = true }: { active?: boolean }) {
               Stop team
             </Menu.Item>
           )}
+          {agent.workspaceMode === GeneratedApiWorkspaceMode.worktree &&
+            (agent.isLead ||
+              agent.role === GeneratedApiAgentRole.implementer) && (
+              <Menu.Item
+                data-action="switch-to-layr"
+                leftSection={<Layers size={14} />}
+                disabled={busy.has(agent.status ?? "") || !!agent.inFlight}
+                onClick={() => {
+                  void run(() =>
+                    post(
+                      "/api/agents/workspace-mode",
+                      { id: agent.id, workspaceMode: "layr-native" },
+                      { timeoutMs: 300000 },
+                    ),
+                  );
+                }}
+              >
+                Switch to Layr
+                <small className="menu-action-help">
+                  Keeps this chat and its history. Commit and push worktree
+                  changes first.
+                </small>
+              </Menu.Item>
+            )}
           <Menu.Divider />
           <Menu.Label>Model actions</Menu.Label>
           {(

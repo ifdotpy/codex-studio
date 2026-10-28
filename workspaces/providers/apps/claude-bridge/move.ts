@@ -531,3 +531,24 @@ export async function publishNative(
   }
   await fs.rename(temporary, destination);
 }
+
+/** Claude keys native history by cwd. When Studio resumes a chat in another workspace
+ * folder, copy its current history to the new folder's key, as a move import does.
+ * The old file stays; a repeat with equal bytes is a no-op. */
+export async function carryNativeHistory(
+  session: Pick<
+    Session,
+    "id" | "nativeId" | "cwd" | "nativeHistoryCwd" | "started"
+  >,
+  cwd: string,
+) {
+  if (!session.started || cwd === session.cwd) return;
+  const id = session.nativeId || session.id;
+  const source = await nativeFile(
+    id,
+    undefined,
+    session.nativeHistoryCwd || session.cwd,
+  );
+  const destination = await nativeDestination(id, cwd);
+  if (source !== destination) await publishNative(source, destination, true);
+}
