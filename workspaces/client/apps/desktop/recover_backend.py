@@ -933,7 +933,7 @@ def supervisor_request(state: Path, action: SupervisorAction) -> dict[str, objec
             hello = SupervisorHello(**exchange({"protocol": SUPERVISOR_PROTOCOL_VERSION,
                               "stateDir": str(state), role: True}))
             if hello.ok is not True or hello.protocol != SUPERVISOR_PROTOCOL_VERSION:
-                raise RuntimeError("The running process supervisor does not serve protocol 2.")
+                raise RuntimeError("The running process supervisor uses an incompatible protocol.")
             reply = SupervisorReply(**exchange({"requestId": 1, "action": action}))
             if reply.requestId != 1 or reply.error is not None or reply.result is None:
                 raise RuntimeError(reply.error or "The supervisor reply does not match the request.")

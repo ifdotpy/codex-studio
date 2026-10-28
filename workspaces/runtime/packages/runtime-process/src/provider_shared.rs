@@ -331,7 +331,7 @@ pub(crate) fn validate_handshake_v2(response: &str) -> Result<(), SupervisorErro
             received,
             detail: value
                 .error
-                .unwrap_or_else(|| "supervisor did not confirm protocol v2".to_owned()),
+                .unwrap_or_else(|| "supervisor did not confirm the required protocol".to_owned()),
         })
     }
 }
