@@ -7,6 +7,43 @@ use rusqlite::Connection;
 const AGENT: &str = "agent";
 const ACCOUNT: &str = "acct";
 
+#[test]
+fn execution_outcome_reads_current_attempt_and_rejects_malformed_values() {
+    for (outcome, accepted) in [
+        (json!("unknown"), true),
+        (json!(null), false),
+        (json!("invented"), false),
+    ] {
+        let mut connection = database();
+        let agent = agent_from(
+            json!({"status":"running","startAttempt":{"id":"attempt","epoch":0,"submitted":true,"events":[],"executionOutcome":outcome}}),
+        );
+        let transaction = connection.transaction().expect("transaction");
+        assert_eq!(
+            crate::ExecutionHistoryRepository::record(&transaction, &agent).is_ok(),
+            accepted
+        );
+        let saved: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_execution_attempts",
+                [],
+                |row| row.get(0),
+            )
+            .expect("attempt count");
+        assert_eq!(saved, i64::from(accepted));
+        if accepted {
+            let status: String = transaction
+                .query_row(
+                    "SELECT json_extract(record,'$.submission') FROM runtime_execution_attempts",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("submission");
+            assert_eq!(status, "unknown");
+        }
+    }
+}
+
 fn database() -> Connection {
     let mut connection = Connection::open_in_memory().expect("memory database opens");
     crate::receipt_schema::create(&connection).expect("receipt schema");

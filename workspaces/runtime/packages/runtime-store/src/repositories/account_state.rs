@@ -495,10 +495,10 @@ mod tests {
         };
         assert!(fields.into_state().unwrap().is_none());
         for stream in [
-            json!({"streams":{},"connection":"c"}),
-            json!({"streams":{},"ack":0}),
+            r#"{"streams":{},"connection":"c"}"#,
+            r#"{"streams":{},"ack":0}"#,
         ] {
-            let fields: super::StreamFields = serde_json::from_value(stream).unwrap();
+            let fields: super::StreamFields = serde_json::from_str(stream).unwrap();
             assert!(fields.into_state().is_err());
         }
     }

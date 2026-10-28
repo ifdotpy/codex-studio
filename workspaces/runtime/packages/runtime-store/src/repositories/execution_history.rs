@@ -499,7 +499,16 @@ impl ExecutionHistoryRepository {
         } else {
             attempt
                 .get("executionOutcome")
-                .map(|value| serde_json::from_value::<AttemptSubmission>(value.clone()))
+                .map(|value| {
+                    let status = value.as_str().ok_or_else(|| {
+                        <serde_json::Error as serde::de::Error>::custom(
+                            "execution outcome must be a string",
+                        )
+                    })?;
+                    AttemptSubmission::deserialize(serde::de::value::StrDeserializer::<
+                        serde_json::Error,
+                    >::new(status))
+                })
                 .transpose()?
                 .unwrap_or(
                     if submitted == super::scheduler::StartSubmission::Submitted {
@@ -764,7 +773,12 @@ fn decode(table: &str, id: &str, raw: &str) -> StoreResult<Value> {
         && ["agent", "accountKey", "status"]
             .iter()
             .all(|key| record[*key].is_string())
-        && serde_json::from_value::<ExecutionStatus>(record["status"].clone()).is_ok()
+        && record["status"].as_str().is_some_and(|status| {
+            ExecutionStatus::deserialize(
+                serde::de::value::StrDeserializer::<serde_json::Error>::new(status),
+            )
+            .is_ok()
+        })
         && record["created"].as_f64().is_some_and(f64::is_finite)
         && [
             "threadId",
@@ -891,7 +905,7 @@ mod tests {
         };
         tx.execute(
             "UPDATE runtime_execution_attempts SET record=json_set(record,'$.admission',json(?1))",
-            [serde_json::to_value(&admission).expect("token").to_string()],
+            [serde_json::to_string(&admission).expect("token")],
         )
         .expect("persist admission");
         let final_effect = admission.derive_result("provider-call", &["bootstrap"], "fingerprint");
