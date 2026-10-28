@@ -55,8 +55,37 @@ A remote server in the desktop app and a plain browser keep the RxDB path.
 - A late write after a reset: the same sequence rules apply as before. The core never reorders.
 - The API schema changes: the page uses a new prefix, starts empty, and the core removes the old rows.
 
+## Uploads and recordings
+
+Step 4 moves the file uploads and dictation recordings of the local server into
+the core. The page sends commands and renders the state.
+
+- Uploads: `files.begin` and `files.append` stage a file in parts of at most
+  1 MiB (`PART_LIMIT` in [`uploads.rs`](../../workspaces/client/packages/client-core/src/uploads.rs),
+  `UPLOAD_PART_BYTES` in `native/uploadParts.ts`). A 20 MiB file never crosses
+  the native bridge in one message. Parts are not request receipts, so their
+  bytes are stored once. `uploads.enqueue` queues the staged files.
+- Retries: `files.begin`, `uploads.queue` and `dictation.create` and
+  `dictation.begin` replay their first reply for the same request identity. An
+  append repeats at the same offset. A lost reply therefore does not create a
+  second upload, recording or transcription attempt.
+- Cancel: `uploads.cancel` leaves a tombstone. A late `uploads.deliver` reply
+  never creates an attachment.
+- Dictation: `dictation.*` stores recordings and PCM chunks. The core assigns
+  recording and attempt identities. Trash clears the attempt, so a late
+  transcript is refused. The page joins WAV slices from `dictation.read`.
+- Old browser rows (`codex-studio-uploads`, `codex-studio-dictation`) move once
+  on the first page load (`native/legacyUploads.ts`, `native/legacyRecordings.ts`).
+  A file imports under its old row ID. A finished recording gets a core marker,
+  so a deleted recording does not return. A recording that cannot be read
+  becomes an error row, and an upload that cannot be read stops the list with
+  its name. The old rows stay in browser storage.
+- Remote servers and the plain browser keep the IndexedDB path until the
+  transport step.
+
 ## What stays on IndexedDB
 
+- The composer attachment list and the form drafts of the local server. They use `localDraft` (localStorage with IndexedDB locks). Steps 5 and 6 move them.
 - The outbox and drafts of the local server (`send.ts`). Step 3 moves the outbox to `outbox.*`. The page opens that database on demand, so a slow database no longer blocks the stream or the projections.
 - Old IndexedDB projection databases from earlier builds stay on disk until the user clears them. The native path never reads them.
 - Remote servers and the plain browser path (RxDB, Dexie, Web Locks, BroadcastChannel).
