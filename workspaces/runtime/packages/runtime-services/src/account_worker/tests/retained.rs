@@ -3230,12 +3230,17 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
     let actor = state.agent.clone();
     let epoch = state.epoch;
     let scope = port.scope().clone();
+    let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let operation = crate::monitor_policy::Operation {
         agent: actor.clone(),
         epoch,
         account_key: scope.account.clone(),
         connection_id: scope.connection.clone(),
-        evidence: Default::default(),
+        evidence: [
+            ("rootRequestId".into(), json!(root)),
+            ("providerGeneration".into(), json!(scope.generation)),
+        ]
+        .into(),
     };
     let saved_operation = operation.clone();
     let cwd = state.record().await["cwd"].as_str().unwrap().to_owned();
@@ -3249,13 +3254,14 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
             Ok(())
         }).await
     }).await.unwrap();
-    let exec = monitor_request(
+    let mut exec = monitor_request(
         &state,
         &port,
         "monitor:transfer-watch".into(),
         Method::CommandExec,
         json!({"command":["/bin/sh","-c","true"],"cwd":cwd,"processId":"transfer-watch"}),
     );
+    exec.root_request_id = root;
     let sender = port.clone();
     let mut running = tokio::spawn(async move { sender.request(exec).await });
     let exec_wire = monitor_write(&mut peer, &mut running, "command/exec").await;
@@ -4479,17 +4485,18 @@ async fn manual_recovery_owner_to_callback_keeps_unknown_and_exact_replay() {
     };
     assert_eq!(first.body, replay.body);
     assert_eq!(session.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-    let records = studio_runtime_store::system_reads::all(
-        &store.test_reader().unwrap(),
-        "runtime_tool_requests",
-    )
-    .unwrap();
-    let record = records
-        .iter()
-        .find(|record| record["callId"] == "owner-recovery")
+    let db = store.test_reader().unwrap();
+    let id: String = db.query_row(
+        "SELECT id FROM runtime_tool_requests WHERE kind='managed_tool' AND json_extract(record,'$.callId')=?1",
+        ["owner-recovery"],
+        |row| row.get(0),
+    ).unwrap();
+    let record = studio_runtime_store::system_reads::get(&db, "runtime_tool_requests", &id)
+        .unwrap()
         .unwrap();
     assert_eq!(record["deliveryCertainty"], "unknown");
-    assert_eq!(record["result"]["success"], false);
+    let result = crate::tool_requests::saved_result(&db, &id).unwrap().unwrap();
+    assert_eq!(result["success"], false);
     assert_eq!(state.event_status("input").await, "uncertain");
     worker.shutdown().await.unwrap();
 }
