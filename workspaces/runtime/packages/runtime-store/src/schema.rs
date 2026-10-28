@@ -62,6 +62,30 @@ pub(crate) fn prepare_receipt_holds(connection: &Connection) -> StoreResult<()> 
     Ok(())
 }
 
+pub(crate) fn prepare_callback_origin(connection: &Connection) -> rusqlite::Result<()> {
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='runtime_tool_requests')",
+        [], |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(());
+    }
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_xinfo('runtime_tool_requests') WHERE name='origin_key')",
+        [], |row| row.get(0),
+    )?;
+    if !exists {
+        let (_, _, definition) = receipt_owner_columns()
+            .into_iter()
+            .find(|(table, name, _)| *table == "runtime_tool_requests" && *name == "origin_key")
+            .expect("callback origin schema");
+        connection.execute_batch(&format!(
+            "ALTER TABLE runtime_tool_requests ADD COLUMN origin_key {definition}"
+        ))?;
+    }
+    connection.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS runtime_tool_request_origin ON runtime_tool_requests(origin_key) WHERE origin_key IS NOT NULL")
+}
+
 pub(crate) fn prepare_receipt_owners(connection: &Connection) -> StoreResult<()> {
     for (table, name, definition) in receipt_owner_columns() {
         if !table_exists(connection, table)? {
@@ -78,6 +102,7 @@ pub(crate) fn prepare_receipt_owners(connection: &Connection) -> StoreResult<()>
             ))?;
         }
     }
+    prepare_callback_origin(connection)?;
     let old_archive_index: Option<String> = connection
         .query_row(
             "SELECT sql FROM sqlite_schema WHERE name='runtime_work_archive_due'",
@@ -92,7 +117,6 @@ pub(crate) fn prepare_receipt_owners(connection: &Connection) -> StoreResult<()>
         "CREATE INDEX IF NOT EXISTS runtime_agent_holds ON runtime_agents(id) WHERE hold_status!='clear';
          CREATE INDEX IF NOT EXISTS runtime_work_archive_due ON runtime_work(archive_next_at,id) WHERE archive_status IN ('pending','retryable','unknown');
          CREATE INDEX IF NOT EXISTS runtime_tool_request_current_actor ON runtime_tool_requests(agent,updated DESC,id);
-         CREATE UNIQUE INDEX IF NOT EXISTS runtime_tool_request_origin ON runtime_tool_requests(origin_key) WHERE origin_key IS NOT NULL;
          CREATE INDEX IF NOT EXISTS runtime_tool_request_current_status ON runtime_tool_requests(status,agent,id);
          CREATE UNIQUE INDEX IF NOT EXISTS runtime_execution_terminal_source ON runtime_execution_attempts(json_extract(record,'$.terminalRepair.source.accountKey'),json_extract(record,'$.terminalRepair.source.threadId'),json_extract(record,'$.terminalRepair.proof.turnId')) WHERE json_type(record,'$.terminalRepair')='object';"
     )?;

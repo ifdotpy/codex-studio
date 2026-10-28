@@ -736,7 +736,8 @@ impl ReceiptFamilyMigration for Family {
     fn id(&self) -> &'static str {
         "2026-10-28-receipts-provider-callbacks"
     }
-    fn prepare(&self, _tx: &Transaction<'_>, _cutover_ms: i64) -> Result<()> {
+    fn prepare(&self, tx: &Transaction<'_>, _cutover_ms: i64) -> Result<()> {
+        crate::schema::prepare_callback_origin(tx)?;
         Ok(())
     }
     fn move_batch(
@@ -871,7 +872,9 @@ mod tests {
         let mut db = rusqlite::Connection::open_in_memory().expect("database");
         let tx = db.transaction().expect("transaction");
         prepare_schema(&tx).expect("schema");
-        tx.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL,origin_key TEXT GENERATED ALWAYS AS (record->>'$.originKey'));CREATE UNIQUE INDEX origins ON runtime_tool_requests(origin_key)").expect("source");
+        tx.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL)").expect("source");
+        Family.prepare(&tx, 1000).expect("prepare callbacks");
+        assert!(tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name='runtime_tool_request_origin')", [], |row| row.get::<_,bool>(0)).expect("origin index"));
         tx.commit().expect("commit");
         db
     }
