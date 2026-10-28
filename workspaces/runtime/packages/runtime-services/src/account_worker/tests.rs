@@ -5436,6 +5436,11 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         })
         .await
         .unwrap();
+    for actor in ["vm-actor", "vm-sibling"] {
+        store::attach_provider_stream(&store, "default", Some(actor), 31, "fixture-connection")
+            .await
+            .unwrap();
+    }
     let frame = Frame::Notification(studio_runtime_providers::NotificationFrame {
         method: Method::TurnCompleted,
         params: Some(json!({
