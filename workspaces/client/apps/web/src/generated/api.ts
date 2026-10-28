@@ -17325,6 +17325,8 @@ export interface components {
       requestId: string;
       response?: components["schemas"]["ProcessResponse"] | null | undefined;
       status: components["schemas"]["ProcessActionStatus"];
+    } & {
+      [key: string]: unknown;
     };
     /** @enum {string} */
     ProcessActionStatus: "completed" | "partial" | "uncertain";

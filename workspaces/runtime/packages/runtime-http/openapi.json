@@ -35666,6 +35666,7 @@
         "type": "object"
       },
       "ProcessActionResult": {
+        "additionalProperties": true,
         "properties": {
           "processes": {
             "default": [],
@@ -36101,7 +36102,8 @@
           "key",
           "agent"
         ],
-        "type": "object"
+        "type": "object",
+        "unevaluatedProperties": true
       },
       "ProcessIdentity": {
         "additionalProperties": false,
