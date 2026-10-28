@@ -4,7 +4,7 @@ pub use crate::federation_limits::{
     MAX_QUEUE_BYTES, MAX_QUEUE_ROWS, MAX_ROOM_MEMBERS, MAX_ROOM_RATE, PROTOCOL_VERSION as PROTOCOL,
 };
 use crate::remote_transport::{RemoteTransportError, canonical_json};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_store::federation_messaging::FederationTable;
 use thiserror::Error;
@@ -17,6 +17,8 @@ pub enum FederationMessageError {
     Transport(#[from] RemoteTransportError),
     #[error(transparent)]
     Event(#[from] crate::event_write::EventWriteError),
+    #[error(transparent)]
+    RequestResult(#[from] studio_runtime_store::request_results::RequestResultError),
     #[error("invalid federation object at {0}")]
     Invalid(&'static str),
     #[error("federation permission refused: {0}")]
@@ -40,12 +42,39 @@ fn decode<T: serde::de::DeserializeOwned>(value: Value, location: &'static str) 
     serde_json::from_value(value).map_err(|_| FederationMessageError::Invalid(location))
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum MessageKind {
-    ChatMessage,
-    RoomInvite,
-    RoomAccept,
+pub(crate) use studio_runtime_schema::persistence::FederationMessageKind as MessageKind;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageReceipt {
+    pub protocol: u32,
+    pub message_id: String,
+    pub accepted: bool,
+    pub room: String,
+    pub sequence: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FederationAck {
+    pub id: String,
+    pub hash: String,
+    pub request_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FederationDeliveryReply {
+    pub ack: FederationAck,
+    pub receipt: Option<MessageReceipt>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MessageSendReply {
+    pub id: String,
+    pub room: String,
+    pub deliveries:
+        std::collections::BTreeMap<String, studio_runtime_schema::persistence::RecipientDelivery>,
+    pub status: studio_runtime_schema::persistence::DeliveryStatus,
 }
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,6 +121,7 @@ struct Room {
 pub(crate) struct Envelope {
     pub(crate) sender_server: String,
     pub(crate) id: String,
+    pub(crate) request_id: String,
     pub(crate) room: String,
     pub(crate) kind: MessageKind,
     pub(crate) payload: Value,
@@ -119,7 +149,6 @@ pub struct Snapshot {
     pub(crate) peer: Peer,
     room: Option<Room>,
     pub(crate) room_value: Option<Value>,
-    previous: Option<Value>,
     rate: u64,
 }
 pub struct SnapshotKeys<'a> {
@@ -133,29 +162,17 @@ impl Snapshot {
         settings: Value,
         peer: Value,
         room: Option<Value>,
-        previous: Option<Value>,
         rate: u64,
     ) -> Result<Self> {
         let SnapshotKeys {
             peer: peer_id,
             room: room_id,
-            message: message_id,
+            message: _,
         } = keys;
         FederationTable::Settings.validate("global", &settings)?;
         FederationTable::Peer.validate(peer_id, &peer)?;
         if let Some(value) = &room {
             FederationTable::Room.validate(room_id, value)?;
-        }
-        if let Some(value) = &previous {
-            FederationTable::Inbox.validate(message_id, value)?;
-            validate(
-                "studio_api__federation__models__MessageReceipt",
-                &value["receipt"],
-                "inbox.receipt",
-            )?;
-            if value["receipt"]["messageId"] != message_id || value["receipt"]["room"] != room_id {
-                return Err(FederationMessageError::Invalid("inbox.receipt.identity"));
-            }
         }
         let enabled = settings["enabled"]
             .as_bool()
@@ -165,7 +182,6 @@ impl Snapshot {
             peer: decode(peer, "peer")?,
             room: room.clone().map(|v| decode(v, "room")).transpose()?,
             room_value: room,
-            previous,
             rate,
         })
     }
@@ -197,19 +213,8 @@ pub(crate) struct ChatEffect {
 }
 
 pub fn envelope_hash(envelope: &Value) -> Result<String> {
-    let fields = envelope
-        .as_object()
-        .ok_or(FederationMessageError::Invalid("envelope"))?;
-    let immutable = Value::Object(
-        fields
-            .iter()
-            .filter(|(key, _)| !matches!(key.as_str(), "timestamp" | "nonce" | "signature"))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-    );
-    Ok(studio_runtime_store::sha256_hex(
-        canonical_json(&immutable)?.as_bytes(),
-    ))
+    studio_runtime_store::multi_server_delivery::federation_envelope_signature(envelope)
+        .map_err(Into::into)
 }
 
 /// Cross-field disclosure rules cannot be expressed by the participant API schema.
@@ -257,19 +262,6 @@ pub fn decide_receive(snapshot: &Snapshot, envelope: &Value, now: f64) -> Result
         return Err(FederationMessageError::Forbidden("sender identity"));
     }
     let hash = envelope_hash(envelope)?;
-    if let Some(previous) = &snapshot.previous {
-        if previous["hash"] != hash {
-            return Err(FederationMessageError::Conflict(
-                "message identity has different content",
-            ));
-        }
-        return Ok(ReceiveDecision {
-            receipt: previous["receipt"].clone(),
-            room: None,
-            chat: None,
-            inbox: None,
-        });
-    }
     let mut receipt = json!({"protocol":PROTOCOL,"messageId":message.id,"accepted":true,"room":message.room,"sequence":null});
     let mut chat = None;
     let room = match message.kind {
@@ -380,7 +372,7 @@ pub fn decide_receive(snapshot: &Snapshot, envelope: &Value, now: f64) -> Result
             value
         }
     };
-    let mut inbox = json!({"hash":hash,"receipt":receipt,"ack":"pending","created":now});
+    let mut inbox = json!({"hash":hash,"requestId":message.request_id,"ack":studio_runtime_schema::persistence::FederationAckState::Pending,"created":now});
     if message.kind == MessageKind::ChatMessage {
         inbox["kind"] = json!("chat-message");
         inbox["room"] = json!(message.room);
