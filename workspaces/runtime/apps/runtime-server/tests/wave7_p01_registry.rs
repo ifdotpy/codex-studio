@@ -1529,11 +1529,12 @@ async fn fixture_supervisor_store(
     account: &str,
     seed: i64,
 ) -> Arc<RuntimeStore> {
-    let path = tempfile::Builder::new()
-        .prefix("account-state-")
-        .tempdir_in(root)
-        .unwrap()
-        .keep();
+    static NEXT_ACCOUNT_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let path = root.join(format!(
+        "account-state-{}",
+        NEXT_ACCOUNT_STATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&path).unwrap();
     let store = Arc::new(RuntimeStore::open(Some(&path)).await.unwrap());
     let account = account.to_owned();
     store

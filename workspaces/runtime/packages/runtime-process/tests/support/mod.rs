@@ -53,11 +53,12 @@ impl DisposableState {
 pub(crate) async fn account_store(
     state: &DisposableState,
 ) -> std::sync::Arc<studio_runtime_store::RuntimeStore> {
-    let path = tempfile::Builder::new()
-        .prefix("account-state-")
-        .tempdir_in(&state.0)
-        .unwrap()
-        .keep();
+    static NEXT_ACCOUNT_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let path = state.0.join(format!(
+        "account-state-{}",
+        NEXT_ACCOUNT_STATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&path).unwrap();
     std::sync::Arc::new(
         studio_runtime_store::RuntimeStore::open(Some(&path))
             .await
