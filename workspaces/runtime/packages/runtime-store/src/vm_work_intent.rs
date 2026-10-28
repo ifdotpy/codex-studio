@@ -65,12 +65,11 @@ pub struct View {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     #[test]
     fn accepted_completion_round_trips_without_result_field() {
-        let value = json!({"status":"completed","requestId":"rpc","owner":"a","revision":"rev","resultId":"r"});
+        let stored = r#"{"status":"completed","requestId":"rpc","owner":"a","revision":"rev","resultId":"r"}"#;
         let intent: Intent<Acceptance, ()> =
-            serde_json::from_value(value.clone()).expect("stored completion");
-        assert_eq!(serde_json::to_value(intent).expect("serialized"), value);
+            serde_json::from_str(stored).expect("stored completion");
+        assert_eq!(serde_json::to_string(&intent).expect("serialized"), stored);
     }
 }

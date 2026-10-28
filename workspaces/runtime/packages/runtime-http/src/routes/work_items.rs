@@ -93,7 +93,10 @@ pub(super) async fn queue_for_agent(state: HttpState, agent_id: String) -> Resul
         Ok(json!({
             "items": snapshot.items,
             "revision": snapshot.revision,
-            "capabilities": snapshot.capabilities,
+            "capabilities": {
+                "reorder": studio_runtime_services::queue_write::QUEUE_REORDER_ENABLED,
+                "receipts": studio_runtime_services::queue_write::QUEUE_RECEIPTS_ENABLED,
+            },
         }))
     })
     .await

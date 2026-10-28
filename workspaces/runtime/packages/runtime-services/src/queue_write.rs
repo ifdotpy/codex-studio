@@ -11,28 +11,42 @@ use studio_runtime_store::{
 };
 use thiserror::Error;
 
-#[derive(serde::Serialize, serde::Deserialize)]
+pub const QUEUE_REORDER_ENABLED: bool = true;
+pub const QUEUE_RECEIPTS_ENABLED: bool = true;
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 enum QueueMutationStatus {
     #[serde(rename = "updated")]
     Updated,
 }
-#[derive(serde::Serialize, serde::Deserialize)]
-struct QueueCapabilities {
-    reorder: bool,
-    receipts: bool,
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct QueueCapabilities {
+    pub reorder: bool,
+    pub receipts: bool,
 }
-#[derive(serde::Serialize, serde::Deserialize)]
-struct QueueReply {
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct QueueReply {
     status: QueueMutationStatus,
     revision: String,
     capabilities: QueueCapabilities,
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::QueueReply;
+
+    #[test]
+    fn stored_receipt_round_trips() {
+        let stored = r#"{"status":"updated","revision":"abc","capabilities":{"reorder":true,"receipts":true}}"#;
+        let reply: QueueReply = serde_json::from_str(stored).expect("stored receipt");
+        assert_eq!(serde_json::to_string(&reply).expect("receipt JSON"), stored);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueueSnapshot {
     pub items: Vec<Value>,
     pub revision: String,
-    pub capabilities: Value,
 }
 
 #[derive(Debug, Error)]
@@ -62,7 +76,7 @@ pub fn action(
     body: &QueueCommand,
     signature: &str,
     snapshot: impl Fn(&Transaction<'_>, &AgentRecord) -> Result<QueueSnapshot, QueueWriteError>,
-) -> Result<Value, QueueWriteError> {
+) -> Result<QueueReply, QueueWriteError> {
     let agent = AgentRepository::get(transaction, &AgentId::from(agent_id))?
         .ok_or(QueueWriteError::InvalidRequest("Invalid request"))?;
     if agent.id.0 != agent_id {
@@ -102,7 +116,7 @@ pub fn action(
         signature,
         now_ms,
     )? {
-        event_write::CallerAdmission::Replay(reply) => return Ok(serde_json::to_value(reply)?),
+        event_write::CallerAdmission::Replay(reply) => return Ok(reply),
         event_write::CallerAdmission::Fresh(admitted) => admitted,
     };
 
@@ -228,20 +242,15 @@ pub fn action(
     } else {
         updated
     };
-    let result = json!({
-        "status": "updated",
-        "revision": final_snapshot.revision,
-        "capabilities": final_snapshot.capabilities,
-    });
-    if !valid_receipt(&result) {
-        return Err(QueueWriteError::InvalidRequest("Invalid queue receipt"));
-    }
-    event_write::settle_request(
-        transaction,
-        &admitted,
-        Some(agent_id),
-        &serde_json::from_value::<QueueReply>(result.clone())?,
-    )?;
+    let result = QueueReply {
+        status: QueueMutationStatus::Updated,
+        revision: final_snapshot.revision,
+        capabilities: QueueCapabilities {
+            reorder: QUEUE_REORDER_ENABLED,
+            receipts: QUEUE_RECEIPTS_ENABLED,
+        },
+    };
+    event_write::settle_request(transaction, &admitted, Some(agent_id), &result)?;
     Ok(result)
 }
 
@@ -343,15 +352,6 @@ fn read_metadata(transaction: &Transaction<'_>, id: &str) -> Result<Value, Queue
     }
 }
 
-fn valid_receipt(value: &Value) -> bool {
-    value.get("status").and_then(Value::as_str) == Some("updated")
-        && value.get("revision").and_then(Value::as_str).is_some()
-        && value
-            .get("capabilities")
-            .and_then(Value::as_object)
-            .is_some()
-}
-
 fn unix_time() -> Result<f64, QueueWriteError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -446,11 +446,7 @@ pub fn queue_snapshot(
     };
     let bytes = serde_json::to_vec(&json!([agent.epoch, revision_number, items]))?;
     let revision = studio_runtime_store::sha256_hex(&bytes);
-    Ok(QueueSnapshot {
-        items,
-        revision,
-        capabilities: json!({"reorder":true,"receipts":true}),
-    })
+    Ok(QueueSnapshot { items, revision })
 }
 
 pub fn is_live(agent: &AgentRecord) -> bool {
@@ -489,7 +485,7 @@ pub fn publish_queue(
                 },
             })?;
             (
-                json!({"items":snapshot.items,"revision":snapshot.revision,"capabilities":snapshot.capabilities}),
+                json!({"items":snapshot.items,"revision":snapshot.revision,"capabilities":{"reorder":QUEUE_REORDER_ENABLED,"receipts":QUEUE_RECEIPTS_ENABLED}}),
                 false,
             )
         }

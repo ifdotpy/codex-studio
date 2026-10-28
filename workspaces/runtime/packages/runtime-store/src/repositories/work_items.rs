@@ -97,8 +97,11 @@ impl WorkItemsRepository {
             id: agent.id.0.clone(),
         };
         let id = pointer["runId"].as_str().ok_or_else(invalid)?;
-        let attempt: Option<String> =
-            serde_json::from_value(pointer["attemptId"].clone()).map_err(|_| invalid())?;
+        let attempt = match pointer.get("attemptId") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(attempt)) => Some(attempt.clone()),
+            Some(_) => return Err(invalid()),
+        };
         let raw: Option<String> = connection
             .query_row(
                 "SELECT record FROM runtime_execution_runs WHERE id=?1",

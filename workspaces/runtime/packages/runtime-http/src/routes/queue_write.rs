@@ -13,7 +13,7 @@ use crate::router::HttpState;
 pub(crate) async fn queue_action(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<QueueCommand>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<queue_write::QueueReply>, ApiError> {
     validate_queue_action(&body)?;
     let agent_id = body
         .agent()
@@ -22,9 +22,8 @@ pub(crate) async fn queue_action(
     let signature =
         super::work_items::python_operation_signature(&json!({"agent": agent_id, "body": body}))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let result = super::sync_delta::write(
-        store,
-        move |transaction| {
+    let result = store
+        .transaction_with_error(move |transaction| {
             queue_write::action(
                 transaction,
                 &agent_id,
@@ -32,10 +31,9 @@ pub(crate) async fn queue_action(
                 &signature,
                 |connection, agent| super::queue_read::queue_snapshot(connection, agent),
             )
-        },
-        write_error,
-    )
-    .await?;
+        })
+        .await
+        .map_err(write_error)?;
     state.event_wake.notify_one();
     Ok(Json(result))
 }
@@ -184,6 +182,17 @@ mod tests {
         let reorder = json!({"action":"reorder","ordered_ids":["b","a","c"],"expected_revision":revision,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
         let (status, receipt) = call(&app, reorder.clone()).await;
         assert_eq!(status, 200, "{receipt}");
+        let stored: String = reader
+            .query_row("SELECT result FROM request_results", [], |row| row.get(0))
+            .expect("stored queue receipt");
+        let envelope: studio_runtime_store::request_results::ResultEnvelope<
+            queue_write::QueueReply,
+        > = serde_json::from_str(&stored).expect("typed stored queue receipt");
+        assert_eq!(
+            serde_json::from_str::<Value>(&serde_json::to_string(&envelope).expect("serialized"))
+                .expect("JSON"),
+            serde_json::from_str::<Value>(&stored).expect("stored JSON")
+        );
         assert_eq!(
             call(&app, reorder.clone()).await,
             (200, receipt.clone()),
