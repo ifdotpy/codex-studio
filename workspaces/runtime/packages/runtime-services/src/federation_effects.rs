@@ -99,19 +99,9 @@ impl FederationAction {
     }
 }
 
-pub(crate) fn snapshot(
-    tx: &Transaction<'_>,
-    peer: &str,
-    room: &str,
-    message: &str,
-    now: f64,
-) -> Result<Snapshot> {
+pub(crate) fn snapshot(tx: &Transaction<'_>, peer: &str, room: &str, now: f64) -> Result<Snapshot> {
     Snapshot::checked(
-        core::SnapshotKeys {
-            peer,
-            room,
-            message,
-        },
+        core::SnapshotKeys { peer, room },
         Repo::record(tx, Table::Settings, "global", peer)?
             .unwrap_or_else(|| json!({"enabled":false})),
         Repo::record(tx, Table::Peer, peer, peer)?.ok_or(Error::Forbidden("unknown peer"))?,
@@ -162,7 +152,7 @@ pub async fn handle(
     let body = body.clone();
     let identity_for_effect = Arc::clone(&identity);
     let result=store.transaction_with(move |tx| {
-        let state=snapshot(tx,&peer_id,"","",now)?;
+        let state=snapshot(tx,&peer_id,"",now)?;
         state.authorize(matches!(action,FederationAction::Status))?;
         if let (Some(observed),Some(expected))=(&observed,&state.peer.whois_user)
             && observed.to_lowercase()!=expected.to_lowercase() { return Err(Error::Forbidden("origin identity mismatch")); }
@@ -394,7 +384,7 @@ pub async fn receive(
 }
 fn receive_locked(tx: &Transaction<'_>, peer: &str, envelope: &Value, now: f64) -> Result<Value> {
     let message = core::checked_envelope(envelope)?;
-    let state = snapshot(tx, peer, &message.room, &message.id, now)?;
+    let state = snapshot(tx, peer, &message.room, now)?;
     state.authorize(false)?;
     if message.sender_server != peer {
         return Err(Error::Forbidden("sender identity mismatch"));
@@ -406,40 +396,21 @@ fn receive_locked(tx: &Transaction<'_>, peer: &str, envelope: &Value, now: f64) 
     )?;
     consume_nonce(tx, peer, &message.nonce, message.timestamp, now as i64)?;
     let hash = core::envelope_hash(envelope)?;
-    let result_id = studio_runtime_store::multi_server_delivery::remote_result_key(
-        "federation-inbox",
-        &[peer],
-        &message.request_id,
-    );
-    let old_id = studio_runtime_store::multi_server_delivery::remote_result_key(
+    use crate::event_write::{CallerAdmission, RequestKey, begin_request};
+    let raw = studio_runtime_store::multi_server_delivery::remote_result_key(
         "federation-inbox",
         &[peer],
         &message.id,
     );
-    let now_ms = (now * 1000.0) as i64;
-    if let Some(saved) = crate::event_write::replay_request::<core::MessageReceipt>(
-        tx, &old_id, &hash, now_ms,
-    )?
-    .or(crate::event_write::replay_request::<core::MessageReceipt>(
-        tx, &result_id, &hash, now_ms,
-    )?) {
-        return serde_json::to_value(saved.reply).map_err(|error| StoreError::from(error).into());
-    }
-    let admitted = match crate::event_write::admit_request(
+    let admitted = match begin_request::<core::MessageReceipt>(
         tx,
-        "federation-inbox",
-        &[peer],
-        &message.request_id,
-        &[],
+        RequestKey::new("federation-inbox", &[peer], &message.request_id).raw(&raw),
         &hash,
-        now_ms,
+        chrono::Utc::now().timestamp_millis(),
     )? {
-        studio_runtime_store::request_results::Admission::Fresh(admitted) => admitted,
-        studio_runtime_store::request_results::Admission::Replay(saved) => {
-            let saved: studio_runtime_store::request_results::ResultEnvelope<core::MessageReceipt> =
-                serde_json::from_str(&saved.result).map_err(StoreError::from)?;
-            return serde_json::to_value(saved.reply)
-                .map_err(|error| StoreError::from(error).into());
+        CallerAdmission::Fresh(admitted) => admitted,
+        CallerAdmission::Replay(saved) => {
+            return serde_json::to_value(saved).map_err(|error| StoreError::from(error).into());
         }
     };
     let mut decision = core::decide_receive(&state, envelope, now)?;
@@ -537,7 +508,7 @@ pub async fn pull(store: Arc<RuntimeStore>, peer: &str, body: &Value, now: f64) 
     let identity = Arc::new(identity);
     store
         .transaction_with(move |tx| {
-            snapshot(tx, &peer, "", "", now)?.authorize(false)?;
+            snapshot(tx, &peer, "", now)?.authorize(false)?;
             check_identity(tx, &identity)?;
             pull_locked(tx, &peer, &body, &identity, now)
         })
@@ -606,7 +577,7 @@ pub(crate) fn acknowledge_outbox(
                 tx,
                 &key,
                 hash,
-                (now * 1000.0) as i64,
+                chrono::Utc::now().timestamp_millis(),
             )?
             .is_some_and(|saved| saved.reply.ack.id == id && saved.reply.ack.hash == hash),
         );
@@ -614,7 +585,7 @@ pub(crate) fn acknowledge_outbox(
     if item["hash"] != hash || item["requestId"] != root {
         return Ok(false);
     }
-    if item["kind"] == "room-accept" {
+    if item["kind"] == core::MessageKind::RoomAccept.as_str() {
         let room_id = item["room"].as_str().ok_or(Error::Invalid("outbox.room"))?;
         if let Some(mut room) = Repo::record(tx, Table::Room, room_id, peer)?
             && room["peerId"] == peer
@@ -701,7 +672,7 @@ pub(crate) async fn reconcile(
     let response = response.clone();
     store
         .transaction_with(move |tx| {
-            let state = snapshot(tx, &peer, "", "", now)?;
+            let state = snapshot(tx, &peer, "", now)?;
             state.authorize(false)?;
             if state.peer.public_key != expected_key {
                 return Err(Error::Conflict("peer key changed"));
@@ -720,7 +691,8 @@ pub(crate) async fn reconcile(
                 if let Some(mut item) = Repo::record(tx, Table::Inbox, id, &peer)?
                     && item["hash"] == ack["hash"]
                 {
-                    item["ack"] = json!("confirmed");
+                    item["ack"] =
+                        json!(studio_runtime_schema::persistence::FederationAckState::Confirmed);
                     Repo::put(tx, Table::Inbox, id, &peer, &item)?;
                 }
             }

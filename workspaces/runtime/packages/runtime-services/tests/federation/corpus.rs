@@ -13,6 +13,19 @@ use studio_runtime_store::federation_messaging::{
 };
 
 const NOW: f64 = 1_700_000_000.0;
+static FIXTURE_REQUEST_MS: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+fn fixture_request_id(label: &str) -> &'static str {
+    let discriminator =
+        uuid::Uuid::new_v5(&uuid::Uuid::nil(), label.as_bytes()).as_u128() & ((1u128 << 62) - 1);
+    let id = uuid::Uuid::from_u128(
+        ((*FIXTURE_REQUEST_MS.get_or_init(|| chrono::Utc::now().timestamp_millis()) as u128) << 80)
+            | (7 << 76)
+            | (2 << 62)
+            | discriminator,
+    );
+    Box::leak(id.to_string().into_boxed_str())
+}
+
 const LOCAL: &str = "11111111-1111-4111-8111-111111111111";
 const PEER: &str = "22222222-2222-4222-8222-222222222222";
 const ROOM: &str = "federated:33333333-3333-4333-8333-333333333333";
@@ -64,7 +77,7 @@ impl Corpus {
             for (key, value) in fields.as_object().expect("fields") {
                 payload[key] = value.clone();
             }
-            let mut envelope = json!({"protocol":1,"senderServer":PEER,"id":format!("message-{name}"),
+            let mut envelope = json!({"protocol":1,"senderServer":PEER,"requestId":fixture_request_id(name),"id":format!("message-{name}"),
                 "kind":"chat-message","room":ROOM,"payload":payload,"created":NOW,
                 "timestamp":NOW as i64,"nonce":format!("unique-nonce-{name}-12345")});
             envelope["signature"] = json!(identity.sign(
@@ -98,7 +111,7 @@ impl Corpus {
                 prior["remoteApproved"] = json!(false);
                 prior
             };
-            let mut envelope = json!({"protocol":1,"senderServer":PEER,"id":format!("message-{kind}"),
+            let mut envelope = json!({"protocol":1,"senderServer":PEER,"requestId":fixture_request_id(kind),"id":format!("message-{kind}"),
                 "kind":kind,"room":ROOM,
                 "payload":{"room":ROOM,"participants":[{"id":"remote-lead","role":"lead","name":"Remote"}],
                     "shareNames":false,"shareStatus":false},
@@ -139,6 +152,8 @@ impl Corpus {
         let agents = seed["agents"].clone();
         store
             .transaction(move |tx| {
+                studio_runtime_store::receipt_schema::create(tx)?;
+                tx.execute("UPDATE runtime_orchestration_settings SET record=json_set(record,'$.expired_before_ms',0) WHERE id='global'",[])?;
                 tx.execute(
                     "INSERT INTO runtime_federation_identity VALUES('local',?1)",
                     [identity.to_string()],
@@ -266,12 +281,10 @@ async fn federation_payload_validation() {
             SnapshotKeys {
                 peer: corpus.peer(),
                 room: corpus.room(),
-                message: case["envelope"]["id"].as_str().expect("message id"),
             },
             json!({"enabled":true}),
             corpus.data["seed"]["peer"].clone(),
             (!room.is_null()).then(|| room.clone()),
-            None,
             0,
         )
         .expect("checked fixture snapshot");
@@ -349,7 +362,7 @@ async fn callback_remote_message_uses_the_existing_federation_outbox() {
         .expect("moved callback actor and paired link fixture");
     let effects = RuntimeOrchestrationEffects::new(Arc::clone(&store));
     let envelope = json!({
-        "requestId":"stable-callback-remote-message",
+        "requestId":fixture_request_id("stable-callback-remote-message"),"operation":[],
         "action":"message",
         "payload":{"link":"callback-link","worker":"lead","epoch":0,"parentEpoch":0,"args":args}
     });
@@ -839,7 +852,7 @@ async fn federation_user_message_uses_the_local_lead_and_stable_idempotency_key(
         std::sync::Arc::clone(&store),
         corpus.room(),
         "user message",
-        "stable-user-message-key",
+        fixture_request_id("stable-user-message-key"),
         studio_runtime_schema::delivery::DeliveryMoment::NextTurn,
         corpus.now(),
     )
@@ -849,7 +862,7 @@ async fn federation_user_message_uses_the_local_lead_and_stable_idempotency_key(
         std::sync::Arc::clone(&store),
         corpus.room(),
         "user message",
-        "stable-user-message-key",
+        fixture_request_id("stable-user-message-key"),
         studio_runtime_schema::delivery::DeliveryMoment::NextTurn,
         corpus.now() + 1.0,
     )
@@ -862,7 +875,7 @@ async fn federation_user_message_uses_the_local_lead_and_stable_idempotency_key(
                 std::sync::Arc::clone(&store),
                 corpus.room(),
                 "user message",
-                "stable-user-message-key",
+                fixture_request_id("stable-user-message-key"),
                 studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
                 corpus.now() + 2.0,
             )
@@ -882,7 +895,7 @@ async fn federation_user_message_uses_the_local_lead_and_stable_idempotency_key(
             std::sync::Arc::clone(&store),
             corpus.room(),
             "changed text",
-            "stable-user-message-key",
+            fixture_request_id("stable-user-message-key"),
             studio_runtime_schema::delivery::DeliveryMoment::NextTurn,
             corpus.now(),
         )
@@ -1148,7 +1161,7 @@ async fn lost_push_response() {
     let corpus = &Corpus::new();
     let (sender_path, sender) = corpus.store("sender", false).await;
     let (_, receiver) = corpus.store("receiver", true).await;
-    let key = "stable-message-key";
+    let key = fixture_request_id("stable-message-key");
     let room_id = corpus.room().to_owned();
     let now = corpus.now();
     let result = sender
@@ -1239,10 +1252,7 @@ async fn lost_push_response() {
         .expect("fixture operation"),
         1
     );
-    assert_eq!(
-        rows(&sender, "runtime_federation_outbox")[0]["status"],
-        "delivered"
-    );
+    assert!(rows(&sender, "runtime_federation_outbox").is_empty());
     assert_eq!(effect_rows(&receiver).0.len(), 1);
     assert_eq!(effect_rows(&receiver).1.len(), 2);
     assert_eq!(
@@ -1301,7 +1311,7 @@ async fn bad_federation_response_signature_stays_unknown_and_does_not_learn_rout
         "lead",
         corpus.room(),
         "message with an unverified response",
-        "bad-response-signature-key",
+        fixture_request_id("bad-response-signature-key"),
         studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
         corpus.now(),
     )
@@ -1382,7 +1392,7 @@ async fn outbound_final_write_failure_rolls_back_and_retries_after_restart() {
     let corpus = &Corpus::new();
     let (path, store) = corpus.store("rollback-outbound", false).await;
     let prior = rows(&store, "runtime_federation_rooms");
-    store.transaction(move |tx| {tx.execute_batch("CREATE TRIGGER fault AFTER INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT,'fixture crash'); END")?;Ok(())})
+    store.transaction(move |tx| {tx.execute_batch("CREATE TRIGGER fault AFTER INSERT ON request_results BEGIN SELECT RAISE(ABORT,'fixture crash'); END")?;Ok(())})
             .await.expect("sender failpoint");
     assert!(
         delivery::send_message(
@@ -1390,7 +1400,7 @@ async fn outbound_final_write_failure_rolls_back_and_retries_after_restart() {
             "lead",
             corpus.room(),
             "message",
-            "key",
+            fixture_request_id("key"),
             studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
             corpus.now()
         )
@@ -1417,7 +1427,7 @@ async fn outbound_final_write_failure_rolls_back_and_retries_after_restart() {
         "lead",
         corpus.room(),
         "message",
-        "key",
+        fixture_request_id("key"),
         studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
         corpus.now(),
     )
@@ -1484,7 +1494,7 @@ async fn delivery_failures() {
         let (_, receiver) = corpus
             .store(&format!("failure-receiver-{kind}"), true)
             .await;
-        for key in ["one", "two"] {
+        for key in [fixture_request_id("one"), fixture_request_id("two")] {
             delivery::send_message(
                 std::sync::Arc::clone(&sender),
                 "lead",

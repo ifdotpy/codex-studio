@@ -154,7 +154,6 @@ pub struct Snapshot {
 pub struct SnapshotKeys<'a> {
     pub peer: &'a str,
     pub room: &'a str,
-    pub message: &'a str,
 }
 impl Snapshot {
     pub fn checked(
@@ -167,7 +166,6 @@ impl Snapshot {
         let SnapshotKeys {
             peer: peer_id,
             room: room_id,
-            message: _,
         } = keys;
         FederationTable::Settings.validate("global", &settings)?;
         FederationTable::Peer.validate(peer_id, &peer)?;

@@ -381,6 +381,11 @@ mod tests {
              CREATE TABLE runtime_access_clients(id TEXT NOT NULL, record TEXT NOT NULL);
              CREATE TABLE runtime_access_outbound(server TEXT NOT NULL, request_id TEXT NOT NULL, hash TEXT NOT NULL, record TEXT NOT NULL, PRIMARY KEY(server,request_id));",
         ).expect("fixture tables create");
+        super::super::super::receipt_schema::create(&db).expect("target receipt schema");
+        db.execute_batch(
+            "CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .expect("settings");
         db
     }
 
@@ -576,7 +581,7 @@ mod tests {
             RemoteTransportRepository::reserve_multi_server_request(
                 &tx,
                 "server-a",
-                "request-a",
+                "00000000-03e8-7000-8000-000000000001",
                 "fingerprint-a",
                 12.0
             )
@@ -590,7 +595,7 @@ mod tests {
             RemoteTransportRepository::reserve_multi_server_request(
                 &tx,
                 "server-a",
-                "request-a",
+                "00000000-03e8-7000-8000-000000000001",
                 "fingerprint-a",
                 13.0
             )
@@ -603,7 +608,7 @@ mod tests {
         RemoteTransportRepository::complete_multi_server_request(
             &tx,
             "server-a",
-            "request-a",
+            "00000000-03e8-7000-8000-000000000001",
             "fingerprint-a",
             &json!({"ok":true}),
             14.0,
@@ -618,7 +623,7 @@ mod tests {
             RemoteTransportRepository::complete_multi_server_request(
                 &tx,
                 "server-a",
-                "request-a",
+                "00000000-03e8-7000-8000-000000000001",
                 "fingerprint-a",
                 &json!({"ok":false}),
                 15.0,
@@ -632,7 +637,7 @@ mod tests {
             RemoteTransportRepository::reserve_multi_server_request(
                 &tx,
                 "server-a",
-                "request-a",
+                "00000000-03e8-7000-8000-000000000001",
                 "fingerprint-a",
                 16.0
             )
@@ -650,11 +655,13 @@ mod tests {
             let mut db = Connection::open(&path).expect("journal database opens");
             db.execute_batch("CREATE TABLE runtime_access_outbound(server TEXT,request_id TEXT,hash TEXT,record TEXT,PRIMARY KEY(server,request_id));")
                 .expect("journal schema creates");
+            crate::receipt_schema::create(&db).expect("target receipt schema");
+            db.execute_batch("CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)").expect("settings");
             let tx = db.transaction().expect("first reservation starts");
             let reservation = RemoteTransportRepository::reserve_multi_server_request(
                 &tx,
                 "server-a",
-                "request-a",
+                "00000000-03e8-7000-8000-000000000001",
                 "fingerprint-a",
                 1.0,
             )
@@ -670,7 +677,7 @@ mod tests {
             let reservation = RemoteTransportRepository::reserve_multi_server_request(
                 &tx,
                 "server-a",
-                "request-a",
+                "00000000-03e8-7000-8000-000000000001",
                 "fingerprint-a",
                 2.0,
             )
@@ -689,14 +696,14 @@ mod tests {
     fn malformed_receipt_reports_the_table_and_stored_key() {
         let db = nonce_db();
         db.execute(
-            "INSERT INTO runtime_access_outbound(server,request_id,hash,record) VALUES('server-a','request-a','fingerprint-a','{}')",
+            "INSERT INTO runtime_access_outbound(server,request_id,hash,record) VALUES('server-a','00000000-03e8-7000-8000-000000000001','fingerprint-a','{}')",
             [],
         ).expect("invalid persisted receipt fixture inserts");
         let tx = db.unchecked_transaction().expect("read transaction begins");
         let error = RemoteTransportRepository::reserve_multi_server_request(
             &tx,
             "server-a",
-            "request-a",
+            "00000000-03e8-7000-8000-000000000001",
             "fingerprint-a",
             1.0,
         )
@@ -705,7 +712,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("runtime_access_outbound/server-a/request-a")
+                .contains("runtime_access_outbound/server-a/00000000-03e8-7000-8000-000000000001")
         );
         tx.rollback().expect("read transaction ends");
     }
@@ -717,7 +724,7 @@ mod tests {
         RemoteTransportRepository::reserve_multi_server_request(
             &tx,
             "server-a",
-            "invite-a",
+            "00000000-03e8-7000-8000-000000000002",
             "fingerprint-a",
             1.0,
         )
@@ -725,7 +732,7 @@ mod tests {
         RemoteTransportRepository::redact_multi_server_request(
             &tx,
             "server-a",
-            "invite-a",
+            "00000000-03e8-7000-8000-000000000002",
             "fingerprint-a",
             2.0,
         )
@@ -733,14 +740,24 @@ mod tests {
         tx.commit().expect("redacted receipt commits");
         let stored: String = db
             .query_row(
-                "SELECT record FROM runtime_access_outbound WHERE server='server-a' AND request_id='invite-a'",
-                [],
+                "SELECT result FROM request_results WHERE id=?1",
+                [super::remote_result_key(
+                    "access-outbound",
+                    &["server-a"],
+                    "00000000-03e8-7000-8000-000000000002",
+                )],
                 |row| row.get(0),
             )
             .expect("redacted receipt reads");
+        let result: serde_json::Value = serde_json::from_str(&stored).expect("receipt JSON");
+        assert_eq!(result["reply"]["outcome"], "redacted");
+        assert!(result["reply"].get("value").is_none());
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&stored).expect("receipt JSON"),
-            serde_json::json!({"outcome":"redacted", "completed":2.0})
+            db.query_row("SELECT count(*) FROM runtime_access_outbound", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("pending count"),
+            0
         );
         let tx = db
             .unchecked_transaction()
@@ -749,7 +766,7 @@ mod tests {
             RemoteTransportRepository::reserve_multi_server_request(
                 &tx,
                 "server-a",
-                "invite-a",
+                "00000000-03e8-7000-8000-000000000002",
                 "fingerprint-a",
                 3.0
             )

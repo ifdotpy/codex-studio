@@ -399,7 +399,7 @@ pub(crate) async fn pump_peer_until(
     let identity_for_claim = Arc::clone(&identity);
     let (peer, queued) = store
         .transaction_with(move |tx| {
-            let state = snapshot(tx, &peer_id_owned, "", "", now)?;
+            let state = snapshot(tx, &peer_id_owned, "", now)?;
             state.authorize(false)?;
             effects::check_identity(tx, identity_for_claim.as_ref())?;
             Ok::<_, Error>((
@@ -424,14 +424,15 @@ pub(crate) async fn pump_peer_until(
         let hash_for_check = hash.clone();
         store
             .transaction_with(move |tx| {
-                let state = snapshot(tx, &peer_id_owned, "", "", now)?;
+                let state = snapshot(tx, &peer_id_owned, "", now)?;
                 state.authorize(false)?;
                 if state.peer.public_key != peer_for_check.public_key {
                     return Err(Error::Conflict("peer key changed"));
                 }
                 let mut latest = Repo::record(tx, Table::Outbox, &id_for_check, &peer_id_owned)?
                     .ok_or(Error::Conflict("outbox removed"))?;
-                if latest["status"] != "queued"
+                if latest["status"]
+                    != studio_runtime_schema::persistence::FederationDeliveryState::Queued.as_str()
                     || core::envelope_hash(&effects::outbound(
                         &latest,
                         identity_for_check.as_ref(),
@@ -478,7 +479,7 @@ pub(crate) async fn pump_peer_until(
                     .transaction_with(move |tx| {
                         if let Some(mut latest) =
                             Repo::record(tx, Table::Outbox, &id_owned, &peer_id_owned)?
-                            && latest["status"] == "queued"
+                            && latest["status"] == studio_runtime_schema::persistence::FederationDeliveryState::Queued.as_str()
                         {
                             let attempts = latest["attempts"]
                                 .as_u64()
@@ -505,7 +506,7 @@ pub(crate) async fn pump_peer_until(
         let result_for_ack = result.clone();
         store
             .transaction_with(move |tx| {
-                let state = snapshot(tx, &peer_id_owned, "", "", now)?;
+                let state = snapshot(tx, &peer_id_owned, "", now)?;
                 state.authorize(false)?;
                 if state.peer.public_key != peer_for_ack.public_key {
                     return Err(Error::Conflict("peer key changed"));
@@ -529,7 +530,7 @@ pub(crate) async fn pump_peer_until(
     let peer_for_acks = peer.clone();
     let acks = store
         .transaction_with(move |tx| {
-            let state = snapshot(tx, &peer_id_owned, "", "", now)?;
+            let state = snapshot(tx, &peer_id_owned, "", now)?;
             state.authorize(false)?;
             if state.peer.public_key != peer_for_acks.public_key {
                 return Err(Error::Conflict("peer key changed"));
@@ -656,7 +657,7 @@ pub fn send_message_in_transaction(
         .as_str()
         .ok_or(Error::Invalid("room.peerId"))?
         .to_owned();
-    snapshot(tx, &peer, room_id, "", now)?.authorize(false)?;
+    snapshot(tx, &peer, room_id, now)?.authorize(false)?;
     if room["status"] != "approved"
         || room["localApproved"] != true
         || room["remoteApproved"] != true
@@ -670,38 +671,18 @@ pub fn send_message_in_transaction(
     let signature = crate::event_write::request_signature(&json!({
         "sender":sender,"room":room_id,"text":text,"delivery":delivery,
     }));
+    use crate::event_write::{CallerAdmission, RequestKey, begin_request};
     use studio_runtime_store::multi_server_delivery::remote_result_key;
-    use studio_runtime_store::request_results::{Admission, ResultEnvelope};
-    let now_ms = (now * 1000.0) as i64;
-    let result_id = remote_result_key("federation-send", &[sender], key);
-    if let Some(saved) = crate::event_write::replay_request::<core::MessageSendReply>(
+    use studio_runtime_store::request_results::Admission;
+    let admitted = match begin_request::<core::MessageSendReply>(
         tx,
-        &message_id,
+        RequestKey::new("federation-send", &[sender], key).raw(&message_id),
         &signature,
-        now_ms,
-    )?
-    .or(
-        crate::event_write::replay_request::<core::MessageSendReply>(
-            tx, &result_id, &signature, now_ms,
-        )?,
-    ) {
-        return serde_json::to_value(saved.reply).map_err(|error| StoreError::from(error).into());
-    }
-    let admitted = match crate::event_write::admit_request(
-        tx,
-        "federation-send",
-        &[sender],
-        key,
-        &[],
-        &signature,
-        now_ms,
+        chrono::Utc::now().timestamp_millis(),
     )? {
-        Admission::Fresh(admitted) => admitted,
-        Admission::Replay(saved) => {
-            let saved: ResultEnvelope<core::MessageSendReply> =
-                serde_json::from_str(&saved.result).map_err(StoreError::from)?;
-            return serde_json::to_value(saved.reply)
-                .map_err(|error| StoreError::from(error).into());
+        CallerAdmission::Fresh(admitted) => admitted,
+        CallerAdmission::Replay(saved) => {
+            return serde_json::to_value(saved).map_err(|error| StoreError::from(error).into());
         }
     };
     let person = room
@@ -741,7 +722,7 @@ pub fn send_message_in_transaction(
         key,
         &[],
         &delivery_signature,
-        (now * 1000.0) as i64,
+        chrono::Utc::now().timestamp_millis(),
     )? {
         Admission::Fresh(admitted) => admitted,
         Admission::Replay(_) => return Err(Error::Conflict("message delivery already settled")),
@@ -786,7 +767,7 @@ pub fn send_message_in_transaction(
     room["sequence"] = json!(sequence);
     room["updated"] = json!(now);
     effects::save_room(tx, &peer, &room)?;
-    let result = json!({"id":message_id,"room":room_id,"deliveries":deliveries,"status":"queued"});
+    let result = json!({"id":message_id,"room":room_id,"deliveries":deliveries,"status":studio_runtime_schema::persistence::DeliveryStatus::Queued});
     let reply: core::MessageSendReply =
         serde_json::from_value(result.clone()).map_err(StoreError::from)?;
     crate::event_write::settle_request(tx, &admitted, Some(sender), &reply)?;

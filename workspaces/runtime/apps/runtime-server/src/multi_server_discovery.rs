@@ -595,6 +595,7 @@ mod tests {
         let first = reserve_auto_pair_id(&store, "peer", &identity, "https://peer.example")
             .await
             .unwrap();
+        assert_eq!(uuid::Uuid::parse_str(&first).unwrap().get_version_num(), 7);
         drop(store);
         let store = RuntimeStore::open(Some(root.path())).await.unwrap();
         let second = reserve_auto_pair_id(&store, "peer", &identity, "https://peer.example")

@@ -648,7 +648,7 @@ fn apply_pair(
     };
     use studio_runtime_store::request_results::{Admission, ResultEnvelope};
     let id = remote_result_key("access", &[request.client_id()], request.request_id());
-    let now_ms = (now * 1000.0) as i64;
+    let now_ms = chrono::Utc::now().timestamp_millis();
     if let Some(saved) =
         crate::event_write::replay_request::<HttpAccessReply>(tx, &id, &fingerprint, now_ms)
             .map_err(crate::multi_server_orchestration::replay_error)?

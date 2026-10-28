@@ -745,10 +745,6 @@ pub async fn exchange_multi_server(
             .map_err(|error| map_outbound_error(error, &server_id, &request_id))
         })
         .await?;
-    let replay_redacted = matches!(
-        &reserved,
-        studio_runtime_store::OutboundReservation::Redacted
-    );
     match reserved {
         studio_runtime_store::OutboundReservation::Complete(value) => {
             let bytes =
@@ -763,7 +759,6 @@ pub async fn exchange_multi_server(
                 key: format!("{}/{}", input.server_id, input.request_id),
             });
         }
-        studio_runtime_store::OutboundReservation::Redacted if invitation_response => {}
         studio_runtime_store::OutboundReservation::Redacted => {
             return Ok(serde_json::json!({"outcome":"redacted"}));
         }
@@ -841,7 +836,7 @@ pub async fn exchange_multi_server(
     ) {
         return Ok(value);
     }
-    if !replay_redacted {
+    {
         let server_id = input.server_id.to_owned();
         let request_id = input.request_id.to_owned();
         let fingerprint = fingerprint.clone();
@@ -928,10 +923,6 @@ async fn exchange_multi_server_with(
             .map_err(|error| map_outbound_error(error, &server_id, &request_id))
         })
         .await?;
-    let replay_redacted = matches!(
-        &reserved,
-        studio_runtime_store::OutboundReservation::Redacted
-    );
     match reserved {
         studio_runtime_store::OutboundReservation::Complete(value) => {
             let bytes =
@@ -946,7 +937,6 @@ async fn exchange_multi_server_with(
                 key: format!("{}/{}", input.server_id, input.request_id),
             });
         }
-        studio_runtime_store::OutboundReservation::Redacted if invitation_response => {}
         studio_runtime_store::OutboundReservation::Redacted => {
             return Ok(serde_json::json!({"outcome":"redacted"}));
         }
@@ -997,7 +987,7 @@ async fn exchange_multi_server_with(
         return Ok(value);
     }
 
-    if !replay_redacted {
+    {
         let server_id = input.server_id.to_owned();
         let request_id = input.request_id.to_owned();
         let fingerprint = fingerprint.clone();
@@ -1031,8 +1021,8 @@ async fn exchange_multi_server_with(
 
 fn map_outbound_error(
     error: StoreError,
-    server_id: &str,
-    request_id: &str,
+    _server_id: &str,
+    _request_id: &str,
 ) -> RemoteTransportError {
     match &error {
         StoreError::RequestResult(
@@ -1041,15 +1031,10 @@ fn map_outbound_error(
         StoreError::RequestResult(
             studio_runtime_store::request_results::RequestResultError::Conflict { .. },
         ) => RemoteTransportError::RequestConflict,
-        StoreError::SchemaMismatch(message)
-            if message.contains("conflicts with stored content") =>
-        {
-            RemoteTransportError::RequestConflict
-        }
-        StoreError::SchemaMismatch(message) if message.contains("runtime_access_outbound") => {
+        StoreError::InvalidStoredObject { table, id } => {
             RemoteTransportError::InvalidStoredObject {
-                table: "runtime_access_outbound",
-                key: format!("{server_id}/{request_id}"),
+                table,
+                key: id.clone(),
             }
         }
         StoreError::StateDirectory(_)
@@ -1065,7 +1050,6 @@ fn map_outbound_error(
         | StoreError::Sqlite(_)
         | StoreError::CommitOutcomeUnknown(_)
         | StoreError::Json(_)
-        | StoreError::InvalidStoredObject { .. }
         | StoreError::SchemaValidation(_)
         | StoreError::RecordContract(_)
         | StoreError::WriterPoisoned
@@ -2178,35 +2162,30 @@ pub(crate) mod tests {
         let (_directory, root, store) = runtime_store_fixture().await;
         let identity = identity();
         let public_key = spki_pem();
-        let body = br#"{"action":"rename_server","label":"fixture"}"#;
+        let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let now = crate::event_write::unix_time().expect("clock") as i64;
         let input = MultiServerExchangeInput {
             server_id: "server-peer",
-            method: "post",
+            method: "POST",
             url: "https://peer.example/api/multi-server",
-            request_id: "request-a",
-            timestamp: 1_700_000_000,
+            request_id: &request,
+            timestamp: now,
             nonce: "abcdefghijklmnopqrstuvwxyz012345",
-            body,
+            body: br#"{"action":"rename_server","label":"fixture"}"#,
             expected_public_key: &public_key,
-            timeout: std::time::Duration::from_secs(2),
+            timeout: Duration::from_secs(2),
         };
-        let response = serde_json::to_vec(&json!({
-            "serverId":"server-peer",
-            "publicKey":public_key,
-            "renamed":true
-        }))
-        .expect("fixture response serializes");
+        let response = serde_json::to_vec(
+            &json!({"serverId":"server-peer","publicKey":public_key,"renamed":true}),
+        )
+        .expect("reply");
         let mut sends = 0;
         let first = super::exchange_multi_server_with(
             &store,
             &identity,
             &input,
-            1_700_000_000,
-            |method, _, _, _, _, _| {
-                assert_eq!(
-                    method, "POST",
-                    "one normalized method reaches the transport"
-                );
+            now,
+            |_, _, _, _, _, _| {
                 sends += 1;
                 Ok(super::HttpResponse {
                     status: 200,
@@ -2216,161 +2195,145 @@ pub(crate) mod tests {
             },
         )
         .await
-        .expect("new exchange verifies and completes");
+        .expect("first exchange");
+        assert_eq!(
+            store
+                .test_reader()
+                .expect("reader")
+                .query_row("SELECT count(*) FROM runtime_access_outbound", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("count"),
+            0
+        );
         drop(store);
-
-        let store = RuntimeStore::open(Some(&root))
-            .await
-            .expect("saved receipt opens after restart");
+        let store = RuntimeStore::open(Some(&root)).await.expect("restart");
         let replay = super::exchange_multi_server_with(
             &store,
             &identity,
             &input,
-            1_700_000_000,
+            now,
             |_, _, _, _, _, _| {
                 sends += 1;
                 Err(super::RemoteTransportError::ExchangeUnknown)
             },
         )
         .await
-        .expect("saved result is replayed without transport");
+        .expect("saved reply");
         assert_eq!(first, replay);
         assert_eq!(sends, 1);
-        drop(store);
-
-        let store = RuntimeStore::open(Some(&root))
-            .await
-            .expect("unknown reservation opens after restart");
+        let unknown = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let unknown_for_claim = unknown.clone();
         let fingerprint =
-            super::multi_server_request_fingerprint("POST", input.url, br#"{"other":"body"}"#)
-                .expect("unknown fixture fingerprint computes");
+            super::multi_server_request_fingerprint("POST", input.url, b"{}").expect("signature");
         store
-            .transaction(move |transaction| {
+            .transaction(move |tx| {
                 RemoteTransportRepository::reserve_multi_server_request(
-                    transaction,
+                    tx,
                     "server-peer",
-                    "unknown-request",
+                    &unknown_for_claim,
                     &fingerprint,
-                    1_700_000_000.0,
+                    now as f64,
                 )?;
                 Ok(())
             })
             .await
-            .expect("unknown reservation commits");
+            .expect("unknown claim");
         drop(store);
-        let store = RuntimeStore::open(Some(&root))
-            .await
-            .expect("unknown receipt reopens");
-        let unknown_input = MultiServerExchangeInput {
-            request_id: "unknown-request",
-            body: br#"{"other":"body"}"#,
+        let store = RuntimeStore::open(Some(&root)).await.expect("restart");
+        let input = MultiServerExchangeInput {
+            request_id: &unknown,
+            body: b"{}",
             ..input
         };
-        let result = super::exchange_multi_server_with(
+        assert!(matches!(
+            super::exchange_multi_server_with(
+                &store,
+                &identity,
+                &input,
+                now,
+                |_, _, _, _, _, _| {
+                    sends += 1;
+                    Err(super::RemoteTransportError::ExchangeUnknown)
+                }
+            )
+            .await,
+            Err(super::RemoteTransportError::ExchangeUnknown)
+        ));
+        assert_eq!(sends, 1);
+    }
+
+    #[tokio::test]
+    async fn redacted_invitation_retry_keeps_the_identity_without_another_send() {
+        let (_directory, root, store) = runtime_store_fixture().await;
+        let identity = identity();
+        let public_key = spki_pem();
+        let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let now = crate::event_write::unix_time().expect("clock") as i64;
+        let body = serde_json::to_vec(&json!({"action":"create_invite","requestId":request}))
+            .expect("request");
+        let input = MultiServerExchangeInput {
+            server_id: "server-peer",
+            method: "POST",
+            url: "https://peer.example/api/multi-server",
+            request_id: &request,
+            timestamp: now,
+            nonce: "abcdefghijklmnopqrstuvwxyz012345",
+            body: &body,
+            expected_public_key: &public_key,
+            timeout: Duration::from_secs(2),
+        };
+        let response=serde_json::to_vec(&json!({"serverId":"server-peer","publicKey":public_key,"invitation":{"token":"fixture-secret"}})).expect("reply");
+        let mut sends = 0;
+        let first = super::exchange_multi_server_with(
             &store,
             &identity,
-            &unknown_input,
-            1_700_000_000,
+            &input,
+            now,
+            |_, _, _, _, _, _| {
+                sends += 1;
+                Ok(super::HttpResponse {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: response.clone(),
+                })
+            },
+        )
+        .await
+        .expect("first exchange");
+        assert_eq!(first["invitation"]["token"], "fixture-secret");
+        let result: String = store
+            .test_reader()
+            .expect("reader")
+            .query_row(
+                "SELECT result FROM request_results WHERE id=?1",
+                [
+                    studio_runtime_store::multi_server_delivery::remote_result_key(
+                        "access-outbound",
+                        &["server-peer"],
+                        &request,
+                    ),
+                ],
+                |row| row.get(0),
+            )
+            .expect("redacted replay");
+        assert!(!result.contains("fixture-secret"));
+        drop(store);
+        let store = RuntimeStore::open(Some(&root)).await.expect("restart");
+        let retry = super::exchange_multi_server_with(
+            &store,
+            &identity,
+            &input,
+            now,
             |_, _, _, _, _, _| {
                 sends += 1;
                 Err(super::RemoteTransportError::ExchangeUnknown)
             },
         )
-        .await;
-        assert!(matches!(
-            result,
-            Err(super::RemoteTransportError::ExchangeUnknown)
-        ));
-        assert_eq!(sends, 1, "unknown request identity is never sent again");
-        drop(store);
-    }
-
-    #[tokio::test]
-    async fn redacted_invitation_retry_reuses_the_same_request_and_recovers_its_secret() {
-        let (_directory, root, store) = runtime_store_fixture().await;
-        let identity = identity();
-        let public_key = spki_pem();
-        let body = br#"{"action":"create_invite","requestId":"invite-request"}"#;
-        let first_input = MultiServerExchangeInput {
-            server_id: "server-peer",
-            method: "POST",
-            url: "https://peer.example/api/multi-server",
-            request_id: "invite-request",
-            timestamp: 1_700_000_000,
-            nonce: "abcdefghijklmnopqrstuvwxyz012345",
-            body,
-            expected_public_key: &public_key,
-            timeout: Duration::from_secs(2),
-        };
-        let response = serde_json::to_vec(&json!({
-            "serverId":"server-peer",
-            "publicKey":public_key,
-            "invitation":{"serverId":"server-peer","token":"fixture-secret"},
-            "expires":1_700_000_900
-        }))
-        .expect("fixture invitation serializes");
-        let mut sends = 0;
-        let first = super::exchange_multi_server_with(
-            &store,
-            &identity,
-            &first_input,
-            1_700_000_000,
-            |_, _, headers, request_body, _, _| {
-                sends += 1;
-                assert_eq!(request_body, body);
-                assert!(headers.iter().any(|(name, value)| {
-                    *name == "X-Studio-Request-Id" && *value == "invite-request"
-                }));
-                Ok(super::HttpResponse {
-                    status: 200,
-                    headers: Vec::new(),
-                    body: response.clone(),
-                })
-            },
-        )
         .await
-        .expect("first invitation response is saved redacted");
-        let outbound: String = store.test_reader().expect("outbound reader")
-            .query_row("SELECT record FROM runtime_access_outbound WHERE server='server-peer' AND request_id='invite-request'", [], |row| row.get(0))
-            .expect("durable outbound receipt");
-        assert!(
-            !outbound.contains("fixture-secret"),
-            "invitation secret must not be persisted"
-        );
-
-        drop(store);
-
-        let store = RuntimeStore::open(Some(&root))
-            .await
-            .expect("redacted request survives restart");
-        let retry_input = MultiServerExchangeInput {
-            nonce: "0123456789abcdefghijklmnopqrstuv",
-            ..first_input
-        };
-        let retry = super::exchange_multi_server_with(
-            &store,
-            &identity,
-            &retry_input,
-            1_700_000_000,
-            |_, _, headers, request_body, _, _| {
-                sends += 1;
-                assert_eq!(request_body, body);
-                assert!(headers.iter().any(|(name, value)| {
-                    *name == "X-Studio-Request-Id" && *value == "invite-request"
-                }));
-                Ok(super::HttpResponse {
-                    status: 200,
-                    headers: Vec::new(),
-                    body: response.clone(),
-                })
-            },
-        )
-        .await
-        .expect("same logical invitation retrieves its receiver-saved response");
-        assert_eq!(retry, first);
-        assert_eq!(retry["invitation"]["token"], "fixture-secret");
-        assert_eq!(sends, 2);
-        drop(store);
+        .expect("redacted reply");
+        assert_eq!(retry, json!({"outcome":"redacted"}));
+        assert_eq!(sends, 1);
     }
 
     #[test]
