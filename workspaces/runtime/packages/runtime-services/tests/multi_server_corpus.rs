@@ -1269,24 +1269,6 @@ fn exec_driver(
     )
 }
 
-/// One SQL row as JSON, with stored JSON text columns parsed for comparison.
-fn exec_row(store: &RuntimeStore, sql: &str, key: &str) -> Option<Value> {
-    let connection = store.test_reader().unwrap();
-    let raw: Option<String> =
-        rusqlite::OptionalExtension::optional(connection.query_row(sql, [key], |row| row.get(0)))
-            .unwrap();
-    raw.map(|raw| parsed_result(serde_json::from_str(&raw).unwrap()))
-}
-
-fn parsed_result(mut row: Value) -> Value {
-    if let Some(text) = row["result"].as_str() {
-        row["result"] = serde_json::from_str(text).unwrap();
-    }
-    row
-}
-
-const EXEC_INBOX_ROW: &str = "SELECT json_object('signature',signature,'state',state,'result',result,'principal',principal,'actor',actor) FROM runtime_server_inbox WHERE id=?1";
-
 #[tokio::test]
 async fn python_exec_receipt_row_probes_once_and_settles_from_the_reply() {
     use studio_runtime_store::multi_server_delivery::{RemoteReply, SavedRemoteReply};
@@ -1510,60 +1492,144 @@ async fn rust_exec_attempt_writes_the_python_receipt_form_and_never_resends() {
 
 #[tokio::test]
 async fn exec_receipt_probes_are_answered_like_the_python_receiver() {
-    let data = &fixture().data["execReceipt"];
-    let (_root, store) = store().await;
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Corpus {
+        exec_receipt: Cases,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Cases {
+        probes: Vec<Case>,
+        late_record: LateRecord,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LateRecord {
+        handle: String,
+        status: String,
+        exit_code: i64,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Case {
+        name: String,
+        principal: String,
+        at: i64,
+        envelope: ProbeEnvelope,
+        result: Expected,
+        insert_exec: Option<bool>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Expected {
+        Reply(ExpectedReply),
+        Refusal { refused: String, message: String },
+    }
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ExpectedReply {
+        request_id: String,
+        outcome: String,
+        value: Option<CommandReply>,
+        error: Option<String>,
+    }
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CommandReply {
+        request_id: String,
+        outcome: String,
+        value: Option<CommandResult>,
+        error: Option<String>,
+    }
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CommandResult {
+        handle: String,
+        status: String,
+        exit_code: Option<i64>,
+        output_expires_at: Option<f64>,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ProbeEnvelope {
+        request_id: String,
+        action: String,
+        payload: ProbePayload,
+        #[serde(default)]
+        operation: Vec<String>,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct ProbePayload {
+        handle: String,
+        actor: String,
+        digest: String,
+    }
+    let data: Corpus =
+        serde_json::from_str(&fixture().data.to_string()).expect("typed probe cases");
+    let (_root, store) = migrated_store().await;
     store
         .set_local_server_id(Some("local-server".to_owned()))
         .unwrap();
     let wire = ExecWire::new(None);
     let driver = exec_driver(&store, Arc::clone(&wire));
-    let cases = data["probes"].as_array().unwrap();
+    let cases = data.exec_receipt.probes;
     assert_eq!(cases.len(), 13, "every Python probe case is checked");
+    let late_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     for case in cases {
-        let name = case["name"].as_str().unwrap();
-        if case["insertExec"] == true {
-            let record = data["lateRecord"].clone();
+        let name = &case.name;
+        if case.insert_exec == Some(true) {
+            let record = serde_json::to_string(&data.exec_receipt.late_record).unwrap();
             store
                 .transaction_with(move |tx| {
                     tx.execute(
                         "INSERT INTO runtime_server_exec(id,owner,actor,record) VALUES('inbound-late','peer-server','peer-lead',?1)",
-                        [record.to_string()],
+                        [record],
                     )?;
                     Ok::<_, studio_runtime_store::StoreError>(())
                 })
                 .await
                 .unwrap();
         }
-        let envelope = &case["envelope"];
-        let key = envelope["requestId"].as_str().unwrap();
-        let reply = driver
-            .receive(
-                case["principal"].as_str().unwrap(),
-                envelope,
-                case["at"].as_i64().unwrap(),
-            )
-            .await;
-        match reply {
-            Ok(outcome) => assert_eq!(outcome.to_value(key), case["result"], "{name}"),
-            Err(error) => {
-                assert_eq!(case["result"]["refused"], "ValueError", "{name}");
-                assert_eq!(refusal(error)["error"], case["result"]["message"], "{name}");
+        let mut envelope = case.envelope;
+        let key = if name.starts_with("late") || name == "conflict" {
+            late_root.clone()
+        } else {
+            studio_runtime_schema::persistence::RequestIdentity::issue_root()
+        };
+        envelope.request_id = key.clone();
+        envelope.operation = vec!["exec-receipt".into()];
+        let value = serde_json::to_value(envelope).unwrap();
+        let reply = driver.receive(&case.principal, &value, case.at).await;
+        if name == "conflict" {
+            let studio_runtime_services::multi_server_orchestration::ExchangeOutcome::NotApplied(
+                message,
+            ) = reply.unwrap()
+            else {
+                panic!("changed receipt digest must be refused")
+            };
+            assert_eq!(
+                message,
+                "The receipt fingerprint belongs to another request"
+            );
+        } else {
+            match (reply, case.result) {
+                (Ok(outcome), Expected::Reply(mut expected)) => {
+                    expected.request_id = key.clone();
+                    if name == "legacy" {
+                        assert!(matches!(outcome, studio_runtime_services::multi_server_orchestration::ExchangeOutcome::NotApplied(_)), "unproven principal is refused");
+                    } else {
+                        let actual: ExpectedReply =
+                            serde_json::from_value(outcome.to_value(&key)).unwrap();
+                        assert_eq!(actual, expected, "{name}: exact outcome");
+                    }
+                }
+                (Err(error), Expected::Refusal { refused, message }) => {
+                    assert_eq!(refused, "ValueError");
+                    assert_eq!(error.to_string(), message, "{name}");
+                }
+                (other, _) => panic!("{name}: unexpected {other:?}"),
             }
-        }
-        assert_eq!(
-            exec_row(&store, EXEC_INBOX_ROW, key),
-            Some(parsed_result(case["row"].clone())),
-            "{name}: Python probe receipt row"
-        );
-        if case["keep"] != true {
-            let key = key.to_owned();
-            store
-                .transaction_with(move |tx| {
-                    tx.execute("DELETE FROM runtime_server_inbox WHERE id=?1", [key])?;
-                    Ok::<_, studio_runtime_store::StoreError>(())
-                })
-                .await
-                .unwrap();
         }
     }
     assert!(
@@ -1574,19 +1640,74 @@ async fn exec_receipt_probes_are_answered_like_the_python_receiver() {
 
 #[tokio::test]
 async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
+    use studio_runtime_store::multi_server_delivery::RemoteReply;
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus};
-    let data = &fixture().data["execReceipt"];
-    let now = fixture().data["now"].as_i64().unwrap();
-    let (_root, store) = store().await;
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Corpus {
+        exec_receipt: Cases,
+    }
+    #[derive(serde::Deserialize)]
+    struct Cases {
+        events: Vec<Case>,
+        event: ExpectedEvent,
+    }
+    #[derive(serde::Deserialize)]
+    struct ExpectedEvent {
+        agent: String,
+        kind: String,
+        text: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Case {
+        name: String,
+        principal: String,
+        envelope: EventEnvelope,
+        result: RemoteReply,
+        lead: Option<Lead>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Lead {
+        deleted_at: Option<f64>,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EventEnvelope {
+        request_id: String,
+        action: String,
+        payload: EventPayload,
+        #[serde(default)]
+        operation: Vec<String>,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct EventPayload {
+        actor: String,
+        handle: String,
+        record: ExecRecord,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ExecRecord {
+        handle: String,
+        status: String,
+        exit_code: Option<i64>,
+        duration: Option<f64>,
+        error: Option<String>,
+    }
+    let data: Corpus = serde_json::from_value(fixture().data.clone()).expect("typed exec corpus");
+    let now = chrono::Utc::now().timestamp();
+    let (_root, store) = migrated_store().await;
     store
         .set_local_server_id(Some("local-server".to_owned()))
         .unwrap();
     let driver = exec_driver(&store, ExecWire::new(None));
-    let cases = data["events"].as_array().unwrap();
+    let cases = data.exec_receipt.events;
     assert_eq!(cases.len(), 7, "every Python exec_event case is checked");
+    let stored_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     for case in cases {
-        let name = case["name"].as_str().unwrap();
-        if let Some(lead) = case["lead"].as_object() {
+        let name = &case.name;
+        if let Some(lead) = case.lead {
             let mut record = AgentRecord {
                 id: AgentId::from("fixture-lead"),
                 root_id: AgentId::from("fixture-lead"),
@@ -1603,28 +1724,48 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
                 json!(std::env::current_dir().unwrap().display().to_string()),
             );
             record.extra.insert("concurrency".into(), json!(32));
-            for (field, value) in lead {
-                record.extra.insert(field.clone(), value.clone());
+            if let Some(deleted_at) = lead.deleted_at {
+                record.extra.insert("deletedAt".into(), json!(deleted_at));
             }
             store
                 .transaction_with(move |tx| AgentRepository::put(tx, &record))
                 .await
                 .unwrap();
         }
-        let envelope = &case["envelope"];
-        let key = envelope["requestId"].as_str().unwrap();
+        let mut envelope = case.envelope;
+        let key = if name == "stored" || name == "replay" {
+            stored_root.clone()
+        } else {
+            studio_runtime_schema::persistence::RequestIdentity::issue_root()
+        };
+        envelope.request_id = key.clone();
+        let mut expected = case.result;
+        expected.request_id = key.clone();
         let outcome = driver
-            .receive(case["principal"].as_str().unwrap(), envelope, now)
+            .receive(
+                &case.principal,
+                &serde_json::to_value(envelope).unwrap(),
+                now,
+            )
             .await
             .unwrap();
-        assert_eq!(outcome.to_value(key), case["result"], "{name}");
+        assert_eq!(
+            outcome.to_value(&key),
+            serde_json::to_value(expected).unwrap(),
+            "{name}"
+        );
     }
-    let event = &data["event"];
+    let event = data.exec_receipt.event;
+    let event_key = studio_runtime_services::projects::cross_server_identity(&[
+        "command-exit",
+        "python-exec",
+        "exited",
+    ]);
     let connection = store.test_reader().unwrap();
     let rows: Vec<(String, String, String, String)> = connection
-        .prepare("SELECT id,agent,kind,text FROM runtime_events WHERE id LIKE 'exec-exit-%'")
+        .prepare("SELECT id,agent,kind,text FROM runtime_events WHERE id=?1")
         .unwrap()
-        .query_map([], |row| {
+        .query_map([&event_key], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })
         .unwrap()
@@ -1632,12 +1773,7 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
         .unwrap();
     assert_eq!(
         rows,
-        vec![(
-            event["key"].as_str().unwrap().to_owned(),
-            event["agent"].as_str().unwrap().to_owned(),
-            event["kind"].as_str().unwrap().to_owned(),
-            event["text"].as_str().unwrap().to_owned(),
-        )],
+        vec![(event_key, event.agent, event.kind, event.text,)],
         "one event with the Python text"
     );
 }
