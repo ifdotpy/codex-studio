@@ -112,6 +112,11 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
                 &self.admission,
             )
             .map_err(|error| match error {
+                crate::coordination::CoordinationError::RequestResult(error) => {
+                    crate::managed_host_tools::Error::Store(
+                        studio_runtime_store::StoreError::RequestResult(error),
+                    )
+                }
                 crate::coordination::CoordinationError::Store(error) => {
                     crate::managed_host_tools::Error::Store(error)
                 }

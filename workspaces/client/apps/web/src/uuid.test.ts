@@ -5,7 +5,10 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { randomUUID } from "./uuid";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 function uuidAccessCandidate(source: string): boolean {
   // Escaped identifier and string spellings always contain a backslash.
@@ -95,20 +98,8 @@ describe("browser UUID owner", () => {
     expect(violations, "Use src/uuid.ts for browser UUID creation").toEqual([]);
   });
 
-  it("uses the native method with its crypto receiver", () => {
-    const crypto = {
-      randomUUID: vi.fn(function (this: unknown) {
-        expect(this).toBe(crypto);
-        return "native-id";
-      }),
-      getRandomValues: vi.fn(),
-    };
-    vi.stubGlobal("crypto", crypto);
-    expect(randomUUID()).toBe("native-id");
-    expect(crypto.getRandomValues).not.toHaveBeenCalled();
-  });
-
-  it("creates a UUIDv4 from secure bytes when HTTP lacks randomUUID", () => {
+  it("creates a UUIDv7 with the original issuance timestamp and secure randomness", () => {
+    vi.spyOn(Date, "now").mockReturnValue(0x019bcdef0123);
     const crypto = {
       getRandomValues: vi.fn(function (this: unknown, bytes: Uint8Array) {
         expect(this).toBe(crypto);
@@ -117,15 +108,16 @@ describe("browser UUID owner", () => {
       }),
     };
     vi.stubGlobal("crypto", crypto);
-    expect(randomUUID()).toBe("00010203-0405-4607-8809-0a0b0c0d0e0f");
+    expect(randomUUID()).toBe("019bcdef-0123-7607-8809-0a0b0c0d0e0f");
     expect(crypto.getRandomValues).toHaveBeenCalledTimes(1);
   });
 
-  it("clears the version and variant bits before setting UUIDv4", () => {
+  it("sets the UUIDv7 version and RFC variant bits", () => {
+    vi.spyOn(Date, "now").mockReturnValue(0x019bcdef0123);
     vi.stubGlobal("crypto", {
       getRandomValues: (bytes: Uint8Array) => bytes.fill(0xff),
     });
-    expect(randomUUID()).toBe("ffffffff-ffff-4fff-bfff-ffffffffffff");
+    expect(randomUUID()).toBe("019bcdef-0123-7fff-bfff-ffffffffffff");
   });
 
   it("preserves a secure random source failure", () => {

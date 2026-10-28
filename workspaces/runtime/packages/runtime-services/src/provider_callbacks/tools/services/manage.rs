@@ -261,29 +261,13 @@ fn park_target(tx: &Transaction<'_>, actor: &Value, target: &Value) -> Result<()
     Ok(())
 }
 
-fn receipt(
-    tx: &Transaction<'_>,
-    key: &str,
-    signature: &str,
-) -> Result<Option<Value>, CallbackError> {
-    Ok(event_write::read_receipt(
-        tx,
-        Some(key),
-        signature,
-        "runtime_operation_receipts",
-        key,
-        Value::is_object,
-    )?)
-}
-
-fn save_receipt(
-    tx: &Transaction<'_>,
-    key: &str,
-    signature: &str,
-    value: Value,
-) -> Result<Value, CallbackError> {
-    event_write::save_receipt(tx, Some(key), signature, &value)?;
-    Ok(value)
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ParkReply {
+    event: String,
+    count: usize,
+    woken: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replayed: Option<bool>,
 }
 
 /// Save a changed agent row with its projection, then queue its wake input.
@@ -349,13 +333,26 @@ fn park_action(
         let body = json!({"action":action,"event":name});
         let signature = event_write::request_signature(&body);
         let request_key = format!("park-request:{root}:{request_id}");
-        if let Some(previous) = receipt(tx, &request_key, &signature)? {
-            return Ok((previous, signals));
-        }
-        let event_key = format!("park-event:{root}:{name}");
-        if let Some(mut fired) = receipt(tx, &event_key, &signature)? {
-            fired["replayed"] = json!(true);
-            return Ok((save_receipt(tx, &request_key, &signature, fired)?, signals));
+        let admitted = match event_write::begin_request::<ParkReply>(
+            tx,
+            event_write::RequestKey::new("park", &[root], request_id).raw(&request_key),
+            &signature,
+            (now * 1000.0) as i64,
+        )? {
+            event_write::CallerAdmission::Replay(reply) => {
+                return Ok((serde_json::to_value(reply)?, signals));
+            }
+            event_write::CallerAdmission::Fresh(admitted) => admitted,
+        };
+        if !studio_runtime_store::AgentRepository::fire_event(tx, root, &name)? {
+            let result = ParkReply {
+                event: name.to_owned(),
+                count: 0,
+                woken: Vec::new(),
+                replayed: Some(true),
+            };
+            event_write::settle_request(tx, &admitted, Some(actor_id), &result)?;
+            return Ok((serde_json::to_value(result)?, signals));
         }
         let mut woken = Vec::new();
         for mut agent in team(tx, root, false)? {
@@ -378,25 +375,23 @@ fn park_action(
                 now,
                 &mut signals,
             )?;
-            woken.push(json!(id));
+            woken.push(id);
         }
-        let result = json!({"event":name,"count":woken.len(),"woken":woken});
-        save_receipt(tx, &event_key, &signature, result.clone())?;
-        return Ok((save_receipt(tx, &request_key, &signature, result)?, signals));
+        let result = ParkReply {
+            event: name.to_owned(),
+            count: woken.len(),
+            woken,
+            replayed: None,
+        };
+        event_write::settle_request(tx, &admitted, Some(actor_id), &result)?;
+        return Ok((serde_json::to_value(result)?, signals));
     }
     let mut target = target(tx, args)?;
     park_target(tx, actor, &target)?;
     let target_id = text(&target, "id")?.to_owned();
     if action == "park" {
         let name = event_name(&args["event"])?;
-        let fired = json!({"action":"emit_event","event":name});
-        if receipt(
-            tx,
-            &format!("park-event:{root}:{name}"),
-            &event_write::request_signature(&fired),
-        )?
-        .is_some()
-        {
+        if studio_runtime_store::AgentRepository::event_fired(tx, root, &name)? {
             return Err(CallbackError::Invalid("This event already occurred"));
         }
         if studio_runtime_store::truthy(target.get("parkedEvent")) {

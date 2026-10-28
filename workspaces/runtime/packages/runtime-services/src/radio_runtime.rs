@@ -6,7 +6,7 @@
 //! run only after commit; an interrupt marked requested is never sent again.
 use crate::event_write::{self, python_json, truthy};
 use crate::host_project_runtime::PreparedHost;
-use crate::projects::operations::{live_teams, project_agents, replay, save_operation_receipt};
+use crate::projects::operations::{live_teams, project_agents, request_error};
 use crate::projects::{ProjectsError, project_key};
 use crate::radio::{
     RadioAuthorizationRecords, RadioAuthorizationSnapshot, RadioDenial, RadioTurnDecision,
@@ -38,6 +38,18 @@ pub use lifecycle::{
     record_question_answer_followup, route_question_answer, select_pending, settle_interrupt,
     shared_turn_active, tick,
 };
+
+#[derive(Serialize, Deserialize)]
+struct RadioRoomReply {
+    id: String,
+    radio: Radio,
+    #[serde(flatten)]
+    fields: Map<String, Value>,
+}
+#[derive(Serialize, Deserialize)]
+struct RadioReply {
+    room: RadioRoomReply,
+}
 
 pub(crate) fn publish_room(
     db: &Transaction<'_>,
@@ -71,13 +83,26 @@ async fn manage_command(
     }
     let key = request_key(body)?;
     let signature = event_write::request_signature(&json!({"operation":"radio","body":body}));
+    let root = bounded_text(&body["request_id"], 255)?;
+    let replay_root = root.clone();
     let replay_key = key.clone();
     let replay_signature = signature.clone();
     if let Some(result) = store
-        .transaction_with(move |db| replay(db, &replay_key, &replay_signature, "radio"))
+        .transaction_with(move |db| {
+            event_write::saved_request::<RadioReply>(
+                db,
+                event_write::RequestKey::new("radio", &["owner-api"], &replay_root)
+                    .raw(&replay_key),
+                &replay_signature,
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .map_err(request_error)
+        })
         .await?
     {
-        return Ok(result);
+        return serde_json::to_value(result)
+            .map_err(studio_runtime_store::StoreError::from)
+            .map_err(Into::into);
     }
     let body_for_preparation = body.clone();
     let prepared = PreparedHost::load(&store).await?;
@@ -99,7 +124,10 @@ async fn manage_command(
     let key_for_write = key.clone();
     let signature_for_write = signature.clone();
     store.transaction_with(move |db| {
-        if let Some(prior) = replay(db,&key_for_write,&signature_for_write,"radio")? { return Ok(prior); }
+        let admitted=match event_write::begin_request::<RadioReply>(db,event_write::RequestKey::new("radio",&["owner-api"],&root).raw(&key_for_write),&signature_for_write,chrono::Utc::now().timestamp_millis()).map_err(request_error)? {
+            event_write::CallerAdmission::Replay(reply)=>return serde_json::to_value(reply).map_err(studio_runtime_store::StoreError::from).map_err(Into::into),
+            event_write::CallerAdmission::Fresh(admitted)=>admitted,
+        };
         prepared.recheck(db)?;
         let id = format!("radio:{team}");
         let now = crate::projects::now_seconds();
@@ -139,7 +167,7 @@ async fn manage_command(
         }
         save(db,&mut room,&prepared,now)?;
         let result = json!({"room":room.value});
-        save_operation_receipt(db,&key,&signature,&result)?;
+        event_write::settle_request(db,&admitted,Some("owner-api"),&serde_json::from_value::<RadioReply>(result.clone()).map_err(studio_runtime_store::StoreError::from)?).map_err(request_error)?;
         Ok(result)
     }).await
 }
@@ -247,13 +275,26 @@ pub async fn create_with(
 ) -> Result<Value, ProjectsError> {
     let key = request_key(body)?;
     let signature = event_write::request_signature(&json!({"operation":"radio","body":body}));
+    let root = bounded_text(&body["request_id"], 255)?;
+    let replay_root = root.clone();
     let replay_key = key.clone();
     let replay_signature = signature.clone();
     if let Some(result) = store
-        .transaction_with(move |db| replay(db, &replay_key, &replay_signature, "radio"))
+        .transaction_with(move |db| {
+            event_write::saved_request::<RadioReply>(
+                db,
+                event_write::RequestKey::new("radio", &["owner-api"], &replay_root)
+                    .raw(&replay_key),
+                &replay_signature,
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .map_err(request_error)
+        })
         .await?
     {
-        return Ok(result);
+        return serde_json::to_value(result)
+            .map_err(studio_runtime_store::StoreError::from)
+            .map_err(Into::into);
     }
     let body_for_preparation = body.clone();
     let (path, name, namespace, room_id, ids, drafts, mut creation) =
@@ -302,7 +343,10 @@ pub async fn create_with(
     let replay_key = key.clone();
     let replay_signature = signature.clone();
     store.transaction_with(move |db| {
-        if let Some(result)=replay(db,&replay_key,&replay_signature,"radio")? {return Ok(result);}
+        let admitted=match event_write::begin_request::<RadioReply>(db,event_write::RequestKey::new("radio",&["owner-api"],&root).raw(&replay_key),&replay_signature,chrono::Utc::now().timestamp_millis()).map_err(request_error)? {
+            event_write::CallerAdmission::Replay(reply)=>return serde_json::to_value(reply).map_err(studio_runtime_store::StoreError::from).map_err(Into::into),
+            event_write::CallerAdmission::Fresh(admitted)=>admitted,
+        };
         prepared.recheck(db)?;
         creation.recheck(db,&drafts)?;
         if records::get(db,"runtime_rooms",&room_id)?.is_some() || ids.iter().map(|id|prepared_agent_exists(db,id.as_ref())).collect::<Result<Vec<_>,_>>()?.into_iter().any(|exists|exists) {return Err(ProjectsError::Invalid("shared identity already exists without its receipt"));}
@@ -319,7 +363,7 @@ pub async fn create_with(
         let now=crate::projects::now_seconds();
         let mut room=Room::checked(json!({"id":room_id,"kind":"private","members":ids,"projectPath":path,"customName":name,"created":now,"userHidden":false,"radio":{"direct":true,"teamId":namespace.to_string(),"revision":0,"status":"idle","speaker":null,"next":[],"active":null,"error":null,"seen":{}}}))?;
         save(db,&mut room,&prepared,now)?;
-        let result=json!({"room":room.value});save_operation_receipt(db,&key,&signature,&result)?;Ok(result)
+        let result=json!({"room":room.value});event_write::settle_request(db,&admitted,Some("owner-api"),&serde_json::from_value::<RadioReply>(result.clone()).map_err(studio_runtime_store::StoreError::from)?).map_err(request_error)?;Ok(result)
     }).await
 }
 fn prepared_agent_exists(db: &Connection, id: &str) -> Result<bool, ProjectsError> {

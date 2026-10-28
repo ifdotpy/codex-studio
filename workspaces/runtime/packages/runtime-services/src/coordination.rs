@@ -990,13 +990,7 @@ fn check_historical_team(
         if row.author != "user" {
             participants.insert(row.author);
         }
-        participants.extend(
-            deliveries
-                .as_object()
-                .expect("validated deliveries")
-                .keys()
-                .cloned(),
-        );
+        participants.extend(deliveries.keys().cloned());
     }
     let mut found = BTreeSet::new();
     for member in participants {

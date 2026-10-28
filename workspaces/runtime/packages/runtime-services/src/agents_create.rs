@@ -122,10 +122,7 @@ impl AgentMutation {
     }
 }
 
-enum MutationAdmission<R> {
-    Fresh(studio_runtime_store::request_results::AdmittedRequest),
-    Replay(R),
-}
+use crate::event_write::CallerAdmission as MutationAdmission;
 
 fn replay_agent_mutation<R: serde::de::DeserializeOwned>(
     connection: &Connection,
@@ -135,29 +132,13 @@ fn replay_agent_mutation<R: serde::de::DeserializeOwned>(
     signature: &str,
     now_ms: i64,
 ) -> Result<Option<R>, MutationError> {
-    if let Some(saved) =
-        crate::event_write::replay_request::<R>(connection, request_id, signature, now_ms)?
-    {
-        return Ok(Some(saved.reply));
-    }
-    let identity = studio_runtime_schema::persistence::RequestIdentity::new(
-        AGENT_MUTATION_NAMESPACE,
-        &[id],
-        request_id,
-        &[operation.operation()],
-    )
-    .map_err(|_| {
-        studio_runtime_store::request_results::RequestResultError::from(
-            studio_runtime_schema::persistence::RequestIdentityError::Expired {
-                issued_ms: 0,
-                expired_before_ms: now_ms,
-            },
-        )
-    })?;
-    Ok(
-        crate::event_write::replay_request::<R>(connection, identity.id(), signature, now_ms)?
-            .map(|saved| saved.reply),
-    )
+    Ok(crate::event_write::saved_request(
+        connection,
+        crate::event_write::RequestKey::new(AGENT_MUTATION_NAMESPACE, &[id], request_id)
+            .operation(&[operation.operation()]),
+        signature,
+        now_ms,
+    )?)
 }
 
 /// The caller must authorize access to the agent before disclosing this reply.
@@ -185,42 +166,17 @@ fn admit_agent_mutation<R: serde::de::DeserializeOwned>(
     operation: AgentMutation,
     signature: &str,
 ) -> Result<MutationAdmission<R>, MutationError> {
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    if let Some(reply) =
-        replay_agent_mutation(transaction, id, request_id, operation, signature, now_ms)?
-    {
-        return Ok(MutationAdmission::Replay(reply));
-    }
-    match crate::event_write::admit_request(
+    Ok(crate::event_write::begin_request(
         transaction,
-        AGENT_MUTATION_NAMESPACE,
-        &[id],
-        request_id,
-        &[operation.operation()],
+        crate::event_write::RequestKey::new(AGENT_MUTATION_NAMESPACE, &[id], request_id)
+            .operation(&[operation.operation()]),
         signature,
-        now_ms,
-    )? {
-        studio_runtime_store::request_results::Admission::Fresh(admitted) => {
-            Ok(MutationAdmission::Fresh(admitted))
-        }
-        studio_runtime_store::request_results::Admission::Replay(saved) => {
-            let envelope: studio_runtime_store::request_results::ResultEnvelope<R> =
-                serde_json::from_str(&saved.result).map_err(StoreError::from)?;
-            Ok(MutationAdmission::Replay(envelope.reply))
-        }
-    }
+        chrono::Utc::now().timestamp_millis(),
+    )?)
 }
 
 fn new_id() -> Result<String, CreateError> {
-    let mut bytes = [0_u8; 16];
-    getrandom::fill(&mut bytes).map_err(|error| {
-        CreateError::Store(StoreError::StateDirectory(std::io::Error::other(
-            error.to_string(),
-        )))
-    })?;
-    Ok(uuid::Builder::from_random_bytes(bytes)
-        .into_uuid()
-        .to_string())
+    Ok(studio_runtime_schema::persistence::RequestIdentity::issue_root())
 }
 
 /// Normalize the persisted mode fields using the same rules as Python mode_fields.
