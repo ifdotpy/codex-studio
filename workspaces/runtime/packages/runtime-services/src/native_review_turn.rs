@@ -18,7 +18,7 @@
 use crate::account_session_runtime::{AccountSessionError, SessionOutcome as ReceiptOutcome};
 use crate::{
     account_session_runtime::{
-        AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
+        AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
     },
     account_worker::{WorkerError, preparation, retained::RequestActor},
     native_action_ports::{MessageNativeAdmission, NativeActionAcceptance},

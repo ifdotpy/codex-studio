@@ -161,6 +161,9 @@ pub fn maintain_monitor(
     };
     let report = json!({"id":format!("monitor:{}:{generation}:{kind}",before.id()),"kind":kind,"message":message,"monitorId":before.id()});
     observe(tx, &agent, &report, now).map_err(|error| match error {
+        crate::notification_dispatch::NotificationDispatchError::RequestResult(error) => {
+            MonitorError::Store(StoreError::RequestResult(error))
+        }
         crate::notification_dispatch::NotificationDispatchError::Store(error) => {
             MonitorError::Store(error)
         }
@@ -173,7 +176,6 @@ pub fn maintain_monitor(
         | crate::notification_dispatch::NotificationDispatchError::UnauthorizedSubmission
         | crate::notification_dispatch::NotificationDispatchError::Dependency(_)
         | crate::notification_dispatch::NotificationDispatchError::Move(_)
-        | crate::notification_dispatch::NotificationDispatchError::RequestResult(_)
         | crate::notification_dispatch::NotificationDispatchError::Json(_) => {
             MonitorError::Refused("Could not record the shell policy notice")
         }
