@@ -34,27 +34,22 @@ actions, all read-only on the offering server except their export file:
 | `update.chunk`   | `{export, offset}` | `{offset, nextOffset, data, sha256}`, 512 KiB of data                                                                                                                 |
 | `update.release` | `{export}`         | `{released: true}`                                                                                                                                                    |
 
-`codex_peer_updates.py` owns the actions and their limits. `update.export` waits up to 90 seconds
-for the archive; after that it answers `preparing` and the puller asks again every 10 seconds, for
-up to 20 minutes. The archive is at most 1 GiB. `update.release` deletes the archive when every
-server that exported it released it; the hourly prune deletes archives older than a day. The
-receipt of an `update.chunk` keeps no archive data. Every action is a read, so the puller uses a
-new request ID for each call.
+[`peer_updates.rs`](../workspaces/runtime/packages/runtime-services/src/peer_updates.rs) owns the
+actions and their limits. `update.export` waits up to 5 seconds (`EXPORT_WAIT`) for the archive, so
+that a request does not hold the 20-second shutdown grace of the server. After that it answers
+`preparing`. The puller asks again every 10 seconds, for up to 20 minutes
+(`EXPORT_POLL`, `EXPORT_PREPARE` in `peer_update_pull.rs`). The archive is at most 1 GiB
+(`MAX_ARCHIVE_BYTES`). `update.release` deletes the archive when every server that exported it
+released it. The server also deletes archives older than a day (`EXPORT_AGE`) when a puller asks
+for an offer or an export. The receipt of an `update.chunk` keeps no archive data. Every action is a
+read, so the puller uses a new request ID for each call.
 
 An older peer refuses the actions. It answers "Supply a remote-parent link" (`not_applied`),
 because it sends an unknown action to the remote-parent checks. The puller treats any refusal of
 `update.offer` as no offer and records no failure.
 
-The Rust backend answers the same four actions
-(`workspaces/runtime/packages/runtime-services/src/peer_updates.rs`). Its limits come from
-`codex_peer_updates.py`; a unit test compares them. Its `update.export` waits up to 5 seconds, so
-that a request does not hold the 20-second shutdown grace of the server; the puller asks again
-after `preparing`. It removes update archives older than a day when a puller asks for an offer or
-an export. It does not serve the QUIC export stream, so a
-puller receives the archive in `update.chunk` answers. A Rust backend before this module refused
-the actions with HTTP 501. A paired Python server then got no offer and kept its older build,
-and the UI hid that server's projects because its API schema hash differed. The Rust backend
-has the puller too (below). A Rust backend before the puller took no newer build from a paired server.
+The Rust backend does not serve a QUIC export stream, so a puller receives the archive in
+`update.chunk` answers.
 
 ## Pull and verify (backend)
 

@@ -13,7 +13,7 @@ It already supports worker completion wakes, command monitors, agent rooms, comp
 
 Local evidence:
 
-- [Runtime](../workspaces/runtime/apps/server/src/codex_runtime.py): `TOOLS`, `send`, `start`, `record_task`, `native_action`, `prepare_locked`.
+- [Managed tools](../workspaces/runtime/packages/runtime-services/src/managed_host_tools.rs): `ManagedHostTool` and `spawn`. [Busy-turn delivery](../workspaces/runtime/packages/runtime-services/src/account_worker/steer.rs): `claim` and the `turn/steer` request.
 - [Conversation](../workspaces/client/apps/web/src/components/Conversation.tsx): text composer, pending messages, copy, and approval controls.
 - [Sidebar](../workspaces/client/apps/web/src/components/Sidebar.tsx): search over names and recent previews, without full transcript search or archive.
 - [Task panel](../workspaces/client/apps/web/src/components/shell/BackgroundTasks.tsx): process and tool history, monitor approval and cancellation.
@@ -21,10 +21,16 @@ Local evidence:
 - [Native tool evidence](ui-and-tools.md#tool-evidence): tool parity and prior live inventory. Configuration controls actual availability.
 
 `runtime_tasks` stores tool executions. It is not a work backlog with dependencies or atomic work assignment.
-`send` always queues an event. The managed runtime does not call `turn/steer`.
+The default `current_turn` delivery steers a busy Codex or Claude agent through `turn/steer`
+([`account_worker/steer.rs`](../workspaces/runtime/packages/runtime-services/src/account_worker/steer.rs),
+[`scheduler/steer.rs`](../workspaces/runtime/packages/runtime-store/src/repositories/scheduler/steer.rs)).
+`next_turn` waits for the running turn to end (`DeliveryMoment` in
+[`delivery.rs`](../workspaces/runtime/packages/runtime-schema/src/delivery.rs)).
+`POST /api/queue` cancels, edits, reorders, and sends queued input now
+([`queue_write.rs`](../workspaces/runtime/packages/runtime-http/src/routes/queue_write.rs)).
 `start` sends a text-only input array. There is no attachment upload path in the web composer.
 The app stores plan and diff notifications as tool output. It lacks a separate plan editor and a diff review workspace.
-The installed protocol has image inputs, thread forks, and turn steering. `thread/rollback` is marked deprecated in its generated schema.
+The installed protocol has image inputs and thread forks. `thread/rollback` is marked deprecated in its generated schema.
 Protocol rollback alone does not restore files or worker state.
 
 ## Priority UI additions
@@ -32,7 +38,7 @@ Protocol rollback alone does not restore files or worker state.
 | Order | Addition                              | Local gap and proposed behavior                                                                                                  | Reference                                                                                                                                                                                                                     |
 | ----- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1     | Shared work board                     | Ready, running, blocked, review, accepted. Each item has an owner, dependencies, and evidence links.                             | [Claude agent teams](https://code.claude.com/docs/en/agent-teams#assign-and-claim-tasks)                                                                                                                                      |
-| 2     | Steering and queue controls           | Separate corrections for the current turn from follow-ups. Edit or cancel pending instructions.                                  | [Pi message queue](https://github.com/earendil-works/pi/tree/main/packages/coding-agent#message-queue)                                                                                                                        |
+| 2     | Steering and queue controls (UI)      | The server steers and edits the queue. Add UI that separates current-turn corrections from follow-ups.                           | [Pi message queue](https://github.com/earendil-works/pi/tree/main/packages/coding-agent#message-queue)                                                                                                                        |
 | 3     | Changes and results workspace         | Inspect each worker's file changes and reports. Comment on exact lines. Keep review state separate from a completed model turn.  | [T3 diff comments](https://github.com/pingdotgg/t3code/blob/f8b4c464b4760d73e0ece7e68011c738803d8b69/apps/workspaces/client/apps/web/src/components/diffs/DiffCommentAnnotation.tsx)                                          |
 | 4     | Attention inbox                       | Collect pending questions, approvals, failures, and unresolved complaints across teams. Group routine notifications.             | [OpenCode attention](https://opencode.ai/docs/tui/#attention)                                                                                                                                                                 |
 | 5     | Attachments and file previews         | Paste screenshots and attach files. Open images, PDF, HTML, and reports beside the conversation.                                 | [T3 Chat FAQ](https://t3.chat/faq), [T3 composer](https://github.com/pingdotgg/t3code/blob/f8b4c464b4760d73e0ece7e68011c738803d8b69/docs/user/composer.md)                                                                    |
@@ -52,7 +58,6 @@ Names in this table are proposed names for our app, not claims about existing up
 | -------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | First    | `orchestration_task` with create, list, claim, update, submit, accept | Persistent work items, atomic claims, dependency checks, and explicit acceptance. Worker completion alone must not mark a result accepted.          |
 | First    | `orchestration_search`                                                | Search team messages, tool output, complaints, and accepted decisions. Return exact record links and enforce room membership.                       |
-| First    | Extend `orchestration_send` with delivery mode                        | Support current-turn steering and next-turn follow-up through one existing API. Preserve idempotency and stopped-agent rules.                       |
 | Next     | `orchestration_watch` and `orchestration_schedule`                    | Persist event rules and schedules. A script decides whether an event needs a model call. Define deduplication and restart behavior.                 |
 | Next     | `orchestration_result`                                                | Register a worker result with files, source revision, test evidence, and review state. Reuse the task record instead of a second completion system. |
 | Later    | Resource claim wrapper                                                | Expose the existing `codex-board` operations to managed agents and the UI. Do not create a second resource registry.                                |
@@ -93,7 +98,7 @@ Claude checkpoint restoration excludes shell changes and most subagent edits. Do
 ## Recommended sequence
 
 1. Shared work board and atomic claims.
-2. Current-turn steering and editable follow-up queue.
+2. UI for current-turn steering and the editable follow-up queue (the server side exists).
 3. Worker changes, evidence, and attention inbox.
 4. Attachments, previews, and indexed team search.
 5. Durable event rules, checkpoints, and reusable worker profiles.

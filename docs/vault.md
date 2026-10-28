@@ -11,7 +11,10 @@ only the integration:
   (`workspaces/runtime/apps/vm-guest/vault_admin.py`) keep the writer configuration in
   `layr-admin/vault/<project>/config.json`, readable by root only. The broker pushes the main
   head of each configured project every 10 minutes.
-- `codex_vault.py configure|push|status PROJECT_FOLDER` calls them from the Mac.
+- On the Mac, layr-desk runs `runtime-server vault-configure <vm-state-dir> <project-folder>` as
+  its writer command (`workspaces/runtime/packages/runtime-services/src/vault.rs`:
+  `WRITER_SUBCOMMAND`, `configure`). It sends `vault.configure` to the guest and keeps the optional
+  Desk site. The Rust backend has no Mac command for `vault.push` or `vault.status`.
 
 ## Set up a vault
 
@@ -117,10 +120,9 @@ this Mac for that site with the app's own binary, and asks `layr-desk status` wh
 this Mac keeps a key for. A `layr-desk` outside the app (a development build on `PATH`) only
 reports; it never replaces the agent.
 
-The server asks the VM for `vault.status` of every imported project every 2 minutes, outside
-the runtime lock, and keeps the report in `layr-projects/<id>/vault.json`. The sidebar reads
-only that record; the time of a check stays out of it, so a quiet vault does not change the
-project entity. The Desk site comes from the writer configuration (`site`) or from
-`codex_vault.py site PROJECT_FOLDER https://desk.example.com/` and stays in
-`layr-projects/<id>/vault-site.json`. Studio finds `layr-desk` through `STUDIO_LAYR_DESK_BIN`,
+The Rust backend does not ask the VM for `vault.status`. It only reads the report in
+`layr-projects/<id>/vault.json` (`vault::view`). The sidebar reads only that record, so a quiet vault
+does not change the project entity. The Desk site comes from the writer configuration (`site`)
+and stays in `layr-projects/<id>/vault-site.json` (`vault::store_site`). Studio finds `layr-desk`
+through `STUDIO_LAYR_DESK_BIN`,
 `PATH` or `~/.cargo/bin`.
