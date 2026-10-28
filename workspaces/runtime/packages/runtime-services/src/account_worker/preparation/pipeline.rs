@@ -823,7 +823,8 @@ pub(crate) async fn before_start(
                 thread::HoldReason::AccountTransfer
             ))
         }
-        error @ crate::account_transfer::TransferError::Stored { .. }
+        error @ crate::account_transfer::TransferError::Expired
+        | error @ crate::account_transfer::TransferError::Stored { .. }
         | error @ crate::account_transfer::TransferError::Refused(_)
         | error @ crate::account_transfer::TransferError::Requires(_)
         | error @ crate::account_transfer::TransferError::Store(_) => refusal(error.to_string()),
@@ -995,7 +996,8 @@ async fn workspace_with_vm_action(
                 | crate::native_actions::NativeError::Unavailable(_)) => {
                     WorkerError::PreparationPending(format!("workspace-readiness/{error}").into())
                 }
-                error @ crate::native_actions::NativeError::Invalid(_)
+                error @ crate::native_actions::NativeError::Expired
+                | error @ crate::native_actions::NativeError::Invalid(_)
                 | error @ crate::native_actions::NativeError::InvalidStored { .. }
                 | error @ crate::native_actions::NativeError::Conflict
                 | error @ crate::native_actions::NativeError::Changed
