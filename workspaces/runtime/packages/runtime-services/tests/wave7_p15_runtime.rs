@@ -1256,7 +1256,7 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
         acknowledged.is_ok(),
         "prior acknowledgement replays while another request holds the sequence"
     );
-    let query = json!({"requestId":input_request_id(input_request_id("busy-fresh-request")),"agent":case["actor"]["id"],"accountKey":case["actor"]["accountKey"],"epoch":case["actor"]["epoch"]});
+    let query = json!({"requestId":input_request_id("busy-fresh-request"),"agent":case["actor"]["id"],"accountKey":case["actor"]["accountKey"],"epoch":case["actor"]["epoch"]});
     let receipt = studio_runtime_services::process_controls::receipt(
         &store.test_reader().expect("read"),
         &query,
