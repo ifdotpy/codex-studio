@@ -218,10 +218,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 // Pure computations never wait behind database writes: the UI
                 // calls several of them synchronously.
                 Ok(request) if pure(&request.method) => Work::Immediate(compute(&request)),
-                // Only Rust services export recordings to private files.
-                Ok(request) if request.method == "dictation.wav" => Work::Immediate(
-                    Response::failure(request.id, "invalid_request", "Unknown command."),
-                ),
                 Ok(request)
                     if matches!(
                         request.method.as_str(),

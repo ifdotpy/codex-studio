@@ -105,6 +105,18 @@ fn execute(request: &Request) -> Result<Value, String> {
     }
 }
 
+/// Creates an identity owned by the core for a stored object.
+pub(crate) fn new_identity() -> Result<String, String> {
+    dispatch(&Request {
+        id: "identity".into(),
+        method: "system.uuid".into(),
+        params: Value::Null,
+    })
+    .result
+    .and_then(|value| value.as_str().map(str::to_owned))
+    .ok_or_else(|| "Cannot create an identity.".to_owned())
+}
+
 pub fn dispatch(request: &Request) -> Response {
     match execute(request) {
         Ok(value) => Response::success(request.id.clone(), value),
