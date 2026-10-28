@@ -1023,7 +1023,27 @@ fn map_outbound_error(error: StoreError) -> RemoteTransportError {
         StoreError::InvalidStoredObject { table, id } => {
             RemoteTransportError::InvalidStoredObject { table, key: id }
         }
-        error => RemoteTransportError::Store(error),
+        error @ (StoreError::Outbox(_)
+        | StoreError::StateDirectory(_)
+        | StoreError::AlreadyOwned
+        | StoreError::MissingDatabase(_)
+        | StoreError::UnsafeStateDirectory
+        | StoreError::SchemaMismatch(_)
+        | StoreError::Migration { .. }
+        | StoreError::InvalidSyncObject { .. }
+        | StoreError::InvalidSyncObjectField { .. }
+        | StoreError::InvalidStoredRecord { .. }
+        | StoreError::SchemaObjectMismatch { .. }
+        | StoreError::Sqlite(_)
+        | StoreError::CommitOutcomeUnknown(_)
+        | StoreError::Json(_)
+        | StoreError::SchemaValidation(_)
+        | StoreError::RecordContract(_)
+        | StoreError::WriterPoisoned
+        | StoreError::WriterActorInitialization(_)
+        | StoreError::WriterActorControl(_)
+        | StoreError::CommitActorOutcomeUnknown(_)
+        | StoreError::ReadTaskFailed) => RemoteTransportError::Store(error),
     }
 }
 

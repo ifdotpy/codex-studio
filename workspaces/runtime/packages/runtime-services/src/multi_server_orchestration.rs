@@ -2366,7 +2366,9 @@ fn exec_receipt_answer(
         return Ok(Some(Ok(
             match ExchangeOutcome::from_value(&receipt, handle, now)? {
                 ExchangeOutcome::Unknown => unknown,
-                _ => receipt,
+                ExchangeOutcome::Applied(_)
+                | ExchangeOutcome::NotApplied(_)
+                | ExchangeOutcome::PreEffectWaiting => receipt,
             },
         )));
     }
