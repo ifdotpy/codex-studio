@@ -2196,7 +2196,12 @@ fn operation_error(error: OperationError) -> ApiError {
     use agents_create::MutationError;
     let error = match error {
         OperationError::Create(MutationError::Request(error)) => return error.into(),
-        error => error,
+        error @ (OperationError::Invalid(_)
+        | OperationError::Forbidden(_)
+        | OperationError::Unavailable(_)
+        | OperationError::Create(_)
+        | OperationError::Store(_)
+        | OperationError::Internal) => error,
     };
     // A stale revision is rejected before any write, so the client may drop the
     // request and refresh from the canonical value.
