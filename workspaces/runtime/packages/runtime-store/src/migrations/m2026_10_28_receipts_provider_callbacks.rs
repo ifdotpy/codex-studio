@@ -306,7 +306,7 @@ fn canonical(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<
         if response_identity.get("attempt").is_none() {
             response_identity["attempt"] = json!("");
         }
-        let payload = json!({"identity":response_identity,"body":body,"card":card_id,"tool_request":tool,"unanswered":saved["unanswered"],"journal_cursor":cursor,"delete_requested_at":saved["deleteRequestedAt"],"frame_fingerprint":null});
+        let payload = json!({"identity":response_identity,"body":body,"card":card_id,"tool_request":tool,"unanswered":saved["unanswered"],"delete_requested_at":saved["deleteRequestedAt"],"frame_fingerprint":null});
         if status == OutboxStatus::Committed {
             return settle_written(tx, row, &mut owner, base, signature, payload, cutover);
         }
@@ -662,7 +662,7 @@ fn unanswered(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result
             old["frame_fingerprint"] = json!(fingerprint);
             old
         } else {
-            json!({"identity":reply_identity,"body":body,"card":null,"tool_request":null,"unanswered":null,"journal_cursor":cursor,"delete_requested_at":null,"frame_fingerprint":fingerprint})
+            json!({"identity":reply_identity,"body":body,"card":null,"tool_request":null,"unanswered":null,"delete_requested_at":null,"frame_fingerprint":fingerprint})
         };
         let delivery = if state == ToolRequestStatus::Completed {
             OutboxStatus::Committed
@@ -1006,7 +1006,9 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, OutboxStatus::Unknown);
         assert_eq!(rows[0].next_at, None);
+        assert!(rows[0].payload.get("journal_cursor").is_none());
         let before: Value = task(&tx, &rows[0].id).expect("task").expect("owner");
+        assert_eq!(before["payload"]["journal_cursor"], 9);
         let after = Family
             .move_batch(&tx, "callbacks", &cp)
             .expect("second open");
