@@ -63,6 +63,9 @@ domain!(RecoveryReceiptStatus { Unknown=>"unknown", Unconfirmed=>"unconfirmed", 
 domain!(NativeSettingsStatus { Submitted=>"submitted", Acknowledged=>"acknowledged", NotSent=>"not_sent", Unknown=>"unknown", Rejected=>"rejected" });
 domain!(SafetyRetryStage { Turns=>"turns", Items=>"items", Interrupt=>"interrupt", VerifyTurns=>"verify_turns", VerifyItems=>"verify_items", Fork=>"fork", Start=>"start", Running=>"running", Unknown=>"unknown", Failed=>"failed", Cancelled=>"cancelled" });
 domain!(SafetyRetryDispatch { Ready=>"ready", Intent=>"intent", Received=>"received", Rejected=>"rejected", Unknown=>"unknown", Cancelled=>"cancelled" });
+domain!(ResetCreditStatus { Pending=>"pending", Uncertain=>"uncertain", Completed=>"completed" });
+domain!(ResetCreditCertainty { NotSent=>"not_sent", Written=>"written", Unknown=>"unknown" });
+domain!(ResetCreditOutcome { Reset=>"reset", NothingToReset=>"nothingToReset", NoCredit=>"noCredit", AlreadyRedeemed=>"alreadyRedeemed" });
 domain!(WorkStatus { Ready=>"ready", Blocked=>"blocked", Running=>"running", Review=>"review", Accepted=>"accepted", Cancelled=>"cancelled" });
 domain!(OwnerKind { Agent=>"agent", Task=>"task", Account=>"account", Vm=>"vm", Project=>"project", Monitor=>"monitor", Terminal=>"terminal", Message=>"message", Request=>"request", Server=>"server" });
 domain!(OutboxKind { ProviderCall=>"provider_call", ProviderCallback=>"provider_callback", JournalEntry=>"journal_entry", Publication=>"publication", StreamFlush=>"stream_flush", FollowupEffect=>"followup_effect", Steer=>"steer", VoiceStop=>"voice_stop", VoiceDelete=>"voice_delete", WorkArchive=>"work_archive", WorkVm=>"work_vm", TitleGeneration=>"title_generation", NativeAction=>"native_action", TerminalAction=>"terminal_action", MonitorInput=>"monitor_input", McpReconnect=>"mcp_reconnect", ProjectRegistration=>"project_registration", RemoteDelivery=>"remote_delivery", ManagedTool=>"managed_tool" });
@@ -115,6 +118,9 @@ macro_rules! contracts {
     };
 }
 contracts!(
+    ResetCreditStatus,
+    ResetCreditCertainty,
+    ResetCreditOutcome,
     SafetyRetryStage,
     SafetyRetryDispatch,
     NativeSettingsStatus,
