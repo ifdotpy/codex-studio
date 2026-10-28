@@ -581,7 +581,7 @@ fn table_columns(
     connection: &Connection,
     table: &str,
 ) -> StoreResult<std::collections::HashSet<String>> {
-    let mut statement = connection.prepare(&format!("PRAGMA table_info(\"{table}\")"))?;
+    let mut statement = connection.prepare(&format!("PRAGMA table_xinfo(\"{table}\")"))?;
     Ok(statement
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<Result<std::collections::HashSet<_>, _>>()?)
@@ -600,6 +600,14 @@ mod tests {
         verify_payload_migration,
     };
     use rusqlite::Connection;
+
+    #[test]
+    fn receipt_schema_verifier_sees_generated_query_columns() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE target(record TEXT, status TEXT GENERATED ALWAYS AS (json_extract(record,'$.status')) VIRTUAL)").expect("query column");
+        super::require_columns(&db, "canvas.sqlite3", "target", &["record", "status"])
+            .expect("generated columns are ordinary target schema requirements");
+    }
 
     #[test]
     fn persisted_and_federation_json_keep_distinct_unicode_formats() {
