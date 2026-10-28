@@ -5,6 +5,7 @@ use crate::{
     request_results::ResultEnvelope,
 };
 use rusqlite::{OptionalExtension, Transaction, params};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_schema::persistence::{
     MigrationStatus, OutboxKind, OutboxStatus, OwnerKind, RequestIdentity, ToolRequestKind,
@@ -27,69 +28,68 @@ fn load(tx: &Transaction<'_>, id: &str) -> Result<Option<Value>> {
     })
     .transpose()
 }
+#[derive(Deserialize)]
+struct LegacyContext {
+    account: String,
+    agent: String,
+    generation: i64,
+    epoch: u64,
+    thread: String,
+    turn: String,
+    #[serde(rename = "connection")]
+    _connection: String,
+}
+#[derive(Deserialize)]
+struct LegacyIdentity {
+    context: LegacyContext,
+    rpc_id: LegacyRpc,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(untagged)]
+enum LegacyRpc {
+    String(String),
+    Number(serde_json::Number),
+}
 fn identity(
     tx: &Transaction<'_>,
     row: &SourceReceipt,
     mut identity: Value,
 ) -> Result<(String, Value)> {
-    let context = &mut identity["context"];
-    let account = context["account"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| fail(row))?
-        .to_owned();
-    let agent = context["agent"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| fail(row))?
-        .to_owned();
-    if context["generation"].as_i64().is_none()
-        || context["epoch"].as_u64().is_none()
-        || context["thread"].as_str().is_none()
-        || context["turn"].as_str().is_none()
-        || context["connection"].as_str().is_none()
-        || !(identity["rpc_id"].is_string() || identity["rpc_id"].is_number())
-    {
+    let LegacyIdentity { context: c, rpc_id } =
+        LegacyIdentity::deserialize(&identity).map_err(|_| fail(row))?;
+    if c.account.is_empty() || c.agent.is_empty() {
         return Err(fail(row));
     }
-    let raw: Option<String> = tx
+    let vm = tx
         .query_row(
             "SELECT record FROM runtime_agents WHERE id=?1",
-            [&agent],
-            |r| r.get(0),
+            [&c.agent],
+            |r| r.get::<_, String>(0),
         )
-        .optional()?;
-    let vm = raw
+        .optional()?
         .map(|raw| serde_json::from_str::<Value>(&raw).map_err(|_| fail(row)))
         .transpose()?
         .is_some_and(|r| r["executionMode"] == "vm");
     let stream = if vm {
-        format!("{account}:vm:{agent}")
+        format!("{}:vm:{}", c.account, c.agent)
     } else {
-        account.clone()
+        c.account.clone()
     };
+    let bytes = serde_json::to_vec(&(
+        &c.account,
+        c.generation,
+        &stream,
+        &c.agent,
+        c.epoch,
+        &c.thread,
+        &c.turn,
+        &rpc_id,
+    ))
+    .map_err(|_| fail(row))?;
+    let key = format!("provider-callback:{}", crate::sha256_hex(&bytes));
     identity["context"]["stream_id"] = json!(stream);
-    let c = &identity["context"];
-    let key = format!(
-        "provider-callback:{}",
-        crate::sha256_hex(
-            json!([
-                c["account"],
-                c["generation"],
-                c["stream_id"],
-                c["agent"],
-                c["epoch"],
-                c["thread"],
-                c["turn"],
-                identity["rpc_id"]
-            ])
-            .to_string()
-            .as_bytes()
-        )
-    );
-    // Host-only generation allocation includes callback history exactly once.
     if !vm {
-        tx.execute("INSERT INTO runtime_account_state(account,next_generation,journal_ack,recovery_required,streams) VALUES(?1,?2,0,0,'null') ON CONFLICT(account) DO UPDATE SET next_generation=max(next_generation,excluded.next_generation)",params![account,c["generation"].as_i64()])?;
+        tx.execute("INSERT INTO runtime_account_state(account,next_generation,journal_ack,recovery_required,streams) VALUES(?1,?2,0,0,'null') ON CONFLICT(account) DO UPDATE SET next_generation=max(next_generation,excluded.next_generation)",params![c.account,c.generation])?;
     }
     Ok((key, identity))
 }
