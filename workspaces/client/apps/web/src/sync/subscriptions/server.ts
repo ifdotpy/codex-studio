@@ -1,4 +1,3 @@
-import { SignedEventSource } from "../../servers/eventSource";
 import type { CoreClient } from "../../native/client";
 import { NativeEventSource } from "../../native/stream";
 import type { createApiScope } from "../../api";
@@ -39,13 +38,10 @@ export function createServerSubscriptions(options: ServerSubscriptionOptions) {
     // The server's requests use its client core (serverServices.ts).
     transferStorage: () => (core ? new MemoryTransferStorage() : undefined),
     ...(core ? { independent: true } : {}),
-    openEvents: (url) =>
-      core
-        ? new NativeEventSource(url, core)
-        : new SignedEventSource(
-            new URL(url, owner.origin).href,
-            api.fetchApiRequest,
-          ),
+    openEvents: (url) => {
+      if (!core) throw new Error("The native client is unavailable.");
+      return new NativeEventSource(url, core);
+    },
     storageName: (name) =>
       owner.id === "local" ? name : `${name}:server:${owner.id}`,
   });

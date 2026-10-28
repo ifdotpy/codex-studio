@@ -1898,7 +1898,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
     if (openingSource !== attempt || !canOpenSource()) return;
     try {
-      const connected = openServerEvents(path, { backpressure: true });
+      const connected = openServerEvents(path);
       if (openingSource !== attempt || !canOpenSource()) {
         connected.close();
         return;

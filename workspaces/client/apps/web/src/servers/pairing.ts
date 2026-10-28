@@ -1,9 +1,6 @@
 import { randomUUID } from "../uuid";
-import { serveOrigin, type StudioServer } from "./registry";
-import {
-  ACCESS_PROTOCOL_VERSION,
-  MULTI_SERVER_SIGNING_DOMAIN,
-} from "../generated/multiServerProtocol";
+import { serveOrigin } from "./registry";
+import { ACCESS_PROTOCOL_VERSION } from "../generated/multiServerProtocol";
 export class PairingNotAppliedError extends Error {
   constructor() {
     super(
@@ -21,16 +18,6 @@ export type PairInvitation = {
   publicKey: string;
   tailscaleUser: string;
   expires: number;
-};
-export type PairReceipt = {
-  protocol: typeof ACCESS_PROTOCOL_VERSION;
-  serverId: string;
-  clientId: string;
-  label: string;
-  origin: string;
-  publicKey: string;
-  tailscaleUser: string;
-  paired: true;
 };
 export function parseInvitation(code: string, origin: string): PairInvitation {
   const input: unknown = JSON.parse(code);
@@ -59,114 +46,6 @@ export function parseInvitation(code: string, origin: string): PairInvitation {
       "The pairing invitation is invalid or belongs to another server.",
     );
   return value;
-}
-export function pairedServer(
-  receipt: PairReceipt,
-  invitation: PairInvitation,
-  clientId: string,
-): StudioServer {
-  if (
-    receipt.protocol !== ACCESS_PROTOCOL_VERSION ||
-    receipt.paired !== true ||
-    receipt.serverId !== invitation.serverId ||
-    receipt.clientId !== clientId ||
-    serveOrigin(receipt.origin) !== serveOrigin(invitation.origin) ||
-    receipt.publicKey !== invitation.publicKey ||
-    receipt.tailscaleUser !== invitation.tailscaleUser
-  )
-    throw new Error(
-      "The pairing response does not match the server invitation.",
-    );
-  return {
-    id: receipt.serverId,
-    label:
-      typeof receipt.label === "string" && receipt.label.trim()
-        ? receipt.label.slice(0, 128)
-        : invitation.label || new URL(receipt.origin).hostname,
-    origin: serveOrigin(receipt.origin),
-    credentialId: clientId,
-  };
-}
-export function signatureInput(
-  method: string,
-  path: string,
-  serverId: string,
-  clientId: string,
-  timestamp: string,
-  nonce: string,
-  requestId: string,
-  hash: string,
-) {
-  return [
-    MULTI_SERVER_SIGNING_DOMAIN,
-    method.toUpperCase(),
-    path,
-    serverId,
-    clientId,
-    timestamp,
-    nonce,
-    requestId,
-    hash,
-  ].join("\n");
-}
-export function publicKeyPem(bytes: ArrayBuffer) {
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
-  return `-----BEGIN PUBLIC KEY-----\n${base64.match(/.{1,64}/g)!.join("\n")}\n-----END PUBLIC KEY-----\n`;
-}
-export async function signedRequest(
-  request: Request,
-  serverId: string,
-  clientId: string,
-  privateKey: CryptoKey,
-  requestId: string,
-) {
-  const url = new URL(request.url);
-  const body = new Uint8Array(await request.clone().arrayBuffer());
-  const hash = Array.from(
-    new Uint8Array(await crypto.subtle.digest("SHA-256", body)),
-    (byte) => byte.toString(16).padStart(2, "0"),
-  ).join("");
-  const timestamp = String(Math.floor(Date.now() / 1000));
-  const nonce = btoa(
-    String.fromCharCode(...crypto.getRandomValues(new Uint8Array(24))),
-  )
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-  const signature = await crypto.subtle.sign(
-    "Ed25519",
-    privateKey,
-    new TextEncoder().encode(
-      signatureInput(
-        request.method,
-        url.pathname + url.search,
-        serverId,
-        clientId,
-        timestamp,
-        nonce,
-        requestId,
-        hash,
-      ),
-    ),
-  );
-  const headers = new Headers(request.headers);
-  headers.delete("X-Canvas-Token");
-  headers.delete("Cookie");
-  headers.delete("Authorization");
-  headers.set("X-Studio-Client", clientId);
-  headers.set("X-Studio-Server", serverId);
-  headers.set("X-Studio-Timestamp", timestamp);
-  headers.set("X-Studio-Nonce", nonce);
-  headers.set("X-Studio-Request-Id", requestId);
-  headers.set(
-    "X-Studio-Signature",
-    btoa(String.fromCharCode(...new Uint8Array(signature))),
-  );
-  return new Request(request.clone(), {
-    headers,
-    credentials: "omit",
-    redirect: "error",
-  });
 }
 export async function requestIdentity(request: Request): Promise<string> {
   if (request.headers.get("X-Studio-Request-Id"))

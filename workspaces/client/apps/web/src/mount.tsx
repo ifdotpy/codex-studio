@@ -1,8 +1,6 @@
 import { BottomInsetBand } from "./hooks/BottomInsetBand";
 import "./browser-reset.css";
 import { NativeServerCredentials } from "./native/serverCredentials";
-import { hasNativeClient } from "./native/client";
-import { isNativeFrame } from "./native/frame";
 import {
   bootstrapPreferenceCache,
   applyCachedPreferenceAppearance,
@@ -11,7 +9,6 @@ import {
   DesktopServerCredentials,
   nativeCredentialBridge,
 } from "./servers/desktopCredentials";
-import { BrowserServerCredentials } from "./servers/browserCredentials";
 import { setServerCredentialAdapter } from "./servers/transport";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
@@ -20,9 +17,7 @@ import App from "./App";
 import { SidebarWarningsProvider } from "./components/SidebarWarnings";
 import MultiServerApp from "./servers/MultiServerApp";
 import { isServerView } from "./servers/environment";
-import { isRemoteServerView } from "./servers/environment";
 import { isClassicServerView } from "./servers/environment";
-import { shellCredentialBridge } from "./servers/shellTransport";
 import "./servers/servers.css";
 import UIErrorBoundary from "./components/UIErrorBoundary";
 import { theme } from "./theme";
@@ -40,19 +35,11 @@ async function mount() {
   applyCachedPreferenceAppearance();
   const nativeCredentials = nativeCredentialBridge();
   setServerCredentialAdapter(
+    // The keys stay in a client core (the desktop or the server of a browser
+    // page). Each paired server's requests go through its own core.
     nativeCredentials
       ? new DesktopServerCredentials(nativeCredentials)
-      : isNativeFrame()
-        ? new DesktopServerCredentials(shellCredentialBridge())
-        : // The desktop and the server of a browser page keep the keys in a
-          // client core; each paired server's requests go through its core.
-          hasNativeClient()
-          ? new NativeServerCredentials()
-          : isRemoteServerView
-            ? new BrowserServerCredentials()
-            : isServerView && window.parent !== window
-              ? new DesktopServerCredentials(shellCredentialBridge())
-              : new BrowserServerCredentials(),
+      : new NativeServerCredentials(),
   );
   if (isServerView) document.documentElement.dataset.serverView = "true";
   if (isClassicServerView)

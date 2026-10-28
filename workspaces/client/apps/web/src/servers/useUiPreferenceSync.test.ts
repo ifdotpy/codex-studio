@@ -18,8 +18,8 @@ vi.mock("react", () => ({
 vi.mock("./ServerServicesContext", () => ({
   useServerApi: () => ({ fetchApiRequest: mocks.fetch }),
 }));
-vi.mock("./eventSource", () => ({
-  SignedEventSource: class extends EventTarget {
+vi.mock("../native/stream", () => ({
+  NativeEventSource: class extends EventTarget {
     constructor() {
       super();
       mocks.streams.push(this);

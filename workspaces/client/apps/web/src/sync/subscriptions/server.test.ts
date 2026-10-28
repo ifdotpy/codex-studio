@@ -14,8 +14,8 @@ vi.mock("../resourceEvents", () => ({
     };
   },
 }));
-vi.mock("../../servers/eventSource", () => ({
-  SignedEventSource: class {
+vi.mock("../../native/stream", () => ({
+  NativeEventSource: class {
     constructor(...args: unknown[]) {
       mocks.source(...args);
     }
@@ -37,6 +37,7 @@ it("forwards resumed refs to the same server's fully applied cursor reader", asy
   const options = {
     owner: { id: "remote", origin: "https://server.example" },
     api: { fetchApiRequest: request },
+    core: { server: "remote" },
     tokenRates: {},
     sync: () => ({
       readSubscriptionCursor: read,
@@ -52,9 +53,6 @@ it("forwards resumed refs to the same server's fully applied cursor reader", asy
   expect(read).toHaveBeenCalledExactlyOnceWith(ref);
   expect(mocks.options?.storageName?.("cache")).toBe("cache:server:remote");
   mocks.options?.openEvents?.("/api/sync/stream");
-  expect(mocks.source).toHaveBeenCalledWith(
-    "https://server.example/api/sync/stream",
-    request,
-  );
+  expect(mocks.source).toHaveBeenCalledWith("/api/sync/stream", options.core);
   subscriptions.dispose();
 });

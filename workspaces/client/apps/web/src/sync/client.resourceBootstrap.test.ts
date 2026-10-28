@@ -37,7 +37,9 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("../servers/eventSource", () => ({
   openServerEvents: vi.fn(),
-  SignedEventSource: class {
+}));
+vi.mock("../native/stream", () => ({
+  NativeEventSource: class {
     listeners = new Map<string, (event: Event) => void>();
     onopen = null;
     onerror = null;
@@ -599,6 +601,7 @@ it.each([false, true])(
     const api = await import("../api");
     const subscriptions = createServerSubscriptions({
       owner: { id: "local", origin: "http://studio.test" },
+      core: { server: "local" },
       api: { ...api, fetchApiRequest: vi.fn() },
       tokenRates: {
         configureTokenRateStream: vi.fn(),
@@ -670,7 +673,7 @@ it.each([false, true])(
     );
     const replacement = mocks.sources[1];
     assert.ok(replacement != null);
-    const query = new URL(replacement.url).searchParams;
+    const query = new URL(replacement.url, "http://studio.test").searchParams;
     if (durableBase)
       expect(JSON.parse(query.get("since")!)).toContainEqual({
         resource: ref,
@@ -924,6 +927,7 @@ it.each(["burst", "inline removal", "staged removal"])(
     const api = await import("../api");
     const subscriptions = createServerSubscriptions({
       owner: { id: "local", origin: "http://studio.test" },
+      core: { server: "local" },
       api: { ...api, fetchApiRequest: vi.fn() },
       tokenRates: {
         configureTokenRateStream: vi.fn(),

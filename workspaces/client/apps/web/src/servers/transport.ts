@@ -3,15 +3,6 @@ import { nativeFetch } from "../native/http";
 import { serverViewId, isolatedServerView } from "./environment";
 import { viewServer, type StudioServer } from "./registry";
 
-const LOCAL_FRAME_ACCOUNT_MUTATIONS = new Set([
-  "/api/accounts/login",
-  "/api/accounts/login/cancel",
-  "/api/accounts/claude/login",
-  "/api/accounts/claude/add",
-  "/api/accounts/claude/login/code",
-  "/api/accounts/claude/login/cancel",
-]);
-
 // Pairing owns credentials and signing. This boundary never puts a credential
 // in a URL, snapshot, project row, or navigation message.
 export type PairAttemptIdentity = {
@@ -58,28 +49,6 @@ export function apiOrigin() {
 export function serverFetch(request: Request) {
   // The page reaches its server through that server's client core.
   if (hasNativeClient()) return nativeFetch(request, apiOrigin(), pageCore());
-  // In a browser the backend also serves the local frame origin and takes
-  // these account requests there. In the desktop a separate UI host serves the
-  // frames and owns no API, so the desktop bridge carries them to the local
-  // server with the session token, like every other local frame request.
-  if (
-    globalThis.location?.protocol !== "studio-view:" &&
-    serverViewId === "local" &&
-    isolatedServerView &&
-    !(
-      typeof window !== "undefined" &&
-      (window as Window & { codexDesktop?: unknown }).codexDesktop
-    ) &&
-    request.method === "POST" &&
-    LOCAL_FRAME_ACCOUNT_MUTATIONS.has(new URL(request.url).pathname)
-  ) {
-    const requestUrl = new URL(request.url);
-    const frameUrl = new URL(
-      `${requestUrl.pathname}${requestUrl.search}`,
-      globalThis.location.origin,
-    );
-    return globalThis.fetch(new Request(frameUrl, request));
-  }
   if (!serverViewId || (serverViewId === "local" && !isolatedServerView))
     return globalThis.fetch(request);
   const server = viewServer(serverViewId);

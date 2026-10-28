@@ -13,7 +13,6 @@ import { createSubscriptionStore } from "./subscriptions/store";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
-import { EventStreamParser } from "../servers/eventSource";
 
 vi.mock("./client", () => ({ syncDatabase: vi.fn() }));
 vi.mock("../usage/tokenRate", () => ({
@@ -663,14 +662,10 @@ it("applies split reconnect data beside passive hints without repeating its dura
       },
       { ...common, resources: [passive], resourceVersions: [{ revision: 3 }] },
     ];
-    const parser = new EventStreamParser((name, data) => {
-      replacement.listeners.get(name)?.({ data } as MessageEvent<string>);
-    });
-    parser.push(
-      frames
-        .map((frame) => `event: resources\ndata: ${JSON.stringify(frame)}\n\n`)
-        .join(""),
-    );
+    for (const frame of frames)
+      replacement.listeners.get("resources")?.({
+        data: JSON.stringify(frame),
+      } as MessageEvent<string>);
     // No durable application receipt is published while the write is pending.
     expect(listener).not.toHaveBeenCalled();
     finish();
