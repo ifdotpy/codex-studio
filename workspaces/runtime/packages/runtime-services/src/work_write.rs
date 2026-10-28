@@ -1119,17 +1119,9 @@ pub async fn prepare_vm_submission(
             Some(VmWorkIntent::Completed { .. } | VmWorkIntent::NotSent(..)) | None => {}
         }
         view.vm_submit = Some(VmWorkIntent::Pending(VmOwner {request_id:rpc_id.clone(),owner:owner_id.into(),revision:revision.clone(),id:Submission { version:work.value()["version"].as_i64().ok_or_else(|| invalid("runtime_work", &input.task_id))? },public:None}));
-        if let Some(root) = request_id.as_deref() {
-            let token = if let Some(saved) = pending_work_request(tx,&agent,root,&signature)? {
-                if saved.task != input.task_id { return Err(Error::Conflict("This request id has different content").into()); }
-                saved.admitted
-            } else {
-                match event_write::begin_request::<WorkItemRecord>(tx,event_write::RequestKey::new("work",&[&agent.root_id.0],root),&signature,(event_write::unix_time()?*1000.0) as i64).map_err(Error::from)? {
-                    event_write::CallerAdmission::Fresh(token) => token,
-                    event_write::CallerAdmission::Replay(_) => return Ok(VmSubmissionPreparation::Replay),
-                }
-            };
-            reserve_work_request(tx,&agent,root,&input.task_id,&token,false)?;
+        if let Some(root) = request_id.as_deref()
+            && admit_vm_work_request(tx, &agent, root, &input.task_id, &signature, event_write::unix_time()?)?.is_none() {
+            return Ok(VmSubmissionPreparation::Replay);
         }
         write_vm_view(tx, &input.task_id, &view)?;
         Ok(VmSubmissionPreparation::Call(VmSubmissionCall {
@@ -1382,32 +1374,12 @@ pub async fn prepare_vm_accept(
                 public: None,
             };
             if let Some(root) = request_id.as_deref() {
-                let token = if let Some(saved) = pending_work_request(tx, &lead, root, &signature)?
-                {
-                    if saved.task != task_id {
-                        return Err(Error::Conflict("This request id has different content").into());
-                    }
-                    saved.admitted
-                } else {
-                    match event_write::begin_request::<WorkItemRecord>(
-                        tx,
-                        event_write::RequestKey::new("work", &[&lead.root_id.0], root),
-                        &signature,
-                        (now * 1000.0) as i64,
-                    )
-                    .map_err(Error::from)?
-                    {
-                        event_write::CallerAdmission::Fresh(token) => token,
-                        event_write::CallerAdmission::Replay(_) => {
-                            return Err(Error::Conflict("The acceptance already completed").into());
-                        }
-                    }
-                };
+                let token = admit_vm_work_request(tx, &lead, root, &task_id, &signature, now)?
+                    .ok_or(Error::Conflict("The acceptance already completed"))?;
                 owner.public = Some(VmPublic {
-                    public_admission: token.clone(),
+                    public_admission: token,
                     public_request_id: root.into(),
                 });
-                reserve_work_request(tx, &lead, root, &task_id, &token, false)?;
             }
             view.vm_accept = Some(VmWorkIntent::Pending(owner));
             write_vm_view(tx, &task_id, &view)?;
@@ -1716,6 +1688,36 @@ fn pending_work_request(
         return Ok(Some(row.payload));
     }
     Ok(None)
+}
+
+fn admit_vm_work_request(
+    tx: &Transaction<'_>,
+    agent: &AgentRecord,
+    root: &str,
+    task: &str,
+    signature: &str,
+    now: f64,
+) -> Result<Option<AdmittedRequest>, Error> {
+    let token = if let Some(saved) = pending_work_request(tx, agent, root, signature)? {
+        if saved.task != task {
+            return Err(Error::Conflict("This request id has different content"));
+        }
+        saved.admitted
+    } else {
+        match event_write::begin_request::<WorkItemRecord>(
+            tx,
+            event_write::RequestKey::new("work", &[&agent.root_id.0], root),
+            signature,
+            (now * 1000.0) as i64,
+        )
+        .map_err(Error::from)?
+        {
+            event_write::CallerAdmission::Fresh(token) => token,
+            event_write::CallerAdmission::Replay(_) => return Ok(None),
+        }
+    };
+    reserve_work_request(tx, agent, root, task, &token, false)?;
+    Ok(Some(token))
 }
 
 fn reserve_work_request(

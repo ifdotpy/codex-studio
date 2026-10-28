@@ -240,8 +240,14 @@ fn move_counter(
                 .as_bytes()
         )
     );
-    let metadata:Option<(i64,String,i64)>=tx.query_row("SELECT rowid,signature,length(CAST(result AS BLOB)) FROM runtime_operation_receipts WHERE id=?1",[&id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-    let Some((rowid, signature, bytes)) = metadata else {
+    let bytes: Option<i64> = tx
+        .query_row(
+            "SELECT length(CAST(result AS BLOB)) FROM runtime_operation_receipts WHERE id=?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(bytes) = bytes else {
         return Ok(budget.include(row.result.len() + raw.len()));
     };
     if !budget.include(
@@ -252,17 +258,8 @@ fn move_counter(
     ) {
         return Ok(false);
     }
-    let result = tx.query_row(
-        "SELECT result FROM runtime_operation_receipts WHERE rowid=?1",
-        [rowid],
-        |r| r.get(0),
-    )?;
-    let receipt = contract::SourceReceipt {
-        rowid,
-        id,
-        signature,
-        result,
-    };
+    let receipt = contract::load_operation_receipt(tx, &id)?.ok_or_else(invalid)?;
+    let rowid = receipt.rowid;
     let count = counter(&receipt)?;
     let errors = if let Some(errors) = count.errors {
         errors
@@ -550,10 +547,7 @@ fn move_effect(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
             "merge" => "vmAccept",
             _ => return Err(invalid()),
         };
-        let transport: Value = row.json(TABLE)?;
-        let (intent, status) = serde_json::from_value::<LegacyVmIntent>(transport)
-            .map_err(|_| invalid())?
-            .parts();
+        let (intent, status) = row.json::<LegacyVmIntent>(TABLE)?.parts();
         if intent.task_id != task
             || intent.request_id.is_empty()
             || intent.owner.is_empty()
@@ -737,14 +731,37 @@ mod tests {
         serde_json::from_str(&raw).expect("JSON")
     }
     #[test]
-    fn receipts_work_vm_typed_source_preserves_last_key_and_refuses_null_proofs() {
+    fn receipts_work_vm_typed_source_refuses_duplicates_and_null_proofs() {
         let mut db = fixture();
         db.execute("INSERT INTO runtime_work VALUES('t','{\"id\":\"t\"}')", [])
             .unwrap();
-        db.execute("INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)", params![
-            "work-write-vm-intent:submission:t", "work-write-vm-intent-v1",
-            r#"{"status":"pending","status":"completed","taskId":"t","requestId":"old","requestId":"rpc","owner":"a","revision":"rev","version":1,"created":1.0,"evidence":{"layrProjectId":"p","layrLine":"a","layrStateId":"rev"}}"#
-        ]).unwrap();
+        let duplicate = r#"{"status":"pending","status":"completed","taskId":"t","requestId":"rpc","owner":"a","revision":"rev","version":1,"created":1.0,"evidence":{"layrProjectId":"p","layrLine":"a","layrStateId":"rev"}}"#;
+        db.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+            params![
+                "work-write-vm-intent:submission:t",
+                "work-write-vm-intent-v1",
+                duplicate
+            ],
+        )
+        .unwrap();
+        assert!(batch(&mut db, TABLE).is_err());
+        assert_eq!(
+            db.query_row("SELECT result FROM runtime_operation_receipts", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
+            duplicate
+        );
+        assert!(work(&db, "t").get("vmSubmit").is_none());
+        db.execute("DELETE FROM runtime_operation_receipts", [])
+            .unwrap();
+        put(
+            &db,
+            "work-write-vm-intent:submission:t",
+            "work-write-vm-intent-v1",
+            json!({"status":"completed","taskId":"t","requestId":"rpc","owner":"a","revision":"rev","version":1,"created":1.0,"evidence":{"layrProjectId":"p","layrLine":"a","layrStateId":"rev"}}),
+        );
         migrate(&mut db);
         assert_eq!(
             work(&db, "t")["vmSubmit"],
@@ -812,25 +829,37 @@ mod tests {
 
     #[test]
     fn receipts_work_vm_reservation_preserves_proof_in_both_source_orders() {
-        for id in ["a-public", "z-public"] {
+        for reservation_first in [true, false] {
+            let id = "public";
             let mut db = fixture();
             db.execute(
                 "INSERT INTO runtime_work VALUES('t','{\"id\":\"t\",\"rootId\":\"root\"}')",
                 [],
             )
             .unwrap();
-            put(
-                &db,
-                id,
-                "sig",
-                json!({"vmAcceptReservation":true,"taskId":"t","agentId":"root","status":"reserved"}),
-            );
-            put(
-                &db,
-                "work-write-vm-intent:merge:t",
-                "work-write-vm-intent-v1",
-                json!({"status":"unknown","taskId":"t","requestId":"rpc","owner":"a","revision":"rev","resultId":"r","created":1.0}),
-            );
+            let reservation = || {
+                put(
+                    &db,
+                    id,
+                    "sig",
+                    json!({"vmAcceptReservation":true,"taskId":"t","agentId":"root","status":"reserved"}),
+                )
+            };
+            let intent = || {
+                put(
+                    &db,
+                    "work-write-vm-intent:merge:t",
+                    "work-write-vm-intent-v1",
+                    json!({"status":"unknown","taskId":"t","requestId":"rpc","owner":"a","revision":"rev","resultId":"r","created":1.0}),
+                )
+            };
+            if reservation_first {
+                reservation();
+                intent();
+            } else {
+                intent();
+                reservation();
+            }
             migrate(&mut db);
             let intent = &work(&db, "t")["vmAccept"];
             assert_eq!(intent["status"], "unknown");
