@@ -222,17 +222,20 @@ fn blocker(tx: &Transaction<'_>, worker: &Value) -> Result<Option<&'static str>,
 /// Interpret the status of an existing durable receipt written before typed outcomes.
 pub(crate) fn decode_saved_recovery_receipt(value: Value) -> crate::recovery::RecoveryReceipt {
     use crate::recovery::RecoveryReceipt;
-    match serde_json::from_value::<RecoveryReceiptStatus>(value["status"].clone()) {
-        Ok(RecoveryReceiptStatus::Unknown | RecoveryReceiptStatus::Unconfirmed) | Err(_) => {
+    match value["status"]
+        .as_str()
+        .and_then(|status| status.parse::<RecoveryReceiptStatus>().ok())
+    {
+        Some(RecoveryReceiptStatus::Unknown | RecoveryReceiptStatus::Unconfirmed) | None => {
             RecoveryReceipt::Unknown(value)
         }
-        Ok(
+        Some(
             RecoveryReceiptStatus::Blocked
             | RecoveryReceiptStatus::Skipped
             | RecoveryReceiptStatus::Superseded
             | RecoveryReceiptStatus::HistoryMissing,
         ) => RecoveryReceipt::Rejected(value),
-        Ok(
+        Some(
             RecoveryReceiptStatus::InputRestored
             | RecoveryReceiptStatus::Held
             | RecoveryReceiptStatus::Reconciled
@@ -835,9 +838,11 @@ async fn finish_release(
             }
             let closed = closed && current;
             let confirmed_close = closed || worker["nativeRelease"]["closedAt"].as_f64().is_some();
-            let phase: NativeReleasePhase = serde_json::from_value(value.value()["status"].clone())
-                .map_err(|_| Error::Stale)?;
-            worker["nativeRelease"]["phase"] = json!(phase);
+            let phase: NativeReleasePhase = value.value()["status"]
+                .as_str()
+                .and_then(|status| status.parse().ok())
+                .ok_or(Error::Stale)?;
+            worker["nativeRelease"]["phase"] = json!(phase.as_str());
             worker["nativeRelease"]["resetPending"] = json!(submitted && !confirmed_close);
             if closed {
                 worker["nativeRelease"]["closedAt"] = json!(now);

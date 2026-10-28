@@ -479,9 +479,9 @@ pub async fn consume_reset(
                 && receipt.certainty() == RequestCertainty::Written =>
         {
             let outcome = receipt.response().and_then(|result| match result {
-                ProviderResponse::Reply(value) => {
-                    serde_json::from_value::<ResetCreditOutcome>(value["outcome"].clone()).ok()
-                }
+                ProviderResponse::Reply(value) => value["outcome"]
+                    .as_str()
+                    .and_then(|outcome| outcome.parse().ok()),
                 ProviderResponse::Rejected(_) => None,
             });
             if let Some(outcome) = outcome {
@@ -778,6 +778,18 @@ mod tests {
         let calls = provider.requests.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0.split(':').next_back(), Some("1"));
+    }
+
+    #[test]
+    fn unrecognized_written_outcome_stays_held() {
+        let (_root, store) = store();
+        let provider = FakeProvider::new([Reply::Outcome("unexpected")]);
+        let request_id = RequestIdentity::issue_root();
+        let first = consume_reset(&store, &provider, &request(&request_id)).unwrap();
+        let retry = consume_reset(&store, &provider, &request(&request_id)).unwrap();
+        assert_eq!(first["outcome"], "uncertain");
+        assert_eq!(retry["outcome"], "uncertain");
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
     }
 
     #[test]

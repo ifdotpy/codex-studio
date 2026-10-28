@@ -446,7 +446,10 @@ fn validate_agent(agent: &Value) -> Result<(), RepairError> {
         }
     }
     if let Some(repair) = agent.get("contextRepair").filter(|v| !v.is_null())
-        && serde_json::from_value::<ContextRepairPhase>(repair["phase"].clone()).is_err()
+        && repair["phase"]
+            .as_str()
+            .and_then(|phase| phase.parse::<ContextRepairPhase>().ok())
+            .is_none()
     {
         return Err(RepairError::Invalid("agent.contextRepair.phase"));
     }

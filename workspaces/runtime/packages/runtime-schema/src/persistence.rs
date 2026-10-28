@@ -41,6 +41,12 @@ macro_rules! domain {
         impl $name {
             pub const fn as_str(self) -> &'static str { match self { $(Self::$variant => $wire),+ } }
         }
+        impl std::str::FromStr for $name {
+            type Err = ();
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                match value { $($wire => Ok(Self::$variant),)+ _ => Err(()) }
+            }
+        }
         #[cfg(feature = "sqlite")]
         impl rusqlite::types::ToSql for $name {
             fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
@@ -293,6 +299,15 @@ impl RequestIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_credit_outcome_wire_values_round_trip() {
+        for &wire in ResetCreditOutcome::VARIANTS {
+            let outcome = wire.parse::<ResetCreditOutcome>().expect("domain value");
+            assert_eq!(outcome.as_str(), wire);
+        }
+        assert!("unknown".parse::<ResetCreditOutcome>().is_err());
+    }
 
     #[test]
     fn captured_provider_scope_round_trips_writer_bytes() {

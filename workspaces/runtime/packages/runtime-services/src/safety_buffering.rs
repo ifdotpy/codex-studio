@@ -30,7 +30,10 @@ const ACTIVE_STAGES: &[SafetyRetryStage] = &[
 
 pub use studio_runtime_schema::persistence::SafetyRetryStage;
 fn parse_stage(value: &Value) -> Result<SafetyRetryStage, SafetyBufferingError> {
-    serde_json::from_value(value.clone()).map_err(|_| SafetyBufferingError::InvalidStoredState)
+    value
+        .as_str()
+        .and_then(|stage| stage.parse().ok())
+        .ok_or(SafetyBufferingError::InvalidStoredState)
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
