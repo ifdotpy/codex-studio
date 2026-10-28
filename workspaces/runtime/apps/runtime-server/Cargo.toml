@@ -31,6 +31,7 @@ tokio-util = { workspace = true, features = ["rt"] }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+studio-runtime-services = { path = "../../packages/runtime-services", features = ["test-support"] }
 studio-runtime-store = { path = "../../packages/runtime-store", features = ["test-support"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

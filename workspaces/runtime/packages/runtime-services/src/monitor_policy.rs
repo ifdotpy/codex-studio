@@ -14,16 +14,9 @@ pub const DEFAULT_MONITOR_STALL_SECONDS: u64 = 1800;
 use studio_runtime_schema::studio_errors::MonitorRecoveryStatus as RecoveryStatus;
 pub use studio_runtime_schema::studio_errors::MonitorStatus;
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Operation {
-    pub agent: String,
-    pub epoch: i64,
-    pub account_key: String,
-    pub connection_id: String,
-    #[serde(flatten)]
-    pub evidence: std::collections::BTreeMap<String, Value>,
-}
+pub use studio_runtime_store::{
+    MonitorOperation as Operation, MonitorOperationEvidence as OperationEvidence,
+};
 
 #[derive(Debug, Error)]
 pub enum MonitorError {

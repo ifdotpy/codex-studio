@@ -44,6 +44,94 @@ async fn input_schema(store: &RuntimeStore) {
         .expect("target schema");
 }
 
+#[tokio::test]
+async fn migrated_monitor_inputs_remain_visible_through_process_receipt() {
+    use serde::{Deserialize, Serialize};
+    use studio_runtime_schema::persistence::MonitorInputStatus;
+    #[derive(Serialize)]
+    struct LegacyReceipt {
+        monitor: String,
+        operation: studio_runtime_store::MonitorOperation,
+        status: MonitorInputStatus,
+    }
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Query<'a> {
+        request_id: &'a str,
+        agent: &'a str,
+        account_key: &'a str,
+        epoch: i64,
+    }
+    #[derive(Deserialize)]
+    struct ReadReceipt {
+        found: bool,
+        result: ReadResult,
+    }
+    #[derive(Deserialize)]
+    struct ReadResult {
+        response: ReadResponse,
+    }
+    #[derive(Deserialize)]
+    struct ReadResponse {
+        status: String,
+    }
+    let root = fixtures::tempdir();
+    let case = running(&fixtures::corpus(root.path()));
+    let store = fixtures::store(root.path(), "migration").await;
+    fixtures::seed(&store, &case).await;
+    let path = store.root().to_owned();
+    drop(store);
+    let db = rusqlite::Connection::open(path.join("canvas.sqlite3")).expect("old store");
+    db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);").expect("pre-cutover source");
+    for (id, status) in [
+        ("pending-input", MonitorInputStatus::Pending),
+        ("unknown-input", MonitorInputStatus::Unknown),
+    ] {
+        let receipt = LegacyReceipt {
+            monitor: "f8fc5c50-e4e4-50bc-8ff5-885105058c9d".into(),
+            operation: studio_runtime_store::MonitorOperation {
+                agent: "agent".into(),
+                epoch: 2,
+                account_key: "default".into(),
+                connection_id: "connection".into(),
+                evidence: Default::default(),
+            },
+            status,
+        };
+        db.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,'http-input-v1:hash',?2)",
+            rusqlite::params![
+                format!("monitor-http-input:{id}"),
+                serde_json::to_string(&receipt).expect("source receipt")
+            ],
+        )
+        .expect("source");
+    }
+    drop(db);
+    let store = RuntimeStore::open(Some(&path))
+        .await
+        .expect("migrate input");
+    for (id, expected) in [("pending-input", "pending"), ("unknown-input", "unknown")] {
+        let query = serde_json::to_value(Query {
+            request_id: id,
+            agent: "agent",
+            account_key: "default",
+            epoch: 2,
+        })
+        .expect("query");
+        let receipt = studio_runtime_services::process_controls::receipt(
+            &store.test_reader().expect("read"),
+            &query,
+        )
+        .expect("caller");
+        let result: ReadReceipt =
+            serde_json::from_value(serde_json::to_value(receipt).expect("response"))
+                .expect("typed response");
+        assert!(result.found);
+        assert_eq!(result.result.response.status, expected);
+    }
+}
+
 fn record(store: &RuntimeStore, id: &str) -> Value {
     MonitorsRepository::get(&store.test_reader().expect("read"), id)
         .expect("get")

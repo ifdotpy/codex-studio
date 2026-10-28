@@ -37,9 +37,48 @@ struct NativeActionIntent<'a> {
     outcome: &'a Value,
 }
 #[derive(Serialize)]
-struct InputIntent<'a> {
+struct InputIntent<'a, T: Serialize> {
     admitted: AdmittedRequest,
-    receipt: &'a Value,
+    receipt: &'a T,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyMonitorOperation {
+    agent: String,
+    epoch: i64,
+    account_key: String,
+    connection_id: String,
+    root_request_id: Option<String>,
+    provider_generation: Option<u64>,
+    provider_request: Option<AdmittedRequest>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MonitorReceipt<O> {
+    monitor: String,
+    operation: O,
+    status: MonitorInputStatus,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyMonitorOwner {
+    operation: Option<LegacyMonitorOperation>,
+    stream_queue: Option<Vec<LegacyMonitorQueueEntry>>,
+    input_attempt: Option<LegacyMonitorInput>,
+    cancel_requested: Option<bool>,
+    stall_probe_generation: Option<i64>,
+    root_request_id: Option<String>,
+}
+#[derive(Deserialize)]
+struct LegacyMonitorQueueEntry {
+    operation: Option<LegacyMonitorOperation>,
+}
+#[derive(Deserialize)]
+struct LegacyMonitorInput {
+    id: String,
 }
 #[derive(Serialize)]
 struct CommandCancelIntent<'a> {
@@ -347,22 +386,20 @@ fn command(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value, cutover: i6
         _ => Err(invalid()),
     }
 }
-fn monitor(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value, cutover: i64) -> Result<()> {
+fn monitor(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> {
     let table = SOURCES[0];
     let invalid = || unclassifiable(table, &row.id, &row.signature);
     if !row.signature.starts_with("http-input-v1:") {
         return Err(invalid());
     }
-    let monitor = string(value, "monitor", table, row)?;
-    let mut value = value.clone();
-    value["operation"] = monitor_operation(tx, row, monitor, value["operation"].clone(), cutover)?;
-    let actor = string(&value["operation"], "agent", table, row)?;
-    if !value["operation"]["epoch"].is_i64() || !value["operation"]["connectionId"].is_string() {
-        return Err(invalid());
-    }
-    let status: MonitorInputStatus =
-        serde_json::from_value(value["status"].clone()).map_err(|_| invalid())?;
-    match status {
+    let legacy: MonitorReceipt<LegacyMonitorOperation> = row.json(table)?;
+    let operation = monitor_operation(tx, row, &legacy.monitor, legacy.operation, cutover)?;
+    let value = MonitorReceipt {
+        monitor: legacy.monitor,
+        operation,
+        status: legacy.status,
+    };
+    match value.status {
         MonitorInputStatus::Expired => Err(invalid()),
         MonitorInputStatus::Pending | MonitorInputStatus::Unknown => obligation(
             tx,
@@ -371,26 +408,23 @@ fn monitor(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value, cutover: i6
             (
                 Some("monitor-http-input"),
                 OutboxKind::MonitorInput,
-                (OwnerKind::Monitor, monitor),
+                (OwnerKind::Monitor, &value.monitor),
             ),
             OutboxStatus::Unknown,
             InputIntent {
                 admitted: admitted_owner_token(&row.id, &row.signature, cutover),
                 receipt: &value,
             },
-            (
-                Some(string(&value["operation"], "accountKey", table, row)?.into()),
-                None,
-            ),
+            (Some(value.operation.account_key.clone()), None),
         ),
         MonitorInputStatus::Acknowledged | MonitorInputStatus::Rejected => import_result(
             tx,
             &row.id,
             &row.signature,
             &ResultEnvelope {
-                actor: Some(actor.into()),
+                actor: Some(value.operation.agent.clone()),
+                references: vec![value.monitor.clone()],
                 reply: value,
-                references: vec![monitor.into()],
             },
             cutover,
         ),
@@ -608,6 +642,26 @@ type Call = studio_runtime_schema::provider_call_contract::ProviderCallIntent<
     studio_runtime_providers::Method,
     AdmittedRequest,
 >;
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacySubmitted {
+    call: LegacyCall,
+    #[serde(default, rename = "request")]
+    _request: Option<serde::de::IgnoredAny>,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyCall {
+    root_request_id: Option<String>,
+    admitted_request: Option<AdmittedRequest>,
+    scope: studio_runtime_schema::provider_call_contract::ConnectionScope,
+    operation: String,
+    actor: Option<studio_runtime_schema::provider_call_contract::RequestActor>,
+    transfer: Option<studio_runtime_schema::provider_call_contract::TransferAuthorization>,
+    deleted_actor_session: Option<String>,
+    method: studio_runtime_providers::Method,
+    params: Value,
+}
 fn retained(
     tx: &Transaction<'_>,
     table: &str,
@@ -620,24 +674,25 @@ fn retained(
         "account-worker:{}",
         studio_runtime_schema::provider_call_contract::transport_key(account, operation)
     );
-    let raw: Option<(String, String)> = tx
-        .query_row(
-            "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
-            [format!("{key}:submitted")],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    let Some((source_signature, raw)) = raw else {
+    let Some(source) =
+        crate::receipt_migration_contract::load_operation_receipt(tx, &format!("{key}:submitted"))?
+    else {
         return Ok(None);
     };
     let invalid = || unclassifiable(table, &row.id, &row.signature);
-    let mut saved: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-    if !saved["call"].is_object() {
-        return Err(invalid());
-    }
-    saved["call"]["root_request_id"] = json!("");
-    saved["call"]["admitted_request"] = Value::Null;
-    let mut call: Call = serde_json::from_value(saved["call"].clone()).map_err(|_| invalid())?;
+    let saved: LegacySubmitted = source.json("runtime_operation_receipts")?;
+    let legacy = saved.call;
+    let mut call = Call {
+        root_request_id: String::new(),
+        admitted_request: None,
+        scope: legacy.scope,
+        operation: legacy.operation,
+        actor: legacy.actor,
+        transfer: legacy.transfer,
+        deleted_actor_session: legacy.deleted_actor_session,
+        method: legacy.method,
+        params: legacy.params,
+    };
     if call.scope.account != account || call.operation != operation {
         return Err(invalid());
     }
@@ -646,14 +701,28 @@ fn retained(
         &call.fingerprint(account, call.method.as_str()),
         cutover,
     );
+    if legacy
+        .admitted_request
+        .as_ref()
+        .is_some_and(|saved| saved != &token)
+    {
+        return Err(invalid());
+    }
     call.root_request_id = crate::receipt_migration_contract::hydrate_source_root(
         tx,
         "runtime_operation_receipts",
         &format!("{key}:submitted"),
-        &source_signature,
+        &source.signature,
         "result",
         "$.call.root_request_id",
     )?;
+    if legacy
+        .root_request_id
+        .as_ref()
+        .is_some_and(|root| !root.is_empty() && root != &call.root_request_id)
+    {
+        return Err(invalid());
+    }
     Ok(Some((call, token)))
 }
 fn captured_token(
@@ -872,46 +941,76 @@ fn monitor_operation(
     tx: &Transaction<'_>,
     row: &SourceReceipt,
     id: &str,
-    mut operation: Value,
+    operation: LegacyMonitorOperation,
     cutover: i64,
-) -> Result<Value> {
+) -> Result<crate::MonitorOperation> {
     let table = "runtime_monitors";
     let invalid = || unclassifiable(table, &row.id, &row.signature);
-    let account = string(&operation, "accountKey", table, row)?;
-    let authority = retained(tx, table, row, account, &format!("monitor:{id}"), cutover)?;
-    if let Some((call, token)) = authority {
-        if call
-            .actor
+    let authority = retained(
+        tx,
+        table,
+        row,
+        &operation.account_key,
+        &format!("monitor:{id}"),
+        cutover,
+    )?;
+    if operation
+        .root_request_id
+        .as_ref()
+        .is_some_and(|root| RequestIdentity::new("monitor", &[], root, &[]).is_err())
+        || (authority.is_none() && operation.provider_request.is_some())
+    {
+        return Err(invalid());
+    }
+    let evidence = if let Some((call, token)) = authority {
+        if operation
+            .provider_request
             .as_ref()
-            .is_none_or(|a| operation["agent"] != a.agent || operation["epoch"] != a.epoch)
-            || operation["connectionId"] != call.scope.connection
+            .is_some_and(|saved| saved != &token)
+            || operation
+                .root_request_id
+                .as_ref()
+                .is_some_and(|root| root != &call.root_request_id)
+            || operation
+                .provider_generation
+                .is_some_and(|generation| generation != call.scope.generation)
+            || call
+                .actor
+                .as_ref()
+                .is_none_or(|a| operation.agent != a.agent || operation.epoch != a.epoch)
+            || operation.connection_id != call.scope.connection
         {
             return Err(invalid());
         }
-        operation["rootRequestId"] = json!(call.root_request_id);
-        operation["providerRequest"] = json!(token);
-        operation["providerGeneration"] = json!(call.scope.generation);
-    } else if operation["rootRequestId"].is_null() {
+        crate::MonitorOperationEvidence {
+            root_request_id: Some(call.root_request_id),
+            provider_request: Some(token),
+            provider_generation: Some(call.scope.generation),
+        }
+    } else {
         let current: Option<String> =
             if crate::receipt_migration_contract::source_exists(tx, table)? {
                 tx.query_row(
-                    "SELECT record FROM runtime_monitors WHERE id=?1",
+                    "SELECT json_extract(record,'$.operation') FROM runtime_monitors WHERE id=?1",
                     [id],
-                    |r| r.get(0),
+                    |r| r.get::<_, Option<String>>(0),
                 )
                 .optional()?
+                .flatten()
             } else {
                 None
             };
         let same = current
             .as_ref()
-            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .and_then(|raw| serde_json::from_str::<LegacyMonitorOperation>(raw).ok())
             .is_some_and(|value| {
-                value["operation"]["agent"] == operation["agent"]
-                    && value["operation"]["epoch"] == operation["epoch"]
-                    && value["operation"]["connectionId"] == operation["connectionId"]
+                value.agent == operation.agent
+                    && value.epoch == operation.epoch
+                    && value.connection_id == operation.connection_id
             });
-        operation["rootRequestId"] = json!(if same {
+        let root = if let Some(root) = operation.root_request_id {
+            root
+        } else if same {
             crate::receipt_migration_contract::hydrate_source_root(
                 tx,
                 table,
@@ -922,90 +1021,130 @@ fn monitor_operation(
             )?
         } else {
             RequestIdentity::issue_root()
-        });
-        operation["providerRequest"] = Value::Null;
-    }
-    Ok(operation)
+        };
+        crate::MonitorOperationEvidence {
+            root_request_id: Some(root),
+            provider_request: None,
+            provider_generation: operation.provider_generation,
+        }
+    };
+    Ok(crate::MonitorOperation {
+        agent: operation.agent,
+        epoch: operation.epoch,
+        account_key: operation.account_key,
+        connection_id: operation.connection_id,
+        evidence,
+    })
+}
+fn set_monitor<T: Serialize>(
+    tx: &Transaction<'_>,
+    row: &SourceReceipt,
+    path: &str,
+    value: &T,
+) -> Result<()> {
+    let json = serde_json::to_string(value)
+        .map_err(|_| unclassifiable("runtime_monitors", &row.id, &row.signature))?;
+    tx.execute(
+        "UPDATE runtime_monitors SET record=json_set(record,?1,json(?2)) WHERE rowid=?3",
+        params![path, json, row.rowid],
+    )?;
+    Ok(())
+}
+fn monitor_effect(
+    tx: &Transaction<'_>,
+    row: &SourceReceipt,
+    account: &str,
+    operation: &str,
+    cutover: i64,
+) -> Result<(String, Option<AdmittedRequest>)> {
+    Ok(
+        retained(tx, "runtime_monitors", row, account, operation, cutover)?.map_or_else(
+            || (RequestIdentity::issue_root(), None),
+            |(call, token)| (call.root_request_id, Some(token)),
+        ),
+    )
 }
 fn monitor_owner(
     tx: &Transaction<'_>,
     row: &SourceReceipt,
-    mut value: Value,
+    value: LegacyMonitorOwner,
     cutover: i64,
-) -> Result<Value> {
-    let invalid = || unclassifiable("runtime_monitors", &row.id, &row.signature);
-    if !value.is_object() {
-        return Err(invalid());
-    }
-    if value["operation"].is_object() {
-        let operation = monitor_operation(tx, row, &row.id, value["operation"].clone(), cutover)?;
-        value["operation"] = operation;
-        if let Some(queue) = value["streamQueue"].as_array_mut() {
-            for entry in queue {
-                if entry["operation"].is_object() {
-                    entry["operation"] =
-                        monitor_operation(tx, row, &row.id, entry["operation"].clone(), cutover)?;
+) -> Result<()> {
+    let account = if let Some(operation) = value.operation {
+        let operation = monitor_operation(tx, row, &row.id, operation, cutover)?;
+        let account = operation.account_key.clone();
+        set_monitor(tx, row, "$.operation", &operation)?;
+        if let Some(queue) = value.stream_queue {
+            for (index, entry) in queue.into_iter().enumerate() {
+                if let Some(operation) = entry.operation {
+                    let operation = monitor_operation(tx, row, &row.id, operation, cutover)?;
+                    set_monitor(
+                        tx,
+                        row,
+                        &format!("$.streamQueue[{index}].operation"),
+                        &operation,
+                    )?;
                 }
             }
         }
-    } else if value["rootRequestId"].is_null() {
-        value["rootRequestId"] = json!(RequestIdentity::issue_root());
-    }
-    let account = value["operation"]["accountKey"].as_str().map(str::to_owned);
+        Some(account)
+    } else {
+        if value.root_request_id.is_none() {
+            set_monitor(tx, row, "$.rootRequestId", &RequestIdentity::issue_root())?;
+        }
+        None
+    };
     if let Some(account) = account {
-        if value["inputAttempt"].is_object() {
-            let mut input = value["inputAttempt"].clone();
-            let id = string(&input, "id", "runtime_monitors", row)?;
-            let authority = retained(
+        if let Some(input) = value.input_attempt {
+            let (root, token) = monitor_effect(
                 tx,
-                "runtime_monitors",
                 row,
                 &account,
-                &format!("monitor-input:{}:{id}", row.id),
+                &format!("monitor-input:{}:{}", row.id, input.id),
                 cutover,
             )?;
-            let (root, token) = authority.map_or_else(
-                || (RequestIdentity::issue_root(), None),
-                |(call, token)| (call.root_request_id, Some(token)),
-            );
-            input["rootRequestId"] = json!(root);
-            input["providerRequest"] = json!(token);
-            value["inputAttempt"] = input;
+            set_monitor(tx, row, "$.inputAttempt.rootRequestId", &root)?;
+            set_monitor(tx, row, "$.inputAttempt.providerRequest", &token)?;
         }
-        if value["cancelRequested"] == true {
-            let authority = retained(
+        if value.cancel_requested == Some(true) {
+            let (root, token) = monitor_effect(
                 tx,
-                "runtime_monitors",
                 row,
                 &account,
                 &format!("monitor-cancel:{}", row.id),
                 cutover,
             )?;
-            let (root, token) = authority.map_or_else(
-                || (RequestIdentity::issue_root(), None),
-                |(call, token)| (call.root_request_id, Some(token)),
-            );
-            value["cancelRootRequestId"] = json!(root);
-            value["cancelProviderRequest"] = json!(token);
+            set_monitor(tx, row, "$.cancelRootRequestId", &root)?;
+            set_monitor(tx, row, "$.cancelProviderRequest", &token)?;
         }
-        if let Some(generation) = value["stallProbeGeneration"].as_i64() {
-            let authority = retained(
+        if let Some(generation) = value.stall_probe_generation {
+            let (root, token) = monitor_effect(
                 tx,
-                "runtime_monitors",
                 row,
                 &account,
                 &format!("liveness:{}:{generation}", row.id),
                 cutover,
             )?;
-            let (root, token) = authority.map_or_else(
-                || (RequestIdentity::issue_root(), None),
-                |(call, token)| (call.root_request_id, Some(token)),
-            );
-            value["livenessProbe"] =
-                json!({"generation":generation,"rootRequestId":root,"providerRequest":token});
+            #[derive(Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Probe {
+                generation: i64,
+                root_request_id: String,
+                provider_request: Option<AdmittedRequest>,
+            }
+            set_monitor(
+                tx,
+                row,
+                "$.livenessProbe",
+                &Probe {
+                    generation,
+                    root_request_id: root,
+                    provider_request: token,
+                },
+            )?;
         }
     }
-    Ok(value)
+    Ok(())
 }
 
 fn operation_owner(
@@ -1190,11 +1329,16 @@ impl ReceiptFamilyMigration for ActionsMigration {
         };
         for row in rows {
             if domain {
+                if source == "runtime_monitors" {
+                    if let Ok(value) = row.json::<LegacyMonitorOwner>(source) {
+                        monitor_owner(tx, &row, value, checkpoint.cutover_ms)?;
+                    }
+                    next.cursor = row.rowid;
+                    continue;
+                }
                 let value: Value = row.json(source)?;
                 let updated = if source == "runtime_agents" {
                     agent_owners(tx, &row, value, checkpoint.cutover_ms)?
-                } else if source == "runtime_monitors" {
-                    monitor_owner(tx, &row, value, checkpoint.cutover_ms)?
                 } else {
                     operation_owner(tx, source, &row, value, checkpoint.cutover_ms)?
                 };
@@ -1209,11 +1353,15 @@ impl ReceiptFamilyMigration for ActionsMigration {
                 "runtime_native_action_receipts" => native(tx, &row, checkpoint.cutover_ms)?,
                 "user_terminal_receipts" => terminal(tx, &row, checkpoint.cutover_ms)?,
                 "runtime_operation_receipts" => {
+                    if row.id.starts_with("monitor-http-input:") {
+                        monitor(tx, &row, checkpoint.cutover_ms)?;
+                        delete_source(tx, source, row.rowid)?;
+                        next.cursor = row.rowid;
+                        continue;
+                    }
                     let value: Value = row.json(source)?;
                     if row.id.starts_with("native-command:") {
                         command(tx, &row, &value, checkpoint.cutover_ms)?;
-                    } else if row.id.starts_with("monitor-http-input:") {
-                        monitor(tx, &row, &value, checkpoint.cutover_ms)?;
                     } else if row.id.starts_with("claude-steer:") {
                         steer(tx, &row, value, checkpoint.cutover_ms)?;
                     } else if row.id.starts_with("park-event:") {
@@ -1831,6 +1979,164 @@ mod tests {
         }
     }
     #[test]
+    fn receipts_actions_monitor_evidence_is_classified_without_losing_authority() {
+        for (extra, valid, undecodable) in [
+            (json!({}), true, false),
+            (
+                json!({"rootRequestId":RequestIdentity::issue_root(),"providerRequest":null}),
+                true,
+                false,
+            ),
+            (
+                json!({"rootRequestId":RequestIdentity::issue_root(),"providerRequest":{"id":"token","signature":"signature","created":1000}}),
+                false,
+                false,
+            ),
+            (
+                json!({"providerRequest":{"id":"token","signature":"signature","created":1000}}),
+                false,
+                false,
+            ),
+            (json!({"rootRequestId":"invalid-root"}), false, false),
+            (
+                json!({"rootRequestId":RequestIdentity::issue_root(),"providerRequest":{"id":17}}),
+                false,
+                true,
+            ),
+            (json!({"unexpectedEvidence":true}), false, true),
+        ] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&db);
+            db.execute_batch(
+                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+            )
+            .expect("monitor source");
+            let mut operation = json!({"agent":"agent","epoch":1,"accountKey":"account","connectionId":"connection"});
+            operation
+                .as_object_mut()
+                .expect("operation")
+                .extend(extra.as_object().expect("extra").clone());
+            let original = json!({"id":"watch","operation":operation,"untouched":{"future":[1,2]}})
+                .to_string();
+            db.execute(
+                "INSERT INTO runtime_monitors VALUES('watch',?1)",
+                [&original],
+            )
+            .expect("monitor");
+            let result = batch(&mut db, "runtime_monitors");
+            if undecodable {
+                result.expect("unrecognized retained owner is skipped");
+                let raw: String = db
+                    .query_row("SELECT record FROM runtime_monitors", [], |r| r.get(0))
+                    .expect("retained");
+                assert_eq!(raw, original);
+                continue;
+            }
+            if !valid {
+                assert!(matches!(
+                    result,
+                    Err(ReceiptMigrationError::Unclassifiable { .. })
+                ));
+                continue;
+            }
+            result.expect("classify");
+            let raw: String = db
+                .query_row("SELECT record FROM runtime_monitors", [], |r| r.get(0))
+                .expect("monitor");
+            let record: Value = serde_json::from_str(&raw).expect("record");
+            assert_eq!(record.get("untouched"), Some(&json!({"future":[1,2]})));
+            let decoded: crate::MonitorOperation =
+                serde_json::from_value(record.get("operation").expect("operation").clone())
+                    .expect("runtime operation");
+            assert_eq!(
+                serde_json::to_value(decoded).expect("round trip"),
+                *record.get("operation").expect("operation")
+            );
+            let operation = record
+                .get("operation")
+                .and_then(Value::as_object)
+                .expect("operation");
+            match extra.get("providerRequest") {
+                Some(token) if !token.is_null() => {
+                    assert_eq!(operation.get("providerRequest"), Some(token))
+                }
+                Some(_) | None => assert!(!operation.contains_key("providerRequest")),
+            }
+        }
+    }
+    #[test]
+    fn receipts_actions_monitor_input_preserves_unresolved_and_rejects_unrecognized() {
+        #[derive(Deserialize)]
+        struct Saved {
+            receipt: MonitorReceipt<crate::MonitorOperation>,
+        }
+        for (status, recognized) in [("Pending", true), ("Unknown", true), ("future", false)] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&db);
+            let id = format!("monitor-http-input:{status}");
+            let raw = format!(
+                r#"{{"monitor":"watch","operation":{{"agent":"agent","epoch":1,"accountKey":"account","connectionId":"connection"}},"status":"{status}"}}"#
+            );
+            db.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,'http-input-v1:hash',?2)",
+                params![id, raw],
+            )
+            .expect("source");
+            let result = batch(&mut db, SOURCES[0]);
+            if !recognized {
+                assert!(
+                    matches!(result, Err(ReceiptMigrationError::Unclassifiable { table, key, .. }) if table == SOURCES[0] && key == id)
+                );
+                let original: String = db
+                    .query_row(
+                        "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                        [&id],
+                        |r| r.get(0),
+                    )
+                    .expect("source remains");
+                assert_eq!(original, raw);
+                continue;
+            }
+            result.expect("migrate");
+            let saved: OutboxRow<Saved> =
+                Outbox::get(&db, &json!(["monitor-http-input", id]).to_string())
+                    .expect("outbox read")
+                    .expect("unresolved");
+            assert_eq!(saved.status, OutboxStatus::Unknown);
+            assert_eq!(
+                saved.payload.receipt.status,
+                if status == "Pending" {
+                    MonitorInputStatus::Pending
+                } else {
+                    MonitorInputStatus::Unknown
+                }
+            );
+        }
+    }
+    #[test]
+    fn receipts_actions_duplicate_retired_monitor_input_aborts_and_preserves_source() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        let id = "monitor-http-input:duplicate";
+        let raw = r#"{"monitor":"watch","operation":{"agent":"agent","epoch":1,"accountKey":"account","connectionId":"connection"},"status":"Pending","status":"Unknown"}"#;
+        db.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,'http-input-v1:hash',?2)",
+            params![id, raw],
+        )
+        .expect("source");
+        assert!(
+            matches!(batch(&mut db, SOURCES[0]), Err(ReceiptMigrationError::Unclassifiable { table, key, .. }) if table == SOURCES[0] && key == id)
+        );
+        let saved: String = db
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .expect("source remains");
+        assert_eq!(saved, raw);
+    }
+    #[test]
     fn receipts_actions_completed_current_release_keeps_typed_authorization() {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&db);
@@ -1888,14 +2194,54 @@ mod tests {
                 r.get(0)
             })
             .expect("owner");
-        let credit: Value = serde_json::from_str(&raw).expect("JSON");
-        assert_eq!(credit["idempotency_key"], "charge-key");
-        assert_eq!(credit["transport_attempts"], 1);
+        #[derive(Deserialize)]
+        struct CreditEvidence {
+            idempotency_key: String,
+            transport_attempts: u64,
+            status: studio_runtime_schema::persistence::ResetCreditStatus,
+            provider_request: AdmittedRequest,
+            admission: AdmittedRequest,
+        }
+        let credit: CreditEvidence = serde_json::from_str(&raw).expect("typed credit");
+        assert_eq!(credit.idempotency_key, "charge-key");
+        assert_eq!(credit.transport_attempts, 1);
         assert_eq!(
-            credit["provider_request"]["id"],
+            credit.status,
+            studio_runtime_schema::persistence::ResetCreditStatus::Uncertain
+        );
+        assert_eq!(
+            credit.provider_request.id(),
             format!("account-worker:{key}:result")
         );
-        assert_eq!(credit["admission"]["id"], "credit-attempt");
+        assert_eq!(credit.admission.id(), "credit-attempt");
+        let source: String = db
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                [format!("account-worker:{key}:submitted")],
+                |r| r.get(0),
+            )
+            .expect("unresolved source retained");
+        #[derive(Deserialize)]
+        struct Submission {
+            request: Option<serde::de::IgnoredAny>,
+        }
+        assert!(
+            serde_json::from_str::<Submission>(&source)
+                .expect("source")
+                .request
+                .is_none()
+        );
+        let pending: i64 = db
+            .query_row(
+                "SELECT count(*) FROM runtime_outbox WHERE kind=?1 AND status=?2",
+                params![OutboxKind::ProviderCall, OutboxStatus::Pending],
+                |r| r.get(0),
+            )
+            .expect("sendable provider calls");
+        assert_eq!(
+            pending, 0,
+            "missing request never becomes a sendable provider call"
+        );
         let raw: String = db
             .query_row("SELECT record FROM runtime_safety_retries", [], |r| {
                 r.get(0)

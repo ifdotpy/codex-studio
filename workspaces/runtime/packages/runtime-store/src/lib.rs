@@ -116,7 +116,9 @@ pub use repositories::federation::FederationRepository;
 pub use repositories::federation_credentials::FederationCredentialsRepository;
 pub use repositories::federation_messaging;
 pub use repositories::monitor_runtime;
-pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
+pub use repositories::monitors::{
+    MonitorOperation, MonitorOperationEvidence, MonitorsRepository, StoredMonitor,
+};
 pub use repositories::multi_server::MultiServerRepository;
 pub use repositories::notification_dispatch::NotificationDispatchRepository;
 pub use repositories::orchestration_settings::{

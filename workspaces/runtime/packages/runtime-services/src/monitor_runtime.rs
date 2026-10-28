@@ -636,29 +636,17 @@ pub fn settle_provider_call(
         || operation.epoch != actor.epoch
         || operation.account_key != call.scope.account
         || operation.connection_id != call.scope.connection
-        || operation
-            .evidence
-            .get("providerGeneration")
-            .and_then(Value::as_u64)
-            != Some(call.scope.generation)
+        || operation.evidence.provider_generation != Some(call.scope.generation)
         || token.signature() != call.fingerprint(&call.scope.account, call.method.as_str())
     {
         return Ok(false);
     }
-    if let Some(saved) = operation.evidence.get("providerRequest") {
-        let Ok(saved) = serde_json::from_value::<
-            studio_runtime_store::request_results::AdmittedRequest,
-        >(saved.clone()) else {
-            return Ok(false);
-        };
-        if saved != *token {
+    if let Some(saved) = &operation.evidence.provider_request {
+        if saved != token {
             return Ok(false);
         }
     } else {
-        let root = operation
-            .evidence
-            .get("rootRequestId")
-            .and_then(Value::as_str);
+        let root = operation.evidence.root_request_id.as_deref();
         if root != Some(call.root_request_id.as_str()) {
             return Ok(false);
         }
@@ -1109,9 +1097,8 @@ pub async fn provider_root(store: &RuntimeStore, id: &str) -> Result<String, Mon
             if let Some(operation) = snapshot.operation() {
                 return operation
                     .evidence
-                    .get("rootRequestId")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
+                    .root_request_id
+                    .clone()
                     .ok_or(MonitorError::Refused(
                         "Monitor provider request identity is unavailable",
                     ));

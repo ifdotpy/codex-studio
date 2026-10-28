@@ -1190,20 +1190,9 @@ fn monitor_call(
 ) -> Result<Option<storage::RecordedCall>, WorkerError> {
     let identity = format!("monitor:{id}");
     let key = Call::operation_key(&operation.account_key, &identity);
-    let admitted = operation
-        .evidence
-        .get("providerRequest")
-        .cloned()
-        .map(serde_json::from_value::<AdmittedRequest>)
-        .transpose()
-        .map_err(StoreError::from)?;
-    let result_id = if let Some(token) = &admitted {
+    let result_id = if let Some(token) = &operation.evidence.provider_request {
         Some(token.id().to_owned())
-    } else if let Some(root) = operation
-        .evidence
-        .get("rootRequestId")
-        .and_then(Value::as_str)
-    {
+    } else if let Some(root) = operation.evidence.root_request_id.as_deref() {
         Some(
             RequestIdentity::new(
                 "provider-call",

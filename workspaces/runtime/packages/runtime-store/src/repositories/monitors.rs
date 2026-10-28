@@ -6,6 +6,48 @@ use crate::StoreResult;
 use crate::records::{MonitorRecord, Table};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 
+#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MonitorOperation {
+    pub agent: String,
+    pub epoch: i64,
+    pub account_key: String,
+    pub connection_id: String,
+    #[serde(flatten)]
+    pub evidence: MonitorOperationEvidence,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorOperationEvidence {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub root_request_id: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub provider_generation: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub provider_request: Option<crate::request_results::AdmittedRequest>,
+}
+
+fn present<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
 /// Compatibility name for callers that used the pre-typed monitor wrapper.
 pub type StoredMonitor = MonitorRecord;
 

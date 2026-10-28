@@ -698,10 +698,11 @@ impl RetainedMonitorPort {
                 .map_err(|_| MonitorError::Refused("Monitor epoch is invalid"))?,
             account_key: account.to_owned(),
             connection_id: scope.connection.clone(),
-            evidence: BTreeMap::from([
-                ("rootRequestId".into(), json!(root_request_id)),
-                ("providerGeneration".into(), json!(scope.generation)),
-            ]),
+            evidence: studio_runtime_services::monitor_policy::OperationEvidence {
+                root_request_id: Some(root_request_id),
+                provider_generation: Some(scope.generation),
+                provider_request: None,
+            },
         };
         let resources = self
             .preparation
@@ -968,10 +969,11 @@ impl RetainedMonitorPort {
                 .clone()
                 .unwrap_or_else(|| "default".into()),
             connection_id: scope.connection,
-            evidence: BTreeMap::from([
-                ("rootRequestId".into(), json!(root_request_id)),
-                ("providerGeneration".into(), json!(scope.generation)),
-            ]),
+            evidence: studio_runtime_services::monitor_policy::OperationEvidence {
+                root_request_id: Some(root_request_id),
+                provider_generation: Some(scope.generation),
+                provider_request: None,
+            },
         };
         let config = provider_request(
             MonitorRequestOwner {
@@ -2169,6 +2171,132 @@ mod tests {
             "log":log.to_string_lossy(),"cancelRequested":false})
     }
 
+    fn retained_command(
+        root: &Path,
+        remote_id: Option<u64>,
+    ) -> (
+        Operation,
+        studio_runtime_services::account_worker::retained::ProviderCallIntent,
+        studio_runtime_services::provider_session_task::RecoveredRequest,
+    ) {
+        use studio_runtime_process::OperationId;
+        use studio_runtime_providers::{RequestId, RequestTicket};
+        use studio_runtime_services::account_worker::retained::{ProviderCallIntent, RequestActor};
+        use studio_runtime_services::provider_session_task::RecoveredRequest;
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Params<'a> {
+            process_id: &'a str,
+            cwd: &'a Path,
+            command: [&'a str; 1],
+        }
+        let root_request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let operation = Operation {
+            agent: "owner".into(),
+            epoch: 0,
+            account_key: "default".into(),
+            connection_id: "old".into(),
+            evidence: studio_runtime_services::monitor_policy::OperationEvidence {
+                root_request_id: Some(root_request_id.clone()),
+                provider_generation: Some(1),
+                provider_request: None,
+            },
+        };
+        let call = ProviderCallIntent {
+            root_request_id,
+            admitted_request: None,
+            scope: studio_runtime_services::account_session_runtime::ConnectionScope {
+                account: "default".into(),
+                connection: "old".into(),
+                generation: 1,
+            },
+            operation: "monitor:watch".into(),
+            actor: Some(RequestActor {
+                agent: "owner".into(),
+                epoch: 0,
+            }),
+            transfer: None,
+            deleted_actor_session: None,
+            method: Method::CommandExec,
+            params: serde_json::to_value(Params {
+                process_id: "watch",
+                cwd: root,
+                command: ["true"],
+            })
+            .expect("params"),
+        };
+        let key = studio_runtime_schema::provider_call_contract::transport_key(
+            "default",
+            "monitor:watch",
+        );
+        let request = RecoveredRequest {
+            ticket: RequestTicket {
+                id: RequestId::String(key.clone()),
+                generation: 1,
+                method: Method::CommandExec,
+            },
+            operation_id: OperationId(key),
+            thread_id: None,
+            lightweight: true,
+            deadline_ms: 60000,
+            unknown: true,
+            remote_id,
+        };
+        (operation, call, request)
+    }
+
+    async fn retained_submit(
+        store: &RuntimeStore,
+        call: &studio_runtime_services::account_worker::retained::ProviderCallIntent,
+        request: &studio_runtime_services::provider_session_task::RecoveredRequest,
+        written: bool,
+    ) {
+        use studio_runtime_services::account_worker::retained::{record_outcome, submitted};
+        submitted(store, call, request, None)
+            .await
+            .expect("store submission")
+            .expect("authorize submission");
+        if written {
+            let request = request.clone();
+            let key = request.operation_id.0.clone();
+            store
+                .transaction_with(move |tx| {
+                    record_outcome(tx, &key, Some(request), None, 0)?;
+                    Ok::<_, studio_runtime_services::account_worker::WorkerError>(())
+                })
+                .await
+                .expect("persist written proof");
+        }
+    }
+
+    async fn retained_answer(store: &RuntimeStore, key: String) {
+        use studio_runtime_services::account_worker::retained::{
+            RequestResult, checkpoint_covered, record_outcome,
+        };
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Exit {
+            exit_code: i32,
+        }
+        store
+            .transaction_with(move |tx| {
+                record_outcome(
+                    tx,
+                    &key,
+                    None,
+                    Some(RequestResult::Reply(
+                        serde_json::to_value(Exit { exit_code: 0 }).expect("exit"),
+                    )),
+                    1,
+                )?;
+                studio_runtime_store::account_state::set_provider_checkpoint(tx, "default", 1, 1)?;
+                checkpoint_covered(tx, "default", 1, 1)?;
+                Ok::<_, studio_runtime_services::account_worker::WorkerError>(())
+            })
+            .await
+            .expect("commit exact retained answer and checkpoint");
+    }
+
     #[tokio::test]
     async fn http_input_retains_the_full_ticket_through_the_real_monitor_adapter() {
         let root = tempfile::tempdir().expect("state root");
@@ -2201,13 +2329,16 @@ mod tests {
             cols: None,
             close_stdin: false,
         };
-        for id in ["request-one", "request:with:colons"] {
+        for id in [
+            studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+            studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+        ] {
             let first = runtime
-                .input_http("watch:with:colons", id, &input, 2000.0)
+                .input_http("watch:with:colons", &id, &input, 2000.0)
                 .await
                 .expect("real adapter returns exact HTTP acknowledgement");
             let replay = runtime
-                .input_http("watch:with:colons", id, &input, 2001.0)
+                .input_http("watch:with:colons", &id, &input, 2001.0)
                 .await
                 .expect("replay saved HTTP acknowledgement");
             assert_eq!(first, replay);
@@ -2301,7 +2432,13 @@ mod tests {
             epoch: 0,
             account_key: "default".into(),
             connection_id: "connection".into(),
-            evidence: BTreeMap::new(),
+            evidence: studio_runtime_services::monitor_policy::OperationEvidence {
+                root_request_id: Some(
+                    studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                ),
+                provider_generation: Some(1),
+                provider_request: None,
+            },
         };
         let mut watch = starting_watch(root.path(), "watch");
         watch["status"] = json!("running");
@@ -2449,10 +2586,12 @@ mod tests {
             epoch: 0,
             account_key: "default".into(),
             connection_id: "connection".into(),
-            evidence: BTreeMap::from([(
-                "rootRequestId".into(),
-                json!(studio_runtime_schema::persistence::RequestIdentity::issue_root()),
-            )]),
+            evidence: studio_runtime_services::monitor_policy::OperationEvidence {
+                root_request_id: Some(
+                    studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                ),
+                ..Default::default()
+            },
         };
         let mut watch = starting_watch(root.path(), "watch");
         watch["status"] = json!("running");
@@ -2519,7 +2658,7 @@ mod tests {
         struct Session {
             live: AtomicBool,
             executions: AtomicUsize,
-            replay_config: bool,
+            config_reads: AtomicUsize,
             refuse_config_once: AtomicBool,
         }
         impl AccountSessionPort for Session {
@@ -2556,22 +2695,16 @@ mod tests {
                 SessionReceipt,
             > {
                 Box::pin(async move {
-                    let mut scope = request.expected_scope.clone().expect("scope");
+                    let scope = request.expected_scope.clone().expect("scope");
                     let (result, replayed) = match request.method {
                         Method::ConfigRead => {
+                            self.config_reads.fetch_add(1, Ordering::SeqCst);
                             if self.refuse_config_once.swap(false, Ordering::SeqCst) {
                                 return Err(AccountSessionError::Refused(
                                     "temporary fixture config refusal",
                                 ));
                             }
-                            if self.replay_config {
-                                scope.connection = "old".into();
-                                scope.generation = 1;
-                            }
-                            (
-                                json!({"config":{"allow_login_shell":false}}),
-                                self.replay_config,
-                            )
+                            (json!({"config":{"allow_login_shell":false}}), false)
                         }
                         Method::CommandExec => {
                             self.executions.fetch_add(1, Ordering::SeqCst);
@@ -2787,7 +2920,7 @@ mod tests {
         let session = Arc::new(Session {
             live: AtomicBool::new(false),
             executions: AtomicUsize::new(0),
-            replay_config,
+            config_reads: AtomicUsize::new(0),
             refuse_config_once: AtomicBool::new(replay_config),
         });
         let port = RetainedMonitorPort::new(
@@ -2850,6 +2983,10 @@ mod tests {
             1,
             "restart={restart} replay={replay_config}"
         );
+        assert_eq!(
+            session.config_reads.load(Ordering::SeqCst),
+            if replay_config { 2 } else { 1 }
+        );
         let agent = store
             .read_async("test/owner-turn", |tx| {
                 AgentRepository::get(tx, &"owner".into())
@@ -2884,37 +3021,36 @@ mod tests {
         let root = tempfile::tempdir().expect("state root");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let now = studio_runtime_services::event_write::unix_time().expect("clock");
-        let operation = Operation {
-            agent: "owner".into(),
-            epoch: 0,
-            account_key: "default".into(),
-            connection_id: "old".into(),
-            evidence: BTreeMap::new(),
-        };
+        let (operation, call, request) = retained_command(root.path(), Some(42));
         let mut watch = starting_watch(root.path(), "watch");
         watch["status"] = json!("running");
         watch["created"] = json!(now);
         watch["operation"] = json!(operation);
         let owner = owner(root.path(), true);
-        let key = format!(
-            "retained:default:{}",
-            studio_runtime_store::sha256_hex(b"monitor:watch")
+        let key = request.operation_id.0.clone();
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                studio_runtime_store::Table::new(tx)
+                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("persist retained command before restart");
+        let saved: String = store
+            .read_async("test/stored-operation", |tx| {
+                tx.query_row("SELECT json_extract(record,'$.operation') FROM runtime_monitors WHERE id='watch'", [], |row| row.get(0))
+                    .map_err(studio_runtime_store::StoreError::from)
+            })
+            .await
+            .expect("stored operation");
+        let decoded: Operation = serde_json::from_str(&saved).expect("typed stored operation");
+        assert_eq!(decoded, operation);
+        assert_eq!(
+            serde_json::from_str::<Value>(&saved).expect("stored JSON"),
+            serde_json::to_value(&decoded).expect("round-trip JSON")
         );
-        let submitted = json!({
-            "call":{"scope":{"account":"default","connection":"old","generation":1},
-                "operation":"monitor:watch","actor":{"agent":"owner","epoch":0},
-                "transfer":null,"deleted_actor_session":null,"method":"command/exec",
-                "params":{"processId":"watch","cwd":root.path().to_string_lossy(),"command":["true"]}},
-            "request":{"id":key,"generation":1,"method":"command/exec","operation":key,
-                "thread":null,"lightweight":true,"deadline":60000,"remoteId":42}
-        });
-        let submitted_id = format!("account-worker:{key}:submitted");
-        store.transaction(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
-            studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
-            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)", (submitted_id, submitted.to_string()))?;
-            Ok::<_, studio_runtime_store::StoreError>(())
-        }).await.expect("persist retained command before restart");
+        retained_submit(&store, &call, &request, false).await;
         studio_runtime_services::monitor_runtime::recover_on_startup(&store, now)
             .await
             .expect("startup");
@@ -2937,23 +3073,12 @@ mod tests {
         let wake = Arc::new(Notify::new());
         port.set_dispatch_wake(Arc::clone(&wake))
             .expect("install wake");
-        async fn receipt(store: &RuntimeStore, key: String) {
-            store.transaction(move |tx| {
-                for (id, result) in [
-                    (format!("account-worker:{key}:result"), json!({"result":{"Reply":{"exitCode":0}},"cursor":1})),
-                    ("account-worker:cursor:default:1:ack".into(),json!(1)),
-                ] {
-                    tx.execute("INSERT OR REPLACE INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)",(id,result.to_string()))?;
-                }
-                Ok::<_, studio_runtime_store::StoreError>(())
-            }).await.expect("retained native reply and checkpoint commit");
-        }
         if already_present {
-            receipt(&store, key.clone()).await;
+            retained_answer(&store, key.clone()).await;
         }
         port.await_exit(&snapshot).expect("restore exit waiter");
         if !already_present {
-            receipt(&store, key.clone()).await;
+            retained_answer(&store, key.clone()).await;
         }
         tokio::time::timeout(Duration::from_secs(10), wake.notified())
             .await
@@ -2964,7 +3089,7 @@ mod tests {
             Arc::new(Notify::new()),
         );
         runtime.tick(now + 1.0).await.expect("terminal delivery");
-        receipt(&store, key).await;
+        retained_answer(&store, key).await;
         runtime.tick(now + 2.0).await.expect("receipt replay");
         let count: i64 = store.read_async("test/wake-count",|tx| {
             tx.query_row("SELECT count(*) FROM runtime_events WHERE id='monitor:watch' AND kind='monitor_exit' AND status='pending'",[],|row|row.get(0)).map_err(studio_runtime_store::StoreError::from)
@@ -3076,54 +3201,35 @@ mod tests {
         let root = tempfile::tempdir().expect("state root");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let now = studio_runtime_services::event_write::unix_time().expect("clock");
-        let operation = Operation {
-            agent: "owner".into(),
-            epoch: 0,
-            account_key: "default".into(),
-            connection_id: "old".into(),
-            evidence: BTreeMap::new(),
-        };
+        let (operation, call, request) = retained_command(root.path(), None);
         let mut watch = starting_watch(root.path(), "watch");
         watch["status"] = json!("running");
         watch["created"] = json!(now);
         watch["operation"] = json!(operation);
-        let mut owner = owner(root.path(), true);
-        if transferred {
-            owner["accountKey"] = json!("target");
-        }
-        let key = format!(
-            "retained:default:{}",
-            studio_runtime_store::sha256_hex(b"monitor:watch")
-        );
-        let submitted = json!({
-            "call":{"scope":{"account":"default","connection":"old","generation":1},
-                "operation":"monitor:watch","actor":{"agent":"owner","epoch":0},
-                "transfer":null,"deleted_actor_session":null,"method":"command/exec",
-                "params":{"processId":"watch","cwd":root.path().to_string_lossy(),"command":["true"]}},
-            "request":{"id":key,"generation":1,"method":"command/exec","operation":key,
-                "thread":null,"lightweight":true,"deadline":60000,"remoteId":null}
-        });
-        let submitted_id = format!("account-worker:{key}:submitted");
-        store.transaction(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
-            studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
-            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)", (submitted_id, submitted.to_string()))?;
-            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)", (format!("account-worker:{}:written",submitted["request"]["id"].as_str().expect("native request id")),submitted["request"].to_string()))?;
-            Ok::<_, studio_runtime_store::StoreError>(())
-        }).await.expect("persist retained command before restart");
-        async fn answer(store: &RuntimeStore, key: String) {
-            store.transaction(move |tx| {
-                for (id, result) in [
-                    (format!("account-worker:{key}:result"), json!({"result":{"Reply":{"exitCode":0}},"cursor":1})),
-                    ("account-worker:cursor:default:1:ack".into(),json!(1)),
-                ] {
-                    tx.execute("INSERT OR REPLACE INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)",(id,result.to_string()))?;
-                }
+        let owner = owner(root.path(), true);
+        let key = request.operation_id.0.clone();
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                studio_runtime_store::Table::new(tx)
+                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
                 Ok::<_, studio_runtime_store::StoreError>(())
-            }).await.expect("retained native reply and checkpoint commit");
+            })
+            .await
+            .expect("persist retained command before restart");
+        retained_submit(&store, &call, &request, true).await;
+        if transferred {
+            store
+                .transaction(|tx| {
+                    let mut owner = AgentRepository::get(tx, &"owner".into())?.expect("owner");
+                    owner.extra.insert("accountKey".into(), json!("target"));
+                    AgentRepository::put(tx, &owner)
+                })
+                .await
+                .expect("transfer owner");
         }
         if answered {
-            answer(&store, key.clone()).await;
+            retained_answer(&store, key.clone()).await;
         }
         studio_runtime_services::monitor_runtime::recover_on_startup(&store, now)
             .await
@@ -3168,7 +3274,7 @@ mod tests {
             let watch = read(Arc::clone(&store)).await;
             assert_eq!(watch["status"], "running", "{case}: still owed its answer");
             assert!(watch["reattachRecovery"].is_null(), "{case}");
-            answer(&store, key.clone()).await;
+            retained_answer(&store, key.clone()).await;
         }
         // The restored waiter queues the exit after the answer commits.
         let watch = tokio::time::timeout(Duration::from_secs(10), async {
@@ -3267,13 +3373,7 @@ mod tests {
         let root = tempfile::tempdir().expect("state root");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let now = studio_runtime_services::event_write::unix_time().expect("clock");
-        let operation = Operation {
-            agent: "owner".into(),
-            epoch: 0,
-            account_key: "default".into(),
-            connection_id: "old".into(),
-            evidence: BTreeMap::new(),
-        };
+        let (operation, call, request) = retained_command(root.path(), None);
         // The deadline and the provider grace passed long ago.
         let mut watch = starting_watch(root.path(), "watch");
         watch["status"] = json!("running");
@@ -3281,32 +3381,17 @@ mod tests {
         watch["timeout_ms"] = json!(60_000);
         watch["operation"] = json!(operation);
         let owner = owner(root.path(), true);
-        let key = format!(
-            "retained:default:{}",
-            studio_runtime_store::sha256_hex(b"monitor:watch")
-        );
-        let submitted = json!({
-            "call":{"scope":{"account":"default","connection":"old","generation":1},
-                "operation":"monitor:watch","actor":{"agent":"owner","epoch":0},
-                "transfer":null,"deleted_actor_session":null,"method":"command/exec",
-                "params":{"processId":"watch","cwd":root.path().to_string_lossy(),"command":["true"]}},
-            "request":{"id":key,"generation":1,"method":"command/exec","operation":key,
-                "thread":null,"lightweight":true,"deadline":60000,"remoteId":null}
-        });
-        let submitted_id = format!("account-worker:{key}:submitted");
-        store.transaction(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
-            studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
-            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)", (submitted_id, submitted.to_string()))?;
-            Ok::<_, studio_runtime_store::StoreError>(())
-        }).await.expect("persist a command whose answer is still owed");
-        let written_key = key.clone();
-        store.transaction(move |tx| {
-            let submitted:String=tx.query_row("SELECT result FROM runtime_operation_receipts WHERE id=?1",[format!("account-worker:{written_key}:submitted")],|row|row.get(0))?;
-            let submitted:Value=serde_json::from_str(&submitted)?;
-            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)",(format!("account-worker:{written_key}:written"),submitted["request"].to_string()))?;
-            Ok::<_,studio_runtime_store::StoreError>(())
-        }).await.expect("native transport acknowledged this exact command");
+        let key = request.operation_id.0.clone();
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                studio_runtime_store::Table::new(tx)
+                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("persist a command whose answer is still owed");
+        retained_submit(&store, &call, &request, true).await;
         // The same entry as a request that timed out: the answer is unknown.
         studio_runtime_services::monitor_runtime::reconcile_unknown(&store, "watch", now)
             .await
@@ -3381,15 +3466,7 @@ mod tests {
             vec!["monitor:watch".to_owned()]
         );
         // The provider process answers late; the answer commits to the ledger.
-        store.transaction(move |tx| {
-            for (id, result) in [
-                (format!("account-worker:{key}:result"), json!({"result":{"Reply":{"exitCode":0}},"cursor":1})),
-                ("account-worker:cursor:default:1:ack".into(),json!(1)),
-            ] {
-                tx.execute("INSERT OR REPLACE INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)",(id,result.to_string()))?;
-            }
-            Ok::<_, studio_runtime_store::StoreError>(())
-        }).await.expect("late native reply and checkpoint commit");
+        retained_answer(&store, key).await;
         let completed = until("completed").await;
         assert_eq!(completed["exitCode"], 0, "{completed}");
         for _ in 0..3 {
@@ -3651,7 +3728,7 @@ mod tests {
                 epoch: 0,
                 account_key: "default".into(),
                 connection_id: "old".into(),
-                evidence: BTreeMap::new()
+                evidence: Default::default()
             });
             store
                 .transaction(move |tx| {
@@ -3741,7 +3818,7 @@ mod tests {
             epoch: 0,
             account_key: "default".into(),
             connection_id: "old".into(),
-            evidence: BTreeMap::new()
+            evidence: Default::default()
         });
         store
             .transaction(move |tx| {
@@ -3866,7 +3943,7 @@ mod tests {
         assert_eq!(record["status"], "failed");
         assert_eq!(
             record["error"],
-            "The command was not started: The agent turn was stopped"
+            "The command was not started: Monitor owner is no longer active"
         );
     }
 
@@ -3877,15 +3954,50 @@ mod tests {
         let root = tempfile::tempdir().expect("state root");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let session = Arc::new(ExecSession::default());
-        let port =
-            RetainedMonitorPort::new(store, Arc::clone(&session) as Arc<dyn AccountSessionPort>);
+        let port = RetainedMonitorPort::new(
+            store.clone(),
+            Arc::clone(&session) as Arc<dyn AccountSessionPort>,
+        );
         let operation = Operation {
             agent: "owner".into(),
             epoch: 0,
             account_key: "default".into(),
             connection_id: "connection".into(),
-            evidence: BTreeMap::new(),
+            evidence: studio_runtime_services::monitor_policy::OperationEvidence {
+                root_request_id: Some(
+                    studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                ),
+                provider_generation: Some(1),
+                provider_request: None,
+            },
         };
+        let mut watch = starting_watch(root.path(), "watch");
+        let fields = watch.as_object_mut().expect("watch object");
+        fields.insert(
+            "status".into(),
+            serde_json::to_value(studio_runtime_services::monitor_policy::MonitorStatus::Running)
+                .expect("status"),
+        );
+        fields.insert(
+            "operation".into(),
+            serde_json::to_value(&operation).expect("operation"),
+        );
+        let owner = AgentRecord::from_value(owner(root.path(), true)).expect("owner");
+        let watch = studio_runtime_store::MonitorRecord::from_value(watch).expect("watch");
+        store
+            .transaction_with(move |tx| {
+                AgentRepository::put(tx, &owner)?;
+                studio_runtime_store::Table::new(tx).put(&watch)?;
+                studio_runtime_services::monitor_driver::reserve_cancel(
+                    tx,
+                    "watch",
+                    Some("owner"),
+                    2.0,
+                )?;
+                Ok::<_, MonitorError>(())
+            })
+            .await
+            .expect("persist running monitor and cancellation identity");
         let terminate = studio_runtime_services::monitor_driver::cancel_effect("watch");
         let missing = |submission: Submission| {
             matches!(
