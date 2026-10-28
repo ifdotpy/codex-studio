@@ -4860,3 +4860,29 @@ mod wal_flush_tests {
         assert_eq!((canvas, analytics), (expected, expected));
     }
 }
+
+/// The only typed→Value conversion: feeds existing Value-only projections
+/// (sync views, SSE, entity/room/subscription views). Not for storage or logic.
+pub fn projection_value<T: serde::Serialize>(
+    value: &T,
+) -> Result<serde_json::Value, serde_json::Error> {
+    serde_json::to_value(value)
+}
+
+#[cfg(test)]
+mod projection_adapter_tests {
+    #[test]
+    fn preserves_typed_fields() {
+        #[derive(serde::Serialize)]
+        struct Sample {
+            name: &'static str,
+            count: u32,
+        }
+        let projected = super::projection_value(&Sample {
+            name: "sample",
+            count: 3,
+        })
+        .expect("projection");
+        assert_eq!(projected, serde_json::json!({"name":"sample", "count":3}));
+    }
+}
