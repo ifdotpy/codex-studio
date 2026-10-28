@@ -42,8 +42,6 @@ use crate::{
     sync_policy, work_write,
 };
 
-const VOICE_STOP_SIGNATURE: &str = "lifecycle.voice-stop.v1";
-
 /// Recovery shares stop/delete's canonical parent notification and failed-work
 /// release owners. These writes run inside RecoveryStore's transaction.
 pub struct ProductionRecoveryDelivery {
@@ -117,6 +115,7 @@ enum InterruptWriteResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InterruptRequest {
     pub ticket: String,
+    pub root_request_id: String,
     pub agent: String,
     pub epoch: i64,
     pub thread: String,
@@ -324,6 +323,17 @@ impl ProductionLifecyclePorts {
                 "account-worker/agent-interrupt",
             ));
         }
+        let root_request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let mut owner = AgentRepository::get(tx, &AgentId::from(agent))?
+            .ok_or(ManagementError::Invalid("Missing interrupt owner"))?;
+        owner
+            .extra
+            .get_mut("startAttempt")
+            .and_then(|attempt| attempt.get_mut("interrupt"))
+            .and_then(Value::as_object_mut)
+            .ok_or(ManagementError::Invalid("Missing interrupt intent"))?
+            .insert("rootRequestId".into(), json!(root_request_id));
+        AgentRepository::put(tx, &owner)?;
         let terminals = studio_runtime_providers::ProviderKind::of_field(before.get("provider"))
             .ok()
             .and_then(studio_runtime_providers::stop_terminals_method)
@@ -333,6 +343,7 @@ impl ProductionLifecyclePorts {
             });
         let request = InterruptRequest {
             ticket,
+            root_request_id,
             agent: agent.to_owned(),
             epoch: request_epoch,
             thread: thread.to_owned(),
@@ -579,6 +590,8 @@ async fn request_stop_work(
     let receipt = port
         .provider_request(ProviderRequest {
             account: request.scope.account.clone(),
+            root_request_id: request.root_request_id.clone(),
+            admitted_request: None,
             operation: operation.to_owned(),
             actor: Some(RequestActor {
                 agent: request.agent.clone(),
@@ -726,26 +739,8 @@ impl ProductionLifecyclePorts {
             .get("epoch")
             .and_then(Value::as_i64)
             .ok_or(ManagementError::Invalid("Invalid voice stop epoch"))?;
-        let id = format!("agent-voice-stop:{agent_id}:{epoch}");
-        let result = json!({"agent":agent_id,"epoch":epoch,"status":"pending"});
-        tx.execute(
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) ON CONFLICT(id) DO NOTHING",
-            rusqlite::params![id, VOICE_STOP_SIGNATURE, result.to_string()],
-        )
-        .map_err(studio_runtime_store::StoreError::from)?;
-        let stored_signature: String = tx
-            .query_row(
-                "SELECT signature FROM runtime_operation_receipts WHERE id=?1",
-                [&id],
-                |row| row.get(0),
-            )
-            .map_err(studio_runtime_store::StoreError::from)?;
-        if stored_signature != VOICE_STOP_SIGNATURE {
-            return Err(ManagementError::Invalid(
-                "Voice stop intent identity collision",
-            ));
-        }
-        Ok(())
+        crate::voice::provider::stage_voice_stop_sessions(tx, agent_id, epoch)
+            .map_err(|_| ManagementError::Invalid("Invalid voice stop intent"))
     }
 
     fn stage_remote_stop(
@@ -797,20 +792,12 @@ impl ProductionLifecyclePorts {
 
 impl ProductionLifecyclePorts {
     async fn dispatch_active_voice_stops(&self) -> Result<(), ManagementError> {
-        let intents = self
-            .store
-            .read_async("runtime-services/lifecycle_effects", |tx| {
-                let mut statement = tx.prepare(
-                    "SELECT id,json_extract(result,'$.agent') FROM runtime_operation_receipts \
-                 WHERE signature=?1 AND json_extract(result,'$.status')='pending' ORDER BY id",
-                )?;
-                let rows = statement.query_map([VOICE_STOP_SIGNATURE], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?;
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(studio_runtime_store::StoreError::from)
-            })
-            .await?;
+        let intents = crate::voice::provider::pending_voice_intents(
+            &self.store,
+            studio_runtime_schema::persistence::OutboxKind::VoiceStop,
+        )
+        .await
+        .map_err(|_| ManagementError::Invalid("Invalid voice stop intent"))?;
         if intents.is_empty() {
             return Ok(());
         }
@@ -820,8 +807,9 @@ impl ProductionLifecyclePorts {
             .ok_or(ManagementError::Unavailable("voice-driver/agent-stop"))?;
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|_| ManagementError::Unavailable("voice-driver/agent-stop"))?;
-        for (intent_id, agent_id) in intents {
-            let dispatch_key = intent_id.clone();
+        for intent in intents {
+            let dispatch_key = intent.id.clone();
+            let agent_id = intent.agent_id.clone();
             let already_dispatching = !self
                 .voice_dispatching
                 .lock()
@@ -833,34 +821,22 @@ impl ProductionLifecyclePorts {
             let store = Arc::clone(&self.store);
             let provider = Arc::clone(&provider);
             let dispatching = Arc::clone(&self.voice_dispatching);
-            let completion_store = Arc::clone(&store);
-            let completion_intent = intent_id.clone();
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|duration| duration.as_secs_f64())
                 .unwrap_or_default();
             handle.spawn(async move {
-                if let Err(error) = crate::voice::provider::end_active_for_agent(
+                if let Err(error) = crate::voice::provider::end_voice_sessions_tracked(
                     store,
                     provider,
-                    agent_id.clone(),
+                    intent.id,
+                    studio_runtime_schema::persistence::OutboxKind::VoiceStop,
+                    intent.sessions,
                     now,
                 )
                 .await
                 {
                     eprintln!("voice sessions remain stopped-pending for {agent_id}: {error}");
-                } else if let Err(error) = completion_store
-                    .transaction(move |tx| {
-                        tx.execute(
-                            "DELETE FROM runtime_operation_receipts WHERE id=?1 AND signature=?2 \
-                         AND json_extract(result,'$.status')='pending'",
-                            rusqlite::params![completion_intent, VOICE_STOP_SIGNATURE],
-                        )?;
-                        Ok(())
-                    })
-                    .await
-                {
-                    eprintln!("voice stop intent remains pending for {agent_id}: {error}");
                 }
                 dispatching
                     .lock()
@@ -1742,6 +1718,7 @@ mod tests {
 
     fn request() -> InterruptRequest {
         InterruptRequest {
+            root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
             ticket: "lifecycle-interrupt:request".into(),
             agent: "agent".into(),
             epoch: 4,
