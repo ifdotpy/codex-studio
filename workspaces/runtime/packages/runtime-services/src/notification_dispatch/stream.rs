@@ -7,7 +7,7 @@ use super::{
 };
 use std::ops::{Deref, DerefMut};
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     sync::Arc,
 };
 
@@ -278,17 +278,6 @@ pub(super) enum EnqueueResult {
 }
 
 impl NotificationStreamBuffer {
-    pub(crate) fn owners(&self) -> BTreeSet<String> {
-        self.entries
-            .iter()
-            .map(|entry| &entry.key)
-            .chain(self.closed.iter().map(|key| key.value()))
-            .chain(self.analytics.iter().map(|capture| &capture.key))
-            .chain(self.analytics_skipped.iter().map(|key| key.value()))
-            .map(|key| key.agent_id.clone())
-            .collect()
-    }
-
     /// Move one actor's stream state to its owner; account publication bookkeeping stays here.
     pub(crate) fn take_owner(&mut self, actor: &str) -> Self {
         let mut owner = Self {
@@ -1258,8 +1247,8 @@ mod tests {
         ));
         let before = streams.clone();
         let vm = streams.take_owner("vm");
-        assert_eq!(streams.owners(), BTreeSet::from(["host".into()]));
-        assert_eq!(vm.owners(), BTreeSet::from(["vm".into()]));
+        assert_eq!(streams.selected(None), vec![host_key.clone()]);
+        assert_eq!(vm.selected(None), vec![vm_key.clone()]);
         assert_eq!(streams.publication_sequence, 17);
         assert_eq!(vm.publication_sequence, 0);
         let (metadata, pending) = vm.persisted_parts().expect("VM owner state");

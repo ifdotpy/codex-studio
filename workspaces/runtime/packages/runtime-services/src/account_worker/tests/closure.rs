@@ -331,7 +331,7 @@ pub(super) async fn scenario_old_generation_pending_text_is_materialized_and_rec
             let all:i64=db.query_row("SELECT COUNT(*) FROM runtime_outbox WHERE account='default'",[],|row|row.get(0))?;
             let owner_count:i64=db.query_row("SELECT COUNT(*) FROM runtime_account_state WHERE account='default'",[],|row|row.get(0))?;
             assert_eq!(owner_count,1,"the host keeps one current stream owner across generations");
-            let checkpoint=db.query_row("SELECT connection_generation,journal_ack FROM runtime_account_state WHERE account='default'",[],|row|Ok((row.get::<_,u64>(0)?,row.get::<_,u64>(1)?)))?;
+            let checkpoint=db.query_row("SELECT connection_generation,journal_ack FROM runtime_account_state WHERE account='default'",[],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?)))?;
             Ok((text,all-retained.len() as i64+owner_count,retained,checkpoint))
         }).await.unwrap();
         assert_eq!(text, "old generation text");
@@ -362,11 +362,12 @@ pub(super) async fn scenario_old_generation_pending_text_is_materialized_and_rec
             crate::account_worker::retained::RequestResult::Unknown
         );
         assert_eq!(
-            checkpoint.0, generation,
+            checkpoint.0,
+            i64::try_from(generation).expect("generation fits SQLite"),
             "only the current host generation owns the checkpoint"
         );
         assert!(
-            checkpoint.1 >= marker,
+            checkpoint.1 >= i64::try_from(marker).expect("cursor fits SQLite"),
             "the current generation ACK includes its committed barrier"
         );
     }
