@@ -3,7 +3,34 @@
 
 use super::*;
 use crate::managed_host_tools::{PostCommitPort, SendPort};
+use studio_runtime_schema::persistence::{RecipientDelivery, RequestIdentity};
 use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
+use studio_runtime_store::{StoreError, ToolResultRecord};
+
+fn request_time() -> f64 {
+    chrono::Utc::now().timestamp_millis() as f64 / 1000.0
+}
+
+fn replace_cached_result(tx: &Transaction<'_>, id: &str, result: Value) -> Result<(), StoreError> {
+    let task = records::get(tx, "runtime_tool_requests", id)?.unwrap();
+    let token: AdmittedRequest = serde_json::from_value(task["admitted"].clone())?;
+    let stored = RequestResults::replay(
+        tx,
+        token.id(),
+        token.signature(),
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .map_err(StoreError::RequestResult)?
+    .unwrap();
+    let mut envelope: ResultEnvelope<ToolResultRecord> = serde_json::from_str(&stored.result)?;
+    envelope.reply = ToolResultRecord::from_value(result)?;
+    tx.execute(
+        "UPDATE request_results SET result=?1 WHERE id=?2",
+        params![serde_json::to_string(&envelope)?, token.id()],
+    )?;
+    Ok(())
+}
 
 thread_local! { static AGENT_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 thread_local! { static AGENT_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
@@ -63,7 +90,7 @@ async fn message_ignores_invalid_parent_project_outside_sender_cwd() {
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.cwd','/other-parent-project') WHERE id=?1", [&lead])?;
         tx.execute("INSERT INTO runtime_projects(id,record) VALUES('invalid-parent-project',?1)", [json!({"id":"invalid-parent-project","path":"/other-parent-project","peerTeams":"invalid"}).to_string()])?;
         let snapshot = super::super::super::storage::snapshot(tx, &context)?;
-        messages::send(tx, &snapshot, &json!({"target":"lead","text":"hello"}), "parent-project-witness", 20.0)?;
+        messages::send(tx, &snapshot, &json!({"target":"lead","text":"hello"}), &RequestIdentity::issue_root(), request_time())?;
         Ok::<_, CallbackError>(())
     }).await.unwrap();
 }
@@ -88,8 +115,9 @@ async fn message_delivers_between_user_grouped_leads() {
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.cwd','/peer-project') WHERE id=?1", [&lead])?;
         tx.execute("INSERT INTO runtime_projects(id,record) VALUES('peer-project',?1)", [json!({"id":"peer-project","path":"/peer-project","peerTeams":[{"id":"peers","name":"Peers","members":[context.agent,lead]}]}).to_string()])?;
         let snapshot = super::super::super::storage::snapshot(tx, &context)?;
-        let sent = messages::send(tx, &snapshot, &json!({"target":lead,"text":"hello"}), "peer-message-witness", 20.0)?;
-        assert!(sent["deliveries"].get(&lead).is_some());
+        let sent = messages::send(tx, &snapshot, &json!({"target":lead,"text":"hello"}), &RequestIdentity::issue_root(), request_time())?;
+        let deliveries: std::collections::BTreeMap<String, RecipientDelivery> = serde_json::from_value(sent["deliveries"].clone())?;
+        assert!(deliveries.contains_key(&lead));
         let payload: String = tx.query_row("SELECT payload FROM sync_entities WHERE collection='room' AND id=?1", [sent["room"].as_str().unwrap()], |row| row.get(0))?;
         let projection: Value = serde_json::from_str(&payload)?;
         assert_eq!(projection["value"]["peerTeamId"], "peers");
@@ -128,8 +156,8 @@ async fn message_with_unrelated_invalid(table: &'static str, record: Value) {
                 tx,
                 &snapshot,
                 &json!({"target":lead,"text":"hello"}),
-                "invalid-unrelated-witness",
-                20.0,
+                &RequestIdentity::issue_root(),
+                request_time(),
             )
         })
         .await
@@ -214,8 +242,8 @@ async fn count_message_agent_rows(unrelated: usize) -> usize {
                 ToolKind::Message,
                 "orchestration_message",
                 &json!({"target":prefix,"text":"hello"}),
-                "rows-witness",
-                20.0,
+                &RequestIdentity::issue_root(),
+                request_time(),
                 None,
                 &ports,
             );
@@ -354,8 +382,8 @@ async fn message_send_does_not_scan_agent_directory() {
                 tx,
                 &snapshot,
                 &json!({"target":lead,"text":"hello"}),
-                "scan-witness",
-                20.0,
+                &RequestIdentity::issue_root(),
+                request_time(),
             );
             tx.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, None);
             result?;
@@ -495,7 +523,7 @@ async fn try_send_args_with(
     .unwrap();
     let id = id.to_owned();
     let result = store
-        .transaction_with(move |tx| ports.send(tx, &actor, &args, &id, 20.0))
+        .transaction_with(move |tx| ports.send(tx, &actor, &args, &id, request_time()))
         .await
         .map(|result| result.value);
     (directory, store, result)
@@ -547,7 +575,13 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
     let args = json!({"agent_id":child_id,"text":"wake after commit"});
     let staged = store
         .transaction_with(move |tx| {
-            ports_for_send.send(tx, &actor_for_send, &args, "wake-after-commit", 20.0)
+            ports_for_send.send(
+                tx,
+                &actor_for_send,
+                &args,
+                &RequestIdentity::issue_root(),
+                request_time(),
+            )
         })
         .await
         .unwrap();
@@ -555,8 +589,8 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT count(*) FROM runtime_events WHERE id='wake-after-commit'",
-            [],
+            "SELECT count(*) FROM runtime_events WHERE id=?1",
+            [staged.value["id"].as_str().unwrap()],
             |row| row.get(0),
         )
         .unwrap();
@@ -679,13 +713,13 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
     let child = oracle["agents"][1]["id"].as_str().unwrap();
     let lead = oracle["agents"][0]["id"].as_str().unwrap();
 
-    let (_root, store, value) = send(0, child, "send-child").await;
+    let (_root, store, value) = send(0, child, &RequestIdentity::issue_root()).await;
     assert_eq!(value["status"], "queued");
     let reader = store.test_reader().unwrap();
     let event: (String, String, String) = reader
         .query_row(
-            "SELECT agent,kind,text FROM runtime_events WHERE id='send-child'",
-            [],
+            "SELECT agent,kind,text FROM runtime_events WHERE id=?1",
+            [value["id"].as_str().unwrap()],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
@@ -695,7 +729,7 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
     );
     drop(reader);
 
-    let (_root, store, value) = send(1, lead, "send-parent").await;
+    let (_root, store, value) = send(1, lead, &RequestIdentity::issue_root()).await;
     let mut member_ids = [lead, child];
     member_ids.sort_unstable();
     assert_eq!(
@@ -705,28 +739,28 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
     let reader = store.test_reader().unwrap();
     let event_count: i64 = reader
         .query_row(
-            "SELECT count(*) FROM runtime_events WHERE id='send-parent'",
-            [],
+            "SELECT count(*) FROM runtime_events WHERE id=?1",
+            [value["id"].as_str().unwrap()],
             |row| row.get(0),
         )
         .unwrap();
     let chat_count: i64 = reader
         .query_row(
-            "SELECT count(*) FROM runtime_chat_messages WHERE id='send-parent'",
-            [],
+            "SELECT count(*) FROM runtime_chat_messages WHERE id=?1",
+            [value["id"].as_str().unwrap()],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!((event_count, chat_count), (0, 1));
     drop(reader);
 
-    let (_root, store, value) = send(1, "broadcast", "send-broadcast").await;
+    let (_root, store, value) = send(1, "broadcast", &RequestIdentity::issue_root()).await;
     assert!(value["room"].as_str().unwrap().starts_with("broadcast:"));
     let reader = store.test_reader().unwrap();
     let chat_count: i64 = reader
         .query_row(
-            "SELECT count(*) FROM runtime_chat_messages WHERE id='send-broadcast'",
-            [],
+            "SELECT count(*) FROM runtime_chat_messages WHERE id=?1",
+            [value["id"].as_str().unwrap()],
             |row| row.get(0),
         )
         .unwrap();
@@ -739,7 +773,7 @@ async fn send_preserves_explicit_next_turn_for_followup_and_chat() {
     let oracle = expectations();
     for (sender, target_index, event_prefix) in [(0, 1, ""), (1, 0, "chat:")] {
         let target = oracle["agents"][target_index]["id"].as_str().unwrap();
-        let id = format!("explicit-next-{sender}");
+        let id = RequestIdentity::issue_root();
         let (_root, store, result) = try_send_args(
             sender,
             json!({"agent_id":target,"text":"wait for the active turn","delivery":DeliveryMoment::NextTurn}),
@@ -876,14 +910,14 @@ async fn send_resolves_a_unique_visible_prefix_and_names_a_refused_id() {
     let oracle = expectations();
     let child = oracle["agents"][1]["id"].as_str().unwrap();
 
-    let (_root, store, value) = send(0, &child[..8], "send-child-prefix").await;
+    let (_root, store, value) = send(0, &child[..8], &RequestIdentity::issue_root()).await;
     assert_eq!(value["status"], "queued");
     let agent: String = store
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT agent FROM runtime_events WHERE id='send-child-prefix'",
-            [],
+            "SELECT agent FROM runtime_events WHERE id=?1",
+            [value["id"].as_str().unwrap()],
             |row| row.get(0),
         )
         .unwrap();
@@ -939,11 +973,9 @@ async fn an_unusual_record_of_another_team_does_not_refuse_sends() {
             foreign("bbbbbbbb-relative-cwd", "relative/cwd"),
         ]
     };
-    for (target, id) in [
-        (child, "send-child-full"),
-        (&child[..8], "send-child-prefix"),
-    ] {
-        let (_root, _store, sent) = try_send_with(0, target, id, others()).await;
+    for target in [child, &child[..8]] {
+        let (_root, _store, sent) =
+            try_send_with(0, target, &RequestIdentity::issue_root(), others()).await;
         assert_eq!(sent.unwrap()["status"], "queued", "{target}");
     }
     let (_root, store, refused) =
@@ -993,29 +1025,45 @@ async fn a_broadcast_names_a_member_that_cannot_be_checked_and_reaches_the_other
     member["isLead"] = json!(false);
     member["threadId"] = json!(format!("thread-{bad}"));
     member["cwd"] = json!("relative/cwd");
-    let (_root, store, sent) =
-        try_send_with(0, "broadcast", "send-broadcast-bad-member", vec![member]).await;
+    let request_id = RequestIdentity::issue_root();
+    let (_root, store, sent) = try_send_with(0, "broadcast", &request_id, vec![member]).await;
     let sent = sent.expect("one bad member does not refuse the broadcast");
-    assert!(sent["deliveries"].get(child).is_some(), "{sent}");
-    assert!(sent["deliveries"].get(bad).is_none(), "{sent}");
+    let sent_deliveries: std::collections::BTreeMap<String, RecipientDelivery> =
+        serde_json::from_value(sent["deliveries"].clone()).unwrap();
+    assert!(sent_deliveries.contains_key(child), "{sent}");
+    assert!(!sent_deliveries.contains_key(bad), "{sent}");
     assert_eq!(
         sent["refused"][bad],
         json!(format!("Invalid stored record at agents/{bad}/cwd")),
         "{sent}"
     );
     let reader = store.test_reader().unwrap();
-    let (deliveries, receipt): (String, String) = reader
+    let deliveries: String = reader
         .query_row(
-            "SELECT m.deliveries,r.result FROM runtime_chat_messages m JOIN runtime_operation_receipts r ON r.id=m.id WHERE m.id='send-broadcast-bad-member'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            "SELECT deliveries FROM runtime_chat_messages WHERE id=?1",
+            [&request_id],
+            |row| row.get(0),
         )
         .unwrap();
     assert_eq!(
-        serde_json::from_str::<Value>(&deliveries).unwrap(),
-        sent["deliveries"]
+        serde_json::from_str::<std::collections::BTreeMap<String, RecipientDelivery>>(&deliveries)
+            .unwrap(),
+        sent_deliveries
     );
-    assert_eq!(serde_json::from_str::<Value>(&receipt).unwrap(), sent);
+    let identity = RequestIdentity::new("agent_message", &[lead_id], &request_id, &[]).unwrap();
+    let signature = event_write::request_signature(
+        &json!({"target":"broadcast","text":"dispatch input","delivery":null}),
+    );
+    let cached = RequestResults::replay(
+        &reader,
+        identity.id(),
+        &signature,
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .unwrap()
+    .unwrap();
+    let reply: ResultEnvelope<Value> = serde_json::from_str(&cached.result).unwrap();
+    assert_eq!(reply.reply, sent);
     let bad_events: i64 = reader
         .query_row(
             "SELECT count(*) FROM runtime_events WHERE agent=?1",
@@ -1057,16 +1105,16 @@ async fn a_broadcast_with_no_member_that_can_be_checked_is_refused_by_location()
         })
         .collect::<Vec<_>>();
     assert!(!members.is_empty(), "the fixture team has a member");
-    let (_root, store, sent) =
-        try_send_with(0, "broadcast", "send-broadcast-no-member", broken).await;
+    let request_id = RequestIdentity::issue_root();
+    let (_root, store, sent) = try_send_with(0, "broadcast", &request_id, broken).await;
     let refusal = sent.expect_err("no member can be checked").to_string();
     assert!(members.contains(&refusal), "{refusal}");
     let messages: i64 = store
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT count(*) FROM runtime_chat_messages WHERE id='send-broadcast-no-member'",
-            [],
+            "SELECT count(*) FROM runtime_chat_messages WHERE id=?1",
+            [&request_id],
             |row| row.get(0),
         )
         .unwrap();
@@ -1117,7 +1165,7 @@ async fn radio_member_message_is_refused_only_during_its_shared_reply_turn() {
         })
         .await
         .unwrap();
-    let send = |id: &'static str| {
+    let send = |id: String| {
         let lead = lead.clone();
         let worker = worker.clone();
         let store = &store;
@@ -1139,14 +1187,15 @@ async fn radio_member_message_is_refused_only_during_its_shared_reply_turn() {
                         tx,
                         &snapshot,
                         &json!({"target":lead,"text":"private note"}),
-                        id,
-                        20.0,
+                        &id,
+                        request_time(),
                     )
                 })
                 .await
         }
     };
-    let refused = send("radio-guard-live").await;
+    let refused_id = RequestIdentity::issue_root();
+    let refused = send(refused_id.clone()).await;
     assert!(
         matches!(
             refused,
@@ -1167,16 +1216,17 @@ async fn radio_member_message_is_refused_only_during_its_shared_reply_turn() {
         })
         .await
         .unwrap();
-    let delivered = send("radio-guard-idle")
+    let delivered_id = RequestIdentity::issue_root();
+    let delivered = send(delivered_id.clone())
         .await
         .expect("a radio member may message privately outside its shared reply turn");
-    assert_eq!(delivered["id"], "radio-guard-idle");
+    assert_eq!(delivered["id"], delivered_id);
     let chat_count: i64 = store
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT count(*) FROM runtime_chat_messages WHERE id IN ('radio-guard-live','radio-guard-idle')",
-            [],
+            "SELECT count(*) FROM runtime_chat_messages WHERE id IN (?1,?2)",
+            [&refused_id, &delivered_id],
             |row| row.get(0),
         )
         .unwrap();
@@ -1198,6 +1248,7 @@ fn empty_runtime_ports() -> crate::provider_callbacks::tools::ManagedToolRuntime
 
 #[derive(Clone, Copy)]
 enum BlobRace {
+    Cached,
     Unchanged,
     ActorEpoch,
     ResultReference,
@@ -1249,6 +1300,22 @@ async fn callback_blob_case(race: BlobRace) {
     )
     .await
     .unwrap();
+    let origin = crate::provider_callbacks::storage::callback_origin_key(
+        &context,
+        &RequestId::String("saved".into()),
+    );
+    let saved_id = crate::tool_requests::get_callback::<
+        crate::provider_callbacks::storage::CallbackOwner,
+    >(&store.test_reader().unwrap(), &origin)
+    .unwrap()
+    .unwrap()
+    .payload
+    .tool_request
+    .unwrap();
+    assert_eq!(
+        uuid::Uuid::parse_str(&saved_id).unwrap().get_version_num(),
+        7
+    );
     if matches!(race, BlobRace::InvalidAction) {
         let reply = dispatch(
             Arc::clone(&store),
@@ -1283,31 +1350,38 @@ async fn callback_blob_case(race: BlobRace) {
         .join(&hash[..2])
         .join(&hash[2..4])
         .join(hash);
-    let recover = !matches!(
+    let seed_result = if matches!(
         race,
-        BlobRace::Unchanged
-            | BlobRace::ActorEpoch
-            | BlobRace::ResultReference
-            | BlobRace::Abandoned
-            | BlobRace::InlineExpiry
-    );
-    let inline_result = matches!(race, BlobRace::InlineExpiry).then(|| result.to_string());
+        BlobRace::RecoveryWrite | BlobRace::InlineExpiry | BlobRace::Cached
+    ) {
+        result.clone()
+    } else {
+        decision.record.clone()
+    };
+    let seed_id = saved_id.clone();
+    let pending_result = seed_result.clone();
     store.transaction(move |tx| {
-        tx.execute("UPDATE runtime_tool_results SET result=?1 WHERE id='thread-0:saved'", [decision.record.to_string()])?;
-        if let Some(result) = inline_result { tx.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.result',json(?1)) WHERE id='thread-0:saved'", [result])?; }
-        if recover {
-            tx.execute("UPDATE runtime_tool_requests SET record=json_remove(json_set(record,'$.stage','running','$.outcome','pending'),'$.result','$.finished') WHERE id='thread-0:saved'", [])?;
+        if matches!(race, BlobRace::InlineExpiry | BlobRace::Cached) {
+            replace_cached_result(tx, &seed_id, seed_result)?;
+        } else {
+            let task = records::get(tx, "runtime_tool_requests", &seed_id)?.unwrap();
+            let token: AdmittedRequest = serde_json::from_value(task["admitted"].clone())?;
+            tx.execute("DELETE FROM request_results WHERE id=?1", [token.id()])?;
+            tx.execute("UPDATE runtime_tool_requests SET record=json_remove(json_set(record,'$.stage','running','$.outcome','pending','$.result',json(?1)),'$.finished') WHERE id=?2", params![seed_result.to_string(), seed_id])?;
         }
         Ok(())
     }).await.unwrap();
-    if matches!(race, BlobRace::InlineExpiry) {
+    if matches!(race, BlobRace::InlineExpiry | BlobRace::Cached) {
+        if matches!(race, BlobRace::Cached) {
+            std::fs::remove_file(&blob_path).unwrap();
+        }
         let reply = dispatch(
             Arc::clone(&store),
             &context,
             &frame(
                 "read",
                 "orchestration_request",
-                json!({"action":"get","request_id":"thread-0:saved"}),
+                json!({"action":"get","request_id":saved_id}),
             ),
             11.0,
         )
@@ -1321,13 +1395,20 @@ async fn callback_blob_case(race: BlobRace) {
         };
         let record: Value =
             serde_json::from_str(body["contentItems"][0]["text"].as_str().unwrap()).unwrap();
-        assert!(
-            record["result"]["contentItems"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("expired"),
-            "{record}"
-        );
+        if matches!(race, BlobRace::Cached) {
+            assert_eq!(
+                record["result"], result,
+                "the exact completed body needs no blob file"
+            );
+        } else {
+            assert!(
+                record["result"]["contentItems"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("expired"),
+                "{record}"
+            );
+        }
         return;
     }
     match race {
@@ -1348,11 +1429,7 @@ async fn callback_blob_case(race: BlobRace) {
         let reply = dispatch(
             Arc::clone(&store),
             &context,
-            &frame(
-                "read",
-                "orchestration_read",
-                json!({"output_ref":"thread-0:saved"}),
-            ),
+            &frame("read", "orchestration_read", json!({"output_ref":saved_id})),
             11.0,
         )
         .await;
@@ -1360,7 +1437,7 @@ async fn callback_blob_case(race: BlobRace) {
         let row = records::get(
             &store.test_reader().unwrap(),
             "runtime_tool_requests",
-            "thread-0:saved",
+            &saved_id,
         )
         .unwrap()
         .unwrap();
@@ -1399,14 +1476,10 @@ async fn callback_blob_case(race: BlobRace) {
         frame(
             "read",
             "orchestration_request",
-            json!({"action":"get","request_id":"thread-0:saved"}),
+            json!({"action":"get","request_id":saved_id}),
         )
     } else {
-        frame(
-            "read",
-            "orchestration_read",
-            json!({"output_ref":"thread-0:saved"}),
-        )
+        frame("read", "orchestration_read", json!({"output_ref":saved_id}))
     };
     let read_store = Arc::clone(&store);
     let read_task = tokio::spawn(async move { dispatch(read_store, &context, &read, 11.0).await });
@@ -1415,21 +1488,22 @@ async fn callback_blob_case(race: BlobRace) {
         .unwrap()
         .unwrap();
     let writer_store = Arc::clone(&store);
+    let writer_id = saved_id.clone();
     let mut writer = tokio::spawn(async move {
         writer_store.transaction(move |tx| {
         match race {
             BlobRace::ActorEpoch => { tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',4,'$.turnEpoch',4) WHERE json_extract(record,'$.threadId')='thread-0'", [])?; }
-            BlobRace::ResultReference => { tx.execute("UPDATE runtime_tool_results SET result=?1 WHERE id='thread-0:saved'", [alternate.unwrap().to_string()])?; }
-            BlobRace::LateResult => { tx.execute("UPDATE runtime_tool_results SET result=?1 WHERE id='thread-0:saved'", [json!({"success":true,"contentItems":[{"type":"inputText","text":"late saved result"}]}).to_string()])?; }
+            BlobRace::ResultReference => { tx.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.result',json(?1)) WHERE id=?2", params![alternate.unwrap().to_string(), writer_id])?; }
+            BlobRace::LateResult => { tx.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.result',json(?1)) WHERE id=?2", params![json!({"success":true,"contentItems":[{"type":"inputText","text":"late saved result"}]}).to_string(), writer_id])?; }
             BlobRace::RecoveryWrite => {
-                let saved = records::get(tx, "runtime_tool_requests", "thread-0:saved")?.unwrap();
+                let saved = records::get(tx, "runtime_tool_requests", &writer_id)?.unwrap();
                 assert_eq!(saved["stage"], "running", "the blob write must precede recovery commit");
-                assert!(saved.get("result").is_none());
+                assert_eq!(saved["result"], pending_result, "the preexisting result is unchanged before recovery commit");
                 assert!(saved.get("_payloadBlobs").is_none());
             }
-            BlobRace::Unchanged | BlobRace::Abandoned | BlobRace::InlineExpiry | BlobRace::InvalidAction | BlobRace::Missing | BlobRace::Corrupt => { tx.execute("UPDATE runtime_tool_requests SET record=record WHERE id='thread-0:saved'", [])?; }
+            BlobRace::Unchanged | BlobRace::Abandoned | BlobRace::InlineExpiry | BlobRace::Cached | BlobRace::InvalidAction | BlobRace::Missing | BlobRace::Corrupt => { tx.execute("UPDATE runtime_tool_requests SET record=record WHERE id=?1", [&writer_id])?; }
             #[cfg(unix)]
-            BlobRace::Symlink => { tx.execute("UPDATE runtime_tool_requests SET record=record WHERE id='thread-0:saved'", [])?; }
+            BlobRace::Symlink => { tx.execute("UPDATE runtime_tool_requests SET record=record WHERE id=?1", [&writer_id])?; }
         }
         Ok(())
     }).await
@@ -1456,6 +1530,7 @@ async fn callback_blob_case(race: BlobRace) {
             | BlobRace::Abandoned
             | BlobRace::RecoveryWrite
             | BlobRace::InlineExpiry
+            | BlobRace::Cached
             | BlobRace::InvalidAction
             | BlobRace::Missing
             | BlobRace::Corrupt => assert!(
@@ -1471,19 +1546,22 @@ async fn callback_blob_case(race: BlobRace) {
     }
     let reader = store.test_reader().unwrap();
     if matches!(race, BlobRace::RecoveryWrite) {
-        let raw = records::get(&reader, "runtime_tool_requests", "thread-0:saved")
+        let raw = records::get(&reader, "runtime_tool_requests", &saved_id)
             .unwrap()
             .unwrap();
         assert_eq!(raw["stage"], "completed");
-        assert!(raw.get("_payloadBlobs").is_some());
-        let resolved = crate::payload_blobs::resolve_record(directory.path(), &raw).unwrap();
+        assert!(raw.get("result").is_none());
+        assert!(raw.get("_payloadBlobs").is_none());
         assert_eq!(
-            resolved["result"], result,
+            crate::tool_requests::saved_result(&reader, &saved_id)
+                .unwrap()
+                .unwrap(),
+            result,
             "referenced payload was durable at commit"
         );
     }
     if matches!(race, BlobRace::LateResult) {
-        let raw = records::get(&reader, "runtime_tool_requests", "thread-0:saved")
+        let raw = records::get(&reader, "runtime_tool_requests", &saved_id)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1491,7 +1569,7 @@ async fn callback_blob_case(race: BlobRace) {
             "stale preparation must not settle the target receipt"
         );
         assert_eq!(
-            records::get(&reader, "runtime_tool_results", "thread-0:saved")
+            crate::tool_requests::saved_result(&reader, &saved_id)
                 .unwrap()
                 .unwrap()["contentItems"][0]["text"],
             "late saved result"
@@ -1610,6 +1688,11 @@ async fn callback_panel_returns_the_retired_progress_notice() {
             "{body}"
         );
     }
+}
+
+#[tokio::test]
+async fn callback_terminal_cached_result_needs_no_blob_file() {
+    callback_blob_case(BlobRace::Cached).await;
 }
 
 #[tokio::test]

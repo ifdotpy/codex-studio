@@ -121,7 +121,7 @@ fn admit_delivery(
     direction: Direction,
     authority: &str,
     envelope: &Envelope,
-    now: i64,
+    _now: i64,
 ) -> Result<AdmittedRequest, AccessError> {
     use crate::event_write::{CallerAdmission, RequestKey, begin_request};
     let signature = match direction {
@@ -181,7 +181,7 @@ fn saved_remote(
     direction: Direction,
     authority: &str,
     root: &str,
-    now: i64,
+    _now: i64,
 ) -> Result<Option<SavedRemoteReply>, AccessError> {
     let scoped = remote_operation_key(
         direction.namespace(),
@@ -2159,7 +2159,6 @@ const EXEC_EXIT_EVENT_DETAIL: &str = "Read output with orchestration_servers act
 const EXEC_OWNER_REFUSAL: &str = "The command handle belongs to another actor or server";
 const EXEC_RECEIPT_OWNER_REFUSAL: &str = "The command receipt belongs to another actor or server";
 const EXEC_RECEIPT_DIGEST_REFUSAL: &str = "The receipt fingerprint belongs to another request";
-const EXPIRED_RECEIPT_DETAIL: &str = "The receipt has expired. This identity cannot execute again.";
 
 /// Python `deliver`: an `exec` row in receipt form never sends its command
 /// again. It sends this probe with a stable identity instead.
@@ -2552,7 +2551,7 @@ impl DeliverySnapshot {
         table: &'static str,
         id: &str,
         raw: &str,
-        now: i64,
+        _now: i64,
     ) -> Result<Self, AccessError> {
         let value = stored("PersistedServerDelivery", table, id, raw)?;
         if text(&value, "id") != id {
@@ -2562,13 +2561,11 @@ impl DeliverySnapshot {
                 "Stored delivery identity differs from its row",
             ));
         }
-        let body = value.get("body").and_then(Value::as_str);
         let signature = value
             .get("signature")
             .and_then(Value::as_str)
             .or_else(|| value.get("fingerprint").and_then(Value::as_str))
             .map(str::to_owned)
-            .or_else(|| body.map(|b| digest(b.as_bytes())))
             .ok_or_else(|| refused(503, "invalid_record", "Stored delivery has no identity"))?;
         Ok(Self {
             state: serde_json::from_value(value["state"].clone())

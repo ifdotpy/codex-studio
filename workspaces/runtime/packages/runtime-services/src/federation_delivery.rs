@@ -672,7 +672,6 @@ pub fn send_message_in_transaction(
         "sender":sender,"room":room_id,"text":text,"delivery":delivery,
     }));
     use crate::event_write::{CallerAdmission, RequestKey, begin_request};
-    use studio_runtime_store::multi_server_delivery::remote_result_key;
     use studio_runtime_store::request_results::Admission;
     let admitted = match begin_request::<core::MessageSendReply>(
         tx,
