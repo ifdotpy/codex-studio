@@ -198,9 +198,7 @@ async fn request(
         .transaction_with(move |tx| {
             let mut agent = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))?
                 .ok_or(super::WorkerError::CallbackUnknown)?;
-            if ended_turn(&agent, intent.scope.generation)
-                .is_none_or(|current| current.owner != actor.owner)
-            {
+            if !owner_matches(&agent, &actor, intent.scope.generation) {
                 return Err(super::WorkerError::CallbackUnknown);
             }
             let attempt_id = match &actor.owner {
