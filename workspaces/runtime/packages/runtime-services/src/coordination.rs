@@ -1478,7 +1478,6 @@ mod tests {
                 Ok(crate::queue_write::QueueSnapshot {
                     items: vec![json!({"id":event.id.0,"kind":event.kind,"text":event.text,"created":event.created})],
                     revision: event.created.to_string(),
-                    capabilities: json!({"reorder":true,"receipts":true}),
                 })
             },
         )
