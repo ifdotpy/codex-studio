@@ -706,7 +706,7 @@ pub fn claim(
     let result = ProcessActionResult {
         request_id: id.into(),
         status: ProcessActionStatus::Uncertain,
-        processes: Some(entries),
+        processes: entries,
         response: None,
         extra: Default::default(),
     };
@@ -758,7 +758,7 @@ pub fn claim(
             ProcessControlRequest::BackgroundCommand { .. } => ProcessActionKind::BackgroundCommand,
         },
         response_target: response,
-        processes: result.processes.clone().unwrap_or_default(),
+        processes: result.processes.clone(),
         created: now,
         result: result.clone(),
     };

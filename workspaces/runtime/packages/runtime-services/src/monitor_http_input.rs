@@ -167,7 +167,7 @@ pub(crate) fn read(connection: &Connection, query: &Value) -> Result<ProcessRece
         } else {
             ProcessActionStatus::Uncertain
         },
-        processes: Some(vec![]),
+        processes: vec![],
         response: Some(ProcessResponse::MonitorInput(MonitorInputResponse {
             kind: MonitorInputKind::MonitorInput,
             monitor_id: receipt.monitor,

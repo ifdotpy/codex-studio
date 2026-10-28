@@ -287,8 +287,8 @@ pub struct ProcessActionResult {
     #[schemars(length(min = 1, max = ACTION_ID_MAX_CODEPOINTS))]
     pub request_id: String,
     pub status: ProcessActionStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub processes: Option<Vec<ProcessEntry>>,
+    #[serde(default)]
+    pub processes: Vec<ProcessEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<ProcessResponse>,
     #[serde(flatten)]
@@ -381,8 +381,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn result_processes_defaults_to_empty_and_rejects_null() {
+        let result: ProcessActionResult =
+            serde_json::from_str(r#"{"requestId":"request","status":"completed"}"#)
+                .expect("missing processes");
+        assert_eq!(
+            serde_json::to_value(result).unwrap()["processes"],
+            json!([])
+        );
+        assert!(
+            serde_json::from_str::<ProcessActionResult>(
+                r#"{"requestId":"request","status":"completed","processes":null}"#,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn found_receipt_exposes_typed_result_and_preserves_wire_fields() {
-        let result = json!({"requestId":"request", "status":"completed", "response": {
+        let result = json!({"requestId":"request", "status":"completed", "processes":[], "response": {
             "kind":"monitor_input", "monitorId":"monitor", "status":"acknowledged"
         }, "legacy":null});
         let typed =

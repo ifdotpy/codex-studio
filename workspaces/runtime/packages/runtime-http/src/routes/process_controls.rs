@@ -298,7 +298,6 @@ async fn execute(
                 if let Some(entry) = result
                     .processes
                     .iter_mut()
-                    .flatten()
                     .find(|p| p.key == text(&target, "key"))
                 {
                     entry.outcome = outcome;
@@ -309,11 +308,10 @@ async fn execute(
             result.status = if result
                 .processes
                 .iter()
-                .flatten()
                 .any(|p| matches!(p.outcome, ProcessOutcome::Uncertain { .. }))
             {
                 ProcessActionStatus::Uncertain
-            } else if result.processes.iter().flatten().any(|p| {
+            } else if result.processes.iter().any(|p| {
                 matches!(
                     p.outcome,
                     ProcessOutcome::Failed { .. } | ProcessOutcome::Stale { .. }
@@ -348,7 +346,7 @@ fn update_record(
     record: &mut studio_runtime_store::ProcessActionRecord,
     result: &ProcessActionResult,
 ) {
-    record.processes = result.processes.clone().unwrap_or_default();
+    record.processes = result.processes.clone();
     record.result = result.clone();
 }
 async fn save(

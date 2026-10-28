@@ -1119,6 +1119,9 @@ async fn process_receipt_and_replay_preserve_retained_result_payload() {
             tx.execute("UPDATE runtime_process_actions SET record=json_set(record,'$.result',json(?)) WHERE id='stop'", [stored.to_string()])?;
             Ok::<_, StoreError>(())
         }).await.unwrap();
+        if omit_processes {
+            retained["processes"] = json!([]);
+        }
         // Null decodes as None and serializes as an absent optional field.
         if explicit_null {
             retained.as_object_mut().unwrap().remove("response");
