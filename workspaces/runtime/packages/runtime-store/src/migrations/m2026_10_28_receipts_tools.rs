@@ -785,6 +785,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn receipts_tools_orphan_alias_and_result_refuse_without_writes() {
+        for source in &SOURCES[..2] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            db.execute(
+                "INSERT INTO runtime_tool_request_aliases VALUES('agent','call','missing')",
+                [],
+            )
+            .expect("orphan alias");
+            db.execute(
+                "INSERT INTO runtime_tool_results VALUES('missing','{}')",
+                [],
+            )
+            .expect("orphan result");
+            let tx = db.transaction().expect("transaction");
+            let checkpoint =
+                MigrationCheckpoint::begin(&tx, ID, source, CUTOVER).expect("checkpoint");
+            let error = Family
+                .move_batch(&tx, source, &checkpoint)
+                .expect_err("orphan must refuse");
+            assert!(
+                matches!(error, ReceiptMigrationError::Unclassifiable { table, .. } if table == *source)
+            );
+            tx.rollback().expect("rollback");
+            for table in &SOURCES[..2] {
+                assert_eq!(
+                    db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                        .get::<_, i64>(0))
+                        .expect("source rows"),
+                    1
+                );
+            }
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("destination rows"),
+                0
+            );
+        }
+    }
+
     fn blob_task(db: &Connection, root: &std::path::Path, write: bool) -> std::path::PathBuf {
         let result = json!({"success":true,"contentItems":[{"type":"inputText","text":"exact original body"}]});
         let bytes = result.to_string().into_bytes();
