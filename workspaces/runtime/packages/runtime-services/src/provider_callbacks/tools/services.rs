@@ -382,7 +382,7 @@ impl crate::managed_host_tools::ComplaintPort for ProductionPorts {
                 crate::managed_host_tools::Error::Store(error)
             }
             crate::notification_dispatch::NotificationDispatchError::RequestResult(error) => {
-                crate::managed_host_tools::Error::RequestResult(error)
+                crate::managed_host_tools::Error::Store(error.into())
             }
             crate::notification_dispatch::NotificationDispatchError::ConflictingInput => {
                 crate::managed_host_tools::Error::Invalid(if args["action"] == "submit" {
