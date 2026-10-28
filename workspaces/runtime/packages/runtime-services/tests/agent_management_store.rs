@@ -221,7 +221,7 @@ async fn lifecycle_failure_case(case_name: &str, tables: &[&str]) {
             .await
             .expect("failpoint installed");
         assert!(
-            execute(std::sync::Arc::clone(&store), &action, NOW)
+            execute(std::sync::Arc::clone(&store), &action, NOW, None)
                 .await
                 .is_err(),
             "{case_name} {table}"
@@ -242,7 +242,7 @@ async fn lifecycle_failure_case(case_name: &str, tables: &[&str]) {
             .expect("restart"),
     );
     assert_eq!(state(&store), before, "rollback survives restart");
-    execute(std::sync::Arc::clone(&store), &action, NOW)
+    execute(std::sync::Arc::clone(&store), &action, NOW, None)
         .await
         .expect("recovery applies once");
     assert_ne!(state(&store), before, "recovery changed rows {case_name}");
@@ -283,7 +283,7 @@ async fn committed_archive_response_loss_replays_after_restart_without_duplicate
     )
     .await;
     let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
-    let first = execute(std::sync::Arc::clone(&store), &action, 1234567.5)
+    let first = execute(std::sync::Arc::clone(&store), &action, 1234567.5, None)
         .await
         .expect("archive");
     assert_eq!(first["status"], "archived");
@@ -294,7 +294,7 @@ async fn committed_archive_response_loss_replays_after_restart_without_duplicate
             .await
             .expect("restart"),
     );
-    let result = execute(std::sync::Arc::clone(&store), &action, 1234568.0)
+    let result = execute(std::sync::Arc::clone(&store), &action, 1234568.0, None)
         .await
         .expect("replay");
     assert_eq!(result["replayed"], true);
@@ -335,7 +335,7 @@ async fn deleted_team_broadcast_projection_survives_repeated_delete() {
     let action = Action::Delete {
         target: "lead".to_owned(),
     };
-    execute(std::sync::Arc::clone(&store), &action, 100.0)
+    execute(std::sync::Arc::clone(&store), &action, 100.0, None)
         .await
         .expect("delete");
     let room = |store: &RuntimeStore| -> Value {
@@ -344,7 +344,7 @@ async fn deleted_team_broadcast_projection_survives_repeated_delete() {
     };
     let before = room(&store);
     assert_eq!(before["members"], json!(["lead"]));
-    execute(std::sync::Arc::clone(&store), &action, 200.0)
+    execute(std::sync::Arc::clone(&store), &action, 200.0, None)
         .await
         .expect("repeated deletion");
     assert_eq!(room(&store), before);
@@ -551,7 +551,7 @@ async fn lifecycle_effect_refusals_preserve_rows_and_projections() {
                 }
             };
             let before = state(&store);
-            let result = execute(std::sync::Arc::clone(&store), &action, 1234567.5).await;
+            let result = execute(std::sync::Arc::clone(&store), &action, 1234567.5, None).await;
             if delete && effect.starts_with("voice-") {
                 // This fixture has no native thread or connection identity to
                 // cancel. Deletion can remove its stale session row; live
@@ -613,6 +613,7 @@ async fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() 
             sender_epoch: None,
         },
         1234567.5,
+        None,
     )
     .await
     .expect("history does not need termination");
@@ -624,6 +625,7 @@ async fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() 
             target: "lead".into(),
         },
         1234568.0,
+        None,
     )
     .await
     .expect("ended voice history is removed with the conversation");
@@ -865,7 +867,7 @@ async fn incremental_lifecycle_projection_matches_full_rebuild() {
         // Archive and restore also settle workspace cleanup; stop and delete
         // run the production effect adapter, which releases deleted work.
         let result = if matches!(action, Action::Archive { .. } | Action::Restore { .. }) {
-            execute(std::sync::Arc::clone(&store), &action, SYNTHETIC_NOW_SECS).await
+            execute(std::sync::Arc::clone(&store), &action, SYNTHETIC_NOW_SECS, None).await
         } else {
             agent_lifecycle_runtime::execute(
                 std::sync::Arc::clone(&store),

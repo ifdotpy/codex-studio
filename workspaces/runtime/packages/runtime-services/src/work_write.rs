@@ -266,9 +266,9 @@ async fn run_accepted_archive(
     let intent_for_preflight = intent.clone();
     let owner_for_preflight = owner_id.clone();
     let root_for_preflight = root_id.clone();
-    let preflight = store
+    let (preflight, owner_snapshot) = store
         .read_async("runtime-services/work_write", move |connection| {
-            accepted_archive_preflight(
+            let outcome = accepted_archive_preflight(
                 connection,
                 &task_for_preflight,
                 work_for_preflight.value(),
@@ -276,13 +276,48 @@ async fn run_accepted_archive(
                 &owner_for_preflight,
                 &root_for_preflight,
                 dispatch_actor_epoch,
-            )
+            )?;
+            let owner = AgentRepository::get(connection, &AgentId::from(owner_for_preflight.as_str()))?
+                .map(|agent| agent.value());
+            Ok::<_, WorkWriteError>((outcome, owner))
         })
         .await?;
+    let mut verify_terminal = false;
+    let preflight = if preflight.is_none() {
+        let owner = owner_snapshot.as_ref().expect("preflight requires owner");
+        if owner.get("executionMode").and_then(Value::as_str) != Some("vm")
+            && !crate::layr_native::is_native(owner)
+        {
+            let cwd = owner.get("cwd").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let revision = work.value()["results"].as_array().and_then(|items| items.last())
+                .and_then(|result| result["revision"].as_str()).unwrap_or_default().to_owned();
+            let (on_main, remote) = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/accepted-archive/git", move || {
+                    let on_main = !cwd.is_empty() && accepted_revision_is_on_local_main(&cwd, &revision);
+                    let remote = !on_main && !cwd.is_empty() && repository_has_origin(&cwd);
+                    (on_main, remote)
+                },
+            ).await.map_err(|_| WorkWriteError::PreparationWorker)?;
+            if !on_main {
+                verify_terminal = true;
+                let reason = if remote {
+                    "Remote-origin main verification requires cross-server/remote-transport"
+                } else {
+                    "The result commit is not reachable from local main"
+                };
+                Some(json!({"status":"kept","reason":reason}))
+            } else { None }
+        } else { None }
+    } else { preflight };
     let outcome = match preflight {
         Some(value) => Ok(value),
         None if prior_status == WorkEffectStatus::Unknown => return Ok(ArchiveRun::Skipped),
         None => {
+            let guard = ArchiveGuard {
+                work: work.value().clone(), owner: owner_snapshot.clone().expect("preflight requires owner"),
+                task_id: task_id.clone(), owner_id: owner_id.clone(), root_id: root_id.clone(),
+                intent: intent.clone(), actor_epoch: dispatch_actor_epoch,
+            };
             crate::agent_management_store::execute(
                 Arc::clone(store),
                 &crate::agent_management::Action::Archive {
@@ -293,10 +328,14 @@ async fn run_accepted_archive(
                     unassign_work: false,
                 },
                 now,
+                Some(Box::new(move |tx| guard.check(tx))),
             )
             .await
         }
     };
+    if matches!(&outcome, Err(crate::agent_management::ManagementError::Invalid("The accepted task owner or result changed"))) {
+        return Err(Error::Conflict("The accepted task owner or result changed").into());
+    }
     let (receipt_status, archive, retryable) = match outcome {
         Ok(value) => {
             let retryable = value["retryable"] == true
@@ -321,8 +360,16 @@ async fn run_accepted_archive(
     let intent_for_settlement = intent.clone();
     let owner_for_settlement = owner_id.clone();
     let root_for_settlement = root_id.clone();
+    let terminal_guard = verify_terminal.then(|| ArchiveGuard {
+        work: work.value().clone(), owner: owner_snapshot.expect("preflight requires owner"),
+        task_id: task_id.clone(), owner_id: owner_id.clone(), root_id: root_id.clone(),
+        intent: intent.clone(), actor_epoch: dispatch_actor_epoch,
+    });
     let result = store
         .transaction_with_error(move |tx| -> Result<ArchiveRun, WorkWriteError> {
+            if let Some(guard) = &terminal_guard {
+                guard.check(tx).map_err(|_| Error::Conflict("The accepted task owner or result changed"))?;
+            }
             let Some(current) = WorkItemsRepository::work_record(tx, &task_id_for_settlement)?
             else {
                 return Ok(ArchiveRun::Skipped);
@@ -577,6 +624,7 @@ async fn reviewer_archive_tick(store: Arc<RuntimeStore>, now: f64) -> Result<(),
                 unassign_work: false,
             },
             now,
+            None,
         )
         .await;
         let (error, retryable) = match outcome {
@@ -749,6 +797,31 @@ pub async fn next_archive_retry_at(
         .await
 }
 
+struct ArchiveGuard {
+    work: Value,
+    owner: Value,
+    task_id: String,
+    owner_id: String,
+    root_id: String,
+    intent: ArchiveIntent,
+    actor_epoch: i64,
+}
+
+impl ArchiveGuard {
+    fn check(&self, tx: &Transaction<'_>) -> Result<(), crate::agent_management::ManagementError> {
+        let changed = || crate::agent_management::ManagementError::Invalid("The accepted task owner or result changed");
+        let current = WorkItemsRepository::work_record(tx, &self.task_id).map_err(|_| changed())?.ok_or_else(changed)?;
+        let owner = AgentRepository::get(tx, &AgentId::from(self.owner_id.as_str())).map_err(|_| changed())?.ok_or_else(changed)?;
+        if current.status() != WorkStatus::Accepted
+            || current.value()["version"] != self.work["version"]
+            || current.value()["results"] != self.work["results"]
+            || owner.value() != self.owner
+            || accepted_archive_preflight(tx, &self.task_id, current.value(), &self.intent, &self.owner_id, &self.root_id, self.actor_epoch).map_err(|_| changed())?.is_some()
+        { return Err(changed()); }
+        Ok(())
+    }
+}
+
 /// Reconcile the target and accepted result before replaying a lifecycle archive.
 /// A canonical archive marker proves the prior effect committed; cleanupPending
 /// or a conflicting marker is held without repeating cleanup effects.
@@ -859,34 +932,18 @@ fn accepted_archive_preflight(
         ));
     }
 
-    if owner_value.get("executionMode").and_then(Value::as_str) == Some("vm")
-        || crate::layr_native::is_native(&owner_value)
-    {
-        if !vm_merge_confirmed(
+    if (owner_value.get("executionMode").and_then(Value::as_str) == Some("vm")
+        || crate::layr_native::is_native(&owner_value))
+        && !vm_merge_confirmed(
             connection,
             task_id,
             result_id,
             result["revision"].as_str().unwrap_or_default(),
-        )? {
-            return Ok(Some(
-                json!({"status":"kept","reason":"The layr result merge is not confirmed"}),
-            ));
-        }
-    } else {
-        let revision = result["revision"].as_str().unwrap_or_default();
-        let cwd = owner_value
-            .get("cwd")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if cwd.is_empty() || !accepted_revision_is_on_local_main(cwd, revision) {
-            let remote = !cwd.is_empty() && repository_has_origin(cwd);
-            let reason = if remote {
-                "Remote-origin main verification requires cross-server/remote-transport"
-            } else {
-                "The result commit is not reachable from local main"
-            };
-            return Ok(Some(json!({"status":"kept","reason":reason})));
-        }
+        )?
+    {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The layr result merge is not confirmed"}),
+        ));
     }
     Ok(None)
 }
@@ -4817,6 +4874,50 @@ mod actor_tests {
         json!({"id":id,"rootId":"lead","owner":owner,"status":status,"title":id,
             "description":"","created":1.0,"updated":1.0,"version":2,
             "dependencies":[],"results":results,"decisions":[],"createdBy":"worker"})
+    }
+
+    #[tokio::test]
+    async fn accepted_archive_refuses_changed_work_after_git_check() {
+        let repo = tempfile::tempdir().expect("repository");
+        let git = |args: &[&str]| {
+            let output = crate::bounded_child::run_with_isolated_git_config(crate::bounded_child::Request {
+                program: std::ffi::OsStr::new("git"), git_directory: Some(repo.path().as_os_str()),
+                args, environment: &[], input: None, stdout_limit: 4096, stderr_limit: 4096,
+                timeout: std::time::Duration::from_secs(10),
+            }).expect("git runs");
+            String::from_utf8(output.stdout.bytes).expect("git output")
+        };
+        git(&["init", "-b", "main"]);
+        git(&["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"]);
+        let revision = git(&["rev-parse", "HEAD"]).trim().to_owned();
+        let dir = tempfile::tempdir().expect("state");
+        let store = Arc::new(RuntimeStore::open(Some(dir.path())).await.expect("store"));
+        let owner = json!({"provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"paused","cwd":repo.path().to_str().expect("path")});
+        let item = work("race", Some("worker"), "accepted", json!([{"id":"result-1","agent":"worker","text":"done","checks":"checked","revision":revision,"files":[]}]));
+        let saved_owner = owner.clone();
+        let saved_work = item.clone();
+        store.transaction(move |tx| {
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running"}))?)?;
+            AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+            WorkItemsRepository::put_work(tx, "race", &item)?;
+            Ok(())
+        }).await.expect("seed");
+        let intent: super::ArchiveIntent = serde_json::from_str(r#"{"status":"unknown","taskId":"race","intentId":"race:result-1","actor":"lead","actorEpoch":1,"target":"worker","attempts":0,"created":1}"#).expect("intent");
+        assert!(super::accepted_revision_is_on_local_main(repo.path().to_str().expect("path"), &revision));
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_work SET record=json_set(record,'$.version',3) WHERE id='race'", [])?;
+            Ok(())
+        }).await.expect("concurrent work change");
+        let guard = super::ArchiveGuard { work:saved_work, owner:saved_owner, task_id:"race".into(), owner_id:"worker".into(), root_id:"lead".into(), intent, actor_epoch:1 };
+        let result = crate::agent_management_store::execute(
+            Arc::clone(&store),
+            &crate::agent_management::Action::Archive { actor:"lead".into(), epoch:1, target:"worker".into(), reason:"Accepted task result is on main".into(), unassign_work:false },
+            10.0, Some(Box::new(move |tx| guard.check(tx))),
+        ).await;
+        assert!(matches!(result, Err(crate::agent_management::ManagementError::Invalid("The accepted task owner or result changed"))));
+        let reader = store.test_reader().expect("reader");
+        let owner = AgentRepository::get(&reader, &AgentId::from("worker")).expect("owner read").expect("owner exists");
+        assert!(owner.value().get("deletedAt").is_none());
     }
 
     #[test]

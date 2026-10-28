@@ -724,7 +724,7 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
         Some(ports) => {
             agent_lifecycle_runtime::execute(Arc::clone(&store), &action, now, ports).await
         }
-        None => agent_management_store::execute(Arc::clone(&store), &action, now).await,
+        None => agent_management_store::execute(Arc::clone(&store), &action, now, None).await,
     }
     .map_err(|error| match error {
         ManagementError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),

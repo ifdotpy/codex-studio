@@ -8,6 +8,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use studio_runtime_store::{RuntimeStore, Transaction, agent_management as repository};
 
+pub type TransactionGuard = Box<dyn FnOnce(&Transaction<'_>) -> Result<(), ManagementError> + Send>;
+
 /// HTTP stop/delete and the tool dispatcher's archive/restore share this entry.
 /// Preconditions, decision, writes and renderer changes commit together. No
 /// caller can replay an unknown external effect because none is submitted here.
@@ -15,8 +17,13 @@ pub async fn execute(
     store: std::sync::Arc<RuntimeStore>,
     action: &Action,
     now: f64,
+    guard: Option<TransactionGuard>,
 ) -> Result<Value, ManagementError> {
-    let mut result = execute_prepared(std::sync::Arc::clone(&store), action, now, None).await?;
+    let action_for_transaction = action.clone();
+    let mut result = store.transaction_with_error(move |transaction| {
+        if let Some(guard) = guard { guard(transaction)?; }
+        execute_decision(transaction, &action_for_transaction, now, None)
+    }).await?;
     if matches!(action, Action::Delete { .. }) {
         crate::workspace_cleanup_runtime::reconcile_pending_cleanup(std::sync::Arc::clone(&store))
             .await
@@ -226,6 +233,7 @@ pub async fn archive_finished(
                 unassign_work,
             },
             now,
+            None,
         )
         .await?;
         let reply: ArchiveReply =
@@ -302,6 +310,7 @@ pub async fn archive_accepted_result(
             unassign_work: false,
         },
         now,
+        None,
     )
     .await
 }
@@ -792,7 +801,7 @@ mod archive_finished_tests {
             reason: "must not replace committed receipt".into(),
             unassign_work: false,
         };
-        let recovered = execute(Arc::clone(&store), &action, ARCHIVE_TIME)
+        let recovered = execute(Arc::clone(&store), &action, ARCHIVE_TIME, None)
             .await
             .expect("readback");
         assert_eq!(recovered["status"], "archived");
@@ -1082,6 +1091,7 @@ mod archive_finished_tests {
                 unassign_work: false,
             },
             30.0,
+            None,
         )
         .await
         .expect("archive decides")

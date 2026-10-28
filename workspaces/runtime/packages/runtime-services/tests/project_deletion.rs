@@ -537,6 +537,7 @@ async fn project_deletion_orders_archive_restore_with_its_writer() {
                 target: "archived".into(),
             },
             3.,
+            None,
         )
         .await;
         if deletion_first {

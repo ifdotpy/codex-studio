@@ -884,7 +884,7 @@ async fn lifecycle_management(
     };
     let outcome = match action {
         LifecycleCommand::Single(action) => {
-            crate::agent_management_store::execute(store, &action, now).await
+            crate::agent_management_store::execute(store, &action, now, None).await
         }
         LifecycleCommand::Finished {
             actor,
