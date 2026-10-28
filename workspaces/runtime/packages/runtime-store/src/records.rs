@@ -240,6 +240,101 @@ pub struct AgentRecord {
     pub start_outcome_hold: Option<StoredStartOutcomeHold>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub fired_events: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_review_thread: Option<NativeReviewThread>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vm_launch: Option<VmLaunch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_copy: Option<CredentialCopy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vm_auth_bootstrap: Option<VmAuthBootstrap>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_release: Option<NativeRelease>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewThread {
+    pub sequence: u64,
+    pub attempt: String,
+    pub operation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_request_id: Option<String>,
+    #[serde(default)]
+    pub admitted_request: Option<crate::request_results::AdmittedRequest>,
+    pub generation: u64,
+    pub connection: String,
+    pub request_digest: String,
+    pub status: studio_runtime_schema::persistence::NativeReviewThreadStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartIdentity {
+    pub agent_id: String,
+    pub epoch: i64,
+    pub handle: String,
+    pub request_id: String,
+    pub launch_fingerprint: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VmLaunch {
+    pub identity: StartIdentity,
+    pub signature: String,
+    pub status: studio_runtime_schema::persistence::WorkEffectStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub info: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialCopy {
+    pub agent_id: String,
+    pub epoch: i64,
+    pub account_key: String,
+    pub provider: studio_runtime_providers::ProviderKind,
+    pub relative_path: String,
+    pub digest: String,
+    pub request_id: String,
+    pub signature: String,
+    pub status: studio_runtime_schema::persistence::WorkEffectStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VmAuthBootstrap {
+    pub agent_id: String,
+    pub epoch: i64,
+    pub request_id: String,
+    pub root_request_id: String,
+    pub admitted_request: crate::request_results::AdmittedRequest,
+    pub fingerprint: String,
+    pub state: studio_runtime_schema::persistence::WorkEffectStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReleaseScope {
+    pub account: String,
+    #[serde(flatten)]
+    pub provider: studio_runtime_schema::persistence::ProviderScope,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeRelease {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admitted_request: Option<crate::request_results::AdmittedRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<NativeReleaseScope>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -516,6 +611,21 @@ impl AgentRecord {
         if !self.fired_events.is_empty() {
             value["firedEvents"] = crate::projection_value(&self.fired_events);
         }
+        if let Some(field) = &self.native_review_thread {
+            value["nativeReviewThread"] = crate::projection_value(field);
+        }
+        if let Some(field) = &self.vm_launch {
+            value["vmLaunch"] = crate::projection_value(field);
+        }
+        if let Some(field) = &self.credential_copy {
+            value["credentialCopy"] = crate::projection_value(field);
+        }
+        if let Some(field) = &self.vm_auth_bootstrap {
+            value["vmAuthBootstrap"] = crate::projection_value(field);
+        }
+        if let Some(field) = &self.native_release {
+            value["nativeRelease"] = crate::projection_value(field);
+        }
         value
     }
 
@@ -534,6 +644,21 @@ impl AgentRecord {
         }
         if !self.fired_events.is_empty() {
             value["firedEvents"] = crate::projection_value(&self.fired_events);
+        }
+        if let Some(field) = &self.native_review_thread {
+            value["nativeReviewThread"] = crate::projection_value(field);
+        }
+        if let Some(field) = &self.vm_launch {
+            value["vmLaunch"] = crate::projection_value(field);
+        }
+        if let Some(field) = &self.credential_copy {
+            value["credentialCopy"] = crate::projection_value(field);
+        }
+        if let Some(field) = &self.vm_auth_bootstrap {
+            value["vmAuthBootstrap"] = crate::projection_value(field);
+        }
+        if let Some(field) = &self.native_release {
+            value["nativeRelease"] = crate::projection_value(field);
         }
         value
     }
@@ -1637,6 +1762,41 @@ mod tests {
     use crate::StoreError;
     use rusqlite::Connection;
     use serde_json::{Value, json};
+
+    #[test]
+    fn agent_effect_records_keep_live_and_current_shapes() {
+        let legacy = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","nativeReviewThread":{"attempt":"attempt","connection":"connection","generation":2,"operation":"operation","requestDigest":"digest","sequence":1,"status":"accepted","threadId":"thread"},"nativeRelease":{"id":"release","phase":"released","resetPending":false}}"#;
+        let agent: AgentRecord = serde_json::from_str(legacy).expect("live review and release");
+        assert!(
+            agent
+                .native_review_thread
+                .as_ref()
+                .unwrap()
+                .root_request_id
+                .is_none()
+        );
+        assert!(agent.native_release.as_ref().unwrap().scope.is_none());
+        let encoded = serde_json::to_string(&agent).expect("serialize legacy agent");
+        let round_trip: AgentRecord = serde_json::from_str(&encoded).expect("round-trip agent");
+        assert_eq!(agent, round_trip);
+        assert_eq!(
+            agent.value(),
+            serde_json::from_str::<Value>(&encoded).unwrap()
+        );
+        assert_eq!(agent.clone().into_value(), agent.value());
+
+        let current = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","vmLaunch":{"identity":{"agentId":"agent","epoch":1,"handle":"handle","requestId":"request","launchFingerprint":"digest"},"signature":"signature","status":"submitted"},"credentialCopy":{"agentId":"agent","epoch":1,"accountKey":"account","provider":"codex","relativePath":"path","digest":"digest","requestId":"request","signature":"signature","status":"submitted"},"vmAuthBootstrap":{"agentId":"agent","epoch":1,"requestId":"request","rootRequestId":"root","admittedRequest":{"id":"token","signature":"signature","created":1},"fingerprint":"digest","state":"submitted"},"nativeRelease":{"scope":{"account":"account","connection":"connection","generation":2},"admittedRequest":{"id":"token","signature":"signature","created":1},"id":"release"}}"#;
+        let agent: AgentRecord = serde_json::from_str(current).expect("current effect fields");
+        let encoded = serde_json::to_string(&agent).expect("serialize current agent");
+        assert_eq!(
+            serde_json::from_str::<Value>(&encoded).unwrap(),
+            serde_json::from_str::<Value>(current).unwrap()
+        );
+        assert_eq!(
+            agent.value(),
+            serde_json::from_str::<Value>(&encoded).unwrap()
+        );
+    }
 
     fn agent(value: Value) -> AgentRecord {
         AgentRecord::from_value(value).expect("agent record has a string id")

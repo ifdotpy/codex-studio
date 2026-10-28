@@ -17,7 +17,19 @@ use studio_runtime_schema::persistence::{
 };
 use studio_runtime_store::outbox::{Outbox, OutboxRow};
 use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
-use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, truthy};
+use studio_runtime_store::{
+    AgentId, AgentRecord, AgentRepository, NativeReleaseScope, RuntimeStore, truthy,
+};
+
+pub(crate) fn stored_scope(scope: &ConnectionScope) -> NativeReleaseScope {
+    NativeReleaseScope {
+        account: scope.account.clone(),
+        provider: studio_runtime_schema::persistence::ProviderScope {
+            connection: scope.connection.clone(),
+            generation: scope.generation,
+        },
+    }
+}
 
 const TOOL_MEMORY_LOSS: &str = "JavaScript code cells and MCP tool memory end when the native session closes. The transcript and receipts stay. No user input is replayed.";
 /// Operation ID prefix reserved for an explicitly authorized native tool reset.
@@ -464,7 +476,7 @@ pub(crate) async fn execute(
             &store,
             &auth,
             &release,
-            Arc::clone(&session),
+            (Arc::clone(&session), None),
             release_result(
                 ReleaseStatus::Blocked,
                 Some("The owning account is offline"),
@@ -474,10 +486,10 @@ pub(crate) async fn execute(
         )
         .await;
     };
-    release["scope"] = serde_json::to_value(&scope).map_err(|_| Error::Stale)?;
     release["connectionId"] = json!(scope.connection);
     let frozen = release.clone();
     let frozen_auth = auth.clone();
+    let scope_for_store = stored_scope(&scope);
     store
         .transaction_with(move |tx| {
             if !frozen_auth.current(tx)? {
@@ -493,7 +505,11 @@ pub(crate) async fn execute(
                 return Err(Error::Stale);
             }
             worker["nativeRelease"] = frozen;
-            put(tx, worker)
+            let mut worker =
+                AgentRecord::from_value(worker).map_err(studio_runtime_store::StoreError::from)?;
+            worker.native_release.as_mut().ok_or(Error::Stale)?.scope = Some(scope_for_store);
+            AgentRepository::put(tx, &worker)?;
+            Ok(())
         })
         .await?;
     let inspection = inspect(session.as_ref(), &auth, &release, &scope).await;
@@ -504,7 +520,7 @@ pub(crate) async fn execute(
                 &store,
                 &auth,
                 &release,
-                Arc::clone(&session),
+                (Arc::clone(&session), Some(&scope)),
                 release_result(ReleaseStatus::Blocked, Some(reason)),
                 false,
                 false,
@@ -518,7 +534,7 @@ pub(crate) async fn execute(
             &store,
             &auth,
             &release,
-            Arc::clone(&session),
+            (Arc::clone(&session), Some(&scope)),
             release_result(ReleaseStatus::Released, None),
             false,
             true,
@@ -567,11 +583,14 @@ pub(crate) async fn execute(
                 },
             )
             .map_err(|_| Error::Unavailable("provider-session/request-admission"))?;
-            worker["nativeRelease"]["admittedRequest"] =
-                serde_json::to_value(&provider_admission).map_err(|_| Error::Stale)?;
-            worker["nativeRelease"]["scope"] =
-                serde_json::to_value(frozen_scope).map_err(|_| Error::Stale)?;
-            put(tx, worker)?;
+            let mut worker =
+                AgentRecord::from_value(worker).map_err(studio_runtime_store::StoreError::from)?;
+            worker
+                .native_release
+                .as_mut()
+                .ok_or(Error::Stale)?
+                .admitted_request = Some(provider_admission.clone());
+            AgentRepository::put(tx, &worker)?;
             Ok(provider_admission)
         })
         .await;
@@ -580,7 +599,7 @@ pub(crate) async fn execute(
             &store,
             &auth,
             &release,
-            Arc::clone(&session),
+            (Arc::clone(&session), Some(&scope)),
             release_result(
                 ReleaseStatus::Blocked,
                 Some("The lead or worker changed during inspection"),
@@ -590,13 +609,11 @@ pub(crate) async fn execute(
         )
         .await;
     };
-    release["admittedRequest"] =
-        serde_json::to_value(provider_admission).map_err(|_| Error::Stale)?;
     let outcome = request(
         session.as_ref(),
         &auth,
         &release,
-        &scope,
+        (&scope, Some(&provider_admission)),
         Method::ThreadUnsubscribe,
         "unsubscribe",
         json!({"threadId":release["threadId"]}),
@@ -618,7 +635,7 @@ pub(crate) async fn execute(
         &store,
         &auth,
         &release,
-        Arc::clone(&session),
+        (Arc::clone(&session), Some(&scope)),
         release_result(status, None),
         true,
         closed,
@@ -666,11 +683,12 @@ async fn request(
     session: &dyn AccountSessionPort,
     auth: &AuthorizedRecoveryRequest,
     release: &Value,
-    scope: &ConnectionScope,
+    authority: (&ConnectionScope, Option<&AdmittedRequest>),
     method: Method,
     suffix: &str,
     params: Value,
 ) -> Result<Value, Error> {
+    let (scope, admitted) = authority;
     let operation = format!(
         "{}:{suffix}",
         release["id"]
@@ -684,12 +702,7 @@ async fn request(
             } else {
                 String::new()
             },
-            admitted_request: if method == Method::ThreadUnsubscribe {
-                serde_json::from_value(release["admittedRequest"].clone())
-                    .map_err(|_| Error::Invalid("Invalid release admission"))?
-            } else {
-                None
-            },
+            admitted_request: admitted.cloned(),
             account: scope.account.clone(),
             operation: operation.clone(),
             actor: Some(RequestActor {
@@ -745,7 +758,7 @@ async fn inspect(
         session,
         auth,
         release,
-        scope,
+        (scope, None),
         Method::ThreadRead,
         "thread",
         json!({"threadId":thread,"includeTurns":false}),
@@ -771,7 +784,16 @@ async fn inspect(
         ),
         (Method::ThreadQueueList, "queue", json!({"threadId":thread})),
     ] {
-        let body = request(session, auth, release, scope, method, suffix, params).await?;
+        let body = request(
+            session,
+            auth,
+            release,
+            (scope, None),
+            method,
+            suffix,
+            params,
+        )
+        .await?;
         if !body["data"].as_array().is_some_and(Vec::is_empty) || truthy(body.get("nextCursor")) {
             return Err(Error::Invalid(
                 "Native commands or input still hold this session",
@@ -802,13 +824,15 @@ async fn finish_release(
     store: &RuntimeStore,
     auth: &AuthorizedRecoveryRequest,
     release: &Value,
-    session: Arc<dyn AccountSessionPort>,
+    authority: (Arc<dyn AccountSessionPort>, Option<&ConnectionScope>),
     mut value: crate::recovery::RecoveryReceipt,
     submitted: bool,
     closed: bool,
 ) -> Result<DispatchedOperation, Error> {
+    let (session, scope) = authority;
     let auth = auth.clone();
     let release = release.clone();
+    let scope = scope.cloned();
     let now = release["at"].as_f64().ok_or(Error::Stale)?;
     let value = store
         .transaction_with(move |tx| {
@@ -820,12 +844,9 @@ async fn finish_release(
                 return Err(Error::Stale);
             }
             let current = auth.current(tx)?
-                && (release["scope"].is_null()
-                    || serde_json::from_value::<ConnectionScope>(release["scope"].clone())
-                        .ok()
-                        .is_some_and(|scope| {
-                            session.current_scope(&scope.account).as_ref() == Some(&scope)
-                        }));
+                && scope.as_ref().is_none_or(|scope| {
+                    session.current_scope(&scope.account).as_ref() == Some(scope)
+                });
             if !current {
                 value = release_result(
                     if submitted {
@@ -867,6 +888,11 @@ pub(crate) fn authorize_release(
     let Some(worker) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
         return Ok(false);
     };
+    let saved_scope = worker
+        .native_release
+        .as_ref()
+        .and_then(|release| release.scope.as_ref())
+        .cloned();
     let worker = worker.value();
     let release = &worker["nativeRelease"];
     let Ok(auth) =
@@ -880,7 +906,7 @@ pub(crate) fn authorize_release(
         && blocker(tx, &worker)?.is_none()
         && release["phase"] == NativeReleasePhase::Unsubscribing.as_str()
         && release["resetPending"] == true
-        && release["scope"] == serde_json::to_value(scope).map_err(|_| Error::Stale)?
+        && saved_scope.as_ref() == Some(&stored_scope(scope))
         && release["id"]
             .as_str()
             .is_some_and(|id| operation == format!("{id}:unsubscribe"))
@@ -1070,10 +1096,9 @@ mod tests {
                                 let mut worker =
                                     AgentRepository::get(tx, &AgentId::from("worker-00000000"))?
                                         .expect("worker");
-                                let release =
-                                    worker.extra.get_mut("nativeRelease").expect("release");
-                                release["closedAt"] = json!(11.0);
-                                release["resetPending"] = json!(false);
+                                let release = worker.native_release.as_mut().expect("release");
+                                release.extra.insert("closedAt".into(), json!(11.0));
+                                release.extra.insert("resetPending".into(), json!(false));
                                 AgentRepository::put(tx, &worker)
                             })
                             .await
@@ -1518,7 +1543,7 @@ mod tests {
         let (_directory, store, actor, session) = fixture().await;
         store.transaction(|tx| {
             let mut worker = AgentRepository::get(tx, &AgentId::from("worker-00000000"))?.expect("worker");
-            worker.extra.insert("nativeRelease".into(), json!({"id":"old-release","phase":"resumed","closedAt":5.0,"resetPending":false,"targetEpoch":3,"threadId":"worker-thread","accountKey":"default"}));
+            worker.native_release = Some(serde_json::from_str(r#"{"id":"old-release","phase":"resumed","closedAt":5.0,"resetPending":false,"targetEpoch":3,"threadId":"worker-thread","accountKey":"default"}"#).unwrap());
             AgentRepository::put(tx, &worker)
         }).await.expect("native close followed by resume");
         let session = Arc::new(session);

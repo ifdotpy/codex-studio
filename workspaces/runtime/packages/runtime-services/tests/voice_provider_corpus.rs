@@ -406,6 +406,11 @@ async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
                     title_job: None,
                     start_outcome_hold: None,
                     fired_events: Default::default(),
+                    native_review_thread: None,
+                    vm_launch: None,
+                    credential_copy: None,
+                    vm_auth_bootstrap: None,
+                    native_release: None,
                     id: id.clone(), root_id: id, epoch: 0,
                     status: studio_runtime_store::AgentStatus::Idle,
                     extra: [

@@ -236,7 +236,7 @@ async fn vm_existing_reattach_refuses_missing_or_unfinished_start_receipts() {
                                 .get_mut("vmLaunch")
                                 .expect("current launch owner")["status"] = json!(status);
                         } else {
-                            agent.extra.remove("vmLaunch");
+                            agent.vm_launch = None;
                         }
                         AgentRepository::put(tx, &agent)
                     })

@@ -2356,7 +2356,11 @@ fn record_manual_release_closure(
         || source.account != identity.account
         || source.connection.is_empty()
         || source.generation != Some(entry.generation.0)
-        || release["scope"] != json!(scope)
+        || agent
+            .native_release
+            .as_ref()
+            .and_then(|release| release.scope.as_ref())
+            != Some(&crate::agent_management_recovery::stored_scope(&scope))
         || release["connectionId"] != source.connection
         || release["accountKey"] != identity.account
         || release["threadId"] != thread
@@ -2372,12 +2376,14 @@ fn record_manual_release_closure(
     {
         return Ok(true);
     }
-    let mut release = release.clone();
-    release["closedAt"] = json!(now());
-    release["resetPending"] = json!(false);
+    let release = agent
+        .native_release
+        .as_mut()
+        .ok_or_else(|| invalid(thread))?;
+    release.extra.insert("closedAt".into(), json!(now()));
+    release.extra.insert("resetPending".into(), json!(false));
     // Closure does not replace the exact unsubscribe receipt. In particular,
     // an unknown unsubscribe keeps its phase and cannot enable preparation.
-    agent.extra.insert("nativeRelease".into(), release);
     AgentRepository::put(tx, &agent)?;
     Ok(true)
 }

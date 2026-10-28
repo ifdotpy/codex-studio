@@ -30,7 +30,6 @@ use studio_runtime_process::{
         ProviderAttachment, ProviderTaskFactory, SessionClock, Shutdown, TaskExit,
     },
 };
-use studio_runtime_providers::ProviderKind;
 use studio_runtime_providers::{DecodedJournalPayload, decode_journal_value};
 use studio_runtime_schema::persistence::{
     OutboxKind, OutboxStatus, OwnerKind, RequestIdentity, WorkEffectStatus,
@@ -38,8 +37,10 @@ use studio_runtime_schema::persistence::{
 use studio_runtime_schema::shared_values::{
     GUEST_PROVIDER_READ_RETRY_SECONDS, LINUX_VM_PROVIDER_HANDLE_PREFIX,
 };
+pub use studio_runtime_store::StartIdentity;
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, ExecutionHistoryRepository, RuntimeStore, StoreError,
+    AgentId, AgentRecord, AgentRepository, CredentialCopy, ExecutionHistoryRepository,
+    RuntimeStore, StoreError, VmAuthBootstrap, VmLaunch,
     outbox::{Outbox, OutboxError, OutboxRow},
     request_results::{AdmittedRequest, RequestResultError},
     sha256_hex as hex_digest,
@@ -132,53 +133,6 @@ pub enum GuestProviderError {
     Json(#[from] serde_json::Error),
     #[error("VM provider worker task failed")]
     Task,
-}
-
-/// Stable host-side identity persisted before the first guest dispatch.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StartIdentity {
-    pub agent_id: String,
-    pub epoch: i64,
-    pub handle: String,
-    pub request_id: String,
-    pub launch_fingerprint: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VmLaunch {
-    identity: StartIdentity,
-    signature: String,
-    status: WorkEffectStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    info: Option<Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CredentialCopy {
-    agent_id: String,
-    epoch: i64,
-    account_key: String,
-    provider: ProviderKind,
-    relative_path: String,
-    digest: String,
-    request_id: String,
-    signature: String,
-    status: WorkEffectStatus,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VmAuthBootstrap {
-    agent_id: String,
-    epoch: i64,
-    request_id: String,
-    root_request_id: String,
-    admitted_request: AdmittedRequest,
-    fingerprint: String,
-    state: WorkEffectStatus,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -665,8 +619,7 @@ impl GuestProviderSession {
                         &AgentId::from(expected.agent_id.as_str()),
                     )?
                     .ok_or(GuestProviderError::Unknown)?;
-                    let saved: VmLaunch =
-                        agent_field(&agent, "vmLaunch")?.ok_or(GuestProviderError::Unknown)?;
+                    let saved = agent.vm_launch.ok_or(GuestProviderError::Unknown)?;
                     if saved.status != WorkEffectStatus::Complete {
                         return Err(GuestProviderError::Unknown);
                     }
@@ -1199,7 +1152,7 @@ async fn reserve_start(
                 if held_for_agent(tx, &agent_id, "vmLaunch")? {
                     return Ok(None);
                 }
-                if let Some(mut saved) = agent_field::<VmLaunch>(&agent, "vmLaunch")? {
+                if let Some(mut saved) = agent.vm_launch.clone() {
                     if saved.identity.epoch != epoch {
                         if unresolved(saved.status) {
                             hold_obligation(
@@ -1225,7 +1178,8 @@ async fn reserve_start(
                         }
                         let disposition = if saved.status == WorkEffectStatus::NotSent {
                             saved.status = WorkEffectStatus::Submitted;
-                            save_agent_field(tx, &mut agent, "vmLaunch", &saved)?;
+                            agent.vm_launch = Some(saved.clone());
+                            AgentRepository::put(tx, &agent)?;
                             StartDisposition::Dispatch
                         } else if saved.status == WorkEffectStatus::Complete {
                             StartDisposition::Retained(
@@ -1244,17 +1198,13 @@ async fn reserve_start(
                     request_id: RequestIdentity::issue_root(),
                     launch_fingerprint: fingerprint.to_owned(),
                 };
-                save_agent_field(
-                    tx,
-                    &mut agent,
-                    "vmLaunch",
-                    &VmLaunch {
-                        identity: identity.clone(),
-                        signature,
-                        status: WorkEffectStatus::Submitted,
-                        info: None,
-                    },
-                )?;
+                agent.vm_launch = Some(VmLaunch {
+                    identity: identity.clone(),
+                    signature,
+                    status: WorkEffectStatus::Submitted,
+                    info: None,
+                });
+                AgentRepository::put(tx, &agent)?;
                 Ok(Some((identity, StartDisposition::Dispatch)))
             },
         )
@@ -1275,31 +1225,6 @@ async fn persist_start(
     store
         .transaction_with(move |tx| settle_start(tx, &identity, status, info))
         .await
-}
-
-fn agent_field<T: serde::de::DeserializeOwned>(
-    agent: &AgentRecord,
-    field: &str,
-) -> Result<Option<T>> {
-    agent
-        .extra
-        .get(field)
-        .map(T::deserialize)
-        .transpose()
-        .map_err(Into::into)
-}
-
-fn save_agent_field(
-    tx: &Transaction<'_>,
-    agent: &mut AgentRecord,
-    field: &str,
-    state: &impl Serialize,
-) -> Result<()> {
-    agent
-        .extra
-        .insert(field.to_owned(), serde_json::to_value(state)?);
-    AgentRepository::put(tx, agent)?;
-    Ok(())
 }
 
 fn unresolved(status: WorkEffectStatus) -> bool {
@@ -1347,7 +1272,12 @@ fn hold_obligation(
             created: chrono::Utc::now().timestamp_millis(),
         },
     )?;
-    agent.extra.remove(field);
+    match field {
+        "vmLaunch" => agent.vm_launch = None,
+        "credentialCopy" => agent.credential_copy = None,
+        "vmAuthBootstrap" => agent.vm_auth_bootstrap = None,
+        _ => return Err(GuestProviderError::Invalid),
+    }
     AgentRepository::put(tx, agent)?;
     Ok(())
 }
@@ -1360,8 +1290,7 @@ fn settle_start(
 ) -> Result<()> {
     let mut agent = AgentRepository::get(tx, &AgentId::from(identity.agent_id.as_str()))?
         .ok_or(GuestProviderError::Unknown)?;
-    let mut saved: VmLaunch =
-        agent_field(&agent, "vmLaunch")?.ok_or(GuestProviderError::Unknown)?;
+    let mut saved = agent.vm_launch.clone().ok_or(GuestProviderError::Unknown)?;
     if saved.identity != *identity || agent.epoch != identity.epoch {
         return Err(GuestProviderError::Unknown);
     }
@@ -1382,7 +1311,9 @@ fn settle_start(
     }
     saved.status = status;
     saved.info = info;
-    save_agent_field(tx, &mut agent, "vmLaunch", &saved)
+    agent.vm_launch = Some(saved);
+    AgentRepository::put(tx, &agent)?;
+    Ok(())
 }
 
 fn reserve_credentials(tx: &Transaction<'_>, mut copy: CredentialCopy) -> Result<Option<bool>> {
@@ -1410,7 +1341,7 @@ fn reserve_credentials(tx: &Transaction<'_>, mut copy: CredentialCopy) -> Result
     if Outbox::get::<VmObligation>(tx, &held_id)?.is_some() {
         return Ok(None);
     }
-    if let Some(saved) = agent_field::<CredentialCopy>(&agent, "credentialCopy")? {
+    if let Some(saved) = agent.credential_copy.clone() {
         copy.status = saved.status;
         if saved == copy {
             if saved.status == WorkEffectStatus::Complete {
@@ -1446,13 +1377,15 @@ fn reserve_credentials(tx: &Transaction<'_>, mut copy: CredentialCopy) -> Result
             return Err(GuestProviderError::Unknown);
         }
         copy.status = WorkEffectStatus::Complete;
-        save_agent_field(tx, &mut agent, "credentialCopy", &copy)?;
+        agent.credential_copy = Some(copy);
+        AgentRepository::put(tx, &agent)?;
         return Ok(Some(false));
     }
     // A fresh operation or a proved pre-transport failure is the only permission
     // to dispatch. Commit uncertainty before the guest can observe the request.
     copy.status = WorkEffectStatus::Submitted;
-    save_agent_field(tx, &mut agent, "credentialCopy", &copy)?;
+    agent.credential_copy = Some(copy);
+    AgentRepository::put(tx, &agent)?;
     Ok(Some(true))
 }
 
@@ -1463,8 +1396,10 @@ fn settle_credentials(
 ) -> Result<()> {
     let mut agent = AgentRepository::get(tx, &AgentId::from(copy.agent_id.as_str()))?
         .ok_or(GuestProviderError::Unknown)?;
-    let saved: CredentialCopy =
-        agent_field(&agent, "credentialCopy")?.ok_or(GuestProviderError::Unknown)?;
+    let saved = agent
+        .credential_copy
+        .clone()
+        .ok_or(GuestProviderError::Unknown)?;
     copy.status = saved.status;
     if saved != copy || agent.epoch != copy.epoch {
         return Err(GuestProviderError::Unknown);
@@ -1476,7 +1411,9 @@ fn settle_credentials(
         return Err(GuestProviderError::Unknown);
     }
     copy.status = status;
-    save_agent_field(tx, &mut agent, "credentialCopy", &copy)
+    agent.credential_copy = Some(copy);
+    AgentRepository::put(tx, &agent)?;
+    Ok(())
 }
 
 /// A submitted authentication bootstrap is never re-sent after response loss.
@@ -1506,7 +1443,7 @@ pub async fn vm_bootstrap_admission(
         if held_for_agent(tx, &state.agent_id, "vmAuthBootstrap")? {
             return Ok(None);
         }
-        if let Some(saved) = agent_field::<VmAuthBootstrap>(&agent, "vmAuthBootstrap")? {
+        if let Some(saved) = agent.vm_auth_bootstrap.clone() {
             if saved.epoch == state.epoch
                 && saved.admitted_request.id() == state.admitted_request.id()
             {
@@ -1514,7 +1451,8 @@ pub async fn vm_bootstrap_admission(
                     return Ok(None);
                 }
                 state.state = WorkEffectStatus::Submitted;
-                save_agent_field(tx, &mut agent, "vmAuthBootstrap", &state)?;
+                agent.vm_auth_bootstrap = Some(state);
+                AgentRepository::put(tx, &agent)?;
                 return Ok(Some(false));
             }
             if !fresh {
@@ -1536,7 +1474,8 @@ pub async fn vm_bootstrap_admission(
             return Ok(None);
         }
         state.state = WorkEffectStatus::Submitted;
-        save_agent_field(tx, &mut agent, "vmAuthBootstrap", &state)?;
+        agent.vm_auth_bootstrap = Some(state);
+        AgentRepository::put(tx, &agent)?;
         Ok(Some(false))
     })
     .await
@@ -1557,7 +1496,7 @@ pub async fn vm_bootstrap_settled(
             return Err(GuestProviderError::Unknown);
         }
         state.state = WorkEffectStatus::Complete;
-        let current = agent_field::<VmAuthBootstrap>(&agent, "vmAuthBootstrap")?;
+        let current = agent.vm_auth_bootstrap.clone();
         let held_id = Outbox::effect_id(
             state.admitted_request.id(),
             OutboxKind::ProviderCall,
@@ -1590,7 +1529,8 @@ pub async fn vm_bootstrap_settled(
             },
         )?;
         if current.is_some_and(|saved| saved.admitted_request == state.admitted_request) {
-            save_agent_field(tx, &mut agent, "vmAuthBootstrap", &state)?;
+            agent.vm_auth_bootstrap = Some(state);
+            AgentRepository::put(tx, &agent)?;
         }
         if let Some(held) = held {
             Outbox::delete_settled(tx, &held.id, &held.signature)?;
@@ -2065,14 +2005,9 @@ mod tests {
         let agent = AgentRepository::get(&connection, &AgentId::from("agent-1"))
             .unwrap()
             .unwrap();
-        assert_eq!(
-            agent.extra.get("vmLaunch").map(|state| &state["status"]),
-            Some(&json!("complete"))
-        );
-        assert_eq!(
-            agent.extra["vmLaunch"]["identity"],
-            serde_json::to_value(session.identity()).unwrap()
-        );
+        let launch = agent.vm_launch.as_ref().unwrap();
+        assert_eq!(launch.status, WorkEffectStatus::Complete);
+        assert_eq!(&launch.identity, session.identity());
         drop(connection);
         drop(session);
         open_session(store, guest.clone()).await.unwrap();
@@ -2417,7 +2352,10 @@ mod tests {
         let agent = AgentRepository::get(&store.test_reader().unwrap(), &AgentId::from("agent-1"))
             .unwrap()
             .unwrap();
-        assert_eq!(agent.extra["vmAuthBootstrap"]["requestId"], "new-operation");
+        assert_eq!(
+            agent.vm_auth_bootstrap.as_ref().unwrap().request_id,
+            "new-operation"
+        );
     }
 
     #[tokio::test]
@@ -2478,7 +2416,7 @@ mod tests {
         let agent = AgentRepository::get(&store.test_reader().unwrap(), &AgentId::from("agent-1"))
             .unwrap()
             .unwrap();
-        assert!(!agent.extra.contains_key("vmAuthBootstrap"));
+        assert!(agent.vm_auth_bootstrap.is_none());
     }
 
     #[tokio::test]
@@ -2523,7 +2461,10 @@ mod tests {
         let agent = AgentRepository::get(&store.test_reader().unwrap(), &AgentId::from("agent-1"))
             .unwrap()
             .unwrap();
-        assert_eq!(agent.extra["vmAuthBootstrap"]["requestId"], "bootstrap-B");
+        assert_eq!(
+            agent.vm_auth_bootstrap.as_ref().unwrap().request_id,
+            "bootstrap-B"
+        );
     }
 
     #[tokio::test]
@@ -2620,7 +2561,10 @@ mod tests {
                     AgentRepository::get(&store.test_reader().unwrap(), &AgentId::from("agent-1"))
                         .unwrap()
                         .unwrap();
-                assert_eq!(agent.extra["credentialCopy"]["status"], "complete");
+                assert_eq!(
+                    agent.credential_copy.as_ref().unwrap().status,
+                    WorkEffectStatus::Complete
+                );
             }
             assert!(guest.credential_puts.lock().unwrap().is_empty());
             store
@@ -2726,7 +2670,7 @@ mod tests {
         store
             .read_async("linux_vm_provider/test_start_receipt", |connection| {
                 let agent = AgentRepository::get(connection, &AgentId::from("agent-1"))?.unwrap();
-                Ok::<_, StoreError>(agent.extra["vmLaunch"].to_string())
+                Ok::<_, StoreError>(serde_json::to_string(&agent.vm_launch).unwrap())
             })
             .await
             .unwrap()
@@ -2789,18 +2733,19 @@ mod tests {
                 "generation" => guest.info.lock().unwrap()["generation"] = json!(4),
                 "pid" => guest.info.lock().unwrap()["pid"] = json!(43),
                 _ => {
-                    let mut saved: Value =
+                    let mut saved: VmLaunch =
                         serde_json::from_str(&saved_start(&store).await).unwrap();
-                    saved["info"]["state"] = json!(if refusal == "legacy lost proof" {
-                        "lost"
-                    } else {
-                        "exited"
-                    });
+                    saved.info.as_mut().unwrap()["state"] =
+                        json!(if refusal == "legacy lost proof" {
+                            "lost"
+                        } else {
+                            "exited"
+                        });
                     store
                         .transaction(move |tx| {
                             let mut agent =
                                 AgentRepository::get(tx, &AgentId::from("agent-1"))?.unwrap();
-                            agent.extra.insert("vmLaunch".into(), saved);
+                            agent.vm_launch = Some(saved);
                             AgentRepository::put(tx, &agent)
                         })
                         .await
@@ -3156,7 +3101,7 @@ mod tests {
         struct ReceiptObservingGuest {
             inner: FakeGuest,
             store: Arc<RuntimeStore>,
-            dispatch_receipts: Mutex<Vec<Value>>,
+            dispatch_receipts: Mutex<Vec<VmLaunch>>,
         }
 
         impl GuestRpc for ReceiptObservingGuest {
@@ -3178,7 +3123,7 @@ mod tests {
                     self.dispatch_receipts
                         .lock()
                         .unwrap()
-                        .push(agent.extra["vmLaunch"].clone());
+                        .push(agent.vm_launch.unwrap());
                 }
                 self.inner
                     .stream(method, params, request_id, timeout, on_frame)
@@ -3196,33 +3141,30 @@ mod tests {
             open_session(store.clone(), guest.clone()).await,
             Err(GuestProviderError::Guest(_))
         ));
-        let not_sent: Value = serde_json::from_str(&saved_start(&store).await).unwrap();
-        assert_eq!(not_sent["status"], "not_sent");
+        let not_sent: VmLaunch = serde_json::from_str(&saved_start(&store).await).unwrap();
+        assert_eq!(not_sent.status, WorkEffectStatus::NotSent);
         assert!(matches!(
             open_session(store.clone(), guest.clone()).await,
             Err(GuestProviderError::Unknown)
         ));
-        let after_unknown: Value = serde_json::from_str(&saved_start(&store).await).unwrap();
+        let after_unknown: VmLaunch = serde_json::from_str(&saved_start(&store).await).unwrap();
         let reopened = open_session(store, guest.clone()).await.unwrap();
 
         assert_eq!(*guest.inner.starts.lock().unwrap(), 2);
         let dispatched = guest.dispatch_receipts.lock().unwrap();
         assert_eq!(dispatched.len(), 2);
         for receipt in dispatched.iter() {
-            assert_eq!(receipt["status"], "submitted");
-            assert_eq!(receipt["identity"], not_sent["identity"]);
+            assert_eq!(receipt.status, WorkEffectStatus::Submitted);
+            assert_eq!(receipt.identity, not_sent.identity);
         }
-        assert_eq!(after_unknown["status"], "submitted");
-        assert_eq!(after_unknown["identity"], not_sent["identity"]);
-        assert_eq!(
-            serde_json::to_value(reopened.identity()).unwrap(),
-            not_sent["identity"]
-        );
+        assert_eq!(after_unknown.status, WorkEffectStatus::Submitted);
+        assert_eq!(after_unknown.identity, not_sent.identity);
+        assert_eq!(reopened.identity(), &not_sent.identity);
         let ids = guest.inner.start_ids.lock().unwrap();
         assert_eq!(ids[0], ids[1]);
         assert_eq!(
             ids[0].as_deref(),
-            not_sent["identity"]["requestId"].as_str()
+            Some(not_sent.identity.request_id.as_str())
         );
     }
 
@@ -3306,7 +3248,7 @@ mod tests {
         let agent = AgentRepository::get(&store.test_reader().unwrap(), &AgentId::from("agent-1"))
             .unwrap()
             .unwrap();
-        let receipt: CredentialCopy = agent_field(&agent, "credentialCopy").unwrap().unwrap();
+        let receipt = agent.credential_copy.unwrap();
         assert_eq!(receipt.status, WorkEffectStatus::Complete);
         assert!(
             !serde_json::to_string(&receipt)

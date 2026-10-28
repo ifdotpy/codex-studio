@@ -2751,7 +2751,7 @@ mod retained_executor_tests {
             store
                 .transaction_with_error(|tx| {
                     let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-                    row.extra.remove("nativeRelease");
+                    row.native_release = None;
                     AgentRepository::put(tx, &row)
                 })
                 .await
