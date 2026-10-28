@@ -18,7 +18,9 @@ use std::{
 };
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_providers::{Method, RequestId};
-use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind, RequestIdentity};
+use studio_runtime_schema::persistence::{
+    NativeSettingsStatus, OutboxKind, OutboxStatus, OwnerKind, RequestIdentity,
+};
 use studio_runtime_store::outbox::{Outbox, OutboxRow};
 use studio_runtime_store::request_results::{
     Admission as RequestAdmission, AdmittedRequest, RequestResults, ResultEnvelope,
@@ -459,6 +461,7 @@ pub struct NativeRequest {
 pub fn reserve_provider_intent(
     tx: &Transaction<'_>,
     owner: &AdmittedRequest,
+    provider_operation: &str,
     mut request: NativeRequest,
 ) -> Result<NativeRequest> {
     if request.admitted_request.is_none() {
@@ -474,7 +477,7 @@ pub fn reserve_provider_intent(
                     connection: request.ticket.connection.clone(),
                     generation: request.ticket.generation,
                 },
-                operation: request.ticket.operation.clone(),
+                operation: provider_operation.to_owned(),
                 actor: Some(RequestActor {
                     agent: request.ticket.agent.clone(),
                     epoch: i64::try_from(request.ticket.epoch).map_err(|_| NativeError::Changed)?,
@@ -583,7 +586,7 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
         .ok_or(NativeError::Changed)?
         .payload
         .admitted;
-    let request = reserve_provider_intent(tx, &owner, request)?;
+    let request = reserve_provider_intent(tx, &owner, &ticket.operation, request)?;
     snapshot.agent["startAttempt"]["providerRequest"] = json!(request.admitted_request);
     snapshot.agent["startAttempt"]["submitted"] = json!(true);
     snapshot.agent["startAttempt"]["accountKey"] = json!(ticket.account);
@@ -1126,17 +1129,16 @@ pub async fn update_action_settings(
                     {
                         return Err(NativeError::Conflict);
                     }
-                    match saved["status"].as_str() {
-                        Some("acknowledged") => return Ok(None),
-                        Some("not_sent") => {}
-                        Some("submitted" | "unknown") => return Err(NativeError::Unknown),
-                        Some("rejected") => return Err(NativeError::Invalid("settings/rejected")),
-                        _ => {
-                            return Err(NativeError::InvalidStored {
-                                table: "runtime_agents",
-                                id: request_agent_for_error,
-                                location: "startAttempt.modelSettings.status".into(),
-                            });
+                    let status: NativeSettingsStatus =
+                        decode(saved["status"].clone(), "modelSettings.status")?;
+                    match status {
+                        NativeSettingsStatus::Acknowledged => return Ok(None),
+                        NativeSettingsStatus::NotSent => (),
+                        NativeSettingsStatus::Submitted | NativeSettingsStatus::Unknown => {
+                            return Err(NativeError::Unknown);
+                        }
+                        NativeSettingsStatus::Rejected => {
+                            return Err(NativeError::Invalid("settings/rejected"));
                         }
                     }
                 }
@@ -1147,6 +1149,7 @@ pub async fn update_action_settings(
                 let prepared = reserve_provider_intent(
                     tx,
                     &owner,
+                    &operation_for_tx,
                     NativeRequest {
                         root_request_id: request_id.clone(),
                         admitted_request: final_token,
@@ -1164,7 +1167,7 @@ pub async fn update_action_settings(
                     "scope": scope_snapshot,
                     "method": "thread/settings/update",
                     "params": params_snapshot,
-                    "status": "submitted",
+                    "status": NativeSettingsStatus::Submitted,
                     "providerRequest":prepared.admitted_request,
                 });
                 AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
@@ -1209,20 +1212,20 @@ pub async fn update_action_settings(
                     ReceiptOutcome::Written {
                         response: ProviderResponse::Reply(_),
                         ..
-                    } => "acknowledged",
+                    } => NativeSettingsStatus::Acknowledged,
                     ReceiptOutcome::Written {
                         response: ProviderResponse::Rejected(_),
                         ..
-                    } => "rejected",
+                    } => NativeSettingsStatus::Rejected,
                     ReceiptOutcome::WorkerNotSent { .. }
                     | ReceiptOutcome::NoLiveAccountWorker
                     | ReceiptOutcome::ExpectedScopeMismatch
                     | ReceiptOutcome::DeadlineExpired
-                    | ReceiptOutcome::NotHandedOff => "not_sent",
-                    ReceiptOutcome::Unknown { .. } => "unknown",
+                    | ReceiptOutcome::NotHandedOff => NativeSettingsStatus::NotSent,
+                    ReceiptOutcome::Unknown { .. } => NativeSettingsStatus::Unknown,
                 }
             }
-            Err(_) => "unknown",
+            Err(_) => NativeSettingsStatus::Unknown,
         };
         let action_id = request.request_id.clone();
         let request_agent = request.agent.clone();
@@ -1232,7 +1235,8 @@ pub async fn update_action_settings(
                 let mut agent = agent(tx, &request_agent)?;
                 if agent["startAttempt"]["modelSettings"]["operation"] != operation_for_tx
                     || agent["startAttempt"]["modelSettings"]["requestId"] != action_id
-                    || agent["startAttempt"]["modelSettings"]["status"] != "submitted"
+                    || agent["startAttempt"]["modelSettings"]["status"]
+                        != json!(NativeSettingsStatus::Submitted)
                 {
                     return Err(NativeError::Changed);
                 }
@@ -1242,11 +1246,14 @@ pub async fn update_action_settings(
             })
             .await?;
         match status {
-            "acknowledged" => return Ok(()),
-            "not_sent" if retry < MAX_NOT_SENT_RETRIES => continue,
-            "not_sent" => return Err(NativeError::Unknown),
-            "rejected" => return Err(NativeError::Invalid("settings/rejected")),
-            _ => return Err(NativeError::Unknown),
+            NativeSettingsStatus::Acknowledged => return Ok(()),
+            NativeSettingsStatus::NotSent if retry < MAX_NOT_SENT_RETRIES => continue,
+            NativeSettingsStatus::NotSent
+            | NativeSettingsStatus::Submitted
+            | NativeSettingsStatus::Unknown => return Err(NativeError::Unknown),
+            NativeSettingsStatus::Rejected => {
+                return Err(NativeError::Invalid("settings/rejected"));
+            }
         }
     }
     Err(NativeError::Unknown)
@@ -1662,7 +1669,7 @@ pub fn command_cancel_claim(
         &signature,
         chrono::Utc::now().timestamp_millis(),
     )?;
-    let request = reserve_provider_intent(tx, &admitted, request)?;
+    let request = reserve_provider_intent(tx, &admitted, &ticket.request, request)?;
     Outbox::put(
         tx,
         &OutboxRow {
