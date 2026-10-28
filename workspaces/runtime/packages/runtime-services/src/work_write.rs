@@ -249,8 +249,7 @@ async fn run_accepted_archive(
                 intent.status = WorkEffectStatus::Unknown;
                 intent.attempt_started_at = Some(now);
                 intent.next_attempt_at = Some(now + ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS as f64);
-                record["archiveIntent"] =
-                    serde_json::to_value(intent).map_err(studio_runtime_store::StoreError::from)?;
+                record["archiveIntent"] = studio_runtime_store::projection_value(&intent);
                 WorkItemsRepository::update_work(tx, &task_id_for_claim, &record)?;
                 Ok(Some((claimed, prior_status)))
             },
@@ -440,8 +439,7 @@ async fn run_accepted_archive(
             if !retryable && receipt_status != WorkEffectStatus::Unknown {
                 final_intent.outcome = Some(archive.clone());
             }
-            current["archiveIntent"] = serde_json::to_value(&final_intent)
-                .map_err(studio_runtime_store::StoreError::from)?;
+            current["archiveIntent"] = studio_runtime_store::projection_value(&final_intent);
             WorkItemsRepository::update_work(tx, &task_id_for_settlement, &current)?;
             if matches!(timing, ArchiveTiming::Immediate)
                 && !retryable
@@ -1159,7 +1157,7 @@ fn read_vm_view(connection: &Connection, task_id: &str) -> Result<VmView, WorkWr
 fn write_vm_view(tx: &Transaction<'_>, task_id: &str, view: &VmView) -> Result<(), WorkWriteError> {
     let mut work = WorkItemsRepository::work_record(tx, task_id)?
         .ok_or(Error::InvalidRequest("Unknown work item"))?;
-    let fields = serde_json::to_value(view).map_err(studio_runtime_store::StoreError::from)?;
+    let fields = studio_runtime_store::projection_value(view);
     for (field, value) in fields
         .as_object()
         .ok_or_else(|| invalid("runtime_work", task_id))?
@@ -2056,11 +2054,9 @@ fn write_internal(
             let mut work = WorkItemsRepository::work_record(tx, typed.id().as_ref())?
                 .ok_or(Error::InvalidRequest("Unknown work item"))?
                 .into_value();
-            work["archiveIntent"]["publicAdmission"] =
-                serde_json::to_value(&token).map_err(studio_runtime_store::StoreError::from)?;
+            work["archiveIntent"]["publicAdmission"] = studio_runtime_store::projection_value(&token);
             work["archiveIntent"]["publicRequestId"] = json!(request_id);
-            work["archiveIntent"]["publicResponse"] =
-                serde_json::to_value(&typed).map_err(studio_runtime_store::StoreError::from)?;
+            work["archiveIntent"]["publicResponse"] = studio_runtime_store::projection_value(&typed);
             WorkItemsRepository::update_work(tx, typed.id().as_ref(), &work)?;
             reserve_work_request(
                 tx,
@@ -3284,7 +3280,7 @@ fn refuse_result(
         .min(MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT);
     let mut current = work.clone();
     if failed < MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT {
-        current["resultFailures"] = serde_json::to_value(ResultFailures {
+        current["resultFailures"] = studio_runtime_store::projection_value(&ResultFailures {
             version: work["version"]
                 .as_i64()
                 .ok_or_else(|| invalid("runtime_work", &work["id"].to_string()))?,
@@ -3293,8 +3289,7 @@ fn refuse_result(
             provider_attempt: WorkItemsRepository::submission_identity(tx, owner)?,
             count: next,
             errors: errors.clone(),
-        })
-        .map_err(studio_runtime_store::StoreError::from)?;
+        });
         WorkItemsRepository::update_work(
             tx,
             work["id"]

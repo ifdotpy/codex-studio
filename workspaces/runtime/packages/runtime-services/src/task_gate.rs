@@ -19,9 +19,7 @@ struct DefaultGateReply {
 pub fn normalize(value: &Value) -> Result<Value, EventWriteError> {
     let gate =
         studio_runtime_schema::task_gate::parse(value).map_err(EventWriteError::InvalidRequest)?;
-    serde_json::to_value(gate)
-        .map_err(studio_runtime_store::StoreError::from)
-        .map_err(Into::into)
+    Ok(studio_runtime_store::projection_value(&gate))
 }
 
 pub fn set_default(
