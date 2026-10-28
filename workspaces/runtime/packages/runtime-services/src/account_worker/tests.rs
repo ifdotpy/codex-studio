@@ -1489,7 +1489,7 @@ async fn unresolved_receipt_for_held_invalid_agent_does_not_block_recovery() {
                         account: Some("default".into()), stream_id: Some("default".into()), generation: Some(1),
                         request_id: None, signature: "held-call".into(), status: studio_runtime_schema::persistence::OutboxStatus::Unknown,
                         ordinal: None, next_at: None, created: 1,
-                        payload: store::ProviderCall::Account(store::AccountCall { context, request, written: None, restarted: false }),
+                        payload: store::ProviderCall::Account(Box::new(store::AccountCall { context, request, written: None, restarted: false })),
                     })?;
                     Ok(())
                 }).await?;
