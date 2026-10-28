@@ -14,6 +14,8 @@ export type Recording = {
   deletedAt?: number | undefined;
 };
 export const DICTATION_DATABASE_NAME = "codex-studio-dictation";
+/** Sample rate of new recordings, in hertz. Owner of the recording start value. */
+export const DICTATION_SAMPLE_RATE = 16000;
 export function createRecordingStorage(databaseName: string) {
   const database = () =>
     new Promise<IDBDatabase>((resolve, reject) => {
@@ -60,6 +62,18 @@ export function createRecordingStorage(databaseName: string) {
     await transaction(["recordings"], "readwrite", (tx) =>
       tx.objectStore("recordings").put(row),
     );
+  }
+  async function createRecording(chatId: string) {
+    const row: Recording = {
+      id: randomUUID(),
+      chatId,
+      created: Date.now(),
+      sampleRate: DICTATION_SAMPLE_RATE,
+      samples: 0,
+      state: "recording",
+    };
+    await saveRecording(row);
+    return row;
   }
   async function saveChunk(row: Recording, index: number, pcm: Int16Array) {
     await transaction(["recordings", "chunks"], "readwrite", (tx) => {
@@ -171,7 +185,9 @@ export function createRecordingStorage(databaseName: string) {
     });
   }
 
-  async function beginTranscription(row: Recording, attempt: string) {
+  // Returns the attempt this claim owns, or null when the recording is not in this chat.
+  async function beginTranscription(row: Recording) {
+    const attempt = randomUUID();
     const existing = await transaction<Recording | undefined>(
       ["recordings"],
       "readwrite",
@@ -185,11 +201,12 @@ export function createRecordingStorage(databaseName: string) {
         return request;
       },
     );
-    return existing?.chatId === row.chatId;
+    return existing?.chatId === row.chatId ? attempt : null;
   }
 
   return {
     listRecordings,
+    createRecording,
     saveRecording,
     saveChunk,
     deleteRecording,
@@ -205,6 +222,7 @@ export function createRecordingStorage(databaseName: string) {
 
 export const {
   listRecordings,
+  createRecording,
   saveRecording,
   saveChunk,
   deleteRecording,
