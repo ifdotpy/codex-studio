@@ -269,7 +269,7 @@ async fn opaque_payload_does_not_change_fresh_applied_outcome() {
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[]}),
+        &json!({"agents":[]}),
     );
     let decision = dispatch_with_managed_tools(
         Arc::clone(&store),
@@ -298,7 +298,7 @@ async fn written_rejection_settles_and_replays_exactly() {
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[]}),
+        &json!({"agents":[]}),
     );
     let decision = dispatch_with_managed_tools(
         Arc::clone(&store),
@@ -356,7 +356,7 @@ async fn proven_pre_write_refusals_settle_not_applied() {
             json!({}),
         ),
     ] {
-        let frame = call(&context, call_id, tool, args);
+        let frame = call(&context, call_id, tool, &args);
         let decision = dispatch_with_managed_tools(
             Arc::clone(&store),
             &context,
@@ -381,7 +381,7 @@ async fn transient_catalog_refusal_settles_not_applied_with_retry_guidance() {
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[{"name":"Worker","prompt":"Task"}],"request_id":RequestIdentity::issue_root()}),
+        &json!({"agents":[{"name":"Worker","prompt":"Task"}],"request_id":RequestIdentity::issue_root()}),
     );
     let decision = dispatch_with_managed_tools(
         Arc::clone(&store),
@@ -418,7 +418,7 @@ async fn possible_effects_settle_unknown_and_never_redispatch() {
             &context,
             call_id,
             "orchestration_spawn",
-            json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
+            &json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
         );
         let first = dispatch_with_managed_tools(
             Arc::clone(&store),
@@ -455,7 +455,7 @@ async fn rolled_back_local_execution_settles_not_applied() {
         &context,
         "settle-local-refused",
         "orchestration_search",
-        json!({"query":"fixture"}),
+        &json!({"query":"fixture"}),
     );
     let ports = shared_ports(
         crate::provider_callbacks::managed_tool_ports(
@@ -510,7 +510,7 @@ async fn dropped_dispatch_settles_unknown() {
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
+        &json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
     let ports = ports_for(&store, &context, &frame, &creation).await;
     let entered = creation.entered.notified();
@@ -538,7 +538,7 @@ async fn startup_recovery_settles_stuck_rows_and_unblocks_context_repair() {
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
+        &json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
     // Seed the live symptom: a claimed spawn whose process died mid-dispatch
     // (no runtime to run the guard), plus a reserved row never claimed.
@@ -645,7 +645,7 @@ async fn connection_recovery_leaves_an_in_flight_dispatch_to_record_its_real_out
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
+        &json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
     let wake = Arc::new(tokio::sync::Notify::new());
     let ports = ports_with_wake(&store, &context, &frame, &creation, Arc::clone(&wake)).await;
@@ -719,7 +719,7 @@ async fn connection_recovery_settles_a_claim_without_an_in_process_owner() {
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
+        &json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
     // Seed a running claim whose dispatcher is gone without its drop guard.
     let ports = ports_for(&store, &context, &frame, &creation).await;
@@ -787,7 +787,7 @@ async fn failed_finalize_still_records_the_real_operation_and_wakes_its_owner() 
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
+        &json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
     let wake = Arc::new(tokio::sync::Notify::new());
     let ports = ports_with_wake(&store, &context, &frame, &creation, Arc::clone(&wake)).await;
@@ -892,7 +892,7 @@ async fn managed_recovery_callback_uses_typed_receipt_and_replays() {
             &context,
             &call_id,
             "orchestration_agent_manage",
-            json!({"action":"recover","agent_id":target}),
+            &json!({"action":"recover","agent_id":target}),
         );
         let session = Arc::new(ScriptedRecoverySession {
             receipt,

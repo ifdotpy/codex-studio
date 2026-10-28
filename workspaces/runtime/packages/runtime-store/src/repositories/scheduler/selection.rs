@@ -316,13 +316,13 @@ impl SchedulerRepository {
             || agent.extra.get("autoWake") != Some(&json!(true))
             || agent.extra.get("inFlight") != Some(&json!(false))
             || !continuation_allowed(agent)
+            || agent.start_outcome_hold.is_some()
             || ["turnId"]
                 .iter()
                 .any(|key| agent.extra.get(*key).is_some_and(|value| !value.is_null()))
             || [
                 "capacityRetry",
                 "usageResume",
-                "startOutcomeHold",
                 "manualRecoveryDeliveryHold",
                 "nativeSafetyBuffering",
                 "restartRecovery",
@@ -334,9 +334,10 @@ impl SchedulerRepository {
             .iter()
             .any(|key| agent.extra.get(*key).is_some_and(truthy))
             || agent
-                .extra
-                .get("nativeRelease")
-                .is_some_and(|value| value.get("resetPending").is_some_and(truthy))
+                .native_release
+                .as_ref()
+                .and_then(|release| release.extra.get("resetPending"))
+                .is_some_and(truthy)
         {
             return Ok(false);
         }

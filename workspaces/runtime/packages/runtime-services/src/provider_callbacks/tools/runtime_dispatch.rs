@@ -494,7 +494,7 @@ pub(super) async fn dispatch(
             )
             .await
             {
-                Ok(value) => written(value, Vec::new()),
+                Ok(value) => written(&value, Vec::new()),
                 // The bridge returns the earlier request of the same link, so a
                 // refusal, also after a lost reply, is safe to send again.
                 Err(message) => DispatchedOperation::NotSent(OperationResult::reply(&message)),
@@ -517,7 +517,7 @@ pub(super) async fn dispatch(
                     "model-directory/status-and-dispatch-capacity",
                 ))));
             };
-            written(port.status(store_ref, actor, args, now).await?, Vec::new())
+            written(&port.status(store_ref, actor, args, now).await?, Vec::new())
         }
         "orchestration_watch" => {
             let action = args["action"].as_str().unwrap_or("list");
@@ -552,7 +552,7 @@ pub(super) async fn dispatch(
                 .await
                 .map_err(super::runtime_ports::rules_error)?;
             }
-            written(result.value, Vec::new())
+            written(&result.value, Vec::new())
         }
         "orchestration_spawn" | "orchestration_review" => {
             let Some(port) = ports.child_creation.as_ref() else {
@@ -602,7 +602,7 @@ pub(super) async fn dispatch(
                 ))));
             };
             written(
-                port.create(store_ref, actor, args, request_id, now).await?,
+                &port.create(store_ref, actor, args, request_id, now).await?,
                 Vec::new(),
             )
         }
@@ -633,7 +633,7 @@ pub(super) async fn dispatch(
                 Err(_) => Err(Error::Invalid("Invalid monitor input")),
             };
             match result {
-                Ok(value) => written(value, Vec::new()),
+                Ok(value) => written(&value, Vec::new()),
                 Err(error) => match input_attempt(store_ref, monitor_id, request_id).await {
                     Ok(Some(record)) => managed_input_receipt(&record, request_id)?,
                     Ok(None) => not_sent(error),
@@ -664,12 +664,12 @@ pub(super) async fn dispatch(
                     value["requestId"] = json!(request_id);
                     value["detail"] =
                         json!({"tool":"orchestration_task","action":"get","task_id":record["id"]});
-                    written(value, Vec::new())
+                    written(&value, Vec::new())
                 }
                 WorkActionOutcome::Refused(message) => {
                     DispatchedOperation::NotSent(OperationResult::reply(&message))
                 }
-                WorkActionOutcome::Unknown(message) => unknown(json!(message), Vec::new()),
+                WorkActionOutcome::Unknown(message) => unknown(&json!(message), Vec::new()),
             }
         }
         crate::host_exec::TOOL => {
@@ -721,7 +721,7 @@ pub(super) async fn dispatch(
             )
             .await
             {
-                Ok(value) => written(value, Vec::new()),
+                Ok(value) => written(&value, Vec::new()),
                 Err(error) => not_sent(callback_refusal(
                     super::services::manage::management_error(error),
                 )),
@@ -900,7 +900,7 @@ async fn lifecycle_management(
         }),
     };
     match outcome {
-        Ok(value) => Ok(written(value, Vec::new())),
+        Ok(value) => Ok(written(&value, Vec::new())),
         // Every decision refusal precedes its single writer transaction.
         Err(crate::agent_management::ManagementError::Invalid(message)) => {
             Ok(not_sent(Error::Invalid(message)))
@@ -953,14 +953,14 @@ async fn speak(
     })
     .await
     {
-        Ok(value) => written(value, Vec::new()),
+        Ok(value) => written(&value, Vec::new()),
         Err(V::Voice(crate::voice::VoiceError::InvalidRequest(message)))
         | Err(V::Voice(crate::voice::VoiceError::Conflict(message))) => {
             not_sent(Error::Invalid(message))
         }
         Err(V::RequiresDependency(name)) => not_sent(Error::Unavailable(name)),
         Err(error @ (V::Unknown | V::Store(_) | V::Voice(crate::voice::VoiceError::Store(_)))) => {
-            unknown(json!(error.to_string()), Vec::new())
+            unknown(&json!(error.to_string()), Vec::new())
         }
         Err(error) => DispatchedOperation::Rejected(OperationResult::reply(&error.to_string())),
     }
@@ -1133,22 +1133,22 @@ fn not_sent(error: Error) -> DispatchedOperation {
 
 fn unknown_input() -> DispatchedOperation {
     unknown(
-        json!("Monitor input outcome unknown; do not repeat it"),
+        &json!("Monitor input outcome unknown; do not repeat it"),
         Vec::new(),
     )
 }
 
-fn unknown(value: Value, signals: Vec<WakeSignal>) -> DispatchedOperation {
+fn unknown(value: &Value, signals: Vec<WakeSignal>) -> DispatchedOperation {
     DispatchedOperation::Unknown(OperationResult {
         signals,
-        ..OperationResult::reply(&value)
+        ..OperationResult::reply(value)
     })
 }
 
-fn written(value: Value, signals: Vec<WakeSignal>) -> DispatchedOperation {
+fn written(value: &Value, signals: Vec<WakeSignal>) -> DispatchedOperation {
     DispatchedOperation::Applied(OperationResult {
         signals,
-        ..OperationResult::reply(&value)
+        ..OperationResult::reply(value)
     })
 }
 

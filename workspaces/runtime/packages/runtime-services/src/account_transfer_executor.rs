@@ -2725,10 +2725,15 @@ mod retained_executor_tests {
             store
                 .transaction_with_error(|tx| {
                     let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-                    row.extra.insert(
-                        "nativeRelease".into(),
-                        json!({"phase":"unknown","resetPending":true}),
-                    );
+                    row.native_release = Some(studio_runtime_store::NativeRelease {
+                        admitted_request: None,
+                        scope: None,
+                        extra: [
+                            ("phase".into(), json!("unknown")),
+                            ("resetPending".into(), json!(true)),
+                        ]
+                        .into(),
+                    });
                     AgentRepository::put(tx, &row)
                 })
                 .await

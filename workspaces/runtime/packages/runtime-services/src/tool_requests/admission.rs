@@ -34,8 +34,7 @@ pub(crate) fn reserve(
         )?;
         match admission {
             crate::event_write::CallerAdmission::Fresh(admitted) => {
-                candidate["admitted"] = serde_json::to_value(admitted)
-                    .map_err(studio_runtime_store::StoreError::from)?;
+                candidate["admitted"] = studio_runtime_store::projection_value(&admitted);
             }
             crate::event_write::CallerAdmission::Replay(_) => {
                 return Err(ToolRequestError::InvalidRequest(

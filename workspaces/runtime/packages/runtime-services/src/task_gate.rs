@@ -35,7 +35,8 @@ pub fn set_default(
             "Only the lead can set the default acceptance gate",
         ));
     }
-    let gate = normalize(gate)?;
+    let gate =
+        studio_runtime_schema::task_gate::parse(gate).map_err(EventWriteError::InvalidRequest)?;
     let admitted = if let Some(root) = request_id {
         match event_write::begin_request::<DefaultGateReply>(
             tx,
@@ -44,24 +45,26 @@ pub fn set_default(
             (event_write::unix_time()? * 1000.0) as i64,
         )? {
             CallerAdmission::Replay(reply) => {
-                return serde_json::to_value(reply)
-                    .map_err(studio_runtime_store::StoreError::from)
-                    .map_err(Into::into);
+                return Ok(studio_runtime_store::projection_value(&reply));
             }
             CallerAdmission::Fresh(admitted) => Some(admitted),
         }
     } else {
         None
     };
-    actor.extra.insert("taskDefaultGate".into(), gate.clone());
+    actor.extra.insert(
+        "taskDefaultGate".into(),
+        studio_runtime_store::projection_value(&gate),
+    );
     AgentRepository::put(tx, &actor)?;
-    let receipt = json!({"id":actor_id,"defaultGate":gate});
+    let reply = DefaultGateReply {
+        id: actor_id.to_owned(),
+        default_gate: gate,
+    };
     if let Some(admitted) = admitted {
-        let reply: DefaultGateReply = serde_json::from_value(receipt.clone())
-            .map_err(studio_runtime_store::StoreError::from)?;
         event_write::settle_request(tx, &admitted, Some(actor_id), &reply)?;
     }
-    Ok(receipt)
+    Ok(studio_runtime_store::projection_value(&reply))
 }
 
 /// The guard and command both execute through the managed monitor sandbox.

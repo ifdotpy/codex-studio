@@ -375,7 +375,7 @@ fn proven_session_scope(
 fn capture(
     tx: &Transaction<'_>,
     row: &SourceReceipt,
-    value: LegacyStop,
+    value: &LegacyStop,
 ) -> Result<VoiceStopPayload> {
     let invalid = || unclassifiable(RECEIPT_SOURCE, &row.id, &row.signature);
     let agent = (!value.agent.is_empty())
@@ -618,7 +618,7 @@ impl ReceiptFamilyMigration for VoiceMigration {
             {
                 (
                     OutboxKind::VoiceStop,
-                    capture(tx, &row, row.json::<LegacyStop>(source)?)?,
+                    capture(tx, &row, &row.json::<LegacyStop>(source)?)?,
                 )
             } else {
                 return Err(invalid());

@@ -541,14 +541,12 @@ mod tests {
         let mut disabled = settings;
         disabled.mode = Mode::Off;
         OrchestrationSettingsRepository::set_idle_compaction(&db, &disabled).expect("disable");
-        let previous = serde_json::from_value(agent["idleCompactionEpisode"].clone()).unwrap();
-        observe(&db, &mut agent, &json!(episode.cache), Some(&previous)).expect("same episode");
+        observe(&db, &mut agent, &json!(episode.cache), Some(&episode)).expect("same episode");
         assert_eq!(agent["idleCompactionEpisode"]["id"], root);
         assert_eq!(agent["idleCompactionEpisode"]["fired"], true);
         disabled.mode = Mode::Compact;
         OrchestrationSettingsRepository::set_idle_compaction(&db, &disabled).expect("enable");
-        let previous = serde_json::from_value(agent["idleCompactionEpisode"].clone()).unwrap();
-        observe(&db, &mut agent, &json!(episode.cache), Some(&previous)).expect("repeat");
+        observe(&db, &mut agent, &json!(episode.cache), Some(&episode)).expect("repeat");
         assert_eq!(agent["idleCompactionEpisode"]["id"], root);
         assert_eq!(agent["idleCompactionEpisode"]["fired"], true);
         let tx = db.unchecked_transaction().expect("tx");

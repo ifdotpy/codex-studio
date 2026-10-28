@@ -539,9 +539,10 @@ impl SchedulerRepository {
             .any(|key| agent.extra.get(*key).is_some_and(truthy))
             || agent.start_outcome_hold.is_some()
             || agent
-                .extra
-                .get("nativeRelease")
-                .is_some_and(|release| truthy(&release["resetPending"]))
+                .native_release
+                .as_ref()
+                .and_then(|release| release.extra.get("resetPending"))
+                .is_some_and(truthy)
             || agent
                 .extra
                 .get("restartRecovery")

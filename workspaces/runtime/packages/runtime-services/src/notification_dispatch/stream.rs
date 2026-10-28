@@ -988,8 +988,8 @@ mod tests {
             let capture = &streams.analytics[0];
             assert_eq!(capture.observation.params["delta"], expected);
             assert_eq!(capture.retained_bytes, retained_bytes);
-            let restored: NotificationStreamBuffer =
-                serde_json::from_str(&serde_json::to_string(&streams).unwrap()).unwrap();
+            let raw = serde_json::to_string(&streams).unwrap();
+            let restored: NotificationStreamBuffer = serde_json::from_str(&raw).unwrap();
             assert_eq!(restored.analytics_bytes, streams.analytics_bytes);
         }
     }
@@ -1444,8 +1444,8 @@ mod tests {
         );
         assert!(streams.analytics_bytes > first_size);
         assert_eq!(streams.indexes.analytics.get(&key), Some(&0));
-        let mut restored: NotificationStreamBuffer =
-            serde_json::from_str(&serde_json::to_string(&streams).unwrap()).unwrap();
+        let raw = serde_json::to_string(&streams).unwrap();
+        let mut restored: NotificationStreamBuffer = serde_json::from_str(&raw).unwrap();
         assert_eq!(restored.analytics_bytes, streams.analytics_bytes);
         assert_eq!(restored.indexes.analytics.get(&key), Some(&0));
         restored.flush_analytics(&key, &json!({"id":"agent"}));

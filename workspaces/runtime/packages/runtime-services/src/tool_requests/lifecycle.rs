@@ -8,8 +8,16 @@ use studio_runtime_schema::persistence::{ToolRequestOutcome as O, ToolRequestSta
 pub(crate) fn classify(record: &Value) -> Result<OperationState, ToolRequestError> {
     let invalid =
         || studio_runtime_store::system_reads::invalid("runtime_tool_requests", text(record, "id"));
-    let status: S = serde_json::from_value(record["stage"].clone()).map_err(|_| invalid())?;
-    let outcome: O = serde_json::from_value(record["outcome"].clone()).map_err(|_| invalid())?;
+    let status: S = record["stage"]
+        .as_str()
+        .ok_or_else(invalid)?
+        .parse()
+        .map_err(|_| invalid())?;
+    let outcome: O = record["outcome"]
+        .as_str()
+        .ok_or_else(invalid)?
+        .parse()
+        .map_err(|_| invalid())?;
     Ok(match (status, outcome) {
         (S::Queued, O::Pending) => OperationState::Reserved,
         (S::Running, O::Pending) if record["cancelRequested"] == true => {

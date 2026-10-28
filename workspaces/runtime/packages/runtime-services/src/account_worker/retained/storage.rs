@@ -1302,13 +1302,12 @@ mod replay_identity_tests {
         call.root_request_id = request_root;
         call.operation = "monitor:watch".into();
         call.method = Method::CommandExec;
-        call.params = serde_json::to_value(Params {
+        call.params = studio_runtime_store::projection_value(&Params {
             process_id: "watch",
             cwd: root.path(),
             command: ["true"],
-        })
-        .expect("params");
-        let agent = serde_json::to_value(Agent {
+        });
+        let agent = studio_runtime_store::projection_value(&Agent {
             id: "agent-1",
             root_id: "agent-1",
             epoch: 7,
@@ -1316,17 +1315,15 @@ mod replay_identity_tests {
             auto_wake: true,
             account_key: "default",
             provider: "codex",
-        })
-        .expect("agent");
-        let watch = serde_json::to_value(Monitor {
+        });
+        let watch = studio_runtime_store::projection_value(&Monitor {
             id: "watch",
             agent: "agent-1",
             epoch: 7,
             status: "running",
             cwd: root.path(),
             operation,
-        })
-        .expect("monitor");
+        });
         store
             .transaction(move |tx| {
                 AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(agent)?)?;
@@ -1464,7 +1461,7 @@ mod replay_identity_tests {
         .expect("agent");
         assert!(thread_started_for_actor(&tx, &call, "thread-1").expect("matching provenance"));
         assert!(!thread_started_for_actor(&tx, &call, "missing").expect("missing provenance"));
-        let mut other = call.clone();
+        let mut other = call;
         other.scope.generation += 1;
         assert!(!thread_started_for_actor(&tx, &other, "thread-1").expect("different generation"));
     }

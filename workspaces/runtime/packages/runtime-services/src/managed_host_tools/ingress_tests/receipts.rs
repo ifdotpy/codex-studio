@@ -17,7 +17,7 @@ async fn callback_studio_ids_are_v7_and_distinct_from_rpc_labels() {
         &context,
         rpc_label,
         "orchestration_send",
-        json!({"agent_id":"worker","text":"continue"}),
+        &json!({"agent_id":"worker","text":"continue"}),
     );
     let first = dispatch_with_managed_tools(store.clone(), &context, &frame, 20.0, ports.clone())
         .await
@@ -148,7 +148,7 @@ async fn ambiguous_alias_neither_cancels_nor_dispatches_a_tool() {
         &context,
         "ambiguous-alias-rpc",
         "orchestration_spawn",
-        json!({"request_id":"shared-short-label","agents":[]}),
+        &json!({"request_id":"shared-short-label","agents":[]}),
     );
     assert!(matches!(
         dispatch_with_managed_tools(store.clone(), &context, &frame, 22.0, ports.clone()).await,
@@ -217,7 +217,7 @@ async fn expired_tool_result_refuses_a_new_rpc_alias_without_dispatch() {
         &context,
         "expiry-original-rpc",
         "orchestration_spawn",
-        args.clone(),
+        &args.clone(),
     );
     dispatch_with_managed_tools(store.clone(), &context, &first, 20.0, ports.clone())
         .await
@@ -244,7 +244,7 @@ async fn expired_tool_result_refuses_a_new_rpc_alias_without_dispatch() {
             RequestResultError::Identity(RequestIdentityError::Expired { .. })
         ))
     ));
-    let retry = call(&context, "expiry-retry-rpc", "orchestration_spawn", args);
+    let retry = call(&context, "expiry-retry-rpc", "orchestration_spawn", &args);
     assert!(matches!(
         dispatch_with_managed_tools(store.clone(), &context, &retry, 21.0, ports.clone()).await,
         Err(CallbackError::Expired)

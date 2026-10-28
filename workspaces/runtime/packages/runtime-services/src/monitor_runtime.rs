@@ -1233,7 +1233,7 @@ pub async fn provider_request_identity(
         } else {return Err(MonitorError::Refused("Monitor provider method has no mutation owner"));};
         let root=identity["rootRequestId"].as_str().ok_or(MonitorError::Refused("Monitor provider request identity is unavailable"))?.to_owned();
         let admitted = if method == Method::CommandExec && probe_generation.is_none() {
-            operation.evidence.provider_request.clone()
+            operation.evidence.provider_request
         } else if identity.get("providerRequest").is_some_and(|value| !value.is_null()) {
             let path = if probe_generation.is_some() { "$.livenessProbe.providerRequest" } else if method == Method::CommandExecTerminate { "$.cancelProviderRequest" } else { "$.inputAttempt.providerRequest" };
             let raw: String = tx.query_row("SELECT record -> ?2 FROM runtime_monitors WHERE id=?1", rusqlite::params![id, path], |row| row.get(0)).map_err(studio_runtime_store::StoreError::from)?;

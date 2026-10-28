@@ -232,9 +232,10 @@ async fn vm_existing_reattach_refuses_missing_or_unfinished_start_receipts() {
                         assert_eq!(agent.epoch, epoch);
                         if let Some(status) = result {
                             agent
-                                .extra
-                                .get_mut("vmLaunch")
-                                .expect("current launch owner")["status"] = json!(status);
+                                .vm_launch
+                                .as_mut()
+                                .expect("current launch owner")
+                                .status = status;
                         } else {
                             agent.vm_launch = None;
                         }

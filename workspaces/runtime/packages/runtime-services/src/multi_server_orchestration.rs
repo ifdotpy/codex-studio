@@ -2561,8 +2561,8 @@ impl Envelope {
         Ok(Self {
             key: text(value, "requestId").to_owned(),
             root: text(value, "requestId").to_owned(),
-            action: serde_json::from_value(value["action"].clone()).map_err(|_|refused(400,"invalid_request","Unknown cross-server operation"))?,
-            operation: serde_json::from_value(value["operation"].clone()).map_err(|_|refused(400,"invalid_request","Invalid cross-server operation identity"))?,
+            action: action.parse().map_err(|_|refused(400,"invalid_request","Unknown cross-server operation"))?,
+            operation: value["operation"].as_array().and_then(|items| items.iter().map(|item| item.as_str().map(str::to_owned)).collect()).ok_or_else(||refused(400,"invalid_request","Invalid cross-server operation identity"))?,
             payload: value["payload"].clone(),
             fingerprint: digest(canonical_json(&json!({"requestId":text(value,"requestId"),"action":action,"payload":value["payload"]})).map_err(|_|refused(400,"invalid_request","Invalid cross-server request"))?.as_bytes()),
             body,

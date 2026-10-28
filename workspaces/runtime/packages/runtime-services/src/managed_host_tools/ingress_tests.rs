@@ -376,7 +376,7 @@ async fn a_failed_wake_after_the_effect_still_answers_with_the_real_result() {
         &context,
         "post-commit-status",
         "orchestration_status",
-        json!({}),
+        &json!({}),
     );
     // The effect committed, so the model must not be told it failed.
     let first =
@@ -640,7 +640,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
             &context,
             "production-monitor-input",
             "orchestration_monitor_input",
-            json!({"monitor_id":managed_monitor_id(),"text":"hello"}),
+            &json!({"monitor_id":managed_monitor_id(),"text":"hello"}),
         );
         activate_fixture_monitor(&store, &context, &managed_monitor_id()).await;
         let ports = production_managed_ports(&store, &context, &frame, fake.clone()).await;
@@ -696,7 +696,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
         &worker_context,
         "production-foreign-monitor-input",
         "orchestration_monitor_input",
-        json!({"monitor_id":managed_monitor_id(),"text":"no"}),
+        &json!({"monitor_id":managed_monitor_id(),"text":"no"}),
     );
     let ports = production_managed_ports(&store, &worker_context, &frame, fake.clone()).await;
     let before = callback_intent_snapshot(&store);
@@ -724,7 +724,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
         &stale_context,
         "production-stale-monitor-input",
         "orchestration_monitor_input",
-        json!({"monitor_id":managed_monitor_id(),"text":"no"}),
+        &json!({"monitor_id":managed_monitor_id(),"text":"no"}),
     );
     let ports = production_managed_ports(&store, &stale_context, &frame, fake.clone()).await;
     let before = callback_intent_snapshot(&store);
@@ -911,7 +911,7 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
             &context,
             "stable-monitor-input",
             "orchestration_monitor_input",
-            json!({"monitor_id":managed_monitor_id(),"text":"hello"}),
+            &json!({"monitor_id":managed_monitor_id(),"text":"hello"}),
         );
         let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports_with_runtime(
@@ -969,7 +969,7 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
         &worker_context,
         "foreign-monitor-input",
         "orchestration_monitor_input",
-        json!({"monitor_id":managed_monitor_id(),"text":"no"}),
+        &json!({"monitor_id":managed_monitor_id(),"text":"no"}),
     );
     let ports = shared_ports(
         crate::provider_callbacks::managed_tool_ports_with_runtime(
@@ -1064,7 +1064,7 @@ async fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
     let (_root, store, context) = fixture().await;
     for (index, (tool, args, refusal)) in cases.into_iter().enumerate() {
         let before = application_table_snapshot(&store);
-        let frame = call(&context, &format!("missing-port-{index}"), tool, args);
+        let frame = call(&context, &format!("missing-port-{index}"), tool, &args);
         let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports_with_runtime(
                 &store,
@@ -1087,7 +1087,7 @@ async fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
     }
 }
 
-fn call(context: &CallbackContext, rpc: &str, tool: &str, args: Value) -> Frame {
+fn call(context: &CallbackContext, rpc: &str, tool: &str, args: &Value) -> Frame {
     Frame::Request(RequestFrame {
         id: RequestId::String(format!("rpc-{rpc}")),
         method: Method::ItemToolCall,
@@ -1233,7 +1233,7 @@ async fn dispatch_case(
         &context,
         expected["callId"].as_str().unwrap(),
         expected["tool"].as_str().unwrap(),
-        args.unwrap_or_else(|| expected["arguments"].clone()),
+        &args.unwrap_or_else(|| expected["arguments"].clone()),
     );
     let ports = shared_ports(
         crate::provider_callbacks::managed_tool_ports(
@@ -1255,7 +1255,7 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
         &context,
         "managed-monitor-create",
         "orchestration_monitor",
-        json!({"command":"printf managed-monitor","wake_on":"exit"}),
+        &json!({"command":"printf managed-monitor","wake_on":"exit"}),
     );
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
     let monitor_port: Arc<dyn crate::monitor_runtime_wiring::MonitorPort> =
@@ -1466,7 +1466,7 @@ async fn send_remote_routing_refusals_write_nothing() {
             &context,
             &format!("remote-send-{index}"),
             "orchestration_send",
-            json!({"agent_id":target,"text":"remote send"}),
+            &json!({"agent_id":target,"text":"remote send"}),
         );
         let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports(
@@ -1543,7 +1543,7 @@ async fn managed_reads_preserve_corrupt_record_identity() {
         &context,
         "corrupt-search",
         "orchestration_search",
-        json!({"query":"fixture"}),
+        &json!({"query":"fixture"}),
     );
     let search_ports = shared_ports(
         crate::provider_callbacks::managed_tool_ports(
@@ -1609,7 +1609,7 @@ async fn managed_reads_preserve_corrupt_record_identity() {
         &context,
         "corrupt-context",
         "orchestration_context",
-        json!({"topic":"monitor","id":monitor_id}),
+        &json!({"topic":"monitor","id":monitor_id}),
     );
     let context_ports = shared_ports(
         crate::provider_callbacks::managed_tool_ports(
@@ -1881,7 +1881,7 @@ async fn every_managed_tool_runs_through_provider_callback_dispatch() {
     ];
     for (index, (tool, args)) in cases.into_iter().enumerate() {
         let rpc = format!("managed-{index}");
-        let frame = call(&context, &rpc, tool, args);
+        let frame = call(&context, &rpc, tool, &args);
         let decision =
             dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
                 .await
@@ -1903,7 +1903,7 @@ async fn post_commit_wake_failure_answers_and_replays_without_staging_again() {
         &context,
         "rollback-status",
         "orchestration_status",
-        json!({}),
+        &json!({}),
     );
     let first =
         dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
@@ -1931,7 +1931,7 @@ async fn same_request_replays_saved_result_without_a_second_effect() {
         &context,
         "exact-replay",
         "orchestration_send",
-        json!({"agent_id":"worker","text":"continue"}),
+        &json!({"agent_id":"worker","text":"continue"}),
     );
     let first =
         dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
@@ -1998,7 +1998,7 @@ async fn remote_origin_search_and_monitor_context_stay_local() {
             json!({"topic":"monitor","id":monitor_id}),
         ),
     ] {
-        let frame = call(&context, rpc, tool, args);
+        let frame = call(&context, rpc, tool, &args);
         let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports(
                 &store,
@@ -2566,7 +2566,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
                 args["request_id"] = json!(request_id);
                 args
             };
-            let frame = call(&context, &key, tool, args);
+            let frame = call(&context, &key, tool, &args);
             let ports = shared_ports(
                 crate::provider_callbacks::managed_tool_ports_with_bundle(
                     &store,
@@ -3541,7 +3541,7 @@ async fn task_claim_submit_and_accept_run_through_the_work_action_owner_once() {
             &context,
             rpc,
             "orchestration_task",
-            json!({"action":action,"task_id":"task-1","version":3,"result":"done"}),
+            &json!({"action":action,"task_id":"task-1","version":3,"result":"done"}),
         );
         let ports = work_ports(&store, &context, &frame, Arc::clone(&port)).await;
         let first =
@@ -3586,7 +3586,7 @@ async fn task_claim_submit_and_accept_run_through_the_work_action_owner_once() {
         &context,
         "task-refused",
         "orchestration_task",
-        json!({"action":"submit","task_id":"task-1","version":3,"result":"done"}),
+        &json!({"action":"submit","task_id":"task-1","version":3,"result":"done"}),
     );
     let ports = work_ports(&store, &context, &frame, refusing).await;
     let (success, value) = tool_reply(
@@ -3643,7 +3643,7 @@ async fn legacy_worker_archives_through_current_tool_without_losing_its_row() {
         &context,
         "legacy-archive",
         "orchestration_agent_manage",
-        json!({
+        &json!({
             "action":"archive", "agent_id":worker, "reason":"Legacy workspace is finished", "unassign_work":true
         }),
     );
@@ -3702,7 +3702,7 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
         let store = Arc::clone(&store);
         let context = context.clone();
         async move {
-            let frame = call(&context, rpc, "orchestration_agent_manage", args);
+            let frame = call(&context, rpc, "orchestration_agent_manage", &args);
             let ports = shared_ports(
                 crate::provider_callbacks::managed_tool_ports(
                     &store,
@@ -3844,7 +3844,7 @@ async fn archive_finished_runs_for_codex_and_claude_leads_through_tool_dispatch(
             &context,
             "archive-finished-provider",
             "orchestration_agent_manage",
-            json!({"action":"archive_finished","request_id":RequestIdentity::issue_root()}),
+            &json!({"action":"archive_finished","request_id":RequestIdentity::issue_root()}),
         );
         let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports(
@@ -3905,7 +3905,7 @@ async fn archive_finished_reason_survives_dispatch_and_receipt_replay() {
             &context,
             "archive-with-reason",
             "orchestration_agent_manage",
-            args,
+            &args,
         );
         let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports(

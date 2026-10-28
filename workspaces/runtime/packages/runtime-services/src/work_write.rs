@@ -230,10 +230,13 @@ async fn run_accepted_archive(
                 {
                     return Ok(None);
                 }
-                let mut record = current.into_value();
+                let raw: String = tx.query_row(
+                    "SELECT json_extract(record,'$.archiveIntent') FROM runtime_work WHERE id=?1",
+                    [&task_id_for_claim], |row| row.get(0),
+                ).map_err(studio_runtime_store::StoreError::from)?;
                 let mut intent: ArchiveIntent =
-                    serde_json::from_value(record["archiveIntent"].clone())
-                        .map_err(studio_runtime_store::StoreError::from)?;
+                    serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
+                let mut record = current.into_value();
                 let prior_status = intent.status;
                 if !matches!(
                     prior_status,
@@ -451,8 +454,15 @@ async fn run_accepted_archive(
                     .get("deletedAt")
                     .is_none_or(|value| value.is_null())
             {
-                let notice: ArchiveNotice = serde_json::from_value(current.clone())
+                let raw: String = tx
+                    .query_row(
+                        "SELECT record FROM runtime_work WHERE id=?1",
+                        [&task_id_for_settlement],
+                        |row| row.get(0),
+                    )
                     .map_err(studio_runtime_store::StoreError::from)?;
+                let notice: ArchiveNotice =
+                    serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
                 let reason = notice
                     .decisions
                     .last()
@@ -1906,12 +1916,14 @@ pub fn settle_accepted_archive(
     if work["archiveIntent"]["publicRequestId"] != request_root {
         return Err(Error::Conflict("The acceptance request changed").into());
     }
+    let (token, original): (String, String) = tx.query_row(
+        "SELECT json_extract(record,'$.archiveIntent.publicAdmission'),json_extract(record,'$.archiveIntent.publicResponse') FROM runtime_work WHERE id=?1",
+        [task], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).map_err(studio_runtime_store::StoreError::from)?;
     let token: AdmittedRequest =
-        serde_json::from_value(work["archiveIntent"]["publicAdmission"].clone())
-            .map_err(studio_runtime_store::StoreError::from)?;
+        serde_json::from_str(&token).map_err(studio_runtime_store::StoreError::from)?;
     let mut original: WorkItemRecord =
-        serde_json::from_value(work["archiveIntent"]["publicResponse"].clone())
-            .map_err(studio_runtime_store::StoreError::from)?;
+        serde_json::from_str(&original).map_err(studio_runtime_store::StoreError::from)?;
     original
         .set("archive", reply.value()["archive"].clone())
         .map_err(studio_runtime_store::StoreError::from)?;
@@ -2054,9 +2066,11 @@ fn write_internal(
             let mut work = WorkItemsRepository::work_record(tx, typed.id().as_ref())?
                 .ok_or(Error::InvalidRequest("Unknown work item"))?
                 .into_value();
-            work["archiveIntent"]["publicAdmission"] = studio_runtime_store::projection_value(&token);
+            work["archiveIntent"]["publicAdmission"] =
+                studio_runtime_store::projection_value(&token);
             work["archiveIntent"]["publicRequestId"] = json!(request_id);
-            work["archiveIntent"]["publicResponse"] = studio_runtime_store::projection_value(&typed);
+            work["archiveIntent"]["publicResponse"] =
+                studio_runtime_store::projection_value(&typed);
             WorkItemsRepository::update_work(tx, typed.id().as_ref(), &work)?;
             reserve_work_request(
                 tx,
@@ -3198,8 +3212,36 @@ fn current_result_failures(
     let Some(value) = work.get("resultFailures") else {
         return Ok(None);
     };
-    let saved: ResultFailures = serde_json::from_value(value.clone())
-        .map_err(|_| invalid("runtime_work", work["id"].as_str().unwrap_or_default()))?;
+    let invalid_record = || invalid("runtime_work", work["id"].as_str().unwrap_or_default());
+    let provider_attempt = match value.get("providerAttempt") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(items)) if items.len() == 2 => {
+            let first = items[0].as_str().ok_or_else(invalid_record)?.to_owned();
+            let second = match &items[1] {
+                Value::Null => None,
+                Value::String(value) => Some(value.clone()),
+                Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
+                    return Err(invalid_record().into());
+                }
+            };
+            Some((first, second))
+        }
+        _ => return Err(invalid_record().into()),
+    };
+    let saved = ResultFailures {
+        version: value["version"].as_i64().ok_or_else(invalid_record)?,
+        owner: value["owner"]
+            .as_str()
+            .ok_or_else(invalid_record)?
+            .to_owned(),
+        epoch: value["epoch"].as_i64().ok_or_else(invalid_record)?,
+        provider_attempt,
+        count: value["count"].as_u64().ok_or_else(invalid_record)?,
+        errors: value["errors"]
+            .as_array()
+            .ok_or_else(invalid_record)?
+            .clone(),
+    };
     let current = saved.version == work["version"]
         && saved.owner == owner.id.0
         && saved.epoch == owner.epoch
@@ -4056,9 +4098,9 @@ mod actor_tests {
 
     #[test]
     fn vm_submission_completed_requires_evidence() {
-        let missing = json!({"status":"completed","requestId":"evidence","taskId":"task","owner":"worker","revision":"state","version":2,"created":1.0});
+        let missing = r#"{"status":"completed","requestId":"evidence","taskId":"task","owner":"worker","revision":"state","version":2,"created":1.0}"#;
         assert!(
-            serde_json::from_value::<
+            serde_json::from_str::<
                 super::VmWorkIntent<super::Submission, super::VmSubmissionResult>,
             >(missing)
             .is_err()
@@ -4068,12 +4110,12 @@ mod actor_tests {
     #[test]
     fn vm_submission_migrated_unknown_round_trips() {
         let stored =
-            json!({"status":"unknown","requestId":"rpc","owner":"a","revision":"rev","version":1});
+            r#"{"status":"unknown","requestId":"rpc","owner":"a","revision":"rev","version":1}"#;
         let intent: super::VmWorkIntent<super::Submission, super::VmSubmissionResult> =
-            serde_json::from_value(stored.clone()).expect("migrated intent");
+            serde_json::from_str(stored).expect("migrated intent");
         assert_eq!(
-            serde_json::to_value(intent).expect("serialized intent"),
-            stored
+            studio_runtime_store::projection_value(&intent),
+            serde_json::from_str::<Value>(stored).expect("fixture")
         );
     }
 

@@ -222,22 +222,20 @@ mod tests {
 
     #[test]
     fn historical_thread_is_readable_but_does_not_change_operation_identity() {
-        let base =
-            serde_json::json!({"agent":"a","epoch":1,"accountKey":"default","connectionId":"c"});
-        let mut historical = base.clone();
-        historical["threadId"] = serde_json::json!("thread");
-        let original: super::MonitorOperation = serde_json::from_value(base.clone()).unwrap();
-        let saved: super::MonitorOperation = serde_json::from_value(historical.clone()).unwrap();
+        let base = r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c"}"#;
+        let historical = r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c","threadId":"thread"}"#;
+        let original: super::MonitorOperation = serde_json::from_str(base).unwrap();
+        let saved: super::MonitorOperation = serde_json::from_str(historical).unwrap();
         assert_eq!(original, saved);
-        assert_eq!(serde_json::to_value(&saved).unwrap(), historical);
-        historical["threadId"] = serde_json::Value::Null;
         assert_eq!(
-            serde_json::from_value::<super::MonitorOperation>(historical).unwrap(),
+            crate::projection_value(&saved),
+            serde_json::from_str::<serde_json::Value>(historical).unwrap()
+        );
+        assert_eq!(
+            serde_json::from_str::<super::MonitorOperation>(r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c","threadId":null}"#).unwrap(),
             original
         );
-        let mut unknown = base;
-        unknown["unexpected"] = serde_json::json!(true);
-        assert!(serde_json::from_value::<super::MonitorOperation>(unknown).is_err());
+        assert!(serde_json::from_str::<super::MonitorOperation>(r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c","unexpected":true}"#).is_err());
     }
 
     /// The index build runs at every store open, also on older states that

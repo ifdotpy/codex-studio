@@ -12,9 +12,9 @@ use studio_runtime_services::multi_server_discovery::DiscoverySnapshot;
 use studio_runtime_services::multi_server_orchestration::{AppliedReply, ExchangeOutcome};
 use studio_runtime_store::{RuntimeStore, multi_server_delivery::RemoteReply};
 
-fn applied(value: Value) -> ExchangeOutcome {
+fn applied(value: &Value) -> ExchangeOutcome {
     ExchangeOutcome::Applied(AppliedReply::new(
-        serde_json::value::to_raw_value(&value).unwrap(),
+        serde_json::value::to_raw_value(value).unwrap(),
     ))
 }
 
@@ -316,7 +316,7 @@ async fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once
                 if *count == 1 {
                     return Err(refused(503, "exchange_unknown", "reply was lost"));
                 }
-                Ok(applied(json!({"stored":true})).to_reply(&id))
+                Ok(applied(&json!({"stored":true})).to_reply(&id))
             })
         }
     }
@@ -960,12 +960,12 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
         .execute("home-server", &envelope)
         .await
         .expect("remote stop");
-    assert_eq!(first, applied(json!({"stopped":["remote-worker"]})));
+    assert_eq!(first, applied(&json!({"stopped":["remote-worker"]})));
     let replay = effects
         .execute("home-server", &envelope)
         .await
         .expect("same request replay");
-    assert_eq!(replay, applied(json!({"stopped":["remote-worker"]})));
+    assert_eq!(replay, applied(&json!({"stopped":["remote-worker"]})));
     let reader = store.test_reader().expect("read replayed worker");
     let current = AgentRepository::get(&reader, &AgentId::from("remote-worker"))
         .expect("worker row")
@@ -1069,7 +1069,7 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
                 if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
                     return Err(refused(503, "exchange_unknown", "reply was lost"));
                 }
-                Ok(applied(json!({"stopped": [envelope.payload.worker]}))
+                Ok(applied(&json!({"stopped": [envelope.payload.worker]}))
                     .to_reply(&envelope.request_id))
             })
         }
@@ -1750,13 +1750,13 @@ async fn rust_exec_attempt_writes_the_python_receipt_form_and_never_resends() {
 
     // The same admitted root now only probes; the command never repeats.
     let receipt = json!({"requestId":root,"outcome":"applied","value":{"status":"exited"}});
-    let wire = ExecWire::new(Some(applied(receipt).to_reply(&root)));
+    let wire = ExecWire::new(Some(applied(&receipt).to_reply(&root)));
     let driver = exec_driver(&store, Arc::clone(&wire));
     let outcome = driver
         .exchange("peer-server", "exec", &payload, &root, now + 5)
         .await
         .unwrap();
-    assert_eq!(outcome, applied(json!({"status":"exited"})));
+    assert_eq!(outcome, applied(&json!({"status":"exited"})));
     let sent = wire.sent();
     assert_eq!(sent.len(), 1);
     let probe = &sent[0];
@@ -1920,10 +1920,8 @@ async fn exec_receipt_probes_are_answered_like_the_python_receiver() {
                     if name == "legacy" {
                         assert!(matches!(outcome, studio_runtime_services::multi_server_orchestration::ExchangeOutcome::NotApplied(_)), "unproven principal is refused");
                     } else {
-                        let actual: ExpectedReply = serde_json::from_str(
-                            &serde_json::to_string(&outcome.to_reply(&key)).unwrap(),
-                        )
-                        .unwrap();
+                        let raw = serde_json::to_string(&outcome.to_reply(&key)).unwrap();
+                        let actual: ExpectedReply = serde_json::from_str(&raw).unwrap();
                         assert_eq!(actual, expected, "{name}: exact outcome");
                     }
                 }
@@ -2557,7 +2555,7 @@ async fn only_typed_pre_effect_waiting_reopens_peer_input() {
                 if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
                     Ok(ExchangeOutcome::PreEffectWaiting)
                 } else {
-                    Ok(applied(json!({"applied":true})))
+                    Ok(applied(&json!({"applied":true})))
                 }
             })
         }
@@ -2602,7 +2600,7 @@ async fn only_typed_pre_effect_waiting_reopens_peer_input() {
             .receive("peer-server", &envelope, now + 1)
             .await
             .expect("retry after known pre-effect waiting"),
-        applied(json!({"applied":true}))
+        applied(&json!({"applied":true}))
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
@@ -2677,7 +2675,7 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
         ) -> futures_util::future::BoxFuture<'a, Result<ExchangeOutcome, AccessError>> {
             Box::pin(async move {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                Ok(applied(json!({"applied":true})))
+                Ok(applied(&json!({"applied":true})))
             })
         }
     }
@@ -2692,7 +2690,7 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
             let request_id = envelope["requestId"].as_str().expect("request id");
             Box::pin(async move {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                Ok(applied(json!({"applied":true})).to_reply(request_id))
+                Ok(applied(&json!({"applied":true})).to_reply(request_id))
             })
         }
     }
@@ -2746,7 +2744,7 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
             assert_eq!(
                 result,
                 if stage == "claim" {
-                    applied(json!({"applied":true}))
+                    applied(&json!({"applied":true}))
                 } else {
                     ExchangeOutcome::Unknown
                 },
@@ -2803,7 +2801,7 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
         if completed {
             assert_eq!(
                 result.expect("migrated reply"),
-                applied(json!({"applied":true})),
+                applied(&json!({"applied":true})),
                 "legacy cache hit replays"
             );
         } else {
@@ -3189,7 +3187,7 @@ async fn a_row_that_cannot_be_delivered_does_not_hold_back_later_rows() {
             Box::pin(async move {
                 let id = envelope["requestId"].as_str().unwrap().to_owned();
                 self.delivered.lock().unwrap().push(id.clone());
-                Ok(applied(json!({"stored":true})).to_reply(&id))
+                Ok(applied(&json!({"stored":true})).to_reply(&id))
             })
         }
     }

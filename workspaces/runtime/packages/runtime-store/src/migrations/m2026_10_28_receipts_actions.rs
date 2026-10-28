@@ -135,10 +135,8 @@ impl<'de> Deserialize<'de> for LegacyTerminalDelivery {
 }
 #[derive(Deserialize)]
 struct LegacyTerminalReceipt {
-    #[serde(default)]
-    id: Value,
-    #[serde(default)]
-    status: Value,
+    id: Option<String>,
+    status: Option<String>,
     #[serde(default)]
     delivery: LegacyTerminalDelivery,
 }
@@ -340,13 +338,13 @@ fn terminal(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<(
     let table = SOURCES[2];
     let value: LegacyTerminalReceipt = row.json(table)?;
     let invalid = || unclassifiable(table, &row.id, &row.signature);
-    let terminal = value.id.as_str();
+    let terminal = value.id.as_deref();
     let uncertain = match value.delivery {
         LegacyTerminalDelivery::Present(TerminalInputDelivery::Uncertain) => true,
         LegacyTerminalDelivery::Present(TerminalInputDelivery::Sent) => false,
         LegacyTerminalDelivery::Missing
             if terminal.is_some()
-                && matches!(value.status.as_str(), Some("running" | "exited" | "closed")) =>
+                && matches!(value.status.as_deref(), Some("running" | "exited" | "closed")) =>
         {
             true
         }

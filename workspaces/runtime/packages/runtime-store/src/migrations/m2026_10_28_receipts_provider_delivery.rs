@@ -401,8 +401,8 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
                 let proof = crate::projection_value(
                     &studio_runtime_schema::provider_call_contract::ThreadProvenance {
                         scope: reply.call.scope.clone(),
-                        actor: reply.call.actor.clone().ok_or_else(|| fail(row))?,
-                        operation: operation.clone(),
+                        actor: reply.call.actor.ok_or_else(|| fail(row))?,
+                        operation,
                     },
                 );
                 if record["threadProvenance"]

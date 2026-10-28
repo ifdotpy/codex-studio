@@ -217,8 +217,8 @@ fn refuse<T>(message: impl Into<String>) -> Result<T, Step> {
 }
 
 /// A written tool result that carries the paired receipt or local value.
-fn written(value: Value) -> DispatchedOperation {
-    let mut result = OperationResult::reply(&value);
+fn written(value: &Value) -> DispatchedOperation {
+    let mut result = OperationResult::reply(value);
     if let Some(probe) = output_metadata(result.value.get()) {
         result.output_expires_at = probe.output_expires_at;
         result.handle = probe.handle;
@@ -290,14 +290,14 @@ mod output_metadata_tests {
     }
 }
 
-fn not_sent(message: String) -> DispatchedOperation {
+fn not_sent(message: &str) -> DispatchedOperation {
     DispatchedOperation::NotSent(OperationResult::reply(&message))
 }
 
 fn settle(step: Result<Value, Step>) -> Result<DispatchedOperation, Error> {
     match step {
-        Ok(value) => Ok(written(value)),
-        Err(Step::Refused(message)) => Ok(not_sent(message)),
+        Ok(value) => Ok(written(&value)),
+        Err(Step::Refused(message)) => Ok(not_sent(&message)),
         Err(Step::Failed(message)) => Ok(DispatchedOperation::Unknown(OperationResult::reply(
             &message,
         ))),

@@ -236,6 +236,7 @@ async fn send_now_keeps_explicit_stop_and_other_start_owners_held() {
         ("nativeThreadBlock", json!({"threadId":"original-thread"})),
         ("startAttempt", json!({"id":"other","submitted":true})),
         ("startOutcomeHold", json!({"phase":"unknown"})),
+        ("nativeRelease", json!({"phase":"unknown","resetPending":true})),
     ] {
         let (_directory, store, app) = fixture().await;
         store

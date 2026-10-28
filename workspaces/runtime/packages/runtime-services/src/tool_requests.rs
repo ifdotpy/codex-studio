@@ -41,6 +41,31 @@ pub enum Action<'a> {
 const TABLE: &str = "runtime_tool_requests";
 const PAYLOAD: &str = "payload-store/tool-request-recovery";
 
+fn admitted(task: &Value) -> Result<AdmittedRequest, ToolRequestError> {
+    let value = &task["admitted"];
+    let fields = value
+        .as_object()
+        .filter(|fields| fields.len() == 3)
+        .ok_or_else(|| records::invalid(TABLE, text(task, "id")))?;
+    let id = fields
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| records::invalid(TABLE, text(task, "id")))?;
+    let signature = fields
+        .get("signature")
+        .and_then(Value::as_str)
+        .ok_or_else(|| records::invalid(TABLE, text(task, "id")))?;
+    let created = fields
+        .get("created")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| records::invalid(TABLE, text(task, "id")))?;
+    Ok(AdmittedRequest::from_persisted_fields(
+        id.to_owned(),
+        signature.to_owned(),
+        created,
+    ))
+}
+
 /// Read the exact original tool reply; expiry never authorizes another dispatch.
 pub fn saved_result(
     connection: &studio_runtime_store::Connection,
@@ -52,8 +77,7 @@ pub fn saved_result(
     if !terminal(&task)? {
         return Ok(task.get("result").cloned());
     }
-    let admitted: AdmittedRequest =
-        serde_json::from_value(task["admitted"].clone()).map_err(StoreError::from)?;
+    let admitted = admitted(&task)?;
     let now = crate::event_write::unix_time()
         .map_err(|_| ToolRequestError::InvalidRequest("Invalid request clock"))?;
     let row = RequestResults::replay(
@@ -82,8 +106,7 @@ pub fn settle_result(
     if !terminal(&task)? {
         return Ok(());
     }
-    let admitted: AdmittedRequest =
-        serde_json::from_value(task["admitted"].clone()).map_err(StoreError::from)?;
+    let admitted = admitted(&task)?;
     RequestResults::settle(
         tx,
         &admitted,
@@ -621,8 +644,12 @@ pub(crate) fn reconcile_effect(
         return Ok(());
     };
     let run_id = old.as_ref().map(|v| &v["runId"]).unwrap_or(&run["id"]);
-    let status: ExecutionEffectStatus =
-        serde_json::from_value(record.get("stage").unwrap_or(&record["status"]).clone())?;
+    let status: ExecutionEffectStatus = record
+        .get("stage")
+        .unwrap_or(&record["status"])
+        .as_str()
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| records::invalid("runtime_execution_effects", &key))?;
     let value = json!({"id":key,"runId":run_id,"kind":kind,"referenceId":record["id"],"attemptId":old.as_ref().map(|v|&v["attemptId"]).unwrap_or(&run["latestAttemptId"]),"requestId":record.get("request_id").filter(|v|truthy(Some(v))).or_else(||record.get("callId")).or_else(||record.get("requestId")),"status":status,"outcome":record["outcome"],"resultReference":if truthy(record.get("finished")){record["id"].clone()}else{Value::Null}});
     records::validate("runtime_execution_effects", &key, value.clone())?;
     if old.as_ref() != Some(&value) {
