@@ -457,6 +457,14 @@ impl ProductionLifecyclePorts {
     }
 
     async fn dispatch_remote_stops(&self) -> Result<(), ManagementError> {
+        #[derive(serde::Deserialize, serde::Serialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct RemoteOperation {
+            request_id: String,
+            operation: Vec<String>,
+            action: studio_runtime_schema::persistence::ServerOperationKind,
+            payload: Value,
+        }
         let pending = self
             .store
             .read_async("runtime-services/lifecycle_effects", |tx| {
@@ -475,38 +483,27 @@ impl ProductionLifecyclePorts {
                     .map_err(studio_runtime_store::StoreError::from)
             })
             .await?;
-        if pending.is_empty() {
-            return Ok(());
-        }
-        let effects = Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&self.store)));
         let driver = OrchestrationDriver::new(
             Arc::clone(&self.store),
             Arc::clone(&self.remote_transport),
-            effects,
+            Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&self.store))),
         );
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs() as i64)
             .unwrap_or_default();
-        for (request_id, server, body) in pending {
-            let Ok(envelope) = serde_json::from_str::<Value>(&body) else {
-                eprintln!("stored cross-server stop intent is invalid: {request_id}");
+        for (id, server, body) in pending {
+            let Ok(envelope) = serde_json::from_str::<RemoteOperation>(&body) else {
+                eprintln!("stored cross-server stop intent is invalid: {id}");
                 continue;
             };
-            if envelope.get("action").and_then(Value::as_str) != Some("stop") {
+            if envelope.action != studio_runtime_schema::persistence::ServerOperationKind::Stop {
                 continue;
             }
-            let Some(payload) = envelope.get("payload") else {
-                eprintln!("stored cross-server stop intent is incomplete: {request_id}");
-                continue;
-            };
-            // The signed driver preserves the exact request identity. A lost
-            // reply stays pending and is replayed only under the same identity.
-            if let Err(error) = driver
-                .exchange(&server, "stop", payload, &request_id, now)
-                .await
-            {
-                eprintln!("cross-server stop remains queued ({request_id}): {error}");
+            let request = serde_json::to_value(&envelope)
+                .map_err(|_| ManagementError::Invalid("Invalid cross-server stop intent"))?;
+            if let Err(error) = driver.exchange_operation(&server, &request, now).await {
+                eprintln!("cross-server stop remains queued ({id}): {error}");
             }
         }
         Ok(())
