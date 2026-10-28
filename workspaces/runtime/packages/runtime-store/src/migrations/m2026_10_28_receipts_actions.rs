@@ -801,6 +801,20 @@ fn agent_owners(
     if !value.is_object() {
         return Err(invalid());
     }
+    if let Some(ticket) = value.pointer_mut("/startAttempt/requestTicket")
+        && let Some(number) = ticket.as_number()
+    {
+        let text = if number.is_i64() || number.is_u64() {
+            number.to_string()
+        } else {
+            let real = number.as_f64().ok_or_else(invalid)?;
+            if real.fract() != 0.0 {
+                return Err(invalid());
+            }
+            format!("{:.0}", if real == 0.0 { 0.0 } else { real })
+        };
+        *ticket = Value::String(text);
+    }
     if let Some(attempt) = value
         .get_mut("startAttempt")
         .and_then(|value| value.as_object_mut())
@@ -1540,24 +1554,47 @@ mod tests {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&db);
         db.execute("INSERT INTO runtime_agents VALUES('agent',?1)", [json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"running","startAttempt":{"id":"attempt","requestTicket":91}}).to_string()]).expect("legacy agent");
+        db.execute("INSERT INTO runtime_agents VALUES('real',?1)", [json!({"id":"real","rootId":"real","provider":"codex","epoch":1,"status":"running","startAttempt":{"id":"attempt","requestTicket":91.0}}).to_string()]).expect("legacy real ticket");
         batch(&mut db, "runtime_agents").expect("migrate agent");
-        let raw: String = db
-            .query_row(
+        for id in ["agent", "real"] {
+            let raw: String = db
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id=?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .expect("agent");
+            let agent = crate::AgentRecord::from_value(serde_json::from_str(&raw).expect("JSON"))
+                .expect("agent record");
+            assert_eq!(
+                agent
+                    .start_attempt()
+                    .expect("typed start attempt")
+                    .expect("attempt")
+                    .request_ticket
+                    .as_deref(),
+                Some("91")
+            );
+        }
+    }
+    #[test]
+    fn receipts_actions_fractional_ticket_refuses_without_changes() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        let raw = r#"{"id":"agent","startAttempt":{"requestTicket":91.5}}"#;
+        db.execute("INSERT INTO runtime_agents VALUES('agent',?1)", [raw])
+            .expect("agent");
+        assert!(
+            matches!(batch(&mut db, "runtime_agents"), Err(ReceiptMigrationError::Unclassifiable { table, .. }) if table == "runtime_agents")
+        );
+        assert_eq!(
+            db.query_row(
                 "SELECT record FROM runtime_agents WHERE id='agent'",
                 [],
-                |row| row.get(0),
+                |row| row.get::<_, String>(0)
             )
-            .expect("agent");
-        let agent = crate::AgentRecord::from_value(serde_json::from_str(&raw).expect("JSON"))
-            .expect("agent record");
-        assert_eq!(
-            agent
-                .start_attempt()
-                .expect("typed start attempt")
-                .expect("attempt")
-                .request_ticket
-                .as_deref(),
-            Some("91")
+            .expect("source"),
+            raw
         );
     }
     #[test]
