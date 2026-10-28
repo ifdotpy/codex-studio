@@ -465,7 +465,6 @@ async fn pending_codex_approval(
             store.clone(),
             context,
             &frame,
-            1,
             10.0,
         )
         .await
@@ -507,7 +506,7 @@ async fn live_permissions_codex_switch_settles_pending_once_and_ask_prompts_agai
         request.id = studio_runtime_providers::RequestId::Number(88);
     }
     assert!(matches!(
-        admit_native(store.clone(), &context, &later, 2, 11.0)
+        admit_native(store.clone(), &context, &later, 11.0)
             .await
             .unwrap(),
         NativeAdmission::Answer(_)
@@ -523,7 +522,7 @@ async fn live_permissions_codex_switch_settles_pending_once_and_ask_prompts_agai
         request.id = studio_runtime_providers::RequestId::Number(89);
     }
     assert!(matches!(
-        admit_native(store.clone(), &context, &later, 3, 12.0)
+        admit_native(store.clone(), &context, &later, 12.0)
             .await
             .unwrap(),
         NativeAdmission::Card(_)
