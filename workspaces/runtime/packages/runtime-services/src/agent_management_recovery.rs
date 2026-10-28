@@ -714,7 +714,11 @@ async fn request(
         .await
         .map_err(|error| match error {
             AccountSessionError::Expired => Error::Expired,
-            _ => Error::Invalid("The native result is not confirmed"),
+            AccountSessionError::Requires(_)
+            | AccountSessionError::Refused(_)
+            | AccountSessionError::InvalidResponse(_)
+            | AccountSessionError::Persistence
+            | AccountSessionError::Unknown => Error::Invalid("The native result is not confirmed"),
         })?;
     if receipt.operation != operation
         || receipt.scope != *scope
@@ -787,7 +791,13 @@ async fn inspect(
         .await
         .map_err(|error| match error {
             AccountSessionError::Expired => Error::Expired,
-            _ => Error::Invalid("The native notification barrier is not confirmed"),
+            AccountSessionError::Requires(_)
+            | AccountSessionError::Refused(_)
+            | AccountSessionError::InvalidResponse(_)
+            | AccountSessionError::Persistence
+            | AccountSessionError::Unknown => {
+                Error::Invalid("The native notification barrier is not confirmed")
+            }
         })?;
     Ok(false)
 }
