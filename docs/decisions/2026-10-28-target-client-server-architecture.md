@@ -1,14 +1,15 @@
 # Target client and server architecture
 
-- **Status:** Proposed, 2026-10-28. The owner accepted the client model (one frontend, thin cache). The other parts wait for review.
+- **Status:** Proposed, 2026-10-28. The owner accepted the client model (one frontend, thin cache), the domain model, and the type rules. The other parts wait for review.
 - **Audience:** maintainers who plan backend, client, and multi-server work.
 
 ## In short
 
 One server process on each machine owns all state and all business logic. Every UI (the
 desktop window, a browser, the phone) is one frontend that renders server data and sends
-commands. The frontend keeps only a thin cache and a buffer of unsent input. Every user
-action is one command with a stable id in one table.
+commands. The frontend keeps only a thin cache and a buffer of unsent input. Every action
+of a user, an agent, or a peer server is one command with a stable id. Its result lives in
+the row of the entity that it changes.
 
 ## Context
 
@@ -20,9 +21,14 @@ Facts measured on 2026-10-28 at `85663a40a`:
   SQLite, the account worker, and the Claude bridge.
 - Stop takes 5 to 6 hops to the provider, has no request id, pauses the agent, and
   cancels the whole queue. A queued message cannot be withdrawn after `reserved`.
+- One `runtime_agents` JSON record holds the chat, the current provider run
+  (`startAttempt`, the interrupt ticket), and scheduling state. About 100 files write it.
+- Entity publication copies `runtime_agents`, `runtime_requests`, and `runtime_work` rows
+  into `sync_entities` (1.73M rows) in each writer transaction.
 - `client-core` (Rust, about 19.9k lines) does not depend on any runtime crate. The v1
   signature and the paired transport exist in both. On a machine with a server, the
   client keeps a second SQLite copy of the server projections.
+- Each frontend pairs separately with each server and keeps one key for each.
 - The web client writes every stream frame to IndexedDB (RxDB and Dexie) before the UI
   shows it. The owner reports that this makes the frontend slow.
 - Model text reaches the UI after up to 750 ms of buffering in the account worker
@@ -31,6 +37,7 @@ Facts measured on 2026-10-28 at `85663a40a`:
   conversation is stored in the provider file, `runtime_items`, and transcript rows in
   `sync_entities`. `analytics_items` (8.1M rows, about 480 compressed bytes each) holds
   item timings, not message text, and the transcript reads reasoning timings from it.
+- The schema has no foreign keys. See the [schema overview](../audits/db-schema-2026-10-28.md).
 
 ## Decision
 
@@ -45,40 +52,61 @@ Desktop window (Tauri)          Phone (PWA) or UI-only computer
 | Part             | Owns                                                                                        | Does not own                                      |
 | ---------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------- |
 | Server           | State, commands, agents, queue, conversation, drafts, uploads, sync, links to other servers | Microphone, windows, operating system permissions |
-| Frontend         | Rendering, thin cache, unsent input buffer, server keys                                     | Business logic                                    |
+| Frontend         | Rendering, thin cache, unsent input buffer, device key                                      | Business logic                                    |
 | Tauri shell      | Window, microphone, dictation, file dialogs, quick look, notifications                      | State and storage                                 |
 | Peer link        | Transport between servers                                                                   | Logic                                             |
 | Provider adapter | Translation to the provider protocol, a list of capabilities                                | Queue and state                                   |
 
 - The server serves the frontend. The browser, the PWA, and the Tauri window load the same code.
-- A remote frontend connects directly to each server, with its own key for each server.
-  It does not go through another server.
-- The servers maintain the list of servers together. Each server shares its paired
-  servers, and a frontend learns the full list and gets UI access to each server from
-  any server that it reaches.
+- A remote frontend connects directly to each server. It does not go through another server.
 - The PWA and Web Push stay.
-- Server keys: each frontend keeps one non-extractable WebCrypto key for each server in
-  IndexedDB, as today. The PWA and the Tauri window use the same code. The Tauri shell
-  stores nothing.
+
+### Domain model
+
+Today one agent record mixes three things. They become separate entities, each with an
+enum state:
+
+| Entity      | Meaning                                                              | Examples of state                                                       |
+| ----------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| **Chat**    | The conversation that the user sees, with its settings and its queue | `Active`, `Paused`, `Archived`                                          |
+| **Turn**    | One provider run inside a chat                                       | `Starting`, `Running { session }`, `Completed`, `Failed`, `Interrupted` |
+| **Session** | One provider process or thread that runs turns                       | `Starting`, `Ready`, `Lost`                                             |
+| **Message** | Input from the user, an agent, or a peer, with its delivery state    | `Delivery` (see Types)                                                  |
+| **Item**    | One record of the conversation that a turn produced                  | Final, or hidden by a rewind                                            |
+
+- Commands point to real rows: `interrupt(turn)`, `edit(turn)`, `Delivery::Submitted { turn }`.
+- A chat has at most one turn that is not finished. Its state, not fields inside a JSON
+  record, says whether the chat is busy.
 
 ### One command path
 
-`POST /api/commands {id, kind, target, body}` writes one `runtime_commands` row in the
-handler's transaction. The command is a sync entity with the state `pending`, `applied`,
-`failed`, or `unknown`.
+`POST /api/commands {id, kind, target, body}` is the one entry for every action. The UI,
+the agent tools (`managed_host_tools`), and peer servers (orchestration) use it. Checks,
+idempotency, and states are therefore the same for all callers.
 
-- The same id with a different body is a conflict. An `unknown` command never runs again by itself.
-- A command that changes several chats (stop with descendants, delete) is one row in one transaction.
-- `interrupt` names a `turn_id`. A repeat is harmless, so it needs no uncertain state.
-- `withdraw(message_id)` deletes a queued message, or interrupts the turn that holds it. Its text returns to the composer as a server draft.
-- Stop of a turn does not pause the agent and does not clear the queue. Pause is a separate command.
-- Exactly-once applies only to the write to the provider.
+A command is an API concept, not a table. Its result lives in the row of the entity that
+it changes:
 
-- `edit(turn N)` works the same for every provider: hide the items after turn N, restore
-  the files from a layr snapshot of turn N, and fork the provider thread from turn N. This
+- **A command that creates a row** (message, spawn, upload): the client id is the row id,
+  and the row keeps the hash of the body. The row is the receipt. The same id with a
+  different body is a conflict.
+- **A command that changes state** is idempotent by its target: `interrupt` names a turn,
+  `configure` carries the expected revision, `delete` does nothing when the row is gone.
+  It needs no receipt.
+- **A separate record** stays only for the cases that have no main row (section 3 of the
+  [schema overview](../audits/db-schema-2026-10-28.md)).
+- A lost outcome is a state of the row (for example `Delivery::Unknown`). It never runs
+  again by itself. Exactly-once applies only to the write to the provider.
+
+Command rules:
+
+- A command that changes several chats (stop with descendants, delete) runs in one transaction.
+- `withdraw(message)` deletes a queued message, or interrupts the turn that holds it. Its
+  text returns to the composer as a server draft.
+- Stop of a turn does not pause the chat and does not clear the queue. Pause is a separate command.
+- `edit(turn)` works the same for every provider: hide the items after that turn, restore
+  the files from a layr snapshot of that turn, and fork the provider thread from it. This
   gives Codex an in-place rewind and replaces the Claude-only rollback.
-
-The old ledgers move to this table one at a time. Each old table is deleted after its move.
 
 ### Provider adapter
 
@@ -89,8 +117,13 @@ from the Claude bridge to the server.
 
 ### Two streams to the UI
 
-1. **Durable:** `sync_entities` with the existing `since:{workspaceId,seq}` cursors. It gives a delta after a reconnect, or a snapshot when the cursor has expired.
-2. **Live:** model deltas from account worker memory, without SQLite and without the 750 ms timer. A lost delta is harmless, because the final item comes through the durable stream.
+1. **Durable:** the stream reads the main tables directly. Each main table has a `seq`
+   column that a trigger sets from one global counter on each insert and update. A delete
+   writes a tombstone. A subscription returns the rows with `seq` above its cursor, or a
+   snapshot when the cursor is older than the oldest kept tombstone. `sync_entities` no
+   longer keeps a copy of the main rows.
+2. **Live:** model deltas from account worker memory, without SQLite and without the 750 ms
+   timer. A lost delta is harmless, because the final item comes through the durable stream.
 
 Traffic to a remote frontend stays small:
 
@@ -100,9 +133,26 @@ Traffic to a remote frontend stays small:
 - A chat sends only its visible tail. Older items come on scroll.
 - Live deltas go only to the chat that is open.
 
+### Device identity
+
+- Each device (desktop window, phone, browser profile) has one key, a non-extractable
+  WebCrypto key in IndexedDB.
+- The servers keep together the list of servers and the list of trusted device keys. A
+  server shares both with its paired servers. A device that a server trusts gets access
+  to every server of the same owner without a separate pairing.
+- A revocation is made on any server and reaches the others through the same list. A
+  server that was offline applies it when it connects again. Until then it still trusts
+  the revoked key.
+
+### Contract version
+
+At each connection, the frontend and each peer compare the hash of the contract (the
+existing `api-schema` hash). When the hashes differ, the server refuses the connection
+and shows "update needed". It never decodes data in a form that it does not know.
+
 ### Frontend cache
 
-- The IndexedDB uses are the thin cache, the unsent input buffer, and the server keys.
+- The IndexedDB uses are the thin cache, the unsent input buffer, and the device key.
 - A frontend on the same machine as its server keeps no cache.
 - A remote frontend (phone, UI-only computer) keeps one IndexedDB record for each
   subscription: its data and its cursor in one value. It writes at most every 5 seconds
@@ -162,14 +212,14 @@ is one file for backups and layr snapshots. The problems are in its use:
 Invalid state must be impossible to express in Rust, TypeScript, and SQLite.
 
 - **One owner: the Rust type.** TypeScript types come from it through the generated
-  OpenAPI contract (`pnpm run contracts:generate`). SQLite constraints come from it too:
-  a generated check trigger for each enum column, and a parity check that fails when a column
-  and its Rust enum differ. No language keeps a hand-written copy of a value list.
+  OpenAPI contract (`pnpm run contracts:generate`). SQLite checks come from it too: a
+  generated check trigger for each enum column, and a parity check that fails when a
+  column and its Rust enum differ. No language keeps a hand-written copy of a value list.
 - **Enums with data instead of a status string and optional fields.** A state is one
   variant that carries exactly the fields it needs.
 - **Few `Option`s.** `Option` only where absence is a real state of the domain, never for
   "not loaded yet" or "old format".
-- **No free strings.** Identifiers are newtypes (`AgentId`, `TurnId`, `RequestId`) in Rust
+- **No free strings.** Identifiers are newtypes (`ChatId`, `TurnId`, `RequestId`) in Rust
   and branded types in TypeScript. Closed sets are enums.
 - **Strict decoding.** Rows decode with `serde::Deserialize` straight into the type,
   without an intermediate `serde_json::Value`. An unknown variant is an error, not a
@@ -189,8 +239,6 @@ Invalid state must be impossible to express in Rust, TypeScript, and SQLite.
   an error.
 - **Internally tagged enums only** (`#[serde(tag = "kind")]`). Other serde forms produce
   poor generated TypeScript types.
-- **Version skew.** An older server cannot decode a new variant from a newer peer. All
-  paired servers update together.
 
 Example, the delivery state of a message:
 
@@ -224,11 +272,13 @@ BEGIN SELECT RAISE(ABORT, 'invalid delivery state'); END;
 | Data                           | Copies now                                                                                                           | Single owner                                                  | The others                                                                                   |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | Conversation                   | Provider file, `runtime_items`, transcript rows and cached pages in `sync_entities`                                  | `runtime_items`                                               | The provider file stays as the provider's own cache. Transcript pages are built at read time |
+| Entity state for sync          | Main tables and their copies in `sync_entities`                                                                      | The main tables, with a `seq` column                          | Tombstones for deletes                                                                       |
 | Large text                     | Inside item records and agent JSON                                                                                   | `blobs/`, addressed by hash and compressed                    | Rows keep the hash and the size                                                              |
 | Server projections on a client | Client SQLite in `client-core`, RxDB in the web client                                                               | The server                                                    | A remote frontend keeps only the thin cache                                                  |
-| Command results                | About 10 receipt tables (`runtime_operation_receipts` has 2.83M rows for 3,378 chats)                                | `runtime_commands`                                            | Old results compact to a fingerprint after the existing expiry                               |
+| Command results                | About 10 receipt tables (`runtime_operation_receipts` has 2.83M rows for 3,378 chats)                                | The row of the changed entity                                 | A separate record only where no main row exists                                              |
 | Outgoing requests              | 4 outboxes (`runtime_server_outbox`, `runtime_federation_outbox`, `runtime_access_outbound`, `runtime_server_fetch`) | One outbox with `kind` and `target`                           | The same request id and exact body on each retry                                             |
 | Signatures and nonces          | 2 schemes and 2 nonce tables                                                                                         | `studio-multi-server-v1`, with federation as a principal kind | Separate trust lists stay                                                                    |
+| Device keys                    | One key for each pair of device and server                                                                           | One key for each device, in the shared trust list             | Revocation spreads through the list                                                          |
 | Drafts                         | 9 client modules, the Rust client store, and the server                                                              | The server                                                    | The device keeps only unsent input                                                           |
 
 ### Removed parts
@@ -237,6 +287,7 @@ BEGIN SELECT RAISE(ABORT, 'invalid delivery state'); END;
   `desktop_delivery.py`, `install_update.py`). Tauri replaces them.
 - `workspaces/runtime/apps/server/`, which holds only untracked Python caches.
 - `client-wasm`, and the `client-core` stores, sync, outbox, and transport.
+- The entity publication copy into `sync_entities`.
 - The peer update actions (`peer_updates.rs`, `peer_update_pull.rs`, about 2.5k lines)
   move to the shared outbox and commands.
 
@@ -245,32 +296,21 @@ BEGIN SELECT RAISE(ABORT, 'invalid delivery state'); END;
 - All conversation history stays: messages, items, and items hidden by a rewind (owner
   decision, 2026-10-28). Only service data is removed: expired receipts, tombstones,
   cached transcript pages, used nonces, completed outbox entries, and client copies.
-
 - Do not delete a "copy" of data before a check shows that the data exists elsewhere
   (transcript rows in `sync_entities`, client stores).
 - Rewind, restore, and delete make a layr snapshot first. Items are hidden, not deleted.
 - The device keeps unsent input until the server confirms it.
 - Blob order: write the blob, fsync, then write the row. Blob collection uses mark and sweep with a delay.
 - Move client drafts, uploads, and recordings to the server before the client store is deleted.
-- Move receipt tables in one transaction. Keep the old tables read-only until they are empty.
-
-## Order of work
-
-1. The desktop window uses only its local server. The frontend reads data from memory. IndexedDB becomes the thin cache.
-2. The live delta stream.
-3. `runtime_commands` with `interrupt`, `withdraw`, and the queue actions.
-4. Move drafts and uploads to the server. Delete the `client-core` stores and `client-wasm`.
-5. Move the remaining ledgers, then the agent writers (about 100 files), to command and provider handlers.
-6. One copy of the conversation, and blobs. Measure `dbstat` on an APFS clone first.
-7. Routes and reconnect rules in the frontend.
-8. WebTransport, only if a measurement requires it.
+- Move a receipt table in one transaction. Keep the old table read-only until it is empty.
 
 ## Risks
 
-- Complexity grows before it falls: old and new paths live together for months.
+- Complexity grows before it falls: old and new paths live together for a time.
 - The UI depends on its server. A server restart breaks the stream for a short time.
 - Agents survive a server restart only with the supervisor, which Windows does not have.
 - Disk use grows: rewind hides items and makes snapshots.
+- A revoked device key stays valid on a server that was offline until it connects again.
 - The UI moves to Tauri now and to Attar later. The frontend contract must suit Attar,
   or the rendering code is rewritten twice.
 
@@ -278,5 +318,5 @@ BEGIN SELECT RAISE(ABORT, 'invalid delivery state'); END;
 
 - **Analytics size:** `analytics.sqlite3` is 31.8 GB, but `analytics_items` explains only
   about 4 GB. Measure `dbstat` on an APFS clone before any analytics change.
-- **Ownership:** most steps change backend code that Sasha owns (#37). Agree each step with him.
-- **Upgrade:** a protocol change needs all paired servers on the same version.
+- **Ownership:** Sasha handed the typed storage work to Claude. Most other parts also
+  change backend code that he owns (#37). Agree each part with him.
