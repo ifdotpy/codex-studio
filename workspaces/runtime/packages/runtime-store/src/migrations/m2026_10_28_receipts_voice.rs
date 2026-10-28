@@ -24,16 +24,6 @@ const RECEIPT_SOURCE: &str = "runtime_operation_receipts";
 pub(super) const SOURCES: &[&str] = &["voice_sessions", RECEIPT_SOURCE];
 const VOICE: &str = "source.id GLOB 'agent-voice-stop:*' OR source.id GLOB 'agent-delete-voice:*'";
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AgentAccount {
-    #[serde(default = "default_account")]
-    account_key: String,
-}
-fn default_account() -> String {
-    "default".into()
-}
-
 fn migrate_session_scopes(
     tx: &Transaction<'_>,
     checkpoint: &MigrationCheckpoint,
@@ -68,37 +58,12 @@ fn migrate_session_scopes(
         ) {
             break;
         }
-        let invalid = || unclassifiable("voice_sessions", &id, "provider_scope");
-        let agent = crate::AgentRepository::get(tx, &crate::AgentId::from(agent_id.as_str()))
-            .map_err(|_| invalid())?;
-        let scope = if let Some(agent) = agent {
-            let identity: AgentAccount =
-                serde_json::from_value(agent.value()).map_err(|_| invalid())?;
-            match crate::account_state::current_provider_scope(tx, &agent) {
-                Ok(scope)
-                    if account.as_deref() == Some(identity.account_key.as_str())
-                        && connection.as_deref() == Some(scope.connection.as_str()) =>
-                {
-                    Some(scope)
-                }
-                Ok(_) | Err(crate::account_state::ScopeError::Unavailable) => None,
-                Err(crate::account_state::ScopeError::Store(_)) => return Err(invalid()),
-            }
-        } else {
-            None
-        };
-        if let Some(scope) = scope {
-            let scope = serde_json::to_string(&scope).map_err(|_| invalid())?;
-            tx.execute(
-                "UPDATE voice_sessions SET provider_scope=?2 WHERE rowid=?1",
-                params![rowid, scope],
-            )?;
-        } else {
-            tx.execute(
-                "UPDATE voice_sessions SET state='unknown' WHERE rowid=?1",
-                [rowid],
-            )?;
-        }
+        // A matching current connection does not prove a legacy generation.
+        // An exact retained call may establish the scope in the receipt phase.
+        tx.execute(
+            "UPDATE voice_sessions SET state='unknown' WHERE rowid=?1",
+            [rowid],
+        )?;
         next.cursor = rowid;
     }
     if !tx.query_row(
@@ -145,12 +110,11 @@ enum VoiceProviderCall {
     Retained(RetainedCall<Method, AdmittedRequest>),
 }
 
-fn prior(
+fn prior_call(
     tx: &Transaction<'_>,
-    session: &mut VoiceDeleteSession,
+    session: &VoiceDeleteSession,
     operation: &str,
-    cutover: i64,
-) -> Result<Option<VoiceStopOutcome>> {
+) -> Result<Option<(String, String, Call)>> {
     let prefix = format!(
         "account-worker:{}",
         transport_key(&session.account_key, operation)
@@ -177,14 +141,28 @@ fn prior(
         || actor.agent != session.agent_id
         || actor.epoch > session.epoch
         || call.scope.account != session.account_key
-        || call.scope.connection != session.connection_id
-        || session
-            .generation
-            .is_some_and(|generation| call.scope.generation != generation)
         || call.params["threadId"] != session.thread_id
     {
         return Err(invalid());
     }
+    Ok(Some((id, signature, call)))
+}
+
+fn prior(
+    tx: &Transaction<'_>,
+    session: &mut VoiceDeleteSession,
+    operation: &str,
+    cutover: i64,
+) -> Result<Option<VoiceStopOutcome>> {
+    let Some((id, signature, call)) = prior_call(tx, session, operation)? else {
+        return Ok(None);
+    };
+    let invalid = || unclassifiable(RECEIPT_SOURCE, &id, &signature);
+    let prefix = format!(
+        "account-worker:{}",
+        transport_key(&session.account_key, operation)
+    );
+    let actor = call.actor.as_ref().ok_or_else(invalid)?;
     if call.deleted_actor_session.as_deref()
         != operation
             .starts_with("voice:delete-stop:")
@@ -237,6 +215,24 @@ fn prior(
         RequestResult::NotSent => VoiceStopOutcome::NotSent,
         RequestResult::Unknown => VoiceStopOutcome::Unknown,
     }))
+}
+
+fn conflicting_scopes(tx: &Transaction<'_>, session: &VoiceDeleteSession) -> Result<bool> {
+    let mut scope = None;
+    for operation in [
+        format!("voice:stop:{}", session.session_id),
+        format!("voice:delete-stop:{}", session.session_id),
+    ] {
+        if let Some((_, _, call)) = prior_call(tx, session, &operation)? {
+            if call.scope.connection != session.connection_id
+                || scope.as_ref().is_some_and(|old| old != &call.scope)
+            {
+                return Ok(true);
+            }
+            scope = Some(call.scope);
+        }
+    }
+    Ok(false)
 }
 fn reserve(
     tx: &Transaction<'_>,
@@ -459,6 +455,13 @@ fn convert(
         {
             continue;
         }
+        if conflicting_scopes(tx, &session)? {
+            payload
+                .voice_end_results
+                .insert(session.session_id.clone(), VoiceStopOutcome::Unknown);
+            payload.voice_end_sessions.push(session);
+            continue;
+        }
         let deleted = kind == OutboxKind::VoiceDelete;
         let operation = format!(
             "voice:{}:{}",
@@ -469,10 +472,8 @@ fn convert(
             },
             session.session_id
         );
+        prove_session_scope(tx, &mut session)?;
         let mut outcome = prior(tx, &mut session, &operation, cutover)?;
-        if session.generation.is_none() {
-            prove_session_scope(tx, &mut session)?;
-        }
         if held && outcome.is_none() {
             payload.voice_end_results.insert(
                 session.session_id.clone(),
@@ -744,7 +745,7 @@ mod tests {
     use rusqlite::Connection;
 
     #[test]
-    fn voice_session_scope_migration_preserves_exact_and_holds_unproved() {
+    fn voice_session_scope_migration_holds_even_a_matching_current_connection() {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&db);
         db.execute_batch(&crate::agent_volatile::TABLE_SQL).unwrap();
@@ -765,17 +766,15 @@ mod tests {
             .move_batch(&tx, "voice_sessions", &checkpoint)
             .unwrap();
         assert_eq!(next.status, MigrationStatus::Complete);
-        let scope: Option<String> = tx
+        let (scope, state): (Option<String>, String) = tx
             .query_row(
-                "SELECT provider_scope FROM voice_sessions WHERE id='current'",
+                "SELECT provider_scope,state FROM voice_sessions WHERE id='current'",
                 [],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&scope.unwrap()).unwrap(),
-            json!({"generation":42,"connection":"current"})
-        );
+        assert!(scope.is_none());
+        assert_eq!(state, "unknown");
         let (scope, state): (Option<String>, String) = tx
             .query_row(
                 "SELECT provider_scope,state FROM voice_sessions WHERE id='old'",
@@ -991,11 +990,81 @@ mod tests {
         };
         assert_eq!(token.id(), format!("{prefix}:result"));
         assert_eq!(token.created(), 1000);
+        let saved_scope: String = db
+            .query_row(
+                "SELECT provider_scope FROM voice_sessions WHERE id='session'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("proven scope");
+        assert_eq!(
+            serde_json::from_str::<studio_runtime_schema::persistence::ProviderScope>(&saved_scope)
+                .expect("scope"),
+            studio_runtime_schema::persistence::ProviderScope {
+                generation: 1,
+                connection: "legacy-connection".into()
+            }
+        );
         assert!(
             Outbox::pending::<Value>(&db, OutboxKind::VoiceStop, 2000, 500)
                 .expect("selector")
                 .is_empty()
         );
+    }
+    #[test]
+    fn conflicting_retained_scopes_are_held_unproven() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        insert(&db, 0, None);
+        for (operation, generation, deleted) in [
+            ("voice:stop:session-0", 1, None),
+            ("voice:delete-stop:session-0", 2, Some("session-0")),
+        ] {
+            let call: Call = Call {
+                root_request_id: String::new(),
+                admitted_request: None,
+                scope: ConnectionScope {
+                    account: "account".into(),
+                    connection: "legacy-connection".into(),
+                    generation,
+                },
+                operation: operation.into(),
+                actor: Some(RequestActor {
+                    agent: "agent-0".into(),
+                    epoch: 1,
+                }),
+                transfer: None,
+                deleted_actor_session: deleted.map(str::to_owned),
+                method: Method::ThreadRealtimeStop,
+                params: json!({"threadId":"thread"}),
+            };
+            let key = format!(
+                "account-worker:{}:submitted",
+                transport_key("account", operation)
+            );
+            db.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)",
+                params![key, json!({"call":call}).to_string()],
+            )
+            .expect("call");
+        }
+        batch(&mut db).expect("migrate");
+        let row = Outbox::for_owner::<VoiceEffect>(
+            &db,
+            OwnerKind::Agent,
+            "agent-0",
+            OutboxKind::VoiceDelete,
+        )
+        .expect("row")
+        .remove(0);
+        assert_eq!(row.status, OutboxStatus::Unknown);
+        assert!(row.next_at.is_none());
+        assert!(matches!(
+            row.payload.authority,
+            VoiceEffectAuthority::Held {
+                scope: studio_runtime_schema::persistence::CapturedScope::Unproven
+            }
+        ));
     }
     #[test]
     fn receipts_voice_delete_priority_holds_unproven_sessions() {

@@ -2231,6 +2231,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn voice_outbox_late_not_sent_after_agent_removal_is_abandoned() {
+        use studio_runtime_store::request_results::{
+            AbandonedOutcome, AbandonedResult, ResultEnvelope,
+        };
+        let (_directory, store) = voice_outbox_fixture().await;
+        let provider = Arc::new(GatedStop::new(VoiceWriteCertainty::NotSent));
+        let task_store = store.clone();
+        let task_provider = provider.clone();
+        let running = tokio::spawn(async move {
+            end(
+                task_store,
+                task_provider,
+                "agent".into(),
+                "session".into(),
+                10.0,
+            )
+            .await
+        });
+        provider.entered.notified().await;
+        let id = store
+            .transaction_with_error(|tx| -> Result<String, VoiceProviderError> {
+                let row = Outbox::for_owner::<studio_runtime_store::VoiceEffect>(
+                    tx,
+                    OwnerKind::Agent,
+                    "agent",
+                    OutboxKind::VoiceStop,
+                )?
+                .remove(0);
+                assert!(stage_delete_sessions(tx, "agent")?.is_empty());
+                tx.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
+                tx.execute("DELETE FROM runtime_agents WHERE id='agent'", [])?;
+                Ok(row.id)
+            })
+            .await
+            .expect("delete owner");
+        provider.release.notify_one();
+        let _ = running.await.expect("stop task");
+        let reader = store.test_reader().expect("reader");
+        assert!(
+            Outbox::get::<studio_runtime_store::VoiceEffect>(&reader, &id)
+                .unwrap()
+                .is_none()
+        );
+        let raw: String = reader
+            .query_row(
+                "SELECT result FROM request_results WHERE id=?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .expect("abandoned result");
+        let result: ResultEnvelope<AbandonedResult> =
+            serde_json::from_str(&raw).expect("typed result");
+        assert_eq!(
+            result.reply,
+            AbandonedResult::Abandoned {
+                outcome: AbandonedOutcome::Unknown
+            }
+        );
+        assert!(
+            Outbox::for_owner::<studio_runtime_store::VoiceEffect>(
+                &reader,
+                OwnerKind::Agent,
+                "agent",
+                OutboxKind::VoiceDelete
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert_eq!(provider.calls.lock().expect("calls").len(), 1);
+    }
+    #[tokio::test]
     async fn voice_outbox_late_stop_proof_settles_deleted_owner_atomically() {
         for certainty in [
             VoiceWriteCertainty::NotSent,
