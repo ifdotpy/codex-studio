@@ -388,20 +388,7 @@ impl Controls {
         snapshot: &mut ControlSnapshot,
         uncertain: &mut bool,
     ) -> Result<Value> {
-        let attempt = snapshot
-            .saved
-            .as_ref()
-            .and_then(|op| op.get("controlAttempt"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let transport_request = if attempt == 0 {
-            request.request_id().to_owned()
-        } else {
-            format!(
-                "claude-retry:{}",
-                request_signature(&json!([request.request_id(), attempt]))
-            )
-        };
+        let transport_request = request.request_id().to_owned();
         let scope = ControlScope {
             agent: snapshot.agent.id.clone(),
             epoch: snapshot.epoch(),
@@ -699,12 +686,7 @@ impl Controls {
                     .and_then(Value::as_str)
                     .filter(|t| !t.is_empty() && t.len() <= 1024)
                     .ok_or(ControlError::Request)?;
-                let mut scope = scope;
                 let thread = thread.ok_or(ControlError::Request)?;
-                // The task identity is stable even when a client omits request_id.
-                scope.request_id.get_or_insert_with(|| {
-                    format!("stop-task:{}", request_signature(&json!([thread, task])))
-                });
                 let request_id = scope.request_id.clone().ok_or(ControlError::Request)?;
                 match self
                     .bound_call(

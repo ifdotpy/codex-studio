@@ -1,6 +1,6 @@
 //! Classify public request replay independently of provider and domain migrations.
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_schema::persistence::{
     DeliveryStatus, MigrationStatus, OutboxKind, OutboxStatus, OwnerKind, RecipientDelivery,
@@ -34,6 +34,25 @@ const CHANGED_SYNCHRONOUS_SIGNATURES: &[(&str, &str)] = &[
     ("sidebar-order:", "deleted-completed-c:sidebar-order"),
 ];
 pub(super) struct Family;
+
+#[derive(Deserialize)]
+struct WorkspaceKindView {
+    kind: WorkspaceKind,
+}
+
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(strum::VariantNames))]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(test, strum(serialize_all = "snake_case"))]
+enum WorkspaceKind {
+    Capture,
+    Checkpoint,
+    Restore,
+    Branch,
+    Provision,
+    ClaudeSettings,
+    ClaudeRollback,
+}
 
 #[derive(Serialize)]
 struct PendingRequest {
@@ -424,6 +443,24 @@ fn move_workspace_operations(
         let mut owner: Value = row.json(TABLE)?;
         if !schema("PersistedWorkspaceOperationRecord", &owner) || owner["id"] != row.id {
             return Err(invalid());
+        }
+        let view: WorkspaceKindView = serde_json::from_str(&row.result).map_err(|_| invalid())?;
+        if matches!(
+            view.kind,
+            WorkspaceKind::ClaudeSettings | WorkspaceKind::ClaudeRollback
+        ) && owner.get("controlAttempt").is_some()
+        {
+            if !budget.include(row.result.len() + row.id.len() + row.signature.len()) {
+                break;
+            }
+            owner
+                .as_object_mut()
+                .ok_or_else(invalid)?
+                .remove("controlAttempt");
+            tx.execute(
+                "UPDATE runtime_workspace_operations SET record=?1 WHERE rowid=?2",
+                params![owner.to_string(), row.rowid],
+            )?;
         }
         if !matches!(owner["kind"].as_str(), Some("branch" | "restore"))
             || owner["phase"] == "completed"
@@ -1064,6 +1101,56 @@ mod tests {
     use rusqlite::Connection;
     const CUTOVER: i64 = 1_000_000;
     const SIGNATURE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[test]
+    fn receipts_requests_claude_control_attempt_is_removed_without_changing_identity() {
+        use strum::VariantNames;
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../runtime-schema/src/schemas/persisted-workspace-operation-record.schema.json"
+        ))
+        .expect("workspace schema");
+        let kinds: Vec<_> = schema["properties"]["kind"]["enum"]
+            .as_array()
+            .expect("workspace kinds")
+            .iter()
+            .map(|kind| kind.as_str().expect("kind"))
+            .collect();
+        assert_eq!(kinds, WorkspaceKind::VARIANTS);
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute_batch(
+            "CREATE TABLE runtime_workspace_operations(id TEXT PRIMARY KEY,record TEXT)",
+        )
+        .expect("source");
+        for kind in ["claude_settings", "claude_rollback"] {
+            let owner = json!({"id":kind,"kind":kind,"agent":"agent","phase":"recovery_required","requestId":"original","controlAttempt":2});
+            db.execute(
+                "INSERT INTO runtime_workspace_operations VALUES(?1,?2)",
+                params![kind, owner.to_string()],
+            )
+            .expect("owner");
+        }
+        let tx = db.transaction().expect("transaction");
+        let checkpoint =
+            MigrationCheckpoint::begin(&tx, ID, "runtime_workspace_operations", CUTOVER)
+                .expect("checkpoint");
+        Family
+            .move_batch(&tx, "runtime_workspace_operations", &checkpoint)
+            .expect("migration");
+        for kind in ["claude_settings", "claude_rollback"] {
+            let raw: String = tx
+                .query_row(
+                    "SELECT record FROM runtime_workspace_operations WHERE id=?1",
+                    [kind],
+                    |row| row.get(0),
+                )
+                .expect("owner");
+            let owner: Value = serde_json::from_str(&raw).expect("JSON");
+            assert!(owner.get("controlAttempt").is_none());
+            assert_eq!(owner["requestId"], "original");
+            assert_eq!(owner["phase"], "recovery_required");
+        }
+    }
 
     fn fixture(db: &mut Connection) {
         db.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT); CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,body TEXT);").expect("old format");

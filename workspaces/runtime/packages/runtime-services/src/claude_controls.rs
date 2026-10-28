@@ -197,19 +197,6 @@ impl ControlSnapshot {
         if request.restore_files() {
             operation["restoreFiles"] = json!(true);
         }
-        if let Some(previous) = &self.saved {
-            // Reaching this point with a prior record proves that it failed without effects.
-            // A new transport attempt avoids replaying its settled rejection forever.
-            let attempt = previous
-                .get("controlAttempt")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let next = u32::try_from(attempt)
-                .ok()
-                .and_then(|value| value.checked_add(1))
-                .ok_or(ControlError::Conflict)?;
-            operation["controlAttempt"] = json!(next);
-        }
         let mut agent = self.raw.clone();
         agent["workspaceOperation"] = json!("branch");
         agent["workspaceReservationId"] = json!(request.operation_id());
