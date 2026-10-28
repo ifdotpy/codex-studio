@@ -360,6 +360,9 @@ test("execution settings canonical browser", async ({ page }) => {
       });
       await move.click();
       await page.waitForFunction(() => !!window.transferRelease);
+      await expect(
+        page.getByRole("dialog", { name: "Account transfer" }),
+      ).toBeVisible();
       assert.deepEqual(
         await page.evaluate(() =>
           window.transfers.map((row) => [row.account_key, row.scope]),
@@ -744,7 +747,10 @@ test("execution settings canonical browser", async ({ page }) => {
         }),
       );
       // Members with one reason share one line, and each line has its own row.
-      const leftLine = dialog.getByText(
+      const transferDialog = page.getByRole("dialog", {
+        name: "Account transfer",
+      });
+      const leftLine = transferDialog.getByText(
         "Claude worker, Claude helper left on source (claude): Uses claude",
       );
       await leftLine.waitFor();
@@ -752,6 +758,7 @@ test("execution settings canonical browser", async ({ page }) => {
         await leftLine.evaluate((node) => getComputedStyle(node).display),
         "block",
       );
+      await transferDialog.getByRole("button", { name: "Close" }).click();
       // A lost transfer response offers Retry with the same request id.
       await page.evaluate(() => (window.transferFail = true));
       await move.click();

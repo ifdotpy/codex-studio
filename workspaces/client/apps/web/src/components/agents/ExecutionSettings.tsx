@@ -1,3 +1,4 @@
+import { appendAppLog } from "../../appLog";
 import {
   AccountTransferScope,
   AccountTransferStatus as GeneratedAccountTransferStatus,
@@ -564,6 +565,14 @@ function ScopedExecutionSettings({
     value: TransferResponse;
     baseline: string;
   } | null>(null);
+  const [transferOpen, setTransferOpen] = useState(
+    agent.accountTransfer?.status === GeneratedAccountTransferStatus.pending &&
+      (teamDefaults
+        ? agent.accountTransfer.scope === AccountTransferScope.subagents
+        : agent.accountTransfer.scope !== AccountTransferScope.subagents),
+  );
+  const seenTransfer = useRef(agent.accountTransfer?.id);
+  const reportedBlocked = useRef(new Set<string>());
   const [retryTarget, setRetryTarget] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [status, setStatus] = useState<{
@@ -991,6 +1000,7 @@ function ScopedExecutionSettings({
         : randomUUID();
     save(subagentTransferReceiptKey, { target, request_id: requestId });
     saveLock.current = true;
+    setTransferOpen(true);
     const previousPending = accountPending;
     setSaving(true);
     setError("");
@@ -1026,6 +1036,12 @@ function ScopedExecutionSettings({
       if (!mounted.current) return;
       setAccountPending(previousPending);
       setStatus(null);
+      appendAppLog({
+        at: Date.now(),
+        level: "error",
+        title: "Account transfer failed",
+        reason: errorText(failure),
+      });
       setError(errorText(failure));
       setRetryTarget(target);
       return;
@@ -1091,6 +1107,24 @@ function ScopedExecutionSettings({
     (responseIsNewer || transfer.baseline === JSON.stringify(snapshotTransfer))
       ? transfer.value
       : snapshotTransfer || transfer?.value;
+  useEffect(() => {
+    if (shownTransfer?.id && shownTransfer.id !== seenTransfer.current) {
+      seenTransfer.current = shownTransfer.id;
+      if (shownTransfer.status === GeneratedAccountTransferStatus.pending)
+        setTransferOpen(true);
+    }
+    for (const member of shownTransfer?.blocked ?? []) {
+      const key = JSON.stringify([shownTransfer?.id, member.id, member.reason]);
+      if (reportedBlocked.current.has(key)) continue;
+      reportedBlocked.current.add(key);
+      appendAppLog({
+        at: Date.now(),
+        level: "error",
+        title: "Account transfer blocked",
+        reason: `${member.name || "Agent"}: ${member.reason}`,
+      });
+    }
+  }, [shownTransfer]);
   const shownTransferTarget = accounts.find(
     (account) => account.id === shownTransfer?.targetAccountKey,
   );
@@ -1125,6 +1159,12 @@ function ScopedExecutionSettings({
         });
       refreshConfirmed(generation, "Transfer updated.");
     } catch (failure) {
+      appendAppLog({
+        at: Date.now(),
+        level: "error",
+        title: `Account transfer ${action} failed`,
+        reason: errorText(failure),
+      });
       if (mounted.current) setError(errorText(failure));
     } finally {
       saveLock.current = false;
@@ -1567,19 +1607,35 @@ function ScopedExecutionSettings({
             {setupAccountName(activeAccount)}
           </Button>
         )}
-      {!readOnlyReason && (teamDefaults || agent.isLead) && shownTransfer && (
-        <AccountTransferStatus
-          transfer={shownTransfer}
-          targetLabel={
-            teamDefaults
-              ? setupAccountName(shownTransferTarget)
-              : shownTransferTarget?.email ||
-                setupAccountName(shownTransferTarget)
-          }
-          showCompleted
-          pending={saving}
-          onAction={(action) => void runTeamTransferAction(action)}
-        />
+      {!readOnlyReason &&
+        (teamDefaults || agent.isLead) &&
+        (shownTransfer || transferOpen) && (
+          <AccountTransferStatus
+            opened={transferOpen}
+            onClose={() => setTransferOpen(false)}
+            transfer={shownTransfer}
+            targetLabel={
+              teamDefaults
+                ? setupAccountName(shownTransferTarget)
+                : shownTransferTarget?.email ||
+                  setupAccountName(shownTransferTarget)
+            }
+            error={error}
+            retryStart={
+              retryTarget ? () => void moveExisting(retryTarget) : undefined
+            }
+            pending={saving}
+            onAction={(action) => void runTeamTransferAction(action)}
+          />
+        )}
+      {shownTransfer && !transferOpen && (
+        <Button
+          size="compact-xs"
+          variant="subtle"
+          onClick={() => setTransferOpen(true)}
+        >
+          View transfer status
+        </Button>
       )}
       {status && (
         <p role="status" className="notice execution-status">

@@ -49,6 +49,7 @@ const h = vi.hoisted(() => ({
   scoped: "",
   cursor: 0,
   effects: [] as Array<() => unknown>,
+  report: vi.fn(),
   read: vi.fn(),
   post: vi.fn(),
   refresh: vi.fn(async () => {}),
@@ -105,6 +106,7 @@ vi.mock("react", async (load) => ({
   useId: () => "settings-role",
   useCallback: (callback: unknown) => callback,
 }));
+vi.mock("../../appLog", () => ({ appendAppLog: h.report }));
 vi.mock("../../servers/ServerServicesContext", () => ({
   useServerStorage: () => ({
     setItem: (key: string, raw: string) => h.storage.set(key, JSON.parse(raw)),
@@ -284,6 +286,7 @@ afterEach(() => {
   h.storage.clear();
   h.scoped = "";
   h.effects = [];
+  h.report.mockClear();
   h.read.mockReset();
   h.post.mockReset();
   h.refresh.mockClear();
@@ -312,10 +315,14 @@ test("transfer actions retain response identity and retry the same request after
     );
     return required(status).props;
   };
+  expect(transfer()).toHaveProperty("opened", true);
   h.post.mockRejectedValueOnce(new Error("response lost"));
   transfer().onAction?.("retry");
   await vi.waitFor(() => expect(transfer().pending).toBe(false));
   expect(transfer().transfer).toBe(operation);
+  expect(h.report).toHaveBeenCalledWith(
+    expect.objectContaining({ level: "error", reason: "response lost" }),
+  );
   const response = {
     ...operation,
     updated: 3,
@@ -332,6 +339,35 @@ test("transfer actions retain response identity and retry the same request after
     request_id: operation.id,
   });
   expect(transfer().transfer).toBe(response);
+});
+
+test("blocked members are reported but provider mismatches are not", () => {
+  render({
+    ...initial,
+    accountTransfer: {
+      id: "transfer",
+      status: "pending",
+      scope: TransferScope.team,
+      blocked: [{ id: "blocked", name: "Worker", reason: "Receipt missing" }],
+      leftOnSource: [
+        {
+          id: "left",
+          name: "Other",
+          provider: ProviderKind.claude,
+          reason: "Uses claude",
+        },
+      ],
+    },
+  });
+  expect(h.report).toHaveBeenCalledWith(
+    expect.objectContaining({
+      level: "error",
+      reason: "Worker: Receipt missing",
+    }),
+  );
+  expect(h.report).not.toHaveBeenCalledWith(
+    expect.objectContaining({ reason: expect.stringContaining("Uses claude") }),
+  );
 });
 
 for (const provider of ["Future Provider", "codex", "claude"]) {

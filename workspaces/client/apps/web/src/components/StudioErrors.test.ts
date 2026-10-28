@@ -219,3 +219,19 @@ test("local logs share the list without a dismissal checkbox", () => {
     clearAppLog();
   }
 });
+
+test("local transfer failures appear as errors", () => {
+  appendAppLog({
+    at: 1,
+    level: "error",
+    title: "Account transfer blocked",
+    reason: "Worker: Receipt missing",
+  });
+  try {
+    const markup = render([]);
+    expect(markup).toContain("ERROR (1)");
+    expect(markup).toContain("Worker: Receipt missing");
+  } finally {
+    clearAppLog();
+  }
+});
