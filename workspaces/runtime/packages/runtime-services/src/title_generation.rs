@@ -9,6 +9,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use crate::event_write::{CallerAdmission, RequestKey, begin_request, replay_request};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -20,8 +21,7 @@ use studio_runtime_schema::persistence::{
 use studio_runtime_schema::shared_values::TITLE_EFFECT_SIGNATURE;
 use studio_runtime_store::outbox::{Outbox, OutboxError, OutboxRow};
 use studio_runtime_store::request_results::{
-    Admission as ResultAdmission, AdmittedRequest, RequestResultError, RequestResults,
-    ResultEnvelope,
+    AdmittedRequest, RequestResultError, RequestResults, ResultEnvelope,
 };
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
 use thiserror::Error;
@@ -303,9 +303,7 @@ fn saved_reply(
     let signature = python_rename_signature(agent_id);
     let scoped = RequestIdentity::new("title-generation", &[agent_id], request_id, &[]).ok();
     for id in std::iter::once(request_id).chain(scoped.as_ref().map(RequestIdentity::id)) {
-        if let Some(saved) = RequestResults::replay(tx, id, &signature, now_ms())? {
-            let envelope: ResultEnvelope<TitleReply> =
-                serde_json::from_str(&saved.result).map_err(StoreError::from)?;
+        if let Some(envelope) = replay_request::<TitleReply>(tx, id, &signature, now_ms())? {
             if envelope.reply.id != agent_id || envelope.reply.request_id != request_id {
                 return Err(TitleError::Conflict);
             }
@@ -313,6 +311,44 @@ fn saved_reply(
         }
     }
     Ok(None)
+}
+
+/// Validate title authority in the same writer transaction that reserves a provider suboperation.
+pub fn validate_dispatch(tx: &Connection, request: &TitleRequest) -> Result<(), TitleError> {
+    let job = read_job(tx, &request.agent_id, &request.request_id)?.ok_or(TitleError::Conflict)?;
+    let agent = read_agent(tx, &request.agent_id)?;
+    if job.status != TitleStatus::Pending
+        || job.root_request_id != request.root_request_id
+        || job.admitted_request != request.admitted_request
+        || job.epoch != Some(request.epoch)
+        || agent.get("epoch").and_then(Value::as_i64) != Some(request.epoch)
+        || agent.pointer("/titleJob/requestId").and_then(Value::as_str)
+            != Some(request.request_id.as_str())
+        || agent
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            != request.account_key
+        || agent.get("provider").and_then(Value::as_str) != request.provider.as_deref()
+    {
+        return Err(TitleError::Conflict);
+    }
+    let snapshot = Snapshot {
+        agent,
+        original_name: job.original_name.clone().ok_or(TitleError::Conflict)?,
+        epoch: request.epoch,
+        prompt: request.prompt.clone(),
+        model: request.model.clone(),
+        effort: request.effort.clone(),
+        account_key: request.account_key.clone(),
+        provider: request.provider.clone(),
+        request_id: request.request_id.clone(),
+        eligible: true,
+    };
+    if job.fingerprint.as_deref() != Some(signature(&snapshot).as_str()) {
+        return Err(TitleError::Conflict);
+    }
+    Ok(())
 }
 
 /// Read-only discovery of completed replies or retained unresolved work.
@@ -355,14 +391,19 @@ pub async fn admit_python_request(
             let job = if let Some(job) = read_job(tx, &agent_id, &request_id)? {
                 job
             } else {
-                let admission = RequestResults::admit(
+                let admitted_request = match begin_request::<TitleReply>(
                     tx,
-                    &public_identity,
+                    RequestKey::new("title-generation", &[agent_id.as_str()], &request_id),
                     &python_rename_signature(&agent_id),
                     now_ms(),
-                )?;
-                let ResultAdmission::Fresh(admitted_request) = admission else {
-                    return Err(TitleError::Conflict);
+                )? {
+                    CallerAdmission::Fresh(admitted) => admitted,
+                    CallerAdmission::Replay(reply) => {
+                        return Ok((
+                            serde_json::to_value(reply).map_err(StoreError::from)?,
+                            false,
+                        ));
+                    }
                 };
                 let job = TitleJob {
                     request_id,
