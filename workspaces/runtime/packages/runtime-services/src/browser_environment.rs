@@ -2,7 +2,7 @@
 //! (docs/vm-browser-bridge.md, section 6.4). Python `codex_browser_host.thread_environment`
 //! owns the same rule; `tests/browser_environment_differential.rs` checks both.
 
-use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// The host bridge folder in the server state directory (Python `codex_browser_host.FOLDER`).
@@ -19,31 +19,26 @@ pub const BROWSER_OPEN_SOCKET: &str = "open.sock";
 /// files add (measured with codex-cli 0.160.1, docs/vm-browser-bridge.md
 /// section 6.4). Nothing is set before the launcher exists, so a server without
 /// the host bridge keeps the tool's own browser behaviour.
-pub fn thread_environment(state_root: &Path, agent_id: &str) -> Map<String, Value> {
+pub fn thread_environment(state_root: &Path, agent_id: &str) -> BTreeMap<String, String> {
     let folder = state_root.join(BROWSER_HOST_FOLDER);
     let launcher = folder.join(BROWSER_LAUNCHER);
-    let mut overrides = Map::new();
     if !launcher.is_file() {
-        return overrides;
+        return BTreeMap::new();
     }
-    overrides.insert(
-        "shell_environment_policy.set.BROWSER".into(),
-        Value::String(launcher.to_string_lossy().into_owned()),
-    );
-    overrides.insert(
-        "shell_environment_policy.set.STUDIO_BROWSER_SOCKET".into(),
-        Value::String(
+    [
+        ("BROWSER", launcher.to_string_lossy().into_owned()),
+        (
+            "STUDIO_BROWSER_SOCKET",
             folder
                 .join(BROWSER_OPEN_SOCKET)
                 .to_string_lossy()
                 .into_owned(),
         ),
-    );
-    overrides.insert(
-        "shell_environment_policy.set.STUDIO_BROWSER_SESSION".into(),
-        Value::String(agent_id.to_owned()),
-    );
-    overrides
+        ("STUDIO_BROWSER_SESSION", agent_id.to_owned()),
+    ]
+    .into_iter()
+    .map(|(name, value)| (format!("shell_environment_policy.set.{name}"), value))
+    .collect()
 }
 
 #[cfg(test)]

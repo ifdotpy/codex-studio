@@ -23,6 +23,34 @@ fn serde_location(section: &str, path: &serde_path_to_error::Path) -> Vec<Value>
 #[allow(dead_code, reason = "route handlers consume the shared JSON extractor")]
 pub(crate) struct ApiJson<T>(pub T);
 
+/// JSON request bodies read from the validated wire bytes.
+pub(crate) struct ApiRawJson<T>(pub T);
+
+impl<T, S> FromRequest<S> for ApiRawJson<T>
+where
+    T: DeserializeOwned + Send,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(
+        request: axum::extract::Request,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let (mut parts, _) = request.into_parts();
+        let bytes = parts
+            .extensions
+            .remove::<ValidatedRequest>()
+            .ok_or_else(ApiError::internal)?
+            .raw_body
+            .ok_or_else(ApiError::internal)?;
+        let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+        serde_path_to_error::deserialize(&mut deserializer)
+            .map(Self)
+            .map_err(|error| ApiError::validation(serde_location("body", error.path())))
+    }
+}
+
 impl<T, S> FromRequest<S> for ApiJson<T>
 where
     T: DeserializeOwned + Send,

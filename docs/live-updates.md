@@ -5,7 +5,7 @@ Do not publish its temporary patch files or live-update manifests to the Rust se
 
 Use `just deliver-server <commit>` to update the live server on this Linux host.
 That recipe owns release snapshots, the current link, service restart, health
-verification, rollback, and pruning. The entire delivery runs in a separate
+verification, and pruning. An unhealthy release stops for operator recovery. The entire delivery runs in a separate
 transient systemd user service and survives the restart of its calling backend.
 The printed journal command retrieves progress and the final exit code after a
 caller disconnect; a surviving caller receives logs and the exit status. See

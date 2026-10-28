@@ -19,8 +19,8 @@ use studio_runtime_schema::agent_limits::{
     MAX_SUBAGENT_CONCURRENCY, MIN_GLOBAL_CONCURRENCY, MIN_SUBAGENT_CONCURRENCY,
 };
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, MonitorRecord, RecordOrder, RecordPredicate, RuleRecord,
-    RulesRepository, RuntimeStore, StoreError, Table, truthy,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, MonitorRecord, RecordOrder,
+    RecordPredicate, RuleRecord, RulesRepository, RuntimeStore, StoreError, Table, truthy,
 };
 use thiserror::Error;
 
@@ -277,7 +277,7 @@ fn status_snapshot(
 
     let mut active_records = team
         .iter()
-        .filter(|agent| !is_terminal_agent(agent.status.as_str()))
+        .filter(|agent| !is_terminal_agent(&agent.status))
         .map(agent_status_record)
         .collect::<Vec<_>>();
     // The owner predicate is served by `runtime_monitor_agent_status`, so the
@@ -300,7 +300,7 @@ fn status_snapshot(
 
     let finished_agents = team
         .iter()
-        .filter(|agent| is_terminal_agent(agent.status.as_str()))
+        .filter(|agent| is_terminal_agent(&agent.status))
         .map(agent_status_record)
         .collect::<Vec<_>>();
     let mut finished_monitors = team_monitors
@@ -431,7 +431,9 @@ fn status_snapshot(
             .cloned()
             .collect::<Vec<_>>();
         let next_offset = offset + items.len();
-        let next_cursor = (next_offset < total).then(|| encode_cursor(next_offset, &revision));
+        let next_cursor = (next_offset < total)
+            .then(|| encode_cursor(next_offset, &revision))
+            .transpose()?;
         result["finished"] = json!({
             "apiVersion": 2,
             "items": items,
@@ -506,12 +508,14 @@ fn capacity_snapshot(
     root: &AgentRecord,
     paths: &StatusPathSnapshot,
 ) -> Result<Value, StatusError> {
-    let slots = dispatch_active_slots(connection)?;
-    let global_active = slots.len();
-    let team_active = slots
-        .iter()
-        .filter(|slot| slot["rootId"] == root.id.0 && slot["id"] != root.id.0)
-        .count();
+    let (global_active, team_active): (i64, i64) = connection.query_row(
+        &format!(
+            "SELECT count(*), count(*) FILTER (WHERE root_id=?1 AND id<>?1) FROM ({})",
+            studio_runtime_store::RESERVED_TURN_INPUT
+        ),
+        [&root.id.0],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
     let global_limit = std::env::var("CODEX_CANVAS_CONCURRENCY")
         .map_or(Ok(DEFAULT_GLOBAL_CONCURRENCY), |value| {
             value
@@ -546,11 +550,10 @@ fn capacity_snapshot(
         .get("maxAgents")
         .and_then(Value::as_i64)
         .unwrap_or(DEFAULT_MAX_TEAM_AGENTS);
-    let active_statuses = ["running", "starting", "approval"];
     let mut queued = Vec::new();
     for agent in team
         .iter()
-        .filter(|agent| agent.status.as_str() == "queued")
+        .filter(|agent| agent.status == AgentStatus::Queued)
     {
         let id = agent.id.0.as_str();
         let wait = crate::sync_views::agent_start_wait(&agent.value())
@@ -565,10 +568,12 @@ fn capacity_snapshot(
         }
         queued.push(row);
     }
+    use AgentStatus::{Approval, Running, Starting};
     let team_active_all = team
         .iter()
         .filter(|agent| {
-            truthy(agent.extra.get("inFlight")) || active_statuses.contains(&agent.status.as_str())
+            truthy(agent.extra.get("inFlight"))
+                || matches!(agent.status, Running | Starting | Approval)
         })
         .count();
     Ok(json!({
@@ -582,20 +587,6 @@ fn capacity_snapshot(
         "queued": queued,
         "configure": {"userOnly":true,"minimum":MIN_SUBAGENT_CONCURRENCY,"maximum":MAX_SUBAGENT_CONCURRENCY},
     }))
-}
-
-fn dispatch_active_slots(connection: &Connection) -> Result<Vec<Value>, StatusError> {
-    let mut statement = connection.prepare(studio_runtime_store::RESERVED_TURN_INPUT)?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut slots = BTreeMap::new();
-    for (id, root) in rows {
-        slots.insert(id.clone(), json!({"id":id,"rootId":root}));
-    }
-    Ok(slots.into_values().collect())
 }
 
 fn status_path_inputs(
@@ -640,7 +631,7 @@ fn agent_status_record(agent: &AgentRecord) -> Value {
         "kind": "agent",
         "error": clip_value(agent.extra.get("error")),
     });
-    if agent.status.as_str() == "parked" && truthy(agent.extra.get("parkedEvent")) {
+    if agent.status == AgentStatus::Parked && truthy(agent.extra.get("parkedEvent")) {
         record["waitsForEvent"] = agent
             .extra
             .get("parkedEvent")
@@ -730,8 +721,9 @@ fn valid_status_key(record: &Value) -> Option<String> {
     Some(key)
 }
 
-fn is_terminal_agent(status: &str) -> bool {
-    matches!(status, "completed" | "failed" | "interrupted")
+fn is_terminal_agent(status: &AgentStatus) -> bool {
+    use AgentStatus::{Completed, Failed, Interrupted};
+    matches!(status, Completed | Failed | Interrupted)
 }
 
 fn is_active_monitor(monitor: &MonitorRecord) -> bool {
@@ -754,24 +746,30 @@ fn digest(value: &Value) -> Result<String, StatusError> {
     Ok(data_encoding::HEXLOWER.encode(&hash[..12]))
 }
 
-fn encode_cursor(offset: usize, revision: &str) -> String {
-    URL_SAFE.encode(json!({"offset":offset,"revision":revision}).to_string())
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct StatusCursor {
+    offset: usize,
+    revision: String,
+}
+
+fn encode_cursor(offset: usize, revision: &str) -> Result<String, StatusError> {
+    Ok(URL_SAFE.encode(serde_json::to_vec(&StatusCursor {
+        offset,
+        revision: revision.to_owned(),
+    })?))
 }
 
 fn decode_cursor(cursor: &str, revision: &str) -> Result<usize, StatusError> {
     let decoded = URL_SAFE
         .decode(cursor)
         .map_err(|_| StatusError::InvalidCursor)?;
-    let value: Value = serde_json::from_slice(&decoded).map_err(|_| StatusError::InvalidCursor)?;
-    let offset = value
-        .get("offset")
-        .and_then(Value::as_u64)
-        .and_then(|value| usize::try_from(value).ok())
-        .ok_or(StatusError::InvalidCursor)?;
-    if value.get("revision").and_then(Value::as_str) != Some(revision) {
+    let value: StatusCursor =
+        serde_json::from_slice(&decoded).map_err(|_| StatusError::InvalidCursor)?;
+    if value.revision != revision {
         return Err(StatusError::InvalidCursor);
     }
-    Ok(offset)
+    Ok(value.offset)
 }
 
 fn expand_home(path: &str) -> String {

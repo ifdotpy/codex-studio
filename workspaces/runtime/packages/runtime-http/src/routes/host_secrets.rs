@@ -1,6 +1,6 @@
 //! HTTP adaptation for project secrets and the platform-bound vault actions.
 
-use super::extractors::ApiJson;
+use super::extractors::ApiRawJson;
 use super::manifest::{OperationStatus, RouteGroup, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -230,12 +230,6 @@ fn guest(state: &HttpState) -> Result<std::sync::Arc<dyn GuestRpc>, ApiError> {
     })
 }
 
-fn request_string<'a>(body: &'a Value, key: &str) -> Result<&'a str, ApiError> {
-    body.get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| ApiError::validation(vec![Value::String("body".to_owned())]))
-}
-
 fn guest_error(error: ProjectSecretsError) -> ApiError {
     let status = match error.code() {
         Some("invalid_params" | "not_found" | "id_conflict") => StatusCode::BAD_REQUEST,
@@ -272,9 +266,9 @@ async fn guest_call(
 
 async fn list_secrets(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiRawJson(body): ApiRawJson<crate::generated::ProjectSecretsListRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let project_id = request_string(&body, "projectId")?.to_owned();
+    let project_id = body.project_id;
     guest_call(&state, false, move |rpc| {
         project_secrets::list_names(rpc, &project_id)
     })
@@ -283,12 +277,12 @@ async fn list_secrets(
 
 async fn set_secret(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiRawJson(body): ApiRawJson<crate::generated::ProjectSecretSetRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let project_id = request_string(&body, "projectId")?.to_owned();
-    let name = request_string(&body, "name")?.to_owned();
-    let value = request_string(&body, "value")?.to_owned();
-    let request_id = request_string(&body, "requestId")?.to_owned();
+    let project_id = body.project_id;
+    let name = body.name;
+    let value = body.value;
+    let request_id = body.request_id;
     guest_call(&state, true, move |rpc| {
         project_secrets::set_secret(rpc, &project_id, &name, &value, &request_id)
     })
@@ -297,11 +291,11 @@ async fn set_secret(
 
 async fn remove_secret(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiRawJson(body): ApiRawJson<crate::generated::ProjectSecretRemoveRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let project_id = request_string(&body, "projectId")?.to_owned();
-    let name = request_string(&body, "name")?.to_owned();
-    let request_id = request_string(&body, "requestId")?.to_owned();
+    let project_id = body.project_id;
+    let name = body.name;
+    let request_id = body.request_id;
     guest_call(&state, true, move |rpc| {
         project_secrets::remove_secret(rpc, &project_id, &name, &request_id)
     })
@@ -310,10 +304,10 @@ async fn remove_secret(
 
 async fn aws_login(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiRawJson(body): ApiRawJson<crate::generated::VaultLoginRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let profile = request_string(&body, "profile")?.to_owned();
-    let request_id = request_string(&body, "requestId")?.to_owned();
+    let profile = body.profile;
+    let request_id = body.request_id;
     let job_client = vault_job_client(&state)?;
     if let Some(job) = find_job(&job_client, VaultJobKind::Login, &request_id).await? {
         return Ok(Json(job));
@@ -339,10 +333,10 @@ async fn aws_login(
 
 async fn pull(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiRawJson(body): ApiRawJson<crate::generated::VaultPullRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let project_id = request_string(&body, "projectId")?.to_owned();
-    let request_id = request_string(&body, "requestId")?.to_owned();
+    let project_id = body.project_id;
+    let request_id = body.request_id;
     let job_client = vault_job_client(&state)?;
     if let Some(job) = find_job(&job_client, VaultJobKind::Pull, &request_id).await? {
         return Ok(Json(job));
@@ -369,7 +363,7 @@ async fn pull(
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .ok_or_else(ApiError::internal)?;
-    let requested_parent = body.get("to").and_then(Value::as_str);
+    let requested_parent = body.to.as_ref().and_then(Option::as_deref);
     let parent = match requested_parent {
         Some("~") => home.clone(),
         Some(path) if path.starts_with("~/") => home.join(&path[2..]),
@@ -404,17 +398,17 @@ async fn pull(
 
 async fn setup(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiRawJson(body): ApiRawJson<crate::generated::VaultSetupRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let project_id = request_string(&body, "projectId")?.to_owned();
-    let request_id = request_string(&body, "requestId")?.to_owned();
+    let project_id = body.project_id;
+    let request_id = body.request_id;
     let job_client = vault_job_client(&state)?;
     if let Some(job) = find_job(&job_client, VaultJobKind::Setup, &request_id).await? {
         return Ok(Json(job));
     }
-    let requested_prefix = request_string(&body, "prefix")?.to_owned();
-    let profile = request_string(&body, "profile")?.to_owned();
-    let region = request_string(&body, "region")?.to_owned();
+    let requested_prefix = body.prefix;
+    let profile = body.profile;
+    let region = body.region;
     let host_command = state
         .vault_host_command
         .as_ref()
@@ -454,10 +448,10 @@ async fn setup(
 
 async fn setup_facts(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiRawJson(body): ApiRawJson<crate::generated::VaultSetupFactsRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let project_id = request_string(&body, "projectId")?;
-    let requested_prefix = body.get("prefix").and_then(Value::as_str);
+    let project_id = &body.project_id;
+    let requested_prefix = body.prefix.as_ref().and_then(Option::as_deref);
     let vm_state_dir = state.vm_state_dir.clone();
     studio_runtime_services::vault::prepare_setup_facts(
         &vm_state_dir,
@@ -937,10 +931,10 @@ fn desk_reason(stderr: &str, stdout: &str) -> String {
 
 async fn unlock(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiRawJson(body): ApiRawJson<crate::generated::VaultUnlockRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let project_id = request_string(&body, "projectId")?.to_owned();
-    let words = request_string(&body, "words")?.to_owned();
+    let project_id = body.project_id;
+    let words = body.words;
     let view = studio_runtime_services::vault::view(&state.vm_state_dir, &project_id)
         .map_err(vault_error)?
         .filter(|view| {
@@ -2004,7 +1998,10 @@ mod tests {
         );
         let replay = super::pull(
             axum::extract::State(without_command),
-            super::ApiJson(request),
+            super::ApiRawJson(crate::generated::VaultPullRequest::new(
+                "p1".into(),
+                "pull-fixture".into(),
+            )),
         )
         .await
         .expect("completed receipt replays without a host command");

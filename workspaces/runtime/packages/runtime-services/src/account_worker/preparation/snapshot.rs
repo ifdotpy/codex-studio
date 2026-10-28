@@ -830,9 +830,11 @@ pub(super) fn guidance(
         && record["executionMode"] != "vm"
         && let Some(agent_id) = record["id"].as_str()
     {
-        thread_config.extend(crate::browser_environment::thread_environment(
-            state_root, agent_id,
-        ));
+        thread_config.extend(
+            crate::browser_environment::thread_environment(state_root, agent_id)
+                .into_iter()
+                .map(|(key, value)| (key, Value::String(value))),
+        );
     }
     if crate::layr_native::is_native(record) {
         for (name, value) in resources
