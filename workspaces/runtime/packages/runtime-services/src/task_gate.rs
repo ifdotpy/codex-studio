@@ -365,9 +365,20 @@ mod tests {
         }).await.expect("gate fixture writes");
         (store, root)
     }
+    fn request_root(store: &RuntimeStore, label: &str) -> String {
+        static ROOTS: std::sync::LazyLock<
+            std::sync::Mutex<std::collections::BTreeMap<(std::path::PathBuf, String), String>>,
+        > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        ROOTS
+            .lock()
+            .expect("fixture roots")
+            .entry((store.root().to_owned(), label.into()))
+            .or_insert_with(studio_runtime_schema::persistence::RequestIdentity::issue_root)
+            .clone()
+    }
     async fn submit(store: &Arc<RuntimeStore>, request: &str, revision: &str) -> Value {
         let state_dir = store.root().to_owned();
-        let request = request.to_owned();
+        let request = request_root(store, request);
         let revision = revision.to_owned();
         store
             .transaction_with(move |tx| {
@@ -401,13 +412,14 @@ mod tests {
         reason: Option<&str>,
     ) -> Result<Value, WorkWriteError> {
         let reason = reason.map(str::to_owned);
+        let request = request_root(store, "accept");
         store
             .transaction_with(move |tx| {
                 work_write::write_action_as_agent(
                     tx,
                     "lead",
                     "lead",
-                    Some("accept"),
+                    Some(&request),
                     "accept",
                     WorkWrite::Accept(AcceptWork {
                         task_id: "task".into(),
@@ -502,12 +514,14 @@ mod tests {
             "Known fixture failure; reviewed manually"
         );
         assert_eq!(events(&store, "work_ready").await.len(), 1);
-        assert_eq!(
-            accept(&store, Some("Known fixture failure; reviewed manually"))
-                .await
-                .expect("decision events load")["status"],
-            "accepted"
-        );
+        assert!(matches!(
+            accept(&store, Some("Known fixture failure; reviewed manually")).await,
+            Err(WorkWriteError::Event(
+                crate::event_write::EventWriteError::Conflict(
+                    "The accepted archive outcome is pending"
+                )
+            ))
+        ));
         assert_eq!(events(&store, "work_ready").await.len(), 1);
     }
     #[tokio::test]
