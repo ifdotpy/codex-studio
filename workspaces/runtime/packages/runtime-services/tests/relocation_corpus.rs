@@ -43,6 +43,20 @@ impl Fixture {
                 }
             }
         }
+        for case in data["cases"].as_array_mut().expect("cases") {
+            if case["family"] == "location" {
+                let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+                let identity = studio_runtime_schema::persistence::RequestIdentity::new(
+                    "project-location",
+                    &["local-fixture", "ui"],
+                    &root,
+                    &["location"],
+                )
+                .expect("fixture identity");
+                case["outbox"]["body"]["payload"]["resultId"] = json!(identity.id());
+                case["requestRoot"] = json!(root);
+            }
+        }
         Self {
             root,
             template,
@@ -65,10 +79,17 @@ impl Fixture {
         let case = case.clone();
         store.transaction(move |tx|{
             if case["family"]=="location" {
-                if !case["project"].is_null() {ProjectsRepository::put_project(tx,&case["project"])?;}
                 let outbox=&case["outbox"];
+                if !case["project"].is_null() {
+                    let mut project = case["project"].clone();
+                    project["registration"] = json!({"requestId":outbox["id"],"status":studio_runtime_schema::persistence::WorkEffectStatus::Unknown});
+                    ProjectsRepository::put_project(tx,&project)?;
+                    let identity = studio_runtime_schema::persistence::RequestIdentity::new("project-location", &["local-fixture","ui"], text(&case,"requestRoot"), &["location"]).expect("fixture identity");
+                    let admission = studio_runtime_store::request_results::RequestResults::admit(tx,&identity,text(&outbox["body"]["payload"],"signature"),identity.issued_ms()).expect("fixture admission");
+                    let studio_runtime_store::request_results::Admission::Fresh(admitted) = admission else {panic!("fresh fixture")};
+                    ProjectsRepository::put_location_request(tx,"/home-project",text(outbox,"id"),&admitted)?;
+                }
                 tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,?2,?3,?4,?5)",params![text(outbox,"id"),text(outbox,"server"),outbox["body"].to_string(),text(outbox,"state"),outbox.get("result").filter(|v|!v.is_null()).map(Value::to_string)])?;
-                ProjectsRepository::save_receipt(tx,"project-registration:/home-project","registration",&json!({"outcome":"unknown","projectId":"/home-project","requestId":outbox["id"]}))?;
             } else if case["family"] == "tool" {
                 let record=&case["record"];let outbox=&case["outbox"];
                 AgentRepository::put(tx,&AgentRecord::from_value(json!({
@@ -85,6 +106,13 @@ impl Fixture {
         }).await.expect("seed Python records without rebuilding snapshots");
     }
 }
+fn project_domain(mut project: Value) -> Value {
+    if let Some(fields) = project.as_object_mut() {
+        fields.remove("registration");
+        fields.remove("locationIntents");
+    }
+    project
+}
 fn text<'a>(row: &'a Value, key: &str) -> &'a str {
     row[key].as_str().expect("fixture string")
 }
@@ -96,7 +124,7 @@ fn snapshot(store: &RuntimeStore) -> Value {
     let mut result = serde_json::Map::new();
     for table in [
         "runtime_projects",
-        "runtime_operation_receipts",
+        "request_results",
         "runtime_server_outbox",
         "runtime_agent_moves",
         "runtime_agents",
@@ -255,19 +283,23 @@ async fn python_location_and_move_corpus_through_consumers() {
                 assert_eq!(
                     ProjectsRepository::get(&db, "/home-project")
                         .expect("project")
-                        .map(|(_, v)| v)
+                        .map(|(_, v)| project_domain(v))
                         .unwrap_or(Value::Null),
                     case["expected"]["project"],
                     "{} project",
                     case["name"]
                 );
-                assert_eq!(
-                    ProjectsRepository::receipt(&db, "project-registration:/home-project")
-                        .expect("registration")
-                        .expect("exists")
-                        .1,
-                    case["expected"]["registration"]
-                );
+                let result = studio_runtime_services::event_write::replay_request::<
+                    project_locations::LocationResult,
+                >(
+                    &db,
+                    text(&outbox["body"]["payload"], "resultId"),
+                    text(&outbox["body"]["payload"], "signature"),
+                    (now * 1000.0) as i64,
+                )
+                .expect("registration")
+                .expect("result");
+                assert_eq!(json!(result.reply), case["expected"]["registration"]);
                 if !case["project"].is_null() {
                     let payload:String=db.query_row("SELECT payload FROM sync_entities WHERE collection='project' AND id='/home-project'",[],|r|r.get(0)).expect("project sync published");
                     let payload: Value = serde_json::from_str(&payload).expect("payload");
@@ -476,14 +508,13 @@ async fn location_commit_failpoints_reopen_and_apply_once() {
     let outbox = &case["outbox"];
     let key = text(outbox, "id");
     let boundaries = [
-        ("runtime_operation_receipts", "INSERT"),
-        ("runtime_operation_receipts", "UPDATE"),
+        ("request_results", "INSERT"),
         ("runtime_projects", "UPDATE"),
         ("sync_entities", "UPDATE"),
         ("runtime_server_outbox", "UPDATE"),
     ];
     for (index, (table, verb)) in boundaries.into_iter().enumerate() {
-        if !full() && ![0, 4].contains(&index) {
+        if !full() && ![0, 3].contains(&index) {
             continue;
         }
         for timing in ["BEFORE", "AFTER"] {
@@ -851,14 +882,16 @@ async fn location_process_loss_before_and_after_commit_is_recoverable() {
         if committed {
             assert_ne!(committed_state, before);
             assert_eq!(
-                ProjectsRepository::get(&store.test_reader().expect("read"), "/home-project")
-                    .expect("project")
-                    .expect("exists")
-                    .1,
+                project_domain(
+                    ProjectsRepository::get(&store.test_reader().expect("read"), "/home-project")
+                        .expect("project")
+                        .expect("exists")
+                        .1
+                ),
                 case["expected"]["project"]
             );
             assert!(
-                !committed_state["runtime_operation_receipts"]
+                !committed_state["request_results"]
                     .as_array()
                     .expect("receipts")
                     .is_empty()
@@ -884,10 +917,12 @@ async fn location_process_loss_before_and_after_commit_is_recoverable() {
             );
         }
         assert_eq!(
-            ProjectsRepository::get(&store.test_reader().expect("read"), "/home-project")
-                .expect("read project")
-                .expect("exists")
-                .1,
+            project_domain(
+                ProjectsRepository::get(&store.test_reader().expect("read"), "/home-project")
+                    .expect("read project")
+                    .expect("exists")
+                    .1
+            ),
             case["expected"]["project"]
         );
     }

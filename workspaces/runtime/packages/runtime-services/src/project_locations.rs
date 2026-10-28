@@ -90,7 +90,8 @@ mod receipt_tests {
         let key = raw["id"].as_str().expect("operation").to_owned();
         let signature = raw["body"]["payload"]["signature"]
             .as_str()
-            .expect("signature");
+            .expect("signature")
+            .to_owned();
         let identity = RequestIdentity::new(
             "project-location",
             &["local-fixture", "ui"],
@@ -109,7 +110,7 @@ mod receipt_tests {
         studio_runtime_store::receipt_schema::create(&db).expect("request schema");
         let tx = db.transaction().expect("transaction");
         let Admission::Fresh(admitted) =
-            RequestResults::admit(&tx, &identity, signature, now_ms).expect("admit")
+            RequestResults::admit(&tx, &identity, &signature, now_ms).expect("admit")
         else {
             panic!("fresh request")
         };
@@ -167,7 +168,7 @@ mod receipt_tests {
         let result = crate::event_write::replay_request::<LocationResult>(
             &tx,
             admitted.id(),
-            signature,
+            &signature,
             now_ms,
         )
         .expect("replay")
@@ -544,9 +545,14 @@ fn settle_location(
                 )),
         });
     }
+    if let Some(intents) = project
+        .get_mut("locationIntents")
+        .and_then(Value::as_object_mut)
+    {
+        intents.remove(key);
+    }
     ProjectsRepository::put_project(tx, &project)?;
     crate::event_write::settle_request(tx, &request, None, &reply).map_err(request_error)?;
-    ProjectsRepository::remove_location_request(tx, project_id, key)?;
     Ok(())
 }
 
