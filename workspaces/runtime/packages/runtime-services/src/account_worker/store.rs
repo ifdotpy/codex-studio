@@ -589,7 +589,7 @@ pub(super) async fn recover(
                 continue;
             }
             if context.method == Method::TurnStart {
-                uncertain(tx, &context, Some(&request.ticket), false, false)?;
+                uncertain(tx, &context, Some(&request.ticket), false)?;
             }
             if matches!(
                 context.method,
@@ -1439,13 +1439,11 @@ fn settle_outcome(
             }
             true
         }
-        SessionOutcome::Write { ticket, .. } => {
-            uncertain(tx, &context, ticket.as_ref(), false, session_closed)?
-        }
+        SessionOutcome::Write { ticket, .. } => uncertain(tx, &context, ticket.as_ref(), false)?,
         SessionOutcome::Resolved {
             outcome: RequestOutcome::Unknown,
             ticket,
-        } => uncertain(tx, &context, Some(&ticket), false, session_closed)?,
+        } => uncertain(tx, &context, Some(&ticket), false)?,
         SessionOutcome::Resolved {
             ticket,
             outcome: RequestOutcome::Reply { body, .. },
@@ -1545,7 +1543,7 @@ fn settle_outcome(
                             }
                             preparation::accept_turn(tx, &context, &ticket, turn)?;
                         } else {
-                            uncertain(tx, &context, Some(&ticket), false, session_closed)?;
+                            uncertain(tx, &context, Some(&ticket), false)?;
                             return Ok(SettledOutcome::default());
                         }
                     }
@@ -1830,7 +1828,7 @@ fn settle_not_sent(
 ) -> Result<Option<(String, i64)>, WorkerError> {
     let method = context.method;
     if method == Method::TurnInterrupt {
-        uncertain(tx, context, ticket, true, session_closed)?;
+        uncertain(tx, context, ticket, true)?;
         return Ok(None);
     }
     let identity = context.intent.identity();
@@ -1884,18 +1882,12 @@ fn session_missing(error: &Value) -> bool {
         == Some(true)
 }
 
-/// The stored reason of a thread/resume whose input went back to the queue.
-const UNKNOWN_THREAD_RESUME_RETRY: &str =
-    "Provider thread resume outcome is unknown; the input returned to the queue once.";
-
-/// Settle a request whose provider outcome is unknown. Returns true when the
-/// request is retired because its attempt went back to the queue.
+/// Preserve uncertainty on the source attempt until exact provider evidence arrives.
 fn uncertain(
     tx: &studio_runtime_store::Transaction<'_>,
     context: &Pending,
     ticket: Option<&studio_runtime_providers::RequestTicket>,
     not_sent: bool,
-    session_closed: bool,
 ) -> Result<bool, WorkerError> {
     if context.method == Method::TurnInterrupt {
         let ticket = ticket.ok_or_else(|| invalid(&context.operation))?;
