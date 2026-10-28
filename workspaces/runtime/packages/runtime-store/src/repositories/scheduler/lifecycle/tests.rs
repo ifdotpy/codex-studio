@@ -635,9 +635,11 @@ fn rejected_start(error: Value) -> (Value, (String, Option<String>)) {
             [],
         )
         .expect("event writes");
-    with(&mut connection,|tx| {
-        let agent=AgentRepository::get(tx,&AgentId::from(AGENT)).expect("agent reads").expect("agent");
-        crate::ExecutionHistoryRepository::record(tx,&agent).expect("attempt admission");
+    with(&mut connection, |tx| {
+        let agent = AgentRepository::get(tx, &AgentId::from(AGENT))
+            .expect("agent reads")
+            .expect("agent");
+        crate::ExecutionHistoryRepository::record(tx, &agent).expect("attempt admission");
     });
     let settled = with(&mut connection, |tx| {
         SchedulerRepository::settle_start_rejected_provider(
@@ -987,11 +989,14 @@ fn terminal_claude_error_keeps_only_bounded_failure_metadata() {
     let saved = stored(&connection);
     assert_eq!(saved["lastCompletedTurnError"]["claudeFailure"], metadata);
     assert_eq!(saved["error"]["codexErrorInfo"], "unauthorized");
-    let receipt=crate::ExecutionHistoryRepository::receipt(&connection,"attempt",ExecutionReceiptKind::Terminal).expect("receipt reads").expect("terminal receipt");
-    assert_eq!(
-        receipt.input["nativeError"]["claudeFailure"],
-        metadata
-    );
+    let receipt = crate::ExecutionHistoryRepository::receipt(
+        &connection,
+        "attempt",
+        ExecutionReceiptKind::Terminal,
+    )
+    .expect("receipt reads")
+    .expect("terminal receipt");
+    assert_eq!(receipt.input["nativeError"]["claudeFailure"], metadata);
     assert!(!receipt.input.to_string().contains("secret"));
     assert!(!saved.to_string().contains("secret"));
 }

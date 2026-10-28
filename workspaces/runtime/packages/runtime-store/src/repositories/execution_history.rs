@@ -45,6 +45,13 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 };
 pub struct ExecutionHistoryRepository;
 impl ExecutionHistoryRepository {
+    pub fn record_current(tx: &Transaction<'_>, agent: &mut AgentRecord) -> StoreResult<()> {
+        Self::record(tx, agent)?;
+        if let Some(pointer) = Self::current_pointer(tx, agent)? {
+            agent.extra.insert("activeExecution".into(), pointer);
+        }
+        Ok(())
+    }
     /// Immutable lifecycle results live with the attempt whose identity they settle.
     pub fn replay(
         tx: &Transaction<'_>,
@@ -116,7 +123,7 @@ impl ExecutionHistoryRepository {
             return Ok(None);
         };
         let saved = RequestResults::replay(db, key.id(), &signature, (now() * 1000.0) as i64)
-            .map_err(result_error)?;
+            .map_err(StoreError::from)?;
         saved
             .map(|saved| {
                 let envelope: ResultEnvelope<Value> = serde_json::from_str(&saved.result)?;
@@ -146,7 +153,7 @@ impl ExecutionHistoryRepository {
             reply: result,
             references: vec![id.into()],
         };
-        let saved = RequestResults::settle(tx, &admitted, &envelope).map_err(result_error)?;
+        let saved = RequestResults::settle(tx, &admitted, &envelope).map_err(StoreError::from)?;
         if serde_json::from_str::<ResultEnvelope<Value>>(&saved.result)? != envelope {
             return Err(Self::invalid("runtime_execution_attempts", id));
         }
@@ -365,12 +372,13 @@ impl ExecutionHistoryRepository {
         if saved.get("admission").is_none() {
             let root = RequestIdentity::issue_root();
             let identity = RequestIdentity::new("execution-attempt", &[&agent.id.0], &root, &[id])
-                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                .map_err(crate::request_results::RequestResultError::from)
+                .map_err(StoreError::from)?;
             let signature =
                 json!({"agent":agent.id.0,"epoch":agent.epoch,"attempt":id}).to_string();
             let admission =
                 match RequestResults::admit(tx, &identity, &signature, (now() * 1000.0) as i64)
-                    .map_err(result_error)?
+                    .map_err(StoreError::from)?
                 {
                     Admission::Fresh(admitted) => admitted,
                     Admission::Replay(_) => {
@@ -520,9 +528,6 @@ fn now() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |d| d.as_secs_f64())
-}
-fn result_error(error: crate::request_results::RequestResultError) -> StoreError {
-    StoreError::SchemaMismatch(error.to_string())
 }
 
 fn decode(table: &str, id: &str, raw: &str) -> StoreResult<Value> {
