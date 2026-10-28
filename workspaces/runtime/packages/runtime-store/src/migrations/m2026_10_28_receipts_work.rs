@@ -632,6 +632,21 @@ fn move_effect(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
         if work.get("vmAccept").is_some_and(|v| !v.is_object()) {
             return Err(invalid());
         }
+        match (
+            work["vmAccept"].get("publicRequestId"),
+            work["vmAccept"].get("publicAdmission"),
+        ) {
+            (None, None) => {}
+            (Some(id), Some(token))
+                if id.as_str() == Some(row.id.as_str())
+                    && serde_json::from_value::<crate::request_results::AdmittedRequest>(
+                        token.clone(),
+                    )
+                    .ok()
+                    .as_ref()
+                        == Some(&admitted) => {}
+            _ => return Err(invalid()),
+        }
         if work.get("vmAccept").is_none() {
             let public = crate::vm_work_intent::PublicRequest {
                 public_request_id: row.id.clone(),
@@ -764,6 +779,64 @@ mod tests {
                 .unwrap(),
                 1
             );
+        }
+    }
+    #[test]
+    fn receipts_work_vm_reservation_never_overwrites_public_proof() {
+        let mut db = fixture();
+        let prior = contract::admitted_owner_token("prior", "sig", 1000);
+        let original = json!({"id":"t","rootId":"root","vmAccept":{"status":"unknown_unattributed","publicRequestId":"prior","publicAdmission":prior}});
+        db.execute(
+            "INSERT INTO runtime_work VALUES('t',?1)",
+            [original.to_string()],
+        )
+        .unwrap();
+        put(
+            &db,
+            "other",
+            "sig",
+            json!({"vmAcceptReservation":true,"taskId":"t","agentId":"root","status":"reserved"}),
+        );
+        assert!(batch(&mut db, TABLE).is_err());
+        assert_eq!(work(&db, "t"), original);
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM runtime_operation_receipts",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn receipts_work_vm_reservation_preserves_proof_in_both_source_orders() {
+        for id in ["a-public", "z-public"] {
+            let mut db = fixture();
+            db.execute(
+                "INSERT INTO runtime_work VALUES('t','{\"id\":\"t\",\"rootId\":\"root\"}')",
+                [],
+            )
+            .unwrap();
+            put(
+                &db,
+                id,
+                "sig",
+                json!({"vmAcceptReservation":true,"taskId":"t","agentId":"root","status":"reserved"}),
+            );
+            put(
+                &db,
+                "work-write-vm-intent:merge:t",
+                "work-write-vm-intent-v1",
+                json!({"status":"unknown","taskId":"t","requestId":"rpc","owner":"a","revision":"rev","resultId":"r","created":1.0}),
+            );
+            migrate(&mut db);
+            let intent = &work(&db, "t")["vmAccept"];
+            assert_eq!(intent["status"], "unknown");
+            assert_eq!(intent["requestId"], "rpc");
+            assert_eq!(intent["publicRequestId"], id);
+            assert_eq!(intent["publicAdmission"]["id"], id);
         }
     }
     #[test]
