@@ -4,11 +4,87 @@ use crate::receipt_migration_contract::{
     read_source_batch,
 };
 use rusqlite::{OptionalExtension, Transaction, params};
+use serde::Deserialize;
 use serde_json::Value;
 use studio_runtime_schema::persistence::{ContextRepairPhase, MigrationStatus};
 
 pub(super) struct ContextRepairMigration;
 pub(super) const SOURCES: &[&str] = &["runtime_context_terminal_receipts", "runtime_agents"];
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyAgent {
+    #[serde(default)]
+    context_repair: Option<LegacyRepair>,
+}
+#[derive(Deserialize)]
+struct LegacyRepair {
+    id: String,
+    #[serde(rename = "phase")]
+    _phase: ContextRepairPhase,
+    source: LegacySource,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySource {
+    account_key: String,
+}
+
+#[derive(Deserialize)]
+struct LegacySubmitted {
+    call: LegacyCall,
+}
+#[derive(Deserialize)]
+struct LegacyCall {
+    scope: studio_runtime_schema::provider_call_contract::ConnectionScope,
+    operation: String,
+    actor: Option<studio_runtime_schema::provider_call_contract::RequestActor>,
+    transfer: Option<studio_runtime_schema::provider_call_contract::TransferAuthorization>,
+    deleted_actor_session: Option<String>,
+    method: studio_runtime_providers::Method,
+    params: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyTerminal {
+    phase: ContextRepairPhase,
+    operation_id: String,
+    source: TerminalSource,
+    proof: TerminalProof,
+    #[serde(default)]
+    start_attempt_snapshot: Option<AttemptIdentity>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalSource {
+    id: String,
+    account_key: String,
+    thread_id: String,
+    // Opaque legacy epoch is compared by full JSON equality.
+    #[serde(default)]
+    epoch: Value,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalProof {
+    thread_id: String,
+    turn_id: String,
+}
+#[derive(Deserialize)]
+struct AttemptIdentity {
+    id: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OriginalAttempt {
+    id: String,
+    #[serde(default)]
+    epoch: Value,
+    // Opaque legacy repair proof is compared by full JSON equality.
+    #[serde(default)]
+    terminal_repair: studio_runtime_schema::queue_command::Field<Value>,
+}
 
 fn hydrate_agents(
     tx: &Transaction<'_>,
@@ -42,22 +118,16 @@ fn hydrate_agents(
             key: row.id.clone(),
             signature: row.signature.clone(),
         };
-        let mut agent: Value = row.json(source)?;
-        if !agent.is_object() {
+        if !row.result.trim_start().starts_with('{') {
             return Err(invalid());
         }
-        if agent["contextRepair"].is_object() {
-            let mut repair = agent["contextRepair"].clone();
-            let _: ContextRepairPhase =
-                serde_json::from_value(repair["phase"].clone()).map_err(|_| invalid())?;
-            let id = repair["id"]
-                .as_str()
-                .filter(|id| !id.is_empty())
+        let agent: LegacyAgent = row.json(source)?;
+        if let Some(repair) = agent.context_repair {
+            let id = (!repair.id.is_empty())
+                .then_some(repair.id.as_str())
                 .ok_or_else(invalid)?;
             let operation = format!("context-repair:{id}:fork");
-            let account = repair["source"]["accountKey"]
-                .as_str()
-                .ok_or_else(invalid)?;
+            let account = repair.source.account_key.as_str();
             let key = format!("account-worker:{}", transport_key(account, &operation));
             let raw: Option<String> = if source_exists(tx, "runtime_operation_receipts")? {
                 tx.query_row(
@@ -71,14 +141,21 @@ fn hydrate_agents(
             };
             let mut provider_root = None;
             let token = if let Some(raw) = raw {
-                let mut old: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-                if !old["call"].is_object() {
+                if !raw.trim_start().starts_with('{') {
                     return Err(invalid());
                 }
-                old["call"]["root_request_id"] = serde_json::json!("");
-                old["call"]["admitted_request"] = Value::Null;
-                let call: ProviderCallIntent<Method, AdmittedRequest> =
-                    serde_json::from_value(old["call"].clone()).map_err(|_| invalid())?;
+                let old: LegacySubmitted = serde_json::from_str(&raw).map_err(|_| invalid())?;
+                let call: ProviderCallIntent<Method, AdmittedRequest> = ProviderCallIntent {
+                    root_request_id: String::new(),
+                    admitted_request: None,
+                    scope: old.call.scope,
+                    operation: old.call.operation,
+                    actor: old.call.actor,
+                    transfer: old.call.transfer,
+                    deleted_actor_session: old.call.deleted_actor_session,
+                    method: old.call.method,
+                    params: old.call.params,
+                };
                 if call.operation != operation
                     || call.method != Method::ThreadFork
                     || call.scope.account != account
@@ -102,15 +179,11 @@ fn hydrate_agents(
             } else {
                 None
             };
-            repair["rootRequestId"] =
-                serde_json::json!(provider_root.unwrap_or_else(
-                    studio_runtime_schema::persistence::RequestIdentity::issue_root
-                ));
-            repair["admittedRequest"] = serde_json::json!(token);
-            agent["contextRepair"] = repair;
+            let root = provider_root
+                .unwrap_or_else(studio_runtime_schema::persistence::RequestIdentity::issue_root);
             tx.execute(
-                "UPDATE runtime_agents SET record=?1 WHERE rowid=?2",
-                params![agent.to_string(), row.rowid],
+                "UPDATE runtime_agents SET record=json_set(record,'$.contextRepair.rootRequestId',?1,'$.contextRepair.admittedRequest',json(?2)) WHERE rowid=?3",
+                params![root, serde_json::to_string(&token).map_err(|_| invalid())?, row.rowid],
             )?;
         }
         next.cursor = row.rowid;
@@ -180,30 +253,29 @@ impl ReceiptFamilyMigration for ContextRepairMigration {
                 key: id.clone(),
                 signature: operation.clone(),
             };
-            let record: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-            let phase: ContextRepairPhase =
-                serde_json::from_value(record["phase"].clone()).map_err(|_| invalid())?;
-            let account = record["source"]["accountKey"]
-                .as_str()
-                .ok_or_else(invalid)?;
-            let thread = record["source"]["threadId"].as_str().ok_or_else(invalid)?;
-            let turn = record["proof"]["turnId"].as_str().ok_or_else(invalid)?;
-            if record["operationId"] != operation
-                || record["source"]["id"] != agent
-                || record["proof"]["threadId"] != thread
+            if !raw.trim_start().starts_with('{') {
+                return Err(invalid());
+            }
+            let record: LegacyTerminal = serde_json::from_str(&raw).map_err(|_| invalid())?;
+            let account = &record.source.account_key;
+            let thread = &record.source.thread_id;
+            let turn = &record.proof.turn_id;
+            if record.operation_id != operation
+                || record.source.id != agent
+                || record.proof.thread_id != *thread
                 || crate::python_json_compact(&serde_json::json!([account, thread, turn])) != id
             {
                 return Err(invalid());
             }
-            let attempt = record["startAttemptSnapshot"]["id"]
-                .as_str()
-                .filter(|id| !id.is_empty());
+            let snapshot_id = record
+                .start_attempt_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.id.as_deref());
+            let attempt = snapshot_id.filter(|id| !id.is_empty());
             let Some(attempt) = attempt else {
                 // The old callback reader returned None without an attempt identity.
                 // A completed proof therefore cannot settle or authorize any work.
-                if phase == ContextRepairPhase::Completed
-                    && record["startAttemptSnapshot"]["id"].is_null()
-                {
+                if record.phase == ContextRepairPhase::Completed && snapshot_id.is_none() {
                     tx.execute(
                         "DELETE FROM runtime_context_terminal_receipts WHERE rowid=?1",
                         [rowid],
@@ -220,19 +292,25 @@ impl ReceiptFamilyMigration for ContextRepairMigration {
                     |r| r.get(0),
                 )
                 .optional()?;
-            let original: Value =
-                serde_json::from_str(&original.ok_or_else(invalid)?).map_err(|_| invalid())?;
-            if !original.is_object()
-                || original["id"] != attempt
-                || original["epoch"] != record["source"]["epoch"]
-            {
+            let original = original.ok_or_else(invalid)?;
+            if !original.trim_start().starts_with('{') {
                 return Err(invalid());
             }
-            if original
-                .get("terminalRepair")
-                .is_some_and(|proof| proof != &record)
-            {
+            let original: OriginalAttempt =
+                serde_json::from_str(&original).map_err(|_| invalid())?;
+            if original.id != attempt || original.epoch != record.source.epoch {
                 return Err(invalid());
+            }
+            match original.terminal_repair {
+                studio_runtime_schema::queue_command::Field::Missing => {}
+                studio_runtime_schema::queue_command::Field::Null => return Err(invalid()),
+                studio_runtime_schema::queue_command::Field::Value(proof) => {
+                    // The entire legacy proof is opaque and must compare structurally.
+                    let opaque: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+                    if proof != opaque {
+                        return Err(invalid());
+                    }
+                }
             }
             tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.terminalRepair',json(?1)) WHERE id=?2",params![raw,attempt])?;
             tx.execute(
