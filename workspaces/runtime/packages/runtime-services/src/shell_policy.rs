@@ -173,6 +173,7 @@ pub fn maintain_monitor(
         | crate::notification_dispatch::NotificationDispatchError::UnauthorizedSubmission
         | crate::notification_dispatch::NotificationDispatchError::Dependency(_)
         | crate::notification_dispatch::NotificationDispatchError::Move(_)
+        | crate::notification_dispatch::NotificationDispatchError::RequestResult(_)
         | crate::notification_dispatch::NotificationDispatchError::Json(_) => {
             MonitorError::Refused("Could not record the shell policy notice")
         }
@@ -265,6 +266,7 @@ pub fn observe(
         | crate::event_write::EventWriteError::RemoteEventsUnavailable
         | crate::event_write::EventWriteError::WorkerAssignmentUnavailable
         | crate::event_write::EventWriteError::InvalidStoredObject { .. }
+        | crate::event_write::EventWriteError::RequestResult(_)
         | crate::event_write::EventWriteError::Clock => {
             crate::notification_dispatch::NotificationDispatchError::invalid()
         }
