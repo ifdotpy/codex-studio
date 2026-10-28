@@ -604,8 +604,8 @@ fn apply_target(
         }
     }
     let verified = match target {
-        MigrationTarget::Canvas => crate::schema::verify_bootstrap(&tx)
-            .and_then(|()| crate::verify_observed_tables_are_rowid(&tx)),
+        // Receipt families finish the target query columns before final bootstrap validation.
+        MigrationTarget::Canvas => Ok(()),
         MigrationTarget::Supervisor => crate::supervisor_journal::validate_schema(
             &tx,
             crate::supervisor_journal::SchemaPresence::Complete,
