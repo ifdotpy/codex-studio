@@ -262,7 +262,10 @@ impl ExecutionHistoryRepository {
         };
         let saved = RequestResults::settle(tx, &admitted, &envelope).map_err(|error| match error {
             RequestResultError::Conflict { .. } => Self::invalid("runtime_execution_attempts", id),
-            other => StoreError::from(other),
+            other @ (RequestResultError::Expired
+            | RequestResultError::Sql(_)
+            | RequestResultError::Json(_)
+            | RequestResultError::Identity(_)) => StoreError::from(other),
         })?;
         if serde_json::from_str::<ResultEnvelope<Value>>(&saved.result)? != envelope {
             return Err(Self::invalid("runtime_execution_attempts", id));
