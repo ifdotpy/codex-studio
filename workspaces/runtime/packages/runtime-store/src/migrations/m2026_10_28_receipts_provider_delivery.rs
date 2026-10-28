@@ -421,7 +421,9 @@ impl ReceiptFamilyMigration for Family {
         Ok(next)
     }
     fn finish(&self, tx: &Transaction<'_>) -> Result<()> {
-        if !crate::receipt_migration_contract::source_exists(tx,SOURCES[0])?{return Ok(());}
+        if !crate::receipt_migration_contract::source_exists(tx, SOURCES[0])? {
+            return Ok(());
+        }
         if tx.query_row(
             &format!(
                 "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts source WHERE {SELECT})"
