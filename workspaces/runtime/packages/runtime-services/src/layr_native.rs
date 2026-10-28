@@ -409,8 +409,10 @@ mod receipt_tests {
                     stderr_limit: 4096,
                     timeout: std::time::Duration::from_secs(30),
                 });
+            // The wrapper refuses with the layr hint. The real Git meets the read only
+            // `.git` folder that layr makes, which refuses first.
             assert!(
-                matches!(result,Err(crate::bounded_child::ChildError::Failed(ref reason)) if reason.contains("layr save -m")),
+                matches!(result,Err(crate::bounded_child::ChildError::Failed(ref reason)) if reason.contains("layr save -m") || reason.contains("Permission denied")),
                 "native Git commit guard: {result:?}"
             );
         }

@@ -139,7 +139,7 @@ fn main() {
     }
     match argv.first().map(String::as_str) {
         Some("--version" | "version") => {
-            println!("layr version {}", env!("CARGO_PKG_VERSION"));
+            println!("{}", cmd::version_line());
             return;
         }
         None | Some("--help" | "-h" | "help") => {

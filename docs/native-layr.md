@@ -200,7 +200,7 @@ The `cachePathChanges` report lists paths whose role differs between main and an
 On APFS, a line can keep versioned files at a path that is a cache in main.
 Main retains its cache. The imported line reports `not a cache: has versioned files`.
 On btrfs, this case still causes refusal because the inherited cache is a subvolume.
-It needs a future `layr cache materialize` command. Native Linux has structural checks only on this Mac.
+It needs a future command that makes a cache folder plain. Native Linux has structural checks only on this Mac.
 Use `--skip-worktree <path>` to omit an operator-selected temporary worktree. The report records the skipped path.
 The original worktree folder remains unchanged.
 
@@ -371,6 +371,9 @@ Use `layr diff --cached` and `layr status --porcelain` for these reads.
 Other real Git index reads describe the exported head, including `ls-files` without `-z`.
 
 Git writes remain refused with a Layr command hint.
+Layr also keeps the `.git` folder of a line read only (mode 0555), so a real Git write fails with `Permission denied`.
+Layr opens the folder around its own writes. Studio does the same when it installs the commit hook and when an import moves `.git` aside, and it restores the mode.
+The installed binary check reads the version from the first words of `layr --version`. A build id and date may follow in parentheses.
 Read commands with `--output` also fail because that option writes a file.
 Outside native lines, the wrapper passes the original arguments to real Git.
 Explicit Git configuration and repository selectors use the real Git read path.

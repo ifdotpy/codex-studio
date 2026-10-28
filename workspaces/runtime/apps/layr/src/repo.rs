@@ -114,14 +114,15 @@ pub fn skip_path(p: &str) -> bool {
 
 /// The kinds of change to a line, for `Repo::authorize_line`.
 #[derive(Clone, Copy, Debug)]
-pub enum LineOp {
+pub enum LineOp<'a> {
     /// Snapshots of the working content (save, overlay repair): the owner.
     Save,
     /// Commit, reset, add, apply, stash and the other work commands: the owner, and only if the
     /// line is not protected or its rule allows direct changes.
     Direct,
     /// A merge into the line: the owner; for a protected line the rule's update role.
-    Merge { expect: bool },
+    /// `hint` is the ready command the refusal of a protected line names.
+    Merge { expect: bool, hint: Option<&'a str> },
     /// Delete, rename or adopt: the owner, or a maintainer.
     Manage,
     /// Moving the head back: the owner; for a protected line the rule's rewrite role.
@@ -200,7 +201,7 @@ impl<'a> Repo<'a> {
     /// Whether the caller may make this kind of change to a line. Returns the line's protection
     /// rule. Only the owner changes a line; a protected line changes through merges by the role
     /// its rule names; moving a protected line back needs the rule's rewrite role.
-    pub fn authorize_line(&self, ctx: &Ctx, line: &Line, op: LineOp) -> Result<Option<Rule>> {
+    pub fn authorize_line(&self, ctx: &Ctx, line: &Line, op: LineOp<'_>) -> Result<Option<Rule>> {
         let pol = self.policy();
         let rule = pol.rule_for(&line.name);
         if ctx.caller.is_root() {
@@ -228,7 +229,7 @@ impl<'a> Repo<'a> {
                     return Err(not_owner());
                 }
             }
-            LineOp::Merge { expect } => match &rule {
+            LineOp::Merge { expect, hint } => match &rule {
                 None if !owner => return Err(not_owner()),
                 None => {}
                 Some(r) => {
@@ -241,7 +242,8 @@ impl<'a> Repo<'a> {
                         );
                     }
                     if r.expect && !expect {
-                        bail!("the protected line '{name}' takes only a reviewed state: add --expect <state>");
+                        let hint = hint.map(|h| format!(" ({h})")).unwrap_or_default();
+                        bail!("the protected line '{name}' takes only a reviewed state: add --expect <state>{hint}");
                     }
                 }
             },
@@ -735,6 +737,14 @@ impl<'a> Repo<'a> {
         Ok(self.p.db.line_states(&line.id, StateKind::Auto)?.into_iter().find(|s| self.p.has_state(&s.id)))
     }
 
+    /// The state that a save compares the working content with: the newest automatic state made
+    /// over the line's current head, else the head. An automatic state over an earlier head is
+    /// older than the head and no base for "changed since".
+    pub fn save_base(&self, line: &Line) -> Result<String> {
+        let auto = self.last_auto(line)?.filter(|s| s.parents.contains(&line.head));
+        Ok(auto.map(|s| s.id).unwrap_or_else(|| line.head.clone()))
+    }
+
     /// The id of a state equal to the working content: a new automatic state, or the previous
     /// automatic state (or head) when nothing changed. The caller holds the project lock.
     pub fn working_state(&self, ctx: &Ctx, line: &Line, message: &str) -> Result<Option<String>> {
@@ -743,7 +753,7 @@ impl<'a> Repo<'a> {
         }
         Ok(match self.save(ctx, line, message, false, false)? {
             Some(s) => Some(s.id),
-            None => Some(self.last_auto(line)?.map(|s| s.id).unwrap_or(line.head.clone())),
+            None => Some(self.save_base(line)?),
         })
     }
 
@@ -759,7 +769,7 @@ impl<'a> Repo<'a> {
         if !force && self.private_paths(line)?.is_empty() && self.thin_line(line)? {
             // Compare before any copy: an unchanged folder makes no state. One scan of the
             // working folder serves the comparison and the layer over the head.
-            let prev = self.last_auto(line)?.map(|s| s.id).unwrap_or(line.head.clone());
+            let prev = self.save_base(line)?;
             let new = btrfs::scan_with_data(&w, true)?;
             let head = self.state_src(&line.head)?;
             let head_scan = head.scan(true)?;
@@ -796,10 +806,12 @@ impl<'a> Repo<'a> {
         let mut st = self.working_snapshot(ctx, line, vec![line.head.clone()], message)?;
         st.running = running;
         if !force {
-            let prev = self.last_auto(line)?.map(|s| s.id).unwrap_or(line.head.clone());
+            let prev = self.save_base(line)?;
             if self.p.has_state(&prev) {
                 let base = self.state_src(&prev)?;
-                let changed = changes::candidates(&base, &self.state_src(&st.id)?)?.into_iter().any(|c| !skip_path(&c.path));
+                // Confirmed file changes: the raw candidates also list folders and files that only
+                // got new times, such as the working folder after a named state.
+                let changed = changes::file_changes(&base, &self.state_src(&st.id)?)?.into_iter().any(|c| !skip_path(&c.path));
                 if !changed {
                     self.discard_states(std::slice::from_ref(&st));
                     return Ok(None);
@@ -1565,6 +1577,7 @@ impl<'a> Repo<'a> {
         working_before: Option<String>,
         data: serde_json::Value,
     ) -> Result<Record> {
+        crate::gitbridge::check_git_head(self, line)?;
         let mut rec = Record::new(op);
         rec.states = states;
         let working_after = match &working_before {
@@ -1611,9 +1624,14 @@ impl<'a> Repo<'a> {
 
     /// All ancestors of `id` (including itself), breadth first.
     pub fn ancestors(&self, id: &str) -> Result<Vec<String>> {
+        self.ancestors_of(vec![id.to_string()])
+    }
+
+    /// All ancestors of the `seeds` (including them), breadth first, each state read once.
+    fn ancestors_of(&self, seeds: Vec<String>) -> Result<Vec<String>> {
         let mut seen = BTreeSet::new();
         let mut order = Vec::new();
-        let mut q = std::collections::VecDeque::from([id.to_string()]);
+        let mut q = std::collections::VecDeque::from(seeds);
         while let Some(x) = q.pop_front() {
             if !seen.insert(x.clone()) {
                 continue;
@@ -1636,23 +1654,19 @@ impl<'a> Repo<'a> {
     }
 
     /// The best common ancestor: a common ancestor that is not an ancestor of another one.
+    /// One walk finds every state that is a proper ancestor of a common ancestor.
     pub fn merge_base(&self, a: &str, b: &str) -> Result<Option<String>> {
         let aa = self.ancestors(a)?;
         let bs: BTreeSet<String> = self.ancestors(b)?.into_iter().collect();
         let common: Vec<String> = aa.into_iter().filter(|x| bs.contains(x)).collect();
+        let mut parents = Vec::new();
         for c in &common {
-            let mut best = true;
-            for d in &common {
-                if d != c && self.is_ancestor(c, d)? {
-                    best = false;
-                    break;
-                }
-            }
-            if best {
-                return Ok(Some(c.clone()));
+            if let Some(s) = self.p.db.state(c)? {
+                parents.extend(s.parents);
             }
         }
-        Ok(None)
+        let below: BTreeSet<String> = self.ancestors_of(parents)?.into_iter().collect();
+        Ok(common.into_iter().find(|c| !below.contains(c)))
     }
 
     /// Commits reachable from `id` by first parents.

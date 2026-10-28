@@ -410,36 +410,117 @@ fn tree_id(commit: &[u8]) -> Result<&str> {
         .context("Git commit has no tree")
 }
 
-fn import_objects(s: &Path, commit: &[u8], parent: Option<&str>, cat: &mut CatFile) -> Result<GitImport> {
-    let tree_ids = |root: &str| -> Result<BTreeSet<String>> {
-        let listed = git_out(s, &["ls-tree", "-r", "-t", "-d", root])?;
-        let mut ids = BTreeSet::from([root.to_string()]);
-        for line in listed.lines() {
-            let fields: Vec<&str> = line.split_whitespace().take(3).collect();
-            if fields.get(1) == Some(&"tree") {
-                ids.insert(fields.get(2).context("bad Git tree entry")?.to_string());
-            }
-        }
-        Ok(ids)
-    };
-    let previous = if let Some(parent) = parent { tree_ids(tree_id(&cat.object(parent, "commit")?)?)? } else { BTreeSet::new() };
-    let mut objects = BTreeMap::new();
-    for oid in tree_ids(tree_id(commit)?)? {
-        if !previous.contains(&oid) {
-            objects.insert(oid.clone(), STANDARD.encode(cat.object(&oid, "tree")?));
-        }
-    }
-    Ok(GitImport { format: 1, commit: STANDARD.encode(commit), trees: objects })
+/// One Git tree entry: its mode as Git prints it, and its object id.
+#[derive(PartialEq)]
+struct TreeEntry {
+    mode: String,
+    oid: String,
 }
 
-fn commit_info(s: &Path, c: &str) -> Result<(String, String, String, i64)> {
-    let out = git_out(s, &["log", "-1", "--format=%an%x00%ae%x00%at%x00%B", c])?;
-    let mut it = out.splitn(4, '\0');
-    let name = it.next().unwrap_or("").to_string();
-    let email = it.next().unwrap_or("").to_string();
-    let time: i64 = it.next().unwrap_or("0").trim().parse().unwrap_or(0);
-    let msg = it.next().unwrap_or("").trim_end().to_string();
-    Ok((name, email, msg, time * 1000))
+impl TreeEntry {
+    fn is_tree(&self) -> bool {
+        self.mode == "40000"
+    }
+    fn is_link(&self) -> bool {
+        self.mode == "160000"
+    }
+}
+
+fn parse_tree(data: &[u8]) -> Result<BTreeMap<String, TreeEntry>> {
+    let mut out = BTreeMap::new();
+    let mut rest = data;
+    while !rest.is_empty() {
+        let space = rest.iter().position(|b| *b == b' ').context("bad Git tree")?;
+        let nul = rest.iter().position(|b| *b == 0).context("bad Git tree")?;
+        if nul < space || rest.len() < nul + 21 {
+            bail!("bad Git tree");
+        }
+        let mode = String::from_utf8_lossy(&rest[..space]).into_owned();
+        let name = String::from_utf8_lossy(&rest[space + 1..nul]).into_owned();
+        out.insert(name, TreeEntry { mode, oid: hex::encode(&rest[nul + 1..nul + 21]) });
+        rest = &rest[nul + 21..];
+    }
+    Ok(out)
+}
+
+/// What one commit changes against its first parent, read from the Git trees that differ.
+/// The cost follows the changed paths, not the size of the tree.
+#[derive(Default)]
+struct Changes {
+    /// Files, links and submodules to write: path, mode, object id.
+    write: Vec<(String, String, String)>,
+    /// Topmost paths that the commit removes or replaces with another type.
+    removed: BTreeSet<String>,
+    /// The paths of every entry of a changed folder, to check for names that differ in case only.
+    names: Vec<String>,
+    /// The exact bytes of the changed trees (the new root tree first).
+    trees: BTreeMap<String, String>,
+}
+
+fn walk_trees(cat: &mut CatFile, old: Option<&str>, new: &str, prefix: &str, c: &mut Changes) -> Result<()> {
+    let raw = cat.object(new, "tree")?;
+    let now = parse_tree(&raw)?;
+    c.trees.insert(new.to_string(), STANDARD.encode(&raw));
+    let before = match old {
+        Some(o) => parse_tree(&cat.object(o, "tree")?)?,
+        None => BTreeMap::new(),
+    };
+    let at = |name: &str| if prefix.is_empty() { name.to_string() } else { format!("{prefix}/{name}") };
+    for (name, e) in &now {
+        let path = at(name);
+        c.names.push(path.clone());
+        let o = before.get(name);
+        if o == Some(e) {
+            continue;
+        }
+        if e.is_tree() {
+            if o.is_some_and(|o| !o.is_tree()) {
+                c.removed.insert(path.clone());
+            }
+            walk_trees(cat, o.filter(|o| o.is_tree()).map(|o| o.oid.as_str()), &e.oid, &path, c)?;
+            continue;
+        }
+        match o {
+            // A submodule is an empty folder: only its own change shows nothing.
+            Some(o) if o.is_link() && e.is_link() => continue,
+            Some(o) if o.is_tree() || o.is_link() != e.is_link() => {
+                c.removed.insert(path.clone());
+            }
+            _ => {}
+        }
+        c.write.push((path, e.mode.clone(), e.oid.clone()));
+    }
+    for name in before.keys().filter(|n| !now.contains_key(*n)) {
+        c.removed.insert(at(name));
+    }
+    Ok(())
+}
+
+/// The changes of `commit` against `parent` (the whole tree without a parent), and the exact
+/// objects that restore the commit: trees that the first parent does not have at that place.
+fn import_changes(commit: &[u8], parent: Option<&str>, cat: &mut CatFile) -> Result<(GitImport, Changes)> {
+    let new = tree_id(commit)?;
+    let old = match parent {
+        Some(p) => Some(tree_id(&cat.object(p, "commit")?)?.to_string()),
+        None => None,
+    };
+    let mut c = Changes::default();
+    if old.as_deref() != Some(new) {
+        walk_trees(cat, old.as_deref(), new, "", &mut c)?;
+    }
+    let git = GitImport { format: 1, commit: STANDARD.encode(commit), trees: std::mem::take(&mut c.trees) };
+    Ok((git, c))
+}
+
+/// Author name, email, message and time (milliseconds) of a raw Git commit.
+fn commit_info(raw: &[u8]) -> (String, String, String, i64) {
+    let text = String::from_utf8_lossy(raw);
+    let (head, body) = text.split_once("\n\n").unwrap_or((&text, ""));
+    let author = head.lines().find_map(|l| l.strip_prefix("author ")).unwrap_or("");
+    let (name, rest) = author.split_once(" <").unwrap_or((author, ""));
+    let (email, rest) = rest.split_once("> ").unwrap_or((rest.trim_end_matches('>'), ""));
+    let time: i64 = rest.split_whitespace().next().and_then(|t| t.parse().ok()).unwrap_or(0);
+    (name.to_string(), email.to_string(), body.trim_end().to_string(), time * 1000)
 }
 
 /// Write the files of `commit` for `paths` (all when `None`) into `dst`, deleting paths that
@@ -536,30 +617,43 @@ fn materialize(
         if fsutil::git_blob_id(&data) != *oid {
             bail!("Git cache blob {oid} has a hash mismatch");
         }
-        if fsutil::lmeta(dst, path).is_some() {
-            fsutil::remove_entry(dst, path)?;
-        }
-        if mode == "120000" {
-            fsutil::make_parents(dst, path, own)?;
-            let target = String::from_utf8_lossy(&data).into_owned();
-            let p = fsutil::safe_join(dst, path)?;
-            std::os::unix::fs::symlink(target, &p)?;
-            if let Some((u, g)) = own {
-                fsutil::chown_nofollow(&p, u, g)?;
-            }
-        } else {
-            let m = if mode == "100755" { 0o755 } else { 0o644 };
-            let cloned = match &source {
-                Some(source) => clone_matching_blob(source, path, &data, dst, m, own)?,
-                None => false,
-            };
-            if !cloned {
-                fsutil::write_file(dst, path, &data, m, own)?;
-            }
-        }
+        place_blob(dst, mode, path, &data, own, source.as_ref())?;
     }
     writer.join().map_err(|_| anyhow!("writer thread"))??;
     child.wait()?;
+    Ok(())
+}
+
+/// Write one file or link of a commit into `dst`, replacing what is at the path.
+fn place_blob(
+    dst: &Path,
+    mode: &str,
+    path: &str,
+    data: &[u8],
+    own: Option<(u32, u32)>,
+    source: Option<&crate::tree::Tree>,
+) -> Result<()> {
+    if fsutil::lmeta(dst, path).is_some() {
+        fsutil::remove_entry(dst, path)?;
+    }
+    if mode == "120000" {
+        fsutil::make_parents(dst, path, own)?;
+        let target = String::from_utf8_lossy(data).into_owned();
+        let p = fsutil::safe_join(dst, path)?;
+        std::os::unix::fs::symlink(target, &p)?;
+        if let Some((u, g)) = own {
+            fsutil::chown_nofollow(&p, u, g)?;
+        }
+    } else {
+        let m = if mode == "100755" { 0o755 } else { 0o644 };
+        let cloned = match source {
+            Some(source) => clone_matching_blob(source, path, data, dst, m, own)?,
+            None => false,
+        };
+        if !cloned {
+            fsutil::write_file(dst, path, data, m, own)?;
+        }
+    }
     Ok(())
 }
 
@@ -594,6 +688,10 @@ fn clone_matching_blob(
     Ok(true)
 }
 
+/// Commits imported between two progress lines on standard error. A long import holds the store
+/// lock, so the lines show that it still runs.
+const IMPORT_PROGRESS_EVERY: usize = 50;
+
 /// Import the entire reachable DAG, parents first. A retry reuses completed imports.
 pub fn import_commit(
     ctx: &Ctx,
@@ -603,7 +701,25 @@ pub fn import_commit(
     author_uid: u32,
     source: Option<&Path>,
 ) -> Result<(String, bool)> {
-    match import_commit_once(ctx, repo, commit, refname, author_uid, source) {
+    import_commit_with(ctx, repo, commit, refname, author_uid, source, false)
+}
+
+/// `import_commit` for a caller that holds no project lock: the import takes it for one commit
+/// at a time, so other commands of the store wait for one commit, not for the whole import.
+pub fn import_commit_unlocked(ctx: &Ctx, repo: &Repo, commit: &str, refname: &str, author_uid: u32) -> Result<(String, bool)> {
+    import_commit_with(ctx, repo, commit, refname, author_uid, None, true)
+}
+
+fn import_commit_with(
+    ctx: &Ctx,
+    repo: &Repo,
+    commit: &str,
+    refname: &str,
+    author_uid: u32,
+    source: Option<&Path>,
+    take_lock: bool,
+) -> Result<(String, bool)> {
+    match import_commit_once(ctx, repo, commit, refname, author_uid, source, take_lock) {
         Ok(value) => Ok(value),
         Err(error) => {
             if !repair_cache(repo)? {
@@ -611,7 +727,7 @@ pub fn import_commit(
             }
             let remote = refname.split_once('/').context("import ref has no remote")?.0;
             fetch(ctx, repo, remote)?;
-            import_commit_once(ctx, repo, commit, refname, author_uid, source)
+            import_commit_once(ctx, repo, commit, refname, author_uid, source, take_lock)
         }
     }
 }
@@ -623,25 +739,37 @@ fn import_commit_once(
     refname: &str,
     author_uid: u32,
     source: Option<&Path>,
+    take_lock: bool,
 ) -> Result<(String, bool)> {
     let s = init_store(repo)?;
     let revs = git_out(&s, &["rev-list", "--topo-order", "--reverse", "--parents", commit])?;
     let mut states = BTreeMap::new();
     let mut cat = CatFile::new(&s)?;
     let mut fresh = false;
+    let mut imported = 0usize;
     for line in revs.lines() {
         let mut fields = line.split_whitespace();
         let oid = fields.next().context("empty Git revision")?;
         let git_parents: Vec<&str> = fields.collect();
-        let mut mapped = None;
-        for st in repo.p.db.state_of_commit(oid)? {
-            if repo.p.has_state(&st) {
-                // Earlier versions imported only the tip; reimport those states as a full DAG.
-                if repo.state(&st)?.kind != StateKind::Import || repo.p.db.git_import(&st)?.is_some() {
-                    mapped = Some(st);
-                    break;
+        let mapped_state = || -> Result<Option<String>> {
+            for st in repo.p.db.state_of_commit(oid)? {
+                if repo.p.has_state(&st) {
+                    // Earlier versions imported only the tip; reimport those states as a full DAG.
+                    if repo.state(&st)?.kind != StateKind::Import || repo.p.db.git_import(&st)?.is_some() {
+                        return Ok(Some(st));
+                    }
                 }
             }
+            Ok(None)
+        };
+        let mut mapped = mapped_state()?;
+        // Hold the lock from the second look to the record: a concurrent import of the same
+        // commit then finds the state instead of making another one.
+        let mut _lock = None;
+        if mapped.is_none() && take_lock {
+            let _t = crate::trace::span("import lock");
+            _lock = Some(repo.p.lock()?);
+            mapped = mapped_state()?;
         }
         let state = match mapped {
             Some(st) => st,
@@ -652,9 +780,13 @@ fn import_commit_once(
                     .collect::<Result<_>>()?;
                 let prev = parents.first().zip(git_parents.first()).map(|(st, c)| (st.clone(), c.to_string()));
                 let raw = cat.object(oid, "commit")?;
-                let objects = import_objects(&s, &raw, git_parents.first().copied(), &mut cat)?;
-                let st = import_one(ctx, repo, &s, oid, refname, parents, prev, objects, source)?;
+                let (objects, changes) = import_changes(&raw, git_parents.first().copied(), &mut cat)?;
+                let st = import_one(ctx, repo, &s, &mut cat, oid, &raw, refname, parents, prev, objects, changes, source)?;
                 fresh |= oid == commit;
+                imported += 1;
+                if imported % IMPORT_PROGRESS_EVERY == 0 {
+                    eprintln!("layr: imported {imported} commits of {refname}");
+                }
                 st
             }
         };
@@ -668,74 +800,48 @@ fn import_one(
     ctx: &Ctx,
     repo: &Repo,
     s: &Path,
+    cat: &mut CatFile,
     commit: &str,
+    raw: &[u8],
     refname: &str,
     parents: Vec<String>,
     prev: Option<(String, String)>,
     objects: GitImport,
+    changes: Changes,
     source: Option<&Path>,
 ) -> Result<String> {
-    // On a store volume that ignores case, README and Readme would become one file.
+    // On a store volume that ignores case, README and Readme would become one file. The earlier
+    // state passed this check: only the entries of changed folders can collide.
     #[cfg(target_os = "macos")]
     if !crate::sys::case_sensitive(&repo.p.work_dir()) {
-        use std::ffi::{OsStr, OsString};
-        use std::os::unix::ffi::{OsStrExt, OsStringExt};
-        // Names stay bytes up to the check: a folder name that is not UTF-8 must still list.
-        let lines = |args: &[OsString]| -> Result<Vec<Vec<u8>>> {
-            let out = base_cmd(&s).args(args).output()?;
-            if !out.status.success() {
-                bail!("git {} failed: {}", args[0].to_string_lossy(), String::from_utf8_lossy(&out.stderr));
-            }
-            Ok(out.stdout.split(|b| *b == 0).filter(|x| !x.is_empty()).map(<[u8]>::to_vec).collect())
-        };
-        let args = |a: &[&str]| -> Vec<OsString> { a.iter().map(OsString::from).collect() };
-        let names = match &prev {
-            // The earlier state passed this check: only an added path can collide, with an
-            // entry of its own folder or of a folder above it.
-            Some((_, pc)) => {
-                let added = lines(&args(&["diff", "--name-only", "-z", "--no-renames", "--diff-filter=A", pc, commit]))?;
-                let mut dirs: std::collections::BTreeSet<Vec<u8>> = Default::default();
-                for a in &added {
-                    for (i, _) in a.iter().enumerate().filter(|(_, b)| **b == b'/') {
-                        dirs.insert(a[..=i].to_vec());
-                    }
-                }
-                let mut names =
-                    if added.is_empty() { Vec::new() } else { lines(&args(&["ls-tree", "-z", "--name-only", commit]))? };
-                let dirs: Vec<&Vec<u8>> = dirs.iter().collect();
-                for chunk in dirs.chunks(500) {
-                    let mut a = args(&["ls-tree", "-z", "--name-only", commit, "--"]);
-                    a.extend(chunk.iter().map(|d| OsStr::from_bytes(d).to_os_string()));
-                    names.extend(lines(&a)?);
-                }
-                names
-            }
-            None => lines(&args(&["ls-tree", "-r", "-t", "-z", "--name-only", commit]))?,
-        };
-        let names: Vec<String> = names.into_iter().map(|n| OsString::from_vec(n).to_string_lossy().into_owned()).collect();
-        fsutil::refuse_case_collisions(&repo.p.work_dir(), names.iter().map(|n| n.as_str()))?;
+        fsutil::refuse_case_collisions(&repo.p.work_dir(), changes.names.iter().map(|n| n.as_str()))?;
     }
     let work = repo.p.work_dir().join(ids::new_id());
     let res = (|| -> Result<StateRec> {
-        match &prev {
-            Some((pst, pc)) => {
-                repo.snapshot_state(pst, &work, false)?;
-                let out = base_cmd(&s).args(["diff", "--name-only", "-z", "--no-renames", pc, commit]).output()?;
-                let paths: Vec<String> = out
-                    .stdout
-                    .split(|b| *b == 0)
-                    .filter(|x| !x.is_empty())
-                    .map(|x| String::from_utf8_lossy(x).into_owned())
-                    .collect();
-                materialize(&s, commit, &work, Some(&paths), None, source)?;
-            }
+        let (name, email, msg, time) = commit_info(raw);
+        // A state with a base and few changes is a thin layer: its cost follows the changes.
+        let layer = match &prev {
+            Some((pst, _)) => thin_import(repo, cat, &changes, &work, pst, source)?,
+            None => None,
+        };
+        let mut st = match layer {
+            Some(id) => repo.describe_state(ctx, id, StateKind::Import, parents, &msg, None)?,
             None => {
-                crate::storage::create_subvolume(&work)?;
-                materialize(&s, commit, &work, None, None, source)?;
+                match &prev {
+                    Some((pst, _)) => {
+                        repo.snapshot_state(pst, &work, false)?;
+                        let paths: Vec<String> =
+                            changes.write.iter().map(|w| w.0.clone()).chain(changes.removed.iter().cloned()).collect();
+                        materialize(s, commit, &work, Some(&paths), None, source)?;
+                    }
+                    None => {
+                        crate::storage::create_subvolume(&work)?;
+                        materialize(s, commit, &work, None, None, source)?;
+                    }
+                }
+                repo.new_state(ctx, &work, StateKind::Import, parents, &msg, None)?
             }
-        }
-        let (name, email, msg, time) = commit_info(&s, commit)?;
-        let mut st = repo.new_state(ctx, &work, StateKind::Import, parents, &msg, None)?;
+        };
         st.author = crate::model::Author { name, email, uid: 0, session: None };
         st.time = time.max(1);
         Ok(st)
@@ -748,6 +854,45 @@ fn import_one(
     repo.commit_record(ctx, rec)?;
     // Indexes are built lazily for line heads, not for every historical commit.
     Ok(st.id)
+}
+
+/// A thin layer of the changes over the state `base` of the first parent, written from the
+/// changed files only. `None` when the chain of `base` is long enough for a complete tree
+/// (`thin.chain`), so reads stay short, and for a project that keeps complete trees.
+#[cfg(target_os = "macos")]
+fn thin_import(
+    repo: &Repo,
+    cat: &mut CatFile,
+    changes: &Changes,
+    work: &Path,
+    base: &str,
+    source: Option<&Path>,
+) -> Result<Option<String>> {
+    let max = repo.p.config_u64("thin.chain", crate::thin::MAX_CHAIN) as usize;
+    let len = crate::thin::chain_len(&repo.p, base);
+    if repo.p.is_overlay() || len == 0 || len >= max {
+        return Ok(None);
+    }
+    std::fs::create_dir(work)?;
+    std::fs::set_permissions(work, std::fs::Permissions::from_mode(0o755))?;
+    let source = source.map(crate::tree::Tree::open).transpose()?;
+    for (path, mode, oid) in &changes.write {
+        if mode == "160000" {
+            fsutil::make_parents(work, &format!("{path}/x"), None)?;
+            continue;
+        }
+        let data = cat.object(oid, "blob")?;
+        place_blob(work, mode, path, &data, None, source.as_ref())?;
+    }
+    let d = crate::thin::Diff { write: changes.write.iter().map(|w| w.0.clone()).collect(), removed: changes.removed.clone() };
+    let id = ids::new_id();
+    crate::thin::write_layer(work, &repo.p.delta_path(&id), &d, base, false, None)?;
+    Ok(Some(id))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn thin_import(_: &Repo, _: &mut CatFile, _: &Changes, _: &Path, _: &str, _: Option<&Path>) -> Result<Option<String>> {
+    Ok(None)
 }
 
 /// Removes the given paths from an index before they are added again. A copied index keeps the
@@ -1157,8 +1302,10 @@ fn commit_of(repo: &Repo, state: &str) -> Result<Option<String>> {
 }
 
 /// The commit that a record names for a state (import, push, git-sync), if it is in the store.
+/// A squash commit is never one: it has the parent of an earlier export, not the history.
 fn recorded_commit(repo: &Repo, state: &str) -> Result<Option<String>> {
-    if let Some(c) = repo.p.db.git_commit_of(state)? {
+    let squash = repo.p.db.squash_commits_of(state)?;
+    for c in repo.p.db.git_commits_of(state)?.into_iter().filter(|c| !squash.contains(c)) {
         if git_out(&store(repo), &["cat-file", "-e", &format!("{c}^{{commit}}")]).is_ok() {
             check_commit(repo, &c)?;
             return Ok(Some(c));
@@ -1604,6 +1751,8 @@ pub fn make_git_folder(repo: &Repo, line: &Line, state: &str, w: &Path) -> Resul
     for p in paths {
         fsutil::chown_nofollow(&g.join(p), u, gid)?;
     }
+    // Read only for git: a git write needs lock files and new objects; layr writes through descriptors.
+    fsutil::git_writable(w, false);
     Ok(())
 }
 
@@ -1628,17 +1777,26 @@ pub fn refresh_git_folder(repo: &Repo, line: &Line) -> Result<()> {
     // A HEAD that is not a regular file (for example a link) is replaced.
     let cur = fsutil::read_at(&dir, "HEAD").map(|c| String::from_utf8_lossy(&c).trim().to_string()).unwrap_or_default();
     let c = line_commit(repo, &line.head)?;
+    let w = repo.working(line);
     if cur == c {
+        fsutil::git_writable(&w, false);
         return Ok(());
     }
+    fsutil::git_writable(&w, true);
+    let r = write_git_folder(repo, line, &dir, &c);
+    fsutil::git_writable(&w, false);
+    r
+}
+
+fn write_git_folder(repo: &Repo, line: &Line, dir: &std::fs::File, c: &str) -> Result<()> {
     let own = Some(repo.owner_ids(line));
     let head = format!("{c}\n");
-    fsutil::replace_at(&dir, "HEAD", &mut |f| Ok((&*f).write_all(head.as_bytes())?), own)?;
+    fsutil::replace_at(dir, "HEAD", &mut |f| Ok((&*f).write_all(head.as_bytes())?), own)?;
     // The index of the head state: its stat data matches files copied from that state.
     let idx = index_path(repo, &line.head);
     if idx.exists() {
         fsutil::replace_at(
-            &dir,
+            dir,
             "index",
             &mut |f| {
                 let src = std::fs::File::open(&idx)?;
@@ -1650,7 +1808,43 @@ pub fn refresh_git_folder(repo: &Repo, line: &Line) -> Result<()> {
             own,
         )?;
     } else {
-        fsutil::unlink_at(&dir, "index");
+        fsutil::unlink_at(dir, "index");
+    }
+    Ok(())
+}
+
+/// Refuse a move of a line's head while the `.git` folder of the line shows another commit than
+/// `refresh_git_folder` wrote: a git commit, merge or reset made in the line. The next export
+/// would make its commit a child of layr's last export and drop git's commit from HEAD. Nothing
+/// moves on refusal. A `.git` folder that the line owner made is left alone.
+pub fn check_git_head(repo: &Repo, line: &Line) -> Result<()> {
+    if !has_store(repo) {
+        return Ok(());
+    }
+    let w = repo.working(line);
+    let dir = match fsutil::open_dir_nofollow(&w.join(".git")) {
+        Ok(d) => d,
+        Err(_) => return Ok(()),
+    };
+    if !fsutil::is_layer(&w, ".git", &fsutil::meta_of(&dir.metadata()?)) {
+        return Ok(());
+    }
+    // A HEAD that is missing or not a regular file is replaced by refresh_git_folder, as before.
+    let Some(cur) = fsutil::read_at(&dir, "HEAD") else {
+        return Ok(());
+    };
+    let cur = String::from_utf8_lossy(&cur).trim().to_string();
+    // Without a commit for the head, refresh_git_folder keeps HEAD and only warns: no refusal.
+    let Ok(expected) = line_commit(repo, &line.head) else {
+        return Ok(());
+    };
+    if cur != expected {
+        bail!(
+            "A git commit, merge, reset or checkout ran in this line ({cur}). layr did not touch the files.\n\
+             To keep the files as they are and continue, run:\n  printf '%s\\n' {expected} > .git/HEAD\n\
+             and then:\n  layr save -a -m \"<message>\"\n\
+             Use layr merge, layr git fetch and layr save instead of git."
+        );
     }
     Ok(())
 }

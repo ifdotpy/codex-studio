@@ -512,12 +512,9 @@ pub(super) fn import_worktree_line(
         .map(|saved| super::private_tree::Directory::open(saved.path()))
         .transpose()?;
     with_git_aside(&destination, saved_directory.as_ref(), || {
-        let overlays: Vec<Value> = serde_json::from_str(&run(
-            state_dir,
-            &cwd,
-            &["overlay", "list", "--json"],
-        )?)
-        .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
+        let overlays: Vec<Value> =
+            serde_json::from_str(&run(state_dir, &cwd, &["overlay", "list", "--json"])?)
+                .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
         let mut cache_roots: BTreeSet<PathBuf> = overlays
             .iter()
             .filter(|overlay| overlay["state"] == "cache")
@@ -557,18 +554,32 @@ pub(super) fn import_worktree_line(
 
 /// Runs `work` with the line's `.git` moved into `saved` and puts it back
 /// afterwards, also when `work` fails: `saved` is a temporary folder that is
-/// deleted on drop.
+/// deleted on drop. Layr keeps a `.git` folder that it made read only (0555), and a
+/// folder cannot move to another parent without write access, so the folder is opened
+/// for the move and gets its old mode back.
 fn with_git_aside<T>(
     destination: &super::private_tree::Directory,
     saved: Option<&super::private_tree::Directory>,
     work: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
+    let mut sealed = None;
     if let Some(saved) = saved {
+        let git = destination.child(Path::new(".git"), false)?;
+        let mode = git.mode()?;
+        if mode & 0o200 == 0 {
+            git.set_mode(mode | 0o200)?;
+            sealed = Some(mode);
+        }
         destination.rename(Path::new(".git"), saved, Path::new("git"))?;
     }
     let result = work();
     if let Some(saved) = saved {
         saved.rename(Path::new("git"), destination, Path::new(".git"))?;
+        if let Some(mode) = sealed {
+            destination
+                .child(Path::new(".git"), false)?
+                .set_mode(mode)?;
+        }
     }
     result
 }
@@ -599,6 +610,30 @@ mod tests {
             fs::read_to_string(line.join(".git/HEAD")).expect("git folder is back"),
             "ref: refs/heads/main\n"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sealed_line_git_folder_moves_aside_and_is_sealed_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().expect("fixture");
+        let line = fixture.path().join("line");
+        fs::create_dir_all(line.join(".git")).expect("git folder");
+        fs::write(line.join(".git/HEAD"), "ref: refs/heads/main\n").expect("head");
+        fs::set_permissions(line.join(".git"), fs::Permissions::from_mode(0o555)).expect("seal");
+        let saved = tempfile::tempdir_in(fixture.path()).expect("saved");
+        let destination = super::super::private_tree::Directory::open(&line).expect("line");
+        let aside = super::super::private_tree::Directory::open(saved.path()).expect("aside");
+        with_git_aside(&destination, Some(&aside), || {
+            assert!(!line.join(".git").exists());
+            Ok(())
+        })
+        .expect("a sealed folder moves");
+        let mode = fs::metadata(line.join(".git"))
+            .expect("git folder")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o555);
     }
 
     #[test]

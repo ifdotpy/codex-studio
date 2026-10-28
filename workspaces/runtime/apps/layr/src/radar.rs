@@ -63,10 +63,23 @@ impl Repo<'_> {
         Ok(hidden)
     }
 
+    /// The tree of our working folder to compare. APFS compares the live folder, as status does:
+    /// a copy would clone every file, cache folders included.
+    fn radar_tree(&self, line: &Line) -> Result<(Option<crate::repo::Temp>, std::path::PathBuf)> {
+        #[cfg(target_os = "macos")]
+        return Ok((None, self.working(line)));
+        #[cfg(not(target_os = "macos"))]
+        {
+            let t = self.scan(line)?;
+            let path = t.path.clone();
+            Ok((Some(t), path))
+        }
+    }
+
     pub fn overlaps(&self, ctx: &Ctx, line: &Line) -> Result<Vec<Overlap>> {
         self.can_read(ctx)?;
-        // Scanning the working folder copies its tree; do it only when another line needs it.
-        let mut ours = None;
+        // Taking the working folder tree is costly; do it only when another line needs it.
+        let mut ours: Option<(Option<crate::repo::Temp>, std::path::PathBuf)> = None;
         let ignored = crate::ignore_rules::Rules::new(&self.working(line));
         let our_hidden = self.radar_hidden(ctx, line)?;
         let our_private = self.private_paths(line)?;
@@ -85,11 +98,11 @@ impl Repo<'_> {
                 Err(_) => continue,
             };
             if ours.is_none() {
-                ours = Some(self.scan(line)?);
+                ours = Some(self.radar_tree(line)?);
             }
-            let ours = ours.as_ref().expect("scanned above");
+            let ours = &ours.as_ref().expect("scanned above").1;
             if !ours_by_base.contains_key(&base) {
-                ours_by_base.insert(base.clone(), changed_paths(&root, &ours.path, &our_private, &ignored)?);
+                ours_by_base.insert(base.clone(), changed_paths(&root, ours, &our_private, &ignored)?);
             }
             let our_paths = &ours_by_base[&base];
             let hidden = self.radar_hidden(ctx, &other)?;
@@ -108,7 +121,7 @@ impl Repo<'_> {
                     });
                 }
             }
-            overlaps.extend(self.overlay_overlaps(ctx, line, &other, &ours.path, &our_hidden, &hidden)?);
+            overlaps.extend(self.overlay_overlaps(ctx, line, &other, ours, &our_hidden, &hidden)?);
         }
         overlaps.sort_by(|a, b| (&a.path, &a.line).cmp(&(&b.path, &b.line)));
         overlaps.dedup_by(|a, b| a.path == b.path && a.line == b.line);
