@@ -3541,21 +3541,21 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         .collect();
     assert_eq!(sdk_inputs.len(), 2);
     assert_eq!(sdk_inputs[0]["shouldQuery"], false);
-    assert!(sdk_inputs[0].get("origin").is_none());
-    assert!(sdk_inputs[0].get("isSynthetic").is_none());
-    assert!(sdk_inputs[0].get("text_not_typed").is_none());
+    assert_eq!(sdk_inputs[0]["origin"], json!({"kind":"task-notification"}));
+    assert_eq!(sdk_inputs[0]["isSynthetic"], true);
+    assert_eq!(sdk_inputs[0]["text_not_typed"], true);
+    assert!(sdk_inputs[1].get("shouldQuery").is_none());
+    assert!(sdk_inputs[1].get("origin").is_none());
+    assert!(sdk_inputs[1].get("isSynthetic").is_none());
+    assert!(sdk_inputs[1].get("text_not_typed").is_none());
     assert_eq!(
-        sdk_inputs[0]["message"]["content"],
+        sdk_inputs[1]["message"]["content"],
         json!([{"type":"text","text":"split-stream"}])
     );
-    assert!(sdk_inputs[1].get("shouldQuery").is_none());
-    assert_eq!(sdk_inputs[1]["origin"], json!({"kind":"task-notification"}));
-    assert_eq!(sdk_inputs[1]["isSynthetic"], true);
-    assert_eq!(sdk_inputs[1]["text_not_typed"], true);
     assert_eq!(sdk_inputs[1]["uuid"], expected[0]["id"]);
     assert_ne!(sdk_inputs[0]["uuid"], sdk_inputs[1]["uuid"]);
     assert!(
-        sdk_inputs[1]["message"]["content"][0]["text"]
+        sdk_inputs[0]["message"]["content"][0]["text"]
             .as_str()
             .unwrap()
             .trim_start()
