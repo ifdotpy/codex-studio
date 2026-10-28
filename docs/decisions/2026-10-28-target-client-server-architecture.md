@@ -167,6 +167,7 @@ enum Grant { Full, Observe }                // Observe: read commands only
 | Pairing, grants, revoke, settings           | Owner only                                                                            |
 | Federation                                  | Federated, only in rooms that the peer approved                                       |
 
+- A newly paired device gets `Full` (owner decision, 2026-10-28). `Observe` is a choice at pairing.
 - The grant lives in the shared trust list. A server reads the grant from its own copy,
   never from the request.
 - The descendant check exists twice today (`managed_host_tools.rs`, `services.rs`). It
@@ -463,7 +464,6 @@ BEGIN SELECT RAISE(ABORT, 'invalid delivery state'); END;
   about 4 GB. Measure `dbstat` on an APFS clone before any analytics change.
 - **Ownership:** Sasha handed the typed storage work to Claude. Most other parts also
   change backend code that he owns (#37). Agree each part with him.
-- **Phone grant:** should a newly paired phone get `Full` (as today) or `Observe`?
 - **Agent shells:** should agents lose the owner token on loopback? Agents with full
   access can also change files and the database directly, so the gain is small.
 - **Codex turn start:** does Codex ignore a repeated `turn/start` with the same
