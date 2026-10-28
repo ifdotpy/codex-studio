@@ -158,6 +158,7 @@
           "$ref": "#/$defs/LocationRequest"
         },
         "signature": {
+          "description": "Optional immutable signature retained in completed transport evidence; current writers derive it from the captured request.",
           "maxLength": 262144,
           "title": "Signature",
           "type": "string"
