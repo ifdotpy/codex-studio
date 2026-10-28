@@ -1,8 +1,7 @@
-import { serverLocalStorage } from "../servers/storage";
 import type { JsonInput, JsonInputOf, Json } from "../types";
 import type { ApiError, GetResult } from "../api";
 import { ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS } from "../generated/sharedValues";
-import { storedLimitData } from "./providerLimits";
+import { nativeUsage, type UsagePersistence } from "./usageRequest";
 
 export type JsonObject = Json;
 
@@ -32,44 +31,6 @@ export function jsonObject(
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value
     : null;
-}
-
-// Local storage is untrusted; streamed/API responses already carry the contract.
-function isStoredAccountLimitsSnapshot(value: JsonInput): boolean {
-  const limits = jsonObject(value);
-  const readError = jsonObject(limits?.readError);
-  if (
-    !limits ||
-    typeof limits.accountKey !== "string" ||
-    (limits.at !== undefined &&
-      limits.at !== null &&
-      (typeof limits.at !== "number" || !Number.isFinite(limits.at))) ||
-    (limits.error !== undefined &&
-      limits.error !== null &&
-      typeof limits.error !== "string") ||
-    (limits.readError !== undefined &&
-      (!readError ||
-        typeof readError.message !== "string" ||
-        typeof readError.status !== "number" ||
-        !Number.isFinite(readError.status) ||
-        (readError.location !== undefined &&
-          (!Array.isArray(readError.location) ||
-            !readError.location.every((part) => typeof part === "string"))))) ||
-    (limits.readAt !== undefined &&
-      limits.readAt !== null &&
-      (typeof limits.readAt !== "number" || !Number.isFinite(limits.readAt))) ||
-    (limits.checkedAt !== undefined &&
-      limits.checkedAt !== null &&
-      (typeof limits.checkedAt !== "number" ||
-        !Number.isFinite(limits.checkedAt))) ||
-    (limits.loading !== undefined && typeof limits.loading !== "boolean") ||
-    (limits.stale !== undefined && typeof limits.stale !== "boolean") ||
-    (limits.data !== undefined &&
-      limits.data !== null &&
-      !storedLimitData(limits.data))
-  )
-    return false;
-  return true;
 }
 
 export function accountLimits(
@@ -110,32 +71,41 @@ export function limitsSnapshotIsFresh(
 }
 
 // Each server owns its in-memory snapshots, listeners, and durable namespace.
+// Memory is the synchronous read model. Accepted writes go to the native core in order.
 export function createAccountLimitsCache(
-  storage: Pick<Storage, "getItem" | "setItem">,
+  usage: UsagePersistence = nativeUsage,
 ) {
   let cacheScope: string | undefined;
   let cache: Record<string, AccountLimitsSnapshot> = {};
   const cacheListeners = new Set<() => void>();
+  let writes: Promise<unknown> = Promise.resolve();
+  function notifyListeners() {
+    for (const listener of cacheListeners) listener();
+  }
   function configureLimitsCache(scope: string) {
     if (scope === cacheScope) return;
     cacheScope = scope;
     cache = {};
-    try {
-      const stored: Record<string, JsonInput> = JSON.parse(
-        storage.getItem(`codex-limits:${scope}`) || "{}",
-      );
-      for (const [key, value] of Object.entries(stored)) {
-        // This cache is written by cacheAccountLimits. Its existing guard checks
-        // the envelope/data, not every saved field. Eligibility retains its
-        // serialized contract and use-time identity/freshness checks.
-        const snapshot = isStoredAccountLimitsSnapshot(value)
-          ? accountLimits(value as AccountLimitsSnapshot, key)
-          : null;
-        if (snapshot) cache[key] = snapshot;
-      }
-    } catch {
-      /* Storage can be unavailable. */
-    }
+    const request = usage();
+    if (!request) return;
+    request<Record<string, JsonInput>>("usage.limits.list", { scope }).then(
+      (stored) => {
+        if (scope !== cacheScope) return;
+        let changed = false;
+        for (const [key, value] of Object.entries(stored)) {
+          // The core returns only what cacheAccountLimits wrote for this scope.
+          const snapshot = accountLimits(value as AccountLimitsSnapshot, key);
+          if (snapshot && shouldReplaceLimitsSnapshot(cache[key], snapshot)) {
+            cache[key] = snapshot;
+            changed = true;
+          }
+        }
+        if (changed) notifyListeners();
+      },
+      () => {
+        /* Keep live values when the native core is unavailable. */
+      },
+    );
   }
   function cachedAccountLimits(key: string, accountId?: string | null) {
     return accountLimits(cache[key], key, accountId);
@@ -152,12 +122,15 @@ export function createAccountLimitsCache(
     if (previous === snapshot) return;
     if (!shouldReplaceLimitsSnapshot(previous, snapshot)) return;
     cache = { ...cache, [snapshot.accountKey]: snapshot };
-    try {
-      storage.setItem(`codex-limits:${cacheScope}`, JSON.stringify(cache));
-    } catch {
-      /* Keep the session cache when storage is unavailable. */
-    }
-    for (const listener of cacheListeners) listener();
+    const scope = cacheScope;
+    const request = usage();
+    if (request)
+      writes = writes
+        .then(() => request("usage.limits.put", { scope, snapshot }))
+        .catch(() => {
+          /* Keep the session cache when the native core is unavailable. */
+        });
+    notifyListeners();
   }
   function cachedLimitsByAccount() {
     return cache;
@@ -178,4 +151,4 @@ export const {
   subscribeLimitsCache,
   cacheAccountLimits,
   cachedLimitsByAccount,
-} = createAccountLimitsCache(serverLocalStorage);
+} = createAccountLimitsCache();

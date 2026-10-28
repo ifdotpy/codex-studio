@@ -17,6 +17,7 @@ import { createFileActions } from "../fileActions";
 import { createFileDialogs } from "../native/fileDialogs";
 import { watchResourceReads } from "../sync/subscriptions/reads";
 import { createAccountLimitsCache } from "../usage/accountUsage";
+import type { UsagePersistence } from "../usage/usageRequest";
 import { createBrowserDrafts } from "../sync/drafts";
 import { createDraftJournal } from "../sync/draftJournal";
 import { createDraftStorage } from "../sync/draftStorage";
@@ -29,7 +30,7 @@ import { createTranscriptCache } from "../sync/transcriptCache";
 import { createTokenRateCache } from "../usage/tokenRate";
 import { createEntitySequenceScope } from "../sync/entitySequence";
 import { createApiScope } from "../api";
-import { hasNativeClient } from "../native/client";
+import { hasNativeClient, nativeRequest } from "../native/client";
 import { nativeFetch } from "../native/http";
 import { preferenceStorageForServer } from "../sync/uiPreferenceStore";
 import { createServerActivity } from "./activity";
@@ -49,10 +50,13 @@ export function createServerServices(server: StudioServer) {
     return serverCredentialAdapter().fetch(owner, request);
   });
   const storage = preferenceStorageForServer(transport.owner.id);
-  const accountLimits = createAccountLimitsCache(storage);
   // The native core stores the projections of the local server; every other server keeps the page cache.
   const localNativeClient = () =>
     transport.owner.id === "local" && hasNativeClient();
+  // Usage caches persist only in the local native core; other servers keep memory only.
+  const usage: UsagePersistence = () =>
+    localNativeClient() ? nativeRequest : undefined;
+  const accountLimits = createAccountLimitsCache(usage);
   const sequences = createEntitySequenceScope();
   const activity = createServerActivity();
   const api = createApiScope({
@@ -67,7 +71,7 @@ export function createServerServices(server: StudioServer) {
     beginActivity: activity.beginServerActivity,
   });
   const audio = createServerAudio();
-  const sessionCosts = createSessionCostCache(storage);
+  const sessionCosts = createSessionCostCache(usage);
   const transcripts = createTranscriptCache();
   const tokenRates = createTokenRateCache();
   let runtime:
