@@ -1,7 +1,8 @@
 # Native projections
 
-In the desktop app, the native core stores the projection cache of the local
-server. The page does not open IndexedDB, RxDB, Web Locks or a BroadcastChannel
+The client core of each server stores the projection cache of that server:
+the local server and every paired server, in the desktop app and in a
+browser page ([hosted client core](hosted-client-core.md)). The page does not open IndexedDB, RxDB, Web Locks or a BroadcastChannel
 for it. This removes the slow storage path that caused "Could not prepare or
 apply local sync data. Reconnecting...": WebKit storage took seconds for a
 startup snapshot, and the page waited for it before it applied or resumed the
@@ -37,8 +38,10 @@ after the last id.
 
 ## Page without browser storage
 
-The sync client takes an optional `projectionStore`. The local server in the
-desktop app and the default client pass the native store. Then:
+The sync client takes an optional `projectionStore`. With a client core,
+`createServerServices` passes the store of that server's core
+(`coreForServer`), and the default client of a page passes the store of the
+page's own server (`pageCore`). Then:
 
 - `syncDatabase()` returns the workspace identity and the native projections. It opens no database.
 - `outboxDatabase()` opens the old RxDB outbox on demand, only to import its rows into the core (see below).
@@ -46,7 +49,7 @@ desktop app and the default client pass the native store. Then:
 - `createResourceEvents` runs with `independent: true`: one page owns its stream, with no Web Locks owner election and no BroadcastChannel.
 - Large entity transfers stage in memory (`MemoryTransferStorage`).
 
-A remote server in the desktop app and a plain browser keep the RxDB path.
+Only a page without a client core keeps the RxDB path (step 8b-B removes it).
 
 ## Failure cases
 
@@ -84,15 +87,15 @@ the core. The page sends commands and renders the state.
   so a deleted recording does not return. A recording that cannot be read
   becomes an error row, and an upload that cannot be read stops the list with
   its name. The old rows stay in browser storage.
-- Remote servers and the plain browser keep the IndexedDB path until the
-  transport step.
+- Each server's core imports the old rows of that server
+  (`openLegacyUploads(server)`, `openLegacyRecordings(server)`).
 
 ## What stays on IndexedDB
 
 - The composer attachment list and the form drafts of the local server. They use `localDraft` (localStorage with IndexedDB locks). Step 8 removes them.
-- The old outbox rows. The core owns the outbox of the local server (`native/outbox.ts`, `outbox.*`): queue states, delivery, retry, receipts, and remove and restore. When the queue view starts, the page imports each old row with its status and attempted marker, like `native/legacyDrafts.ts`. The core keeps its own copy of a row it already has. The old rows stay on disk.
+- The old outbox rows. The core of each server owns its outbox (`native/outbox.ts`, `outbox.*`): queue states, delivery, retry, receipts, and remove and restore. When the queue view starts, the page imports each old row with its status and attempted marker, like `native/legacyDrafts.ts`. The core keeps its own copy of a row it already has. The old rows stay on disk.
 - Old IndexedDB projection databases from earlier builds stay on disk until the user clears them. The native path never reads them.
-- Remote servers and the plain browser path (RxDB, Dexie, Web Locks, BroadcastChannel).
+- The page path without a client core (RxDB, Dexie, Web Locks, BroadcastChannel). No app page uses it; step 8b-B deletes it.
 
 ## What moves later
 
