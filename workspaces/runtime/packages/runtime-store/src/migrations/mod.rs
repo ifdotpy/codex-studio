@@ -30,6 +30,7 @@ mod m2026_10_28_receipts_tools;
 mod m2026_10_28_receipts_vm_provider;
 mod m2026_10_28_receipts_voice;
 mod m2026_10_28_receipts_work;
+mod m2026_10_28_usage_revision;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -380,6 +381,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_27_cost_index::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-28-usage-revision",
+            introduced: OCTOBER_28,
+            target: MigrationTarget::Analytics,
+            supported_source: "Analytics usage without receipt revisions",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_28_usage_revision::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {

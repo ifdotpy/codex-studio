@@ -1,6 +1,7 @@
 //! Session cost estimates over the incremental analytics cost aggregate.
 use studio_runtime_schema::provider_kind::ProviderKind;
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read};
@@ -11,13 +12,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_store::cost_aggregate::{
-    CostMember, CostReceipt, CostTokens, DEFAULT_ACCOUNT, cost_groups,
+    CostMember, CostReceipt, CostTokens, DEFAULT_ACCOUNT, JournalReceiptCache, cost_groups,
 };
 use studio_runtime_store::{AnalyticsStoreError, RuntimeStore, StoreError, analytics};
 use thiserror::Error;
 
 use crate::file_derived::FileDerived;
 use crate::pricing::TokenUsage;
+
+thread_local! {
+    static RECEIPT_CACHES: RefCell<BTreeMap<String, JournalReceiptCache>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+/// Number of session roots whose validated journal matches one reader retains.
+const RECEIPT_CACHE_ROOTS: usize = 128;
 
 #[derive(Debug, Error)]
 pub enum CostsError {
@@ -110,8 +118,17 @@ fn session_cost_on_reader(
             )
         })
         .collect::<BTreeSet<CostReceipt>>();
-    let partition =
-        studio_runtime_store::cost_aggregate::partition_journal_receipts(&tx, &receipts, &members)?;
+    let partition = RECEIPT_CACHES.with_borrow_mut(|caches| {
+        if caches.len() >= RECEIPT_CACHE_ROOTS && !caches.contains_key(&root) {
+            caches.clear();
+        }
+        studio_runtime_store::cost_aggregate::partition_journal_receipts_cached(
+            &tx,
+            &receipts,
+            &members,
+            caches.entry(root.clone()).or_default(),
+        )
+    })?;
     local_claude.retain(|row| {
         partition.accepted.contains(&(
             row.account_key.clone(),

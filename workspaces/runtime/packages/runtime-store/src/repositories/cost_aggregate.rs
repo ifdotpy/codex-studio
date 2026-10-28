@@ -81,11 +81,16 @@ WITH receipts AS MATERIALIZED (
  SELECT json_extract(value,'$[0]') agent,json_extract(value,'$[1]') account,
         json_extract(value,'$[2]') thread FROM json_each(?2)
 )
-SELECT r.account,r.thread,r.response,u.record
+SELECT r.account,r.thread,r.response,u.record,u.id
 FROM receipts r JOIN scopes s ON s.account=r.account AND s.thread=r.thread
 CROSS JOIN analytics_usage u INDEXED BY analytics_usage_response
 WHERE u.agent=s.agent AND u.thread=s.thread AND json_extract(u.record,'$.responseId')=r.response
 AND json_type(u.record,'$.studioUsage') IS NOT NULL";
+
+#[cfg(test)]
+thread_local! {
+    static RECEIPT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// Token counts of one usage row as priced; `None` is an unreported count.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
@@ -193,6 +198,181 @@ pub struct RecordedResponse {
 pub struct JournalPartition {
     pub accepted: BTreeSet<CostReceipt>,
     pub superseded: BTreeSet<CostReceipt>,
+}
+
+type ReceiptScopes = BTreeSet<(String, String, String)>;
+
+/// Validated journal matches retained by the reader for one session root.
+#[derive(Default)]
+pub struct JournalReceiptCache {
+    scopes: ReceiptScopes,
+    receipts: BTreeSet<CostReceipt>,
+    revision: Option<i64>,
+    facts: HashMap<String, Vec<(CostReceipt, bool)>>,
+    final_counts: HashMap<CostReceipt, usize>,
+    partition: JournalPartition,
+}
+
+fn receipt_scopes(members: &[(String, CostMember)]) -> ReceiptScopes {
+    members
+        .iter()
+        .flat_map(|(agent, member)| {
+            let current =
+                std::iter::once((member.account_key.as_deref(), member.thread_id.as_deref()));
+            let history = member
+                .account_history
+                .iter()
+                .flatten()
+                .map(|entry| (entry.account_key.as_deref(), entry.thread_id.as_deref()));
+            current.chain(history).filter_map(move |(account, thread)| {
+                Some((
+                    agent.clone(),
+                    account.unwrap_or(DEFAULT_ACCOUNT).to_owned(),
+                    thread?.to_owned(),
+                ))
+            })
+        })
+        .collect()
+}
+
+fn final_receipt(raw: &str) -> StoreResult<bool> {
+    #[cfg(test)]
+    RECEIPT_READS.update(|count| count + 1);
+    let observation =
+        studio_runtime_schema::usage::ledger::UsageLedgerRow::observation_from_typed_analytics_str(
+            raw,
+        )
+        .map_err(|error| StoreError::SchemaValidation(error.to_string()))?;
+    Ok(matches!(
+        observation,
+        UsageObservation::Response {
+            evidence: UsageEvidence::Live | UsageEvidence::Recovered,
+            ..
+        }
+    ))
+}
+
+/// Reuse validated receipt evidence while applying committed usage mutations by revision.
+/// The cache belongs to the retained read-only connection and its transaction snapshot.
+pub fn partition_journal_receipts_cached(
+    db: &Connection,
+    receipts: &BTreeSet<CostReceipt>,
+    members: &[(String, CostMember)],
+    cache: &mut JournalReceiptCache,
+) -> StoreResult<JournalPartition> {
+    let scopes = receipt_scopes(members);
+    let revision: i64 = db.query_row(
+        "SELECT revision FROM analytics_usage_revision_clock",
+        [],
+        |row| row.get(0),
+    )?;
+    let rebuild = cache.revision.is_none_or(|old| old > revision)
+        || cache.scopes != scopes
+        || !cache.receipts.is_subset(receipts);
+    let added = if rebuild {
+        receipts.clone()
+    } else {
+        receipts.difference(&cache.receipts).cloned().collect()
+    };
+    if !rebuild
+        && cache.revision == Some(revision)
+        && added.is_empty()
+        && cache.receipts == *receipts
+    {
+        return Ok(cache.partition.clone());
+    }
+    let mut updates: HashMap<String, Vec<(CostReceipt, bool)>> = HashMap::new();
+    if !added.is_empty() {
+        let mut statement = db.prepare_cached(JOURNAL_RECEIPT_SQL)?;
+        let mut rows = statement.query(params![
+            serde_json::to_string(&added)?,
+            serde_json::to_string(&scopes)?
+        ])?;
+        while let Some(row) = rows.next()? {
+            let receipt = (row.get(0)?, row.get(1)?, row.get(2)?);
+            let final_evidence =
+                final_receipt(row.get_ref(3)?.as_str().map_err(rusqlite::Error::from)?)?;
+            let id: String = row.get(4)?;
+            updates
+                .entry(id.clone())
+                .or_insert_with(|| {
+                    if rebuild {
+                        Vec::new()
+                    } else {
+                        cache.facts.get(&id).cloned().unwrap_or_default()
+                    }
+                })
+                .push((receipt, final_evidence));
+        }
+    }
+    if !rebuild && cache.revision != Some(revision) {
+        let mut statement = db.prepare_cached("SELECT v.id,u.agent,u.thread,json_extract(u.record,'$.responseId'),json_type(u.record,'$.studioUsage'),u.record
+            FROM analytics_usage_revisions v LEFT JOIN analytics_usage u ON u.id=v.id WHERE v.revision>?1 AND v.revision<=?2")?;
+        let mut rows = statement.query(params![cache.revision, revision])?;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let agent: Option<String> = row.get(1)?;
+            let thread: Option<String> = row.get(2)?;
+            let response: Option<String> = row.get(3)?;
+            let typed: Option<String> = row.get(4)?;
+            let mut facts = Vec::new();
+            if let (Some(agent), Some(thread), Some(response), Some(_)) =
+                (agent, thread, response, typed)
+            {
+                for (_, account, _) in scopes
+                    .iter()
+                    .filter(|(a, _, t)| a == &agent && t == &thread)
+                {
+                    let receipt = (account.clone(), thread.clone(), response.clone());
+                    if receipts.contains(&receipt) {
+                        let final_evidence = final_receipt(
+                            row.get_ref(5)?.as_str().map_err(rusqlite::Error::from)?,
+                        )?;
+                        facts.push((receipt, final_evidence));
+                    }
+                }
+            }
+            updates.insert(id, facts);
+        }
+    }
+    if rebuild {
+        cache.facts.clear();
+        cache.final_counts.clear();
+        cache.partition = JournalPartition {
+            accepted: receipts.clone(),
+            superseded: BTreeSet::new(),
+        };
+    } else {
+        cache.partition.accepted.extend(added);
+    }
+    for (id, facts) in updates {
+        if let Some(previous) = cache.facts.remove(&id) {
+            for (receipt, final_evidence) in previous {
+                if final_evidence && let Some(count) = cache.final_counts.get_mut(&receipt) {
+                    *count -= 1;
+                    if *count == 0 {
+                        cache.final_counts.remove(&receipt);
+                        cache.partition.superseded.remove(&receipt);
+                        cache.partition.accepted.insert(receipt);
+                    }
+                }
+            }
+        }
+        if !facts.is_empty() {
+            for (receipt, final_evidence) in &facts {
+                if *final_evidence {
+                    *cache.final_counts.entry(receipt.clone()).or_default() += 1;
+                    cache.partition.accepted.remove(receipt);
+                    cache.partition.superseded.insert(receipt.clone());
+                }
+            }
+            cache.facts.insert(id, facts);
+        }
+    }
+    cache.scopes = scopes;
+    cache.receipts = receipts.clone();
+    cache.revision = Some(revision);
+    Ok(cache.partition.clone())
 }
 
 /// Read response evidence for exactly these agents in stable observation order.
@@ -358,36 +538,14 @@ pub fn partition_journal_receipts(
     if receipts.is_empty() {
         return Ok(result);
     }
-    let scopes = members
-        .iter()
-        .flat_map(|(agent, member)| {
-            let current =
-                std::iter::once((member.account_key.as_deref(), member.thread_id.as_deref()));
-            let history = member
-                .account_history
-                .iter()
-                .flatten()
-                .map(|entry| (entry.account_key.as_deref(), entry.thread_id.as_deref()));
-            current.chain(history).filter_map(move |(account, thread)| {
-                Some((agent.as_str(), account.unwrap_or(DEFAULT_ACCOUNT), thread?))
-            })
-        })
-        .collect::<BTreeSet<_>>();
+    let scopes = receipt_scopes(members);
     let encoded = serde_json::to_string(receipts)?;
     let scopes = serde_json::to_string(&scopes)?;
     let mut statement = db.prepare_cached(JOURNAL_RECEIPT_SQL)?;
     let mut rows = statement.query(params![encoded, scopes])?;
     while let Some(row) = rows.next()? {
         let raw = row.get_ref(3)?.as_str().map_err(rusqlite::Error::from)?;
-        let observation = studio_runtime_schema::usage::ledger::UsageLedgerRow::observation_from_typed_analytics_str(raw)
-            .map_err(|error| StoreError::SchemaValidation(error.to_string()))?;
-        if matches!(
-            observation,
-            UsageObservation::Response {
-                evidence: UsageEvidence::Live | UsageEvidence::Recovered,
-                ..
-            }
-        ) {
+        if final_receipt(raw)? {
             let receipt = (row.get(0)?, row.get(1)?, row.get(2)?);
             result.accepted.remove(&receipt);
             result.superseded.insert(receipt);
@@ -1600,6 +1758,202 @@ mod tests {
             assert_eq!(super::partition_journal_receipts(tx, &receipts, &receipt_members())?.accepted, receipts);
             Ok(())
         }).await.expect("typed receipt identity");
+    }
+
+    #[tokio::test]
+    async fn typed_usage_unchanged_receipt_reuses_validated_evidence() {
+        let temp = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            let record = json!({"id":"receipt","agentId":"agent","rootId":"root","threadId":"thread","at":1,
+                "responseId":"response","accountKey":"acct","last":{},"total":{},
+                "studioUsage":{"kind":"response","responseId":"response","model":"m","evidence":"live",
+                    "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":2}}});
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &record)?;
+            Ok(())
+        }).await.expect("record usage");
+        let db = crate::AnalyticsRepository::new(store.root())
+            .open_read_only()
+            .expect("reader");
+        let mut cache = super::JournalReceiptCache::default();
+        let receipts = [("acct".into(), "thread".into(), "response".into())].into();
+        assert_eq!(
+            super::partition_journal_receipts_cached(
+                &db,
+                &receipts,
+                &receipt_members(),
+                &mut cache
+            )
+            .expect("first partition")
+            .superseded
+            .len(),
+            1
+        );
+        super::RECEIPT_READS.take();
+        assert_eq!(
+            super::partition_journal_receipts_cached(
+                &db,
+                &receipts,
+                &receipt_members(),
+                &mut cache
+            )
+            .expect("second partition")
+            .superseded
+            .len(),
+            1
+        );
+        assert_eq!(
+            super::RECEIPT_READS.take(),
+            0,
+            "unchanged receipts must reuse validated evidence"
+        );
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            tx.execute("UPDATE analytics_usage SET record=json_set(record,'$.studioUsage.evidence','legacy') WHERE id='receipt'", [])?;
+            Ok(())
+        }).await.expect("update usage in place");
+        let updated = super::partition_journal_receipts_cached(
+            &db,
+            &receipts,
+            &receipt_members(),
+            &mut cache,
+        )
+        .expect("updated partition");
+        assert_eq!(
+            updated.accepted, receipts,
+            "legacy evidence accepts the journal"
+        );
+        assert_eq!(
+            super::RECEIPT_READS.take(),
+            1,
+            "only the changed receipt is decoded"
+        );
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            tx.execute("UPDATE analytics_usage SET record=json_set(record,'$.studioUsage.tokens.output',null) WHERE id='receipt'", [])?;
+            Ok(())
+        }).await.expect("corrupt usage in place");
+        assert!(
+            super::partition_journal_receipts_cached(
+                &db,
+                &receipts,
+                &receipt_members(),
+                &mut cache
+            )
+            .is_err(),
+            "changed malformed evidence must fail closed"
+        );
+        store
+            .analytics_transaction::<_, StoreError>(|tx, _| {
+                tx.execute("DELETE FROM analytics_usage WHERE id='receipt'", [])?;
+                Ok(())
+            })
+            .await
+            .expect("delete usage");
+        let deleted = super::partition_journal_receipts_cached(
+            &db,
+            &receipts,
+            &receipt_members(),
+            &mut cache,
+        )
+        .expect("deleted partition");
+        assert_eq!(
+            deleted.accepted, receipts,
+            "deleted evidence accepts the journal"
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_usage_receipt_cache_keeps_duplicate_final_evidence() {
+        let temp = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            for id in ["one", "two"] {
+                let record = json!({"id":id,"agentId":"agent","rootId":"root","threadId":"thread","at":1,
+                    "responseId":"response","accountKey":"acct","last":{},"total":{},
+                    "studioUsage":{"kind":"response","responseId":"response","model":"m","evidence":"live",
+                        "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":2}}});
+                AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &record)?;
+            }
+            Ok(())
+        }).await.expect("record usage");
+        let db = crate::AnalyticsRepository::new(store.root())
+            .open_read_only()
+            .expect("reader");
+        let mut cache = super::JournalReceiptCache::default();
+        let receipts = [("acct".into(), "thread".into(), "response".into())].into();
+        let first = super::partition_journal_receipts_cached(
+            &db,
+            &receipts,
+            &receipt_members(),
+            &mut cache,
+        )
+        .expect("initial");
+        assert_eq!(first.superseded, receipts);
+        for (id, remaining) in [("one", true), ("two", false)] {
+            store
+                .analytics_transaction::<_, StoreError>(move |tx, _| {
+                    tx.execute("DELETE FROM analytics_usage WHERE id=?1", [id])?;
+                    Ok(())
+                })
+                .await
+                .expect("delete duplicate");
+            let cached = super::partition_journal_receipts_cached(
+                &db,
+                &receipts,
+                &receipt_members(),
+                &mut cache,
+            )
+            .expect("cached");
+            let fresh = super::partition_journal_receipts(&db, &receipts, &receipt_members())
+                .expect("fresh");
+            assert_eq!(cached.accepted, fresh.accepted);
+            assert_eq!(cached.superseded, fresh.superseded);
+            assert_eq!(!cached.superseded.is_empty(), remaining);
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_usage_revision_migrates_old_database_without_changing_groups() {
+        let temp = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            let record = json!({"id":"receipt","agentId":"agent","rootId":"root","threadId":"thread","at":1,
+                "responseId":"response","accountKey":"acct","last":{},"total":{},
+                "studioUsage":{"kind":"response","responseId":"response","model":"m","evidence":"live",
+                    "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":2}}});
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &record)?;
+            Ok(())
+        }).await.expect("record usage");
+        let db = crate::AnalyticsRepository::new(store.root())
+            .open_read_only()
+            .expect("reader");
+        let before = super::cost_groups(&db, "root", &Default::default()).expect("groups");
+        drop(db);
+        drop(store);
+        let db = rusqlite::Connection::open(temp.path().join("analytics.sqlite3"))
+            .expect("old database");
+        db.execute_batch("DROP TRIGGER analytics_usage_revision_insert; DROP TRIGGER analytics_usage_revision_update;
+            DROP TRIGGER analytics_usage_revision_delete; DROP TABLE analytics_usage_revisions;
+            DROP TABLE analytics_usage_revision_clock;").expect("restore old schema");
+        drop(db);
+        let store = RuntimeStore::open(Some(temp.path()))
+            .await
+            .expect("migrate old database");
+        let db = crate::AnalyticsRepository::new(store.root())
+            .open_read_only()
+            .expect("reader");
+        assert_eq!(
+            super::cost_groups(&db, "root", &Default::default()).expect("groups after migration"),
+            before
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT revision FROM analytics_usage_revision_clock",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .expect("clock"),
+            0
+        );
     }
 
     #[tokio::test]
