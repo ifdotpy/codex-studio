@@ -1065,7 +1065,7 @@ impl SchedulerRepository {
             return Ok(false);
         }
         if let Some(saved) = crate::ExecutionHistoryRepository::attempt(transaction, attempt_id)?
-            && saved.get("claimResult").is_some()
+            && saved.claim_result.is_some()
         {
             replay_claim(transaction, agent.clone(), epoch, &saved)?;
         }
@@ -1263,10 +1263,10 @@ impl SchedulerRepository {
         )? {
             let saved = ExecutionHistoryRepository::attempt(transaction, attempt_id)?
                 .ok_or_else(|| invalid_agent(agent_id))?;
-            if saved["requestTicket"] != request_id
-                || saved["accountKey"] != account_key
-                || saved["connectionGeneration"].as_u64() != Some(generation)
-                || saved["threadId"] != thread_id
+            if saved.start.request_ticket.as_deref() != Some(request_id)
+                || saved.start.account_key.as_deref() != Some(account_key)
+                || saved.start.connection_generation != Some(generation)
+                || saved.start.thread_id.as_deref() != Some(thread_id)
             {
                 return Err(ExecutionHistoryRepository::invalid(
                     "runtime_execution_attempts",
@@ -1327,10 +1327,10 @@ impl SchedulerRepository {
         )? {
             let saved = ExecutionHistoryRepository::attempt(transaction, attempt_id)?
                 .ok_or_else(|| invalid_agent(agent_id))?;
-            if saved["requestTicket"] != request_id
-                || saved["accountKey"] != account_key
-                || saved["connectionGeneration"].as_u64() != Some(generation)
-                || saved["threadId"] != thread_id
+            if saved.start.request_ticket.as_deref() != Some(request_id)
+                || saved.start.account_key.as_deref() != Some(account_key)
+                || saved.start.connection_generation != Some(generation)
+                || saved.start.thread_id.as_deref() != Some(thread_id)
             {
                 return Err(ExecutionHistoryRepository::invalid(
                     "runtime_execution_attempts",

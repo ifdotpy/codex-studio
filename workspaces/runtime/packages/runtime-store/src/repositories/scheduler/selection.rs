@@ -2,6 +2,46 @@ use super::*;
 use crate::CachedSql;
 use std::sync::LazyLock;
 
+#[derive(serde::Serialize, serde::Deserialize, PartialEq)]
+struct InputIdentity {
+    id: String,
+    agent: String,
+    kind: String,
+    text: String,
+    created: f64,
+    epoch: i64,
+    error: Option<String>,
+    metadata: Value,
+}
+
+#[derive(serde::Deserialize)]
+struct ClaimResult {
+    agent: AgentRecord,
+    metadata: BTreeMap<String, Value>,
+}
+
+fn claim_result(saved: &crate::ExecutionAttempt) -> StoreResult<ClaimResult> {
+    let invalid = || {
+        ExecutionHistoryRepository::invalid(
+            "runtime_execution_attempts",
+            saved.start.id.as_deref().unwrap_or("unknown"),
+        )
+    };
+    serde_json::from_str(saved.claim_result.as_ref().ok_or_else(invalid)?.get())
+        .map_err(|_| invalid())
+}
+
+fn saved_identity(saved: &crate::ExecutionAttempt) -> StoreResult<Vec<InputIdentity>> {
+    let invalid = || {
+        ExecutionHistoryRepository::invalid(
+            "runtime_execution_attempts",
+            saved.start.id.as_deref().unwrap_or("unknown"),
+        )
+    };
+    serde_json::from_str(saved.input_identity.as_ref().ok_or_else(invalid)?.get())
+        .map_err(|_| invalid())
+}
+
 /// `_v5` removes the obsolete capacity-start predicate. The 2026-10-21
 /// migration drops v4 before removing its generated column.
 const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v5";
@@ -316,53 +356,54 @@ impl SchedulerRepository {
         let Some(run) = ExecutionHistoryRepository::current_run(tx, agent)? else {
             return Ok(false);
         };
-        if run["status"] != "unsent"
-            || run["epoch"] != agent.epoch
-            || run["accountKey"] != account
-            || run["threadId"] != thread
-            || !run["turnId"].is_null()
-            || !run["rootAttemptId"].is_null()
+        if run.status != studio_runtime_schema::persistence::ExecutionStatus::Unsent
+            || run.epoch != agent.epoch
+            || run.account_key != account
+            || run.thread_id.as_deref() != Some(thread)
+            || run.turn_id.is_some()
+            || run.root_attempt_id.is_some()
         {
             return Ok(false);
         }
-        let Some(id) = run["latestAttemptId"].as_str() else {
+        let Some(id) = run.latest_attempt_id.as_deref() else {
             return Ok(false);
         };
         let Some(saved) = ExecutionHistoryRepository::attempt(tx, id)? else {
             return Ok(false);
         };
-        if saved["runId"] != run["id"]
-            || saved["epoch"] != agent.epoch
-            || saved["accountKey"] != account
-            || saved["submission"] != "unsent"
-            || saved["executionOutcome"] != "unsent"
-            || saved["submitted"] != false
-            || saved["activeAtReservation"] != false
-            || ["turnId", "observedTurnId", "nativeOperationId", "action"]
-                .iter()
-                .any(|key| saved.get(*key).is_some_and(|value| !value.is_null()))
+        let attempt = &saved.start;
+        if saved.run_id != run.id
+            || attempt.epoch != Some(agent.epoch)
+            || attempt.account_key.as_deref() != Some(account)
+            || saved.submission
+                != Some(studio_runtime_schema::persistence::AttemptSubmission::Unsent)
+            || attempt.execution_outcome
+                != Some(studio_runtime_schema::persistence::ExecutionStatus::Unsent)
+            || attempt.submitted != Some(false)
+            || attempt.active_at_reservation != Some(false)
+            || attempt.turn_id.is_some()
+            || attempt.observed_turn_id.is_some()
+            || attempt.native_operation_id.is_some()
+            || attempt.action.is_some()
         {
             return Ok(false);
         }
-        if let Some(attempt) = agent
-            .extra
-            .get("startAttempt")
-            .filter(|value| !value.is_null())
-            && [
-                "id",
-                "epoch",
-                "accountKey",
-                "events",
-                "submitted",
-                "activeAtReservation",
-                "executionOutcome",
-                "turnId",
-                "observedTurnId",
-                "nativeOperationId",
-                "action",
-            ]
-            .iter()
-            .any(|key| attempt[*key] != saved[*key])
+        let current = match agent.start_attempt() {
+            Ok(value) => value,
+            Err(_) => return Ok(false),
+        };
+        if let Some(current) = current
+            && (current.id != attempt.id
+                || current.epoch != attempt.epoch
+                || current.account_key != attempt.account_key
+                || current.events != attempt.events
+                || current.submitted != attempt.submitted
+                || current.active_at_reservation != attempt.active_at_reservation
+                || current.execution_outcome != attempt.execution_outcome
+                || current.turn_id != attempt.turn_id
+                || current.observed_turn_id != attempt.observed_turn_id
+                || current.native_operation_id != attempt.native_operation_id
+                || current.action != attempt.action)
         {
             return Ok(false);
         }
@@ -374,10 +415,7 @@ impl SchedulerRepository {
         else {
             return Ok(false);
         };
-        let original: AgentRecord = serde_json::from_value(saved["claimResult"]["agent"].clone())
-            .map_err(|_| {
-            ExecutionHistoryRepository::invalid("runtime_execution_attempts", id)
-        })?;
+        let original = claim_result(&saved)?.agent;
         if original.id != agent.id
             || original.root_id != agent.root_id
             || original.epoch != agent.epoch
@@ -394,24 +432,28 @@ impl SchedulerRepository {
             ]
             .iter()
             .any(|key| original.extra.get(*key) != agent.extra.get(*key))
-            || original.extra.get("startAttempt").is_none_or(|attempt| {
-                attempt["id"] != id
-                    || attempt["events"] != saved["events"]
-                    || attempt["submitted"] != false
-            })
+            || original
+                .start_attempt()
+                .ok()
+                .flatten()
+                .is_none_or(|original| {
+                    original.id.as_deref() != Some(id)
+                        || original.events != attempt.events
+                        || original.submitted != Some(false)
+                })
         {
             return Ok(false);
         }
-        let Some(ids) = saved["events"].as_array() else {
+        let Some(ids) = attempt.events.as_ref() else {
             return Ok(false);
         };
-        let Some(identity) = saved["inputIdentity"].as_array() else {
+        let Ok(identity) = saved_identity(&saved) else {
             return Ok(false);
         };
-        let ids = ids.iter().map(Value::as_str).collect::<Option<Vec<_>>>();
-        let Some(ids) = ids.filter(|ids| !ids.is_empty() && ids.contains(&target)) else {
+        let ids = ids.iter().map(String::as_str).collect::<Vec<_>>();
+        if ids.is_empty() || !ids.contains(&target) {
             return Ok(false);
-        };
+        }
         if ids.len() != identity.len()
             || ids.iter().copied().collect::<BTreeSet<_>>().len() != ids.len()
         {
@@ -438,7 +480,7 @@ impl SchedulerRepository {
                 || event.status != "pending"
                 || event.turn_id.is_some()
                 || event.error.as_deref() != Some(reason)
-                || identity[index]["id"] != *id
+                || identity[index].id != *id
             {
                 return Ok(false);
             }
@@ -449,17 +491,11 @@ impl SchedulerRepository {
             event.text = Self::claimed_event_text(&event.text, &meta);
             // Settlement changes only the delivery error. Compare the original
             // business identity with that one server-owned field restored.
-            event.error =
-                serde_json::from_value(identity[index]["error"].clone()).map_err(|_| {
-                    ExecutionHistoryRepository::invalid(
-                        "runtime_execution_attempts",
-                        saved["id"].as_str().unwrap_or("unknown"),
-                    )
-                })?;
+            event.error = identity[index].error.clone();
             metadata.insert((*id).to_owned(), meta);
             events.push(event);
         }
-        Ok(input_identity(&events, &metadata) == saved["inputIdentity"])
+        Ok(input_identity(&events, &metadata) == identity)
     }
 
     /// Install the candidate index used by worker reconciliation. This index
@@ -831,7 +867,7 @@ impl SchedulerRepository {
             return Ok(None);
         }
         if let Some(saved) = crate::ExecutionHistoryRepository::attempt(transaction, attempt_id)? {
-            if saved.get("claimResult").is_none() {
+            if saved.claim_result.is_none() {
                 return Err(crate::ExecutionHistoryRepository::invalid(
                     "runtime_execution_attempts",
                     attempt_id,
@@ -1251,26 +1287,38 @@ pub(super) fn business_metadata(value: Option<&Value>) -> Value {
     }
     value
 }
-pub(super) fn input_identity(events: &[QueueEvent], metadata: &BTreeMap<String, Value>) -> Value {
-    json!(events.iter().map(|e|json!({"id":e.id.0,"agent":e.agent.0,"kind":e.kind,"text":e.text,"created":e.created,"epoch":e.epoch,"error":e.error,"metadata":business_metadata(metadata.get(&e.id.0))})).collect::<Vec<_>>())
+fn input_identity(events: &[QueueEvent], metadata: &BTreeMap<String, Value>) -> Vec<InputIdentity> {
+    events
+        .iter()
+        .map(|e| InputIdentity {
+            id: e.id.0.clone(),
+            agent: e.agent.0.clone(),
+            kind: e.kind.clone(),
+            text: e.text.clone(),
+            created: e.created,
+            epoch: e.epoch,
+            error: e.error.clone(),
+            metadata: business_metadata(metadata.get(&e.id.0)),
+        })
+        .collect()
 }
 pub(super) fn replay_claim(
     tx: &Transaction<'_>,
     agent: AgentRecord,
     epoch: i64,
-    saved: &Value,
+    saved: &crate::ExecutionAttempt,
 ) -> StoreResult<ClaimedEvents> {
     let receipt_error = || {
         crate::ExecutionHistoryRepository::invalid(
             "runtime_execution_attempts",
-            saved["id"].as_str().unwrap_or("unknown"),
+            saved.start.id.as_deref().unwrap_or("unknown"),
         )
     };
-    let original: AgentRecord = serde_json::from_value(saved["claimResult"]["agent"].clone())
-        .map_err(|_| receipt_error())?;
+    let claim = claim_result(saved)?;
+    let original = claim.agent;
     let preparation = crate::ExecutionHistoryRepository::receipt(
         tx,
-        saved["id"].as_str().ok_or_else(receipt_error)?,
+        saved.start.id.as_deref().ok_or_else(receipt_error)?,
         ExecutionReceiptKind::ThreadPrepared,
     )?;
     let prepared_scope = preparation.as_ref().is_some_and(|preparation| {
@@ -1298,9 +1346,7 @@ pub(super) fn replay_claim(
     {
         return Err(invalid_agent(&agent.id.0));
     }
-    let identity = saved["inputIdentity"]
-        .as_array()
-        .ok_or_else(receipt_error)?;
+    let identity = saved_identity(saved)?;
     let has_metadata: bool = tx.query_row_cached("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_event_meta')", [], |r| r.get(0))?;
     let metadata_column = if has_metadata { "m.record" } else { "NULL" };
     let metadata_join = if has_metadata {
@@ -1311,7 +1357,7 @@ pub(super) fn replay_claim(
     let mut statement = tx.prepare_cached(&format!("SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,{metadata_column} FROM json_each(?1) j JOIN runtime_events e ON e.id=json_extract(j.value,'$.id') {metadata_join} ORDER BY j.key"))?;
     let mut events = Vec::new();
     let mut metadata = BTreeMap::new();
-    for row in statement.query_map([saved["inputIdentity"].to_string()], |r| {
+    for row in statement.query_map([serde_json::to_string(&identity)?], |r| {
         Ok((
             crate::QueueEventRepository::from_row(r)?,
             r.get::<_, Option<String>>(9)?,
@@ -1334,11 +1380,10 @@ pub(super) fn replay_claim(
     if events.len() != identity.len() {
         return Err(receipt_error());
     }
-    if input_identity(&events, &metadata) != saved["inputIdentity"] {
+    if input_identity(&events, &metadata) != identity {
         return Err(invalid_agent(&agent.id.0));
     }
-    let metadata = serde_json::from_value(saved["claimResult"]["metadata"].clone())
-        .map_err(|_| receipt_error())?;
+    let metadata = claim.metadata;
     Ok(ClaimedEvents {
         agent: original,
         events,

@@ -1198,7 +1198,10 @@ async fn repair_idle_with_broker_inner(
         }
         let operation_id = RequestIdentity::issue_root();
         archive_previous_repair(&mut agent)?;
-        let start_snapshot=if let Some(attempt)=agent.get("startAttempt").filter(|value|value.is_object()) {attempt.clone()} else if let Some(id)=agent["activeExecution"]["attemptId"].as_str() {studio_runtime_store::ExecutionHistoryRepository::attempt(tx,id)?.unwrap_or(Value::Null)} else {Value::Null};
+        let start_snapshot=if let Some(attempt)=agent.get("startAttempt").filter(|value|value.is_object()) {Some(serde_json::value::to_raw_value(attempt).map_err(|_| RepairError::Invalid("agent.startAttempt"))?)} else {
+            let pointer = AgentRecord::deserialize(&agent).map_err(|_| RepairError::Invalid("agent"))?.active_execution().map_err(|_| RepairError::Invalid("agent.activeExecution"))?;
+            if let Some(id)=pointer.and_then(|pointer| pointer.attempt_id) {studio_runtime_store::ExecutionHistoryRepository::attempt(tx,&id)?.and_then(|attempt|attempt.snapshot)} else {None}
+        };
         let repair = json!({
             "id":operation_id,
             "rootRequestId":operation_id,

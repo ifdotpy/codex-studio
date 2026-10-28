@@ -604,7 +604,7 @@ async fn manual_restart_settlement_evidence(state: &State) -> Value {
             let saved=studio_runtime_store::ExecutionHistoryRepository::receipt(tx,"manual-unknown-attempt",kind)?.expect("exact execution result");
             outcomes.insert(name.into(),json!({"input":saved.input,"result":saved.result}));
         }
-        Ok::<_,StoreError>(json!({"activeReceipt":receipts[0],"terminalReceipt":receipts[1],"events":events,"attempt":attempt,"outcomes":outcomes}))
+        Ok::<_,StoreError>(json!({"activeReceipt":receipts[0],"terminalReceipt":receipts[1],"events":events,"attempt":attempt.snapshot,"outcomes":outcomes}))
     }).await.expect("manual settlement evidence")
 }
 

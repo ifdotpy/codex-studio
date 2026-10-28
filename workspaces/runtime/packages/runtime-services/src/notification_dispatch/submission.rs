@@ -46,17 +46,29 @@ pub(super) fn record_submission(
             agent,
             &submission.first_event_id,
         )?;
-        let attempt_owner = match authorization {
+        let attempt_owner: Option<ProviderSubmission> = match authorization {
             SubmissionAuthorization::Start { attempt_id } => {
                 ExecutionHistoryRepository::attempt(tx, attempt_id)?
-                    .and_then(|attempt| attempt.get("providerSubmission").cloned())
+                    .and_then(|attempt| attempt.provider_submission)
+                    .map(|raw| {
+                        serde_json::from_str(raw.get())
+                            .map_err(|_| stored("runtime_event_meta", &submission.first_event_id))
+                    })
+                    .transpose()?
             }
             SubmissionAuthorization::Current
             | SubmissionAuthorization::AcknowledgedSteer { .. } => None,
         };
-        if let Some(owner) = attempt_owner.or(input_owner) {
-            let owner: ProviderSubmission = serde_json::from_value(owner)
-                .map_err(|_| stored("runtime_event_meta", &submission.first_event_id))?;
+        let owner = match attempt_owner {
+            Some(owner) => Some(owner),
+            None => input_owner
+                .map(|owner| {
+                    serde_json::from_value(owner)
+                        .map_err(|_| stored("runtime_event_meta", &submission.first_event_id))
+                })
+                .transpose()?,
+        };
+        if let Some(owner) = owner {
             let replacing = matches!(authorization, SubmissionAuthorization::Start { attempt_id } if owner.attempt_id.as_deref() != Some(attempt_id));
             if !replacing {
                 if owner.first_event_id != submission.first_event_id

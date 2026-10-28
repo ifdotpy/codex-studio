@@ -5185,15 +5185,12 @@ pub fn commit_prepared_turn(
     }) {
         return Ok(false);
     }
-    let replay = studio_runtime_store::ExecutionHistoryRepository::attempt(tx, &intent.attempt_id)?
-        .is_some_and(|a| a["receipts"]["submission"].is_object());
-    let may_submit = replay
-        || SchedulerRepository::reconcile_obsolete_before_submit(
-            tx,
-            &intent.agent_id,
-            intent.epoch,
-            &intent.attempt_id,
-        )?;
+    let may_submit = SchedulerRepository::reconcile_obsolete_before_submit(
+        tx,
+        &intent.agent_id,
+        intent.epoch,
+        &intent.attempt_id,
+    )?;
     if !may_submit {
         return Ok(false);
     }

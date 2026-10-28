@@ -1542,9 +1542,14 @@ mod child_turn_parent_tests {
         );
         store
             .transaction(move |tx| {
-                let attempt = ExecutionHistoryRepository::attempt(tx, &intent.attempt_id)?
-                    .expect("attempt retained");
-                assert!(attempt["receipts"].get("terminalInput").is_none());
+                assert!(
+                    ExecutionHistoryRepository::receipt(
+                        tx,
+                        &intent.attempt_id,
+                        studio_runtime_schema::persistence::ExecutionReceiptKind::TerminalInput
+                    )?
+                    .is_none()
+                );
                 Ok(())
             })
             .await

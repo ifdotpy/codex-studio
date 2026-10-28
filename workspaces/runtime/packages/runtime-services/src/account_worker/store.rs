@@ -170,10 +170,10 @@ pub(super) fn execution_admission(
 > {
     let attempt = studio_runtime_store::ExecutionHistoryRepository::attempt(tx, attempt_id)?
         .ok_or_else(|| invalid(attempt_id))?;
-    let root = attempt["rootRequestId"]
-        .as_str()
-        .ok_or_else(|| invalid(attempt_id))?
-        .to_owned();
+    let root = attempt
+        .start
+        .root_request_id
+        .ok_or_else(|| invalid(attempt_id))?;
     let admitted = studio_runtime_store::ExecutionHistoryRepository::admission(tx, attempt_id)?
         .ok_or_else(|| invalid(attempt_id))?;
     Ok((root, admitted))
