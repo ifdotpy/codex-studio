@@ -303,6 +303,7 @@ async fn execute(
                 if let Some(entry) = result
                     .processes
                     .iter_mut()
+                    .flatten()
                     .find(|p| p.key == text(&target, "key"))
                 {
                     entry.outcome = outcome;
@@ -313,10 +314,11 @@ async fn execute(
             result.status = if result
                 .processes
                 .iter()
+                .flatten()
                 .any(|p| matches!(p.outcome, ProcessOutcome::Uncertain { .. }))
             {
                 ProcessActionStatus::Uncertain
-            } else if result.processes.iter().any(|p| {
+            } else if result.processes.iter().flatten().any(|p| {
                 matches!(
                     p.outcome,
                     ProcessOutcome::Failed { .. } | ProcessOutcome::Stale { .. }
