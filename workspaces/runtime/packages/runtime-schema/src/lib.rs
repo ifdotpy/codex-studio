@@ -1111,6 +1111,28 @@ mod tests {
     }
 
     #[test]
+    fn receipt_server_delivery_accepts_canonical_scoped_identity() {
+        let root = crate::persistence::RequestIdentity::issue_root();
+        let id = crate::persistence::RequestIdentity::new(
+            "server-outgoing",
+            &[&"peer".repeat(40)],
+            &root,
+            &["event", &"part".repeat(50)],
+        )
+        .expect("canonical identity");
+        assert!(id.id().len() > 200);
+        assert!(
+            validate(
+                "PersistedServerDelivery",
+                &serde_json::json!({
+                    "id": id.id(), "state": "queued"
+                })
+            )
+            .expect("schema")
+        );
+    }
+
+    #[test]
     fn view_scopes_cover_every_collection_and_keep_detail_out_of_global() {
         let openapi: serde_json::Value = serde_json::from_slice(super::OPENAPI).expect("OpenAPI");
         let scopes = super::sync_protocol::subscription_entity_scopes();
