@@ -10,20 +10,13 @@ use rusqlite::OptionalExtension;
 use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
 use studio_runtime_store::{
     outbox::{Outbox, OutboxRow},
-    request_results::{Admission, AdmittedRequest, RequestResults, ResultEnvelope},
+    request_results::{
+        Admission, AdmittedRequest, RequestResultError, RequestResults, ResultEnvelope, StoredReply,
+    },
 };
 
 impl From<&RecoveredRequest> for TransportRequest {
     fn from(request: &RecoveredRequest) -> Self {
-        Self::from_request(request)
-    }
-}
-pub(in crate::account_worker) trait TransportRequestExt {
-    fn from_request(request: &RecoveredRequest) -> Self;
-    fn recovered(&self) -> RecoveredRequest;
-}
-impl TransportRequestExt for TransportRequest {
-    fn from_request(request: &RecoveredRequest) -> Self {
         Self {
             id: request.ticket.id.clone(),
             generation: request.ticket.generation,
@@ -36,6 +29,11 @@ impl TransportRequestExt for TransportRequest {
             remote_id: request.remote_id,
         }
     }
+}
+pub(in crate::account_worker) trait TransportRequestExt {
+    fn recovered(&self) -> RecoveredRequest;
+}
+impl TransportRequestExt for TransportRequest {
     fn recovered(&self) -> RecoveredRequest {
         RecoveredRequest {
             ticket: RequestTicket {
@@ -623,25 +621,27 @@ fn validate_root(
     tx: &rusqlite::Connection,
     call: &Call,
 ) -> Result<Result<(), PortError>, WorkerError> {
-    let identity = match call.identity() {
-        Ok(identity) => identity,
-        Err(error) => return Ok(Err(error)),
-    };
-    if let Err(error) = identity.validate(
-        now_ms(),
-        RequestResults::expired_before_ms(tx).map_err(result_error)?,
-    ) {
-        return Ok(Err(match error {
-            studio_runtime_schema::persistence::RequestIdentityError::Expired { .. } => {
-                PortError::Expired
-            }
-            studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7(_)
-            | studio_runtime_schema::persistence::RequestIdentityError::FutureTimestamp {
-                ..
-            } => PortError::Invalid,
-        }));
+    let floor = RequestResults::expired_before_ms(tx).map_err(result_error)?;
+    Ok(call
+        .identity()
+        .and_then(|identity| identity.validate(now_ms(), floor).map_err(identity_error)))
+}
+fn identity_error(error: studio_runtime_schema::persistence::RequestIdentityError) -> PortError {
+    use studio_runtime_schema::persistence::RequestIdentityError;
+    match error {
+        RequestIdentityError::Expired { .. } => PortError::Expired,
+        RequestIdentityError::InvalidUuidV7(_) | RequestIdentityError::FutureTimestamp { .. } => {
+            PortError::Invalid
+        }
     }
-    Ok(Ok(()))
+}
+fn call_error(error: RequestResultError) -> Result<PortError, WorkerError> {
+    match error {
+        RequestResultError::Conflict { .. } => Ok(PortError::Identity),
+        RequestResultError::Expired => Ok(PortError::Expired),
+        RequestResultError::Identity(error) => Ok(identity_error(error)),
+        error => Err(result_error(error)),
+    }
 }
 pub(super) enum Replay {
     Ready,
@@ -665,16 +665,23 @@ fn result_id(call: &Call) -> Result<String, PortError> {
 fn saved_reply(
     tx: &rusqlite::Connection,
     id: &str,
-    signature: &str,
-) -> Result<Option<RetainedReply>, WorkerError> {
-    RequestResults::replay(tx, id, signature, now_ms())
-        .map_err(result_error)?
-        .map(|saved| {
-            serde_json::from_str::<ResultEnvelope<RetainedReply>>(&saved.result)
-                .map(|envelope| envelope.reply)
-                .map_err(|error| WorkerError::Store(error.into()))
-        })
-        .transpose()
+) -> Result<Option<StoredReply<RetainedReply>>, WorkerError> {
+    Ok(RequestResults::read(
+        tx,
+        id,
+        "provider-call",
+        &[],
+        "",
+        &[],
+        now_ms(),
+    )?)
+}
+fn replay_final(saved: &RetainedReply) -> Replay {
+    let mut receipt = saved
+        .call
+        .receipt(saved.request.recovered().ticket, saved.result.clone());
+    receipt.replayed = true;
+    Replay::Return(receipt)
 }
 pub(super) fn replay_recorded(
     tx: &rusqlite::Transaction<'_>,
@@ -698,19 +705,7 @@ pub(super) fn replay_recorded(
         Ok(id) => id,
         Err(error) => return Ok(Err(error)),
     };
-    let saved = match RequestResults::replay(tx, &id, &call.signature(), now_ms()) {
-        Ok(saved) => saved,
-        Err(studio_runtime_store::request_results::RequestResultError::Conflict { .. }) => {
-            return Ok(Err(PortError::Identity));
-        }
-        Err(studio_runtime_store::request_results::RequestResultError::Identity(
-            studio_runtime_schema::persistence::RequestIdentityError::Expired { .. },
-        )) => return Ok(Err(PortError::Expired)),
-        Err(studio_runtime_store::request_results::RequestResultError::Identity(_)) => {
-            return Ok(Err(PortError::Invalid));
-        }
-        Err(error) => return Err(result_error(error)),
-    };
+    let saved = saved_reply(tx, &id)?;
     let Some(saved) = saved else {
         if call.admitted_request.is_some() {
             return Ok(Err(PortError::Unknown));
@@ -720,18 +715,12 @@ pub(super) fn replay_recorded(
         }
         return Ok(Ok(Replay::Ready));
     };
-    let saved: ResultEnvelope<RetainedReply> =
-        serde_json::from_str(&saved.result).map_err(StoreError::from)?;
-    if saved.reply.call.signature() != call.signature() {
+    if saved.signature != call.signature() || saved.reply.call.signature() != call.signature() {
         return Ok(Err(PortError::Identity));
     }
-    let mut receipt = saved
-        .reply
-        .call
-        .receipt(saved.reply.request.recovered().ticket, saved.reply.result);
-    receipt.replayed = true;
-    Ok(Ok(Replay::Return(receipt)))
+    Ok(Ok(replay_final(&saved.reply)))
 }
+
 fn replay_pending(prior: &RetainedCall) -> Replay {
     let Some(request) = &prior.request else {
         return Replay::Ready;
@@ -759,7 +748,7 @@ pub(super) fn reserve(
         }
         return Ok(());
     }
-    if RequestResults::replay(tx, admitted.id(), &call.signature(), now_ms())
+    if RequestResults::admitted_result(tx, &admitted)
         .map_err(result_error)?
         .is_some()
     {
@@ -809,8 +798,12 @@ pub(super) fn discard_unsent(
     tx: &rusqlite::Transaction<'_>,
     admitted: &AdmittedRequest,
 ) -> Result<(), WorkerError> {
-    let rows =
-        Outbox::for_request::<store::ProviderCall>(tx, admitted.id()).map_err(outbox_error)?;
+    let rows = Outbox::for_request_kind::<store::ProviderCall>(
+        tx,
+        admitted.id(),
+        OutboxKind::ProviderCall,
+    )
+    .map_err(outbox_error)?;
     for row in rows {
         let payload = retained(&row)?;
         if row.signature != admitted.signature()
@@ -852,16 +845,7 @@ pub(super) async fn submitted(
             let admitted = match RequestResults::admit(tx, &identity, &call.signature(), now_ms()) {
                 Ok(Admission::Fresh(admitted)) => admitted,
                 Ok(Admission::Replay(_)) => return Ok(Err(PortError::Unknown)),
-                Err(studio_runtime_store::request_results::RequestResultError::Conflict {
-                    ..
-                }) => return Ok(Err(PortError::Identity)),
-                Err(studio_runtime_store::request_results::RequestResultError::Identity(
-                    studio_runtime_schema::persistence::RequestIdentityError::Expired { .. },
-                )) => return Ok(Err(PortError::Expired)),
-                Err(studio_runtime_store::request_results::RequestResultError::Identity(_)) => {
-                    return Ok(Err(PortError::Invalid));
-                }
-                Err(error) => return Err(result_error(error)),
+                Err(error) => return Ok(Err(call_error(error)?)),
             };
             let mut reserved = call.clone();
             reserved.admitted_request = Some(admitted.clone());
@@ -933,7 +917,7 @@ pub(in crate::account_worker) fn checkpoint_covered(
             .as_ref()
             .is_some_and(|outcome| outcome.cursor <= cursor)
         {
-            settle(tx, &mut row, stream, generation, cursor)?;
+            settle(tx, &mut row, stream, generation)?;
         }
     }
     Ok(())
@@ -943,7 +927,6 @@ fn settle(
     row: &mut RetainedRow,
     stream: &str,
     generation: u64,
-    _checkpoint: u64,
 ) -> Result<(), WorkerError> {
     let store::ProviderCall::Retained(payload) = &mut row.payload else {
         return Err(WorkerError::Capacity);
@@ -1122,7 +1105,7 @@ pub(in crate::account_worker) fn record_outcome(
         .as_ref()
         .is_some_and(|(_, cursor)| *cursor <= checkpoint)
     {
-        settle(tx, &mut row, &stream, generation, checkpoint)?;
+        settle(tx, &mut row, &stream, generation)?;
     }
     Ok(accepted)
 }
@@ -1223,13 +1206,7 @@ impl RecordedCall {
     pub(super) fn replay(&self) -> Replay {
         match self {
             Self::Pending(value) => replay_pending(value),
-            Self::Final(value) => {
-                let mut receipt = value
-                    .call
-                    .receipt(value.request.recovered().ticket, value.result.clone());
-                receipt.replayed = true;
-                Replay::Return(receipt)
-            }
+            Self::Final(value) => replay_final(value),
         }
     }
 }
@@ -1242,18 +1219,7 @@ pub(super) fn recorded_operation(
         return Ok(Some(RecordedCall::Pending(value)));
     }
     let Some(id) = result_id else { return Ok(None) };
-    // This inspection is authorized by the immutable monitor operation, not ingress.
-    let signature: Option<String> = tx
-        .query_row(
-            "SELECT signature FROM request_results WHERE id=?1",
-            [id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(signature) = signature else {
-        return Ok(None);
-    };
-    Ok(saved_reply(tx, id, &signature)?.map(RecordedCall::Final))
+    Ok(saved_reply(tx, id)?.map(|saved| RecordedCall::Final(saved.reply)))
 }
 
 #[cfg(test)]
