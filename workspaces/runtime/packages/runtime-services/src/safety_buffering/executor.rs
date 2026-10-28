@@ -15,6 +15,7 @@ use crate::{
     agent_lifecycle_runtime::{LifecycleEffect, LifecycleEffectKind, LifecyclePorts},
 };
 use rusqlite::{OptionalExtension, Transaction, params};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     sync::Arc,
@@ -28,6 +29,26 @@ use studio_runtime_store::request_results::{Admission, AdmittedRequest, RequestR
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, RuntimeStore, SchedulerRepository, StoreError,
 };
+
+// Field order is the initial admission signature contract.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SafetyInitialReceipt {
+    account_key: String,
+    agent: String,
+    attempt_id: String,
+    connection_id: String,
+    created: f64,
+    epoch: i64,
+    id: String,
+    model: String,
+    root_request_id: String,
+    source_thread_id: String,
+    stage: Stage,
+    thread_id: String,
+    turn_id: String,
+    updated: f64,
+}
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const NOT_SENT_RETRIES: usize = 1;
@@ -206,7 +227,10 @@ pub async fn execute_action(
                         &[&decision_identity],
                     )
                     .map_err(|_| Error::InvalidStoredState)?;
-                    let signature = operation.to_string();
+                    let initial = SafetyInitialReceipt::deserialize(&operation)
+                        .map_err(|_| Error::InvalidStoredState)?;
+                    let signature =
+                        serde_json::to_string(&initial).map_err(|_| Error::InvalidStoredState)?;
                     let Admission::Fresh(admission) = RequestResults::admit(
                         tx,
                         &identity,
@@ -273,130 +297,153 @@ async fn drive(
             return Err(Error::StaleRetry);
         }
         let operation_id = format!("{}:{}", required_str(&operation, "id")?, stage.as_str());
-        if let Some(response) =
+        let body = if let Some(response) =
             recorded_written_response(&operation, stage, &operation_id, &saved_scope)?
         {
-            match advance_stage(&store, &mut operation, stage, response, lifecycle.clone()).await {
-                Ok(true) => continue,
-                Ok(false) => return public_receipt(&operation),
-                Err(error @ (Error::ProviderRejected | Error::Inactive)) => {
-                    operation["stage"] = json!(Stage::Failed.as_str());
-                    operation["dispatch"] = json!(SafetyRetryDispatch::Rejected);
-                    operation["error"] = json!("Safety retry stage was refused");
-                    persist_operation(&store, &mut operation).await?;
-                    return Err(error);
-                }
-                Err(Error::ProviderUnknown) => {
-                    operation["stage"] = json!(Stage::Unknown.as_str());
-                    operation["dispatch"] = json!(SafetyRetryDispatch::Unknown);
-                    operation["error"] =
-                        json!("Provider response did not identify the resulting thread or turn");
-                    persist_operation(&store, &mut operation).await?;
-                    return public_receipt(&operation);
-                }
-                Err(error) => return Err(error),
+            response
+        } else {
+            let (method, params) = request_for_stage(
+                Arc::clone(&store),
+                resources,
+                &operation,
+                stage,
+                scope.generation,
+            )
+            .await?;
+            if !persist_intent(
+                &store,
+                &mut operation,
+                stage,
+                &operation_id,
+                method,
+                &params,
+            )
+            .await?
+            {
+                return public_receipt(&operation);
             }
-        }
-        let (method, params) = request_for_stage(
-            Arc::clone(&store),
-            resources,
-            &operation,
-            stage,
-            scope.generation,
-        )
-        .await?;
-        if !persist_intent(
-            &store,
-            &mut operation,
-            stage,
-            &operation_id,
-            method,
-            &params,
-        )
-        .await?
-        {
-            return public_receipt(&operation);
-        }
-        let request = ProviderRequest {
-            root_request_id: required_str(&operation, "rootRequestId")?.to_owned(),
-            admitted_request: serde_json::from_value(operation["admittedRequest"].clone())
-                .map_err(|_| Error::InvalidStoredState)?,
-            account: account.clone(),
-            operation: operation_id.clone(),
-            actor: Some(RequestActor {
-                agent: required_str(&operation, "agent")?.to_owned(),
-                epoch: operation
-                    .get("epoch")
-                    .and_then(Value::as_i64)
-                    .ok_or(Error::InvalidStoredState)?,
-            }),
-            deleted_actor_session: None,
-            expected_scope: Some(scope),
-            method,
-            params: params.clone(),
-            deadline: Instant::now() + REQUEST_TIMEOUT,
-        };
-        let mut sent_retry = 0;
-        let receipt = loop {
-            match provider.provider_request(request.clone()).await {
-                Ok(receipt) => {
-                    validate_receipt(&receipt, &operation_id, &saved_scope)?;
-                    if !persist_stage_receipt(&store, &mut operation, stage, &receipt).await? {
-                        return public_receipt(&operation);
+            let request = ProviderRequest {
+                root_request_id: required_str(&operation, "rootRequestId")?.to_owned(),
+                admitted_request: serde_json::from_value(operation["admittedRequest"].clone())
+                    .map_err(|_| Error::InvalidStoredState)?,
+                account: account.clone(),
+                operation: operation_id.clone(),
+                actor: Some(RequestActor {
+                    agent: required_str(&operation, "agent")?.to_owned(),
+                    epoch: operation
+                        .get("epoch")
+                        .and_then(Value::as_i64)
+                        .ok_or(Error::InvalidStoredState)?,
+                }),
+                deleted_actor_session: None,
+                expected_scope: Some(scope),
+                method,
+                params: params.clone(),
+                deadline: Instant::now() + REQUEST_TIMEOUT,
+            };
+            let mut sent_retry = 0;
+            let receipt = loop {
+                match provider.provider_request(request.clone()).await {
+                    Ok(receipt) => {
+                        validate_receipt(&receipt, &operation_id, &saved_scope)?;
+                        if !persist_stage_receipt(&store, &mut operation, stage, &receipt).await? {
+                            return public_receipt(&operation);
+                        }
+                        if receipt.certainty() == RequestCertainty::NotSent
+                            && sent_retry < NOT_SENT_RETRIES
+                        {
+                            sent_retry += 1;
+                            operation["dispatch"] = json!(SafetyRetryDispatch::Intent);
+                            persist_operation(&store, &mut operation).await?;
+                            if parse_stage(
+                                operation.get("stage").ok_or(Error::InvalidStoredState)?,
+                            )? != stage
+                            {
+                                return public_receipt(&operation);
+                            }
+                            continue;
+                        }
+                        break receipt;
                     }
-                    if receipt.certainty() == RequestCertainty::NotSent
-                        && sent_retry < NOT_SENT_RETRIES
-                    {
-                        sent_retry += 1;
-                        operation["dispatch"] = json!(SafetyRetryDispatch::Intent);
-                        persist_operation(&store, &mut operation).await?;
-                        if parse_stage(operation.get("stage").ok_or(Error::InvalidStoredState)?)?
-                            != stage
+                    Err(AccountSessionError::Expired) => return Err(Error::Expired),
+                    Err(AccountSessionError::Requires(name)) => return Err(Error::Requires(name)),
+                    Err(AccountSessionError::Refused(_)) => {
+                        if !persist_unknown_receipt(
+                            &store,
+                            &mut operation,
+                            stage,
+                            &operation_id,
+                            SafetyRetryCertainty::Refused,
+                        )
+                        .await?
                         {
                             return public_receipt(&operation);
                         }
-                        continue;
+                        if stage == Stage::Start
+                            && !settle_start_rejected(
+                                &store,
+                                &mut operation,
+                                None,
+                                "Provider refused turn/start",
+                            )
+                            .await?
+                        {
+                            return public_receipt(&operation);
+                        }
+                        operation["stage"] = json!(Stage::Failed.as_str());
+                        operation["dispatch"] = json!(SafetyRetryDispatch::Rejected);
+                        operation["error"] = json!("Provider request refused");
+                        persist_operation(&store, &mut operation).await?;
+                        return Err(Error::ProviderRejected);
                     }
-                    break receipt;
-                }
-                Err(AccountSessionError::Expired) => return Err(Error::Expired),
-                Err(AccountSessionError::Requires(name)) => return Err(Error::Requires(name)),
-                Err(AccountSessionError::Unknown) => {
-                    if !persist_unknown_receipt(
-                        &store,
-                        &mut operation,
-                        stage,
-                        &operation_id,
-                        SafetyRetryCertainty::Unknown,
-                    )
-                    .await?
-                    {
+                    Err(_) => {
+                        if !persist_unknown_receipt(
+                            &store,
+                            &mut operation,
+                            stage,
+                            &operation_id,
+                            SafetyRetryCertainty::Unknown,
+                        )
+                        .await?
+                        {
+                            return public_receipt(&operation);
+                        }
+                        operation["stage"] = json!(Stage::Unknown.as_str());
+                        operation["dispatch"] = json!(SafetyRetryDispatch::Unknown);
+                        operation["error"] = json!("Provider request outcome is unknown");
+                        persist_operation(&store, &mut operation).await?;
                         return public_receipt(&operation);
                     }
+                }
+            };
+            let (ticket, response) = match receipt.outcome {
+                ReceiptOutcome::WorkerNotSent { .. }
+                | ReceiptOutcome::NoLiveAccountWorker
+                | ReceiptOutcome::ExpectedScopeMismatch
+                | ReceiptOutcome::DeadlineExpired
+                | ReceiptOutcome::NotHandedOff => {
+                    operation["dispatch"] = json!(SafetyRetryDispatch::Ready);
+                    persist_operation(&store, &mut operation).await?;
+                    return public_receipt(&operation);
+                }
+                ReceiptOutcome::Unknown { .. } => {
                     operation["stage"] = json!(Stage::Unknown.as_str());
                     operation["dispatch"] = json!(SafetyRetryDispatch::Unknown);
                     operation["error"] = json!("Provider request outcome is unknown");
                     persist_operation(&store, &mut operation).await?;
                     return public_receipt(&operation);
                 }
-                Err(AccountSessionError::Refused(_)) => {
-                    if !persist_unknown_receipt(
-                        &store,
-                        &mut operation,
-                        stage,
-                        &operation_id,
-                        SafetyRetryCertainty::Refused,
-                    )
-                    .await?
-                    {
-                        return public_receipt(&operation);
-                    }
+                ReceiptOutcome::Written { ticket, response } => (ticket, response),
+            };
+            let body = match response {
+                ProviderResponse::Reply(value) => value,
+                ProviderResponse::Rejected(_) => {
                     if stage == Stage::Start
                         && !settle_start_rejected(
                             &store,
                             &mut operation,
-                            None,
-                            "Provider refused turn/start",
+                            Some(&ticket),
+                            "Provider rejected turn/start",
                         )
                         .await?
                     {
@@ -404,76 +451,19 @@ async fn drive(
                     }
                     operation["stage"] = json!(Stage::Failed.as_str());
                     operation["dispatch"] = json!(SafetyRetryDispatch::Rejected);
-                    operation["error"] = json!("Provider request refused");
+                    operation["error"] = json!("Provider rejected the safety retry request");
                     persist_operation(&store, &mut operation).await?;
                     return Err(Error::ProviderRejected);
                 }
-                Err(_) => {
-                    if !persist_unknown_receipt(
-                        &store,
-                        &mut operation,
-                        stage,
-                        &operation_id,
-                        SafetyRetryCertainty::Unknown,
-                    )
-                    .await?
-                    {
-                        return public_receipt(&operation);
-                    }
-                    operation["stage"] = json!(Stage::Unknown.as_str());
-                    operation["dispatch"] = json!(SafetyRetryDispatch::Unknown);
-                    operation["error"] = json!("Provider request outcome is unknown");
-                    persist_operation(&store, &mut operation).await?;
-                    return public_receipt(&operation);
-                }
-            }
+            };
+            operation
+                .get_mut("responses")
+                .and_then(Value::as_object_mut)
+                .ok_or(Error::InvalidStoredState)?
+                .insert(stage.as_str().into(), body.clone());
+            operation["dispatch"] = json!(SafetyRetryDispatch::Received);
+            body
         };
-        let (ticket, response) = match receipt.outcome {
-            ReceiptOutcome::WorkerNotSent { .. }
-            | ReceiptOutcome::NoLiveAccountWorker
-            | ReceiptOutcome::ExpectedScopeMismatch
-            | ReceiptOutcome::DeadlineExpired
-            | ReceiptOutcome::NotHandedOff => {
-                operation["dispatch"] = json!(SafetyRetryDispatch::Ready);
-                persist_operation(&store, &mut operation).await?;
-                return public_receipt(&operation);
-            }
-            ReceiptOutcome::Unknown { .. } => {
-                operation["stage"] = json!(Stage::Unknown.as_str());
-                operation["dispatch"] = json!(SafetyRetryDispatch::Unknown);
-                operation["error"] = json!("Provider request outcome is unknown");
-                persist_operation(&store, &mut operation).await?;
-                return public_receipt(&operation);
-            }
-            ReceiptOutcome::Written { ticket, response } => (ticket, response),
-        };
-        let body = match response {
-            ProviderResponse::Reply(value) => value,
-            ProviderResponse::Rejected(_) => {
-                if stage == Stage::Start
-                    && !settle_start_rejected(
-                        &store,
-                        &mut operation,
-                        Some(&ticket),
-                        "Provider rejected turn/start",
-                    )
-                    .await?
-                {
-                    return public_receipt(&operation);
-                }
-                operation["stage"] = json!(Stage::Failed.as_str());
-                operation["dispatch"] = json!(SafetyRetryDispatch::Rejected);
-                operation["error"] = json!("Provider rejected the safety retry request");
-                persist_operation(&store, &mut operation).await?;
-                return Err(Error::ProviderRejected);
-            }
-        };
-        operation
-            .get_mut("responses")
-            .and_then(Value::as_object_mut)
-            .ok_or(Error::InvalidStoredState)?
-            .insert(stage.as_str().into(), body.clone());
-        operation["dispatch"] = json!(SafetyRetryDispatch::Received);
         match advance_stage(&store, &mut operation, stage, body, lifecycle.clone()).await {
             Ok(true) => (),
             Ok(false) => return public_receipt(&operation),
@@ -493,10 +483,6 @@ async fn drive(
                 return public_receipt(&operation);
             }
             Err(error) => return Err(error),
-        }
-        if parse_stage(operation.get("stage").ok_or(Error::InvalidStoredState)?)? == Stage::Running
-        {
-            return public_receipt(&operation);
         }
     }
 }
@@ -1315,3 +1301,23 @@ impl From<rusqlite::Error> for Error {
 #[cfg(test)]
 #[path = "executor_publication_tests.rs"]
 mod publication_tests;
+
+#[cfg(test)]
+mod initial_receipt_test {
+    use super::*;
+
+    #[test]
+    fn signature_matches_the_stored_corpus_retry() {
+        const STORED: &str = r#"{"accountKey":"acct","admission":{"created":1793154122023,"id":"[\"safety-retry\",[\"agent\"],\"01a18050-8127-776d-af7a-bd891ba05919\",[\"agent:turn\"]]","signature":"{\"accountKey\":\"acct\",\"agent\":\"agent\",\"attemptId\":\"01a18050-8127-776d-af7a-bd891ba05919\",\"connectionId\":\"connection\",\"created\":1793154122.023043,\"epoch\":7,\"id\":\"agent:turn\",\"model\":\"model-fast\",\"rootRequestId\":\"01a18050-8127-776d-af7a-bd891ba05919\",\"sourceThreadId\":\"thread\",\"stage\":\"turns\",\"threadId\":\"thread\",\"turnId\":\"turn\",\"updated\":1793154122.023043}"},"agent":"agent","attemptId":"01a18050-8127-776d-af7a-bd891ba05919","connectionId":"connection","created":1793154122.023043,"dispatch":"ready","epoch":7,"id":"agent:turn","model":"model-fast","receipts":{},"responses":{},"rootRequestId":"01a18050-8127-776d-af7a-bd891ba05919","scope":{"account":"acct","connection":"connection","generation":1},"sourceThreadId":"thread","stage":"turns","threadId":"thread","turnId":"turn","updated":1793154122.023043}"#;
+        #[derive(serde::Deserialize)]
+        struct Stored {
+            admission: AdmittedRequest,
+        }
+        let initial: SafetyInitialReceipt = serde_json::from_str(STORED).unwrap();
+        let stored: Stored = serde_json::from_str(STORED).unwrap();
+        assert_eq!(
+            serde_json::to_string(&initial).unwrap(),
+            stored.admission.signature()
+        );
+    }
+}
