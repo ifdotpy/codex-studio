@@ -408,7 +408,8 @@ export function query({
         // SDK shouldQuery:false appends context for the next querying message;
         // its receipt must not generate or complete an assistant turn.
         if (input.value.shouldQuery === false) {
-          transcriptPrefix.push(text);
+          // Scenario selection follows human text, not Studio context.
+          if (!input.value.isSynthetic) transcriptPrefix.push(text);
           yield {
             type: "result",
             subtype: "success",
