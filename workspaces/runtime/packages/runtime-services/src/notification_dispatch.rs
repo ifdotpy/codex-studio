@@ -3428,6 +3428,18 @@ mod tests {
         assert_eq!(agent["events"], 1);
         let old_rows: i64 = connection.query_row("SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'provider-notification:%'", [], |row| row.get(0)).expect("old notification rows");
         assert_eq!(old_rows, 0, "journal state owns notification dedup");
+        let tx = connection.transaction().expect("ACK transaction");
+        studio_runtime_store::account_state::set_provider_checkpoint(&tx, "default", 7, 1)
+            .expect("contiguous ACK");
+        tx.execute(
+            "DELETE FROM runtime_outbox WHERE kind=?1",
+            [studio_runtime_schema::persistence::OutboxKind::JournalEntry],
+        )
+        .expect("ACK-covered gap retired");
+        let replay = super::dispatch_notification(&tx, "agent", &PublicationContext::default(), &streams, &identity(1), &frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"different"}})), 9.0).expect("ACK suppresses dispatch after gap cleanup");
+        assert!(matches!(replay.outcome, DispatchOutcome::Ignored { .. }));
+        assert!(replay.stream_update.is_none());
+        assert!(replay.post_commit.effects.is_empty());
     }
 
     #[test]
@@ -3649,12 +3661,27 @@ mod tests {
             result
         };
         write(&mut connection, &first, true).expect("first start writes");
+        let tx = connection.transaction().expect("conflict transaction");
+        assert!(matches!(
+            record_start_submission(&tx, "agent", "attempt", &retry),
+            Err(super::NotificationDispatchError::ConflictingInput)
+        ));
+        tx.commit().expect("refusal commits no changes");
         write(&mut connection, &retry, true).expect("retry replaces the unsent record");
+        write(&mut connection, &first, true)
+            .expect("old exact attempt replays its original result");
         let item = TranscriptRepository::item(&connection, "agent", "agent:e1")
             .expect("item reads")
             .expect("item exists");
         assert_eq!(item.record["text"], retry.text);
         assert_eq!(item.record["inputs"][1]["text"], "more");
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM request_results", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("result count"),
+            2
+        );
         assert_eq!(
             write(&mut connection, &retry, true).expect("identical replay"),
             DispatchOutcome::Written
@@ -3751,6 +3778,92 @@ mod tests {
             DispatchOutcome::Written
         );
         transaction.commit().expect("deleted-agent replay commits");
+        let now = chrono::Utc::now().timestamp_millis();
+        let expired = now - studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS - 1;
+        connection
+            .execute("UPDATE request_results SET created=?1", [expired])
+            .expect("age response");
+        connection.execute("UPDATE runtime_event_meta SET record=json_set(record,'$.providerSubmission.admission.created',?1)", [expired]).expect("age admitted owner");
+        let tx = connection.transaction().expect("GC transaction");
+        assert_eq!(
+            studio_runtime_store::request_results::RequestResults::gc(&tx, now)
+                .expect("bounded GC"),
+            1
+        );
+        assert!(matches!(
+            record_user_submission(&tx, "agent", &submission),
+            Err(super::NotificationDispatchError::RequestResult(
+                studio_runtime_store::request_results::RequestResultError::Identity(
+                    studio_runtime_schema::persistence::RequestIdentityError::Expired { .. }
+                )
+            ))
+        ));
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM request_results", [], |row| row
+                .get::<_, i64>(0))
+                .expect("response count"),
+            0
+        );
+        assert_eq!(
+            TranscriptRepository::item(&tx, "agent", "agent:e1")
+                .expect("item")
+                .expect("published input")
+                .record["text"],
+            submission.text
+        );
+    }
+
+    #[test]
+    fn acknowledged_steer_uses_frozen_admission_after_current_attempt_clears() {
+        let mut connection = database();
+        let admission =
+            studio_runtime_store::ExecutionHistoryRepository::admission(&connection, "attempt")
+                .expect("root admission")
+                .expect("persisted root");
+        connection.execute_batch("INSERT INTO runtime_events VALUES('e1','agent','user','hello','dispatching',1,1,'turn',NULL); UPDATE runtime_agents SET record=json_remove(record,'$.activeExecution','$.startAttempt') WHERE id='agent';").expect("late acknowledgement fixture");
+        let submission = PreparedSubmission {
+            first_event_id: "e1".into(),
+            submitted_at: 2.0,
+            created_at: 1.0,
+            text: "hello".into(),
+            inputs: vec![SubmittedInput {
+                id: "e1".into(),
+                at: 1.0,
+                kind: "user".into(),
+                text: "hello".into(),
+                assets: json!([]),
+            }],
+            assets: json!([]),
+            radio_authorized: false,
+        };
+        let ack = studio_runtime_store::AcknowledgedSteer {
+            agent_id: "agent".into(),
+            admission,
+            steer_id: "steer".into(),
+            event_ids: vec!["e1".into()],
+            prepared_submission: Some(json!({})),
+            events: vec![],
+            submitted_at: 2.0,
+        };
+        let tx = connection
+            .transaction()
+            .expect("late publication transaction");
+        assert_eq!(
+            super::record_acknowledged_steer_submission(&tx, "agent", &submission, &ack)
+                .expect("frozen publication authority"),
+            DispatchOutcome::Written
+        );
+        assert_eq!(
+            super::record_acknowledged_steer_submission(&tx, "agent", &submission, &ack)
+                .expect("exact callback replay"),
+            DispatchOutcome::Written
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM request_results", [], |row| row
+                .get::<_, i64>(0))
+                .expect("exact result count"),
+            1
+        );
     }
 
     #[test]

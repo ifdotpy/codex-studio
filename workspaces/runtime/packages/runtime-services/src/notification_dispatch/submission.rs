@@ -41,9 +41,20 @@ pub(super) fn record_submission(
             "text": submission.text,
             "inputTexts": submission.inputs.iter().map(|input| &input.text).collect::<Vec<_>>(),
         }))?;
-        if let Some(owner) =
-            NotificationDispatchRepository::submission_owner(tx, agent, &submission.first_event_id)?
-        {
+        let input_owner = NotificationDispatchRepository::submission_owner(
+            tx,
+            agent,
+            &submission.first_event_id,
+        )?;
+        let attempt_owner = match authorization {
+            SubmissionAuthorization::Start { attempt_id } => {
+                ExecutionHistoryRepository::attempt(tx, attempt_id)?
+                    .and_then(|attempt| attempt.get("providerSubmission").cloned())
+            }
+            SubmissionAuthorization::Current
+            | SubmissionAuthorization::AcknowledgedSteer { .. } => None,
+        };
+        if let Some(owner) = attempt_owner.or(input_owner) {
             let owner: ProviderSubmission = serde_json::from_value(owner)
                 .map_err(|_| stored("runtime_event_meta", &submission.first_event_id))?;
             if owner.first_event_id != submission.first_event_id {
@@ -119,7 +130,11 @@ pub(super) fn record_submission(
         };
         NotificationDispatchRepository::put_submission_owner(
             tx,
-            owner.attempt_id.as_deref(),
+            if matches!(authorization, SubmissionAuthorization::Start { .. }) {
+                owner.attempt_id.as_deref()
+            } else {
+                None
+            },
             &submission
                 .inputs
                 .iter()

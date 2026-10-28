@@ -1199,6 +1199,46 @@ mod tests {
     /// value with each entry's pending text, count and params blanked, plus a
     /// copy of every entry with pending deltas.
     #[test]
+    fn pending_restore_preserves_current_base_and_rebuilds_counters() {
+        let key = StreamKey {
+            agent_id: "agent".into(),
+            account: "default".into(),
+            generation: 3,
+            thread: "thread".into(),
+            turn: Some("turn".into()),
+            item: "answer".into(),
+            method: "item/agentMessage/delta".into(),
+        };
+        let params = serde_json::json!({"threadId":"thread","turnId":"turn","itemId":"answer"});
+        let mut streams = NotificationStreamBuffer::default();
+        assert!(matches!(
+            streams.enqueue_delta(key.clone(), "first", &params),
+            EnqueueResult::Buffered
+        ));
+        streams.flush(&key, "").expect("initial flush");
+        assert!(streams.preserve_base(&key, "authoritative".into()));
+        assert!(matches!(
+            streams.enqueue_delta(key.clone(), "pending", &params),
+            EnqueueResult::Buffered
+        ));
+        let (metadata, pending) = streams.persisted_parts().expect("persist typed state");
+        let mut pending = pending.expect("flush obligation");
+        pending.0[0].base = Some("obsolete".into());
+        let mut restored: NotificationStreamBuffer =
+            serde_json::from_str(&metadata).expect("metadata");
+        assert!(!restored.has_pending(&key));
+        restored
+            .restore_pending(pending)
+            .expect("restore flush obligation");
+        assert!(restored.pending_bytes() > 0);
+        assert_eq!(restored.base(&key), Some("authoritative"));
+        assert_eq!(
+            restored.flush(&key, "authoritative").expect("flush").0,
+            "authoritativepending"
+        );
+    }
+
+    #[test]
     fn persisted_text_matches_the_blanked_value_form() {
         let key = |item: &str, turn: Option<&str>| StreamKey {
             agent_id: "agent".into(),
