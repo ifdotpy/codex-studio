@@ -210,6 +210,8 @@ impl std::fmt::Display for FailedCheck {
 
 #[derive(Debug, Error)]
 pub enum NotificationDispatchError {
+    #[error("provider notification request expired")]
+    Expired,
     #[error("invalid provider notification or delivery identity (failed check {check})")]
     InvalidNotification { check: FailedCheck },
     /// Account-wide delivery state (the worker's delivery identity or the
