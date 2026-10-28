@@ -645,7 +645,15 @@ impl ProviderTitleRequestPort {
         };
         let title = title.clone();
         let root_request_id = title.root_request_id.clone();
-        let admitted_request = self
+        let admitted_request =
+            if studio_runtime_services::account_worker::retained::ProviderReadMethod::from_method(
+                method,
+            )
+            .is_some()
+            {
+                None
+            } else {
+                Some(self
             .store
             .transaction_with(move |tx| {
                 studio_runtime_services::title_generation::validate_dispatch(tx, &title).map_err(
@@ -662,10 +670,11 @@ impl ProviderTitleRequestPort {
                 )
             })
             .await
-            .ok()?;
+            .ok()?)
+            };
         let request = ProviderRequest {
             root_request_id,
-            admitted_request: Some(admitted_request),
+            admitted_request,
             account: expected_account.clone(),
             operation: expected_operation.clone(),
             actor,
@@ -1101,11 +1110,8 @@ mod tests {
             }
         );
         let calls = session.requests.lock().expect("fixture request list");
-        assert!(
-            calls
-                .iter()
-                .all(|call| call.root_request_id == request_id && call.admitted_request.is_some())
-        );
+        assert!(calls.iter().all(|call| call.root_request_id == request_id
+            && (call.admitted_request.is_some() == (call.method != Method::ThreadTurnsList))));
         assert_eq!(
             calls.iter().map(|call| call.method).collect::<Vec<_>>(),
             [
