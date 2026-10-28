@@ -367,6 +367,81 @@ pub(crate) fn settle(
 mod tests {
     use super::*;
     #[test]
+    fn receipt_pivot_monitor_expired_input_replays_permanent_result() {
+        let mut db = Connection::open_in_memory().expect("database");
+        studio_runtime_store::receipt_schema::create(&db).expect("schema");
+        db.execute_batch(
+            "CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .expect("policy");
+        let root = RequestIdentity::issue_root();
+        let identity = identity(&root).expect("identity");
+        let operation: Operation = serde_json::from_value(
+            json!({"agent":"agent","epoch":1,"accountKey":"account","connectionId":"connection"}),
+        )
+        .expect("operation");
+        let tx = db.transaction().expect("transaction");
+        let admitted =
+            match RequestResults::admit(&tx, &identity, "signature", identity.issued_ms())
+                .expect("admit")
+            {
+                Admission::Fresh(admitted) => admitted,
+                Admission::Replay(_) => panic!("fresh"),
+            };
+        let key = outbox_id(&root);
+        Outbox::put(
+            &tx,
+            &OutboxRow {
+                id: key.clone(),
+                kind: OutboxKind::MonitorInput,
+                owner_kind: OwnerKind::Monitor,
+                owner_id: "monitor".into(),
+                request_id: Some(admitted.id().into()),
+                signature: "signature".into(),
+                status: OutboxStatus::Unknown,
+                account: Some("account".into()),
+                stream_id: None,
+                generation: None,
+                ordinal: None,
+                next_at: None,
+                created: admitted.created(),
+                payload: InputIntent {
+                    admitted,
+                    receipt: Receipt {
+                        operation: operation.clone(),
+                        monitor: "monitor".into(),
+                        status: Status::Unknown,
+                    },
+                },
+            },
+        )
+        .expect("input owner");
+        let ticket = format!("{TICKET_PREFIX}{root}");
+        settle(&tx, "monitor", &operation, &ticket, &InputOutcome::Expired)
+            .expect("permanent refusal");
+        settle(
+            &tx,
+            "monitor",
+            &operation,
+            &ticket,
+            &InputOutcome::Unknown("lost response".into()),
+        )
+        .expect("no resurrection");
+        let (_, receipt) = saved(&tx, &root)
+            .expect("read")
+            .expect("exact final result");
+        assert!(matches!(
+            replay_status(receipt.status),
+            Err(MonitorError::Expired)
+        ));
+        assert!(
+            Outbox::get::<InputIntent>(&tx, &key)
+                .expect("outbox")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn receipt_pivot_monitor_unknown_survives_time_and_late_exact_ack_settles() {
         let mut db = Connection::open_in_memory().expect("database");
         studio_runtime_store::receipt_schema::create(&db).expect("target schema");
