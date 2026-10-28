@@ -89,15 +89,8 @@ the core. The page sends commands and renders the state.
 
 ## What stays on IndexedDB
 
-<<<<<<< head
-- The drafts of the local server.
+- The composer attachment list and the form drafts of the local server. They use `localDraft` (localStorage with IndexedDB locks). Step 8 removes them.
 - The old outbox rows. The core owns the outbox of the local server (`native/outbox.ts`, `outbox.*`): queue states, delivery, retry, receipts, and remove and restore. When the queue view starts, the page imports each old row with its status and attempted marker, like `native/legacyDrafts.ts`. The core keeps its own copy of a row it already has. The old rows stay on disk.
-||||||| base
-- The outbox and drafts of the local server (`send.ts`). Step 3 moves the outbox to `outbox.*`. The page opens that database on demand, so a slow database no longer blocks the stream or the projections.
-=======
-- The composer attachment list and the form drafts of the local server. They use `localDraft` (localStorage with IndexedDB locks). Steps 5 and 6 move them.
-- The outbox and drafts of the local server (`send.ts`). Step 3 moves the outbox to `outbox.*`. The page opens that database on demand, so a slow database no longer blocks the stream or the projections.
->>>>>>> step4-uploads
 - Old IndexedDB projection databases from earlier builds stay on disk until the user clears them. The native path never reads them.
 - Remote servers and the plain browser path (RxDB, Dexie, Web Locks, BroadcastChannel).
 
