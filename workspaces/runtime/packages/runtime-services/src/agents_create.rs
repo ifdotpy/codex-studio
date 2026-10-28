@@ -124,23 +124,6 @@ impl AgentMutation {
 
 use crate::event_write::CallerAdmission as MutationAdmission;
 
-fn replay_agent_mutation<R: serde::de::DeserializeOwned>(
-    connection: &Connection,
-    id: &str,
-    request_id: &str,
-    operation: AgentMutation,
-    signature: &str,
-    now_ms: i64,
-) -> Result<Option<R>, MutationError> {
-    Ok(crate::event_write::saved_request(
-        connection,
-        crate::event_write::RequestKey::new(AGENT_MUTATION_NAMESPACE, &[id], request_id)
-            .operation(&[operation.operation()]),
-        signature,
-        now_ms,
-    )?)
-}
-
 /// The caller must authorize access to the agent before disclosing this reply.
 pub fn replay_rename(
     connection: &Connection,
@@ -149,14 +132,13 @@ pub fn replay_rename(
     signature: &str,
     now_ms: i64,
 ) -> Result<Option<RenameReply>, MutationError> {
-    replay_agent_mutation(
+    Ok(crate::event_write::saved_request(
         connection,
-        id,
-        request_id,
-        AgentMutation::Rename,
+        crate::event_write::RequestKey::new(AGENT_MUTATION_NAMESPACE, &[id], request_id)
+            .operation(&[AgentMutation::Rename.operation()]),
         signature,
         now_ms,
-    )
+    )?)
 }
 
 fn admit_agent_mutation<R: serde::de::DeserializeOwned>(

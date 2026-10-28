@@ -108,26 +108,14 @@ enum RuleObligation {
     CancelMonitors { monitor_ids: Vec<String> },
 }
 
-fn rules_request_error(error: RequestResultError) -> RulesServiceError {
-    match error {
-        RequestResultError::Sql(error) => RulesServiceError::Sqlite(error),
-        RequestResultError::Json(error) => RulesServiceError::Json(error),
-        RequestResultError::Identity(_) => RulesServiceError::Invalid(
-            "Request id expired or invalid; inspect the existing rule before retrying",
-        ),
-        RequestResultError::Conflict { .. } => {
-            RulesServiceError::Invalid("Request identity was reused with different content")
-        }
+impl From<RequestResultError> for RulesServiceError {
+    fn from(error: RequestResultError) -> Self {
+        Self::Store(error.into())
     }
 }
-
-fn rules_outbox_error(error: OutboxError) -> RulesServiceError {
-    match error {
-        OutboxError::Sql(error) => RulesServiceError::Sqlite(error),
-        OutboxError::Json(error) => RulesServiceError::Json(error),
-        OutboxError::Conflict(_) => RulesServiceError::Invalid(
-            "Rule cancellation identity was reused with different content",
-        ),
+impl From<OutboxError> for RulesServiceError {
+    fn from(error: OutboxError) -> Self {
+        Self::Store(error.into())
     }
 }
 
@@ -147,15 +135,13 @@ fn cancellation(
     root: &str,
 ) -> Result<Option<OutboxRow<RuleObligation>>, RulesServiceError> {
     let raw = format!("{RULE_REQUEST_NAMESPACE}:{actor}:{root}");
-    if let Some(row) =
-        Outbox::get(connection, &cancellation_id(&raw, actor)).map_err(rules_outbox_error)?
-    {
+    if let Some(row) = Outbox::get(connection, &cancellation_id(&raw, actor))? {
         return Ok(Some(row));
     }
     let Ok(identity) = RequestIdentity::new(RULE_REQUEST_NAMESPACE, &[actor], root, &[]) else {
         return Ok(None);
     };
-    Outbox::get(connection, &cancellation_id(identity.id(), actor)).map_err(rules_outbox_error)
+    Outbox::get(connection, &cancellation_id(identity.id(), actor))
 }
 
 /// Filesystem work for rule actions. Implementations must be called only before
@@ -904,8 +890,7 @@ fn read_rules_request(
             .raw(&format!("{RULE_REQUEST_NAMESPACE}:{actor_id}:{request_id}")),
         signature,
         chrono::Utc::now().timestamp_millis(),
-    )
-    .map_err(rules_request_error)?
+    )?
     .map(|reply| rules_result(connection, actor_id, request_id, reply))
     .transpose()
 }
@@ -1070,9 +1055,7 @@ pub async fn rules(
                 )),
                 &signature,
                 now_ms,
-            )
-            .map_err(rules_request_error)?
-            {
+            )? {
                 crate::event_write::CallerAdmission::Fresh(admitted) => admitted,
                 crate::event_write::CallerAdmission::Replay(reply) => {
                     return rules_result(tx, &transaction_actor_id, &request_id, reply);
@@ -1206,8 +1189,7 @@ pub async fn rules(
                             monitor_ids: saved.cancel_monitor_ids.clone(),
                         },
                     },
-                )
-                .map_err(rules_outbox_error)?;
+                )?;
             }
             crate::event_write::settle_request(
                 tx,
@@ -1216,8 +1198,7 @@ pub async fn rules(
                 &RulesReply {
                     value: saved.value.clone(),
                 },
-            )
-            .map_err(rules_request_error)?;
+            )?;
             Ok(saved)
         })
         .await?;
@@ -1247,7 +1228,7 @@ pub async fn acknowledge_rule_cancellations(
                         "Rule cancellation owner changed",
                     ));
                 }
-                Outbox::delete_settled(tx, &row.id, &row.signature).map_err(rules_outbox_error)?;
+                Outbox::delete_settled(tx, &row.id, &row.signature)?;
             }
             Ok(())
         })
@@ -1896,7 +1877,7 @@ mod tests {
                         + studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS
                         + 1_000,
                 )
-                .map_err(super::rules_request_error)?;
+                .map_err(super::RulesServiceError::from)?;
                 Ok::<_, RulesServiceError>(())
             })
             .await

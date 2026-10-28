@@ -8,6 +8,10 @@ pub(crate) use studio_runtime_process::clock::monotonic_ns;
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_schema::delivery::DeliveryMoment;
+use studio_runtime_schema::persistence::RequestIdentity;
+use studio_runtime_store::request_results::{
+    Admission, AdmittedRequest, RequestResultError, RequestResults, ResultEnvelope,
+};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
     QueueEventId, QueueWriteRepository, Transaction,
@@ -28,27 +32,22 @@ pub fn replay_request<R: serde::de::DeserializeOwned>(
     id: &str,
     signature: &str,
     now_ms: i64,
-) -> Result<
-    Option<studio_runtime_store::request_results::ResultEnvelope<R>>,
-    studio_runtime_store::request_results::RequestResultError,
-> {
-    studio_runtime_store::request_results::RequestResults::replay(
-        connection, id, signature, now_ms,
-    )?
-    .map(|stored| serde_json::from_str(&stored.result).map_err(Into::into))
-    .transpose()
+) -> Result<Option<ResultEnvelope<R>>, RequestResultError> {
+    RequestResults::replay(connection, id, signature, now_ms)?
+        .map(|stored| serde_json::from_str(&stored.result).map_err(Into::into))
+        .transpose()
 }
 
 pub fn settle_request<R: serde::Serialize>(
     transaction: &Transaction<'_>,
-    admitted: &studio_runtime_store::request_results::AdmittedRequest,
+    admitted: &AdmittedRequest,
     actor: Option<&str>,
     reply: &R,
-) -> Result<(), studio_runtime_store::request_results::RequestResultError> {
-    studio_runtime_store::request_results::RequestResults::settle(
+) -> Result<(), RequestResultError> {
+    RequestResults::settle(
         transaction,
         admitted,
-        &studio_runtime_store::request_results::ResultEnvelope {
+        &ResultEnvelope {
             actor: actor.map(str::to_owned),
             reply,
             references: Vec::new(),
@@ -58,7 +57,7 @@ pub fn settle_request<R: serde::Serialize>(
 }
 
 pub enum CallerAdmission<R> {
-    Fresh(studio_runtime_store::request_results::AdmittedRequest),
+    Fresh(AdmittedRequest),
     Replay(R),
 }
 
@@ -95,23 +94,15 @@ pub fn begin_request<R: serde::de::DeserializeOwned>(
     key: RequestKey<'_>,
     signature: &str,
     now_ms: i64,
-) -> Result<CallerAdmission<R>, studio_runtime_store::request_results::RequestResultError> {
+) -> Result<CallerAdmission<R>, RequestResultError> {
     if let Some(saved) = replay_request(transaction, key.raw, signature, now_ms)? {
         return Ok(CallerAdmission::Replay(saved.reply));
     }
     Ok(
-        match studio_runtime_store::request_results::RequestResults::admit(
-            transaction,
-            &request_identity(&key, now_ms)?,
-            signature,
-            now_ms,
-        )? {
-            studio_runtime_store::request_results::Admission::Fresh(admitted) => {
-                CallerAdmission::Fresh(admitted)
-            }
-            studio_runtime_store::request_results::Admission::Replay(saved) => {
-                let saved: studio_runtime_store::request_results::ResultEnvelope<R> =
-                    serde_json::from_str(&saved.result)?;
+        match RequestResults::admit(transaction, &request_identity(&key)?, signature, now_ms)? {
+            Admission::Fresh(admitted) => CallerAdmission::Fresh(admitted),
+            Admission::Replay(saved) => {
+                let saved: ResultEnvelope<R> = serde_json::from_str(&saved.result)?;
                 CallerAdmission::Replay(saved.reply)
             }
         },
@@ -124,28 +115,17 @@ pub fn saved_request<R: serde::de::DeserializeOwned>(
     key: RequestKey<'_>,
     signature: &str,
     now_ms: i64,
-) -> Result<Option<R>, studio_runtime_store::request_results::RequestResultError> {
+) -> Result<Option<R>, RequestResultError> {
     if let Some(saved) = replay_request(connection, key.raw, signature, now_ms)? {
         return Ok(Some(saved.reply));
     }
-    let identity = request_identity(&key, now_ms)?;
+    let identity = request_identity(&key)?;
     Ok(replay_request(connection, identity.id(), signature, now_ms)?.map(|saved| saved.reply))
 }
 
-fn request_identity(
-    key: &RequestKey<'_>,
-    now_ms: i64,
-) -> Result<
-    studio_runtime_schema::persistence::RequestIdentity,
-    studio_runtime_schema::persistence::RequestIdentityError,
-> {
-    use studio_runtime_schema::persistence::{RequestIdentity, RequestIdentityError};
-    RequestIdentity::new(key.namespace, key.authority, key.root, key.operation).map_err(|_| {
-        RequestIdentityError::Expired {
-            issued_ms: 0,
-            expired_before_ms: now_ms,
-        }
-    })
+fn request_identity(key: &RequestKey<'_>) -> Result<RequestIdentity, RequestResultError> {
+    RequestIdentity::new(key.namespace, key.authority, key.root, key.operation)
+        .map_err(|_| RequestResultError::Expired)
 }
 
 /// Python `str.strip()` includes four ASCII separators Rust's whitespace predicate omits.
@@ -158,7 +138,7 @@ pub fn python_strip(value: &str) -> &str {
 #[derive(Debug, Error)]
 pub enum EventWriteError {
     #[error(transparent)]
-    RequestResult(#[from] studio_runtime_store::request_results::RequestResultError),
+    RequestResult(#[from] RequestResultError),
     #[error("invalid request: {0}")]
     InvalidRequest(&'static str),
     #[error("{0}")]
@@ -327,7 +307,7 @@ pub fn annotate(
     let id = input
         .id
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(studio_runtime_schema::persistence::RequestIdentity::issue_root);
+        .unwrap_or_else(RequestIdentity::issue_root);
     let event_id = format!("annotation:{id}");
     let now_ms = (created * 1000.0) as i64;
     let admitted = match begin_request::<studio_runtime_store::AnnotationRecord>(
@@ -465,9 +445,7 @@ fn enqueue(
                     .ok()
                     .filter(|id| id.get_version_num() == 7)
                     .map(|_| id.clone())
-                    .unwrap_or_else(
-                        studio_runtime_schema::persistence::RequestIdentity::issue_root,
-                    );
+                    .unwrap_or_else(RequestIdentity::issue_root);
                 metadata["remoteRequestId"] = json!(root);
                 QueueWriteRepository::put_metadata(transaction, &id, &metadata)?;
                 root

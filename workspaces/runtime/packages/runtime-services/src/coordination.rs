@@ -2120,9 +2120,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(CoordinationError::RequestResult(
-                studio_runtime_store::request_results::RequestResultError::Identity(
-                    studio_runtime_schema::persistence::RequestIdentityError::Expired { .. }
-                )
+                studio_runtime_store::request_results::RequestResultError::Expired
             ))
         ));
         drop(tx);
