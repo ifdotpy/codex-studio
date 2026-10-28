@@ -723,8 +723,14 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
 
     struct NoBroker;
     impl AccountSessionPort for NoBroker {}
+    #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct StopEnvelope { request_id: String, action: String, operation: Vec<String>, payload: StopPayload }
+    #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct StopPayload { worker: String, link: String, reason: String, control_epoch: i64 }
     struct Peer {
-        calls: Mutex<Vec<Value>>,
+        calls: Mutex<Vec<StopEnvelope>>,
         attempts: AtomicUsize,
     }
     impl PairedTransport for Peer {
@@ -736,27 +742,31 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
         ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
             Box::pin(async move {
                 assert_eq!(server, "peer-server");
+                let envelope: StopEnvelope = serde_json::from_value(envelope.clone()).expect("typed stop envelope");
                 self.calls.lock().unwrap().push(envelope.clone());
                 if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
                     return Err(refused(503, "exchange_unknown", "reply was lost"));
                 }
                 Ok(json!({
-                    "requestId": envelope["requestId"],
+                    "requestId": envelope.request_id,
                     "outcome": "applied",
-                    "value": {"stopped": [envelope["payload"]["worker"]]},
+                    "value": {"stopped": [envelope.payload.worker]},
                 }))
             })
         }
     }
 
-    let (_root, store) = store().await;
+    let root = tempfile::tempdir().expect("state");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+    store.set_local_server_id(Some("local-server".into())).expect("local identity");
     store
         .transaction(|tx| {
-            tx.execute("DELETE FROM runtime_server_outbox", [])?;
+            tx.execute("INSERT INTO runtime_access_clients(id,record) VALUES('peer-server',?1)",
+                [r#"{"id":"peer-server","clientId":"peer-server","kind":"server","label":"Peer","created":1,"publicKey":"fixture-key","status":"paired"}"#])?;
             Ok::<_, studio_runtime_store::StoreError>(())
         })
         .await
-        .expect("isolate the stop outbox");
+        .expect("paired peer");
     let mut proxy = AgentRecord {
         id: AgentId::from("remote-stop-proxy"),
         root_id: AgentId::from("remote-stop-proxy"),
@@ -812,19 +822,18 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
         json!({"stopped":["remote-stop-proxy"]})
     );
     let first = peer.calls.lock().unwrap()[0].clone();
-    assert_eq!(first["action"], "stop");
-    assert_eq!(first["payload"]["worker"], "remote-stop-proxy");
-    let request_id = first["requestId"]
-        .as_str()
-        .expect("stable request id")
-        .to_owned();
-    let retry_at: f64 = store
+    assert_eq!(first.action, "stop");
+    assert_eq!(first.payload.worker, "remote-stop-proxy");
+    let request_id = first.request_id.clone();
+    assert_eq!(uuid::Uuid::parse_str(&request_id).unwrap().get_version_num(), 7, "fresh stop uses UUIDv7");
+    let outbox_key = studio_runtime_store::multi_server_delivery::remote_operation_key("server-outbox", &["peer-server"], &request_id, &["stop"]);
+    let (retry_at, fingerprint): (f64, String) = store
         .test_reader()
         .expect("read queued stop")
         .query_row(
-            "SELECT next_at FROM runtime_server_outbox WHERE id=?1 AND state='queued'",
-            [&request_id],
-            |row| row.get(0),
+            "SELECT next_at,fingerprint FROM runtime_server_outbox WHERE id=?1 AND state='queued'",
+            [&outbox_key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("lost receipt leaves durable queued intent");
 
@@ -843,6 +852,10 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
     let calls = peer.calls.lock().unwrap();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[1], first, "retry reuses exact signed stop content");
+    let saved_signature: String = store.test_reader().unwrap().query_row(
+        "SELECT signature FROM request_results WHERE id=?1", [&outbox_key], |row| row.get(0),
+    ).expect("settled stop receipt");
+    assert_eq!(saved_signature, fingerprint, "replay retains the admitted signature");
 }
 
 #[tokio::test]
