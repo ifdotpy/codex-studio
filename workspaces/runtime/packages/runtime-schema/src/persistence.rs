@@ -10,6 +10,27 @@ pub const REQUEST_RESULT_TTL_MS: i64 = 2_592_000_000;
 /// Maximum accepted UUIDv7 issuance time ahead of the clock. Unit: milliseconds.
 pub const REQUEST_ID_FUTURE_SKEW_MS: i64 = 120_000;
 
+/// The current provider process identity captured by an operation owner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderScope {
+    pub generation: u64,
+    pub connection: String,
+}
+
+/// A retained operation either captured its exact scope or cannot prove it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "state",
+    content = "scope",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+pub enum CapturedScope {
+    Known(ProviderScope),
+    Unproven,
+}
+
 macro_rules! domain {
     ($(#[$meta:meta])* $name:ident { $($(#[$variant_meta:meta])* $variant:ident => $wire:literal),+ $(,)? }) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, strum::VariantNames)]
@@ -272,6 +293,21 @@ impl RequestIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_provider_scope_round_trips_writer_bytes() {
+        for scope in [
+            CapturedScope::Known(ProviderScope {
+                generation: 42,
+                connection: "connection".into(),
+            }),
+            CapturedScope::Unproven,
+        ] {
+            let bytes = serde_json::to_vec(&scope).unwrap();
+            let decoded: CapturedScope = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(serde_json::to_vec(&decoded).unwrap(), bytes);
+        }
+    }
     #[test]
     fn receipt_recipient_delivery_schema_matches_nullable_owner() {
         let openapi: serde_json::Value =
