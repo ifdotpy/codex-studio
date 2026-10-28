@@ -211,6 +211,7 @@ pub mod usage_resume;
 pub mod vault;
 mod vm_attachments;
 pub mod vm_preparation;
+pub mod vm_to_host;
 pub mod voice;
 pub mod voice_runtime;
 pub mod wakeups;
