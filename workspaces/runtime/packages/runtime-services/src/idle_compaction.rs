@@ -219,6 +219,9 @@ pub struct IdleAdmission {
     pub limits: Value,
 }
 impl Admission for IdleAdmission {
+    fn idle_episode_id(&self) -> Option<&str> {
+        Some(&self.episode.id)
+    }
     fn check(
         &self,
         tx: &Transaction<'_>,
@@ -267,11 +270,12 @@ pub async fn release_unsubmitted(
             {
                 return Ok(());
             }
-            let saved = value["idleCompactionEpisode"].clone();
+            let saved = crate::native_actions::idle_provenance(tx, &request_id)?
+                .ok_or(NativeError::Changed)?;
             crate::native_actions::fail_pending(tx, &request_id, &message)?;
-            for field in ["status", "startAttempt", "turnEpoch"] {
-                value[field] = saved["before"][field].clone();
-            }
+            value["status"] = json!(saved.before.status);
+            value["startAttempt"] = saved.before.start_attempt;
+            value["turnEpoch"] = json!(saved.before.turn_epoch);
             value["inFlight"] = json!(false);
             studio_runtime_store::AgentRepository::put(
                 tx,
