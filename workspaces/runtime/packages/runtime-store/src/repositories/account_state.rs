@@ -487,7 +487,11 @@ mod tests {
 
     #[test]
     fn metadata_only_vm_stream_has_no_provider_state() {
-        let fields: super::StreamFields = serde_json::from_value(json!({"streams":{}})).unwrap();
+        let fields = super::StreamFields {
+            generation: None,
+            connection: None,
+            ack: None,
+        };
         assert!(fields.into_state().unwrap().is_none());
         for stream in [
             json!({"streams":{},"connection":"c"}),

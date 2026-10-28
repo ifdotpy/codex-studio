@@ -2623,8 +2623,10 @@ pub fn decide_delivery(
     action: &str,
     now: i64,
 ) -> Result<DeliveryDecision, AccessError> {
-    let action: ServerOperationKind = serde_json::from_value(json!(action))
-        .map_err(|_| refused(400, "invalid_request", "Unknown cross-server operation"))?;
+    let action: ServerOperationKind = <ServerOperationKind as serde::Deserialize>::deserialize(
+        serde::de::value::StrDeserializer::<serde_json::Error>::new(action),
+    )
+    .map_err(|_| refused(400, "invalid_request", "Unknown cross-server operation"))?;
     let Some(snapshot) = snapshot else {
         return Ok(DeliveryDecision::Execute);
     };
@@ -3801,7 +3803,7 @@ mod tests {
 
     fn saved(state: &str, next_at: f64) -> DeliverySnapshot {
         DeliverySnapshot {
-            state: serde_json::from_value(serde_json::json!(state)).expect("state"),
+            state: <studio_runtime_schema::persistence::ServerDeliveryState as serde::Deserialize>::deserialize(serde::de::value::StrDeserializer::<serde_json::Error>::new(state)).expect("state"),
             signature: "same-content".to_owned(),
             server: Some("peer".to_owned()),
             next_at,

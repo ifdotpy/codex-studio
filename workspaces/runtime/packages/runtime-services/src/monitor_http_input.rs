@@ -367,10 +367,13 @@ mod tests {
         .expect("policy");
         let root = RequestIdentity::issue_root();
         let identity = identity(&root).expect("identity");
-        let operation: Operation = serde_json::from_value(
-            json!({"agent":"agent","epoch":1,"accountKey":"account","connectionId":"connection"}),
-        )
-        .expect("operation");
+        let operation: Operation = Operation {
+            agent: "agent".into(),
+            epoch: 1,
+            account_key: "account".into(),
+            connection_id: "connection".into(),
+            evidence: Default::default(),
+        };
         let tx = db.transaction().expect("transaction");
         let admitted =
             match RequestResults::admit(&tx, &identity, "signature", identity.issued_ms())
@@ -448,10 +451,13 @@ mod tests {
             &[],
         )
         .expect("identity");
-        let operation: Operation = serde_json::from_value(
-            json!({"agent":"agent","epoch":1,"accountKey":"account","connectionId":"connection"}),
-        )
-        .expect("operation");
+        let operation: Operation = Operation {
+            agent: "agent".into(),
+            epoch: 1,
+            account_key: "account".into(),
+            connection_id: "connection".into(),
+            evidence: Default::default(),
+        };
         let payload = json!({"admitted":{"id":identity.id(),"signature":"signature","created":identity.issued_ms()},"receipt":{"operation":operation,"monitor":"monitor","status":"Unknown"}});
         let id = outbox_id(&root);
         db.execute("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,request_id,signature,status,next_at,payload,created) VALUES(?1,'monitor_input','monitor','monitor',?2,'signature','unknown',NULL,?3,?4)",rusqlite::params![id,identity.id(),payload.to_string(),identity.issued_ms()]).expect("uncertain admission");

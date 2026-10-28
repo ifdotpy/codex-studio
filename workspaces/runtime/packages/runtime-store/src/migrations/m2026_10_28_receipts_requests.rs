@@ -840,7 +840,10 @@ fn delivery_map(source: &str, row: &SourceReceipt, deliveries: &Value) -> Result
                 }
             } else {
                 RecipientDelivery {
-                    status: serde_json::from_value(json!(value)).map_err(|_| invalid())?,
+                    status: DeliveryStatus::deserialize(serde::de::value::StrDeserializer::<
+                        serde_json::Error,
+                    >::new(&value))
+                    .map_err(|_| invalid())?,
                     error: None,
                 }
             };

@@ -832,7 +832,22 @@ fn agent_owners(
         let mut settings = value["startAttempt"]["modelSettings"].clone();
         let status: NativeSettingsStatus =
             serde_json::from_value(settings["status"].clone()).map_err(|_| invalid())?;
-        let call:Call=serde_json::from_value(json!({"root_request_id":"","admitted_request":null,"scope":settings["scope"],"operation":settings["operation"],"actor":{"agent":row.id,"epoch":value["epoch"]},"transfer":null,"deleted_actor_session":null,"method":settings["method"],"params":settings["params"]})).map_err(|_|invalid())?;
+        let call = Call {
+            root_request_id: String::new(),
+            admitted_request: None,
+            scope: Deserialize::deserialize(&settings["scope"]).map_err(|_| invalid())?,
+            operation: string(&settings, "operation", table, row)?.into(),
+            actor: Some(
+                studio_runtime_schema::provider_call_contract::RequestActor {
+                    agent: row.id.clone(),
+                    epoch: value["epoch"].as_i64().ok_or_else(invalid)?,
+                },
+            ),
+            transfer: None,
+            deleted_actor_session: None,
+            method: Deserialize::deserialize(&settings["method"]).map_err(|_| invalid())?,
+            params: settings["params"].clone(),
+        };
         let (token, root) = if retained(
             tx,
             table,
@@ -1186,7 +1201,22 @@ fn operation_owner(
                     | studio_runtime_providers::Method::TurnStart
             )
         {
-            let call:Call=serde_json::from_value(json!({"root_request_id":"","admitted_request":null,"scope":value["scope"],"operation":value["operationId"],"actor":{"agent":value["agent"],"epoch":value["epoch"]},"transfer":null,"deleted_actor_session":null,"method":method,"params":value["requestParams"]})).map_err(|_|invalid())?;
+            let call = Call {
+                root_request_id: String::new(),
+                admitted_request: None,
+                scope: Deserialize::deserialize(&value["scope"]).map_err(|_| invalid())?,
+                operation: string(&value, "operationId", table, row)?.into(),
+                actor: Some(
+                    studio_runtime_schema::provider_call_contract::RequestActor {
+                        agent: string(&value, "agent", table, row)?.into(),
+                        epoch: value["epoch"].as_i64().ok_or_else(invalid)?,
+                    },
+                ),
+                transfer: None,
+                deleted_actor_session: None,
+                method,
+                params: value["requestParams"].clone(),
+            };
             let (token, root) = captured_token(tx, table, row, &call, cutover)?;
             value["admittedRequest"] = json!(token);
             value["rootRequestId"] = json!(root);
@@ -1709,7 +1739,26 @@ mod tests {
         assert_eq!(row.payload["reply"]["outcome"], "unknown");
     }
     fn call_fixture(db: &Connection, operation: &str, method: &str) -> (Call, String) {
-        let call:Call=serde_json::from_value(json!({"root_request_id":"","admitted_request":null,"scope":{"account":"account","connection":"1","generation":1},"operation":operation,"actor":{"agent":"agent","epoch":1},"transfer":null,"deleted_actor_session":null,"method":method,"params":{"threadId":"thread"}})).expect("call");
+        let call = Call {
+            root_request_id: String::new(),
+            admitted_request: None,
+            scope: studio_runtime_schema::provider_call_contract::ConnectionScope {
+                account: "account".into(),
+                connection: "1".into(),
+                generation: 1,
+            },
+            operation: operation.into(),
+            actor: Some(
+                studio_runtime_schema::provider_call_contract::RequestActor {
+                    agent: "agent".into(),
+                    epoch: 1,
+                },
+            ),
+            transfer: None,
+            deleted_actor_session: None,
+            method: studio_runtime_providers::Method::from_wire(method).expect("method"),
+            params: json!({"threadId":"thread"}),
+        };
         let key =
             studio_runtime_schema::provider_call_contract::transport_key("account", operation);
         let id = format!("account-worker:{key}:submitted");
@@ -2202,7 +2251,21 @@ mod tests {
         db.execute_batch("CREATE TABLE runtime_safety_retries(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_limit_reset_attempts(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_process_actions(id TEXT PRIMARY KEY,signature TEXT,record TEXT)").expect("owners");
         call_fixture(&db, "retry:interrupt", "turn/interrupt");
         db.execute("INSERT INTO runtime_safety_retries VALUES('retry',?1)",[json!({"id":"retry","stage":"interrupt","dispatch":"unknown","agent":"agent","epoch":1,"scope":{"account":"account","connection":"1","generation":1},"rpcMethod":"turn/interrupt","operationId":"retry:interrupt","requestParams":{"threadId":"thread"}}).to_string()]).expect("safety");
-        let call:Call=serde_json::from_value(json!({"root_request_id":"","admitted_request":null,"scope":{"account":"account","connection":"1","generation":1},"operation":"limit-reset:charge-key:1","actor":null,"transfer":null,"deleted_actor_session":null,"method":studio_runtime_providers::Method::AccountRateLimitResetCreditConsume,"params":{"creditId":"credit","idempotencyKey":"charge-key"}})).expect("call");
+        let call = Call {
+            root_request_id: String::new(),
+            admitted_request: None,
+            scope: studio_runtime_schema::provider_call_contract::ConnectionScope {
+                account: "account".into(),
+                connection: "1".into(),
+                generation: 1,
+            },
+            operation: "limit-reset:charge-key:1".into(),
+            actor: None,
+            transfer: None,
+            deleted_actor_session: None,
+            method: studio_runtime_providers::Method::AccountRateLimitResetCreditConsume,
+            params: json!({"creditId":"credit","idempotencyKey":"charge-key"}),
+        };
         let key = studio_runtime_schema::provider_call_contract::transport_key(
             "account",
             &call.operation,
