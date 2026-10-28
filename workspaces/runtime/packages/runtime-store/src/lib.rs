@@ -97,10 +97,11 @@ pub use records::{
     ExecutionRunRecord, GraphAgentRecord, InterruptOutcome, JsonRecord, MessageRepository,
     MonitorRecord, PlanRecord, QueueEvent, QueueEventId, QueueEventRepository, RecordKeyMode,
     RecordOrder, RecordPredicate, RecordQueryShape, RequestRecord, RuleRecord, StartAttemptAction,
-    StartAttemptView, StartInterruptView, Table, TaskId, TaskRecord, TaskRepository,
-    TerminalRecord, ToolResultRecord, TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId,
-    TranscriptItemRecord, UnknownAgentStatus, UsageResumeRecord, WorkItemRecord, WorkStatus,
-    WorkspaceOperationRecord, decode_agent_value,
+    StartAttemptView, StartInterruptView, StartOutcomeHold, StoredStartOutcomeHold, StoredTitleJob,
+    Table, TaskId, TaskRecord, TaskRepository, TerminalRecord, TitleJob, ToolResultRecord,
+    TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord,
+    UnknownAgentStatus, UsageResumeRecord, WorkItemRecord, WorkStatus, WorkspaceOperationRecord,
+    decode_agent_value,
 };
 pub use repositories::agent_indexed_reads::{AgentIndexedReads, RESERVED_TURN_INPUT};
 pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
@@ -4863,6 +4864,7 @@ mod wal_flush_tests {
 
 /// The only typed→Value conversion: feeds existing Value-only projections
 /// (sync views, SSE, entity/room/subscription views). Not for storage or logic.
+/// Also backs legacy read-only AgentRecord::value() readers; migrate to typed fields.
 ///
 /// Panics if T's Serialize fails (custom serializer error or non-string map keys).
 /// Use only with derived projection types; the reply and record types passed

@@ -229,6 +229,9 @@ fn running() -> AgentRecord {
         extra.insert(key.to_owned(), value);
     }
     AgentRecord {
+        title_job: None,
+        start_outcome_hold: None,
+        fired_events: Default::default(),
         id: AgentId::from(AGENT),
         root_id: AgentId::from(AGENT),
         epoch: 4,

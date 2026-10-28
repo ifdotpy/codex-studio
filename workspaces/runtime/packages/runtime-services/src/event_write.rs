@@ -837,6 +837,9 @@ mod tests {
             .expect("volatile agent table creates");
         studio_runtime_store::receipt_schema::create(&connection).expect("request result schema");
         let agent = AgentRecord {
+            title_job: None,
+            start_outcome_hold: None,
+            fired_events: Default::default(),
             id: AgentId::from("a"),
             root_id: AgentId::from("a"),
             epoch: 3,

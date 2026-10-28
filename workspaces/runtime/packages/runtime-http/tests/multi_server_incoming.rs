@@ -822,6 +822,9 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus};
     let (root, store) = common::store().await;
     let mut parent = AgentRecord {
+        title_job: None,
+        start_outcome_hold: None,
+        fired_events: Default::default(),
         id: AgentId::from("event-parent"),
         root_id: AgentId::from("event-parent"),
         epoch: 3,

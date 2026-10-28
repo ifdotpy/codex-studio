@@ -222,6 +222,9 @@ mod tests {
         AgentRepository::put(
             &connection,
             &AgentRecord {
+                title_job: None,
+                start_outcome_hold: None,
+                fired_events: Default::default(),
                 id: AgentId::from("agent"),
                 root_id: AgentId::from("agent"),
                 epoch: 4,
@@ -675,6 +678,9 @@ mod tests {
         AgentRepository::put(
             &transaction,
             &AgentRecord {
+                title_job: None,
+                start_outcome_hold: None,
+                fired_events: Default::default(),
                 id: AgentId::from("other"),
                 root_id: AgentId::from("other"),
                 epoch: 1,

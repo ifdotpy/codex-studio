@@ -1,6 +1,5 @@
 use crate::CachedSql;
 use rusqlite::Connection;
-use std::collections::BTreeSet;
 use studio_runtime_schema::persistence::HoldStatus;
 
 use crate::StoreResult;
@@ -126,14 +125,7 @@ impl AgentRepository {
     pub fn event_fired(connection: &Connection, root: &str, event: &str) -> StoreResult<bool> {
         let agent = Self::get(connection, &AgentId::from(root))?
             .ok_or(crate::StoreError::RecordContract("missing event root"))?;
-        let names: BTreeSet<String> = agent
-            .extra
-            .get("firedEvents")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or_default();
-        Ok(names.contains(event))
+        Ok(agent.fired_events.contains(event))
     }
 
     /// The root owns every fired name for its lifetime; first insertion wins.
@@ -144,19 +136,9 @@ impl AgentRepository {
     ) -> StoreResult<bool> {
         let mut agent = Self::get(tx, &AgentId::from(root))?
             .ok_or(crate::StoreError::RecordContract("missing event root"))?;
-        let mut names: BTreeSet<String> = agent
-            .extra
-            .get("firedEvents")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or_default();
-        if !names.insert(event.to_owned()) {
+        if !agent.fired_events.insert(event.to_owned()) {
             return Ok(false);
         }
-        agent
-            .extra
-            .insert("firedEvents".into(), serde_json::to_value(names)?);
         Self::put(tx, &agent)?;
         Ok(true)
     }

@@ -2745,6 +2745,9 @@ mod tests {
         extra.insert("threadId".into(), json!("voice-thread"));
         extra.insert("isLead".into(), json!(true));
         let agent = AgentRecord {
+            title_job: None,
+            start_outcome_hold: None,
+            fired_events: Default::default(),
             id: AgentId::from("voice-agent"),
             root_id: AgentId::from("voice-agent"),
             epoch: 0,

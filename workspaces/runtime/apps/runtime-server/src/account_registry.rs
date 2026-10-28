@@ -2110,6 +2110,9 @@ mod bounded_reconcile_tests {
                 AgentRepository::put(
                     transaction,
                     &AgentRecord {
+                        title_job: None,
+                        start_outcome_hold: None,
+                        fired_events: Default::default(),
                         id: id.clone(),
                         root_id: id.clone(),
                         epoch: 1,
@@ -2283,6 +2286,9 @@ mod bounded_reconcile_tests {
                 AgentRepository::put(
                     transaction,
                     &AgentRecord {
+                        title_job: None,
+                        start_outcome_hold: None,
+                        fired_events: Default::default(),
                         id: id.clone(),
                         root_id: id.clone(),
                         epoch: 1,
@@ -2344,6 +2350,9 @@ mod bounded_reconcile_tests {
                     AgentRepository::put(
                         transaction,
                         &AgentRecord {
+                            title_job: None,
+                            start_outcome_hold: None,
+                            fired_events: Default::default(),
                             id: AgentId::from(id),
                             root_id: AgentId::from("lead"),
                             epoch: 1,

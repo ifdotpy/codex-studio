@@ -157,11 +157,12 @@ impl SchedulerRepository {
             }
         }
         if agent
-            .extra
-            .get("startOutcomeHold")
-            .is_some_and(|h| h["attemptId"] == identity.attempt_id)
+            .start_outcome_hold
+            .as_ref()
+            .and_then(crate::StoredStartOutcomeHold::attempt_id)
+            == Some(identity.attempt_id.as_str())
         {
-            agent.extra.remove("startOutcomeHold");
+            agent.start_outcome_hold = None;
         }
         let interrupt = (agent.status == AgentStatus::Paused
             && !manual_delivery_hold_tracks(&agent, identity, turn_id))
@@ -459,19 +460,37 @@ impl SchedulerRepository {
             account,
             "(json_extract(record,'$.startAttempt') IS NOT NULL OR json_extract(record,'$.status')='queued')",
         )? {
-            let previous_error = agent
-                .extra
-                .get("startOutcomeHold")
-                .filter(|hold| hold["stage"] == "account_settlement")
-                .and_then(|hold| hold.get("previousError"))
-                .cloned()
-                .unwrap_or_else(|| agent.extra.get("error").cloned().unwrap_or(Value::Null));
-            let previous_hold = agent.extra.get("startOutcomeHold").filter(|h| h["stage"] == "account_settlement")
-                .and_then(|h| h.get("previousNativeFailureHold")).cloned()
-                .unwrap_or_else(|| json!({"present":agent.extra.contains_key("nativeFailureHold"),"value":agent.extra.get("nativeFailureHold")}));
+            let (previous_error, previous_hold) = match &agent.start_outcome_hold {
+                Some(crate::StoredStartOutcomeHold::Known(
+                    crate::StartOutcomeHold::AccountSettlement {
+                        previous_error,
+                        previous_native_failure_hold,
+                        ..
+                    },
+                )) => (previous_error.clone(), previous_native_failure_hold.clone()),
+                _ => (
+                    agent.extra.get("error").cloned().unwrap_or(Value::Null),
+                    crate::records::PreviousNativeFailureHold {
+                        present: agent.extra.contains_key("nativeFailureHold"),
+                        value: agent
+                            .extra
+                            .get("nativeFailureHold")
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                    },
+                ),
+            };
             agent.extra.insert("nativeFailureHold".into(), json!(true));
             agent.extra.insert("error".into(), json!(reason));
-            agent.extra.insert("startOutcomeHold".into(), json!({"stage":"account_settlement","cursor":cursor,"reason":reason,"previousError":previous_error,"previousNativeFailureHold":previous_hold}));
+            agent.start_outcome_hold = Some(crate::StoredStartOutcomeHold::Known(
+                crate::StartOutcomeHold::AccountSettlement {
+                    cursor,
+                    reason: reason.into(),
+                    previous_error,
+                    previous_native_failure_hold: previous_hold,
+                    extra: Default::default(),
+                },
+            ));
             publish_agent(transaction, &agent)?;
         }
         Ok(())
@@ -510,7 +529,6 @@ impl SchedulerRepository {
                 "inFlight",
                 "activeTools",
                 "turnId",
-                "startOutcomeHold",
                 "manualRecoveryDeliveryHold",
                 "nativeSafetyBuffering",
                 "authWait",
@@ -519,6 +537,7 @@ impl SchedulerRepository {
             ]
             .iter()
             .any(|key| agent.extra.get(*key).is_some_and(truthy))
+            || agent.start_outcome_hold.is_some()
             || agent
                 .extra
                 .get("nativeRelease")
@@ -1437,7 +1456,7 @@ impl SchedulerRepository {
             agent.extra.insert("error".into(), json!(message));
         }
         agent.extra.insert("inFlight".into(), json!(false));
-        agent.extra.remove("startOutcomeHold");
+        agent.start_outcome_hold = None;
         agent
             .extra
             .get_mut("startAttempt")
@@ -1659,12 +1678,12 @@ impl SchedulerRepository {
                 agent.extra.insert("error".into(), Value::Null);
             }
             if agent
-                .extra
-                .get("startOutcomeHold")
-                .and_then(|h| h["attemptId"].as_str())
+                .start_outcome_hold
+                .as_ref()
+                .and_then(crate::StoredStartOutcomeHold::attempt_id)
                 == Some(attempt_id)
             {
-                agent.extra.remove("startOutcomeHold");
+                agent.start_outcome_hold = None;
                 if agent
                     .extra
                     .get("nativeFailureHold")
@@ -1837,12 +1856,12 @@ impl SchedulerRepository {
             marker["replacedByTurn"] = json!(turn_id);
         }
         let clears_unknown = agent
-            .extra
-            .get("startOutcomeHold")
-            .and_then(|h| h["attemptId"].as_str())
+            .start_outcome_hold
+            .as_ref()
+            .and_then(crate::StoredStartOutcomeHold::attempt_id)
             == Some(attempt_id);
         if clears_unknown {
-            agent.extra.remove("startOutcomeHold");
+            agent.start_outcome_hold = None;
         }
         transaction.execute_cached(
             "INSERT INTO runtime_completed_turns(id) VALUES (?1)",
@@ -2115,7 +2134,7 @@ fn return_unapplied_input(
     agent.extra.insert("error".into(), Value::Null);
     agent.extra.insert("inFlight".into(), json!(false));
     agent.extra.remove("startAttempt");
-    agent.extra.remove("startOutcomeHold");
+    agent.start_outcome_hold = None;
     publish_agent(tx, &agent)?;
     ExecutionHistoryRepository::save_receipt(
         tx,
@@ -2220,7 +2239,7 @@ pub(super) fn apply_start_error(
         .extra
         .insert("inFlight".into(), json!(decision.in_flight));
     if !unknown {
-        agent.extra.remove("startOutcomeHold");
+        agent.start_outcome_hold = None;
     }
     agent
         .extra
@@ -2368,29 +2387,32 @@ pub(super) fn timestamp() -> f64 {
         .map_or(0.0, |d| d.as_secs_f64())
 }
 pub(super) fn clear_hold(agent: &mut AgentRecord) {
-    if agent
-        .extra
-        .get("startOutcomeHold")
-        .is_none_or(|h| h["stage"] != "account_settlement")
+    if !agent
+        .start_outcome_hold
+        .as_ref()
+        .is_some_and(crate::StoredStartOutcomeHold::is_account_settlement)
     {
         return;
     }
-    let hold = agent
-        .extra
-        .remove("startOutcomeHold")
-        .unwrap_or(Value::Null);
-    if hold["previousNativeFailureHold"]["present"] == true {
+    let Some(crate::StoredStartOutcomeHold::Known(crate::StartOutcomeHold::AccountSettlement {
+        previous_native_failure_hold,
+        previous_error,
+        reason,
+        ..
+    })) = agent.start_outcome_hold.take()
+    else {
+        return;
+    };
+    if previous_native_failure_hold.present {
         agent.extra.insert(
             "nativeFailureHold".into(),
-            hold["previousNativeFailureHold"]["value"].clone(),
+            previous_native_failure_hold.value,
         );
     } else {
         agent.extra.remove("nativeFailureHold");
     }
-    if agent.extra.get("error") == hold.get("reason") {
-        agent
-            .extra
-            .insert("error".into(), hold["previousError"].clone());
+    if agent.extra.get("error").and_then(Value::as_str) == Some(reason.as_str()) {
+        agent.extra.insert("error".into(), previous_error);
     }
 }
 /// Requeue an exact unsubmitted current attempt, or cancel a stale epoch's
@@ -2573,15 +2595,15 @@ pub(super) fn disconnect_agent(
         .insert("autoWake".into(), json!(restart_input_wait));
     if restart_input_wait {
         agent.extra.remove("nativeFailureHold");
-        agent.extra.remove("startOutcomeHold");
+        agent.start_outcome_hold = None;
         let wait_error = agent.extra["contextRepairWait"]["error"].clone();
         agent.extra.insert("error".into(), wait_error);
         agent.extra.remove("startAttempt");
     } else if !paused
         && agent
-            .extra
-            .get("startOutcomeHold")
-            .is_none_or(|h| h["stage"] != "account_settlement")
+            .start_outcome_hold
+            .as_ref()
+            .is_none_or(|h| !h.is_account_settlement())
     {
         agent.extra.insert(
             "error".into(),
@@ -3293,6 +3315,24 @@ mod tests;
 
 #[cfg(test)]
 mod account_scope_tests {
+    #[test]
+    fn clearing_account_hold_restores_prior_error_and_hold() {
+        let mut agent: crate::AgentRecord = serde_json::from_str(
+            r#"{"id":"a","rootId":"a","epoch":1,"status":"waiting","error":"paused","nativeFailureHold":true,"startOutcomeHold":{"stage":"account_settlement","cursor":12,"reason":"paused","previousError":"original","previousNativeFailureHold":{"present":true,"value":"previous"}}}"#,
+        )
+        .expect("stored agent");
+        super::clear_hold(&mut agent);
+        assert_eq!(
+            agent.extra.get("error"),
+            Some(&serde_json::json!("original"))
+        );
+        assert_eq!(
+            agent.extra.get("nativeFailureHold"),
+            Some(&serde_json::json!("previous"))
+        );
+        assert!(agent.start_outcome_hold.is_none());
+    }
+
     /// Account-scoped agent reads search the account index instead of scanning agents.
     #[test]
     fn account_agents_search_the_account_scope_index() {

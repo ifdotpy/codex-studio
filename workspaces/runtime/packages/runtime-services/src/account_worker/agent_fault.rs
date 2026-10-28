@@ -351,10 +351,7 @@ pub(super) fn hold_agent(
             Ok(Some(agent)) => {
                 if agent.status == AgentStatus::Paused
                     || studio_runtime_store::truthy(agent.extra.get("nativeFailureHold"))
-                    || agent
-                        .extra
-                        .get("startOutcomeHold")
-                        .is_some_and(|hold| !hold.is_null())
+                    || agent.start_outcome_hold.is_some()
                 {
                     return Ok(HoldResult::AlreadyHeld);
                 }

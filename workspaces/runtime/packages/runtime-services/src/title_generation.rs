@@ -23,7 +23,9 @@ use studio_runtime_store::outbox::{Outbox, OutboxError, OutboxRow};
 use studio_runtime_store::request_results::{
     AdmittedRequest, RequestResultError, RequestResults, ResultEnvelope,
 };
-use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
+use studio_runtime_store::{
+    AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError, StoredTitleJob, TitleJob,
+};
 use thiserror::Error;
 
 const MAX_ITEMS: usize = 40;
@@ -123,25 +125,11 @@ pub struct TitleReply {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TitleJob {
-    request_id: String,
-    agent_id: String,
-    root_request_id: String,
-    admitted_request: AdmittedRequest,
-    status: TitleStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    fingerprint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    epoch: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    original_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    title: Option<String>,
+trait TitleJobReply {
+    fn reply(&self, status: TitleStatus, error: Option<&str>) -> TitleReply;
 }
 
-impl TitleJob {
+impl TitleJobReply for TitleJob {
     fn reply(&self, status: TitleStatus, error: Option<&str>) -> TitleReply {
         TitleReply {
             id: self.agent_id.clone(),
@@ -221,17 +209,16 @@ fn write_job(
     job: &TitleJob,
     replace_current: bool,
 ) -> Result<(), TitleError> {
-    let mut agent = read_agent(tx, &job.agent_id)?;
+    let mut agent = AgentRepository::get(tx, &AgentId::from(job.agent_id.as_str()))?
+        .ok_or(TitleError::AgentNotFound)?;
     if replace_current
-        || agent.get("titleJob").is_none_or(|current| {
-            current.get("requestId").and_then(Value::as_str) == Some(job.request_id.as_str())
-        })
+        || match &agent.title_job {
+            Some(StoredTitleJob::Job(current)) => current.request_id == job.request_id,
+            Some(StoredTitleJob::Unrecognized(_)) | None => true,
+        }
     {
-        agent["titleJob"] = serde_json::to_value(job).map_err(StoreError::from)?;
-        AgentRepository::put(
-            tx,
-            &AgentRecord::from_value(agent).map_err(StoreError::from)?,
-        )?;
+        agent.title_job = Some(StoredTitleJob::Job(Box::new(job.clone())));
+        AgentRepository::put(tx, &agent)?;
     }
     let status = match job.status {
         TitleStatus::Scheduled | TitleStatus::NotSent => OutboxStatus::Pending,
@@ -409,6 +396,7 @@ pub async fn admit_python_request(
                     epoch: None,
                     original_name: None,
                     title: None,
+                    extra: Default::default(),
                 };
                 write_job(tx, &job, true)?;
                 job

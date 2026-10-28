@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 
 use rusqlite::types::{Value as SqlValue, ValueRef};
@@ -234,8 +234,119 @@ pub struct AgentRecord {
     pub root_id: AgentId,
     pub epoch: i64,
     pub status: AgentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_job: Option<StoredTitleJob>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_outcome_hold: Option<StoredStartOutcomeHold>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub fired_events: BTreeSet<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TitleJob {
+    pub request_id: String,
+    pub agent_id: String,
+    pub root_request_id: String,
+    pub admitted_request: crate::request_results::AdmittedRequest,
+    pub status: studio_runtime_schema::persistence::TitleStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StoredTitleJob {
+    Job(Box<TitleJob>),
+    Unrecognized(Value),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "stage", rename_all = "snake_case")]
+pub enum StartOutcomeHold {
+    Held {
+        #[serde(rename = "operationId", skip_serializing_if = "Option::is_none")]
+        operation_id: Option<String>,
+        #[serde(
+            rename = "connectionGeneration",
+            skip_serializing_if = "Option::is_none"
+        )]
+        connection_generation: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(rename = "attemptId", skip_serializing_if = "Option::is_none")]
+        attempt_id: Option<String>,
+        #[serde(flatten)]
+        extra: BTreeMap<String, Value>,
+    },
+    Recovery {
+        epoch: i64,
+        reason: String,
+        #[serde(flatten)]
+        extra: BTreeMap<String, Value>,
+    },
+    AccountSettlement {
+        cursor: Option<u64>,
+        reason: String,
+        #[serde(rename = "previousError")]
+        previous_error: Value,
+        #[serde(rename = "previousNativeFailureHold")]
+        previous_native_failure_hold: PreviousNativeFailureHold,
+        #[serde(flatten)]
+        extra: BTreeMap<String, Value>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PreviousNativeFailureHold {
+    pub present: bool,
+    pub value: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StoredStartOutcomeHold {
+    Known(StartOutcomeHold),
+    Unrecognized(Value),
+}
+
+impl StoredStartOutcomeHold {
+    pub fn operation_id(&self) -> Option<&str> {
+        match self {
+            Self::Known(StartOutcomeHold::Held { operation_id, .. }) => operation_id.as_deref(),
+            Self::Known(
+                StartOutcomeHold::Recovery { .. } | StartOutcomeHold::AccountSettlement { .. },
+            )
+            | Self::Unrecognized(_) => None,
+        }
+    }
+
+    pub fn attempt_id(&self) -> Option<&str> {
+        match self {
+            Self::Known(StartOutcomeHold::Held { attempt_id, .. }) => attempt_id.as_deref(),
+            Self::Known(
+                StartOutcomeHold::Recovery { .. } | StartOutcomeHold::AccountSettlement { .. },
+            )
+            | Self::Unrecognized(_) => None,
+        }
+    }
+
+    pub fn is_account_settlement(&self) -> bool {
+        matches!(
+            self,
+            Self::Known(StartOutcomeHold::AccountSettlement { .. })
+        )
+    }
 }
 
 /// Typed projection of the scheduler-owned fields in a start attempt.
@@ -396,6 +507,15 @@ impl AgentRecord {
         value["rootId"] = Value::String(self.root_id.0.clone());
         value["epoch"] = Value::from(self.epoch);
         value["status"] = Value::String(self.status.as_str().to_owned());
+        if let Some(job) = &self.title_job {
+            value["titleJob"] = crate::projection_value(job);
+        }
+        if let Some(hold) = &self.start_outcome_hold {
+            value["startOutcomeHold"] = crate::projection_value(hold);
+        }
+        if !self.fired_events.is_empty() {
+            value["firedEvents"] = crate::projection_value(&self.fired_events);
+        }
         value
     }
 
@@ -406,6 +526,15 @@ impl AgentRecord {
         value["rootId"] = Value::String(self.root_id.0);
         value["epoch"] = Value::from(self.epoch);
         value["status"] = Value::String(self.status.as_str().to_owned());
+        if let Some(job) = &self.title_job {
+            value["titleJob"] = crate::projection_value(job);
+        }
+        if let Some(hold) = &self.start_outcome_hold {
+            value["startOutcomeHold"] = crate::projection_value(hold);
+        }
+        if !self.fired_events.is_empty() {
+            value["firedEvents"] = crate::projection_value(&self.fired_events);
+        }
         value
     }
 
@@ -1618,7 +1747,6 @@ mod tests {
             .as_array()
             .expect("extra field is an array")
             .as_ptr();
-
         let projected = record.into_value();
 
         assert_eq!(
@@ -1693,6 +1821,26 @@ mod tests {
         assert_eq!(rewritten["futureObject"]["flag"].as_bool(), Some(true));
         assert_eq!(rewritten["futureInteger"].as_i64(), Some(9007199254740993));
         assert_eq!(rewritten, value);
+    }
+
+    #[test]
+    fn agent_round_trip_keeps_legacy_private_fields() {
+        for private in [
+            json!({"accountKey":null,"threadId":null,"titleJob":{"legacy":true}}),
+            json!({"startOutcomeHold":{"stage":"held","reason":"pending"}}),
+            json!({"startOutcomeHold":{"stage":"account_settlement","cursor":null,"reason":"pending"}}),
+            json!({"startOutcomeHold":{"stage":"held","operationId":"op","future":1}}),
+            json!({"startOutcomeHold":{"stage":"recovery","epoch":2,"reason":"pending"}}),
+            json!({"titleJob":{"requestId":"r","agentId":"agent","rootRequestId":"root","admittedRequest":{"id":"r","signature":"s","created":1},"status":"pending","future":true}}),
+        ] {
+            let mut value = json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle"});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(private.as_object().unwrap().clone());
+            let record = agent(value.clone());
+            assert_eq!(crate::projection_value(&record), value);
+        }
     }
 
     #[test]

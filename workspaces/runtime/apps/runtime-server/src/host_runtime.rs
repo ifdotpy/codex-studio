@@ -2547,6 +2547,9 @@ mod voice_composition_tests {
                 AgentRepository::put(
                     tx,
                     &AgentRecord {
+                        title_job: None,
+                        start_outcome_hold: None,
+                        fired_events: Default::default(),
                         id: id.clone(),
                         root_id: id,
                         epoch: 3,

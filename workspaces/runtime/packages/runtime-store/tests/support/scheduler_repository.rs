@@ -40,6 +40,9 @@ fn database() -> Connection {
     AgentRepository::put(
         &connection,
         &AgentRecord {
+            title_job: None,
+            start_outcome_hold: None,
+            fired_events: Default::default(),
             id: AgentId::from("agent"),
             root_id: AgentId::from("agent"),
             epoch: 4,

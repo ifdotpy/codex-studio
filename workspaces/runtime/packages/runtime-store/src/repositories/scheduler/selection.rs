@@ -1065,10 +1065,15 @@ impl SchedulerRepository {
             agent
                 .extra
                 .insert("error".to_owned(), Value::String(reason.to_owned()));
-            agent.extra.insert(
-                "startOutcomeHold".to_owned(),
-                json!({"stage":"held","reason":reason}),
-            );
+            agent.start_outcome_hold = Some(crate::StoredStartOutcomeHold::Known(
+                crate::StartOutcomeHold::Held {
+                    reason: Some(reason.into()),
+                    operation_id: None,
+                    connection_generation: None,
+                    attempt_id: None,
+                    extra: Default::default(),
+                },
+            ));
             AgentRepository::put(transaction, &agent)?;
             return Ok(None);
         }

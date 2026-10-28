@@ -1334,6 +1334,9 @@ mod tests {
         );
         extra.insert("cwd".to_owned(), serde_json::json!(root));
         let agent = AgentRecord {
+            title_job: None,
+            start_outcome_hold: None,
+            fired_events: Default::default(),
             id: AgentId::from("agent"),
             root_id: AgentId::from("agent"),
             epoch: 0,

@@ -480,12 +480,6 @@ pub(super) fn has_pending_thread_start(
         .into_iter().any(|row| matches!(row.payload,ProviderCall::Account(call) if matches!(call.context.method,Method::ThreadStart|Method::ThreadResume))))
 }
 
-#[derive(serde::Deserialize)]
-struct ThreadHold {
-    #[serde(rename = "operationId")]
-    operation_id: String,
-}
-
 #[derive(serde::Serialize)]
 enum LateProviderReply<'a> {
     Result(&'a Value),
@@ -535,17 +529,11 @@ fn supersede_thread_calls(
         }
         studio_runtime_store::request_results::RequestResults::settle_abandoned(tx, &row)?;
         let mut agent = stored_agent(tx, agent_id)?;
-        if let Some(hold) = agent
-            .extra
-            .get("startOutcomeHold")
-            .filter(|hold| !hold.is_null())
+        if let Some(hold) = &agent.start_outcome_hold
+            && hold.operation_id() == Some(context.operation.as_str())
         {
-            let hold: ThreadHold =
-                serde_json::from_value(hold.clone()).map_err(StoreError::from)?;
-            if hold.operation_id == context.operation {
-                agent.extra.remove("startOutcomeHold");
-                AgentRepository::put(tx, &agent)?;
-            }
+            agent.start_outcome_hold = None;
+            AgentRepository::put(tx, &agent)?;
         }
         superseded = true;
     }
@@ -668,9 +656,9 @@ pub(super) async fn recover(
                             attempt.is_null() || completed_attempt(a, attempt)
                         })
                         && (a.extra.get("autoWake") == Some(&json!(true))
-                            || a.extra
-                                .get("startOutcomeHold")
-                                .is_some_and(|h| h["operationId"] == context.operation))
+                            || a.start_outcome_hold.as_ref()
+                                .and_then(studio_runtime_store::StoredStartOutcomeHold::operation_id)
+                                == Some(context.operation.as_str()))
                 }) {
                     hold_thread_receipt(
                         tx,
@@ -1627,9 +1615,9 @@ fn settle_outcome(
                         if current.as_ref().is_some_and(|a| {
                             a.epoch == i.epoch
                                 && account_key(a) == account
-                                && a.extra
-                                    .get("startOutcomeHold")
-                                    .is_some_and(|h| h["operationId"] == context.operation)
+                                && a.start_outcome_hold.as_ref().and_then(
+                                    studio_runtime_store::StoredStartOutcomeHold::operation_id,
+                                ) == Some(context.operation.as_str())
                         }) {
                             hold_thread_receipt(tx, &context, ticket.generation, reason)?;
                         } else {
@@ -4341,9 +4329,15 @@ fn hold_thread_receipt(
     hold_before_claim(tx, &context.intent.agent_id, reason)?;
     let mut agent = AgentRepository::get(tx, &AgentId::from(context.intent.agent_id.as_str()))?
         .ok_or_else(|| invalid(&context.intent.agent_id))?;
-    agent.extra.insert("startOutcomeHold".into(), json!({
-        "stage":"held", "reason":reason, "operationId":context.operation, "connectionGeneration":generation,
-    }));
+    agent.start_outcome_hold = Some(studio_runtime_store::StoredStartOutcomeHold::Known(
+        studio_runtime_store::StartOutcomeHold::Held {
+            reason: Some(reason.into()),
+            operation_id: Some(context.operation.clone()),
+            connection_generation: Some(generation),
+            attempt_id: None,
+            extra: Default::default(),
+        },
+    ));
     AgentRepository::put(tx, &agent)?;
     Ok(())
 }
@@ -4359,10 +4353,15 @@ fn hold_before_claim(
     agent.extra.insert("autoWake".into(), json!(false));
     agent.extra.insert("inFlight".into(), json!(false));
     agent.extra.insert("error".into(), json!(reason));
-    agent.extra.insert(
-        "startOutcomeHold".into(),
-        json!({"stage":"held","reason":reason}),
-    );
+    agent.start_outcome_hold = Some(studio_runtime_store::StoredStartOutcomeHold::Known(
+        studio_runtime_store::StartOutcomeHold::Held {
+            reason: Some(reason.into()),
+            operation_id: None,
+            connection_generation: None,
+            attempt_id: None,
+            extra: Default::default(),
+        },
+    ));
     AgentRepository::put(tx, &agent)?;
     Ok(())
 }
