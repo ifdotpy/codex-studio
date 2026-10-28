@@ -15,6 +15,8 @@ use crate::account_session_runtime::ConnectionScope;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Request id expired")]
+    Expired,
     #[error("{0}")]
     Invalid(&'static str),
     #[error(transparent)]
@@ -773,6 +775,7 @@ pub fn receipt(connection: &Connection, query: &Value) -> Result<ProcessReceipt,
 fn input_receipt(connection: &Connection, query: &Value) -> Result<ProcessReceipt, Error> {
     let value =
         crate::monitor_http_input::read(connection, query).map_err(|error| match error {
+            crate::monitor_policy::MonitorError::Expired => Error::Expired,
             crate::monitor_policy::MonitorError::Store(error) => Error::Store(error),
             crate::monitor_policy::MonitorError::InvalidStored { .. }
             | crate::monitor_policy::MonitorError::InvalidResultReceipt(_)

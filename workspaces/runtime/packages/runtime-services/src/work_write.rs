@@ -1539,6 +1539,8 @@ pub struct ReleaseFailedWorkResult {
 
 #[derive(Debug, Error)]
 pub enum WorkWriteError {
+    #[error("Request id expired")]
+    Expired,
     #[error(transparent)]
     Event(#[from] Error),
     #[error(transparent)]
@@ -2929,6 +2931,7 @@ fn submit(
         now,
     )
     .map_err(|error| match error {
+        crate::monitor_policy::MonitorError::Expired => WorkWriteError::Expired,
         crate::monitor_policy::MonitorError::Store(error) => WorkWriteError::Store(error),
         crate::monitor_policy::MonitorError::InvalidStored { .. }
         | crate::monitor_policy::MonitorError::InvalidResultReceipt(_)
