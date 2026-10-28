@@ -382,12 +382,7 @@ async fn a_failed_wake_after_the_effect_still_answers_with_the_real_result() {
     };
     assert!(matches!(&first.body, ResponseBody::Result(value) if value["success"] == true));
     assert_eq!(ports.dispatched.load(Ordering::SeqCst), 1);
-    let connection = store.test_reader().unwrap();
-    let receipt = studio_runtime_store::system_reads::all(&connection, "runtime_tool_requests")
-        .unwrap()
-        .into_iter()
-        .find(|row| row["callId"] == "post-commit-status")
-        .unwrap();
+    let receipt = claim_settlement::request_row(&store, "post-commit-status");
     assert_eq!(receipt["deliveryCertainty"], "written");
 
     ports.fail_release.store(false, Ordering::SeqCst);
@@ -657,15 +652,14 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
         );
         let tickets = fake.tickets.lock().unwrap();
         assert_eq!(tickets.len(), 1, "same native ticket must not be resent");
-        let row = studio_runtime_store::system_reads::all(
-            &store.test_reader().unwrap(),
-            "runtime_tool_requests",
-        )
-        .unwrap()
-        .into_iter()
-        .find(|row| row["callId"] == "production-monitor-input")
-        .unwrap();
-        assert_eq!(tickets[0], row["id"].as_str().unwrap());
+        let row = claim_settlement::request_row(&store, "production-monitor-input");
+        assert_eq!(
+            tickets[0],
+            crate::monitor_policy::input_effect_identity(
+                &managed_monitor_id(),
+                row["id"].as_str().unwrap(),
+            )
+        );
         let expected = match certainty {
             crate::managed_host_tools::DeliveryCertainty::Written => "written",
             crate::managed_host_tools::DeliveryCertainty::NotSent => "not_sent",
@@ -930,14 +924,7 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
             .await
             .unwrap();
         assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
-        let row = studio_runtime_store::system_reads::all(
-            &store.test_reader().unwrap(),
-            "runtime_tool_requests",
-        )
-        .unwrap()
-        .into_iter()
-        .find(|row| row["callId"] == "stable-monitor-input")
-        .unwrap();
+        let row = claim_settlement::request_row(&store, "stable-monitor-input");
         assert_eq!(*fake.tickets.lock().unwrap(), [row["id"].as_str().unwrap()]);
         assert_eq!(
             uuid::Uuid::parse_str(row["id"].as_str().unwrap())
@@ -1650,12 +1637,14 @@ async fn managed_write_rollback(case_index: usize, table: &str, operation: &str,
     let seed = &template().value;
     let cases = seed["managedToolCases"].as_array().unwrap();
     let (_root, store, _) = fixture().await;
+    let mut expected = cases[case_index].clone();
     if matches!(case_index, 6 | 7) {
-        // Complaint read/respond need the submit; earlier sends and reads are independent.
-        assert!(matches!(
-            dispatch_case(&store, seed, &cases[5], None).await.unwrap(),
-            CallbackDecision::Answer(_)
-        ));
+        // Complaint read/respond use the identity returned by the committed submit.
+        let (success, submitted) =
+            tool_reply(dispatch_case(&store, seed, &cases[5], None).await.unwrap());
+        assert!(success, "complaint prerequisite: {submitted}");
+        expected["arguments"]["complaint_id"] = submitted["id"].clone();
+        assert!(expected["arguments"]["complaint_id"].is_string());
     }
     let trigger = format!("p05_fail_{case_index}_{timing}_{operation}");
     let hits = Arc::new(AtomicUsize::new(0));
@@ -1680,7 +1669,7 @@ async fn managed_write_rollback(case_index: usize, table: &str, operation: &str,
         .await
         .unwrap();
     let before = application_table_snapshot(&store);
-    let expected = &cases[case_index];
+    let expected = &expected;
     let first_attempt = dispatch_case(&store, seed, expected, None).await;
     assert_eq!(
         hits.load(Ordering::SeqCst),

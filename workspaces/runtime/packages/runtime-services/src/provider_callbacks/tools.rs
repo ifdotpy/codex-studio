@@ -238,6 +238,31 @@ pub(crate) fn put(tx: &Transaction<'_>, record: &Value) -> Result<(), CallbackEr
     )?;
     Ok(())
 }
+fn authorize_call(
+    tx: &Transaction<'_>,
+    snapshot: &CallbackSnapshot,
+    call: &ToolCall,
+) -> Result<(), CallbackError> {
+    if call.name == "orchestration_monitor_input" {
+        let actor = crate::managed_host_tools::Actor::from_record(
+            snapshot.actor(),
+            &snapshot.context().agent,
+            snapshot.context().epoch,
+        )
+        .map_err(services::managed_error)?;
+        runtime_dispatch::authorize_monitor_input_in_transaction(
+            tx,
+            &actor,
+            call.args
+                .get("monitor_id")
+                .and_then(Value::as_str)
+                .ok_or(CallbackError::Invalid("Missing monitor_id"))?,
+        )
+        .map_err(services::managed_error)?;
+    }
+    Ok(())
+}
+
 pub(super) async fn dispatch_with_ports(
     store: Arc<RuntimeStore>,
     context: &CallbackContext,
@@ -252,7 +277,9 @@ pub(super) async fn dispatch_with_ports(
     let origin_for_owner = origin.clone();
     let owner_id = store
         .transaction_with(move |tx| {
-            storage::snapshot(tx, &origin_for_owner.context)?.active()?;
+            let snapshot = storage::snapshot(tx, &origin_for_owner.context)?;
+            snapshot.active()?;
+            authorize_call(tx, &snapshot, &call_for_owner)?;
             let mut owner =
                 storage::admit_owner(tx, &origin_for_owner, &input_for_owner.signature())?;
             let id = if let Some(id) = &owner.payload.tool_request { id.clone() } else {
@@ -299,23 +326,7 @@ pub(super) async fn dispatch_with_ports(
             let input = &input_for_admission;
             let snapshot = storage::snapshot(tx, context)?;
             snapshot.active()?;
-            if call.name == "orchestration_monitor_input" {
-                let actor = crate::managed_host_tools::Actor::from_record(
-                    snapshot.actor(),
-                    &context.agent,
-                    context.epoch,
-                )
-                .map_err(services::managed_error)?;
-                runtime_dispatch::authorize_monitor_input_in_transaction(
-                    tx,
-                    &actor,
-                    call.args
-                        .get("monitor_id")
-                        .and_then(Value::as_str)
-                        .ok_or(CallbackError::Invalid("Missing monitor_id"))?,
-                )
-                .map_err(services::managed_error)?;
-            }
+            authorize_call(tx, &snapshot, call)?;
             let mut candidate = json!({
                 "id":call.id, "agent":context.agent, "threadId":context.thread,
                 "callId":call.call, "tool":call.name, "signature":call.signature,
