@@ -1,6 +1,7 @@
 import { required } from "../components/componentTestFixtures.ts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mergePreferenceFields, preferenceCacheKey } from "./uiPreferenceMerge";
+import { installPreferenceStorage } from "../preferenceStorage";
 import {
   capturePreferenceWrite,
   acknowledgePreferenceFields,
@@ -35,8 +36,10 @@ class FakeStorageEvent extends Event {
     this.newValue = options.newValue ?? null;
   }
 }
+let preferences: Storage;
 beforeEach(() => {
-  vi.stubGlobal("localStorage", memoryStorage());
+  preferences = memoryStorage();
+  installPreferenceStorage(preferences);
   vi.stubGlobal("window", new EventTarget());
   vi.stubGlobal("StorageEvent", FakeStorageEvent);
 });
@@ -104,7 +107,7 @@ describe("UI preference cache", () => {
     ]);
   });
   it("drops invalid legacy appearance fields before syncing the remaining choices", () => {
-    localStorage.setItem(
+    preferences.setItem(
       "codex-studio-preferences-v1",
       JSON.stringify({ theme: "dark", sidebarFontSize: 99 }),
     );
@@ -116,13 +119,13 @@ describe("UI preference cache", () => {
         value: "dark",
       }),
     });
-    expect(localStorage.getItem(`${preferenceCacheKey}:user`)).not.toContain(
+    expect(preferences.getItem(`${preferenceCacheKey}:user`)).not.toContain(
       "sidebarFontSize",
     );
   });
   it("keeps a remote field when a stale control changes another field", () => {
     const before = { theme: "auto", mainFontSize: 14 };
-    localStorage.setItem("codex-studio-preferences-v1", JSON.stringify(before));
+    preferences.setItem("codex-studio-preferences-v1", JSON.stringify(before));
     receivePreferenceFields("user", {
       '["codex-studio-preferences-v1","mainFontSize"]': {
         value: 18,
@@ -148,7 +151,7 @@ describe("UI preference cache", () => {
       theme: "dark",
     });
     const a = readPreferenceFields("user");
-    localStorage.clear();
+    preferences.clear();
     writePreferenceEdit("codex-studio-preferences-v1", before, {
       ...before,
       mainFontSize: 18,
@@ -169,11 +172,11 @@ describe("UI preference cache", () => {
       },
     });
     const cached = JSON.parse(
-      localStorage.getItem("codex-studio-preferences-v1")!,
+      preferences.getItem("codex-studio-preferences-v1")!,
     );
     expect(cached.theme).toBe("dark");
     expect(cached.mainFontSize).toBe(14);
-    expect(localStorage.getItem(`${preferenceCacheKey}:user`)).toContain(
+    expect(preferences.getItem(`${preferenceCacheKey}:user`)).toContain(
       "server",
     );
   });
@@ -208,6 +211,6 @@ it("shows the server value when it wins over a clamped edit", () => {
     [key]: { value: "light", timestamp: 2000, writer: "b" },
   });
   expect(
-    JSON.parse(localStorage.getItem("codex-studio-preferences-v1")!).theme,
+    JSON.parse(preferences.getItem("codex-studio-preferences-v1")!).theme,
   ).toBe("light");
 });

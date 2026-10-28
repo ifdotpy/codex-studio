@@ -1,3 +1,4 @@
+import { installPreferenceStorage } from "../preferenceStorage";
 import { AgentSource } from "../generated/api";
 import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
@@ -70,9 +71,19 @@ beforeEach(() => {
   });
   vi.stubGlobal("window", surface);
   vi.stubGlobal("StorageEvent", TestStorageEvent);
-  vi.stubGlobal("localStorage", {
-    getItem: (key: string) => records.get(key) ?? null,
-    setItem: (key: string, value: string) => records.set(key, value),
+  installPreferenceStorage({
+    get length() {
+      return records.size;
+    },
+    key: (index) => [...records.keys()][index] ?? null,
+    getItem: (key) => records.get(key) ?? null,
+    setItem: (key, value) => {
+      records.set(key, value);
+    },
+    removeItem: (key) => {
+      records.delete(key);
+    },
+    clear: () => records.clear(),
   });
   stopConnection.mockClear();
 });

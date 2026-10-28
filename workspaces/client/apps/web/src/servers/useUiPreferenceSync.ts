@@ -1,3 +1,4 @@
+import { preferenceStorage } from "../preferenceStorage";
 import { orderPreferenceServers } from "./preferenceServerOrder";
 import { legacyPreferenceSeed } from "./legacyPreferenceSeed";
 import { useEffect } from "react";
@@ -28,7 +29,8 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
       id,
       origin,
       credentialId,
-      localStorage.getItem(`studio-server-workspace-id:${id}`) || workspaceId,
+      preferenceStorage().getItem(`studio-server-workspace-id:${id}`) ||
+        workspaceId,
     ]),
   );
   useEffect(() => {
@@ -41,8 +43,9 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
     let previousOrder: string[] | undefined;
     for (const server of servers) {
       const identity =
-        localStorage.getItem(`studio-server-workspace-id:${server.id}`) ||
-        server.workspaceId;
+        preferenceStorage().getItem(
+          `studio-server-workspace-id:${server.id}`,
+        ) || server.workspaceId;
       if (identity) identities.set(server.id, identity);
       snapshots.set(server.id, { alias: server.alias, label: server.label });
     }
@@ -53,7 +56,7 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
         servers,
         identities,
         readPreferenceFields("user"),
-        localStorage.getItem(LOCAL_NAME_KEY),
+        preferenceStorage().getItem(LOCAL_NAME_KEY),
       );
       if (Object.keys(fields).length) receivePreferenceFields("user", fields);
     };
@@ -79,10 +82,10 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
           const current =
             typeof alias === "string"
               ? alias
-              : localStorage.getItem(LOCAL_ALIAS_KEY) ||
+              : preferenceStorage().getItem(LOCAL_ALIAS_KEY) ||
                 local.alias ||
                 DEFAULT_LOCAL_SERVER_ALIAS;
-          localStorage.setItem(LOCAL_ALIAS_KEY, current);
+          preferenceStorage().setItem(LOCAL_ALIAS_KEY, current);
           used.add(current);
           snapshots.set("local", { alias: current, label: local.label });
         }
@@ -106,8 +109,8 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
           })
           .sort((a, b) => rank(a) - rank(b));
         const serialized = JSON.stringify(paired);
-        if (localStorage.getItem(SERVER_REGISTRY_KEY) !== serialized)
-          localStorage.setItem(SERVER_REGISTRY_KEY, serialized);
+        if (preferenceStorage().getItem(SERVER_REGISTRY_KEY) !== serialized)
+          preferenceStorage().setItem(SERVER_REGISTRY_KEY, serialized);
         previousOrder = orderPreferenceServers([
           ...(local ? [local] : []),
           ...paired,
@@ -126,7 +129,8 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
         current.splice(servers.indexOf(local), 0, {
           ...local,
           alias:
-            localStorage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS,
+            preferenceStorage().getItem(LOCAL_ALIAS_KEY) ||
+            DEFAULT_LOCAL_SERVER_ALIAS,
         });
       for (const server of current) {
         const identity = identities.get(server.id);

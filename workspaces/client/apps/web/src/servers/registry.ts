@@ -1,3 +1,4 @@
+import { preferenceStorage } from "../preferenceStorage";
 import { hasNativeClient } from "../native/client";
 import { isolatedServerView, serverParentOrigin } from "./environment";
 import type { StudioServerIdentity } from "./serverIdentity.ts";
@@ -34,7 +35,7 @@ export function serveOrigin(value: string) {
     );
   return url.origin;
 }
-export function readServers(storage = globalThis.localStorage): StudioServer[] {
+export function readServers(storage = preferenceStorage()): StudioServer[] {
   const value: unknown = JSON.parse(
     storage.getItem(SERVER_REGISTRY_KEY) || "[]",
   );
@@ -97,7 +98,7 @@ export function shareServers(
 }
 export function writeServers(
   servers: StudioServer[],
-  storage = globalThis.localStorage,
+  storage = preferenceStorage(),
 ) {
   const aliases = new Set([
     storage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS,
@@ -120,9 +121,11 @@ export function writeServers(
 export function localServer(): StudioServer {
   return {
     id: "local",
-    label: localStorage.getItem(LOCAL_NAME_KEY) || "This computer",
+    label: preferenceStorage().getItem(LOCAL_NAME_KEY) || "This computer",
     origin: hasNativeClient() ? "http://localhost" : location.origin,
-    alias: localStorage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS,
+    alias:
+      preferenceStorage().getItem(LOCAL_ALIAS_KEY) ||
+      DEFAULT_LOCAL_SERVER_ALIAS,
   };
 }
 export function readServerAliases(): Record<string, string> {

@@ -1,3 +1,4 @@
+import { preferenceStorage } from "../preferenceStorage";
 import type { ConnectionHealth } from "../sync/connectionState";
 import { randomUUID } from "../uuid";
 import { ProviderKind } from "../generated/providerKind.ts";
@@ -356,7 +357,7 @@ export default function ServerManager({
                         )
                           return discovery.setAlias(server.id, alias);
                         if (server.id === "local")
-                          localStorage.setItem(LOCAL_ALIAS_KEY, alias);
+                          preferenceStorage().setItem(LOCAL_ALIAS_KEY, alias);
                         writeServers(
                           readServers().map((row) =>
                             row.id === server.id ? { ...row, alias } : row,
@@ -406,7 +407,8 @@ export default function ServerManager({
                 try {
                   const invitation = parseInvitation(code.trim(), address);
                   const saved = JSON.parse(
-                    localStorage.getItem("studio-pairing-attempt-v1") || "null",
+                    preferenceStorage().getItem("studio-pairing-attempt-v1") ||
+                      "null",
                   );
                   if (
                     !request.current ||
@@ -423,7 +425,7 @@ export default function ServerManager({
                       code: code.trim(),
                       id,
                     };
-                    localStorage.setItem(
+                    preferenceStorage().setItem(
                       "studio-pairing-attempt-v1",
                       JSON.stringify({
                         origin: address,
@@ -450,7 +452,7 @@ export default function ServerManager({
                   setOrigin("");
                   setLabel("");
                   request.current = null;
-                  localStorage.removeItem("studio-pairing-attempt-v1");
+                  preferenceStorage().removeItem("studio-pairing-attempt-v1");
                 })()
                   .catch((failure: unknown) =>
                     setError(

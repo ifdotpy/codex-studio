@@ -1,10 +1,11 @@
+import { preferenceStorage } from "../preferenceStorage";
 import { readPreferenceFields } from "../sync/uiPreferenceStore";
 import type { StudioServer } from "./registry";
 
 export function preferenceServerIdentity(server: StudioServer): string {
   return (
     server.workspaceId ||
-    localStorage.getItem(`studio-server-workspace-id:${server.id}`) ||
+    preferenceStorage().getItem(`studio-server-workspace-id:${server.id}`) ||
     server.id
   );
 }

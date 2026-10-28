@@ -5,47 +5,43 @@ import { maxPreferenceKeyBytes } from "./preferenceLimits";
 import { expect, it, vi } from "vitest";
 import { NativePreferenceStorage, preferenceScope } from "./preferenceState";
 
-function memory(): Storage {
-  const data = new Map<string, string>();
-  return {
-    get length() {
-      return data.size;
-    },
-    key: (index) => [...data.keys()][index] ?? null,
-    getItem: (key) => data.get(key) ?? null,
-    setItem: (key, value) => {
-      data.set(key, value);
-    },
-    removeItem: (key) => {
-      data.delete(key);
-    },
-    clear: () => data.clear(),
-  };
-}
+const journalKey = 'browser:"root":studio-native-preferences-journal-v1';
+
 function backend() {
   const values: Record<string, string> = {};
   const receipts = new Map<string, string>();
   let lose = false;
+  let rejectJournal = false;
   const invoke = vi.fn(
     async (method: string, params: unknown, id?: string): Promise<unknown> => {
       if (method === "preferences.raw_all") return { ...values };
-      const fingerprint = JSON.stringify([method, params]);
-      if (receipts.has(id!)) {
-        expect(receipts.get(id!)).toBe(fingerprint);
-        return null;
-      }
       const data = params as {
         key: string;
         raw: string;
         entries: Record<string, string>;
       };
+      if (
+        method === "preferences.raw_set" &&
+        data.key.endsWith("studio-native-preferences-journal-v1") &&
+        rejectJournal
+      )
+        throw new Error("quota");
+      const fingerprint = JSON.stringify([method, params]);
+      if (receipts.has(id!)) {
+        expect(receipts.get(id!)).toBe(fingerprint);
+        return null;
+      }
       if (method === "preferences.raw_set") values[data.key] = data.raw;
       else if (method === "preferences.raw_remove") delete values[data.key];
       else if (method === "preferences.import")
         Object.assign(values, data.entries);
       else throw new Error("unexpected method");
       receipts.set(id!, fingerprint);
-      if (lose) {
+      // The loss applies to the next preference write, not to a journal save.
+      if (
+        lose &&
+        !String(data.key).endsWith("studio-native-preferences-journal-v1")
+      ) {
         lose = false;
         throw new Error("lost reply");
       }
@@ -58,45 +54,73 @@ function backend() {
     loseNext: () => {
       lose = true;
     },
+    setJournalRejected: (value: boolean) => {
+      rejectJournal = value;
+    },
   };
 }
 
-it("imports existing preferences once, then retains native edits and clear across restart", async () => {
-  const journal = memory();
-  journal.setItem("theme", "dark");
+it("imports legacy browser entries once into an empty core, then never reads them", async () => {
   const core = backend();
   const invoke = preferenceScope(core.invoke, "root");
-  let storage = await NativePreferenceStorage.open(journal, invoke, vi.fn());
+  const legacy = vi.fn(() => ({ theme: "dark" }));
+  let storage = await NativePreferenceStorage.open(invoke, vi.fn(), legacy);
   expect(storage.getItem("theme")).toBe("dark");
   storage.setItem("theme", "light");
   await storage.flush();
-  storage = await NativePreferenceStorage.open(journal, invoke, vi.fn());
+  storage = await NativePreferenceStorage.open(invoke, vi.fn(), legacy);
   expect(storage.getItem("theme")).toBe("light");
+  expect(legacy).toHaveBeenCalledTimes(1);
+});
+
+it("keeps native edits and clear across restart without resurrecting legacy entries", async () => {
+  const core = backend();
+  const invoke = preferenceScope(core.invoke, "root");
+  const legacy = vi.fn(() => ({ theme: "dark" }));
+  let storage = await NativePreferenceStorage.open(invoke, vi.fn(), legacy);
   storage.clear();
   await storage.flush();
-  storage = await NativePreferenceStorage.open(journal, invoke, vi.fn());
+  storage = await NativePreferenceStorage.open(invoke, vi.fn(), legacy);
   expect(storage.length).toBe(0);
-  expect(journal.getItem("theme")).toBe("dark"); // old WebView cache cannot resurrect it
+  expect(legacy).toHaveBeenCalledTimes(1);
+});
+
+it("does not import legacy entries into a core that already has preferences", async () => {
+  const core = backend();
+  core.values['browser:"root":server-kept'] = "1";
+  const legacy = vi.fn(() => ({ theme: "dark" }));
+  const storage = await NativePreferenceStorage.open(
+    preferenceScope(core.invoke, "root"),
+    vi.fn(),
+    legacy,
+  );
+  expect(storage.getItem("theme")).toBeNull();
+  expect(storage.getItem("server-kept")).toBe("1");
+  expect(core.values['browser:"root":theme']).toBeUndefined();
 });
 
 it("replays an uncertain head with its exact ID before a later edit after restart", async () => {
-  const journal = memory();
   const core = backend();
   const invoke = preferenceScope(core.invoke, "root");
   const error = vi.fn();
-  const storage = await NativePreferenceStorage.open(journal, invoke, error);
+  const storage = await NativePreferenceStorage.open(invoke, error, () => ({}));
   core.loseNext();
   storage.setItem("theme", "dark");
   await expect(storage.flush()).rejects.toThrow("lost reply");
   storage.setItem("theme", "light");
+  await vi.waitFor(() =>
+    expect(core.values[journalKey]).toContain('"raw":"light"'),
+  );
   const recovered = await NativePreferenceStorage.open(
-    journal,
     invoke,
     vi.fn(),
+    () => ({}),
   );
   expect(recovered.getItem("theme")).toBe("light");
   const writes = core.invoke.mock.calls.filter(
-    ([method]) => method === "preferences.raw_set",
+    ([method, params]) =>
+      method === "preferences.raw_set" &&
+      (params as { key: string }).key === 'browser:"root":theme',
   );
   expect(writes).toHaveLength(3);
   expect(required(writes[0])[2]).toBe(required(writes[1])[2]);
@@ -104,24 +128,42 @@ it("replays an uncertain head with its exact ID before a later edit after restar
   expect(error).toHaveBeenCalledOnce();
 });
 
-it("does not change the visible value or submit a write if journal persistence fails", async () => {
-  const journal = memory();
+it("keeps the visible value but sends nothing when the journal cannot be saved", async () => {
   const core = backend();
   const storage = await NativePreferenceStorage.open(
-    journal,
     preferenceScope(core.invoke, "root"),
     vi.fn(),
+    () => ({}),
   );
-  journal.setItem = () => {
-    throw new Error("quota");
-  };
-  expect(() => storage.setItem("theme", "dark")).toThrow("quota");
-  expect(storage.getItem("theme")).toBeNull();
+  core.setJournalRejected(true);
+  storage.setItem("theme", "dark");
+  await expect(storage.flush()).rejects.toThrow("quota");
+  expect(storage.getItem("theme")).toBe("dark");
+  expect(core.values['browser:"root":theme']).toBeUndefined();
   expect(
-    core.invoke.mock.calls.every(
-      ([method]) => method === "preferences.raw_all",
+    core.invoke.mock.calls.some(
+      ([method, params]) =>
+        method === "preferences.raw_set" &&
+        (params as { key: string }).key === "theme",
     ),
-  ).toBe(true);
+  ).toBe(false);
+});
+
+it("writes the pending journal only to core rows", async () => {
+  const core = backend();
+  const storage = await NativePreferenceStorage.open(
+    preferenceScope(core.invoke, "root"),
+    vi.fn(),
+    () => ({}),
+  );
+  core.loseNext();
+  storage.setItem("theme", "dark");
+  await expect(storage.flush()).rejects.toThrow("lost reply");
+  expect(core.values[journalKey]).toContain('"key":"theme"');
+  storage.setItem("theme", "light");
+  await storage.flush();
+  expect(core.values[journalKey]).toBeUndefined();
+  expect(core.values['browser:"root":theme']).toBe("light");
 });
 
 it("isolates server namespaces and rejects non-preference operations", async () => {
@@ -136,86 +178,68 @@ it("isolates server namespaces and rejects non-preference operations", async () 
   );
 });
 
-it("rejects oversized scoped keys before journaling, without blocking later writes", async () => {
-  const journal = memory();
+it("rejects oversized scoped keys before queuing, without blocking later writes", async () => {
   const core = backend();
   const scope = "server:remote";
   const storage = await NativePreferenceStorage.open(
-    journal,
     preferenceScope(core.invoke, scope),
     vi.fn(),
+    () => ({}),
     scope,
   );
   expect(() =>
     storage.setItem("Ж".repeat(maxPreferenceKeyBytes / 2), "bad"),
   ).toThrow("Invalid preference key");
   expect(storage.length).toBe(0);
-  expect(journal.getItem("studio-native-preferences-journal-v1")).toBeNull();
+  expect(core.values['browser:"server:remote":journal']).toBeUndefined();
   storage.setItem("theme", "dark");
   await storage.flush();
   expect(core.values['browser:"server:remote":theme']).toBe("dark");
 });
 
-it("flush includes a write queued at drain completion", async () => {
-  const journal = memory();
+it("flush sends a write queued while the previous drain runs", async () => {
   const core = backend();
   const storage = await NativePreferenceStorage.open(
-    journal,
     preferenceScope(core.invoke, "root"),
     vi.fn(),
+    () => ({}),
   );
-  const original = journal.setItem;
-  let inject = true;
-  journal.setItem = (key, value) => {
-    original(key, value);
-    if (
-      key === "studio-native-preferences-journal-v1" &&
-      value === "[]" &&
-      inject
-    ) {
-      inject = false;
-      queueMicrotask(() => storage.setItem("second", "two"));
-    }
-  };
   storage.setItem("first", "one");
-  await storage.flush();
+  const draining = storage.flush();
+  storage.setItem("second", "two");
+  await draining;
   expect(core.values['browser:"root":second']).toBe("two");
-  expect(journal.getItem("studio-native-preferences-journal-v1")).toBe("[]");
+  expect(core.values[journalKey]).toBeUndefined();
 });
 
 it("keeps draft recovery records out of the preference import", async () => {
-  const journal = memory();
-  journal.setItem(
-    "studio-native-draft-journal-v1:workspace:request",
-    "saved draft",
-  );
-  journal.setItem("theme", "dark");
   const core = backend();
   const storage = await NativePreferenceStorage.open(
-    journal,
     preferenceScope(core.invoke, "root"),
     vi.fn(),
+    () => ({
+      "studio-native-draft-journal-v1:workspace:request": "saved draft",
+      theme: "dark",
+    }),
   );
   expect(storage.getItem("theme")).toBe("dark");
   expect(
     storage.getItem("studio-native-draft-journal-v1:workspace:request"),
   ).toBeNull();
-  storage.clear();
-  await storage.flush();
   expect(
-    journal.getItem("studio-native-draft-journal-v1:workspace:request"),
-  ).toBe("saved draft");
+    core.values[
+      'browser:"root":studio-native-draft-journal-v1:workspace:request'
+    ],
+  ).toBeUndefined();
 });
 
 it("imports long saved answer draft keys without dropping the draft", async () => {
-  const journal = memory();
   const key = "studio-answer-draft:" + "question".repeat(220);
-  journal.setItem(key, "saved answer");
   const core = backend();
   const storage = await NativePreferenceStorage.open(
-    journal,
     preferenceScope(core.invoke, "root"),
     vi.fn(),
+    () => ({ [key]: "saved answer" }),
     "root",
   );
   expect(storage.getItem(key)).toBe("saved answer");
@@ -229,9 +253,9 @@ it("enumerates owner journals without rescanning or copying all native keys per 
     core.values[`browser:"root":server:b:journal:${i}`] = "b";
   }
   const storage = await NativePreferenceStorage.open(
-    memory(),
     preferenceScope(core.invoke, "root"),
     vi.fn(),
+    () => ({}),
   );
   const a = scopedStorage(() => storage, "server:a:");
   const b = scopedStorage(() => storage, "server:b:");
@@ -261,24 +285,25 @@ it("enumerates owner journals without rescanning or copying all native keys per 
 });
 
 it("does not enqueue an unchanged native value or discard its uncertain receipt", async () => {
-  const journal = memory();
   const core = backend();
   const storage = await NativePreferenceStorage.open(
-    journal,
     preferenceScope(core.invoke, "root"),
     vi.fn(),
+    () => ({}),
   );
   core.loseNext();
   storage.setItem("theme", "dark");
   await expect(storage.flush()).rejects.toThrow("lost reply");
-  const pending = journal.getItem("studio-native-preferences-journal-v1");
+  const pending = core.values[journalKey];
   storage.setItem("theme", "dark");
-  expect(journal.getItem("studio-native-preferences-journal-v1")).toBe(pending);
+  expect(core.values[journalKey]).toBe(pending);
   await storage.flush();
   storage.setItem("theme", "dark");
   await storage.flush();
   const writes = core.invoke.mock.calls.filter(
-    ([method]) => method === "preferences.raw_set",
+    ([method, params]) =>
+      method === "preferences.raw_set" &&
+      (params as { key: string }).key === 'browser:"root":theme',
   );
   expect(writes).toHaveLength(2);
   expect(required(writes[0])[2]).toBe(required(writes[1])[2]);

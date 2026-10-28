@@ -1,3 +1,4 @@
+import { installPreferenceStorage, memoryStorage } from "../preferenceStorage";
 import { required } from "./componentTestFixtures";
 import type { GetResult } from "../apiTypes";
 import type { Message } from "../types";
@@ -44,15 +45,12 @@ vi.mock("./removedMessages", () => ({
 
 import { removeSendingMessage } from "./removeSendingMessages.ts";
 
-const storage = new Map<string, string>();
-vi.stubGlobal("localStorage", {
-  getItem: (key: string) => storage.get(key) ?? null,
-  setItem: (key: string, value: string) => storage.set(key, value),
-});
+const storage = memoryStorage();
+installPreferenceStorage(storage);
 
 // This test writes every saved cancellation document in the same process.
 function savedRequestId(key: string): unknown {
-  const saved = JSON.parse(storage.get(key)!) as Extract<
+  const saved = JSON.parse(storage.getItem(key)!) as Extract<
     PostBody<"/api/queue">,
     { action: "cancel" }
   >;
@@ -87,7 +85,7 @@ it("reuses the saved queue request identity and bounded typed write", async () =
     expected_revision: "revision-7",
     request_id: "request-fixed",
   } satisfies PostBody<"/api/queue">;
-  storage.set(key, JSON.stringify(request));
+  storage.setItem(key, JSON.stringify(request));
   mocks.stopRemovedMessage.mockResolvedValue(false);
   mocks.syncPost.mockResolvedValue(
     {} satisfies Awaited<ReturnType<typeof syncPost<"/api/queue">>>,
@@ -198,7 +196,7 @@ it("retains the same request when its write outcome is unknown", async () => {
     expected_revision: "revision-7",
     request_id: "request-fixed",
   } satisfies PostBody<"/api/queue">;
-  storage.set(key, JSON.stringify(request));
+  storage.setItem(key, JSON.stringify(request));
   mocks.stopRemovedMessage.mockResolvedValue(false);
   const unknown = new TypeError("connection lost");
   mocks.syncPost.mockRejectedValue(unknown);
@@ -227,7 +225,7 @@ it("does not replace an unrecognized saved cancellation with a new identity", as
     "chat",
     "client-1",
   ])}`;
-  storage.set(key, JSON.stringify({ request_id: "request-unknown" }));
+  storage.setItem(key, JSON.stringify({ request_id: "request-unknown" }));
 
   await assert.rejects(removeSendingMessage(scope, { chat: "chat", message }), {
     message: "The saved message cancellation cannot be verified.",

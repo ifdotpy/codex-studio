@@ -1,3 +1,7 @@
+import {
+  installPreferenceStorage,
+  preferenceStorage,
+} from "../preferenceStorage";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { preferenceCacheKey } from "../sync/uiPreferenceMerge";
 import { SERVER_REGISTRY_KEY } from "./registry";
@@ -47,16 +51,22 @@ beforeEach(() => {
   mocks.fetch.mockClear();
   cleanups = [];
   const values = new Map<string, string>();
-  vi.stubGlobal("localStorage", {
+  installPreferenceStorage({
     getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => values.set(key, value),
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+    removeItem: (key: string) => {
+      values.delete(key);
+    },
+    clear: () => values.clear(),
     get length() {
       return values.size;
     },
     key: (index: number) => [...values.keys()][index] ?? null,
   });
   vi.stubGlobal("window", new EventTarget());
-  localStorage.setItem(SERVER_REGISTRY_KEY, JSON.stringify([paired]));
+  preferenceStorage().setItem(SERVER_REGISTRY_KEY, JSON.stringify([paired]));
 });
 afterEach(() => {
   cleanups.forEach((cleanup) => cleanup());
@@ -88,15 +98,18 @@ it("leaves preference transport to mounted server projections", () => {
 
 it("uses the projection workspace identity over a stale paired identity", () => {
   const key = JSON.stringify(["server-label:paired-workspace"]);
-  localStorage.setItem("studio-server-workspace-id:paired", "paired-workspace");
-  localStorage.setItem(
+  preferenceStorage().setItem(
+    "studio-server-workspace-id:paired",
+    "paired-workspace",
+  );
+  preferenceStorage().setItem(
     `${preferenceCacheKey}:user`,
     JSON.stringify({
       [key]: { value: "Remote name", timestamp: 1, writer: "remote" },
     }),
   );
   mount();
-  expect(JSON.parse(localStorage.getItem(SERVER_REGISTRY_KEY)!)[0].label).toBe(
-    "Remote name",
-  );
+  expect(
+    JSON.parse(preferenceStorage().getItem(SERVER_REGISTRY_KEY)!)[0].label,
+  ).toBe("Remote name");
 });

@@ -1,3 +1,4 @@
+import { preferenceStorage } from "../preferenceStorage";
 import type { ScreenSearchResultsMessage } from "./screenChannel";
 import { useScreenChannel } from "./ScreenContext";
 import { useServerApi, useServerResources } from "./ServerServicesContext";
@@ -190,8 +191,10 @@ export function useServerFrame(
           const value = JSON.stringify(
             normalizeStudioPreferences(event.data.preferences),
           );
-          if (localStorage.getItem(studioPreferencesStorageKey) !== value) {
-            localStorage.setItem(studioPreferencesStorageKey, value);
+          if (
+            preferenceStorage().getItem(studioPreferencesStorageKey) !== value
+          ) {
+            preferenceStorage().setItem(studioPreferencesStorageKey, value);
             window.dispatchEvent(
               new StorageEvent("storage", {
                 key: studioPreferencesStorageKey,
