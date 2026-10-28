@@ -229,7 +229,7 @@ async fn execute(
             record,
             targets,
             result,
-        } => (record, targets, result),
+        } => (*record, targets, result),
     };
     let root_request_id = record.root_request_id.clone();
     let admitted = record.admitted_request.clone();

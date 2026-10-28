@@ -587,7 +587,7 @@ pub fn validate_stop_response(
 pub enum Claim {
     Replay(ProcessActionResult),
     New {
-        record: ProcessActionRecord,
+        record: Box<ProcessActionRecord>,
         targets: Vec<Value>,
         result: ProcessActionResult,
     },
@@ -772,7 +772,7 @@ pub fn claim(
     )
     .map_err(StoreError::from)?;
     Ok(Claim::New {
-        record,
+        record: Box::new(record),
         targets,
         result,
     })
