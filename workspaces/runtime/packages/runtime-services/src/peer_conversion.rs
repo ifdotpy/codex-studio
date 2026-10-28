@@ -250,7 +250,8 @@ pub(crate) fn idle(
         "runtime_account_transfers",
         "runtime_rooms",
     ] {
-        for r in records::all(db, table)? {
+        let owners = ids.iter().copied().collect::<Vec<_>>();
+        for r in records::owned_by(db, table, &owners)? {
             let belongs = ids.contains(r["agent"].as_str().unwrap_or_default());
             let busy = match table {
                 "runtime_tasks" | "runtime_monitors" => {

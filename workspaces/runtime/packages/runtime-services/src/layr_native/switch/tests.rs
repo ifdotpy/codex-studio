@@ -76,6 +76,27 @@ async fn an_uncertain_past_delivery_does_not_block_the_switch_in_place() {
 }
 
 #[tokio::test]
+async fn a_broken_row_of_another_chat_does_not_block_the_switch() {
+    // A migrated receipt without an agent fails schema checks; only this chat's rows are read.
+    let (_directory, store) = store_with(&[wt_lead()]).await;
+    store
+        .transaction_with(|tx| -> std::result::Result<(), StoreError> {
+            tx.execute(
+                "INSERT INTO runtime_tool_requests(id,record) VALUES('orphan','{\"id\":\"orphan\",\"agent\":null,\"created\":0,\"outcome\":\"unknown\"}')",
+                [],
+            )
+            .map_err(StoreError::from)?;
+            Ok(())
+        })
+        .await
+        .expect("fixture row");
+    let result = switch_chat_with(Arc::clone(&store), "wt-lead", fake_effects)
+        .await
+        .expect("another chat's broken row is not read");
+    assert_eq!(result["workspaceMode"], "layr-native");
+}
+
+#[tokio::test]
 async fn input_still_in_flight_blocks_the_switch() {
     let (_directory, store) = store_with(&[wt_lead()]).await;
     with_event(&store, "dispatching").await;

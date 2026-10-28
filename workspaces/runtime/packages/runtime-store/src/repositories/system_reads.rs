@@ -84,6 +84,31 @@ pub fn all(connection: &Connection, table: &'static str) -> StoreResult<Vec<Valu
         .collect()
 }
 
+/// Schema-checked rows of `table` whose `agent` is one of `agents`, so a
+/// broken row of another chat is neither read nor parsed.
+pub fn owned_by(
+    connection: &Connection,
+    table: &'static str,
+    agents: &[&str],
+) -> StoreResult<Vec<Value>> {
+    if !exists(connection, table)? {
+        return Ok(Vec::new());
+    }
+    let mut statement = connection.prepare_cached(&format!(
+        "SELECT id,record FROM {table} WHERE json_extract(record,'$.agent')=?1 ORDER BY rowid"
+    ))?;
+    let mut rows = Vec::new();
+    for agent in agents {
+        for row in statement.query_map([agent], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            let (id, raw) = row?;
+            rows.push(decode_row(connection, table, &id, &raw)?);
+        }
+    }
+    Ok(rows)
+}
+
 /// Schema-checked agents that are not deleted, in rowid order. A live agent
 /// has no `deletedAt`; the `runtime_agent_live_root_v2` partial index serves the
 /// predicate, so tombstones are neither read nor parsed.
