@@ -872,6 +872,45 @@ mod tests {
         ));
     }
     #[test]
+    fn native_written_keeps_exact_frame_fingerprint_without_retained_transport() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let (identity, input) = input();
+        let reply = Reply::new(
+            identity.clone(),
+            ResponseBody::Result(json!({"native":true})),
+        )
+        .expect("reply");
+        save_reply(&tx, &input, &reply).expect("response");
+        delivery_in(&tx, &reply.identity, DeliveryOutcome::Submitted).expect("native handoff");
+        delivery_in(&tx, &reply.identity, DeliveryOutcome::Written).expect("written proof");
+        assert!(response(&tx, &identity).expect("outbox").is_none());
+        assert_eq!(
+            begin_frame(
+                &tx,
+                "account",
+                4,
+                &reply.identity.operation_id(),
+                &reply.frame()
+            )
+            .expect("same exact frame"),
+            FrameAdmission::Written
+        );
+        let mut changed = reply.clone();
+        changed.body = ResponseBody::Result(json!({"native":false}));
+        assert!(matches!(
+            begin_frame(
+                &tx,
+                "account",
+                4,
+                &changed.identity.operation_id(),
+                &changed.frame()
+            ),
+            Err(CallbackError::Conflict)
+        ));
+    }
+
+    #[test]
     fn late_written_callback_retires_body_after_generation_and_ack_replacement() {
         let mut db = database();
         let tx = db.transaction().expect("transaction");

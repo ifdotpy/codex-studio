@@ -12,7 +12,7 @@ use studio_runtime_store::{
     request_results::{RequestResults, ResultEnvelope},
 };
 
-fn callback_owner(
+pub(crate) fn callback_owner(
     store: &RuntimeStore,
     context: &CallbackContext,
     rpc: &studio_runtime_providers::RequestId,
@@ -25,7 +25,7 @@ fn callback_owner(
     .unwrap()
 }
 
-fn callback_body(
+pub(crate) fn callback_body(
     store: &RuntimeStore,
     owner: &studio_runtime_services::tool_requests::CallbackTask<CallbackOwner>,
 ) -> Option<CallbackResponse> {
