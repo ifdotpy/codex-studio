@@ -20,6 +20,7 @@ use studio_runtime_store::{
     AgentRecord, ContextRepairRepository, RuntimeStore, StoreError, Transaction,
 };
 use thiserror::Error;
+use studio_runtime_schema::persistence::{ContextRepairPhase,RequestIdentity};
 
 pub const MAX_TURNS: usize = 1600;
 pub const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
@@ -51,10 +52,6 @@ pub enum RepairError {
     Worker,
     #[error(transparent)]
     Store(#[from] StoreError),
-}
-
-fn terminal_receipt_key(account: &str, thread: &str, turn: &str) -> String {
-    studio_runtime_store::python_json_compact(&json!([account, thread, turn]))
 }
 
 fn register_source_terminal_receipt(
@@ -91,12 +88,13 @@ fn register_source_terminal_receipt(
         "connectionId":repair["connectionId"],
         "connectionGeneration":repair["connectionGeneration"],
         "newThreadId":new_thread,
-        "phase":"completed"
+        "phase":ContextRepairPhase::Completed
     });
-    tx.execute(
-        "INSERT INTO runtime_context_terminal_receipts(id,agent,operation,record) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,operation=excluded.operation,record=excluded.record WHERE json_extract(runtime_context_terminal_receipts.record,'$.phase')!='completed'",
-        rusqlite::params![terminal_receipt_key(account, thread, turn), repair["agent"].as_str().ok_or(RepairError::ReceiptHold)?, repair["id"].as_str().ok_or(RepairError::ReceiptHold)?, record.to_string()],
-    )?;
+    if proof["threadId"] != thread || source["accountKey"] != account || proof["turnId"] != turn {
+        return Err(RepairError::ReceiptHold);
+    }
+    let attempt = repair["startAttemptSnapshot"]["id"].as_str().ok_or(RepairError::ReceiptHold)?;
+    ContextRepairRepository::save_terminal_provenance(tx, attempt, &record)?;
     Ok(())
 }
 
@@ -122,21 +120,13 @@ pub(crate) fn source_terminal_attempt(
     if !matches!(status, "completed" | "failed" | "interrupted") {
         return Ok(None);
     }
-    let raw: Option<String> = tx
-        .query_row(
-            "SELECT record FROM runtime_context_terminal_receipts WHERE id=?1",
-            [terminal_receipt_key(account, thread, turn)],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(raw) = raw else {
+    let Some(raw) = ContextRepairRepository::terminal_provenance(tx, account, thread, turn)? else {
         return Ok(None);
     };
-    let raw: Value = serde_json::from_str(&raw).map_err(|_| RepairError::ReceiptHold)?;
     let source = &raw["source"];
     let proof = &raw["proof"];
     let snapshot = &raw["startAttemptSnapshot"];
-    if raw["phase"] != "completed"
+    if raw["phase"] != ContextRepairPhase::Completed.as_str()
         || source["accountKey"] != account
         || source["threadId"] != thread
         || proof["threadId"] != thread
@@ -163,7 +153,7 @@ pub(crate) fn source_terminal_attempt(
                 .flatten(),
         )
         .filter(|repair| {
-            repair["phase"] == "completed"
+            repair["phase"] == ContextRepairPhase::Completed.as_str()
                 && repair["agent"] == agent_id
                 && repair["source"]["id"] == agent_id
                 && repair["source"]["epoch"] == epoch
@@ -213,7 +203,7 @@ fn archive_previous_repair(agent: &mut Value) -> Result<(), RepairError> {
     if !previous.is_object() {
         return Ok(());
     }
-    if previous["phase"] == "completed" || studio_runtime_store::truthy(previous.get("rpcMethod")) {
+    if previous["phase"] == ContextRepairPhase::Completed.as_str() || studio_runtime_store::truthy(previous.get("rpcMethod")) {
         if agent
             .get("contextRepairHistory")
             .is_some_and(|history| !history.is_array())
@@ -450,18 +440,7 @@ fn validate_agent(agent: &Value) -> Result<(), RepairError> {
         }
     }
     if let Some(repair) = agent.get("contextRepair").filter(|v| !v.is_null())
-        && !matches!(
-            repair["phase"].as_str(),
-            Some(
-                "preparing"
-                    | "submitted"
-                    | "ready"
-                    | "unknown"
-                    | "unchanged"
-                    | "completed"
-                    | "failed"
-            )
-        )
+        && serde_json::from_value::<ContextRepairPhase>(repair["phase"].clone()).is_err()
     {
         return Err(RepairError::Invalid("agent.contextRepair.phase"));
     }
@@ -1090,7 +1069,7 @@ pub async fn repair_idle_with_broker(
                     )
                 {
                     current["contextRepair"]["phase"] =
-                        json!(if current["contextRepair"]["phase"] == "submitted" {
+                        json!(if current["contextRepair"]["phase"] == ContextRepairPhase::Submitted.as_str() {
                             "unknown"
                         } else {
                             "failed"
@@ -1210,16 +1189,13 @@ async fn repair_idle_with_broker_inner(
         if scope.account != account || scope.connection.is_empty() {
             return Err(RepairError::AccountSession);
         }
-        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)
-            .map_err(|_| RepairError::Invalid("clock"))?.as_nanos();
-        let operation_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID,
-            format!("context-repair:{transaction_agent_id}:{epoch}:{}:{stamp}", agent["threadId"].as_str().unwrap_or_default()).as_bytes()).to_string();
+        let operation_id = RequestIdentity::issue_root();
         archive_previous_repair(&mut agent)?;
         let repair = json!({
             "id":operation_id,
             "agent":&transaction_agent_id,
             "source":{"id":transaction_source_id,"epoch":epoch,"accountKey":account,"threadId":agent["threadId"]},
-            "phase":"preparing",
+            "phase":ContextRepairPhase::Preparing,
             "created":SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| RepairError::Invalid("clock"))?.as_secs_f64(),
             "checkedEventIds":events.iter().filter_map(|e| e["id"].as_str()).collect::<Vec<_>>(),
             "compactions":agent.get("compactions").and_then(Value::as_u64).unwrap_or(0),
@@ -1496,7 +1472,7 @@ async fn repair_idle_with_broker_inner(
                 {
                     return Err(RepairError::ReceiptHold);
                 }
-                current["contextRepair"]["phase"] = json!("unchanged");
+                current["contextRepair"]["phase"] = json!(ContextRepairPhase::Unchanged);
                 current["contextRepair"]["snapshot"] = transaction_repair;
                 ContextRepairRepository::put_agent(tx, &current)?;
                 Ok(json!({"id":transaction_agent_id,"repair":current["contextRepair"]}))
@@ -1521,7 +1497,7 @@ async fn repair_idle_with_broker_inner(
                 return Err(RepairError::ReceiptHold);
             }
             ensure_local_idle(tx, &current)?;
-            current["contextRepair"]["phase"] = json!("submitted");
+            current["contextRepair"]["phase"] = json!(ContextRepairPhase::Submitted);
             current["contextRepair"]["rpcMethod"] = json!("thread/fork");
             current["contextRepair"]["forkOperation"] =
                 json!(format!("context-repair:{transaction_operation_id}:fork"));
@@ -1598,7 +1574,7 @@ async fn repair_idle_with_broker_inner(
                     {
                         return Err(RepairError::ReceiptHold);
                     }
-                    current["contextRepair"]["phase"] = json!("completed");
+                    current["contextRepair"]["phase"] = json!(ContextRepairPhase::Completed);
                     current["contextRepair"]["newThreadId"] = json!(new_thread);
                     current["contextRepair"]["repairedEventIds"] = json!(repaired_event_ids);
                     current["contextRepair"]["sourceSha256"] = json!(source_sha256);
@@ -1617,7 +1593,7 @@ async fn repair_idle_with_broker_inner(
                     let mut current = ContextRepairRepository::agent(tx, &transaction_agent_id)?
                         .ok_or(RepairError::MissingAgent)?;
                     if current["contextRepair"]["id"] == transaction_operation_id {
-                        current["contextRepair"]["phase"] = json!("unknown");
+                        current["contextRepair"]["phase"] = json!(ContextRepairPhase::Unknown);
                         ContextRepairRepository::put_agent(tx, &current)?;
                     }
                     Ok(json!({"id":transaction_agent_id,"repair":current["contextRepair"]}))
@@ -1634,7 +1610,7 @@ async fn repair_idle_with_broker_inner(
                     let mut current = ContextRepairRepository::agent(tx, &transaction_agent_id)?
                         .ok_or(RepairError::MissingAgent)?;
                     if current["contextRepair"]["id"] == transaction_operation_id {
-                        current["contextRepair"]["phase"] = json!("failed");
+                        current["contextRepair"]["phase"] = json!(ContextRepairPhase::Failed);
                         current["contextRepair"]["error"] = json!(error_message);
                         ContextRepairRepository::put_agent(tx, &current)?;
                     }
@@ -2037,7 +2013,7 @@ mod repair_history_tests {
         let completed = json!({
             "id":"repair-1",
             "agent":"agent",
-            "phase":"completed",
+            "phase":ContextRepairPhase::Completed,
             "source":{"id":"agent","epoch":2,"accountKey":"default","threadId":"source"},
             "newThreadId":"destination"
         });
@@ -2053,7 +2029,7 @@ mod repair_history_tests {
     fn repair_with_rpc_method_is_kept_in_history_before_next_repair() {
         let started = json!({
             "id":"repair-rpc",
-            "phase":"preparing",
+            "phase":ContextRepairPhase::Preparing,
             "rpcMethod":"thread/fork"
         });
         let mut agent = json!({"contextRepair":started});

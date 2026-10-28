@@ -493,30 +493,22 @@ fn tool_result(
     {
         return Ok(());
     }
-    let mut aliases = connection.prepare_cached(
-        "SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 LIMIT 2",
-    )?;
-    let aliases = aliases
-        .query_map(params![actor["id"].as_str(), call], |r| {
-            r.get::<_, String>(0)
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    if aliases.len() > 1 {
+    let Some(task) = crate::tool_requests::resolve(
+        connection,
+        actor["id"].as_str().ok_or(TranscriptError::Store)?,
+        call,
+    )
+    .map_err(|_| TranscriptError::Store)?
+    else {
+        return Ok(());
+    };
+    if task["stage"] == "ambiguous" {
         return Ok(());
     }
-    let account = actor["accountKey"].as_str().unwrap_or("default");
-    let thread = actor["threadId"].as_str().unwrap_or("None");
-    let identity = aliases.first().cloned().unwrap_or_else(|| {
-        format!(
-            "{}{thread}:{call}",
-            if account == "default" {
-                String::new()
-            } else {
-                format!("{account}:")
-            }
-        )
-    });
-    let Some(mut result) = records::get(connection, "runtime_tool_results", &identity)? else {
+    let identity = task["id"].as_str().ok_or(TranscriptError::Store)?;
+    let Some(mut result) = crate::tool_requests::saved_result(connection, identity)
+        .map_err(|_| TranscriptError::Store)?
+    else {
         return Ok(());
     };
     if truthy(result.get("_payloadBlobs")) {
