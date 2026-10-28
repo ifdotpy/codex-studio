@@ -40,6 +40,7 @@ async fn queue_review_child(state: &State) {
                         "nativeReview",
                         json!({"target":{"type":"custom","instructions":"Check the change"},
                             "requestId":"lead:review:r1","actorId":"lead","args":{},
+                            "actionRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                             "status":"pending","response":{}}),
                     ),
                 ] {
