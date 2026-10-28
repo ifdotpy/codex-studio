@@ -12,7 +12,7 @@ use crate::schema::{
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "runtime_agents",
-        columns: &["id", "record", "hold_status", "hold_incident"],
+        columns: &["id", "record"],
     },
     TableRequirement {
         name: "runtime_agent_record_generation",
