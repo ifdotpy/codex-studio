@@ -26,8 +26,8 @@ Existing credentials stay active when the setting is off.
 The UI allows 105 seconds for that request, including the server's 90-second pass and cleanup.
 A failed or interrupted request keeps its saved request identity.
 
-The UI reads the local access snapshot every 30 seconds.
-Offline failures increase the interval to a maximum of 120 seconds.
+The local access snapshot arrives through the sync stream (`{kind:"multi-server"}`).
+A `GET` of the snapshot runs only to recover a missed version.
 For a paired server without a UI credential, it requests `ui_invite` from the local server.
 It then completes the normal signed UI pair flow without a user step.
 The invitation must match the peer's server ID, origin, and public key.
@@ -131,12 +131,12 @@ A message broker matches the live frame window, its origin, and its server befor
 The browser broker refuses requests for another server.
 Preferences and theme cross these origins through validated messages.
 
-The shell polls `GET /api/ui-summary` for unloaded servers every 30 seconds.
-Each poll has a 15-second deadline.
-Offline failures increase the interval to a maximum of 120 seconds.
+The shell reads `GET /api/ui-summary` for each server when the manager opens its
+**Servers** or **Accounts** tab, and on a manual sidebar refresh. It does not poll.
+Each read has a 15-second deadline.
 The response contains projects, chats, unread flags, notification summaries, and a busy flag.
 The endpoint reads the durable entity projection without changes to read receipts.
-Remote polls use the same paired signature boundary.
+Remote reads use the same paired signature boundary.
 The native bridge permits only this exact method and path for shell reads.
 It rejects query strings, fragments, request bodies, and calls from server frames.
 The browser shell builds the same fixed request.
