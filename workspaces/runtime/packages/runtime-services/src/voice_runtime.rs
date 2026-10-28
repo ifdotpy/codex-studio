@@ -30,6 +30,7 @@ pub struct VoiceConnectionScope {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VoiceWriteCertainty {
+    Expired,
     Written,
     NotSent,
     Unknown,
@@ -38,6 +39,7 @@ pub enum VoiceWriteCertainty {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VoicePrepareFailure {
+    Expired,
     NotSent,
     Unknown,
     Rejected,
@@ -46,6 +48,7 @@ pub enum VoicePrepareFailure {
 impl From<VoicePrepareFailure> for VoiceWriteCertainty {
     fn from(failure: VoicePrepareFailure) -> Self {
         match failure {
+            VoicePrepareFailure::Expired => Self::Expired,
             VoicePrepareFailure::NotSent => Self::NotSent,
             VoicePrepareFailure::Unknown => Self::Unknown,
             VoicePrepareFailure::Rejected => Self::Rejected,

@@ -928,6 +928,7 @@ fn voice_delete_retry_delay(attempt: usize) -> Duration {
 fn voice_effect_error(error: crate::voice::provider::VoiceProviderError) -> ManagementError {
     use crate::voice::provider::VoiceProviderError;
     match error {
+        VoiceProviderError::Expired => ManagementError::Expired,
         VoiceProviderError::Store(error) => ManagementError::Store(error),
         VoiceProviderError::Outbox(error) => ManagementError::Store(error.into()),
         VoiceProviderError::RequestResult(error) => ManagementError::Store(error.into()),
