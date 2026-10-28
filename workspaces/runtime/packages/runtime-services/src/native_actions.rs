@@ -78,7 +78,7 @@ impl From<studio_runtime_store::request_results::RequestResultError> for NativeE
 }
 impl From<studio_runtime_schema::persistence::RequestIdentityError> for NativeError {
     fn from(error: studio_runtime_schema::persistence::RequestIdentityError) -> Self {
-        Self::Store(StoreError::SchemaMismatch(error.to_string()))
+        Self::Store(StoreError::RequestResult(error.into()))
     }
 }
 impl From<studio_runtime_store::outbox::OutboxError> for NativeError {
@@ -164,6 +164,13 @@ struct NativeActionIntent {
 struct CommandCancelIntent {
     admitted: AdmittedRequest,
     request: NativeRequest,
+}
+
+fn action_outbox_id(root: &str) -> String {
+    json!(["native-action", root]).to_string()
+}
+fn command_outbox_id(root: &str) -> String {
+    json!(["native-command", format!("native-command:{root}")]).to_string()
 }
 
 fn request_identity(namespace: &str, root: &str) -> Result<RequestIdentity> {
@@ -424,7 +431,7 @@ pub fn reserve(
     Outbox::put(
         tx,
         &OutboxRow {
-            id: request.request_id.clone(),
+            id: action_outbox_id(&request.request_id),
             kind: OutboxKind::NativeAction,
             owner_kind: OwnerKind::Agent,
             owner_id: request.agent.clone(),
@@ -492,7 +499,7 @@ pub fn reserve_provider_intent(
             if let crate::account_worker::WorkerError::Store(error) = error {
                 NativeError::Store(error)
             } else {
-                NativeError::Store(StoreError::SchemaMismatch(error.to_string()))
+                NativeError::Unknown
             }
         })?;
         request.admitted_request = Some(token);
@@ -550,10 +557,11 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
             crate::idle_compaction::handoff_refusal(tx, &snapshot.agent, &r.request_id)?
     {
         eprintln!(
-            "idle_compaction_refused request={} reason={reason}",
-            r.request_id
+            "idle_compaction_refused request={} reason={}",
+            r.request_id,
+            reason.as_str()
         );
-        return Err(NativeError::Invalid(reason));
+        return Err(NativeError::Invalid(reason.as_str()));
     }
     let mut params = json!({"threadId":r.thread_id});
     let method = match r.action {
@@ -582,7 +590,7 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
         method: method.into(),
         params,
     };
-    let owner = Outbox::get::<NativeActionIntent>(tx, id)?
+    let owner = Outbox::get::<NativeActionIntent>(tx, &action_outbox_id(id))?
         .ok_or(NativeError::Changed)?
         .payload
         .admitted;
@@ -1142,7 +1150,7 @@ pub async fn update_action_settings(
                         }
                     }
                 }
-                let owner = Outbox::get::<NativeActionIntent>(tx, &request_id)?
+                let owner = Outbox::get::<NativeActionIntent>(tx, &action_outbox_id(&request_id))?
                     .ok_or(NativeError::Changed)?
                     .payload
                     .admitted;
@@ -1339,7 +1347,7 @@ fn agent(tx: &Transaction<'_>, id: &str) -> Result<Value> {
     Ok(value)
 }
 fn row(tx: &Transaction<'_>, id: &str) -> Result<Option<(String, Value, Value)>> {
-    if let Some(saved) = Outbox::get::<NativeActionIntent>(tx, id)? {
+    if let Some(saved) = Outbox::get::<NativeActionIntent>(tx, &action_outbox_id(id))? {
         if saved.kind != OutboxKind::NativeAction
             || saved.owner_kind != OwnerKind::Agent
             || saved.owner_id != saved.payload.receipt.agent_id
@@ -1372,7 +1380,7 @@ fn load(tx: &Transaction<'_>, id: &str) -> Result<Snapshot> {
         .map_err(|error| located(error, "runtime_outbox", id))
 }
 fn write_outcome(tx: &Transaction<'_>, id: &str, outcome: &Outcome) -> Result<()> {
-    let Some(mut row) = Outbox::get::<NativeActionIntent>(tx, id)? else {
+    let Some(mut row) = Outbox::get::<NativeActionIntent>(tx, &action_outbox_id(id))? else {
         return if row(tx, id)?.is_some_and(|(_, _, saved)| saved == json!(outcome)) {
             Ok(())
         } else {
@@ -1409,7 +1417,7 @@ fn write_outcome(tx: &Transaction<'_>, id: &str, outcome: &Outcome) -> Result<()
                     references: vec![row.owner_id.clone()],
                 },
             )?;
-            Outbox::delete_settled(tx, id, &row.signature)?;
+            Outbox::delete_settled(tx, &row.id, &row.signature)?;
         }
     }
     Ok(())
@@ -1632,7 +1640,7 @@ pub fn command_cancel_claim(
     {
         return Err(NativeError::Changed);
     }
-    let id = format!("native-command:{}", ticket.request);
+    let id = command_outbox_id(&ticket.request);
     let request = NativeRequest {
         ticket: ticket.clone(),
         method: "thread/backgroundTerminals/terminate".into(),
@@ -1695,7 +1703,7 @@ pub fn command_cancel_claim(
     Ok(CommandCancelClaim::Send(request))
 }
 pub fn command_cancel_settle(tx: &Transaction<'_>, receipt: &TransportReceipt) -> Result<Value> {
-    let id = format!("native-command:{}", receipt.ticket.request);
+    let id = command_outbox_id(&receipt.ticket.request);
     let saved = Outbox::get::<CommandCancelIntent>(tx, &id)?;
     let Some(saved) = saved else {
         let (_, saved) = saved_reply(tx, "native-command", &receipt.ticket.request)?

@@ -24,6 +24,10 @@ struct TerminalActionIntent {
     reply: TerminalActionReply,
 }
 
+fn action_outbox_id(root: &str) -> String {
+    serde_json::json!(["terminal-action", root]).to_string()
+}
+
 fn now_ms() -> StoreResult<i64> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -204,8 +208,8 @@ impl TerminalsRepository {
         connection: &Connection,
         id: &str,
     ) -> StoreResult<Option<(String, TerminalActionReply)>> {
-        if let Some(saved) =
-            Outbox::get::<TerminalActionIntent>(connection, id).map_err(StoreError::from)?
+        if let Some(saved) = Outbox::get::<TerminalActionIntent>(connection, &action_outbox_id(id))
+            .map_err(StoreError::from)?
         {
             if saved.kind != OutboxKind::TerminalAction
                 || !matches!(saved.owner_kind, OwnerKind::Terminal | OwnerKind::Request)
@@ -260,7 +264,7 @@ impl TerminalsRepository {
         Outbox::put(
             tx,
             &OutboxRow {
-                id: id.into(),
+                id: action_outbox_id(id),
                 kind: OutboxKind::TerminalAction,
                 owner_kind: OwnerKind::Terminal,
                 owner_id: terminal.into(),
@@ -291,8 +295,8 @@ impl TerminalsRepository {
         response: &str,
         failure: Option<TerminalActionFailure>,
     ) -> StoreResult<()> {
-        let Some(mut saved) =
-            Outbox::get::<TerminalActionIntent>(tx, id).map_err(StoreError::from)?
+        let Some(mut saved) = Outbox::get::<TerminalActionIntent>(tx, &action_outbox_id(id))
+            .map_err(StoreError::from)?
         else {
             return Ok(());
         };
@@ -316,7 +320,7 @@ impl TerminalsRepository {
             };
             Outbox::put(tx, &saved).map_err(StoreError::from)?;
         } else {
-            Outbox::delete_settled(tx, id, &saved.signature).map_err(StoreError::from)?;
+            Outbox::delete_settled(tx, &saved.id, &saved.signature).map_err(StoreError::from)?;
         }
         Ok(())
     }
