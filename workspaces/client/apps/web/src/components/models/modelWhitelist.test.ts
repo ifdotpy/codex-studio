@@ -1,5 +1,10 @@
 import { required } from "../componentTestFixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  installPreferenceStorage,
+  memoryStorage,
+  preferenceStorage,
+} from "../../preferenceStorage";
 import { INHERITED_MODEL, toModelOptions } from "./modelOption";
 import {
   modelWhitelistKey,
@@ -21,21 +26,7 @@ const models = toModelOptions([
   { model: "gpt-6-astra", provider: "codex" },
 ]);
 beforeEach(() => {
-  const values = new Map<string, string>();
-  vi.stubGlobal("localStorage", {
-    get length() {
-      return values.size;
-    },
-    key: (i: number) => [...values.keys()][i] ?? null,
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => {
-      values.set(key, value);
-    },
-    removeItem: (key: string) => {
-      values.delete(key);
-    },
-    clear: () => values.clear(),
-  });
+  installPreferenceStorage(memoryStorage());
   vi.stubGlobal("window", new EventTarget());
   vi.stubGlobal("document", new EventTarget());
 });
@@ -52,7 +43,11 @@ it("writes a versioned server preference instead of session memory", async () =>
     timestamp: expect.any(Number),
     writer: expect.any(String),
   });
+  // A reload gets a new facade module. Install the same store, as the core keeps it across a restart.
+  const store = preferenceStorage();
   vi.resetModules();
+  const reloadedFacade = await import("../../preferenceStorage");
+  reloadedFacade.installPreferenceStorage(store);
   const reloaded = await import("./modelWhitelist");
   expect(reloaded.readModelWhitelist("local")).toEqual([]);
 });
