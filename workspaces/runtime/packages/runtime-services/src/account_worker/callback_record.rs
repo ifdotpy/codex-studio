@@ -179,13 +179,22 @@ fn put(tx: &Transaction<'_>, task: &Task) -> Result<(), WorkerError> {
 fn tool_error(error: tool_requests::ToolRequestError) -> WorkerError {
     match error {
         tool_requests::ToolRequestError::Store(error) => WorkerError::Store(error),
-        _ => WorkerError::CallbackUnknown,
+        tool_requests::ToolRequestError::RequestResult(_)
+        | tool_requests::ToolRequestError::InvalidRequest(_)
+        | tool_requests::ToolRequestError::RequiresDependency(_)
+        | tool_requests::ToolRequestError::Payload(_) => WorkerError::CallbackUnknown,
     }
 }
 fn callback_error(error: callbacks::CallbackError) -> WorkerError {
     match error {
         callbacks::CallbackError::Store(error) => WorkerError::Store(error),
-        _ => WorkerError::CallbackUnknown,
+        callbacks::CallbackError::Invalid(_)
+        | callbacks::CallbackError::InvalidResultSchema(_)
+        | callbacks::CallbackError::Dependency(_)
+        | callbacks::CallbackError::Stale
+        | callbacks::CallbackError::Conflict
+        | callbacks::CallbackError::Unknown
+        | callbacks::CallbackError::Stored(_) => WorkerError::CallbackUnknown,
     }
 }
 pub(super) fn operation(scope: &str, generation: u64, cursor: u64) -> String {
@@ -279,7 +288,7 @@ fn accepted_context(
     let params = match &frame {
         Frame::Request(request) => request.params.as_ref(),
         Frame::UnknownMethod(request) => request.fields.get("params"),
-        _ => None,
+        Frame::Notification(_) | Frame::Response { .. } => None,
     };
     let thread = params
         .and_then(|params| params["threadId"].as_str())
@@ -374,10 +383,10 @@ pub(super) async fn expired(
                 return Ok(());
             }
             let mut accepted = task.payload.accepted.clone();
-            if let Some(mut saved) = task.payload.submitted.clone() {
-                if saved.hydrate(tx).is_ok() {
-                    accepted.submitted = Some(saved);
-                }
+            if let Some(mut saved) = task.payload.submitted.clone()
+                && saved.hydrate(tx).is_ok()
+            {
+                accepted.submitted = Some(saved);
             }
             let recoverable = task.status != ToolRequestStatus::Unknown
                 && !task.payload.recovery_attempted

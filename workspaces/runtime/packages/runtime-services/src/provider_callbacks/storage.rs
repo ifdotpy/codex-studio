@@ -790,6 +790,195 @@ pub fn save_frame_response(
 }
 
 #[cfg(test)]
+pub(crate) fn seed_card_owner(
+    tx: &Transaction<'_>,
+    identity: &ReplyIdentity,
+    card: &Value,
+) -> Result<(), CallbackError> {
+    let input = Input {
+        id: identity.rpc_id.clone(),
+        method: card["method"].as_str().ok_or(CallbackError::Stale)?.into(),
+        params: card["params"].clone(),
+    };
+    let mut owner = admit_owner(tx, identity, &input.signature())?;
+    owner.payload.card = card["id"].as_str().map(str::to_owned);
+    owner.payload.journal_cursor = Some(1);
+    put_owner(tx, &owner)
+}
+
+/// Settle the canonical response from an accepted-callback handoff owner.
+pub fn settle_response(
+    tx: &Transaction<'_>,
+    key: &str,
+    outcome: DeliveryOutcome,
+) -> Result<(), CallbackError> {
+    let row: Response = Outbox::get(tx, key)?.ok_or(CallbackError::Unknown)?;
+    delivery_in(tx, &row.payload.identity, outcome)?;
+    Ok(())
+}
+
+/// Accepted logical callbacks still owed by this account, counted once even
+/// after their response enters the delivery outbox.
+pub fn pending_callback_count(
+    db: &Connection,
+    account: &str,
+) -> studio_runtime_store::StoreResult<usize> {
+    let count:i64 = db.query_row("SELECT count(*) FROM runtime_tool_requests WHERE kind=?1 AND status IN (?2,?3,?4) AND json_extract(record,'$.payload.accepted.account')=?5",
+        params![studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback,ToolRequestStatus::Queued,ToolRequestStatus::Running,ToolRequestStatus::Unknown,account],|row|row.get(0))?;
+    usize::try_from(count).map_err(|_| {
+        studio_runtime_store::StoreError::RecordContract("callback pending count exceeds usize")
+    })
+}
+
+/// Allocate a provider callback's Studio root exactly once, before any effect.
+pub fn admit_callback_request(
+    tx: &Transaction<'_>,
+    context: &CallbackContext,
+    frame: &Frame,
+) -> Result<String, CallbackError> {
+    let input = Input::from_frame(frame)?
+        .ok_or(CallbackError::Invalid("Expected callback request frame"))?;
+    input.check_context(context)?;
+    Ok(admit_owner(
+        tx,
+        &ReplyIdentity::new(context, &input.id),
+        &input.signature(),
+    )?
+    .id)
+}
+fn rebind_prepared(
+    tx: &Transaction<'_>,
+    row: &mut Response,
+    context: &CallbackContext,
+) -> Result<(), CallbackError> {
+    if row.payload.identity.context.connection == context.connection {
+        return Ok(());
+    }
+    if !row.payload.identity.key_context_matches(context) {
+        return Err(CallbackError::Stale);
+    }
+    if !context.agent.is_empty() {
+        snapshot(tx, context)?.active()?;
+    }
+    row.payload
+        .identity
+        .context
+        .connection
+        .clone_from(&context.connection);
+    let mut owner = owner(tx, &row.payload.identity)?.ok_or(CallbackError::Unknown)?;
+    owner.payload.reply_identity = Some(row.payload.identity.clone());
+    put_owner(tx, &owner)?;
+    put_response(tx, row)
+}
+
+/// Trusted callback task lookup; never creates admission on a missing owner.
+pub fn callback_admission(
+    db: &Connection,
+    root: &str,
+) -> Result<Option<AdmittedRequest>, CallbackError> {
+    Ok(owner_by_root(db, root)?.and_then(|task| task.payload.admission))
+}
+
+fn owner_by_root(db: &Connection, root: &str) -> Result<Option<Owner>, CallbackError> {
+    use rusqlite::OptionalExtension;
+    let raw: Option<String> = db
+        .query_row(
+            "SELECT record FROM runtime_tool_requests WHERE id=?1 AND kind=?2",
+            params![
+                root,
+                studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let task: Option<Owner> = raw.map(|raw| serde_json::from_str(&raw)).transpose()?;
+    Ok(task)
+}
+
+/// The exact final provider effect pointer, separate from the callback reply token.
+pub fn credential_refresh_admission(
+    db: &Connection,
+    root: &str,
+) -> Result<Option<AdmittedRequest>, CallbackError> {
+    Ok(owner_by_root(db, root)?.and_then(|owner| owner.payload.credential_refresh_admission))
+}
+
+/// Caller reserves the provider obligation in this same transaction. The pointer
+/// can only be written once; a retry cannot replace its admitted effect.
+pub fn set_credential_refresh_admission(
+    tx: &Transaction<'_>,
+    root: &str,
+    source: &AdmittedRequest,
+    final_effect: &AdmittedRequest,
+) -> Result<(), CallbackError> {
+    let mut owner = owner_by_root(tx, root)?.ok_or(CallbackError::Unknown)?;
+    if owner.payload.admission.as_ref() != Some(source) {
+        return Err(CallbackError::Conflict);
+    }
+    if let Some(previous) = &owner.payload.credential_refresh_admission {
+        return if previous == final_effect {
+            Ok(())
+        } else {
+            Err(CallbackError::Conflict)
+        };
+    }
+    if owner.status != ToolRequestStatus::Queued {
+        return Err(CallbackError::Unknown);
+    }
+    owner.payload.credential_refresh_admission = Some(final_effect.clone());
+    put_owner(tx, &owner)
+}
+
+/// First dispatch reserves and points at the effect atomically. Retries return
+/// the persisted final pointer and never call the reservation API again.
+pub fn reserve_credential_refresh(
+    tx: &Transaction<'_>,
+    root: &str,
+    source: &AdmittedRequest,
+    intent: crate::account_worker::retained::ProviderCallIntent,
+) -> Result<AdmittedRequest, CallbackError> {
+    let owner = owner_by_root(tx, root)?.ok_or(CallbackError::Unknown)?;
+    if owner.payload.admission.as_ref() != Some(source)
+        || intent.root_request_id != root
+        || intent.scope.account != owner.payload.identity.context.account
+    {
+        return Err(CallbackError::Conflict);
+    }
+    if let Some(final_effect) = owner.payload.credential_refresh_admission {
+        if final_effect.signature()
+            != intent.fingerprint(&intent.scope.account, intent.method.as_str())
+        {
+            return Err(CallbackError::Conflict);
+        }
+        return Ok(final_effect);
+    }
+    if owner.status != ToolRequestStatus::Queued {
+        return Err(CallbackError::Unknown);
+    }
+    let final_effect = crate::account_worker::retained::reserve_provider_call(tx, source, intent)
+        .map_err(|error| match error {
+        crate::account_worker::WorkerError::Store(error) => CallbackError::Store(error),
+        crate::account_worker::WorkerError::Recovery(_)
+        | crate::account_worker::WorkerError::Scheduler(_)
+        | crate::account_worker::WorkerError::Session(_)
+        | crate::account_worker::WorkerError::Notification(_)
+        | crate::account_worker::WorkerError::PreparationRefused(_)
+        | crate::account_worker::WorkerError::StaleVmActor
+        | crate::account_worker::WorkerError::PreparationPending(_)
+        | crate::account_worker::WorkerError::PreparationAwaitsAgent(_)
+        | crate::account_worker::WorkerError::CleanupUnconfirmed(_)
+        | crate::account_worker::WorkerError::AlreadyRunning
+        | crate::account_worker::WorkerError::Closed
+        | crate::account_worker::WorkerError::ShutdownTimeout
+        | crate::account_worker::WorkerError::TaskFailed
+        | crate::account_worker::WorkerError::Capacity
+        | crate::account_worker::WorkerError::CallbackUnknown => CallbackError::Unknown,
+    })?;
+    set_credential_refresh_admission(tx, root, source, &final_effect)?;
+    Ok(final_effect)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     fn database() -> Connection {
@@ -1127,179 +1316,4 @@ mod tests {
             .expect("written response retired atomically");
         assert_eq!(count, 0);
     }
-}
-
-#[cfg(test)]
-pub(crate) fn seed_card_owner(
-    tx: &Transaction<'_>,
-    identity: &ReplyIdentity,
-    card: &Value,
-) -> Result<(), CallbackError> {
-    let input = Input {
-        id: identity.rpc_id.clone(),
-        method: card["method"].as_str().ok_or(CallbackError::Stale)?.into(),
-        params: card["params"].clone(),
-    };
-    let mut owner = admit_owner(tx, identity, &input.signature())?;
-    owner.payload.card = card["id"].as_str().map(str::to_owned);
-    owner.payload.journal_cursor = Some(1);
-    put_owner(tx, &owner)
-}
-
-/// Settle the canonical response from an accepted-callback handoff owner.
-pub fn settle_response(
-    tx: &Transaction<'_>,
-    key: &str,
-    outcome: DeliveryOutcome,
-) -> Result<(), CallbackError> {
-    let row: Response = Outbox::get(tx, key)?.ok_or(CallbackError::Unknown)?;
-    delivery_in(tx, &row.payload.identity, outcome)?;
-    Ok(())
-}
-
-/// Accepted logical callbacks still owed by this account, counted once even
-/// after their response enters the delivery outbox.
-pub fn pending_callback_count(
-    db: &Connection,
-    account: &str,
-) -> studio_runtime_store::StoreResult<usize> {
-    let count:i64 = db.query_row("SELECT count(*) FROM runtime_tool_requests WHERE kind=?1 AND status IN (?2,?3,?4) AND json_extract(record,'$.payload.accepted.account')=?5",
-        params![studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback,ToolRequestStatus::Queued,ToolRequestStatus::Running,ToolRequestStatus::Unknown,account],|row|row.get(0))?;
-    usize::try_from(count).map_err(|_| {
-        studio_runtime_store::StoreError::RecordContract("callback pending count exceeds usize")
-    })
-}
-
-/// Allocate a provider callback's Studio root exactly once, before any effect.
-pub fn admit_callback_request(
-    tx: &Transaction<'_>,
-    context: &CallbackContext,
-    frame: &Frame,
-) -> Result<String, CallbackError> {
-    let input = Input::from_frame(frame)?
-        .ok_or(CallbackError::Invalid("Expected callback request frame"))?;
-    input.check_context(context)?;
-    Ok(admit_owner(
-        tx,
-        &ReplyIdentity::new(context, &input.id),
-        &input.signature(),
-    )?
-    .id)
-}
-fn rebind_prepared(
-    tx: &Transaction<'_>,
-    row: &mut Response,
-    context: &CallbackContext,
-) -> Result<(), CallbackError> {
-    if row.payload.identity.context.connection == context.connection {
-        return Ok(());
-    }
-    if !row.payload.identity.key_context_matches(context) {
-        return Err(CallbackError::Stale);
-    }
-    if !context.agent.is_empty() {
-        snapshot(tx, context)?.active()?;
-    }
-    row.payload
-        .identity
-        .context
-        .connection
-        .clone_from(&context.connection);
-    let mut owner = owner(tx, &row.payload.identity)?.ok_or(CallbackError::Unknown)?;
-    owner.payload.reply_identity = Some(row.payload.identity.clone());
-    put_owner(tx, &owner)?;
-    put_response(tx, row)
-}
-
-/// Trusted callback task lookup; never creates admission on a missing owner.
-pub fn callback_admission(
-    db: &Connection,
-    root: &str,
-) -> Result<Option<AdmittedRequest>, CallbackError> {
-    Ok(owner_by_root(db, root)?.and_then(|task| task.payload.admission))
-}
-
-fn owner_by_root(db: &Connection, root: &str) -> Result<Option<Owner>, CallbackError> {
-    use rusqlite::OptionalExtension;
-    let raw: Option<String> = db
-        .query_row(
-            "SELECT record FROM runtime_tool_requests WHERE id=?1 AND kind=?2",
-            params![
-                root,
-                studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback
-            ],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let task: Option<Owner> = raw.map(|raw| serde_json::from_str(&raw)).transpose()?;
-    Ok(task)
-}
-
-/// The exact final provider effect pointer, separate from the callback reply token.
-pub fn credential_refresh_admission(
-    db: &Connection,
-    root: &str,
-) -> Result<Option<AdmittedRequest>, CallbackError> {
-    Ok(owner_by_root(db, root)?.and_then(|owner| owner.payload.credential_refresh_admission))
-}
-
-/// Caller reserves the provider obligation in this same transaction. The pointer
-/// can only be written once; a retry cannot replace its admitted effect.
-pub fn set_credential_refresh_admission(
-    tx: &Transaction<'_>,
-    root: &str,
-    source: &AdmittedRequest,
-    final_effect: &AdmittedRequest,
-) -> Result<(), CallbackError> {
-    let mut owner = owner_by_root(tx, root)?.ok_or(CallbackError::Unknown)?;
-    if owner.payload.admission.as_ref() != Some(source) {
-        return Err(CallbackError::Conflict);
-    }
-    if let Some(previous) = &owner.payload.credential_refresh_admission {
-        return if previous == final_effect {
-            Ok(())
-        } else {
-            Err(CallbackError::Conflict)
-        };
-    }
-    if owner.status != ToolRequestStatus::Queued {
-        return Err(CallbackError::Unknown);
-    }
-    owner.payload.credential_refresh_admission = Some(final_effect.clone());
-    put_owner(tx, &owner)
-}
-
-/// First dispatch reserves and points at the effect atomically. Retries return
-/// the persisted final pointer and never call the reservation API again.
-pub fn reserve_credential_refresh(
-    tx: &Transaction<'_>,
-    root: &str,
-    source: &AdmittedRequest,
-    intent: crate::account_worker::retained::ProviderCallIntent,
-) -> Result<AdmittedRequest, CallbackError> {
-    let owner = owner_by_root(tx, root)?.ok_or(CallbackError::Unknown)?;
-    if owner.payload.admission.as_ref() != Some(source)
-        || intent.root_request_id != root
-        || intent.scope.account != owner.payload.identity.context.account
-    {
-        return Err(CallbackError::Conflict);
-    }
-    if let Some(final_effect) = owner.payload.credential_refresh_admission {
-        if final_effect.signature()
-            != intent.fingerprint(&intent.scope.account, intent.method.as_str())
-        {
-            return Err(CallbackError::Conflict);
-        }
-        return Ok(final_effect);
-    }
-    if owner.status != ToolRequestStatus::Queued {
-        return Err(CallbackError::Unknown);
-    }
-    let final_effect = crate::account_worker::retained::reserve_provider_call(tx, source, intent)
-        .map_err(|error| match error {
-        crate::account_worker::WorkerError::Store(error) => CallbackError::Store(error),
-        _ => CallbackError::Unknown,
-    })?;
-    set_credential_refresh_admission(tx, root, source, &final_effect)?;
-    Ok(final_effect)
 }
