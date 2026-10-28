@@ -1903,8 +1903,8 @@ fn callback_records(state: &State) -> i64 {
         .test_reader()
         .expect("reader")
         .query_row(
-            "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:callback:%:accepted'",
-            [],
+            "SELECT count(*) FROM runtime_tool_requests WHERE kind=?1 AND status!=?2 AND origin_key LIKE 'callback:%'",
+            rusqlite::params![studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback, studio_runtime_schema::persistence::ToolRequestStatus::Completed],
             |row| row.get(0),
         )
         .expect("callback records")
@@ -1916,7 +1916,7 @@ async fn callbacks_retired(state: &State) {
     let changed = Arc::new(tokio::sync::Notify::new());
     let observer = changed.clone();
     state.bridge.store.add_table_change_observer(
-        studio_runtime_store::ObservedTable::OperationReceipts,
+        studio_runtime_store::ObservedTable::RuntimeToolRequests,
         move || observer.notify_one(),
     );
     tokio::time::timeout(std::time::Duration::from_secs(120), async {

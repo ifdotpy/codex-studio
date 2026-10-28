@@ -1,5 +1,6 @@
 //! Account database operations. Transaction callbacks stay synchronous and are
 //! submitted to RuntimeStore's bounded writer actor.
+use super::retained::storage::TransportRequestExt;
 use super::*;
 use crate::continuation_runtime::CapacityStartOutcome;
 use crate::diagnostics::measure_runtime_stage as stage;
@@ -15,7 +16,7 @@ use studio_runtime_schema::shared_values::{
 };
 use studio_runtime_store::CachedSql;
 use studio_runtime_store::outbox::{Outbox, OutboxRow};
-use studio_runtime_store::{AgentRecord, EventWriteRepository, NotificationDispatchRepository};
+use studio_runtime_store::{AgentRecord, NotificationDispatchRepository};
 
 pub(super) const PUBLICATION_DRAIN_LIMIT: usize = 64;
 /// Pending publication receipts above which token-rate observations are
@@ -450,64 +451,6 @@ fn journal_frame_payload(frame: &Frame, operation: &str) -> Result<Vec<u8>, Work
     Ok(payload)
 }
 
-fn receipt_id(operation: &str, phase: &str) -> String {
-    format!("account-worker:{operation}:{phase}")
-}
-pub(super) fn receipt(
-    tx: &studio_runtime_store::Transaction<'_>,
-    operation: &str,
-    phase: &str,
-) -> Result<Option<Value>, WorkerError> {
-    EventWriteRepository::receipt(tx, &receipt_id(operation, phase))?
-        .map(|r| serde_json::from_str(&r.result).map_err(|_| invalid(operation)))
-        .transpose()
-}
-pub(super) fn save(
-    tx: &studio_runtime_store::Transaction<'_>,
-    operation: &str,
-    phase: &str,
-    value: Value,
-) -> Result<(), WorkerError> {
-    save_signed(tx, operation, phase, phase, value)
-}
-/// [`save`] with a receipt signature other than the phase.
-fn save_signed(
-    tx: &studio_runtime_store::Transaction<'_>,
-    operation: &str,
-    phase: &str,
-    signature: &str,
-    value: Value,
-) -> Result<(), WorkerError> {
-    if let Some(old) = receipt(tx, operation, phase)? {
-        return if old == value {
-            Ok(())
-        } else {
-            Err(invalid(operation))
-        };
-    }
-    EventWriteRepository::put_receipt(
-        tx,
-        &receipt_id(operation, phase),
-        signature,
-        &value.to_string(),
-    )?;
-    Ok(())
-}
-pub(super) fn delete_receipt(
-    tx: &studio_runtime_store::Transaction<'_>,
-    operation: &str,
-    phase: &str,
-) -> Result<(), WorkerError> {
-    tx.execute_cached(
-        "DELETE FROM runtime_operation_receipts WHERE id=?1",
-        [receipt_id(operation, phase)],
-    )?;
-    Ok(())
-}
-/// Submitted account operations across all accounts, using the receipt-ID owner.
-fn submitted_account_receipt_pattern() -> String {
-    receipt_id("account:*", "submitted")
-}
 /// Whether `attempt` is the attempt of the agent's last completed turn. Such
 /// an attempt is history, not a live start: an earlier build restored it from
 /// a stale disconnect record.
@@ -547,28 +490,6 @@ pub(super) fn has_pending_thread_start(
 ) -> Result<bool, WorkerError> {
     Ok(Outbox::for_owner::<ProviderCall>(connection,OwnerKind::Agent,agent,OutboxKind::ProviderCall).map_err(outbox_error)?
         .into_iter().any(|row| matches!(row.payload,ProviderCall::Account(call) if matches!(call.context.method,Method::ThreadStart|Method::ThreadResume))))
-}
-pub(super) fn record(request: &RecoveredRequest) -> Value {
-    json!({"id":request.ticket.id,"generation":request.ticket.generation,"method":request.ticket.method.as_str(),"operation":request.operation_id.0,"thread":request.thread_id,"lightweight":request.lightweight,"deadline":request.deadline_ms,"unknown":request.unknown,"remoteId":request.remote_id})
-}
-pub(super) fn decode(record: &Value) -> Result<RecoveredRequest, WorkerError> {
-    let invalid = || invalid("recovery");
-    Ok(RecoveredRequest {
-        ticket: studio_runtime_providers::RequestTicket {
-            id: serde_json::from_value(record["id"].clone()).map_err(|_| invalid())?,
-            generation: record["generation"].as_u64().ok_or_else(invalid)?,
-            method: record["method"]
-                .as_str()
-                .and_then(Method::from_wire)
-                .ok_or_else(invalid)?,
-        },
-        operation_id: OperationId(record["operation"].as_str().ok_or_else(invalid)?.into()),
-        thread_id: record["thread"].as_str().map(str::to_owned),
-        lightweight: record["lightweight"].as_bool().ok_or_else(invalid)?,
-        deadline_ms: record["deadline"].as_u64().ok_or_else(invalid)?,
-        unknown: true,
-        remote_id: record["remoteId"].as_u64(),
-    })
 }
 /// The stored agent `id`; a row that vanished inside the transaction is invalid.
 fn stored_agent(
@@ -1889,10 +1810,7 @@ fn start_settled(
     tx: &studio_runtime_store::Transaction<'_>,
     attempt: &str,
 ) -> Result<bool, WorkerError> {
-    Ok(
-        studio_runtime_store::ExecutionHistoryRepository::attempt(tx, attempt)?
-            .is_some_and(|saved| saved.pointer("/receipts/startResult").is_some()),
-    )
+    Ok(studio_runtime_store::ExecutionHistoryRepository::start_settled(tx, attempt)?)
 }
 /// Settle a request proven not written to the provider. Returns the agent to
 /// wake when its exact input batch went back to the queue.
@@ -3180,6 +3098,12 @@ fn compact(
     if cursor > before {
         super::retained::storage::checkpoint_covered(tx, journal_scope, generation, cursor)?;
         set_checkpoint(tx, journal_scope, generation, cursor)?;
+        crate::provider_callbacks::retire_checkpointed(tx, journal_scope, generation).map_err(
+            |error| match error {
+                crate::provider_callbacks::CallbackError::Store(error) => WorkerError::Store(error),
+                _ => invalid(journal_scope),
+            },
+        )?;
     }
     for id in covered {
         tx.execute_cached(
@@ -4282,144 +4206,104 @@ mod journal_frame_payload_tests {
 #[cfg(test)]
 mod pending_thread_start_tests {
     use super::*;
-    use rusqlite::{Connection, params};
-    use serde_json::{Value, json};
-
-    fn receipts() -> Connection {
-        let connection = Connection::open_in_memory().expect("in-memory receipts");
-        connection
-            .execute_batch(
-                "CREATE TABLE runtime_operation_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL)",
-            )
-            .expect("receipt table");
-        connection
+    fn database() -> rusqlite::Connection {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        studio_runtime_store::receipt_schema::create(&db).expect("target schema");
+        db
     }
-
-    fn insert(connection: &Connection, id: &str, result: Value) {
-        connection
-            .execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)",
-                params![id, result.to_string()],
-            )
-            .expect("receipt fixture");
+    fn submit(db: &rusqlite::Connection, account: &str, agent: &str, method: Method) -> String {
+        let operation = format!("account:{account}:{agent}:{}", method.as_str());
+        let request = RecoveredRequest {
+            ticket: studio_runtime_providers::RequestTicket {
+                id: RequestId::String(operation.clone()),
+                generation: 1,
+                method,
+            },
+            operation_id: OperationId(operation.clone()),
+            thread_id: None,
+            lightweight: false,
+            deadline_ms: 1,
+            unknown: true,
+            remote_id: None,
+        };
+        let context = Pending {
+            intent: TurnIntent {
+                agent_id: agent.into(),
+                epoch: 0,
+                attempt_id: operation.clone(),
+                account_key: account.into(),
+                provider: ProviderKind::Codex,
+                thread_id: None,
+                cwd: None,
+                model: None,
+                events: Vec::new(),
+                radio_authorized: false,
+            },
+            method,
+            operation: operation.clone(),
+            thread: None,
+            compiled: None,
+        };
+        let tx = db.unchecked_transaction().expect("transaction");
+        Outbox::put(
+            &tx,
+            &OutboxRow {
+                id: operation.clone(),
+                kind: OutboxKind::ProviderCall,
+                owner_kind: OwnerKind::Agent,
+                owner_id: agent.into(),
+                request_id: None,
+                signature: operation.clone(),
+                status: OutboxStatus::Unknown,
+                account: Some(account.into()),
+                stream_id: Some(account.into()),
+                generation: Some(1),
+                ordinal: None,
+                next_at: None,
+                payload: ProviderCall::Account(AccountCall {
+                    context,
+                    request: super::super::retained::storage::TransportRequest::from(&request),
+                    written: None,
+                    restarted: true,
+                }),
+                created: 1,
+            },
+        )
+        .expect("obligation");
+        tx.commit().expect("commit");
+        operation
     }
-
-    fn operation(account: &str, method: &str) -> String {
-        format!("account:{account}:attempt:{method}")
-    }
-
-    fn context(agent: &str, method: &str) -> Value {
-        json!({"context":{"intent":{"agent_id":agent},"method":method}})
-    }
-
-    fn submit(connection: &Connection, account: &str, agent: &str, method: &str) {
-        insert(
-            connection,
-            &receipt_id(&operation(account, method), "submitted"),
-            context(agent, method),
-        );
-    }
-
-    fn resolve(connection: &Connection, account: &str, method: &str) {
-        insert(
-            connection,
-            &receipt_id(&operation(account, method), "resolved"),
-            json!({}),
-        );
-    }
-
-    /// Small mixed fixture: unrelated receipts and one submission from another agent.
-    fn seed(connection: &Connection) {
-        for index in 0..64 {
-            insert(
-                connection,
-                &format!("callback:default:{index}:ack"),
-                json!({"index": index}),
-            );
+    #[test]
+    fn unresolved_thread_requests_block_only_their_agent() {
+        for method in [Method::ThreadStart, Method::ThreadResume] {
+            let db = database();
+            let id = submit(&db, "account", "lead", method);
+            assert!(has_pending_thread_start(&db, "lead").expect("pending"));
+            assert!(!has_pending_thread_start(&db, "other").expect("other"));
+            let tx = db.unchecked_transaction().expect("transaction");
+            forget_request(&tx, &id).expect("positive settlement");
+            tx.commit().expect("commit");
+            assert!(!has_pending_thread_start(&db, "lead").expect("settled"));
         }
-        submit(connection, "default", "other", "thread/start");
     }
-
     #[test]
-    fn pending_lookup_uses_the_receipt_id_index() {
-        let connection = receipts();
-        seed(&connection);
-        let mut statement = connection
-            .prepare(&format!("EXPLAIN QUERY PLAN {PENDING_THREAD_START_SQL}"))
-            .expect("plan statement");
-        let details = statement
-            .query_map(
-                params!["lead", submitted_account_receipt_pattern()],
-                |row| row.get::<_, String>(3),
-            )
-            .expect("plan rows")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("plan details");
-        assert!(
-            details
-                .iter()
-                .any(|d| d.starts_with("SEARCH r USING INDEX") && d.contains("(id>? AND id<?)")),
-            "{details:?}"
-        );
-        assert!(
-            details
-                .iter()
-                .all(|d| !d.starts_with("SCAN") || d.contains("CONSTANT")),
-            "{details:?}"
-        );
+    fn old_account_unknown_cannot_be_replaced_by_another_account() {
+        let db = database();
+        submit(&db, "old", "lead", Method::ThreadStart);
+        submit(&db, "new", "lead", Method::TurnStart);
+        assert!(has_pending_thread_start(&db, "lead").expect("old uncertainty"));
     }
-
     #[test]
-    fn unresolved_thread_start_blocks_its_agent() {
-        let connection = receipts();
-        submit(&connection, "default", "lead", "thread/start");
-        assert!(has_pending_thread_start(&connection, "lead").expect("lookup"));
+    fn turn_submission_is_not_a_pending_thread_request() {
+        let db = database();
+        submit(&db, "account", "lead", Method::TurnStart);
+        assert!(!has_pending_thread_start(&db, "lead").expect("turn"));
     }
-
     #[test]
-    fn unresolved_thread_resume_blocks_its_agent() {
-        let connection = receipts();
-        submit(&connection, "default", "lead", "thread/resume");
-        assert!(has_pending_thread_start(&connection, "lead").expect("lookup"));
-    }
-
-    #[test]
-    fn resolved_start_does_not_block() {
-        let connection = receipts();
-        submit(&connection, "default", "lead", "thread/start");
-        resolve(&connection, "default", "thread/start");
-        assert!(!has_pending_thread_start(&connection, "lead").expect("lookup"));
-    }
-
-    #[test]
-    fn another_agents_start_does_not_block() {
-        let connection = receipts();
-        submit(&connection, "default", "other", "thread/start");
-        assert!(!has_pending_thread_start(&connection, "lead").expect("lookup"));
-    }
-
-    #[test]
-    fn unrelated_receipts_do_not_block() {
-        let connection = receipts();
-        submit(&connection, "default", "lead", "turn/start");
-        insert(
-            &connection,
-            &receipt_id(&operation("default", "thread/start"), "written"),
-            context("lead", "thread/start"),
-        );
-        insert(
-            &connection,
-            "account-worker:retained:default:attempt:submitted",
-            context("lead", "thread/start"),
-        );
-        assert!(!has_pending_thread_start(&connection, "lead").expect("lookup"));
-    }
-
-    #[test]
-    fn unresolved_start_in_another_account_still_blocks() {
-        let connection = receipts();
-        resolve(&connection, "default", "thread/start");
-        submit(&connection, "other", "lead", "thread/start");
-        assert!(has_pending_thread_start(&connection, "lead").expect("lookup"));
+    fn pending_owner_lookup_uses_the_outbox_owner_index() {
+        let db = database();
+        submit(&db, "account", "lead", Method::ThreadStart);
+        let plan:String=db.query_row("EXPLAIN QUERY PLAN SELECT payload FROM runtime_outbox WHERE owner_kind=?1 AND owner_id=?2 AND kind=?3 ORDER BY id",params![OwnerKind::Agent,"lead",OutboxKind::ProviderCall],|row|row.get(3)).expect("plan");
+        assert!(plan.contains("runtime_outbox_owner"), "{plan}");
     }
 }

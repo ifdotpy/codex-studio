@@ -12,7 +12,7 @@
 //! errors that name no record or agent, stay fatal for the worker.
 use super::*;
 use rusqlite::OptionalExtension;
-use studio_runtime_store::{AgentStatus, CachedSql, EventWriteRepository};
+use studio_runtime_store::{AgentStatus, CachedSql};
 
 /// Savepoint around one agent's part of an account transaction.
 const AGENT_SCOPE_SAVEPOINT: &str = "account_worker_agent_scope";
@@ -393,13 +393,12 @@ pub(super) fn hold_agent(
                 pointer,
                 reason,
             }) if scope == "runtime_agents" && id == agent_id => {
-                let receipt_id = format!(
-                    "{}{agent_id}",
-                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
-                );
-                if EventWriteRepository::receipt(tx, &receipt_id)?.is_some_and(|receipt| {
-                    receipt.signature == studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
-                }) {
+                let held: bool = tx.query_row(
+                    "SELECT hold_status!='clear' FROM runtime_agents WHERE id=?1",
+                    [agent_id],
+                    |row| row.get(0),
+                )?;
+                if held {
                     return Ok(HoldResult::AlreadyHeld);
                 }
                 let diagnostic = StoreError::InvalidSyncObjectField {

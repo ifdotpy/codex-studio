@@ -884,9 +884,10 @@ async fn concurrent_retained_operation_conflict_does_not_kill_worker() {
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
     let mut first = durable_request(&state, &port, "import:fixture:read");
-    first.actor = None;
+    first.method = Method::ThreadStart;
+    first.params = json!({"cwd":"/first"});
     let mut conflicting = first.clone();
-    conflicting.params["threadId"] = json!("other-source-thread");
+    conflicting.params["cwd"] = json!("/other");
 
     // Make both valid callers compete for the same durable operation identity.
     let start = Arc::new(tokio::sync::Barrier::new(3));
@@ -904,9 +905,8 @@ async fn concurrent_retained_operation_conflict_does_not_kill_worker() {
     });
     start.wait().await;
 
-    let write = peer.write("thread/compact/start").await;
-    let source_thread = write["params"]["threadId"].as_str().unwrap();
-    peer.reply(&write, json!({"thread":{"id":source_thread}}))
+    let write = peer.write("thread/start").await;
+    peer.reply(&write, json!({"thread":{"id":"fake-thread-0"}}))
         .await;
     let outcomes = [first_task.await.unwrap(), conflicting_task.await.unwrap()];
     assert_eq!(
@@ -1232,10 +1232,8 @@ async fn retained_written_receipt_replays_after_reconnect_without_sending() {
     );
 
     let mut changed_method = replay.clone();
-    changed_method.method = Method::ThreadSettingsUpdate;
-    changed_method.params = json!({
-        "threadId":"fake-thread-0","limit":10,"sortDirection":"desc","itemsView":"full"
-    });
+    changed_method.method = Method::ThreadRollback;
+    changed_method.params = json!({"threadId":"fake-thread-0","numTurns":1});
     assert_eq!(
         second_port.request(changed_method).await.unwrap_err(),
         PortError::Identity
@@ -1380,8 +1378,8 @@ async fn crash_before_checkpoint_replays_unknown_without_resending_durable_reply
     let task = tokio::spawn(async move { sender.request(task_call).await });
     let _original_wire = peer.write("thread/compact/start").await;
 
-    // Model a crash after the provider result's journal transaction committed,
-    // but before the generation checkpoint could include that cursor.
+    // A durable positive reply without its committed journal prefix stays
+    // uncertain to replay until the exact ACK evidence commits.
     let operation = call.operation.clone();
     let key = format!(
         "retained:default:{}",
@@ -3481,7 +3479,6 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
             epoch: state.epoch,
         },
         "history-read-test".into(),
-        retained_root("history-fixture"),
     );
     let first_deadline =
         (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
@@ -3617,7 +3614,6 @@ async fn connection_recovery_history_receipt_survives_worker_restart_without_res
             epoch: state.epoch,
         },
         recovery_id.clone(),
-        retained_root("history-fixture"),
     );
     let deadline = (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
     let first_params = params.clone();
@@ -3647,7 +3643,6 @@ async fn connection_recovery_history_receipt_survives_worker_restart_without_res
             epoch: state.epoch,
         },
         recovery_id.clone(),
-        retained_root("history-fixture"),
     );
     let deadline = (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
     let mut second_history = second_history;
@@ -3808,7 +3803,6 @@ async fn recovery_reconcile_wait_does_not_hold_store_bridge_permit() {
         session,
         actor,
         "recovery-runtime-test".into(),
-        retained_root("history-fixture"),
     );
     let reconcile = tokio::spawn(async move {
         let observation: Arc<crate::recovery_runtime::ObservationSource> =
@@ -4073,7 +4067,7 @@ async fn claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop() {
     let scope = ControlScope {
         agent: state.agent.clone(),
         epoch: state.epoch.try_into().unwrap(),
-        request_id: Some("stop-task-request".into()),
+        request_id: Some(retained_root("stop-task-request")),
     };
     let copy = session.clone();
     let call_scope = scope.clone();
@@ -4083,7 +4077,7 @@ async fn claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop() {
             ControlInvocation::StopTask {
                 thread_id: "fake-thread-0".into(),
                 task_id: "task".into(),
-                request_id: "stop-task-request".into(),
+                request_id: retained_root("stop-task-request"),
             },
         )
         .await
@@ -4141,7 +4135,7 @@ async fn claude_adapter_distinguishes_not_sent_from_unknown() {
         let scope = ControlScope {
             agent: state.agent.clone(),
             epoch: state.epoch.try_into().unwrap(),
-            request_id: Some(request_id.into()),
+            request_id: Some(retained_root(request_id)),
         };
         let task = tokio::spawn(async move {
             session
@@ -4150,7 +4144,7 @@ async fn claude_adapter_distinguishes_not_sent_from_unknown() {
                     ControlInvocation::StopTask {
                         thread_id: "fake-thread-0".into(),
                         task_id: "task".into(),
-                        request_id: request_id.into(),
+                        request_id: retained_root(request_id),
                     },
                 )
                 .await
@@ -4185,7 +4179,7 @@ async fn claude_rewind_negative_proof_requires_both_original_identities() {
         let scope = ControlScope {
             agent: state.agent.clone(),
             epoch: state.epoch.try_into().unwrap(),
-            request_id: Some("transport".into()),
+            request_id: Some(retained_root("transport")),
         };
         let task = tokio::spawn(async move {
             session
@@ -4196,7 +4190,7 @@ async fn claude_rewind_negative_proof_requires_both_original_identities() {
                         request_id: serde_json::from_value(json!("original")).unwrap(),
                         turn_id: serde_json::from_value(json!("turn")).unwrap(),
                         restore_files: true,
-                        transport_request_id: "transport".into(),
+                        transport_request_id: retained_root("transport"),
                     },
                 )
                 .await

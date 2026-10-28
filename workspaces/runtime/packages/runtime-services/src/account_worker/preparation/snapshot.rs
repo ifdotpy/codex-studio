@@ -23,7 +23,7 @@ const VM_GUEST_SKILLS_ROOT: &str = "/opt/codex-studio/.agents/skills";
 /// Actor-specific inputs needed to launch a provider inside a Linux VM.
 /// Credentials are deliberately absent: the resolver reads and copies them
 /// through its private guest boundary and never returns or logs their values.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq)]
 pub struct VmProviderLaunchRequest {
     pub root_request_id: String,
     pub source: studio_runtime_store::request_results::AdmittedRequest,
@@ -36,6 +36,19 @@ pub struct VmProviderLaunchRequest {
     pub provider: String,
     pub cwd: String,
     pub guest_home: String,
+}
+
+impl PartialEq for VmProviderLaunchRequest {
+    fn eq(&self, other: &Self) -> bool {
+        // Execution admission belongs to the caller; reuse names the same guest process.
+        self.agent_id == other.agent_id
+            && self.epoch == other.epoch
+            && self.generation == other.generation
+            && self.account_key == other.account_key
+            && self.provider == other.provider
+            && self.cwd == other.cwd
+            && self.guest_home == other.guest_home
+    }
 }
 
 /// Provider launch resolved for one actor. `launch.environment` is the guest

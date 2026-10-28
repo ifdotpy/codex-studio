@@ -198,21 +198,14 @@ pub struct HistoryPort {
     port: RetainedSessionPort,
     actor: RequestActor,
     recovery_id: String,
-    root_request_id: String,
     read_step: u64,
 }
 impl HistoryPort {
-    pub fn new(
-        port: RetainedSessionPort,
-        actor: RequestActor,
-        recovery_id: String,
-        root_request_id: String,
-    ) -> Self {
+    pub fn new(port: RetainedSessionPort, actor: RequestActor, recovery_id: String) -> Self {
         Self {
             port,
             actor,
             recovery_id,
-            root_request_id,
             read_step: 0,
         }
     }
@@ -246,7 +239,7 @@ impl crate::recovery_runtime::RetainedHistory for HistoryPort {
             return Box::pin(async { Err(HistoryError::Unsupported) });
         };
         let request = self.port.request(SessionRequest {
-            root_request_id: self.root_request_id.clone(),
+            root_request_id: String::new(),
             admitted_request: None,
             scope: scope.clone(),
             expected_scope: None,
