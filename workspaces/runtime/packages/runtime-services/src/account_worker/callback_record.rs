@@ -187,6 +187,7 @@ fn tool_error(error: tool_requests::ToolRequestError) -> WorkerError {
 }
 fn callback_error(error: callbacks::CallbackError) -> WorkerError {
     match error {
+        callbacks::CallbackError::Expired => WorkerError::Expired,
         callbacks::CallbackError::Store(error) => WorkerError::Store(error),
         callbacks::CallbackError::Invalid(_)
         | callbacks::CallbackError::InvalidResultSchema(_)

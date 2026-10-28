@@ -957,6 +957,7 @@ pub fn reserve_credential_refresh(
     }
     let final_effect = crate::account_worker::retained::reserve_provider_call(tx, source, intent)
         .map_err(|error| match error {
+        crate::account_worker::WorkerError::Expired => CallbackError::Expired,
         crate::account_worker::WorkerError::Store(error) => CallbackError::Store(error),
         crate::account_worker::WorkerError::Recovery(_)
         | crate::account_worker::WorkerError::Scheduler(_)
