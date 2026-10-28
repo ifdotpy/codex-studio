@@ -167,6 +167,8 @@ impl std::fmt::Display for PreparationBlock {
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
+    #[error("Request id expired")]
+    Expired,
     #[error(transparent)]
     Recovery(#[from] crate::recovery::RecoveryError),
     #[error(transparent)]
@@ -224,7 +226,7 @@ fn vm_credential_maintenance_error(error: &WorkerError) -> Option<&'static str> 
         WorkerError::PreparationPending(_) | WorkerError::PreparationAwaitsAgent(_) => {
             Some("pending")
         }
-        WorkerError::PreparationRefused(_) => Some("stale-or-unavailable"),
+        WorkerError::Expired | WorkerError::PreparationRefused(_) => Some("stale-or-unavailable"),
         WorkerError::Store(_)
         | WorkerError::Recovery(_)
         | WorkerError::Scheduler(_)
