@@ -172,6 +172,11 @@ async fn creation_workspace_mode(
     request: &Creation,
     lead: bool,
 ) -> Result<String, OperationError> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct SavedWorkspace {
+        workspace_mode: Option<String>,
+    }
     if let Some(mode) = &request.workspace {
         return Ok(mode.clone());
     }
@@ -184,7 +189,7 @@ async fn creation_workspace_mode(
         let saved=context.store.read_async("agents-create/default-replay", move |tx| {
             use rusqlite::OptionalExtension;
             let signature:Option<String>=tx.query_row("SELECT signature FROM runtime_lead_requests WHERE id=?1 UNION ALL SELECT json_extract(record,'$.quickCreateRequest') FROM runtime_agents WHERE id=?1 AND json_type(record,'$.quickCreateRequest')='text' LIMIT 1", [&id], |row|row.get(0)).optional().map_err(StoreError::from)?;
-            Ok::<_,StoreError>(signature.and_then(|value|serde_json::from_str::<Value>(&value).ok()).and_then(|value|value["workspaceMode"].as_str().map(str::to_owned)))
+            Ok::<_,StoreError>(signature.and_then(|value|serde_json::from_str::<SavedWorkspace>(&value).ok()).and_then(|value|value.workspace_mode))
         }).await?;
         if let Some(saved) = saved {
             return Ok(saved);
