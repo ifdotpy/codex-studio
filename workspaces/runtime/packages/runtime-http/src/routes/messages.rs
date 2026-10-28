@@ -349,6 +349,7 @@ fn federation_error(
 ) -> ApiError {
     use studio_runtime_services::federation_messaging::FederationMessageError as Error;
     match error {
+        Error::RequestResult(error) => error.into(),
         Error::Invalid(_) | Error::Forbidden(_) => {
             ApiError::new(StatusCode::BAD_REQUEST, "Federation room is unavailable")
         }

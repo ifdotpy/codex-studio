@@ -164,6 +164,7 @@ fn map_signed_error(
 ) -> ApiError {
     use studio_runtime_services::federation_messaging::FederationMessageError as Error;
     match error {
+        Error::RequestResult(error) => error.into(),
         Error::Invalid(_) => ApiError::new(StatusCode::BAD_REQUEST, "Invalid federation request"),
         Error::Forbidden(_) => ApiError::new(StatusCode::FORBIDDEN, "Federation request refused"),
         Error::Conflict(_) => ApiError::new(

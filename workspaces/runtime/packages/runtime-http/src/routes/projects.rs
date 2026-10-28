@@ -273,6 +273,7 @@ async fn radio_model_lists(
 
 fn radio_create_error(error: CreateError) -> ProjectsError {
     match error {
+        CreateError::Request(error) => ProjectsError::Store(error.into()),
         CreateError::Store(error) => ProjectsError::Store(error),
         CreateError::CapabilityUnavailable(dependency) => ProjectsError::Requires(dependency),
         CreateError::InvalidCreation(_) | CreateError::IdentityChanged => {
@@ -1319,7 +1320,7 @@ fn projects_error(error: ProjectsError) -> ApiError {
             object,
             id,
         }) => ApiError::invalid_stored(object, &id),
-        ProjectsError::Store(_) => ApiError::internal(),
+        ProjectsError::Store(error) => ApiError::stored(error),
         ProjectsError::Sqlite(_) => ApiError::internal(),
         ProjectsError::PreparationWorker => ApiError::internal(),
     }

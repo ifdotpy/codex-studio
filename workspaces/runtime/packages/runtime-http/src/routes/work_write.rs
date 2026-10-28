@@ -1451,6 +1451,7 @@ mod managed_work_port_tests {
             agent: "lead".into(),
             account: "default".into(),
             connection: "connection".into(),
+            stream_id: "stream".into(),
             generation: 1,
             epoch: 1,
             thread: "thread".into(),

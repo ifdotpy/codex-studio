@@ -135,6 +135,11 @@ async fn reset_limits(
 fn reset_error(error: studio_runtime_services::limit_reset::ResetError) -> ApiError {
     use studio_runtime_services::limit_reset::ResetError;
     match error {
+        ResetError::Request(error) => error.into(),
+        ResetError::Worker(_) => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The reset-credit request outcome is unknown. Inspect this request before retrying.",
+        ),
         ResetError::Invalid(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         ResetError::Provider(message) => ApiError::new(StatusCode::SERVICE_UNAVAILABLE, message),
         ResetError::Store(error) => ApiError::stored(error),
