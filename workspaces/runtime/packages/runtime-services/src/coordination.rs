@@ -318,7 +318,7 @@ fn post_managed_message(
         "assets": input.assets,
     }));
     let now_ms = (crate::event_write::unix_time().map_err(event_write_error)? * 1000.0) as i64;
-    let admission = crate::event_write::begin_request::<ManagedMessageReply>(
+    let result_admission = crate::event_write::begin_request::<ManagedMessageReply>(
         transaction,
         crate::event_write::RequestKey::new("message", &[input.room, "user"], input.id),
         &signature,
@@ -338,7 +338,7 @@ fn post_managed_message(
             ));
         }
     }
-    let admitted = match admission {
+    let admitted = match result_admission {
         crate::event_write::CallerAdmission::Replay(reply) => {
             return Ok(PostMessageResult {
                 receipt: serde_json::to_value(reply).map_err(StoreError::from)?,
@@ -2104,7 +2104,7 @@ mod tests {
             "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('old-message','lead','user','saved','delivered',1.0,0)",
             [],
         ).expect("migrated event");
-        QueueWriteRepository::put_metadata(
+        studio_runtime_store::QueueWriteRepository::put_metadata(
             &connection,
             "old-message",
             &json!({"assets":[],"delivery":DeliveryMoment::CurrentTurn,"sendNow":true}),
