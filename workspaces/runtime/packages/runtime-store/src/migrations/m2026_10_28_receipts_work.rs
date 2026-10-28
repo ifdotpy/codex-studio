@@ -398,19 +398,59 @@ struct WorkReservation {
     archive: bool,
 }
 
-fn read_work(tx: &Transaction<'_>, id: &str, row: &contract::SourceReceipt) -> Result<Value> {
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyVmWork<T> {
+    id: String,
+    #[serde(flatten)]
+    fields: T,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySubmissionWork {
+    #[serde(default)]
+    vm_submit: Field<LegacyVmPublic>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyAcceptanceWork {
+    root_id: Option<String>,
+    #[serde(default)]
+    vm_accept: Field<LegacyVmPublic>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyAcceptanceIntent {
+    #[serde(default)]
+    vm_accept: Field<LegacyVmPublic>,
+}
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyVmPublic {
+    #[serde(default)]
+    public_request_id: Field<String>,
+    #[serde(default)]
+    public_admission: Field<crate::request_results::AdmittedRequest>,
+}
+fn read_vm_work<T: serde::de::DeserializeOwned>(
+    tx: &Transaction<'_>,
+    id: &str,
+    row: &contract::SourceReceipt,
+) -> Result<LegacyVmWork<T>> {
     let invalid = || contract::unclassifiable(TABLE, &row.id, &row.signature);
     let raw: Option<String> = tx
         .query_row("SELECT record FROM runtime_work WHERE id=?1", [id], |r| {
             r.get(0)
         })
         .optional()?;
-    let value: Value = serde_json::from_str(&raw.ok_or_else(invalid)?).map_err(|_| invalid())?;
-    if !value.is_object() || value["id"] != id {
+    let value: LegacyVmWork<T> =
+        serde_json::from_str(&raw.ok_or_else(invalid)?).map_err(|_| invalid())?;
+    if value.id != id {
         return Err(invalid());
     }
     Ok(value)
 }
+
 fn preserve<P: Serialize>(
     tx: &Transaction<'_>,
     row: &contract::SourceReceipt,
@@ -556,24 +596,34 @@ fn move_effect(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
         {
             return Err(invalid());
         }
-        let mut work = read_work(tx, task, row)?;
-        let public = match (
-            work[field].get("publicRequestId"),
-            work[field].get("publicAdmission"),
-        ) {
-            (None, None) => None,
-            (Some(id), Some(admission)) => Some(crate::vm_work_intent::PublicRequest {
-                public_request_id: id.as_str().ok_or_else(invalid)?.to_owned(),
-                public_admission: serde_json::from_value(admission.clone())
-                    .map_err(|_| invalid())?,
-            }),
+        let previous = if kind == "submission" {
+            read_vm_work::<LegacySubmissionWork>(tx, task, row)?
+                .fields
+                .vm_submit
+        } else {
+            read_vm_work::<LegacyAcceptanceIntent>(tx, task, row)?
+                .fields
+                .vm_accept
+        };
+        let previous = match previous {
+            Field::Value(v) => v,
+            Field::Missing | Field::Null => LegacyVmPublic::default(),
+        };
+        let public = match (previous.public_request_id, previous.public_admission) {
+            (Field::Missing, Field::Missing) => None,
+            (Field::Value(id), Field::Value(admission)) => {
+                Some(crate::vm_work_intent::PublicRequest {
+                    public_request_id: id,
+                    public_admission: admission,
+                })
+            }
             _ => return Err(invalid()),
         };
         use crate::vm_work_intent::{Acceptance, Submission, SubmissionResult};
-        work[field] = match (kind, &intent.version, &intent.result_id, &intent.evidence) {
+        let destination = match (kind, &intent.version, &intent.result_id, &intent.evidence) {
             ("submission", Field::Value(version), Field::Missing, Field::Missing) => {
-                serde_json::to_value(
-                    vm_target::<_, SubmissionResult>(
+                serde_json::to_string(
+                    &vm_target::<_, SubmissionResult>(
                         vm_owner(&intent, Submission { version: *version }, public),
                         status,
                         None,
@@ -582,8 +632,8 @@ fn move_effect(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
                 )
             }
             ("submission", Field::Value(version), Field::Missing, Field::Value(evidence)) => {
-                serde_json::to_value(
-                    vm_target(
+                serde_json::to_string(
+                    &vm_target(
                         vm_owner(&intent, Submission { version: *version }, public),
                         status,
                         Some(SubmissionResult {
@@ -596,8 +646,8 @@ fn move_effect(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
             ("merge", Field::Missing, Field::Value(result_id), Field::Missing)
                 if !result_id.is_empty() =>
             {
-                serde_json::to_value(
-                    vm_target(
+                serde_json::to_string(
+                    &vm_target(
                         vm_owner(
                             &intent,
                             Acceptance {
@@ -614,48 +664,50 @@ fn move_effect(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
             _ => return Err(invalid()),
         }
         .map_err(|_| invalid())?;
-        (task.into(), work)
+        tx.execute(
+            "UPDATE runtime_work SET record=json_set(record,?2,json(?3)) WHERE id=?1",
+            params![task, format!("$.{field}"), destination],
+        )?;
+        return Ok(());
     } else {
         let reservation: Reservation = row.json(TABLE)?;
         if !reservation.vm_accept_reservation {
             return Err(invalid());
         }
         let ReservationStatus::Reserved = reservation.status;
-        let mut work = read_work(tx, &reservation.task_id, row)?;
+        let work = read_vm_work::<LegacyAcceptanceWork>(tx, &reservation.task_id, row)?.fields;
         let admitted = contract::admitted_owner_token(&row.id, &row.signature, cutover_ms);
-        if work.get("vmAccept").is_some_and(|v| !v.is_object()) {
-            return Err(invalid());
+        let existing = match work.vm_accept {
+            Field::Missing => None,
+            Field::Null => return Err(invalid()),
+            Field::Value(v) => Some(v),
+        };
+        if let Some(ref value) = existing {
+            match (&value.public_request_id, &value.public_admission) {
+                (Field::Missing, Field::Missing) => {}
+                (Field::Value(id), Field::Value(token)) if id == &row.id && token == &admitted => {}
+                _ => return Err(invalid()),
+            }
         }
-        match (
-            work["vmAccept"].get("publicRequestId"),
-            work["vmAccept"].get("publicAdmission"),
-        ) {
-            (None, None) => {}
-            (Some(id), Some(token))
-                if id.as_str() == Some(row.id.as_str())
-                    && serde_json::from_value::<crate::request_results::AdmittedRequest>(
-                        token.clone(),
-                    )
-                    .ok()
-                    .as_ref()
-                        == Some(&admitted) => {}
-            _ => return Err(invalid()),
-        }
-        if work.get("vmAccept").is_none() {
+        if existing.is_none() {
             let public = crate::vm_work_intent::PublicRequest {
                 public_request_id: row.id.clone(),
                 public_admission: admitted.clone(),
             };
-            work["vmAccept"] = serde_json::to_value(crate::vm_work_intent::Intent::<
+            let value = serde_json::to_string(&crate::vm_work_intent::Intent::<
                 crate::vm_work_intent::Acceptance,
                 (),
             >::UnknownUnattributed(public))
             .map_err(|_| invalid())?;
+            tx.execute(
+                "UPDATE runtime_work SET record=json_set(record,'$.vmAccept',json(?2)) WHERE id=?1",
+                params![reservation.task_id, value],
+            )?;
         }
-        work["vmAccept"]["publicAdmission"] = json!(admitted);
-        work["vmAccept"]["publicRequestId"] = json!(row.id);
+        let token = serde_json::to_string(&admitted).map_err(|_| invalid())?;
+        tx.execute("UPDATE runtime_work SET record=json_set(record,'$.vmAccept.publicAdmission',json(?2),'$.vmAccept.publicRequestId',?3) WHERE id=?1", params![reservation.task_id, token, row.id])?;
         let payload = WorkReservation {
-            root: work["rootId"].as_str().ok_or_else(invalid)?.into(),
+            root: work.root_id.ok_or_else(invalid)?,
             agent: reservation.agent_id,
             task: reservation.task_id.clone(),
             request: row.id.clone(),
@@ -670,7 +722,7 @@ fn move_effect(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
             payload,
             cutover_ms,
         )?;
-        (reservation.task_id, work)
+        return Ok(());
     };
     if !work.is_object() {
         return Err(invalid());
