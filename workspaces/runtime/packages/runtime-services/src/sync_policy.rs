@@ -2645,6 +2645,8 @@ pub async fn push_preferences(
             | other @ StoreError::SchemaObjectMismatch { .. }
             | other @ StoreError::Sqlite(_)
             | other @ StoreError::CommitOutcomeUnknown(_)
+            | other @ StoreError::RequestResult(_)
+            | other @ StoreError::Outbox(_)
             | other @ StoreError::Json(_)
             | other @ StoreError::InvalidStoredObject { .. }
             | other @ StoreError::SchemaValidation(_)
