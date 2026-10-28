@@ -56,10 +56,21 @@ pub(crate) async fn work_for_agent(state: HttpState, agent_id: String) -> Result
             .get("taskDefaultGate")
             .cloned()
             .unwrap_or(Value::Null);
+        let records_by_id: std::collections::BTreeMap<_, _> = records
+            .iter()
+            .map(|record| (record.id().0.as_str(), record))
+            .collect();
         for item in list["items"].as_array_mut().expect("work list") {
+            let id = item["id"].as_str().unwrap_or_default();
+            let record = records_by_id
+                .get(id)
+                .ok_or_else(|| invalid_stored("runtime_work", id))?;
             item["submissionRefusal"] =
-                studio_runtime_services::work_write::current_submission_refusal(connection, item)
-                    .map_err(super::work_write::write_error)?;
+                studio_runtime_services::work_write::current_submission_refusal(
+                    connection,
+                    record.value(),
+                )
+                .map_err(super::work_write::write_error)?;
         }
         list["tasks"] = list["items"].clone();
         Ok(list)

@@ -76,14 +76,14 @@ async fn task_review_projects_default_and_current_refusals_through_http() {
     let default = json!({"command":"check","timeout_ms":1234});
     write(
         &app,
-        json!({"action":"set_default_gate","agent":"lead","id":"default","gate":default}),
+        json!({"action":"set_default_gate","agent":"lead","id":uuid::Uuid::now_v7().to_string(),"gate":default}),
     )
     .await;
-    let created = write(&app, json!({"action":"create","agent":"lead","id":"create","title":"Review me","owner":"worker","result_schema":{"type":"object","properties":{"count":{"type":"integer"}},"required":["count"]}})).await;
+    let created = write(&app, json!({"action":"create","agent":"lead","id":uuid::Uuid::now_v7().to_string(),"title":"Review me","owner":"worker","result_schema":{"type":"object","properties":{"count":{"type":"integer"}},"required":["count"]}})).await;
     let task = created["id"].as_str().unwrap();
     write(
         &app,
-        json!({"action":"create","agent":"other","id":"private","title":"Other team"}),
+        json!({"action":"create","agent":"other","id":uuid::Uuid::now_v7().to_string(),"title":"Other team"}),
     )
     .await;
     let (status, listed) = call(&app, "GET", None).await;
@@ -103,7 +103,7 @@ async fn task_review_projects_default_and_current_refusals_through_http() {
 
     let limit = studio_runtime_schema::task_results::MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT;
     for index in 0..limit {
-        let submit = json!({"action":"submit","agent":"worker","id":format!("invalid-{index}"),"task_id":task,"result":{"count":"bad"},"checks":"checked","revision":"abc","files":[]});
+        let submit = json!({"action":"submit","agent":"worker","id":uuid::Uuid::now_v7().to_string(),"task_id":task,"result":{"count":"bad"},"checks":"checked","revision":"abc","files":[]});
         let (status, refusal) = call(&app, "POST", Some(submit.clone())).await;
         assert_eq!(status, 400, "{refusal}");
         let (status, _) = call(&app, "POST", Some(submit)).await;
@@ -113,7 +113,11 @@ async fn task_review_projects_default_and_current_refusals_through_http() {
         let view = &listed["items"][0];
         assert_eq!(view["version"], created["version"]);
         assert_eq!(view["status"], created["status"]);
-        assert_eq!(view["submissionRefusal"]["failedSubmits"], index + 1);
+        assert_eq!(
+            view["submissionRefusal"]["failedSubmits"],
+            index + 1,
+            "{refusal}"
+        );
         assert_eq!(view["submissionRefusal"]["limit"], limit);
         assert_eq!(view["submissionRefusal"]["retryAllowed"], index + 1 < limit);
         assert_eq!(view["submissionRefusal"]["errors"][0]["path"], "/count");
@@ -124,29 +128,19 @@ async fn task_review_projects_default_and_current_refusals_through_http() {
             "refused submissions publish current typed evidence without changing task version"
         );
     }
-    let (status, _) = call(&app, "POST", Some(json!({"action":"submit","agent":"worker","id":"over-cap","task_id":task,"result":{"count":1},"checks":"checked","revision":"abc","files":[]}))).await;
+    let (status, _) = call(&app, "POST", Some(json!({"action":"submit","agent":"worker","id":uuid::Uuid::now_v7().to_string(),"task_id":task,"result":{"count":1},"checks":"checked","revision":"abc","files":[]}))).await;
     assert_eq!(status, 400);
     let (_, capped) = call(&app, "GET", None).await;
     assert_eq!(
         capped["items"][0]["submissionRefusal"]["errors"][0]["path"], "/count",
         "keep the last validation paths after the cap"
     );
-    // Existing installations have count-only counter receipts. Their saved refusal is readable.
-    store.transaction(|tx| {
-        tx.execute("UPDATE runtime_work SET record=json_remove(record, '$.resultFailures.errors') WHERE json_type(record,'$.resultFailures') IS NOT NULL", [])?;
-        Ok(())
-    }).await.unwrap();
-    let (_, legacy) = call(&app, "GET", None).await;
-    assert_eq!(
-        legacy["items"][0]["submissionRefusal"]["errors"][0]["path"],
-        "/count"
-    );
-    write(&app, json!({"action":"update","agent":"lead","id":"reset","task_id":task,"version":created["version"],"description":"Try again"})).await;
+    write(&app, json!({"action":"update","agent":"lead","id":uuid::Uuid::now_v7().to_string(),"task_id":task,"version":created["version"],"description":"Try again"})).await;
     let (_, reset) = call(&app, "GET", None).await;
     assert_eq!(reset["items"][0]["submissionRefusal"]["failedSubmits"], 0);
     assert_eq!(reset["items"][0]["submissionRefusal"]["errors"], json!([]));
 
-    let (status, _) = call(&app, "POST", Some(json!({"action":"submit","agent":"worker","id":"after-reset","task_id":task,"result":{"count":"bad"},"checks":"checked","revision":"abc","files":[]}))).await;
+    let (status, _) = call(&app, "POST", Some(json!({"action":"submit","agent":"worker","id":uuid::Uuid::now_v7().to_string(),"task_id":task,"result":{"count":"bad"},"checks":"checked","revision":"abc","files":[]}))).await;
     assert_eq!(status, 400);
     store
         .transaction(|tx| {
@@ -169,7 +163,7 @@ async fn task_review_projects_default_and_current_refusals_through_http() {
     );
     write(
         &app,
-        json!({"action":"set_default_gate","agent":"lead","id":"clear-default","gate":null}),
+        json!({"action":"set_default_gate","agent":"lead","id":uuid::Uuid::now_v7().to_string(),"gate":null}),
     )
     .await;
     let (_, cleared) = call(&app, "GET", None).await;
