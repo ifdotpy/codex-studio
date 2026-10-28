@@ -12,6 +12,44 @@ use std::sync::Arc;
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_services::callback_runtime::*;
 use tower::ServiceExt;
+
+struct FramedPort {
+    store: Arc<studio_runtime_store::RuntimeStore>,
+    port: Port,
+}
+
+impl CallbackReplyPort for FramedPort {
+    fn has_live_session(
+        &self,
+        context: &studio_runtime_services::provider_callbacks::CallbackContext,
+    ) -> bool {
+        self.port.has_live_session(context)
+    }
+
+    fn deliver<'a>(
+        &'a self,
+        reply: &'a studio_runtime_services::provider_callbacks::Reply,
+        deadline: std::time::Duration,
+    ) -> CallbackReplyFuture<'a> {
+        Box::pin(async move {
+            let reply_copy = reply.clone();
+            self.store
+                .transaction_with(move |tx| {
+                    let identity = &reply_copy.identity;
+                    studio_runtime_services::provider_callbacks::begin_frame(
+                        tx,
+                        &identity.context.stream_id,
+                        identity.context.generation,
+                        &identity.operation_id(),
+                        &reply_copy.frame(),
+                    )?;
+                    Ok::<_, studio_runtime_services::provider_callbacks::CallbackError>(())
+                })
+                .await?;
+            self.port.deliver(reply, deadline).await
+        })
+    }
+}
 async fn call(app: &axum::Router, path: &str, body: Value, token: &str) -> (u16, Value) {
     let request = Request::builder()
         .method("POST")
@@ -287,7 +325,10 @@ async fn human_http_roundtrip_requires_consumer_and_authenticated_user() {
         "delete cannot bypass CallbackRuntime when its reply port is absent"
     );
     assert_eq!(stored(&store, &id), before);
-    let port = Arc::new(Port::default());
+    let port = Arc::new(FramedPort {
+        store: store.clone(),
+        port: Port::default(),
+    });
     let app = router(
         state.with_callback_runtime(Arc::new(CallbackRuntime::new(store.clone(), port.clone()))),
     )
@@ -300,12 +341,59 @@ async fn human_http_roundtrip_requires_consumer_and_authenticated_user() {
     let (status, value) = call(&app, "/api/answer", body.clone(), "token").await;
     assert_eq!(status, 200, "{value}");
     assert_eq!(value["status"], "answered");
-    assert_eq!(port.calls.lock().unwrap().len(), 1);
-    assert_eq!(checkpoint(&store, &context, 1).await, 1);
+    assert_eq!(port.port.calls.lock().unwrap().len(), 1);
+    let reply = port.port.calls.lock().unwrap()[0].clone();
+    let context_copy = context.clone();
+    store
+        .transaction_with(move |tx| {
+            use studio_runtime_services::provider_callbacks::{
+                CallbackOwner, FrameAdmission, begin_frame, callback_origin_key,
+            };
+            let key = callback_origin_key(
+                &context_copy,
+                &studio_runtime_providers::RequestId::Number(42),
+            );
+            let owner =
+                studio_runtime_services::tool_requests::get_callback::<CallbackOwner>(tx, &key)?
+                    .unwrap();
+            assert_eq!(
+                owner.status,
+                studio_runtime_schema::persistence::ToolRequestStatus::Completed
+            );
+            let token = owner.payload.admission.unwrap();
+            assert!(
+                studio_runtime_store::request_results::RequestResults::replay(
+                    tx,
+                    token.id(),
+                    token.signature(),
+                    (studio_runtime_services::event_write::unix_time().unwrap() * 1000.0) as i64
+                )?
+                .is_some()
+            );
+            let count: i64 = tx.query_row(
+                "SELECT count(*) FROM runtime_outbox WHERE kind='provider_callback'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 0);
+            assert!(matches!(
+                begin_frame(
+                    tx,
+                    &context_copy.stream_id,
+                    context_copy.generation,
+                    &reply.identity.operation_id(),
+                    &reply.frame()
+                )?,
+                FrameAdmission::Written
+            ));
+            Ok::<_, studio_runtime_services::provider_callbacks::CallbackError>(())
+        })
+        .await
+        .unwrap();
     let (status, value) = call(&app, "/api/answer", body, "token").await;
     assert_eq!(status, 200, "{value}");
     assert_eq!(value["replayed"], true);
-    assert_eq!(port.calls.lock().unwrap().len(), 1);
+    assert_eq!(port.port.calls.lock().unwrap().len(), 1);
     assert!(!stored(&store, &id).to_string().contains("private"));
     let (status, value) = call(&app, "/api/questions/delete", json!({"id":id}), "token").await;
     assert_eq!(status, 200, "{value}");
