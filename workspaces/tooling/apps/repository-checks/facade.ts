@@ -18,8 +18,13 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { runLogged } from "./owned-process.ts";
-import { CARGO_BUILD_JOBS, scrubAgentEnvironment } from "./gate-config.ts";
-import { homedir } from "node:os";
+import {
+  CARGO_BUILD_JOBS,
+  RETEST_ENV,
+  RETEST_REAL_ROOT_ENV,
+  scrubAgentEnvironment,
+} from "./gate-config.ts";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -892,6 +897,53 @@ function browserPlan(root: string, smoke = false) {
 
 // Bounded lanes share preparation milestones. Only Rust compiles Cargo targets;
 // types wait for WASM, web and guest tests wait for the workspace, tools start immediately.
+// layr-retest takes the nextest arguments that follow "nextest run".
+export function retestCommand([, args]: Command): Command {
+  return ["layr-retest", ["run", "--", ...args.slice(2)]];
+}
+
+// The Rust workspace step: per-crate reuse, or layr-retest when STUDIO_RETEST=1.
+function rustTests(step: GateStep): GateStep {
+  const retest = process.env[RETEST_ENV] === "1";
+  return {
+    ...step,
+    requires: "workspace",
+    ...(retest
+      ? {
+          commands: [retestCommand(step.commands![0])],
+          // A run with no stale test executes zero tests.
+          options: { allowZeroTests: true },
+        }
+      : { crateReuse: true }),
+  };
+}
+
+// Tests see an empty layr store. Only layr calls made outside a test (no
+// LAYR_RETEST_PROFILE_DIR) get the real store, through a shim first on PATH.
+function retestEnvironment(): NodeJS.ProcessEnv {
+  const real = process.env.LAYR_ROOT ?? "";
+  const layr = (process.env.PATH ?? "")
+    .split(path.delimiter)
+    .map((dir) => path.join(dir, "layr"))
+    .find((file) => existsSync(file));
+  if (!layr) fail("STUDIO_RETEST=1 needs the layr program on PATH");
+  const dir = mkdtempSync(path.join(tmpdir(), "studio-retest-"));
+  const shim = path.join(dir, "bin");
+  mkdirSync(shim);
+  writeFileSync(
+    path.join(shim, "layr"),
+    `#!/bin/sh\n[ -n "$LAYR_RETEST_PROFILE_DIR" ] && exec '${layr}' "$@"\nLAYR_ROOT="$${RETEST_REAL_ROOT_ENV}" exec '${layr}' "$@"\n`,
+    { mode: 0o755 },
+  );
+  const empty = path.join(dir, "store");
+  mkdirSync(empty);
+  return {
+    LAYR_ROOT: empty,
+    [RETEST_REAL_ROOT_ENV]: real,
+    PATH: `${shim}${path.delimiter}${process.env.PATH}`,
+  };
+}
+
 export function gateSteps(root: string, name: string): GateStep[] {
   const packages = discover(root);
   const web = packageTarget(packages, "codex-agents-web");
@@ -997,17 +1049,15 @@ export function gateSteps(root: string, name: string): GateStep[] {
         item: tooling,
         commands: [["pnpm", ["--dir", root, "run", "test:rust-lint-policy"]]],
       },
-      {
-        ...cargo("rust-tests", "Rust nextest", [
+      rustTests(
+        cargo("rust-tests", "Rust nextest", [
           "nextest",
           "run",
           "--workspace",
           "--profile",
           fast ? "fast" : "ci",
         ]),
-        requires: "workspace",
-        crateReuse: true,
-      },
+      ),
       {
         ...cargo("schema-doctests", "Schema compile-fail doctests", [
           "test",
@@ -1527,6 +1577,17 @@ export function parseCounts(
   // oxlint-disable-next-line no-control-regex
   const normalizedOutput = output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
   if (item.ecosystem === "cargo") {
+    const retest = normalizedOutput.match(
+      /^layr-retest: ran (\d+), passed (\d+), failed (\d+), skipped (\d+);/m,
+    );
+    if (retest)
+      return {
+        passed: Number(retest[2]),
+        failed: Number(retest[3]),
+        skipped: Number(retest[4]),
+        executed: Number(retest[1]),
+        summaryFound: true,
+      };
     const summary = normalizedOutput.match(
       /^\s*Summary\s+\[[^\]]+\]\s+(\d+) tests run:\s+(.+)$/m,
     );
@@ -1838,10 +1899,12 @@ export async function execute(
               : {}),
           }
         : scrubAgentEnvironment({ ...process.env });
+    const retestEnv = bin === "layr-retest" ? retestEnvironment() : {};
     const commandEnv = {
       ...baseEnv,
       CARGO_BUILD_JOBS: String(CARGO_BUILD_JOBS),
       ...options.env,
+      ...retestEnv,
     };
     const env = playwrightReportPath
       ? {
@@ -1852,6 +1915,11 @@ export async function execute(
     const child = await runLogged(bin, args, root, logPath, env, {
       signal: options.signal,
     });
+    if (bin === "layr-retest")
+      rmSync(path.dirname(env.LAYR_ROOT!), {
+        recursive: true,
+        force: true,
+      });
     const missingNextest =
       bin === "cargo" && args[0] === "nextest"
         ? nextestError(child.output)
