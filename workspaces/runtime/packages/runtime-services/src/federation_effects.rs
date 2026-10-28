@@ -14,6 +14,7 @@ use studio_runtime_store::{
     AgentId, AgentRepository, RemoteTransportRepository, RuntimeStore, StoreError,
     SyncDocumentsRepository,
 };
+use subtle::ConstantTimeEq;
 
 /// Opaque observation from the server-side trusted adapter.
 ///
@@ -136,10 +137,15 @@ pub async fn handle(
     if !now.is_finite() || now < 0.0 || request.raw.len() > transport::MAX_REQUEST_BYTES {
         return Err(Error::Invalid("request"));
     }
-    let body: Value = serde_json::from_slice(request.raw).map_err(|_| Error::Invalid("body"))?;
     if matches!(request.action, FederationAction::Pair) {
-        return handle_pair(Arc::clone(&store), request, observed, &body, now).await;
+        let body: PairRequest =
+            serde_json::from_slice(request.raw).map_err(|_| Error::Invalid("body"))?;
+        if body.protocol.as_f64() != Some(PROTOCOL as f64) {
+            return Err(Error::Invalid("body"));
+        }
+        return handle_pair(Arc::clone(&store), request, observed, body, now).await;
     }
+    let body: Value = serde_json::from_slice(request.raw).map_err(|_| Error::Invalid("body"))?;
     let identity = transport::load_federation_identity(&store).await?;
     let identity = Arc::new(identity);
     let action = request.action;
@@ -148,8 +154,6 @@ pub async fn handle(
     let timestamp = request.timestamp;
     let signature = request.signature.to_owned();
     let raw = request.raw.to_vec();
-    let observed = observed.clone();
-    let body = body.clone();
     let identity_for_effect = Arc::clone(&identity);
     let result=store.transaction_with(move |tx| {
         let state=snapshot(tx,&peer_id,"",now)?;
@@ -179,37 +183,45 @@ pub async fn handle(
     signed_response(&identity, result, now as i64)
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PairRequest {
+    protocol: serde_json::Number,
+    invite_id: String,
+    token: String,
+    state_id: String,
+    label: String,
+    origin: String,
+    public_key: String,
+    lead_name: Option<String>,
+    tailscale_user: Option<String>,
+    #[serde(rename = "tailscaleStatus")]
+    _tailscale_status: Option<String>,
+}
+
 async fn handle_pair(
     store: Arc<RuntimeStore>,
     request: SignedRequest<'_>,
     observed: Option<String>,
-    body: &Value,
+    body: PairRequest,
     now: f64,
 ) -> Result<Value> {
-    core::validate("PairRequest", body, "body")?;
     let identity = transport::load_federation_identity(&store).await?;
-    let invite_id = body["inviteId"]
-        .as_str()
-        .ok_or(Error::Invalid("inviteId"))?;
-    let token = body["token"].as_str().ok_or(Error::Invalid("token"))?;
-    let state_id = body["stateId"].as_str().ok_or(Error::Invalid("stateId"))?;
-    let label = body["label"].as_str().ok_or(Error::Invalid("label"))?;
-    let public_key = body["publicKey"]
-        .as_str()
-        .ok_or(Error::Invalid("publicKey"))?;
-    let origin = transport::validate_federation_origin(
-        body["origin"].as_str().ok_or(Error::Invalid("origin"))?,
-    )?;
-    if state_id != request.peer_id || label.trim().is_empty() || label.chars().count() > 80 {
+    let origin = transport::validate_federation_origin(&body.origin)?;
+    if body.state_id != request.peer_id
+        || body.label.trim().is_empty()
+        || body.label.chars().count() > 80
+    {
         return Err(Error::Forbidden("pairing identity does not match request"));
     }
-    uuid::Uuid::parse_str(state_id).map_err(|_| Error::Forbidden("invalid peer state identity"))?;
-    if state_id == identity.id() {
+    uuid::Uuid::parse_str(&body.state_id)
+        .map_err(|_| Error::Forbidden("invalid peer state identity"))?;
+    if body.state_id == identity.id() {
         return Err(Error::Forbidden("cannot pair a server with itself"));
     }
     transport::validate_federation_nonce(request.nonce, request.timestamp, now as i64)?;
     transport::verify_signature(
-        public_key,
+        &body.public_key,
         &transport::federation_signing_bytes(
             "POST",
             FederationAction::Pair.path(),
@@ -219,11 +231,11 @@ async fn handle_pair(
         ),
         request.signature,
     )?;
-    let local_claim = body["tailscaleUser"].as_str().map(str::to_ascii_lowercase);
     let whois_status = if let Some(observed_user) = &observed {
-        if local_claim
+        if body
+            .tailscale_user
             .as_deref()
-            .is_some_and(|claimed| claimed != observed_user)
+            .is_some_and(|claimed| !claimed.eq_ignore_ascii_case(observed_user))
         {
             return Err(Error::Forbidden("Tailscale whois identity mismatch"));
         }
@@ -232,18 +244,8 @@ async fn handle_pair(
         "missing"
     };
     let local_identity_id = identity.id().to_owned();
-    let response_identity_id = local_identity_id.clone();
-    let state_id = state_id.to_owned();
-    let invite_id = invite_id.to_owned();
-    let token = token.to_owned();
-    let label = label.to_owned();
-    let public_key = public_key.to_owned();
-    let origin = origin.to_owned();
     let nonce = request.nonce.to_owned();
     let timestamp = request.timestamp;
-    let observed = observed.clone();
-    let body = body.clone();
-    let whois_status = whois_status.to_owned();
     let result = store.transaction_with(move |tx| {
         let current_identity = tx.query_row(
             "SELECT json_extract(record,'$.stateId') FROM runtime_federation_identity WHERE id='local'",
@@ -263,7 +265,7 @@ async fn handle_pair(
         }
         if !RemoteTransportRepository::consume_federation_nonce(
             tx,
-            &state_id,
+            &body.state_id,
             &nonce,
             timestamp,
             now as i64,
@@ -273,7 +275,7 @@ async fn handle_pair(
         let invite: Option<String> = tx
             .query_row(
                 "SELECT record FROM runtime_federation_invites WHERE id=?1",
-                [&invite_id],
+                [&body.invite_id],
                 |row| row.get(0),
             )
             .optional()
@@ -284,11 +286,11 @@ async fn handle_pair(
             .map_err(|_| Error::Invalid("invite"))?
             .ok_or(Error::Forbidden("invalid pairing invitation"))?;
         let expected_hash = invite["tokenHash"].as_str().unwrap_or_default();
-        let supplied_hash = studio_runtime_store::sha256_hex(token.as_bytes());
-        let same_peer = invite["status"] == "used" && invite["usedBy"] == state_id;
+        let supplied_hash = studio_runtime_store::sha256_hex(body.token.as_bytes());
+        let same_peer = invite["status"] == "used" && invite["usedBy"] == body.state_id;
         let expires = invite["expires"].as_i64().unwrap_or_default();
         if (!same_peer && (invite["status"] != "open" || expires < now as i64))
-            || !constant_time_eq(expected_hash.as_bytes(), supplied_hash.as_bytes())
+            || !bool::from(expected_hash.as_bytes().ct_eq(supplied_hash.as_bytes()))
         {
             return Err(Error::Forbidden("pairing invitation is invalid, expired, or already used"));
         }
@@ -300,7 +302,7 @@ async fn handle_pair(
         let existing: Option<String> = tx
             .query_row(
                 "SELECT record FROM runtime_federation_peers WHERE id=?1",
-                [&state_id],
+                [&body.state_id],
                 |row| row.get(0),
             )
             .optional()
@@ -310,50 +312,45 @@ async fn handle_pair(
             .transpose()
             .map_err(|_| Error::Invalid("peer"))?
             .unwrap_or_else(|| json!({
-                "stateId": state_id,
-                "label": label.trim(),
+                "stateId": body.state_id,
+                "label": body.label.trim(),
                 "origin": origin,
-                "publicKey": public_key,
+                "publicKey": body.public_key,
                 "status": "pending",
                 "localApproved": false,
                 "remoteApproved": true,
                 "created": now,
             }));
-        if peer["publicKey"] != public_key {
+        if peer["publicKey"] != body.public_key {
             return Err(Error::Conflict("a different key is already registered for this server"));
         }
-        peer["label"] = json!(label.trim());
+        peer["label"] = json!(body.label.trim());
         peer["origin"] = json!(origin);
         peer["remoteApproved"] = json!(true);
         peer["whoisStatus"] = json!(whois_status);
         peer["whoisUser"] = observed.as_ref().map_or(Value::Null, |value| json!(value));
         peer["updated"] = json!(now);
         peer["status"] = json!(if peer["localApproved"] == true { "approved" } else { "pending" });
-        peer["leadName"] = body.get("leadName").cloned().unwrap_or(Value::Null);
+        peer["leadName"] = json!(body.lead_name);
         tx.execute(
             "INSERT INTO runtime_federation_peers(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
-            rusqlite::params![state_id, transport::canonical_json(&peer)?],
+            rusqlite::params![body.state_id, transport::canonical_json(&peer)?],
         ).map_err(StoreError::from)?;
         invite["status"] = json!("used");
-        invite["usedBy"] = json!(state_id);
+        invite["usedBy"] = json!(body.state_id);
         tx.execute(
             "UPDATE runtime_federation_invites SET record=?1 WHERE id=?2",
-            rusqlite::params![transport::canonical_json(&invite)?, invite_id],
+            rusqlite::params![transport::canonical_json(&invite)?, body.invite_id],
         ).map_err(StoreError::from)?;
         Ok::<_, Error>(json!({
             "protocol": PROTOCOL,
             "accepted": true,
             "remoteApproved": peer["localApproved"] == true,
             "whoisStatus": whois_status,
-            "stateId": response_identity_id,
+            "stateId": local_identity_id,
         }))
     }).await?;
     signed_response(&identity, result, now as i64)
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    use subtle::ConstantTimeEq;
-    left.len() == right.len() && bool::from(left.ct_eq(right))
 }
 
 pub(crate) fn check_identity(tx: &Transaction<'_>, identity: &RemoteIdentity) -> Result<()> {
