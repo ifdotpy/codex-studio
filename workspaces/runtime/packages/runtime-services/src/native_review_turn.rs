@@ -410,6 +410,7 @@ impl native_actions::Preparation for ReviewPreparation {
 
 fn worker_error(error: WorkerError) -> NativeError {
     match error {
+        WorkerError::Expired => NativeError::Expired,
         WorkerError::PreparationPending(reason)
             if reason.reason == crate::account_worker::PreparationWaitReason::ModelCatalog =>
         {

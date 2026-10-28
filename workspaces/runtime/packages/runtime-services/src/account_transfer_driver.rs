@@ -887,6 +887,7 @@ fn check_durable_blockers(tx: &Transaction<'_>, agent: &str) -> Result<(), Trans
         if !crate::account_worker::retained::monitor_survives_account_transfer(tx, &id, agent)
             .map_err(|error| match error {
                 crate::account_worker::WorkerError::Store(error) => TransferError::Store(error),
+                crate::account_worker::WorkerError::Expired => TransferError::Expired,
                 crate::account_worker::WorkerError::Recovery(_)
                 | crate::account_worker::WorkerError::Scheduler(_)
                 | crate::account_worker::WorkerError::Session(_)
