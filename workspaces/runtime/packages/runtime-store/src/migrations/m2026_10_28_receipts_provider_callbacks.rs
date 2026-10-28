@@ -837,6 +837,36 @@ impl ReceiptFamilyMigration for Family {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn callback_key_bytes_match_legacy_json_for_rpc_variants() {
+        for rpc in [
+            json!(17),
+            json!(-9),
+            json!(1.25),
+            json!("escaped \"\\\n 東京"),
+        ] {
+            let value = json!({"context":{"account":"a\\\"","agent":"b\n","generation":7,"epoch":3,"thread":"t","turn":"u","connection":"c"},"rpc_id":rpc});
+            let LegacyIdentity { context: c, rpc_id } =
+                LegacyIdentity::deserialize(&value).unwrap();
+            let bytes = serde_json::to_vec(&(
+                &c.account,
+                c.generation,
+                "stream",
+                &c.agent,
+                c.epoch,
+                &c.thread,
+                &c.turn,
+                &rpc_id,
+            ))
+            .unwrap();
+            assert_eq!(
+                bytes,
+                json!(["a\\\"", 7, "stream", "b\n", 3, "t", "u", rpc])
+                    .to_string()
+                    .as_bytes()
+            );
+        }
+    }
     fn database() -> rusqlite::Connection {
         let mut db = rusqlite::Connection::open_in_memory().expect("database");
         let tx = db.transaction().expect("transaction");
