@@ -2,8 +2,18 @@ import { randomUUID } from "../uuid";
 import { frameRequest, isNativeFrame } from "./frame";
 import { queueMarkdown } from "./markdownQueue";
 import { nativeHost } from "./host";
+import { hasHostedClient, hostedRequest, listenHostedEvents } from "./hosted";
 export { nativeHost } from "./host";
+export { OutcomeUnknownError } from "./hosted";
+/** A client core serves this page: the desktop app, or the server of a browser page. */
 export function hasNativeClient() {
+  return hasDeviceClient() || hasHostedClient();
+}
+/**
+ * The desktop app serves this page, so device commands (microphone, voice,
+ * dialogs, notifications, sign-in windows) work. A hosted core refuses them.
+ */
+export function hasDeviceClient() {
   return typeof nativeHost()?.core?.invoke === "function" || isNativeFrame();
 }
 // TODO(attar-sync): Restore Attar's synchronous commit path for local durable
@@ -33,11 +43,14 @@ async function sendNativeRequest<T>(
 ): Promise<T> {
   if (isNativeFrame()) return frameRequest<T>(method, params, id);
   const native = nativeHost();
-  if (!native) throw new Error("The native client is unavailable.");
+  if (!native && !hasHostedClient())
+    throw new Error("The native client is unavailable.");
   // Transport errors never cause an automatic retry of a possibly applied command.
-  const value = await native.core.invoke("client_request", {
-    request: { id, method, params },
-  });
+  const value = native
+    ? await native.core.invoke("client_request", {
+        request: { id, method, params },
+      })
+    : await hostedRequest(id, method, params);
   if (
     !value ||
     typeof value !== "object" ||
@@ -67,6 +80,7 @@ export async function listenNativeEvents(callback: (value: unknown) => void) {
     return () => window.removeEventListener("message", receive);
   }
   const native = nativeHost();
+  if (!native && hasHostedClient()) return listenHostedEvents(callback);
   if (!native?.event) throw new Error("Native events are unavailable.");
   return native.event.listen("studio-client-event", (event) =>
     callback(event.payload),

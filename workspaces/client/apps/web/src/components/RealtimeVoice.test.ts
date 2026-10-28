@@ -29,7 +29,10 @@ vi.mock("@mantine/core", () => ({
   ActionIcon: () => null,
   Popover: () => null,
 }));
-vi.mock("../native/client", () => ({ hasNativeClient: () => false }));
+vi.mock("../native/client", () => ({
+  hasDeviceClient: () => false,
+  hasNativeClient: () => false,
+}));
 vi.mock("../servers/ServerServicesContext", async () => {
   const { watchResourceReads } = await import("./watchResourceReads");
   return {

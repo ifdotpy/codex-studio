@@ -1,8 +1,8 @@
 import type { DesktopBridge } from "../desktop";
-import { hasNativeClient, nativeHost, nativeRequest } from "./client";
+import { hasDeviceClient, nativeHost, nativeRequest } from "./client";
 import { isNativeFrame } from "./frame";
 export function hasDesktopNotifications() {
-  return !!window.codexDesktop || (hasNativeClient() && !isNativeFrame());
+  return !!window.codexDesktop || (hasDeviceClient() && !isNativeFrame());
 }
 export function notifyDesktop(value: Parameters<DesktopBridge["notify"]>[0]) {
   return window.codexDesktop

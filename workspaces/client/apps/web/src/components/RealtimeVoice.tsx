@@ -5,7 +5,7 @@ import {
   useServerResources,
 } from "../servers/ServerServicesContext";
 import { randomUUID } from "../uuid";
-import { hasNativeClient } from "../native/client";
+import { hasDeviceClient } from "../native/client";
 import { useServerAudio } from "../servers/ServerServicesContext";
 import type { nativeVoice } from "../native/voice";
 import { useEffect, useRef, useState } from "react";
@@ -323,7 +323,7 @@ function NativeVoice({
           "Studio connection is unavailable. Try voice again when connected.",
         );
       // Capture authorization while Start is still the user's native event.
-      const permission = hasNativeClient()
+      const permission = hasDeviceClient()
         ? dictationBridge()!
             .requestMicrophone()
             .then(

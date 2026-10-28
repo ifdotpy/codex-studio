@@ -1,5 +1,5 @@
 import { randomUUID } from "../uuid";
-import { hasNativeClient } from "../native/client";
+import { hasDeviceClient } from "../native/client";
 import { saveFile } from "../fileActions";
 import { useServerAudio } from "../servers/ServerServicesContext";
 import { useServerActivity } from "../servers/activity";
@@ -502,7 +502,7 @@ function RecordingItem({
     audioBytes.current = null;
     void recordingAudio(row)
       .then(async (blob) => {
-        if (hasNativeClient()) {
+        if (hasDeviceClient()) {
           const bytes = await blob.arrayBuffer();
           if (alive) audioBytes.current = bytes;
         }
@@ -539,7 +539,7 @@ function RecordingItem({
           download={`dictation-${row.id}.wav`}
           aria-label="Download recording"
           onClick={(event) => {
-            if (!hasNativeClient()) return;
+            if (!hasDeviceClient()) return;
             event.preventDefault();
             if (!audioBytes.current) {
               setDownloadError("The saved recording is still loading.");

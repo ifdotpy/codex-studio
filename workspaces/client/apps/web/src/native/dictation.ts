@@ -1,7 +1,7 @@
 import { randomUUID } from "../uuid";
 import type { NativeEvent } from "./host";
 import type { DesktopBridge } from "../desktop";
-import { hasNativeClient, listenNativeEvents, nativeRequest } from "./client";
+import { hasDeviceClient, listenNativeEvents, nativeRequest } from "./client";
 import { isNativeFrame } from "./frame";
 
 type SpeechBridge = Pick<
@@ -197,6 +197,6 @@ const defaults = createNativeDictation();
 export const captureNativeAudio = defaults.captureNativeAudio;
 export function dictationBridge(): SpeechBridge | undefined {
   return (
-    window.codexDesktop || (hasNativeClient() ? defaults.bridge : undefined)
+    window.codexDesktop || (hasDeviceClient() ? defaults.bridge : undefined)
   );
 }

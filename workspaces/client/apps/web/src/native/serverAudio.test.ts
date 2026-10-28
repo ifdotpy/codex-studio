@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 vi.mock("./client", () => ({
   nativeRequest: vi.fn(),
   listenNativeEvents: vi.fn(),
-  hasNativeClient: () => true,
+  hasDeviceClient: () => true,
 }));
 vi.mock("./frame", () => ({ isNativeFrame: () => false }));
 import { nativeRequest, listenNativeEvents } from "./client";
