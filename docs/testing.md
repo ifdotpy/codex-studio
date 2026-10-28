@@ -179,7 +179,10 @@ miss its 30-minute limit. On macOS, `just test-fast` takes 12.3 min cold, about
 - Rust reuses results per crate. A crate runs again only when its folder or a
   workspace crate it depends on changed.
 - Results live in `target/studio-test-results/` and travel with the warm build.
-- Code: `workspaces/tooling/apps/repository-checks/test-result-cache.mjs`.
+- Code: `workspaces/tooling/apps/repository-checks/test-result-cache.ts`.
+
+`STUDIO_TEST_RESULTS_DIR` names an absolute folder shared by every checkout. Keys
+hash input content, so a passing result is valid in any checkout.
 
 For the daily full run and before an install:
 
