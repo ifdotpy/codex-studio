@@ -746,6 +746,9 @@ impl RuntimeOrchestrationEffects {
         .await
         .map(ExchangeOutcome::Applied)
         .map_err(|error| match error {
+            crate::agent_management::ManagementError::Expired => {
+                refused(410, "request_expired", "The request ID expired")
+            }
             crate::agent_management::ManagementError::Unavailable(name) => {
                 refused(501, "orchestration_dependency", name)
             }
