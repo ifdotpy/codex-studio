@@ -143,7 +143,7 @@ def verify_backend(config, state):
 def handover_backend(config, state, backend):
     """Start the new build with --takeover (runtime-server src/handover.rs): it takes the
     listening socket, the old server drains and exits, and the port never closes. If the new
-    build fails before it serves, the old build resumes and this reports it."""
+    build fails before it opens the state, the old build resumes; this reports that the new build exited."""
     env = recovery.launch_environment(config, state)
     log_fd = os.open(state / "canvas.log", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     with os.fdopen(log_fd, "ab", buffering=0) as log:
@@ -153,7 +153,7 @@ def handover_backend(config, state, backend):
     while time.monotonic() < deadline:
         code = child.poll()
         if code is not None:
-            raise RuntimeError(f"live handover failed (exit {code}); the old build serves again")
+            raise RuntimeError(f"the new build exited with {code} during the live handover; see canvas.log. The old build may have resumed, else the recovery loop starts a backend")
         data = recovery.identity(config["port"], state)
         if data and data["pid"] == child.pid:
             return "handed over"

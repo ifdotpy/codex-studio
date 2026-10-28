@@ -1112,6 +1112,7 @@ with (state / 'runtime.lock').open('r') as lease:
         with recovery.installed_delivery_admission(self.state), \
                 patch.object(recovery, 'identity', return_value=None), \
                 patch.object(recovery, 'lease_available', return_value=True), \
+                patch.object(recovery, 'listener_pids', return_value=[]), \
                 patch.object(recovery.subprocess, 'Popen', side_effect=raced_spawn):
             recovery.tick(self.config, self.state)
         self.assertEqual(attempts, [75], 'a legacy launch attempt can occur, but its authoritative lease must fail')

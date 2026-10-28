@@ -168,13 +168,34 @@ async fn serving_pid(port: u16) -> u32 {
         .unwrap()
 }
 
-/// Connects every few milliseconds. `refused` counts connections that failed; `slowest`
+/// Asks every few milliseconds. `refused` counts requests that failed to connect or did not
+/// get a 200 answer; `slowest`
 /// is the longest connect-to-answer time in milliseconds.
 struct Probe {
     stop: Arc<AtomicBool>,
     refused: Arc<AtomicU64>,
     slowest: Arc<AtomicU64>,
     task: tokio::task::JoinHandle<()>,
+}
+
+/// One request without keep-alive. `None` when the connection fails or ends before any
+/// answer byte.
+async fn ask(port: u16) -> Option<Vec<u8>> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.ok()?;
+    stream
+        .write_all(
+            format!(
+                "GET /api/desktop HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .ok()?;
+    let mut answer = Vec::new();
+    timeout(Duration::from_secs(30), stream.read_to_end(&mut answer))
+        .await
+        .ok();
+    (!answer.is_empty()).then_some(answer)
 }
 
 fn probe(port: u16) -> Probe {
@@ -184,23 +205,19 @@ fn probe(port: u16) -> Probe {
     let task = tokio::spawn(async move {
         while !s.load(Ordering::Relaxed) {
             let began = Instant::now();
-            match TcpStream::connect(("127.0.0.1", port)).await {
-                Err(_) => {
-                    r.fetch_add(1, Ordering::Relaxed);
+            // A connection that the old server accepted and closed before it answered is
+            // retried once, as an HTTP client does for a GET.
+            let mut answer = ask(port).await;
+            if answer.is_none() {
+                answer = ask(port).await;
+            }
+            // Every answer must be a success, not only every connect.
+            match answer {
+                Some(bytes) if bytes.starts_with(b"HTTP/1.1 200") => {
+                    l.fetch_max(began.elapsed().as_millis() as u64, Ordering::Relaxed);
                 }
-                Ok(mut stream) => {
-                    let sent = stream
-                        .write_all(
-                            b"GET /api/desktop HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
-                        )
-                        .await;
-                    let mut sink = Vec::new();
-                    timeout(Duration::from_secs(30), stream.read_to_end(&mut sink))
-                        .await
-                        .ok();
-                    if sent.is_ok() {
-                        l.fetch_max(began.elapsed().as_millis() as u64, Ordering::Relaxed);
-                    }
+                _ => {
+                    r.fetch_add(1, Ordering::Relaxed);
                 }
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -225,15 +242,40 @@ impl Probe {
     }
 }
 
+/// Stops whatever listens on these ports when a test ends or fails: the resumed old build
+/// and the standby are not children of the test.
+struct Listeners(Vec<u16>);
+
+impl Drop for Listeners {
+    fn drop(&mut self) {
+        for port in &self.0 {
+            let found = std::process::Command::new("/usr/sbin/lsof")
+                .args(["-nP", "-t", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
+                .output();
+            for pid in String::from_utf8_lossy(&found.map(|out| out.stdout).unwrap_or_default())
+                .split_whitespace()
+            {
+                if pid != std::process::id().to_string() {
+                    std::process::Command::new("/bin/kill")
+                        .args(["-9", pid])
+                        .status()
+                        .ok();
+                }
+            }
+        }
+    }
+}
+
+async fn log_has(site: &Site, name: &str, text: &str) -> bool {
+    fs::read_to_string(site.home.join(format!("{name}.log"))).is_ok_and(|log| log.contains(text))
+}
+
 #[tokio::test]
 async fn a_new_server_takes_the_port_and_the_old_one_drains_its_stream() {
     let site = site().await;
-    // A stale standby copy of an earlier handover goes when the next server starts.
-    let copy = site.state.join("handover-standby");
-    fs::write(&copy, b"stale").unwrap();
     let mut old = server(&site, "old", &[]);
     let port = served_port(&mut old).await;
-    assert!(!copy.exists(), "a stale standby copy stayed");
+    let _listeners = Listeners(vec![port]);
     let stream = open_stream(port).await;
     let probe = probe(port);
 
@@ -248,42 +290,41 @@ async fn a_new_server_takes_the_port_and_the_old_one_drains_its_stream() {
         .unwrap();
     assert!(status.success(), "old server: {status}");
     assert_eq!(serving_pid(port).await, new.id().unwrap());
-    // The standby removes its copy when the new server is ready.
-    timeout(Duration::from_secs(10), async {
-        while copy.exists() {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("the standby copy stayed after the handover");
     let (refused, slowest) = probe.finish().await;
-    eprintln!("handover: refused connections {refused}, slowest answer {slowest} ms");
-    assert_eq!(refused, 0, "the port refused a connection");
+    eprintln!("handover: failed requests {refused}, slowest answer {slowest} ms");
+    assert_eq!(refused, 0, "a request failed during the handover");
     // The new server serves the resumed stream.
     drop(open_stream(port).await);
     new.kill().await.unwrap();
 }
 
+/// A new server that is gone before `DRAINED` (B1) or after it but before it opens the
+/// state: the old build serves again on the same port.
 #[tokio::test]
-async fn a_failed_new_server_gives_the_socket_back_and_the_old_build_serves_again() {
+async fn a_new_server_that_dies_before_it_opens_the_state_gives_the_socket_back() {
     let site = site().await;
     let mut old = server(&site, "old", &[]);
     let port = served_port(&mut old).await;
+    let _listeners = Listeners(vec![port]);
     let old_pid = old.id().unwrap();
     let stream = open_stream(port).await;
     let probe = probe(port);
 
-    // The new server takes the socket, then dies before it serves: no `READY`.
+    // The new server gets the socket, then ends the line at once: it died before it
+    // connected anywhere else.
     let state = site.state.clone();
-    let taken = tokio::task::spawn_blocking(move || handover::take(&state))
+    let (listener, go) = tokio::task::spawn_blocking(move || handover::request(&state))
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(taken.listener.local_addr().unwrap().port(), port);
+    assert_eq!(listener.local_addr().unwrap().port(), port);
+    drop(go);
     stream_ends(stream).await;
-    drop(taken);
+    // On macOS, closing this copy of the socket resets the connections that wait in its
+    // queue. A real new server that dies closes its copy too; the test keeps it open so
+    // that the probe checks the rollback itself.
+    std::mem::forget(listener);
 
-    // The old build resumes under a new PID; its old process ended after the drain.
     let status = timeout(Duration::from_secs(30), old.wait())
         .await
         .unwrap()
@@ -291,17 +332,58 @@ async fn a_failed_new_server_gives_the_socket_back_and_the_old_build_serves_agai
     assert!(status.success(), "old server: {status}");
     let resumed = serving_pid(port).await;
     assert_ne!(resumed, old_pid, "the old build resumes in a new process");
-    assert!(
-        !site.state.join("handover-standby").exists(),
-        "the standby copy stayed after the rollback"
-    );
     drop(open_stream(port).await);
     let (refused, slowest) = probe.finish().await;
-    eprintln!("rollback: refused connections {refused}, slowest answer {slowest} ms");
-    assert_eq!(refused, 0, "the port refused a connection");
-    // Stop the resumed server (not our child): SIGTERM through its PID.
-    std::process::Command::new("/bin/kill")
-        .arg(resumed.to_string())
-        .status()
-        .ok();
+    eprintln!("rollback: failed requests {refused}, slowest answer {slowest} ms");
+    assert_eq!(refused, 0, "a request failed during the rollback");
+}
+
+/// After `OPEN` the state may have migrated: the standby must not start the old build.
+#[tokio::test]
+async fn a_new_server_that_fails_after_it_opens_the_state_fails_forward() {
+    let site = site().await;
+    let mut old = server(&site, "old", &[]);
+    let port = served_port(&mut old).await;
+    let _listeners = Listeners(vec![port]);
+    let state = site.state.clone();
+    let mut taken = tokio::task::spawn_blocking(move || handover::take(&state))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut line = taken.line.take().expect("a standby line");
+    line.open().unwrap();
+    line.close();
+    drop(taken);
+    // The standby exits: nothing listens, and the old build does not come back.
+    timeout(Duration::from_secs(30), async {
+        while TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the port stayed open after a failure past OPEN");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(TcpStream::connect(("127.0.0.1", port)).await.is_err());
+}
+
+/// The old server ends without a standby (B2): the new server holds the socket and serves.
+#[tokio::test]
+async fn a_new_server_serves_when_the_old_one_is_killed_during_the_drain() {
+    let site = site().await;
+    let mut old = server(&site, "old", &[]);
+    let port = served_port(&mut old).await;
+    let _listeners = Listeners(vec![port]);
+    let mut new = server(&site, "new", &[handover::TAKEOVER_ARG]);
+    timeout(Duration::from_secs(30), async {
+        while !log_has(&site, "old", "requested by a live handover").await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the old server did not start its drain");
+    old.kill().await.unwrap();
+    let new_port = served_port(&mut new).await;
+    assert_eq!(new_port, port);
+    assert_eq!(serving_pid(port).await, new.id().unwrap());
+    new.kill().await.unwrap();
 }

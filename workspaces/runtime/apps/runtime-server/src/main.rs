@@ -407,7 +407,7 @@ async fn run(
     let token = data_encoding::HEXLOWER.encode(&token);
     let configured_state_dir = env::var_os("CODEX_AGENTS_STATE_DIR").map(PathBuf::from);
     // The old server has drained and closed the state before this returns.
-    let mut taken = if takeover {
+    let taken = if takeover {
         let state_dir = studio_runtime_store::resolve_state_dir()?.to_path_buf();
         Some(
             studio_runtime_process::blocking_pool::spawn_blocking(
@@ -426,6 +426,14 @@ async fn run(
         Some(taken) => taken.listener.local_addr()?.port(),
         None => port,
     };
+    let (taken_listener, mut handover_line) = match taken {
+        Some(taken) => (Some(taken.listener), taken.line),
+        None => (None, None),
+    };
+    // From here a failure goes forward: the standby does not restart the old build.
+    if let Some(line) = handover_line.as_mut() {
+        line.open()?;
+    }
     startup_trace("store-open-started");
     // Serving claims the state for Rust before the first write, whatever launched this process.
     let owner = studio_runtime_store::state_owner::StateOwnerClaim { backend_build };
@@ -520,14 +528,9 @@ async fn run(
     startup_trace("account-registry-open-started");
     let account_driver = Arc::new(AccountDriver::open(&registry_path)?);
     startup_trace("account-registry-open-completed");
-    let (listener, kept_listener) = handover::listener(
-        port,
-        taken
-            .as_ref()
-            .map(|taken| taken.listener.try_clone())
-            .transpose()?,
-    )?;
-    let handover_requested = handover::requested(handover::offer(&state_root, kept_listener)?);
+    let (listener, kept_listener) = handover::listener(port, taken_listener)?;
+    let (offered, release_offer) = handover::offer(&state_root, kept_listener)?;
+    let handover_requested = handover::requested(offered);
     let handed: Arc<Mutex<Option<handover::Handed>>> = Arc::default();
     let handed_in_shutdown = Arc::clone(&handed);
     let address = listener.local_addr()?;
@@ -1339,8 +1342,8 @@ async fn run(
     });
     startup_trace("readiness-output-started");
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
-    if let Some(taken) = taken.as_mut() {
-        taken.ready()?;
+    if let Some(line) = handover_line.as_mut() {
+        line.ready()?;
     }
     #[cfg(unix)]
     let stop_runtime = runtime.shutdown_handle();
@@ -1353,7 +1356,13 @@ async fn run(
     )
     .with_graceful_shutdown(async move {
         let log = tokio::select! {
-            reason = shutdown_signal() => shutdown_exit_log(reason),
+            reason = shutdown_signal() => {
+                // No handover: the port closes with this server, as for any stop.
+                if let Ok(mut kept) = release_offer.lock() {
+                    kept.take();
+                }
+                shutdown_exit_log(reason)
+            }
             requested = handover_requested => {
                 if let Ok(mut slot) = handed_in_shutdown.lock() {
                     *slot = Some(requested);

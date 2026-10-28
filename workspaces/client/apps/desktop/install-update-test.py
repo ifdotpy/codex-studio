@@ -405,9 +405,9 @@ class StopBackendHandover(unittest.TestCase):
         self.assertTrue(options["start_new_session"])
         self.assertEqual(self.killed, [])
 
-    def test_a_failed_new_build_is_reported_and_the_old_one_is_not_signalled(self):
+    def test_a_new_build_that_exits_is_reported_and_the_old_one_is_not_signalled(self):
         (self.state / installer.HANDOVER_SOCKET).touch()
-        with self.assertRaisesRegex(RuntimeError, "old build serves again"):
+        with self.assertRaisesRegex(RuntimeError, "exited with 1 during the live handover"):
             self.stop(child_exit=1)
         self.assertEqual(self.killed, [])
 
