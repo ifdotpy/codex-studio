@@ -5,7 +5,7 @@ use crate::receipt_migration_contract::{
 };
 use crate::request_results::{AdmittedRequest, ResultEnvelope};
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_schema::persistence::{
     AttemptSubmission, ExecutionEffectKind, ExecutionEffectStatus, ExecutionNodeStatus,
@@ -21,12 +21,27 @@ pub(super) const SOURCES: &[&str] = &[
     "runtime_agents",
 ];
 
-fn classify<T: DeserializeOwned>(value: &Value, source: &str, id: &str, field: &str) -> Result<T> {
-    serde_json::from_value(value.clone()).map_err(|_| ReceiptMigrationError::Unclassifiable {
+fn classify<T: strum::VariantNames>(
+    value: &Value,
+    source: &str,
+    id: &str,
+    field: &str,
+) -> Result<()> {
+    if value
+        .as_str()
+        .is_some_and(|value| T::VARIANTS.contains(&value))
+    {
+        return Ok(());
+    }
+    Err(ReceiptMigrationError::Unclassifiable {
         table: source.into(),
         key: id.into(),
         signature: format!("{field}={value}"),
     })
+}
+#[derive(Deserialize)]
+struct AdmissionRecord {
+    admission: AdmittedRequest,
 }
 impl ReceiptFamilyMigration for ExecutionMigration {
     fn id(&self) -> &'static str {
@@ -80,21 +95,37 @@ impl ReceiptFamilyMigration for ExecutionMigration {
             let before = record.clone();
             match source {
                 "runtime_execution_runs" => {
-                    let _: ExecutionStatus = classify(&record["status"], source, &id, "status")?;
+                    classify::<ExecutionStatus>(&record["status"], source, &id, "status")?;
                 }
                 "runtime_execution_attempts" => {
-                    let _: AttemptSubmission =
-                        classify(&record["submission"], source, &id, "submission")?;
+                    classify::<AttemptSubmission>(
+                        &record["submission"],
+                        source,
+                        &id,
+                        "submission",
+                    )?;
                     if !record["turnStatus"].is_null() {
-                        let _: ExecutionStatus =
-                            classify(&record["turnStatus"], source, &id, "turnStatus")?;
+                        classify::<ExecutionStatus>(
+                            &record["turnStatus"],
+                            source,
+                            &id,
+                            "turnStatus",
+                        )?;
                     }
                     let run:String=tx.query_row("SELECT r.record FROM runtime_execution_runs r JOIN runtime_execution_attempts a ON a.run=r.id WHERE a.id=?1",[&id],|r|r.get(0)).optional()?.ok_or_else(invalid)?;
                     let run: Value = serde_json::from_str(&run).map_err(|_| invalid())?;
                     let actor = run["agent"].as_str().ok_or_else(invalid)?;
                     let epoch = record["epoch"].as_i64().ok_or_else(invalid)?;
                     let admission: AdmittedRequest = match record.get("admission") {
-                        Some(value) => classify(value, source, &id, "admission")?,
+                        Some(value) => {
+                            serde_json::from_str::<AdmissionRecord>(&raw)
+                                .map_err(|_| ReceiptMigrationError::Unclassifiable {
+                                    table: source.into(),
+                                    key: id.clone(),
+                                    signature: format!("admission={value}"),
+                                })?
+                                .admission
+                        }
                         None => admitted_owner_token(
                             &json!(["execution-attempt", id]).to_string(),
                             &json!({"agent":actor,"epoch":epoch,"attempt":id}).to_string(),
@@ -104,8 +135,12 @@ impl ReceiptFamilyMigration for ExecutionMigration {
                     if let Some(receipts) = record.get("receipts") {
                         let receipts = receipts.as_object().ok_or_else(invalid)?;
                         for (kind, receipt) in receipts {
-                            let _: ExecutionReceiptKind =
-                                classify(&json!(kind), source, &id, "receiptKind")?;
+                            classify::<ExecutionReceiptKind>(
+                                &json!(kind),
+                                source,
+                                &id,
+                                "receiptKind",
+                            )?;
                             let input = receipt.get("input").ok_or_else(invalid)?;
                             let reply = receipt.get("result").ok_or_else(invalid)?;
                             let result = admission.derive_result(
@@ -130,7 +165,7 @@ impl ReceiptFamilyMigration for ExecutionMigration {
                         .as_object_mut()
                         .ok_or_else(invalid)?
                         .remove("receipts");
-                    record["admission"] = serde_json::to_value(admission).map_err(|_| invalid())?;
+                    record["admission"] = crate::projection_value(&admission);
                 }
                 "runtime_execution_effects" => {
                     let kind: String = tx.query_row(
@@ -138,7 +173,7 @@ impl ReceiptFamilyMigration for ExecutionMigration {
                         [&id],
                         |r| r.get(0),
                     )?;
-                    let _: ExecutionEffectKind = classify(&json!(kind), source, &id, "kind")?;
+                    classify::<ExecutionEffectKind>(&json!(kind), source, &id, "kind")?;
                     if record["kind"] != kind {
                         return Err(invalid());
                     }
@@ -156,13 +191,11 @@ impl ReceiptFamilyMigration for ExecutionMigration {
                         };
                         record["status"] = json!(if matched { "completed" } else { "unknown" });
                     }
-                    let _: ExecutionEffectStatus =
-                        classify(&record["status"], source, &id, "status")?;
+                    classify::<ExecutionEffectStatus>(&record["status"], source, &id, "status")?;
                 }
                 "runtime_execution_nodes" => {
                     if !record["status"].is_null() {
-                        let _: ExecutionNodeStatus =
-                            classify(&record["status"], source, &id, "status")?;
+                        classify::<ExecutionNodeStatus>(&record["status"], source, &id, "status")?;
                     }
                 }
                 "runtime_agents" => {
@@ -174,7 +207,16 @@ impl ReceiptFamilyMigration for ExecutionMigration {
                     let epoch = record["epoch"].as_i64().ok_or_else(invalid)?;
                     let pointer:Option<(String,Option<String>)>=tx.query_row("SELECT id,json_extract(record,'$.latestAttemptId') FROM runtime_execution_runs WHERE agent=?1 AND account=?2 AND epoch=?3 ORDER BY (id=(SELECT run FROM runtime_execution_attempts WHERE id=?4)) DESC,created DESC,rowid DESC LIMIT 1",params![id,account,epoch,record["startAttempt"]["id"].as_str()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
                     if let Some((run, attempt)) = pointer {
-                        record["activeExecution"] = json!({"runId":run,"attemptId":attempt});
+                        #[derive(serde::Serialize)]
+                        #[serde(rename_all = "camelCase")]
+                        struct ActiveExecution {
+                            run_id: String,
+                            attempt_id: Option<String>,
+                        }
+                        record["activeExecution"] = crate::projection_value(&ActiveExecution {
+                            run_id: run,
+                            attempt_id: attempt,
+                        });
                     } else {
                         record
                             .as_object_mut()
@@ -290,8 +332,9 @@ mod tests {
         let record: Value = serde_json::from_str(&raw).expect("JSON");
         assert_eq!(record["submission"], "unknown");
         assert!(record.get("receipts").is_none());
-        let token: AdmittedRequest =
-            serde_json::from_value(record["admission"].clone()).expect("admission");
+        let token = serde_json::from_str::<AdmissionRecord>(&raw)
+            .expect("admission")
+            .admission;
         let derived = token.derive_result(
             "execution-attempt-result",
             &["submission"],
