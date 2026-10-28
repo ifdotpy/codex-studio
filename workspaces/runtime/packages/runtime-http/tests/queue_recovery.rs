@@ -180,7 +180,7 @@ async fn send_now_refuses_unproven_failed_batches_without_any_write() {
         "metadata",
         "extra-event",
         "uncertain-event",
-        "missing-receipt",
+        "missing-identity",
         "later-run",
     ] {
         let (_directory, store, app) = fixture().await;
@@ -207,8 +207,8 @@ async fn send_now_refuses_unproven_failed_batches_without_any_write() {
                     })?;
                     QueueWriteRepository::put_metadata(tx,"extra",&json!({"delivery":"current_turn","acceptedAt":6,"assets":[]}))?;
                 },
-                "missing-receipt"=>{tx.execute("UPDATE runtime_execution_attempts SET record=json_remove(record,'$.receipts') WHERE id=?1",[FIRST])?;},
-                "later-run"=>{tx.execute("INSERT INTO runtime_execution_runs SELECT 'later',agent,account,epoch,thread,turn,created+1,json_set(record,'$.id','later','$.status','unknown') FROM runtime_execution_runs LIMIT 1",[])?;},
+                "missing-identity"=>{tx.execute("UPDATE runtime_execution_attempts SET record=json_remove(record,'$.inputIdentity') WHERE id=?1",[FIRST])?;},
+                "later-run"=>{tx.execute("INSERT INTO runtime_execution_runs SELECT 'later',agent,account,epoch,thread,turn,created+1,json_set(record,'$.id','later','$.status','unknown') FROM runtime_execution_runs LIMIT 1",[])?;tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.activeExecution.runId','later') WHERE id=?1",[ACTOR])?;},
                 _=>unreachable!(),
             }Ok::<_,StoreError>(())
         }).await.unwrap();
