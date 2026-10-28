@@ -26,12 +26,30 @@ struct Seed {
     monitors: Vec<MonitorRecord>,
     projects: Vec<Value>,
     requests: Vec<RequestRecord>,
-    tool_requests: Vec<Value>,
+    tool_requests: Vec<SeedTool>,
     sync_entities: Vec<Entity>,
     metadata: Vec<String>,
     #[serde(rename = "analytics.sqlite3")]
     analytics: Vec<String>,
 }
+#[derive(Deserialize)]
+struct SeedTool {
+    stage: ToolRequestStatus,
+    #[serde(flatten)]
+    fields: serde_json::Map<String, Value>,
+}
+
+#[derive(serde::Serialize)]
+struct PersistedTool<'a> {
+    admitted: &'a studio_runtime_store::request_results::AdmittedRequest,
+    kind: ToolRequestKind,
+    status: &'a ToolRequestStatus,
+    stage: &'a ToolRequestStatus,
+    supervisor: Value,
+    #[serde(flatten)]
+    fields: &'a serde_json::Map<String, Value>,
+}
+
 #[derive(serde::Serialize, Deserialize)]
 struct ExecutionNode {
     status: studio_runtime_schema::persistence::ExecutionNodeStatus,
@@ -98,15 +116,18 @@ fn replace_ids(value: &mut Value, ids: &BTreeMap<String, String>) {
     }
 }
 
-fn seed_tools(tx: &Transaction<'_>, tools: Vec<Value>) -> Result<(), StoreError> {
+fn seed_tools(tx: &Transaction<'_>, tools: Vec<SeedTool>) -> Result<(), StoreError> {
     for mut task in tools {
-        let id = task["id"].as_str().expect("tool identity").to_owned();
+        let id = task.fields["id"]
+            .as_str()
+            .expect("tool identity")
+            .to_owned();
         let identity = RequestIdentity::new(
             "managed_tool",
             &[
-                task["agent"].as_str().expect("tool agent"),
-                task["accountKey"].as_str().expect("tool account"),
-                task["threadId"].as_str().expect("tool thread"),
+                task.fields["agent"].as_str().expect("tool agent"),
+                task.fields["accountKey"].as_str().expect("tool account"),
+                task.fields["threadId"].as_str().expect("tool thread"),
             ],
             &id,
             &[],
@@ -115,37 +136,43 @@ fn seed_tools(tx: &Transaction<'_>, tools: Vec<Value>) -> Result<(), StoreError>
         let Admission::Fresh(token) = RequestResults::admit(
             tx,
             &identity,
-            task["signature"].as_str().expect("tool signature"),
+            task.fields["signature"].as_str().expect("tool signature"),
             chrono::Utc::now().timestamp_millis(),
         )?
         else {
             panic!("unique fixture task");
         };
-        task["admitted"] = serde_json::to_value(&token)?;
-        task["kind"] = json!(ToolRequestKind::ManagedTool);
-        task["status"] = serde_json::to_value(serde_json::from_value::<ToolRequestStatus>(
-            task["stage"].clone(),
-        )?)?;
-        task["supervisor"] = json!({"generation":7});
-        if matches!(task["outcome"].as_str(), Some("applied" | "not_applied")) {
+        if matches!(
+            task.fields["outcome"].as_str(),
+            Some("applied" | "not_applied")
+        ) {
             let reply = ToolResultRecord::from_value(
-                task.as_object_mut()
-                    .expect("task")
-                    .remove("result")
-                    .expect("completed reply"),
+                task.fields.remove("result").expect("completed reply"),
             )?;
             RequestResults::settle(
                 tx,
                 &token,
                 &ResultEnvelope {
-                    actor: task["agent"].as_str().map(str::to_owned),
+                    actor: task.fields["agent"].as_str().map(str::to_owned),
                     reply,
                     references: Vec::new(),
                 },
             )?;
         }
-        let task =
-            studio_runtime_store::system_reads::validate("runtime_tool_requests", &id, task)?;
+        let persisted = PersistedTool {
+            admitted: &token,
+            kind: ToolRequestKind::ManagedTool,
+            status: &task.stage,
+            stage: &task.stage,
+            supervisor: json!({"generation":7}),
+            fields: &task.fields,
+        };
+        let raw = serde_json::to_string(&persisted)?;
+        let task = studio_runtime_store::system_reads::validate(
+            "runtime_tool_requests",
+            &id,
+            serde_json::from_str(&raw)?,
+        )?;
         tx.execute(
             "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",
             params![id, task.to_string()],
@@ -166,10 +193,10 @@ pub(crate) async fn state() -> (tempfile::TempDir, RuntimeStore, Value) {
     let mut ids = BTreeMap::new();
     for task in &seed.tool_requests {
         ids.insert(
-            task["id"].as_str().expect("task id").to_owned(),
+            task.fields["id"].as_str().expect("task id").to_owned(),
             RequestIdentity::issue_root(),
         );
-        if let Some(alias) = task["request_id"].as_str() {
+        if let Some(alias) = task.fields.get("request_id").and_then(Value::as_str) {
             ids.insert(alias.to_owned(), RequestIdentity::issue_root());
         }
     }
@@ -186,11 +213,12 @@ pub(crate) async fn state() -> (tempfile::TempDir, RuntimeStore, Value) {
         }
     }
     replace_ids(&mut oracle, &ids);
-    for record in seed
-        .tool_requests
-        .iter_mut()
-        .chain(seed.execution_effects.iter_mut())
-    {
+    for task in &mut seed.tool_requests {
+        for field in task.fields.values_mut() {
+            replace_ids(field, &ids);
+        }
+    }
+    for record in &mut seed.execution_effects {
         replace_ids(record, &ids);
     }
     for node in &mut seed.execution_nodes {
@@ -222,10 +250,10 @@ pub(crate) async fn state() -> (tempfile::TempDir, RuntimeStore, Value) {
         let task = seed
             .tool_requests
             .iter_mut()
-            .find(|task| task["callId"] == case["record"]["callId"])
+            .find(|task| task.fields["callId"] == case["record"]["callId"])
             .expect("seeded reservation");
-        task["signature"] = json!(signature);
-        task["arguments"] = args;
+        task.fields.insert("signature".into(), json!(signature));
+        task.fields.insert("arguments".into(), args);
     }
     let analytics = seed.analytics.join("\n");
     store.transaction(move |tx| {
