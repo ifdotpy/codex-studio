@@ -74,7 +74,7 @@ pub(crate) fn schema_registrations() -> Vec<&'static SchemaRegistration> {
 
 #[cfg(test)]
 mod tests {
-    use super::{account_state, agents, events, messages, sync_documents, tasks, usage};
+    use super::{account_state, agents, events, messages, sync_documents, tasks};
     use crate::records::{
         AgentId, AgentRecord, AgentRepository, ChatMessage, ChatMessageId, MessageRepository,
         QueueEvent, QueueEventId, QueueEventRepository, TaskRecord, TaskRepository,
@@ -88,13 +88,21 @@ mod tests {
 
     fn database_with(requirements: &crate::schema::SchemaRequirements) -> Connection {
         let connection = Connection::open_in_memory().expect("memory SQLite opens");
+        let mut tables = std::collections::BTreeMap::<&str, Vec<&str>>::new();
         for table in requirements
             .tables
             .iter()
             .chain(requirements.bootstrap_tables)
         {
-            let columns = table
-                .columns
+            let columns = tables.entry(table.name).or_default();
+            for column in table.columns {
+                if !columns.contains(column) {
+                    columns.push(column);
+                }
+            }
+        }
+        for (name, columns) in tables {
+            let columns = columns
                 .iter()
                 .map(|column| {
                     if *column == "id" {
@@ -108,7 +116,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(",");
             connection
-                .execute_batch(&format!("CREATE TABLE \"{}\" ({columns})", table.name))
+                .execute_batch(&format!("CREATE TABLE \"{name}\" ({columns})"))
                 .expect("declared repository table creates");
         }
         connection
@@ -228,11 +236,7 @@ mod tests {
         MessageRepository::put(&db, &message).expect("message write uses declared objects");
         MessageRepository::get(&db, &message.id).expect("message read uses declared objects");
 
-        let db = database_with(&usage::REQUIREMENTS);
-        db.execute_batch(
-            "CREATE TABLE sync_entities (collection TEXT NOT NULL, id TEXT NOT NULL, payload TEXT, deleted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(collection,id))",
-        )
-        .expect("workspace snapshot fixture table is created");
+        let db = database_with(&account_state::REQUIREMENTS);
         db.execute(
             "INSERT INTO sync_entities(collection, id, payload, deleted) VALUES ('workspace', 'current', ?1, 0)",
             [json!({"value": {"rateLimitsByAccount": {
@@ -241,7 +245,7 @@ mod tests {
         )
         .expect("fixture row uses declared columns");
         db.execute_batch(
-            "CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,result TEXT)",
+            "CREATE TABLE runtime_usage_resumes(id TEXT PRIMARY KEY,agent TEXT,record TEXT)",
         )
         .expect("observation receipts fixture table");
         account_state::limits_snapshots(&db).expect("account limits read uses only declared table");

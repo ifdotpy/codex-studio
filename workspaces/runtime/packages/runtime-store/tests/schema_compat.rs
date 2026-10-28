@@ -379,7 +379,7 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
                     agent: AgentId::from("fixture-agent"),
                     kind: "work_review".into(),
                     text: "{}".into(),
-                    status: "running".into(),
+                    status: "pending".into(),
                     created: 5.0,
                     epoch: 0,
                     turn_id: None,
@@ -401,7 +401,7 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
             .expect("written event reads")
             .expect("event exists")
             .status,
-        "running"
+        "pending"
     );
     drop(reader);
     store
@@ -613,6 +613,10 @@ async fn missing_required_objects_are_typed_and_name_the_object() {
     for (sql, expected) in [
         ("DROP TABLE runtime_tasks", "runtime_tasks"),
         (
+            "DROP TABLE runtime_agents; CREATE TABLE runtime_agents(id TEXT PRIMARY KEY)",
+            "runtime_agents",
+        ),
+        (
             "DROP TABLE runtime_tasks; CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY)",
             "runtime_tasks",
         ),
@@ -633,6 +637,12 @@ async fn missing_required_objects_are_typed_and_name_the_object() {
             matches!(error, StoreError::SchemaObjectMismatch { ref object, .. } if object == expected),
             "expected typed refusal naming {expected}, got {error:?}"
         );
+        if expected == "runtime_agents" {
+            assert!(
+                matches!(error, StoreError::SchemaObjectMismatch { ref reason, .. } if reason.contains("record")),
+                "expected missing record refusal, got {error:?}"
+            );
+        }
         assert_eq!(before, catalog(&state.join("canvas.sqlite3")));
     }
 }
@@ -1084,7 +1094,7 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
     store
         .transaction(move |tx| {
             tx.execute(
-                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('bootstrapped-event','fixture-agent','test','{}','queued',1.0,0,NULL,NULL)",
+                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('bootstrapped-event','fixture-agent','user','{}','pending',1.0,0,NULL,NULL)",
                 [],
             )?;
             tx.execute(

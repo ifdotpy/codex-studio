@@ -12,7 +12,7 @@ use crate::schema::{
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "runtime_agents",
-        columns: &["id", "record"],
+        columns: &["id", "record", "hold_status", "hold_incident"],
     },
     TableRequirement {
         name: "runtime_agent_record_generation",
@@ -65,7 +65,13 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
         triggers: TRANSCRIPT_TRIGGERS,
     }],
     connection_functions: &[],
-    bootstrap_tables: &[crate::agent_volatile::TABLE_REQUIREMENT],
+    bootstrap_tables: &[
+        crate::agent_volatile::TABLE_REQUIREMENT,
+        TableRequirement {
+            name: "runtime_agents",
+            columns: &["hold_status", "hold_incident"],
+        },
+    ],
     bootstrap_triggers: &crate::agent_volatile::TRIGGER_REQUIREMENTS,
     bootstrap_connection_functions: &[],
 };

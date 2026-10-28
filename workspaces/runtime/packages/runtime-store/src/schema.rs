@@ -479,7 +479,10 @@ fn is_bootstrap_table(requirements: &SchemaRequirements, table: &TableRequiremen
     requirements
         .bootstrap_tables
         .iter()
-        .any(|bootstrap| bootstrap.name == table.name)
+        .any(|bootstrap| {
+            bootstrap.name == table.name
+                && table.columns.iter().all(|column| bootstrap.columns.contains(column))
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
