@@ -239,6 +239,11 @@ enum ArchiveRecord {
         request: Value,
         page: Value,
     },
+    Footer {
+        counts: BTreeMap<String, u64>,
+        #[serde(rename = "contentSha256")]
+        content_sha256: String,
+    },
     NativeUnmaterialized {
         #[serde(rename = "threadId")]
         thread_id: String,
@@ -247,15 +252,6 @@ enum ArchiveRecord {
         #[serde(rename = "emptyProof", skip_serializing_if = "Option::is_none")]
         empty_proof: Option<Value>,
     },
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ArchiveFooter {
-    kind: String,
-    counts: BTreeMap<String, u64>,
-    #[serde(rename = "contentSha256")]
-    content_sha256: String,
 }
 
 #[derive(Default)]
@@ -415,8 +411,7 @@ impl<'a> ArchiveWriter<'a> {
     }
 
     fn finish(mut self) -> Result<BufWriter<&'a File>, PortableHistoryError> {
-        let footer = ArchiveFooter {
-            kind: "footer".to_owned(),
+        let footer = ArchiveRecord::Footer {
             counts: std::mem::take(&mut self.counts),
             content_sha256: hex_digest(self.digest.clone().finalize().as_slice()),
         };
@@ -767,7 +762,7 @@ where
     let mut counts = BTreeMap::<String, u64>::new();
     let mut header: Option<HistorySource> = None;
     let mut transfer_id: Option<String> = None;
-    let mut footer: Option<ArchiveFooter> = None;
+    let mut footer = None;
     let mut studio = Recent::new(RECENT_CHARS);
     let mut native = Recent::new(RECENT_CHARS);
     let mut seen_turns = BTreeSet::new();
@@ -806,23 +801,27 @@ where
                 maximum: MAX_ARCHIVE_BYTES,
             })?;
         enforce_archive_size(bytes_count, record_index)?;
-        let value: Value = serde_json::from_slice(&line)?;
-        if value.get("kind").and_then(Value::as_str) == Some("footer") {
-            footer = Some(serde_json::from_value(value)?);
+        let record: ArchiveRecord = serde_json::from_slice(&line)
+            .map_err(|_| PortableHistoryError::InvalidArchive("record"))?;
+        if let ArchiveRecord::Footer {
+            counts,
+            content_sha256,
+        } = record
+        {
+            footer = Some((counts, content_sha256));
             continue;
         }
         if native_unmaterialized_seen {
             return Err(PortableHistoryError::InvalidArchive("native record order"));
         }
-        let record: ArchiveRecord = serde_json::from_value(value)
-            .map_err(|_| PortableHistoryError::InvalidArchive("record"))?;
         if header.is_none() && !matches!(record, ArchiveRecord::Header { .. }) {
             return Err(PortableHistoryError::InvalidArchive("header"));
         }
         content_digest.update(&line);
-        let kind = record_kind(&record);
-        *counts.entry(kind.to_owned()).or_default() += 1;
+        *counts.entry(record_kind(&record).to_owned()).or_default() += 1;
         match record {
+            // The footer branch above continues before this match.
+            ArchiveRecord::Footer { .. } => unreachable!(),
             ArchiveRecord::Header {
                 version,
                 source,
@@ -944,10 +943,8 @@ where
     }
     let source = header.ok_or(PortableHistoryError::IncompleteArchive)?;
     let transfer_id = transfer_id.ok_or(PortableHistoryError::IncompleteArchive)?;
-    let footer = footer.ok_or(PortableHistoryError::IncompleteArchive)?;
-    if footer.kind != "footer"
-        || footer.counts != counts
-        || footer.content_sha256 != hex_digest(content_digest.finalize().as_slice())
+    let (footer_counts, content_sha256) = footer.ok_or(PortableHistoryError::IncompleteArchive)?;
+    if footer_counts != counts || content_sha256 != hex_digest(content_digest.finalize().as_slice())
     {
         return Err(PortableHistoryError::ChangedContent);
     }
@@ -1147,6 +1144,7 @@ fn checked_native_records(
                 unmaterialized_seen = true;
             }
             ArchiveRecord::Header { .. }
+            | ArchiveRecord::Footer { .. }
             | ArchiveRecord::Ancestor { .. }
             | ArchiveRecord::StudioItem { .. }
             | ArchiveRecord::NativeUnmaterialized { .. } => {
@@ -1532,6 +1530,7 @@ fn encode_record<T: Serialize>(
 fn record_kind(record: &ArchiveRecord) -> &'static str {
     match record {
         ArchiveRecord::Header { .. } => "header",
+        ArchiveRecord::Footer { .. } => "footer",
         ArchiveRecord::Ancestor { .. } => "ancestor",
         ArchiveRecord::StudioItem { .. } => "studio_item",
         ArchiveRecord::NativeThread { .. } => "native_thread",
@@ -1554,6 +1553,8 @@ pub fn source_settings_snapshot(agent: &Value) -> Result<Value, PortableHistoryE
         "yoloMode",
         "profileInstructions",
         "role",
+        "workerDefaults",
+        "claudeOptions",
     ] {
         settings.insert(
             key.to_owned(),
@@ -1566,12 +1567,6 @@ pub fn source_settings_snapshot(agent: &Value) -> Result<Value, PortableHistoryE
         }
     }
     settings.insert("provider".to_owned(), json!(provider));
-    for key in ["workerDefaults", "claudeOptions"] {
-        settings.insert(
-            key.to_owned(),
-            agent.get(key).cloned().unwrap_or(Value::Null),
-        );
-    }
     Ok(Value::Object(settings))
 }
 
