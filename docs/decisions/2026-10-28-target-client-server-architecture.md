@@ -1,6 +1,6 @@
 # Target client and server architecture
 
-- **Status:** Proposed, 2026-10-28. The owner accepted the client model (one frontend, thin cache), the domain model, and the type rules. The other parts wait for review.
+- **Status:** Proposed, 2026-10-28. The owner accepted the client model (one frontend, thin cache), the domain model, the type rules, and the command execution rules (no event store). The other parts wait for review.
 - **Audience:** maintainers who plan backend, client, and multi-server work.
 
 ## In short
@@ -107,6 +107,35 @@ Command rules:
 - `edit(turn)` works the same for every provider: hide the items after that turn, restore
   the files from a layr snapshot of that turn, and fork the provider thread from it. This
   gives Codex an in-place rewind and replaces the Claude-only rollback.
+
+### Command execution
+
+The write discipline comes from t3code orchestration-v2 (commit `48a29236`), without its
+event store:
+
+1. **Decide without I/O.** A pure function reads the current rows and the command and
+   returns the row changes and the outbox entries. It does not call the provider, the file
+   system, or the network.
+2. **One transaction.** The row changes, the body hash of a create command, and the outbox
+   entries are written together. A half-written command cannot exist.
+3. **Effects in a worker.** A worker reads the outbox and does the I/O (provider, files,
+   peer servers). It reports the result as a new command through the same path.
+4. **Raw provider frames go to rotating log files**, not to tables. They help debugging
+   and replay. They are not a source of state.
+5. **Replay tests.** A test feeds recorded commands and provider frames to the decide
+   function and compares the resulting rows.
+
+**Rejected: an event store as the source of truth** (t3 keeps state as an append-only
+event log and computes tables as projections). The discipline above gives the same
+benefits. The event store adds costs that Studio does not need:
+
+- Every old event must stay decodable forever. A format change needs compatibility code
+  or a rewrite of history, which conflicts with strict decoding (see Types).
+- Current state is computed. A projection cache can diverge from the log again.
+- A wrong event cannot be corrected in place, only by a compensating event.
+
+State lives in typed tables. Items stay append-only because they are the conversation
+history, but they do not control state.
 
 ### Provider adapter
 
