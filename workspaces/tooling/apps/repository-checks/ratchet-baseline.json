@@ -3596,10 +3596,6 @@
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:3"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/callback_record.rs",
-      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:4"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/account_worker/preparation/pipeline.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
@@ -4225,6 +4221,10 @@
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/tests/workspace_operations_corpus.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/lib.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
