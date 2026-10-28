@@ -799,11 +799,11 @@ mod tests {
                 for (id, peer, status, due) in [
                     ("future", "approved", "queued", 52.0),
                     ("earlier-but-unapproved", "pending", "queued", 1.0),
-                    ("done", "approved", "sent", 0.0),
+                    ("done", "approved", "delivered", 0.0),
                 ] {
                     tx.execute(
                         "INSERT INTO runtime_federation_outbox(id,peer_id,record) VALUES (?1,?2,?3)",
-                        rusqlite::params![id, peer, json!({"status":status,"nextAt":due}).to_string()],
+                        rusqlite::params![id, peer, json!({"status":status,"kind":"chat-message","nextAt":due}).to_string()],
                     )?;
                 }
                 Ok(())
