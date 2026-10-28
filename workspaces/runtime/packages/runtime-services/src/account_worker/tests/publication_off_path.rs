@@ -178,16 +178,20 @@ async fn restart_replays_undelivered_publications_once() {
 /// The writer-job callback and its counter are process-wide, so a test that counts
 /// jobs runs its body alone in a child process, not beside other tests of this binary.
 fn run_counting_probe(probe: &str) {
-    let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
-        .args(["--ignored", "--exact", probe, "--nocapture"])
-        .output()
-        .expect("counting probe runs");
-    assert!(
-        output.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+    const PROBE_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
+    let executable = std::env::current_exe().expect("test executable");
+    crate::bounded_child::run(crate::bounded_child::Request {
+        program: executable.as_os_str(),
+        git_directory: None,
+        args: &["--ignored", "--exact", probe, "--nocapture"],
+        environment: &[],
+        input: None,
+        stdout_limit: PROBE_OUTPUT_LIMIT_BYTES,
+        stderr_limit: PROBE_OUTPUT_LIMIT_BYTES,
+        timeout: PROBE_TIMEOUT,
+    })
+    .expect("counting probe passes");
 }
 
 static WRITER_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
