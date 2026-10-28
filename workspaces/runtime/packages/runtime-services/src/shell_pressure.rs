@@ -28,7 +28,7 @@ impl Default for HostPressure {
         #[cfg(target_os = "macos")]
         {
             Self {
-                _source: macos::Source::new(Arc::clone(&critical)),
+                _source: macos::Source::new(&critical),
                 critical,
             }
         }

@@ -71,11 +71,11 @@ fn open(supervisor: &Supervisor, handle: &str) -> Result<Value> {
     )
 }
 
-fn refused(result: Result<Value>) -> bool {
+fn refused(result: &Result<Value>) -> bool {
     matches!(result, Err(Error::Refused(ORPHANED)))
 }
 
-fn reopened_with_native_token(supervisor: &Supervisor, handle: &str, result: Result<Value>) {
+fn reopened_with_native_token(supervisor: &Supervisor, handle: &str, result: &Result<Value>) {
     assert!(result.is_ok(), "{result:?}");
     let saved = supervisor.journal.handle(handle).unwrap().unwrap();
     assert_ne!(saved.signature, PYTHON_SIGNATURE);
@@ -94,7 +94,7 @@ fn a_python_era_handle_with_recovery_proof_reopens_after_its_child_ended() {
     child.0.wait().unwrap();
     python_era_handle(&supervisor, "python:ended", pid, &legacy, "already-exited");
     let result = open(&supervisor, "python:ended");
-    reopened_with_native_token(&supervisor, "python:ended", result);
+    reopened_with_native_token(&supervisor, "python:ended", &result);
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn a_python_era_handle_reopens_when_its_pid_has_another_start() {
     let other = format!("{}.{micros}", seconds.parse::<u64>().unwrap() - 1);
     python_era_handle(&supervisor, "python:reused", pid, &other, "already-exited");
     let result = open(&supervisor, "python:reused");
-    reopened_with_native_token(&supervisor, "python:reused", result);
+    reopened_with_native_token(&supervisor, "python:reused", &result);
     assert!(
         child.running(),
         "the process that now owns the PID was signalled"
@@ -117,7 +117,7 @@ fn a_python_era_handle_stays_refused_while_its_child_runs() {
     let (_root, supervisor) = fixture();
     let (mut child, pid, legacy) = PythonChild::start();
     python_era_handle(&supervisor, "python:live", pid, &legacy, "already-exited");
-    assert!(refused(open(&supervisor, "python:live")));
+    assert!(refused(&open(&supervisor, "python:live")));
     assert!(child.running(), "a live Python child was signalled");
     let saved = supervisor.journal.handle("python:live").unwrap().unwrap();
     assert_eq!(saved.signature, PYTHON_SIGNATURE);
@@ -137,8 +137,8 @@ fn a_python_era_handle_needs_the_recovery_proof_and_the_epoch_form() {
         &legacy,
         "identity-mismatch",
     );
-    assert!(refused(open(&supervisor, "python:no-proof")));
+    assert!(refused(&open(&supervisor, "python:no-proof")));
     let lstart = "Fri Oct  2 00:55:21 2026";
     python_era_handle(&supervisor, "python:lstart", pid, lstart, "already-exited");
-    assert!(refused(open(&supervisor, "python:lstart")));
+    assert!(refused(&open(&supervisor, "python:lstart")));
 }

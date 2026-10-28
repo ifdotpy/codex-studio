@@ -174,7 +174,7 @@ pub mod mac {
     pub fn start(
         id: String,
         microphone: mpsc::Sender<Vec<f32>>,
-        playback: Arc<super::Playback>,
+        playback: &Arc<super::Playback>,
         muted: Arc<AtomicBool>,
         ended: Box<dyn Fn(String) + Send + Sync>,
     ) -> Result<(), String> {
@@ -195,7 +195,7 @@ pub mod mac {
         }
 
         let format = playback_format()?;
-        let source = make_playback_node(&playback, &format);
+        let source = make_playback_node(playback, &format);
         unsafe {
             engine.attachNode(&source);
             let mixer = engine.mainMixerNode();
