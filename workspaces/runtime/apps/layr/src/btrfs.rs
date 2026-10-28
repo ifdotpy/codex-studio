@@ -64,6 +64,11 @@ pub fn create_subvolume(path: &Path) -> Result<()> {
 }
 
 /// Snapshot `src` (a subvolume) to `dst`. The destination must not exist.
+/// A read-only snapshot for comparing content.
+pub fn scan_snapshot(src: &Path, dst: &Path) -> Result<()> {
+    snapshot(src, dst, true)
+}
+
 pub fn snapshot(src: &Path, dst: &Path, readonly: bool) -> Result<()> {
     let _t = crate::trace::span(format!("snapshot {}", dst.display()));
     let s = File::open(src).with_context(|| format!("open {}", src.display()))?;

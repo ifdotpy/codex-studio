@@ -734,6 +734,10 @@ pub fn sync(ctx: &Ctx, args: &[String]) -> Result<i32> {
     exchange(ctx, args, "sync")
 }
 pub fn push(ctx: &Ctx, args: &[String]) -> Result<i32> {
+    // Without a remote name: every layer to each of its remotes (docs/cache-overlays.md).
+    if args.iter().all(|s| s.starts_with('-')) {
+        return super::layerpush::push_all(ctx, args);
+    }
     exchange(ctx, args, "push")
 }
 pub fn index(ctx: &Ctx, args: &[String]) -> Result<i32> {

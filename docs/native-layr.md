@@ -310,7 +310,7 @@ Acceptance runs `layr merge <line> --expect <state>` in main.
 A changed worker head prevents acceptance.
 Lead and reviewer results do not cause a merge.
 
-At turn end, Studio runs `layr cache repair` and `layr save`.
+At turn end, Studio runs `layr overlay repair <overlay>` for each folder overlay, then `layr save`.
 An unchanged line without automatic states resolves to its current named head.
 This automatic state preserves unfinished work separately from the named head.
 Archive saves remaining work and creates `pins/studio/archive/<SHA-256 of agent ID>` at that exact state.

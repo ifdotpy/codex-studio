@@ -675,6 +675,11 @@ fn copy_delta(
     Ok(())
 }
 
+/// A read-only snapshot for comparing content.
+pub fn scan_snapshot(src: &Path, dst: &Path) -> Result<()> {
+    snapshot(src, dst, true)
+}
+
 pub fn snapshot(src: &Path, dst: &Path, readonly: bool) -> Result<()> {
     let src = absolute(src)?;
     let dst = absolute(dst)?;

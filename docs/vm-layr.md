@@ -79,10 +79,10 @@ becomes a cache in the VM:
 
 The import keeps a nested repository and the files that Git tracks in an ignored folder.
 Such a folder has versioned files, so it stays a plain folder in each line.
-`layr save --caches` and `layr cache list` show `not a cache: has versioned files` for it.
+`layr save --caches` and `layr overlay list` show `not a cache: has versioned files` for it.
 To make it a cache, remove its files from history first.
 A record of an older layr that lists such a folder as a cache does not change this: a new line
-takes the folder from the state. `layr cache repair` (at each turn end) or the next
+takes the folder from the state. `layr overlay repair <overlay>` (at each turn end) or the next
 `layr save --caches` makes such a cache in a working folder a plain folder again.
 
 Studio does not choose the build command or when a build is good enough to save.

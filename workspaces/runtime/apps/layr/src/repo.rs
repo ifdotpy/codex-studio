@@ -84,6 +84,16 @@ impl Status {
         }
         s
     }
+    /// Leave out `paths` (the files of quiet overlays) from what the status shows.
+    pub fn drop_paths(&mut self, paths: &BTreeSet<String>) {
+        if paths.is_empty() {
+            return;
+        }
+        self.staged.retain(|c| !paths.contains(&c.path));
+        self.unstaged.retain(|c| !paths.contains(&c.path));
+        self.untracked.retain(|p| !paths.contains(p));
+        self.conflicts.retain(|c| !paths.contains(&c.path));
+    }
     pub fn clean(&self) -> bool {
         self.staged.is_empty() && self.unstaged.is_empty()
     }
@@ -105,7 +115,7 @@ pub fn skip_path(p: &str) -> bool {
 /// The kinds of change to a line, for `Repo::authorize_line`.
 #[derive(Clone, Copy, Debug)]
 pub enum LineOp {
-    /// Snapshots of the working content (save, cache repair): the owner.
+    /// Snapshots of the working content (save, overlay repair): the owner.
     Save,
     /// Commit, reset, add, apply, stash and the other work commands: the owner, and only if the
     /// line is not protected or its rule allows direct changes.
@@ -715,7 +725,9 @@ impl<'a> Repo<'a> {
         if !w.exists() {
             bail!("line '{}' has no working folder on this machine", line.name);
         }
-        self.temp_snapshot(&w, true)
+        let dst = self.p.scan_dir().join(ids::new_id());
+        btrfs::scan_snapshot(&w, &dst)?;
+        Ok(Temp { path: dst })
     }
 
     /// The newest automatic state of a line, if any.
@@ -1329,6 +1341,7 @@ impl<'a> Repo<'a> {
         };
         self.materialize_with(&line, start, &dst, &layers, true)?;
         let res = (|| -> Result<Record> {
+            self.take_caches(ctx, &line, start, source, &dst)?;
             let mut rec = Record::new("line.create");
             rec.lines.insert(
                 line.id.clone(),
@@ -1863,7 +1876,7 @@ fn prune_empty_parents(target: &Path, to: &Path, rel: &str) -> Result<()> {
 
 /// Give every entry of a tree (a new cache copy, still private) to `uid:gid`, without following
 /// links and without entering nested subvolumes.
-fn give_tree(root: &Path, uid: u32, gid: u32) -> Result<()> {
+pub(crate) fn give_tree(root: &Path, uid: u32, gid: u32) -> Result<()> {
     let mut paths = Vec::new();
     fsutil::walk(root, "", &mut |rel, m| {
         if m.uid != uid || m.gid != gid {
@@ -2224,7 +2237,7 @@ mod cache_copy_tests {
     }
 
     #[test]
-    fn cache_list_does_not_recover_an_active_replacement() -> Result<()> {
+    fn overlay_list_does_not_recover_an_active_replacement() -> Result<()> {
         let root = std::env::temp_dir().join(format!("layr-cache-list-{}", crate::ids::new_id()));
         std::fs::create_dir(&root)?;
         #[cfg(target_os = "linux")]
@@ -2239,6 +2252,7 @@ mod cache_copy_tests {
         assert_eq!(run(&ctx, &["init", "concurrent", "-q"])?, 0);
         ctx.cwd = root.join("store/projects/concurrent/lines/main");
         std::fs::write(ctx.cwd.join(".layrattributes"), "cache regenerable\n")?;
+        assert_eq!(run(&ctx, &["overlay", "create", "cache.cache", "--folder", "cache", "--history", "last", "--quiet", "--merge", "union-theirs", "-q"])?, 0);
         std::fs::write(ctx.cwd.join(".gitignore"), "cache/\n")?;
         std::fs::create_dir(ctx.cwd.join("cache"))?;
         std::fs::write(ctx.cwd.join("cache/data"), "original")?;
@@ -2250,14 +2264,14 @@ mod cache_copy_tests {
             .spawn()?;
         let start = std::time::Instant::now();
         while !root.join("ready").exists() {
-            assert!(child.try_wait()?.is_none(), "cache repair stopped before the pause");
+            assert!(child.try_wait()?.is_none(), "overlay repair stopped before the pause");
             assert!(start.elapsed() < std::time::Duration::from_secs(30));
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         let journal = ctx.cwd.join(cache_journal("cache"));
         let before = std::fs::read(&journal)?;
         let staging = std::fs::symlink_metadata(ctx.cwd.join("cache.layr-new"))?;
-        let listed = run(&ctx, &["cache", "list"]);
+        let listed = run(&ctx, &["overlay", "list"]);
         let after = std::fs::read(&journal);
         let same_staging = std::fs::symlink_metadata(ctx.cwd.join("cache.layr-new"))
             .is_ok_and(|m| m.dev() == staging.dev() && m.ino() == staging.ino());
@@ -2267,7 +2281,7 @@ mod cache_copy_tests {
         assert_eq!(after?, before);
         assert!(same_staging);
         assert!(repaired.success());
-        assert_eq!(run(&ctx, &["cache", "repair"])?, 0);
+        assert_eq!(run(&ctx, &["overlay", "repair", "cache.cache"])?, 0);
         assert_eq!(std::fs::read_to_string(ctx.cwd.join("cache/data"))?, "original");
         assert_eq!(std::fs::metadata(ctx.cwd.join("cache"))?.mode() & 0o777, 0o555);
         drop(ctx);
@@ -2288,7 +2302,7 @@ mod cache_copy_tests {
         let root = std::path::PathBuf::from(root);
         if std::env::var_os("LAYR_TEST_CACHE_PAUSE").is_some() {
             let ctx = cache_command_context(&root)?;
-            assert_eq!(crate::cmd::run(&ctx, &["cache".into(), "repair".into()])?, 0);
+            assert_eq!(crate::cmd::run(&ctx, &["overlay".into(), "repair".into(), "cache.cache".into()])?, 0);
             return Ok(());
         }
         let tree = Tree::open(&root)?;

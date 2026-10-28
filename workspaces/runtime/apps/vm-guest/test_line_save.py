@@ -30,6 +30,9 @@ class LineSave(unittest.TestCase):
 
             async def layr(context, *args, root=False):
                 calls.append(args)
+                if args[:2] == ("overlay", "list"):
+                    return json.dumps([{"name": "cache.target", "folder": "target", "state": "plain folder"},
+                                       {"name": "notes", "folder": None}])
                 return "state-1"
 
             handlers.layr = layr
@@ -40,10 +43,11 @@ class LineSave(unittest.TestCase):
             result = asyncio.run(handlers.dispatch_locked(
                 "request", "line.save", {"agentId": agent, "turnId": "turn-1"}, emit))
         self.assertEqual(result, {"stateId": "state-1", "turnId": "turn-1"})
-        # layr renamed its "layer" command to "cache"; the old name fails every turn save.
-        self.assertEqual(calls[0], ("cache", "repair"))
-        self.assertEqual(calls[1], ("save", "--force", "--note", "Studio turn turn-1"))
-        self.assertEqual(calls[2], ("rev-parse", "head@{0}"))
+        # Only folder overlays are repaired, and only by their name.
+        self.assertEqual(calls[0], ("overlay", "list", "--json"))
+        self.assertEqual(calls[1], ("overlay", "repair", "cache.target"))
+        self.assertEqual(calls[2], ("save", "--force", "--note", "Studio turn turn-1"))
+        self.assertEqual(calls[3], ("rev-parse", "head@{0}"))
 
 
 if __name__ == "__main__":
