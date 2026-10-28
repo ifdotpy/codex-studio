@@ -142,6 +142,9 @@ pub fn store_causes(error: &studio_runtime_store::StoreError) -> Vec<Cause> {
         }
         StoreError::AlreadyOwned
         | StoreError::RequestResult(
+            studio_runtime_store::request_results::RequestResultError::Expired,
+        )
+        | StoreError::RequestResult(
             studio_runtime_store::request_results::RequestResultError::Identity(_),
         )
         | StoreError::MissingDatabase(_)
