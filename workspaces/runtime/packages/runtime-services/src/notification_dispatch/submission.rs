@@ -57,12 +57,11 @@ pub(super) fn record_submission(
         if let Some(owner) = attempt_owner.or(input_owner) {
             let owner: ProviderSubmission = serde_json::from_value(owner)
                 .map_err(|_| stored("runtime_event_meta", &submission.first_event_id))?;
-            if owner.first_event_id != submission.first_event_id {
-                return Err(NotificationDispatchError::ConflictingInput);
-            }
             let replacing = matches!(authorization, SubmissionAuthorization::Start { attempt_id } if owner.attempt_id.as_deref() != Some(attempt_id));
             if !replacing {
-                if owner.admission.signature() != signature {
+                if owner.first_event_id != submission.first_event_id
+                    || owner.admission.signature() != signature
+                {
                     return Err(NotificationDispatchError::ConflictingInput);
                 }
                 return replay_submission(tx, agent, &item, &owner.admission);

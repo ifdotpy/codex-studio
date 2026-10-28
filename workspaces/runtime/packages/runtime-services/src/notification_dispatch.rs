@@ -3675,6 +3675,61 @@ mod tests {
     }
 
     #[test]
+    fn start_submission_replaces_unsent_attempt_when_first_input_changes() {
+        let mut connection = database();
+        fixture_attempt(&connection, "attempt-retry");
+        connection.execute_batch(
+            "INSERT INTO runtime_events VALUES('e1','agent','user','hello','dispatching',1,1,'turn',NULL);
+             INSERT INTO runtime_events VALUES('e2','agent','user','more','dispatching',2,1,'turn',NULL);",
+        ).expect("queued events create");
+        let input = |id: &str, at: f64, text: &str| SubmittedInput {
+            id: id.to_owned(),
+            at,
+            kind: "user".to_owned(),
+            text: text.to_owned(),
+            assets: json!([]),
+        };
+        let first = PreparedSubmission {
+            first_event_id: "e1".to_owned(),
+            submitted_at: 1.0,
+            created_at: 1.0,
+            text: "hello\n\nmore".to_owned(),
+            inputs: vec![input("e1", 1.0, "hello"), input("e2", 2.0, "more")],
+            assets: json!([]),
+            radio_authorized: false,
+        };
+        let replacement = PreparedSubmission {
+            first_event_id: "e2".to_owned(),
+            submitted_at: 2.0,
+            created_at: 2.0,
+            text: "more".to_owned(),
+            inputs: vec![input("e2", 2.0, "more")],
+            ..first.clone()
+        };
+        let tx = connection.transaction().expect("first transaction");
+        record_start_submission(&tx, "agent", "attempt", &first).expect("first start writes");
+        tx.commit().expect("first commits");
+        let tx = connection.transaction().expect("replacement transaction");
+        assert_eq!(
+            record_start_submission(&tx, "agent", "attempt-retry", &replacement)
+                .expect("replacement writes"),
+            DispatchOutcome::Written
+        );
+        tx.commit().expect("replacement commits");
+        let tx = connection.transaction().expect("replay transaction");
+        assert_eq!(
+            record_start_submission(&tx, "agent", "attempt", &first).expect("original replays"),
+            DispatchOutcome::Written
+        );
+        assert_eq!(
+            record_start_submission(&tx, "agent", "attempt-retry", &replacement)
+                .expect("replacement replays"),
+            DispatchOutcome::Written
+        );
+        tx.commit().expect("replays commit");
+    }
+
+    #[test]
     fn prepared_submission_preserves_batch_text_metadata_assets_and_replay() {
         let mut connection = database();
         connection.execute_batch(
