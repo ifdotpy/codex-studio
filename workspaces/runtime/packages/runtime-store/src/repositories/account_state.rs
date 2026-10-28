@@ -117,14 +117,21 @@ enum ExecutionMode {
 }
 #[derive(serde::Deserialize)]
 struct StreamFields {
-    generation: u64,
+    generation: Option<u64>,
     connection: Option<String>,
-    #[serde(default)]
-    ack: u64,
+    ack: Option<u64>,
 }
 impl StreamFields {
-    fn into_state(self) -> (ProviderState, u64) {
-        (state(self.generation, self.connection), self.ack)
+    fn into_state(self) -> StoreResult<Option<(ProviderState, u64)>> {
+        match (self.generation, self.connection, self.ack) {
+            (Some(generation), connection, ack) => {
+                Ok(Some((state(generation, connection), ack.unwrap_or(0))))
+            }
+            (None, None, None) => Ok(None),
+            (None, _, _) => Err(StoreError::RecordContract(
+                "provider connection or ACK has no generation",
+            )),
+        }
     }
 }
 
@@ -157,13 +164,20 @@ pub enum ProviderOwner<'a> {
 }
 
 /// Read the host account row or the VM agent's current stream exactly once.
-pub fn provider_state(db: &Connection, owner: ProviderOwner<'_>) -> StoreResult<Option<(ProviderState, u64)>> {
+pub fn provider_state(
+    db: &Connection,
+    owner: ProviderOwner<'_>,
+) -> StoreResult<Option<(ProviderState, u64)>> {
     let account = match owner {
         ProviderOwner::Account(account) => std::borrow::Cow::Borrowed(account),
         ProviderOwner::Agent(agent) => {
             let fields = agent_scope_fields(agent)?;
             if matches!(fields.execution_mode, Some(ExecutionMode::Vm)) {
-                return Ok(fields.provider_stream.map(StreamFields::into_state));
+                return fields
+                    .provider_stream
+                    .map(StreamFields::into_state)
+                    .transpose()
+                    .map(Option::flatten);
             }
             std::borrow::Cow::Owned(fields.account_key.unwrap_or_else(|| "default".into()))
         }
@@ -174,18 +188,37 @@ pub fn provider_state(db: &Connection, owner: ProviderOwner<'_>) -> StoreResult<
     ).optional()?;
     match row {
         None | Some((None, None, _)) => Ok(None),
-        Some((None, Some(_), _)) => Err(StoreError::RecordContract("provider connection has no generation")),
+        Some((None, Some(_), _)) => Err(StoreError::RecordContract(
+            "provider connection has no generation",
+        )),
         Some((Some(generation), connection, ack)) => Ok(Some((
-            state(u64::try_from(generation).map_err(|_| StoreError::RecordContract("provider generation is negative"))?, connection),
-            u64::try_from(ack).map_err(|_| StoreError::RecordContract("provider journal ACK is negative"))?,
+            state(
+                u64::try_from(generation)
+                    .map_err(|_| StoreError::RecordContract("provider generation is negative"))?,
+                connection,
+            ),
+            u64::try_from(ack)
+                .map_err(|_| StoreError::RecordContract("provider journal ACK is negative"))?,
         ))),
     }
 }
 
 /// Read the current host or VM provider identity in the owner's transaction.
-pub fn current_provider_scope(tx: &Transaction<'_>, agent: &crate::AgentRecord) -> Result<ProviderScope, ScopeError> {
+pub fn current_provider_scope(
+    tx: &Transaction<'_>,
+    agent: &crate::AgentRecord,
+) -> Result<ProviderScope, ScopeError> {
     match provider_state(tx, ProviderOwner::Agent(agent))? {
-        Some((ProviderState::Connected { generation, connection }, _)) => Ok(ProviderScope { generation, connection }),
+        Some((
+            ProviderState::Connected {
+                generation,
+                connection,
+            },
+            _,
+        )) => Ok(ProviderScope {
+            generation,
+            connection,
+        }),
         Some((ProviderState::Held { .. }, _)) | None => Err(ScopeError::Unavailable),
     }
 }
@@ -451,6 +484,19 @@ mod tests {
     use super::{authentication_recovery_account_keys, limits_snapshots};
     use rusqlite::Connection;
     use serde_json::{Value, json};
+
+    #[test]
+    fn metadata_only_vm_stream_has_no_provider_state() {
+        let fields: super::StreamFields = serde_json::from_value(json!({"streams":{}})).unwrap();
+        assert!(fields.into_state().unwrap().is_none());
+        for stream in [
+            json!({"streams":{},"connection":"c"}),
+            json!({"streams":{},"ack":0}),
+        ] {
+            let fields: super::StreamFields = serde_json::from_value(stream).unwrap();
+            assert!(fields.into_state().is_err());
+        }
+    }
 
     #[test]
     fn receipt_account_checkpoint_fences_generations_and_never_regresses() {

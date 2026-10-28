@@ -3182,30 +3182,21 @@ pub(crate) fn checkpoint(
     studio_runtime_store::account_state::provider_checkpoint(tx, journal_scope, generation)
 }
 
-#[derive(serde::Deserialize)]
-struct StreamGeneration {
-    generation: u64,
-}
-
 fn current_stream_generation(
     tx: &rusqlite::Connection,
     scope: &str,
     origin: u64,
 ) -> Result<u64, WorkerError> {
     let generation = if let Some((account, actor)) = scope.rsplit_once(":vm:") {
-        AgentRepository::get(tx, &AgentId::from(actor))?
+        let agent = AgentRepository::get(tx, &AgentId::from(actor))?
             .filter(|agent| account_key(agent) == account)
-            .and_then(|agent| {
-                agent
-                    .extra
-                    .get("providerStream")
-                    .filter(|stream| !stream.is_null())
-                    .cloned()
-            })
-            .map(serde_json::from_value::<StreamGeneration>)
-            .transpose()
-            .map_err(StoreError::from)?
-            .map(|stream| stream.generation)
+            .ok_or_else(|| invalid(scope))?;
+        let (state, _) = studio_runtime_store::account_state::provider_state(
+            tx,
+            studio_runtime_store::account_state::ProviderOwner::Agent(&agent),
+        )?
+        .ok_or_else(|| invalid(scope))?;
+        Some(state.generation())
     } else {
         tx.query_row(
             "SELECT connection_generation FROM runtime_account_state WHERE account=?1",
