@@ -901,7 +901,7 @@ impl State {
                         // This fixture seeds domain input; public annotation ingress has its own UUID witnesses.
                         let owner = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?
                             .expect("fixture agent");
-                        let created = store::now();
+                        let created = super::now();
                         studio_runtime_store::EventWriteRepository::put_annotation(
                             tx,
                             &id,
@@ -919,7 +919,7 @@ impl State {
                             created,
                         )
                         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
-                        Ok(())
+                        Ok::<_, StoreError>(())
                     })
                     .await?;
                 Ok(())
