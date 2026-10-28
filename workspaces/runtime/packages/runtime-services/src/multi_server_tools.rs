@@ -343,9 +343,7 @@ impl ServerTools {
         match action {
             "list" => return self.list(&local).await,
             "add_location" | "remove_location" => {
-                return self
-                    .location_request(actor, args, action, key, &local)
-                    .await;
+                return self.location_request(actor, args, key, &local).await;
             }
             "location_matches" => {
                 return self.location_matches(args, key).await;
@@ -467,40 +465,28 @@ impl ServerTools {
         &self,
         actor: &Actor,
         args: &Value,
-        action: &str,
         key: &str,
         local: &str,
     ) -> Result<Value, Step> {
-        let signature_data = crate::project_locations::normalized_location_request(
-            action,
-            args.get("project")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-            args.get("server")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-            args.get("path").and_then(Value::as_str),
-            Some(local),
-        )
-        .map_err(|message| Step::Refused(message.into()))?;
-        let project_id = signature_data["project"]
-            .as_str()
-            .expect("normalized project")
-            .to_owned();
-        let server = signature_data["server"]
-            .as_str()
-            .expect("normalized server")
-            .to_owned();
-        let path = signature_data["path"].as_str().map(str::to_owned);
+        let args = crate::project_locations::LocationIngress::deserialize(args)
+            .map_err(|_| Step::Refused("Invalid project location request".into()))?;
+        let request = crate::project_locations::LocationRequest::parse(args, Some(local))
+            .map_err(|message| Step::Refused(message.into()))?;
+        let (action, path) = match &request.op {
+            crate::project_locations::LocationOp::Add { path } => {
+                ("add_location", Some(path.clone()))
+            }
+            crate::project_locations::LocationOp::Remove => ("remove_location", None),
+        };
+        let project_id = request.project.clone();
+        let server = request.server.clone();
         if server != local && !self.paired_ids().await?.contains(&server) {
             return refuse("The server is not paired or is revoked");
         }
         // Python passes `{**args, 'request_id': key}`: the tool request owns the identity.
         let request_id = text_field(Some(&json!(key)), "a request ID", 128)?;
         let outbox_key = request_id.clone();
-        let signature = studio_runtime_store::sha256_hex(
-            studio_runtime_schema::json_compat::python_json_compact(&signature_data).as_bytes(),
-        );
+        let signature = request.signature().map_err(StoreError::from)?;
         let actor_id = actor.record().id.0.clone();
         let epoch = actor.record().epoch;
         let local_for_write = local.to_owned();
@@ -531,12 +517,14 @@ impl ServerTools {
                     )
                     .optional()?;
                 if let Some((old_server, body)) = old {
-                    let envelope: Value = serde_json::from_str(&body)
+                    #[derive(Deserialize)]
+                    struct SavedEnvelope { payload: Box<serde_json::value::RawValue> }
+                    let envelope: SavedEnvelope = serde_json::from_str(&body)
                         .map_err(|_| Step::Refused("Stored cross-server envelope is invalid".into()))?;
-                    if old_server != server_for_write || envelope["payload"]["request"] != signature_data {
+                    if old_server != server_for_write || ProjectsRepository::location_request(tx, &project_id, &key_for_write)?.as_ref() != Some(&admitted) {
                         return refuse("This request ID has different content");
                     }
-                    return Ok(Ok(envelope["payload"].clone()));
+                    return Ok(Ok(serde_json::from_str(envelope.payload.get()).map_err(StoreError::from)?));
                 }
                 let busy: Option<i64> = tx
                     .query_row(
@@ -566,7 +554,7 @@ impl ServerTools {
                     "project": project_id,
                     "name": project["name"],
                     "path": path,
-                    "request": signature_data,
+                    "request": request.wire(),
                 });
                 if let Some(location) = location {
                     payload["location"] = location;

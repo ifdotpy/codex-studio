@@ -62,7 +62,13 @@ impl Fixture {
                     case["expected"]["result"] = case["previous"].clone();
                 }
                 let admitted = json!({"id":case["record"]["id"],"signature":"fixture-tool","created":chrono::Utc::now().timestamp_millis()});
-                let arguments = case["outbox"]["body"]["payload"]["request"].clone();
+                let mut arguments = case["outbox"]["body"]["payload"]["request"].clone();
+                if arguments["action"] == "remove_location" {
+                    arguments
+                        .as_object_mut()
+                        .expect("location arguments")
+                        .remove("path");
+                }
                 for field in ["record", "expected/record"] {
                     let target = if field == "record" {
                         &mut case["record"]

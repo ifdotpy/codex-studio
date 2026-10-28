@@ -84,6 +84,49 @@ mod receipt_tests {
     }
 
     #[test]
+    fn location_request_signatures_keep_wire_bytes() {
+        for (args, expected) in [
+            (
+                json!({"action":"add_location","project":" /project ","server":" peer ","path":" /remote "}),
+                "410fb9b76817bc6e6398e5abdf5c23acba654d3e2767fc97291efdb766e38adb",
+            ),
+            (
+                json!({"action":"remove_location","project":"/project","server":"peer"}),
+                "b5c0f952f316204ce5bdef1a5d08f89fe93d3078338d7ee544d3bfddd551cd45",
+            ),
+        ] {
+            let args: LocationIngress = serde_json::from_value(args).expect("valid arguments");
+            assert_eq!(
+                LocationRequest::parse(args, Some("local-id"))
+                    .expect("request")
+                    .signature()
+                    .expect("signature"),
+                expected
+            );
+        }
+        for invalid in [
+            json!({"action":"add_location","project":"/project","server":"peer"}),
+            json!({"action":"remove_location","project":"/project","server":"peer","path":"/remote"}),
+        ] {
+            assert!(serde_json::from_value::<LocationIngress>(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn managed_location_snapshot_accepts_unsigned_payload() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/relocation/oracle.json")).expect("fixture");
+        let case = &fixture["cases"][0];
+        let mut raw = case["outbox"].clone();
+        raw["body"]["payload"]
+            .as_object_mut()
+            .expect("payload")
+            .remove("signature");
+        CompletionSnapshot::from_records(&raw, Some(&case["project"]))
+            .expect("managed request has no wire signature");
+    }
+
+    #[test]
     fn hidden_project_completes_pending_location_once() {
         let fixture: Value =
             serde_json::from_str(include_str!("../tests/relocation/oracle.json")).expect("fixture");
@@ -487,46 +530,93 @@ pub fn tool_location_receipt(
 }
 
 #[derive(Deserialize)]
-struct LocationArguments {
-    action: Action,
-    project: String,
-    server: String,
-    path: Option<String>,
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum LocationIngress {
+    AddLocation {
+        project: String,
+        server: String,
+        path: String,
+    },
+    RemoveLocation {
+        project: String,
+        server: String,
+    },
 }
-pub(crate) fn normalized_location_request(
-    action: &str,
-    project: &str,
-    server: &str,
-    path: Option<&str>,
-    local: Option<&str>,
-) -> Result<Value, &'static str> {
-    fn text<'a>(value: &'a str, max: usize, error: &'static str) -> Result<&'a str, &'static str> {
-        if value.chars().count() > max || value.trim().is_empty() {
-            return Err(error);
+pub(crate) enum LocationOp {
+    Add { path: String },
+    Remove,
+}
+pub(crate) struct LocationRequest {
+    pub project: String,
+    pub server: String,
+    pub op: LocationOp,
+}
+#[derive(Serialize)]
+pub(crate) struct LocationWire<'a> {
+    action: &'static str,
+    path: Option<&'a str>,
+    project: &'a str,
+    server: &'a str,
+}
+impl LocationRequest {
+    pub(crate) fn parse(args: LocationIngress, local: Option<&str>) -> Result<Self, &'static str> {
+        fn text(value: String, max: usize, error: &'static str) -> Result<String, &'static str> {
+            if value.chars().count() > max || value.trim().is_empty() {
+                return Err(error);
+            }
+            Ok(value.trim().to_owned())
         }
-        Ok(value.trim())
-    }
-    let project = text(
-        project,
-        4096,
-        "Supply a project ID with 1 to 4096 characters",
-    )?;
-    let server = text(server, 128, "Supply a server ID with 1 to 128 characters")?;
-    let server = if server == "local" {
-        local.ok_or("The local server identity is unavailable")?
-    } else {
-        server
-    };
-    let path = if action == "add_location" {
-        Some(text(
-            path.unwrap_or_default(),
+        let (project, server, op) = match args {
+            LocationIngress::AddLocation {
+                project,
+                server,
+                path,
+            } => {
+                let path = text(
+                    path,
+                    4096,
+                    "Supply a location path with 1 to 4096 characters",
+                )?;
+                (project, server, LocationOp::Add { path })
+            }
+            LocationIngress::RemoveLocation { project, server } => {
+                (project, server, LocationOp::Remove)
+            }
+        };
+        let project = text(
+            project,
             4096,
-            "Supply a location path with 1 to 4096 characters",
-        )?)
-    } else {
-        None
-    };
-    Ok(json!({"action":action,"project":project,"server":server,"path":path}))
+            "Supply a project ID with 1 to 4096 characters",
+        )?;
+        let server = text(server, 128, "Supply a server ID with 1 to 128 characters")?;
+        let server = if server == "local" {
+            local
+                .ok_or("The local server identity is unavailable")?
+                .to_owned()
+        } else {
+            server
+        };
+        Ok(Self {
+            project,
+            server,
+            op,
+        })
+    }
+    pub(crate) fn wire(&self) -> LocationWire<'_> {
+        let (action, path) = match &self.op {
+            LocationOp::Add { path } => ("add_location", Some(path.as_str())),
+            LocationOp::Remove => ("remove_location", None),
+        };
+        LocationWire {
+            action,
+            path,
+            project: &self.project,
+            server: &self.server,
+        }
+    }
+    pub(crate) fn signature(&self) -> Result<String, serde_json::Error> {
+        Ok(sha256_hex(serde_json::to_string(&self.wire())?.as_bytes()))
+    }
 }
 fn task_location_request(
     tx: &Transaction<'_>,
@@ -538,38 +628,39 @@ fn task_location_request(
     )>,
     LocationError,
 > {
-    if task["tool"] != "orchestration_servers"
+    #[derive(Deserialize)]
+    struct Header<'a> {
+        tool: &'a str,
+        #[serde(borrow)]
+        arguments: Option<Args<'a>>,
+    }
+    #[derive(Deserialize)]
+    struct Args<'a> {
+        action: Option<&'a str>,
+    }
+    let header = Header::deserialize(task).map_err(studio_runtime_store::StoreError::from)?;
+    if header.tool != "orchestration_servers"
         || !matches!(
-            task.pointer("/arguments/action").and_then(Value::as_str),
+            header.arguments.and_then(|a| a.action),
             Some("add_location" | "remove_location")
         )
     {
         return Ok(None);
     }
-    let args: LocationArguments = serde_json::from_value(task["arguments"].clone())
-        .map_err(studio_runtime_store::StoreError::from)?;
+    #[derive(Deserialize)]
+    struct ToolOwner {
+        arguments: LocationIngress,
+        admitted: studio_runtime_store::request_results::AdmittedRequest,
+    }
+    let owner = ToolOwner::deserialize(task).map_err(studio_runtime_store::StoreError::from)?;
     let local = RuntimeStore::transaction_local_server_id(tx)?;
-    let path = if args.action == Action::AddLocation {
-        args.path.as_deref()
-    } else {
-        None
-    };
-    let action = if args.action == Action::AddLocation {
-        "add_location"
-    } else {
-        "remove_location"
-    };
-    let normalized =
-        normalized_location_request(action, &args.project, &args.server, path, local.as_deref())
-            .map_err(LocationError::Refused)?;
-    let server = normalized["server"]
-        .as_str()
-        .expect("normalized server")
-        .to_owned();
-    let signature = sha256_hex(canonical_json(&normalized).as_bytes());
-    let parent: studio_runtime_store::request_results::AdmittedRequest =
-        serde_json::from_value(task["admitted"].clone())
-            .map_err(studio_runtime_store::StoreError::from)?;
+    let request = LocationRequest::parse(owner.arguments, local.as_deref())
+        .map_err(LocationError::Refused)?;
+    let signature = request
+        .signature()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let server = request.server;
+    let parent = owner.admitted;
     Ok(Some((
         parent.derive_result("project-location", &["location"], &signature),
         server,
