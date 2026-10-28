@@ -943,7 +943,13 @@ def supervisor_request(state: Path, action: SupervisorAction) -> dict[str, objec
 def tick(config, state, child=None, supervisor_fallback=False):
     if child is not None and child.poll() is None:
         return child, "starting"
-    existing = identity(config["port"], state)
+    try:
+        existing = identity(config["port"], state)
+    except OSError:
+        # A live handover holds the port between two owners (docs/live-handover.md): wait.
+        if listener_pids(config["port"]):
+            return None, "waiting for the port listener"
+        raise
     if existing and supervisor_fallback and existing.get("supervisorFallback") is True:
         return None, "fallback attached"
     if existing and supervisor_fallback and existing.get("supervisorMode") is True:
@@ -955,6 +961,9 @@ def tick(config, state, child=None, supervisor_fallback=False):
     if not lease_available(state):
         return None, "waiting for runtime owner"
     command = [str(rust_server(config)), "--port", str(config["port"])]
+    if listener_pids(config["port"]):
+        # A live handover between two owners holds the port: never start a third backend.
+        return None, "waiting for the port listener"
     env = launch_environment(config, state, supervisor_fallback=supervisor_fallback)
     # A fresh Rust state accepts only a private canvas.log (accepted_private_file in
     # runtime-store fresh_state.rs); launchd starts this agent with umask 022.
