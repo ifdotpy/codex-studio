@@ -788,11 +788,11 @@ fn settle_voice_session(
             VoiceStopOutcome::NotSent | VoiceStopOutcome::Submitted => {}
         }
         if settle_held_deletion(tx, session, outcome)? {
-            if outcome == VoiceStopOutcome::NotSent {
-                if let Some(admitted) = &session.admitted_request {
-                    crate::account_worker::retained::discard_unsent_provider_call(tx, admitted)
-                        .map_err(|error| VoiceProviderError::Provider(Box::new(error)))?;
-                }
+            if outcome == VoiceStopOutcome::NotSent
+                && let Some(admitted) = &session.admitted_request
+            {
+                crate::account_worker::retained::discard_unsent_provider_call(tx, admitted)
+                    .map_err(|error| VoiceProviderError::Provider(Box::new(error)))?;
             }
             row.payload
                 .voice_end_sessions
@@ -3060,6 +3060,45 @@ mod tests {
             .await,
             Err(VoiceProviderError::Unknown)
         ));
+        let state: String = store
+            .test_reader()
+            .expect("reader")
+            .query_row(
+                "SELECT state FROM voice_sessions WHERE id='session'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("session state");
+        assert_eq!(state, "unknown");
+        let rows = Outbox::for_owner::<VoiceStopPayload>(
+            &store.test_reader().expect("reader"),
+            OwnerKind::Agent,
+            "agent",
+            OutboxKind::VoiceStop,
+        )
+        .expect("stop owner");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, OutboxStatus::Unknown);
+        assert_eq!(rows[0].next_at, None);
+        assert!(
+            pending_voice_intents(&store, OutboxKind::VoiceStop)
+                .await
+                .expect("pending stops")
+                .is_empty()
+        );
+        assert_eq!(
+            end(
+                store.clone(),
+                provider.clone(),
+                "agent".into(),
+                "session".into(),
+                11.0
+            )
+            .await
+            .expect("held retry")["state"],
+            "unknown"
+        );
+        assert_eq!(provider.calls.lock().expect("calls").len(), 1);
         let call = provider.calls.lock().expect("calls")[0].clone();
         let intent=store.transaction_with_error(|tx|->Result<_,VoiceProviderError> {
             let intent=stage_delete_sessions(tx,"agent")?;

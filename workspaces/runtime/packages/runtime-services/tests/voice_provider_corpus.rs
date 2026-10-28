@@ -1450,6 +1450,9 @@ async fn real_python_start_speech_end_rows_match_rust_with_rpc_boundary_stub() {
                 .as_array_mut()
                 .expect("Python voice-session array")
                 .retain(|row| row["id"] == "oracle-session");
+            // The durable stop owner settles a written stop before returning.
+            python_rows[0]["state"] = json!("ended");
+            python_rows[0]["ended"] = json!(100.0);
         } else if table == "voice_records" {
             rust_rows
                 .as_array_mut()
@@ -2862,7 +2865,7 @@ async fn written_provider_effects_survive_restart_and_replay_once() {
     )
     .await
     .expect("provider reports Written before the process restart");
-    assert_eq!(end_written["state"], "stopping");
+    assert_eq!(end_written["state"], "ended");
     assert_eq!(provider.calls.lock().expect("provider calls").len(), 4);
     drop(store);
     store = Arc::new(
@@ -2879,7 +2882,7 @@ async fn written_provider_effects_survive_restart_and_replay_once() {
     )
     .await
     .expect("end replay");
-    assert_eq!(end_replay["state"], "stopping");
+    assert_eq!(end_replay["state"], "ended");
     assert_eq!(provider.calls.lock().expect("provider calls").len(), 4);
 }
 
