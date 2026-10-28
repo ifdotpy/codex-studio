@@ -25,6 +25,8 @@ pub(super) const SOURCES: &[&str] = &[
     "runtime_process_actions",
     "runtime_monitors",
 ];
+/// Source-era default for records predating the transport sequence. Unit: attempts.
+const MISSING_RESET_TRANSPORT_SEQUENCE: u64 = 0;
 const ACTIONS: &str = "source.id GLOB 'native-command:*' OR source.id GLOB 'monitor-http-input:*' OR source.id GLOB 'claude-steer:*' OR source.id GLOB 'manual-management:*' OR source.id GLOB 'park-event:*'";
 
 #[derive(Serialize)]
@@ -725,10 +727,41 @@ fn agent_owners(
     }
     if value["startAttempt"]["modelSettings"].is_object() {
         let mut settings = value["startAttempt"]["modelSettings"].clone();
-        let _: NativeSettingsStatus =
+        let status: NativeSettingsStatus =
             serde_json::from_value(settings["status"].clone()).map_err(|_| invalid())?;
         let call:Call=serde_json::from_value(json!({"root_request_id":"","admitted_request":null,"scope":settings["scope"],"operation":settings["operation"],"actor":{"agent":row.id,"epoch":value["epoch"]},"transfer":null,"deleted_actor_session":null,"method":settings["method"],"params":settings["params"]})).map_err(|_|invalid())?;
-        let (token, root) = captured_token(tx, table, row, &call, cutover)?;
+        let (token, root) = if retained(
+            tx,
+            table,
+            row,
+            &call.scope.account,
+            &call.operation,
+            cutover,
+        )?
+        .is_some()
+        {
+            let (token, root) = captured_token(tx, table, row, &call, cutover)?;
+            (Some(token), root)
+        } else if matches!(
+            status,
+            NativeSettingsStatus::Acknowledged
+                | NativeSettingsStatus::Rejected
+                | NativeSettingsStatus::NotSent
+        ) {
+            (
+                None,
+                crate::receipt_migration_contract::hydrate_source_root(
+                    tx,
+                    table,
+                    &row.id,
+                    &row.signature,
+                    "record",
+                    "$.startAttempt.modelSettings.rootRequestId",
+                )?,
+            )
+        } else {
+            return Err(invalid());
+        };
         settings["providerRequest"] = json!(token);
         settings["rootRequestId"] = json!(root);
         value["startAttempt"]["modelSettings"] = settings;
@@ -743,6 +776,32 @@ fn agent_owners(
             Some((_, token)) => json!(token),
             None => Value::Null,
         };
+        if release["authorization"].is_object() {
+            let mut auth = release["authorization"].clone();
+            let request = string(&auth, "request_id", table, row)?.to_owned();
+            let signature = string(&auth, "signature", table, row)?.to_owned();
+            if !auth["lead"].is_object() || !auth["target"].is_object() {
+                return Err(invalid());
+            }
+            auth["root_request_id"] =
+                json!(crate::receipt_migration_contract::hydrate_source_root(
+                    tx,
+                    table,
+                    &row.id,
+                    &row.signature,
+                    "record",
+                    "$.nativeRelease.authorization.root_request_id"
+                )?);
+            if auth["admission"].is_null() {
+                auth["admission"] = json!(admitted_owner_token(&request, &signature, cutover));
+            }
+            let token: AdmittedRequest =
+                serde_json::from_value(auth["admission"].clone()).map_err(|_| invalid())?;
+            if token.id() != request || token.signature() != signature {
+                return Err(invalid());
+            }
+            release["authorization"] = auth;
+        }
         value["nativeRelease"] = release;
     }
     if value["nativeReview"].is_object() && value["nativeReview"]["actionRequestId"].is_null() {
@@ -756,6 +815,8 @@ fn agent_owners(
     }
     if value["nativeReviewThread"].is_object() {
         let mut thread = value["nativeReviewThread"].clone();
+        let _: studio_runtime_schema::persistence::NativeReviewThreadStatus =
+            serde_json::from_value(thread["status"].clone()).map_err(|_| invalid())?;
         let operation = string(&thread, "operation", table, row)?;
         let account = value["accountKey"].as_str().unwrap_or("default");
         let authority = retained(tx, table, row, account, operation, cutover)?;
@@ -964,14 +1025,26 @@ fn operation_owner(
         let operation = format!(
             "limit-reset:{}:{}",
             string(&value, "idempotency_key", table, row)?,
-            value["transport_attempts"].as_u64().unwrap_or(1)
+            match value.get("transport_attempts") {
+                None => MISSING_RESET_TRANSPORT_SEQUENCE,
+                Some(value) => value.as_u64().ok_or_else(invalid)?,
+            }
         );
         let account = string(&value, "account_key", table, row)?;
         let authority = retained(tx, table, row, account, &operation, cutover)?;
-        let token = authority.map(|(call, token)| {
+        let token = if let Some((call, token)) = authority {
+            if call.method != studio_runtime_providers::Method::AccountRateLimitResetCreditConsume
+                || call.actor.is_some()
+                || call.params["creditId"] != value["credit_id"]
+                || call.params["idempotencyKey"] != value["idempotency_key"]
+            {
+                return Err(invalid());
+            }
             value["root_request_id"] = json!(call.root_request_id);
-            token
-        });
+            Some(token)
+        } else {
+            None
+        };
         if status == ResetCreditStatus::Uncertain && token.is_none() {
             return Err(invalid());
         }
@@ -1030,7 +1103,11 @@ impl ReceiptFamilyMigration for ActionsMigration {
                 checkpoint,
                 &ReceiptProjection {
                     id: "source.id",
-                    signature: "'action-owner'",
+                    signature: if source == "runtime_process_actions" {
+                        "source.signature"
+                    } else {
+                        "'action-owner'"
+                    },
                     result: "source.record",
                 },
                 "1",
@@ -1233,8 +1310,12 @@ mod tests {
         let path = dir.path().join("test.db");
         let mut db = Connection::open(&path).expect("database");
         fixture(&db);
-        for n in 0..=MIGRATION_BATCH_ROWS {
-            insert_native(&db, n, "unknown");
+        {
+            let setup = db.transaction().expect("fixture transaction");
+            for n in 0..=MIGRATION_BATCH_ROWS {
+                insert_native(&setup, n, "unknown");
+            }
+            setup.commit().expect("fixture commit");
         }
         assert_eq!(batch(&mut db, SOURCES[1]).expect("first batch").cursor, 500);
         {
@@ -1505,5 +1586,106 @@ mod tests {
         assert_eq!(input.payload["receipt"]["operation"], owner["operation"]);
         assert_eq!(owner["streamQueue"][0]["operation"], owner["operation"]);
         assert_eq!(owner["operation"]["providerGeneration"], 1);
+    }
+    #[test]
+    fn receipts_actions_completed_current_settings_do_not_require_a_retired_transport() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        db.execute("INSERT INTO runtime_agents VALUES('agent',?1)",[json!({"id":"agent","epoch":1,"startAttempt":{"actionRequestId":"native-0","modelSettings":{"operation":"attempt:settings","scope":{"account":"account","connection":"1","generation":1},"method":"thread/settings/update","params":{"threadId":"thread"},"status":"acknowledged"}}}).to_string()]).expect("positive settled settings");
+        batch(&mut db, "runtime_agents").expect("completed owner needs no transport obligation");
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_agents", [], |r| r.get(0))
+            .expect("owner");
+        let owner: Value = serde_json::from_str(&raw).expect("JSON");
+        assert_eq!(
+            owner["startAttempt"]["modelSettings"]["status"],
+            "acknowledged"
+        );
+        assert!(owner["startAttempt"]["modelSettings"]["providerRequest"].is_null());
+        assert_eq!(
+            uuid::Uuid::parse_str(
+                owner["startAttempt"]["modelSettings"]["rootRequestId"]
+                    .as_str()
+                    .expect("root")
+            )
+            .expect("UUID")
+            .get_version_num(),
+            7
+        );
+    }
+    #[test]
+    fn receipts_actions_completed_current_release_keeps_typed_authorization() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        let id = "manual-management:lead:1:request";
+        db.execute("INSERT INTO runtime_agents VALUES('worker',?1)",[json!({"id":"worker","nativeRelease":{"id":"manual-release:digest","phase":"released","accountKey":"account","authorization":{"lead":{"id":"lead","epoch":1},"target":{"id":"worker","epoch":1},"request_id":id,"signature":"signature"}}}).to_string()]).expect("closed release");
+        batch(&mut db, "runtime_agents").expect("migrate authorization");
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_agents", [], |r| r.get(0))
+            .expect("owner");
+        let owner: Value = serde_json::from_str(&raw).expect("JSON");
+        let auth = &owner["nativeRelease"]["authorization"];
+        assert_eq!(auth["admission"]["id"], id);
+        assert_eq!(
+            uuid::Uuid::parse_str(auth["root_request_id"].as_str().expect("root"))
+                .expect("UUID")
+                .get_version_num(),
+            7
+        );
+    }
+    #[test]
+    fn receipts_actions_safety_and_credit_preserve_existing_effect_and_credit_fence() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        db.execute_batch("CREATE TABLE runtime_safety_retries(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_limit_reset_attempts(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_process_actions(id TEXT PRIMARY KEY,signature TEXT,record TEXT)").expect("owners");
+        call_fixture(&db, "retry:interrupt", "turn/interrupt");
+        db.execute("INSERT INTO runtime_safety_retries VALUES('retry',?1)",[json!({"id":"retry","stage":"interrupt","dispatch":"unknown","agent":"agent","epoch":1,"scope":{"account":"account","connection":"1","generation":1},"rpcMethod":"turn/interrupt","operationId":"retry:interrupt","requestParams":{"threadId":"thread"}}).to_string()]).expect("safety");
+        let call:Call=serde_json::from_value(json!({"root_request_id":"","admitted_request":null,"scope":{"account":"account","connection":"1","generation":1},"operation":"limit-reset:charge-key:1","actor":null,"transfer":null,"deleted_actor_session":null,"method":studio_runtime_providers::Method::AccountRateLimitResetCreditConsume,"params":{"creditId":"credit","idempotencyKey":"charge-key"}})).expect("call");
+        let key = studio_runtime_schema::provider_call_contract::transport_key(
+            "account",
+            &call.operation,
+        );
+        db.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)",
+            params![
+                format!("account-worker:{key}:submitted"),
+                json!({"call":call}).to_string()
+            ],
+        )
+        .expect("admitted reset");
+        db.execute("INSERT INTO runtime_limit_reset_attempts VALUES('credit-attempt',?1)",[json!({"id":"credit-attempt","account_key":"account","credit_id":"credit","idempotency_key":"charge-key","transport_attempts":1,"status":"uncertain","certainty":"unknown","outcome":null}).to_string()]).expect("credit owner");
+        db.execute(
+            "INSERT INTO runtime_process_actions VALUES('opaque-action','signature',?1)",
+            [json!({"requestId":"opaque-action","phase":"uncertain"}).to_string()],
+        )
+        .expect("process action");
+        for source in [
+            "runtime_safety_retries",
+            "runtime_limit_reset_attempts",
+            "runtime_process_actions",
+        ] {
+            batch(&mut db, source).expect("hydrate");
+        }
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_limit_reset_attempts", [], |r| {
+                r.get(0)
+            })
+            .expect("owner");
+        let credit: Value = serde_json::from_str(&raw).expect("JSON");
+        assert_eq!(credit["idempotency_key"], "charge-key");
+        assert_eq!(credit["transport_attempts"], 1);
+        assert_eq!(
+            credit["provider_request"]["id"],
+            format!("account-worker:{key}:result")
+        );
+        assert_eq!(credit["admission"]["id"], "credit-attempt");
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_safety_retries", [], |r| {
+                r.get(0)
+            })
+            .expect("retry");
+        let retry: Value = serde_json::from_str(&raw).expect("JSON");
+        assert_eq!(retry["dispatch"], "unknown");
+        assert!(retry["admittedRequest"].is_object());
     }
 }

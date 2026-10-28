@@ -518,6 +518,7 @@ mod tests {
             .expect("fresh state");
         store.transaction(|tx| {
             legacy_table(tx)?;
+            tx.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL)")?;
             for (id, provider) in [("absent", None), ("null", Some(Value::Null)),
                 ("codex", Some(json!("codex"))), ("claude", Some(json!("claude")))] {
                 let mut agent = json!({"id":id,"rootId":id,"epoch":1,"status":"idle"});

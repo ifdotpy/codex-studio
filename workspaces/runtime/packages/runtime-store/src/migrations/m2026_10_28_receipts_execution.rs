@@ -267,8 +267,12 @@ mod tests {
         let path = dir.path().join("test.db");
         let mut db = Connection::open(&path).expect("database");
         fixture(&db);
-        for n in 0..=MIGRATION_BATCH_ROWS {
-            insert(&db, n, "unsent");
+        {
+            let setup = db.transaction().expect("fixture transaction");
+            for n in 0..=MIGRATION_BATCH_ROWS {
+                insert(&setup, n, "unsent");
+            }
+            setup.commit().expect("fixture commit");
         }
         assert_eq!(batch(&mut db, SOURCES[1]).expect("batch").cursor, 500);
         {
