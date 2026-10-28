@@ -295,9 +295,17 @@ fn agent(store: &RuntimeStore) -> Value {
 #[tokio::test]
 async fn claude_control_session_reads_and_stop_keep_dispatch() {
     let (_root, _store, app, mut worker, native) = fixture().await;
+    let stop_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let missing = post(
+        &app,
+        "/api/claude/session",
+        json!({"id":"agent","action":"stop_task","task_id":"task"}),
+    )
+    .await;
+    assert_eq!(missing.0, 400, "{missing:?}");
     for (action, expected) in [("state", 200), ("commands", 409), ("stop_task", 200)] {
         let body = if action == "stop_task" {
-            json!({"id":"agent","action":action,"task_id":"task"})
+            json!({"id":"agent","action":action,"task_id":"task","request_id":stop_id})
         } else {
             json!({"id":"agent","action":action})
         };
@@ -307,7 +315,7 @@ async fn claude_control_session_reads_and_stop_keep_dispatch() {
     let replay = post(
         &app,
         "/api/claude/session",
-        json!({"id":"agent","action":"stop_task","task_id":"task"}),
+        json!({"id":"agent","action":"stop_task","task_id":"task","request_id":stop_id}),
     )
     .await;
     assert_eq!(replay.0, 200, "{replay:?}");
@@ -440,6 +448,9 @@ async fn quota_reason_crosses_retained_adapter_and_http_release_allows_same_requ
         .unwrap();
     assert_eq!(proof["params"]["settledRequestIds"], json!([completed_id]));
     let retry = post(&app, "/api/claude/session", rewind(&quota_id)).await;
+    assert_eq!(retry, rejected);
+    let fresh = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let retry = post(&app, "/api/claude/session", rewind(&fresh)).await;
     assert_eq!(retry.0, 200, "{retry:?}");
     assert_eq!(retry.1["filesRestored"], true);
     worker.shutdown().await.unwrap();
