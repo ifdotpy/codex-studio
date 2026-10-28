@@ -17,29 +17,27 @@ pub(crate) fn reserve(
         .ok_or(ToolRequestError::InvalidRequest("Invalid request identity"))?
         .to_owned();
     let existing = records::get(tx, "runtime_tool_requests", &id)?;
-    let now = candidate["created"]
-        .as_f64()
-        .ok_or(ToolRequestError::InvalidRequest("Invalid request clock"))?;
     if existing.is_none() {
-        let admission = crate::event_write::admit_request(
+        let admission = crate::event_write::begin_request::<studio_runtime_store::ToolResultRecord>(
             tx,
-            "managed_tool",
-            &[
-                candidate["agent"].as_str().unwrap_or_default(),
-                candidate["accountKey"].as_str().unwrap_or("default"),
-                candidate["threadId"].as_str().unwrap_or_default(),
-            ],
-            &id,
-            &[],
+            crate::event_write::RequestKey::new(
+                "managed_tool",
+                &[
+                    candidate["agent"].as_str().unwrap_or_default(),
+                    candidate["accountKey"].as_str().unwrap_or("default"),
+                    candidate["threadId"].as_str().unwrap_or_default(),
+                ],
+                &id,
+            ),
             candidate["signature"].as_str().unwrap_or_default(),
-            (now * 1000.0) as i64,
+            chrono::Utc::now().timestamp_millis(),
         )?;
         match admission {
-            studio_runtime_store::request_results::Admission::Fresh(admitted) => {
+            crate::event_write::CallerAdmission::Fresh(admitted) => {
                 candidate["admitted"] = serde_json::to_value(admitted)
                     .map_err(studio_runtime_store::StoreError::from)?;
             }
-            studio_runtime_store::request_results::Admission::Replay(_) => {
+            crate::event_write::CallerAdmission::Replay(_) => {
                 return Err(ToolRequestError::InvalidRequest(
                     "Request already completed; recover its original receipt",
                 ));

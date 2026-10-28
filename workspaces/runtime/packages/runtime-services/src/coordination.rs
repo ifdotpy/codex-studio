@@ -178,15 +178,11 @@ fn matches_requested_delivery(
     metadata: &Value,
     delivery: DeliveryMoment,
 ) -> Result<bool, CoordinationError> {
-    if metadata.get("requestedDelivery").is_none()
-        && crate::event_write::truthy(metadata.get("sendNow"))
-    {
-        // Historical promoted events did not retain their original timing.
-        return Ok(true);
-    }
     let requested = metadata
         .get("requestedDelivery")
-        .or_else(|| metadata.get("delivery"));
+        .ok_or(CoordinationError::InvalidRequest(
+            "Missing original message timing",
+        ))?;
     let stored = DeliveryMoment::for_event("user", "", Some(&json!({"delivery":requested})))
         .map_err(|_| CoordinationError::InvalidRequest("Invalid stored delivery moment"))?;
     Ok(stored == delivery)
@@ -321,6 +317,13 @@ fn post_managed_message(
         "text": text,
         "assets": input.assets,
     }));
+    let now_ms = (crate::event_write::unix_time().map_err(event_write_error)? * 1000.0) as i64;
+    let admission = crate::event_write::begin_request::<ManagedMessageReply>(
+        transaction,
+        crate::event_write::RequestKey::new("message", &[input.room, "user"], input.id),
+        &signature,
+        now_ms,
+    )?;
     if let Some(event) = QueueEventRepository::get(transaction, &QueueEventId::from(input.id))? {
         let metadata = QueueWriteRepository::metadata(transaction, input.id)?
             .ok_or_else(|| invalid_stored("runtime_event_meta", input.id))?;
@@ -335,13 +338,7 @@ fn post_managed_message(
             ));
         }
     }
-    let now_ms = (crate::event_write::unix_time().map_err(event_write_error)? * 1000.0) as i64;
-    let admitted = match crate::event_write::begin_request::<ManagedMessageReply>(
-        transaction,
-        crate::event_write::RequestKey::new("message", &[input.room, "user"], input.id),
-        &signature,
-        now_ms,
-    )? {
+    let admitted = match admission {
         crate::event_write::CallerAdmission::Replay(reply) => {
             return Ok(PostMessageResult {
                 receipt: serde_json::to_value(reply).map_err(StoreError::from)?,
@@ -1279,6 +1276,7 @@ mod tests {
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
+        studio_runtime_store::receipt_schema::create(&connection).expect("request results schema");
         for (id, root) in [("lead", "lead"), ("worker", "lead")] {
             let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":if id == "lead" {"running"} else {"idle"},"autoWake":id == "lead","inFlight":id == "lead"}).to_string();
             connection
@@ -1348,6 +1346,7 @@ mod tests {
     // Python creates these exact row values at codex_runtime.py:5014-5015.
     fn managed_message_preserves_python_profile_fields_on_agent_write() {
         let mut connection = database();
+        let id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let mut lead = studio_runtime_store::AgentRepository::get(
             &connection,
             &studio_runtime_store::AgentId::from("lead"),
@@ -1368,7 +1367,7 @@ mod tests {
             &transaction,
             PostManagedMessage {
                 room: "lead",
-                id: "profile-message",
+                id: &id,
                 text: "hello",
                 delivery: DeliveryMoment::CurrentTurn,
                 assets: &[],
@@ -1395,13 +1394,15 @@ mod tests {
     #[test]
     fn managed_message_retry_preserves_original_timing_after_promotion() {
         let mut connection = database();
+        let id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let promote = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let transaction = connection.transaction().expect("transaction");
         let send = |delivery| {
             post_message_with_admission(
                 &transaction,
                 PostManagedMessage {
                     room: "lead",
-                    id: "promoted-message",
+                    id: &id,
                     text: "hello",
                     delivery,
                     assets: &[],
@@ -1414,35 +1415,22 @@ mod tests {
                 .expect("first send")
                 .event_inserted
         );
-        let mut metadata =
-            studio_runtime_store::QueueWriteRepository::metadata(&transaction, "promoted-message")
-                .expect("metadata")
-                .expect("accepted metadata");
+        let metadata = studio_runtime_store::QueueWriteRepository::metadata(&transaction, &id)
+            .expect("metadata")
+            .expect("accepted metadata");
         assert_eq!(
             metadata["requestedDelivery"],
             json!(DeliveryMoment::NextTurn)
         );
-        // An old queued message has only the legacy effective timing.
-        metadata
-            .as_object_mut()
-            .expect("metadata object")
-            .remove("requestedDelivery");
-        metadata["delivery"] = json!("after_turn");
-        studio_runtime_store::QueueWriteRepository::put_metadata(
-            &transaction,
-            "promoted-message",
-            &metadata,
-        )
-        .expect("legacy metadata");
         crate::queue_write::action(
             &transaction,
             "lead",
-            &serde_json::from_value(json!({"action":"send_now", "message_id":"promoted-message", "request_id":"promote"})).expect("typed queue command"),
+            &serde_json::from_value(json!({"action":"send_now", "message_id":id, "request_id":promote})).expect("typed queue command"),
             "promotion-fixture",
             |tx, _| {
                 let event = studio_runtime_store::QueueEventRepository::get(
                     tx,
-                    &studio_runtime_store::QueueEventId::from("promoted-message"),
+                    &studio_runtime_store::QueueEventId::from(id.as_str()),
                 )?
                 .expect("queued event");
                 assert_eq!(event.status, "pending");
@@ -1454,10 +1442,9 @@ mod tests {
             },
         )
         .expect("queue promotion");
-        let metadata =
-            studio_runtime_store::QueueWriteRepository::metadata(&transaction, "promoted-message")
-                .expect("promoted metadata")
-                .expect("metadata exists");
+        let metadata = studio_runtime_store::QueueWriteRepository::metadata(&transaction, &id)
+            .expect("promoted metadata")
+            .expect("metadata exists");
         assert_eq!(
             metadata["requestedDelivery"],
             json!(DeliveryMoment::NextTurn)
@@ -1473,7 +1460,7 @@ mod tests {
             Err(CoordinationError::Conflict(_))
         ));
         assert_eq!(
-            studio_runtime_store::QueueWriteRepository::metadata(&transaction, "promoted-message")
+            studio_runtime_store::QueueWriteRepository::metadata(&transaction, &id)
                 .expect("metadata after retry"),
             Some(metadata)
         );
@@ -1482,6 +1469,7 @@ mod tests {
     #[test]
     fn review_regression_legacy_chat_refuses_new_message_without_writes() {
         let mut connection = database();
+        let id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let mut lead = studio_runtime_store::AgentRepository::get(
             &connection,
             &studio_runtime_store::AgentId::from("lead"),
@@ -1502,7 +1490,7 @@ mod tests {
             &tx,
             PostManagedMessage {
                 room: "lead",
-                id: "legacy-new-message",
+                id: &id,
                 text: "Please continue",
                 delivery: DeliveryMoment::CurrentTurn,
                 assets: &[],
@@ -2060,9 +2048,10 @@ mod tests {
     #[test]
     fn group_post_excludes_author_from_pending_recipients_and_bounds_chat_tail() {
         let mut connection = database();
+        let id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         connection
             .execute(
-                "INSERT INTO runtime_agents VALUES('user',?1)",
+                "INSERT INTO runtime_agents(id,record) VALUES('user',?1)",
                 [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"user","rootId":"lead","epoch":0,"status":"idle"}).to_string()],
             )
             .expect("user agent fixture inserts");
@@ -2081,13 +2070,13 @@ mod tests {
             &transaction,
             PostMessage {
                 room,
-                id: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                id: &id,
                 text: &"x".repeat(2_500),
             },
         )
         .expect("message writes");
         assert_eq!(receipt["status"], "queued");
-        assert_eq!(receipt["deliveries"]["lead"], "pending");
+        assert_eq!(receipt["deliveries"]["lead"]["status"], "pending");
         assert!(receipt["deliveries"].get("user").is_none());
         transaction.commit().expect("message commits");
         let payload: String = connection
@@ -2109,63 +2098,42 @@ mod tests {
     }
 
     #[test]
-    fn replay_preserves_python_delivery_receipts() {
+    fn migrated_message_without_original_timing_is_expired_without_sending() {
         let mut connection = database();
-        let room = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
-        let transaction = connection.transaction().expect("transaction starts");
-        create_chat(&transaction, room, "Team", &[]).expect("chat creates");
-        transaction.commit().expect("chat commits");
-        for (id, delivery, status, error) in [
-            (
-                "10101010-1010-1010-1010-101010101010",
-                "delivered",
-                "delivered",
-                None,
-            ),
-            (
-                "11111111-1111-1111-1111-111111111111",
-                "accepted",
-                "delivered",
-                None,
-            ),
-            (
-                "22222222-2222-2222-2222-222222222222",
-                "sent",
-                "delivered",
-                None,
-            ),
-            (
-                "33333333-3333-3333-3333-333333333333",
-                "failed: mailbox closed",
-                "failed",
-                Some("failed: mailbox closed"),
-            ),
-        ] {
-            connection
-                .execute(
-                    "INSERT INTO messages VALUES(?1,?2,'user','saved',1.0,?3)",
-                    [id, room, &json!({"worker":delivery}).to_string()],
+        connection.execute(
+            "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('old-message','lead','user','saved','delivered',1.0,0)",
+            [],
+        ).expect("migrated event");
+        QueueWriteRepository::put_metadata(
+            &connection,
+            "old-message",
+            &json!({"assets":[],"delivery":DeliveryMoment::CurrentTurn,"sendNow":true}),
+        )
+        .expect("lossy timing");
+        let before = count(&connection, "runtime_events");
+        let tx = connection.transaction().expect("transaction");
+        let result = post_message_with_admission(
+            &tx,
+            PostManagedMessage {
+                room: "lead",
+                id: "old-message",
+                text: "saved",
+                delivery: DeliveryMoment::NextTurn,
+                assets: &[],
+            },
+            &AllowAdmission,
+        );
+        assert!(matches!(
+            result,
+            Err(CoordinationError::RequestResult(
+                studio_runtime_store::request_results::RequestResultError::Identity(
+                    studio_runtime_schema::persistence::RequestIdentityError::Expired { .. }
                 )
-                .expect("Python message inserts");
-            let transaction = connection
-                .unchecked_transaction()
-                .expect("transaction starts");
-            let receipt = post_message(
-                &transaction,
-                PostMessage {
-                    room,
-                    id,
-                    text: "saved",
-                },
-            )
-            .expect("replay returns saved receipt");
-            assert_eq!(receipt["status"], status);
-            assert_eq!(
-                receipt.get("error").and_then(serde_json::Value::as_str),
-                error
-            );
-            assert_eq!(receipt["deliveries"]["worker"], delivery);
-        }
+            ))
+        ));
+        drop(tx);
+        assert_eq!(count(&connection, "runtime_events"), before);
+        assert_eq!(count(&connection, "request_results"), 0);
     }
 
     #[test]
