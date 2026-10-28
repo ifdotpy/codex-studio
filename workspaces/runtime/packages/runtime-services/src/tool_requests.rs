@@ -8,6 +8,7 @@ pub use callback_storage::{CallbackTask, delete_callback, get_callback, put_call
 use lifecycle::terminal;
 use rusqlite::{Transaction, params};
 use serde_json::{Value, json};
+use studio_runtime_schema::persistence::{ExecutionEffectKind, ExecutionEffectStatus};
 use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
 use studio_runtime_store::{StoreError, system_reads as records};
 use thiserror::Error;
@@ -509,7 +510,7 @@ fn save(
     if let Some((root, decision)) = decision.as_ref() {
         root.publish(&decision.writes)?;
     }
-    reconcile_effect(tx, "tool_requests", persisted, actor)?;
+    reconcile_effect(tx, ExecutionEffectKind::ToolRequests, persisted, actor)?;
     tx.execute(
         "UPDATE runtime_tool_requests SET record=?1 WHERE id=?2",
         params![persisted.to_string(), id],
@@ -523,14 +524,14 @@ fn save(
 }
 pub(crate) fn reconcile_effect(
     tx: &Transaction<'_>,
-    kind: &str,
+    kind: ExecutionEffectKind,
     record: &Value,
     actor: &Value,
 ) -> Result<(), StoreError> {
     if !records::exists(tx, "runtime_execution_effects")? {
         return Ok(());
     }
-    let key = format!("{kind}:{}", text(record, "id"));
+    let key = format!("{}:{}", kind.as_str(), text(record, "id"));
     let old = records::get(tx, "runtime_execution_effects", &key)?;
     let mut run = old
         .as_ref()
@@ -579,7 +580,9 @@ pub(crate) fn reconcile_effect(
         return Ok(());
     };
     let run_id = old.as_ref().map(|v| &v["runId"]).unwrap_or(&run["id"]);
-    let value = json!({"id":key,"runId":run_id,"kind":kind,"referenceId":record["id"],"attemptId":old.as_ref().map(|v|&v["attemptId"]).unwrap_or(&run["latestAttemptId"]),"requestId":record.get("request_id").filter(|v|truthy(Some(v))).or_else(||record.get("callId")).or_else(||record.get("requestId")),"status":record.get("stage").unwrap_or(&record["status"]),"outcome":record["outcome"],"resultReference":if truthy(record.get("finished")){record["id"].clone()}else{Value::Null}});
+    let status: ExecutionEffectStatus =
+        serde_json::from_value(record.get("stage").unwrap_or(&record["status"]).clone())?;
+    let value = json!({"id":key,"runId":run_id,"kind":kind,"referenceId":record["id"],"attemptId":old.as_ref().map(|v|&v["attemptId"]).unwrap_or(&run["latestAttemptId"]),"requestId":record.get("request_id").filter(|v|truthy(Some(v))).or_else(||record.get("callId")).or_else(||record.get("requestId")),"status":status,"outcome":record["outcome"],"resultReference":if truthy(record.get("finished")){record["id"].clone()}else{Value::Null}});
     records::validate("runtime_execution_effects", &key, value.clone())?;
     if old.as_ref() != Some(&value) {
         tx.execute("INSERT INTO runtime_execution_effects(id,run,kind,reference,record) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![key,run_id.as_str(),kind,record["id"].as_str(),value.to_string()])?;

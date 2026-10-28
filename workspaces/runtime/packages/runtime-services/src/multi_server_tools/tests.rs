@@ -288,7 +288,7 @@ fn context(actor: &Value) -> CallbackContext {
 
 fn frame(context: &CallbackContext, tool: &str, name: &str, call_id: &str, args: &Value) -> Frame {
     Frame::Request(RequestFrame {
-        id: RequestId::String(format!("rpc-{name}")),
+        id: RequestId::String(format!("rpc-{name}-{call_id}")),
         method: Method::ItemToolCall,
         params: Some(json!({
             "threadId": context.thread,
@@ -471,7 +471,7 @@ fn cases() -> Vec<Case> {
             name: "git",
             actor: "lead",
             tool: "orchestration_servers",
-            args: json!({"action": "git", "server": "peer-server", "cwd": "/peer/repo", "argv": ["status", "--porcelain=v1"], "request_id": "git-read-1"}),
+            args: json!({"action": "git", "server": "peer-server", "cwd": "/peer/repo", "argv": ["status", "--porcelain=v1"], "request_id": studio_runtime_schema::persistence::RequestIdentity::issue_root()}),
             success: true,
             sent: &["git"],
             expect: json!({"outcome": "applied", "value": {"exitCode": 0, "output": " M a.txt\n", "truncated": false}}),
@@ -501,7 +501,7 @@ fn cases() -> Vec<Case> {
             args: json!({"action": "receipt", "server": "peer-server", "request_id": "no-such-request"}),
             success: false,
             sent: &[],
-            expect: json!("Unknown remote request receipt"),
+            expect: json!("The request ID expired"),
         },
         Case {
             name: "exec",
@@ -911,7 +911,7 @@ async fn a_lost_reply_is_unknown_and_an_exact_retry_does_not_send_again_in_fligh
     let tools: Arc<dyn MultiServerToolPort> =
         Arc::new(ServerTools::new(Arc::clone(&store), driver, false));
     let lead = &seed["lead"];
-    let args = json!({"action": "exec", "server": PEER, "cwd": "/peer/repo", "command": ["true"], "request_id":"lost-operation"});
+    let args = json!({"action": "exec", "server": PEER, "cwd": "/peer/repo", "command": ["true"], "request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
     let first = call_tool(
         &store,
         lead,
@@ -936,7 +936,12 @@ async fn a_lost_reply_is_unknown_and_an_exact_retry_does_not_send_again_in_fligh
     assert_eq!(*transport.0.lock().unwrap(), 1);
     // The command row is now in receipt form: a new call with the same
     // request identity can only probe for the receipt.
-    let outbox = parsed(&first)["requestId"].as_str().unwrap().to_owned();
+    let outbox = remote_operation_key(
+        "server-outbox",
+        &[PEER],
+        parsed(&first)["requestId"].as_str().unwrap(),
+        &["exec"],
+    );
     let body: String = store
         .test_read_transaction(|tx| {
             Ok(tx.query_row(
@@ -1161,17 +1166,27 @@ async fn fetch_copies_a_remote_worker_branch_through_a_verified_bundle_once() {
         ["export", "chunk", "release"],
         "one export, one chunk, one release"
     );
-    // The peer keeps no chunk data in its receipt and released the bundle.
+    // The exact chunk reply survives release in the result cache, with no inbox row.
     let chunk_result: String = peer
         .test_read_transaction(|tx| {
             Ok(tx.query_row(
-                "SELECT result FROM runtime_server_inbox WHERE json_extract(result,'$.value.offset')=0 AND json_extract(result,'$.value.sha256') IS NOT NULL",
+                "SELECT result FROM request_results WHERE json_extract(result,'$.reply.response.value.offset')=0 AND json_extract(result,'$.reply.response.value.sha256') IS NOT NULL",
                 [],
                 |row| row.get(0),
             )?)
         })
         .unwrap();
-    assert!(!chunk_result.contains("\"data\""), "{chunk_result}");
+    assert!(chunk_result.contains("\"data\""), "{chunk_result}");
+    assert_eq!(
+        peer.test_reader()
+            .unwrap()
+            .query_row("SELECT count(*) FROM runtime_server_inbox", [], |row| row
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+        0
+    );
     let exports = std::fs::read_dir(peer_directory.path().join(server_git::EXPORT_FOLDER))
         .unwrap()
         .count();
@@ -1390,7 +1405,15 @@ async fn speak_plays_once_in_the_ready_voice_session() {
     .await;
     assert_eq!(first["success"], true, "{first}");
     let value = parsed(&first);
-    assert_eq!(value["record"]["id"], "speak:thread-0:call-speak");
+    let speech_id = value["record"]["id"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("speak:")
+        .unwrap();
+    assert_eq!(
+        uuid::Uuid::parse_str(speech_id).unwrap().get_version_num(),
+        7
+    );
     assert_eq!(value["record"]["text"], "Build finished");
     assert_eq!(value["session"], "voice-session");
     assert_eq!(value["state"], "submitted");
@@ -1743,7 +1766,8 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
     );
     let folder = tempfile::tempdir().unwrap();
     // Python `_exec_tool` on the paired server sends this envelope.
-    let envelope = json!({"requestId": "peer-exec-1", "action": "exec", "payload": {
+    let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let envelope = json!({"requestId": root, "operation":[], "action": "exec", "payload": {
         "actor": "peer-lead", "cwd": folder.path(), "command": ["sh", "-c", "printf remote"],
         "env": {}, "timeout": 5, "output_limit": 262144}});
     let now = crate::event_write::unix_time().unwrap() as i64;
@@ -1760,8 +1784,8 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
     let foreign = driver
         .receive(
             PEER,
-            &json!({"requestId": "peer-read-1", "action": "exec_read",
-                "payload": {"actor": "another-lead", "handle": "peer-exec-1"}}),
+            &json!({"requestId": studio_runtime_schema::persistence::RequestIdentity::issue_root(), "operation":[], "action": "exec_read",
+                "payload": {"actor": "another-lead", "handle": root}}),
             now,
         )
         .await
@@ -1780,15 +1804,15 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
         })
         .unwrap();
     let notice: Value = serde_json::from_str(&notice).unwrap();
-    assert_eq!(notice["requestId"], "b75e85fe-064e-5373-9c79-ff2454f3c4e1");
+    assert_eq!(notice["requestId"], root);
     assert_eq!(notice["payload"]["actor"], "peer-lead");
-    assert_eq!(notice["payload"]["handle"], "peer-exec-1");
+    assert_eq!(notice["payload"]["handle"], root);
     assert_eq!(notice["payload"]["record"]["exitCode"], 0);
     // Python reports a command that cannot start with `os.strerror`.
     let missing = driver
         .receive(
             PEER,
-            &json!({"requestId": "peer-exec-2", "action": "exec", "payload": {
+            &json!({"requestId": studio_runtime_schema::persistence::RequestIdentity::issue_root(), "operation":[], "action": "exec", "payload": {
                 "actor": "peer-lead", "cwd": folder.path(), "command": ["/nonexistent/command"],
                 "timeout": 5}}),
             now,

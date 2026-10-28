@@ -3963,7 +3963,7 @@ mod tests {
     /// hidden in the shared project list.
     #[cfg(unix)]
     #[tokio::test]
-    async fn paired_server_pulls_the_installed_app_and_chunk_receipts_keep_no_data() {
+    async fn paired_server_pulls_the_installed_app_and_replays_exact_chunk_receipts() {
         use super::{OrchestrationDriver, RuntimeOrchestrationEffects};
         use base64::Engine;
         use serde_json::json;
@@ -3996,7 +3996,7 @@ mod tests {
             Arc::new(HttpsPairedTransport::new(Arc::clone(&store))),
             Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&store)).with_update_offer(offer)),
         );
-        let request = |key: &str, action: &str, payload: serde_json::Value| json!({"requestId": key, "action": action, "payload": payload});
+        let request = |_: &str, action: &str, payload: serde_json::Value| json!({"requestId": studio_runtime_schema::persistence::RequestIdentity::issue_root(), "operation":[], "action": action, "payload": payload});
 
         let offered = driver
             .receive(
@@ -4054,21 +4054,43 @@ mod tests {
             let data = base64::engine::general_purpose::STANDARD
                 .decode(value["data"].as_str().expect("chunk data"))
                 .expect("base64 chunk");
-            assert_eq!(data, b"app archive", "a replay reads the chunk again");
+            assert_eq!(
+                data, b"app archive",
+                "a replay returns the exact saved chunk"
+            );
         }
         let saved: String = store
             .test_reader()
             .expect("test reader")
             .query_row(
-                "SELECT result FROM runtime_server_inbox WHERE id='chunk-1'",
-                [],
+                "SELECT result FROM request_results WHERE id=?1",
+                [super::remote_operation_key(
+                    "server-inbox",
+                    &["peer-a"],
+                    chunk["requestId"].as_str().unwrap(),
+                    &["update.chunk"],
+                )],
                 |row| row.get(0),
             )
             .expect("stored chunk receipt");
         let saved: serde_json::Value = serde_json::from_str(&saved).expect("receipt JSON");
-        assert_eq!(saved["outcome"], "applied");
-        assert!(saved["value"].get("data").is_none());
-        assert_eq!(saved["value"]["nextOffset"], json!(b"app archive".len()));
+        assert_eq!(saved["reply"]["response"]["outcome"], "applied");
+        assert!(saved["reply"]["response"]["value"]["data"].is_string());
+        assert_eq!(
+            saved["reply"]["response"]["value"]["nextOffset"],
+            json!(b"app archive".len())
+        );
+        assert_eq!(
+            store
+                .test_reader()
+                .unwrap()
+                .query_row("SELECT count(*) FROM runtime_server_inbox", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            0
+        );
         assert!(
             driver
                 .receive(

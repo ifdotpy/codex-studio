@@ -598,6 +598,7 @@ fn monitor_error(error: crate::monitor_policy::MonitorError) -> Error {
     use crate::monitor_policy::MonitorError as E;
     match error {
         E::Store(error) => Error::Store(error),
+        E::Expired => Error::Expired,
         E::Unavailable(name) => Error::Unavailable(name),
         E::InvalidStored { id, location } => Error::InvalidStored {
             table: "runtime_monitors",
@@ -624,6 +625,7 @@ fn management_error(error: crate::agent_management::ManagementError) -> Error {
     use crate::agent_management::ManagementError as E;
     match error {
         E::Store(error) => Error::Store(error),
+        E::Expired => Error::Expired,
         E::Unavailable(name) => Error::Unavailable(name),
         E::Invalid(_) | E::Stored { .. } => Error::Invalid("Agent stop was refused"),
     }

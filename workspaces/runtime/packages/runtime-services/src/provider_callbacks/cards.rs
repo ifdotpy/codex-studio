@@ -244,7 +244,12 @@ pub(super) fn save(tx: &Transaction<'_>, card: &Value) -> Result<(), CallbackErr
         .transpose()?
         .flatten();
     if let Some(actor) = actor {
-        crate::tool_requests::reconcile_effect(tx, "requests", card, &actor)?;
+        crate::tool_requests::reconcile_effect(
+            tx,
+            studio_runtime_schema::persistence::ExecutionEffectKind::Requests,
+            card,
+            &actor,
+        )?;
     }
     let deleted = status(card)? != RequestCardStatus::Pending;
     let value = if deleted {
