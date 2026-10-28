@@ -1178,6 +1178,24 @@ async fn retained_retry_lost_response_replays_unknown_without_another_send() {
 
 #[tokio::test]
 async fn retained_uncheckpointed_not_sent_is_unknown_and_not_retried() {
+    mismatched_not_sent_is_held("$.payload.outcome.cursor", json!(1)).await;
+}
+
+#[tokio::test]
+async fn retained_not_sent_with_wrong_stream_is_unknown_and_not_retried() {
+    mismatched_not_sent_is_held(
+        "$.payload.outcome.committed_ack.stream_id",
+        json!("other-stream"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn retained_not_sent_with_wrong_generation_is_unknown_and_not_retried() {
+    mismatched_not_sent_is_held("$.payload.outcome.committed_ack.generation", json!(2)).await;
+}
+
+async fn mismatched_not_sent_is_held(path: &'static str, value: Value) {
     let state = State::new().await;
     retained_schema(&state).await;
     let mut peer = Peer::new();
@@ -1191,21 +1209,50 @@ async fn retained_uncheckpointed_not_sent_is_unknown_and_not_retried() {
     assert!(first_wire.receipt.send(CommandReceipt::NotSent).is_ok());
     assert_eq!(first.await.unwrap().unwrap().result, RequestResult::NotSent);
 
-    state.bridge.run(|store| async move {
+    let expected = value.clone();
+    state.bridge.run(move |store| async move {
         store.transaction(move |tx| {
             tx.execute(
-                "UPDATE runtime_outbox SET payload=json_set(payload,'$.payload.outcome.cursor',1),status='unknown' WHERE kind='provider_call' AND json_extract(payload,'$.family')='retained' AND json_extract(payload,'$.payload.outcome.result')='NotSent'",
-                [],
+                "UPDATE runtime_outbox SET payload=json_set(payload,?1,json(?2)),status='unknown' WHERE kind='provider_call' AND json_extract(payload,'$.family')='retained' AND json_extract(payload,'$.payload.outcome.result')='NotSent'",
+                (path, value.to_string()),
             )?;
             Ok(())
         }).await?;
         Ok(())
     }).await.unwrap();
     assert_eq!(
-        port.request(call).await.unwrap().result,
+        tokio::time::timeout(FIRST_PASS_TEST_DEADLINE, port.request(call))
+            .await
+            .expect("no retry")
+            .unwrap()
+            .result,
         RequestResult::Unknown
     );
     assert!(peer.writes.try_recv().is_err());
+    state
+        .bridge
+        .store
+        .transaction_with(move |tx| {
+            let key = studio_runtime_schema::provider_call_contract::transport_key("default", "uncheckpointed-not-sent");
+            assert!(crate::account_worker::retained::storage::record_outcome(
+                tx, &key, None, Some(RequestResult::Reply(json!({"accepted":true}))), 99,
+            )?.is_none());
+            crate::account_worker::retained::storage::checkpoint_covered(
+                tx,
+                "default",
+                1,
+                u64::MAX,
+            )?;
+            let (status, actual): (String, String) = tx.query_row(
+                "SELECT status,json_quote(json_extract(payload,?1)) FROM runtime_outbox WHERE kind='provider_call' AND json_extract(payload,'$.family')='retained' AND json_extract(payload,'$.payload.outcome.result')='NotSent'",
+                [path], |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(status, "unknown");
+            assert_eq!(serde_json::from_str::<Value>(&actual).unwrap(), expected);
+            Ok::<_, WorkerError>(())
+        })
+        .await
+        .unwrap();
     worker.shutdown().await.unwrap();
 }
 

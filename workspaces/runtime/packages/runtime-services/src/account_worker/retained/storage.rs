@@ -694,7 +694,7 @@ pub(super) fn replay_recorded(
         if !same_replay_identity(&prior.call, call) {
             return Ok(Err(PortError::Identity));
         }
-        let replay = replay_pending(prior);
+        let replay = replay_pending(prior, row.stream_id.as_deref());
         if call.admitted_request.is_none()
             && matches!(replay, Replay::Ready | Replay::Retry(_))
             && let Err(error) = validate_root(tx, call)?
@@ -723,11 +723,11 @@ pub(super) fn replay_recorded(
     Ok(Ok(replay_final(&saved.reply)))
 }
 
-fn replay_pending(prior: &RetainedCall) -> Replay {
+fn replay_pending(prior: &RetainedCall, stream: Option<&str>) -> Replay {
     let Some(request) = &prior.request else {
         return Replay::Ready;
     };
-    if proven_not_sent(prior) {
+    if proven_not_sent(prior, stream) {
         return Replay::Retry(request.recovered().ticket);
     }
     let mut receipt = prior
@@ -810,7 +810,7 @@ pub(super) fn discard_unsent(
         let payload = retained(&row)?;
         if row.signature != admitted.signature()
             || row.status != OutboxStatus::Pending
-            || (payload.request.is_some() && !proven_not_sent(payload))
+            || (payload.request.is_some() && !proven_not_sent(payload, row.stream_id.as_deref()))
         {
             return Err(WorkerError::PreparationRefused(
                 "retained-session/unknown".into(),
@@ -870,7 +870,7 @@ pub async fn submitted(
         if let Some(original) = &prior.request {
             if retry_ticket.as_ref() != Some(&original.recovered().ticket)
                 || request.recovered().ticket != original.recovered().ticket
-                || !proven_not_sent(&prior)
+                || !proven_not_sent(&prior, row.stream_id.as_deref())
             {
                 return Ok(Err(PortError::Unknown));
             }
@@ -941,12 +941,10 @@ fn settle(
         generation,
         cursor: outcome.cursor,
     };
-    if outcome
-        .committed_ack
-        .as_ref()
-        .is_some_and(|committed| committed != &proof)
-    {
-        return Err(WorkerError::Capacity);
+    if outcome.committed_ack.is_some() && !proof_matches(outcome, Some(stream), generation) {
+        row.status = OutboxStatus::Unknown;
+        row.next_at = None;
+        return put(tx, row);
     }
     let desired = if outcome.result == RequestResult::NotSent {
         OutboxStatus::Pending
@@ -1047,12 +1045,15 @@ fn settle(
     Ok(())
 }
 
-fn proven_not_sent(payload: &RetainedCall) -> bool {
+fn proof_matches(outcome: &RetainedOutcome, stream: Option<&str>, generation: u64) -> bool {
+    outcome.committed_ack.as_ref().is_some_and(|ack| {
+        stream.is_some_and(|stream| ack.matches(stream, generation, outcome.cursor))
+    })
+}
+fn proven_not_sent(payload: &RetainedCall, stream: Option<&str>) -> bool {
     payload.outcome.as_ref().is_some_and(|outcome| {
         outcome.result == RequestResult::NotSent
-            && outcome.committed_ack.as_ref().is_some_and(|ack| {
-                ack.cursor == outcome.cursor && ack.generation == payload.call.scope.generation
-            })
+            && proof_matches(outcome, stream, payload.call.scope.generation)
     })
 }
 
@@ -1067,6 +1068,19 @@ pub fn record_outcome(
         return Ok(None);
     };
     let mut payload = retained(&row)?.clone();
+    if payload.outcome.as_ref().is_some_and(|outcome| {
+        outcome.committed_ack.is_some()
+            && !proof_matches(
+                outcome,
+                row.stream_id.as_deref(),
+                payload.call.scope.generation,
+            )
+    }) {
+        row.status = OutboxStatus::Unknown;
+        row.next_at = None;
+        put(tx, &row)?;
+        return Ok(None);
+    }
     if let Some(written) = written {
         payload.request = Some(TransportRequest::from(&written));
         payload.written = true;
@@ -1092,7 +1106,7 @@ pub fn record_outcome(
         .outcome
         .as_ref()
         .map(|outcome| (outcome.result.clone(), outcome.cursor));
-    row.status = if proven_not_sent(&payload) {
+    row.status = if proven_not_sent(&payload, row.stream_id.as_deref()) {
         OutboxStatus::Pending
     } else {
         OutboxStatus::Unknown
@@ -1136,7 +1150,7 @@ pub(in crate::account_worker) async fn recover(
                 if payload.call.scope.generation != generation {
                     continue;
                 }
-                if proven_not_sent(&payload) {
+                if proven_not_sent(&payload, row.stream_id.as_deref()) {
                     continue;
                 }
                 let Some(prepared) = payload.request.as_ref() else {
@@ -1175,6 +1189,7 @@ pub(in crate::account_worker) async fn recover(
 }
 
 /// Read-only inspection for owners whose authorization outlives their provider wait.
+#[cfg(test)]
 pub(in crate::account_worker) fn recorded_call(
     tx: &rusqlite::Connection,
     key: &str,
@@ -1183,31 +1198,31 @@ pub(in crate::account_worker) fn recorded_call(
 }
 
 pub(super) enum RecordedCall {
-    Pending(RetainedCall),
+    Pending(RetainedCall, Option<String>),
     Final(RetainedReply),
 }
 impl RecordedCall {
     pub(super) fn call(&self) -> &Call {
         match self {
-            Self::Pending(value) => &value.call,
+            Self::Pending(value, _) => &value.call,
             Self::Final(value) => &value.call,
         }
     }
     pub(super) fn request(&self) -> Option<&TransportRequest> {
         match self {
-            Self::Pending(value) => value.request.as_ref(),
+            Self::Pending(value, _) => value.request.as_ref(),
             Self::Final(value) => Some(&value.request),
         }
     }
     pub(super) fn written(&self) -> bool {
         match self {
-            Self::Pending(value) => value.written,
+            Self::Pending(value, _) => value.written,
             Self::Final(value) => value.written,
         }
     }
     pub(super) fn replay(&self) -> Replay {
         match self {
-            Self::Pending(value) => replay_pending(value),
+            Self::Pending(value, stream) => replay_pending(value, stream.as_deref()),
             Self::Final(value) => replay_final(value),
         }
     }
@@ -1217,8 +1232,11 @@ pub(super) fn recorded_operation(
     key: &str,
     result_id: Option<&str>,
 ) -> Result<Option<RecordedCall>, WorkerError> {
-    if let Some(value) = recorded_call(tx, key)? {
-        return Ok(Some(RecordedCall::Pending(value)));
+    if let Some(row) = row(tx, key)? {
+        return Ok(Some(RecordedCall::Pending(
+            retained(&row)?.clone(),
+            row.stream_id,
+        )));
     }
     let Some(id) = result_id else { return Ok(None) };
     Ok(saved_reply(tx, id)?.map(|saved| RecordedCall::Final(saved.reply)))

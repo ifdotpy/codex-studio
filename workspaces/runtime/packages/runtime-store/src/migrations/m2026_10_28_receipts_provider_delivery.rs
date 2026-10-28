@@ -309,18 +309,16 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
         let journal = journal
             .map(|raw| serde_json::from_str::<Value>(&raw).map_err(|_| fail(row)))
             .transpose()?;
-        if let Some(proof) = &outcome.committed_ack
-            && (proof.stream_id != stream
-                || proof.generation != generation
-                || proof.cursor != outcome.cursor)
-        {
-            return Err(fail(row));
+        match &outcome.committed_ack {
+            Some(proof) => proof.matches(&stream, generation, outcome.cursor),
+            None => {
+                outcome.cursor <= ack
+                    || journal.is_some_and(|value| {
+                        value["committed"] == true
+                            && value["cursor"].as_u64() == Some(outcome.cursor)
+                    })
+            }
         }
-        outcome.committed_ack.is_some()
-            || outcome.cursor <= ack
-            || journal.is_some_and(|value| {
-                value["committed"] == true && value["cursor"].as_u64() == Some(outcome.cursor)
-            })
     } else {
         false
     };
@@ -655,6 +653,32 @@ mod tests {
                 .expect("no fabricated result"),
             0
         );
+    }
+    #[test]
+    fn receipt_provider_delivery_mismatched_ack_stays_unknown() {
+        for proof in [
+            json!({"stream_id":"other","generation":7,"cursor":12}),
+            json!({"stream_id":"default","generation":8,"cursor":12}),
+            json!({"stream_id":"default","generation":7,"cursor":11}),
+        ] {
+            let mut db = database();
+            let tx = db.transaction().expect("transaction");
+            let key = fixture(&tx, "mismatched-ack", json!("NotSent"));
+            tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.committed_ack',json(?2)) WHERE id=?1", (format!("account-worker:{key}:result"), proof.to_string())).expect("mismatched proof");
+            tx.execute("INSERT INTO runtime_operation_receipts VALUES('account-worker:cursor:default:7:ack','ack','19')", []).expect("later checkpoint");
+            let cp =
+                MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).expect("checkpoint");
+            Family
+                .move_batch(&tx, SOURCES[0], &cp)
+                .expect("preserve held result");
+            let row = Outbox::get::<Value>(&tx, &key)
+                .expect("lookup")
+                .expect("held");
+            assert_eq!(row.status, OutboxStatus::Unknown);
+            assert_eq!(row.next_at, None);
+            assert_eq!(row.payload["payload"]["outcome"]["cursor"], 12);
+            assert_eq!(row.payload["payload"]["outcome"]["committed_ack"], proof);
+        }
     }
     #[test]
     fn receipt_provider_delivery_not_sent_keeps_original_cursor_and_exact_proof() {

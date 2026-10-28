@@ -84,6 +84,12 @@ pub struct CommittedAck {
     pub cursor: u64,
 }
 
+impl CommittedAck {
+    pub fn matches(&self, stream: &str, generation: u64, cursor: u64) -> bool {
+        self.stream_id == stream && self.generation == generation && self.cursor == cursor
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RetainedReply<M, A, S = ConnectionScope> {
     pub call: ProviderCallIntent<M, A, S>,
