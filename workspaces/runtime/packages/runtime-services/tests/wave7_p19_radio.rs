@@ -46,6 +46,12 @@ struct RadioCorpus {
     /// Holds the project folder that the `create` case makes.
     _projects: tempfile::TempDir,
 }
+#[derive(serde::Deserialize)]
+struct LegacyReceipt {
+    id: String,
+    signature: String,
+    result: String,
+}
 fn corpus() -> RadioCorpus {
     let bytes =
         crate::media_auth_fixtures::state_bytes(include_str!("wave7_p19/initial-state.json"));
@@ -177,12 +183,15 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
             for (table, rows) in snapshot.as_object().expect("snapshot") {
                 if table == "operation_receipts" {
                     db.execute("DELETE FROM request_results", [])?;
-                    for row in rows.as_array().expect("receipts") {
-                        let reply: Value = serde_json::from_str(row["result"].as_str().expect("result"))
-                            .expect("saved reply");
+                    let receipts: Vec<LegacyReceipt> = serde_json::from_value(rows.clone()).expect("receipts");
+                    for row in receipts {
+                        let reply: Box<serde_json::value::RawValue> = serde_json::from_str(&row.result).expect("saved reply");
+                        let envelope = studio_runtime_store::request_results::ResultEnvelope {
+                            actor: None, reply, references: Vec::new(),
+                        };
                         db.execute(
                             "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)",
-                            rusqlite::params![row["id"].as_str(), row["signature"].as_str(), json!({"actor":null,"reply":reply,"references":[]}).to_string(), chrono::Utc::now().timestamp_millis()],
+                            rusqlite::params![row.id, row.signature, serde_json::to_string(&envelope).expect("envelope"), chrono::Utc::now().timestamp_millis()],
                         )?;
                     }
                     continue;
