@@ -729,7 +729,8 @@ mod tests {
     fn current_execution_pointer_follows_account_and_epoch_but_preserves_source_thread() {
         let mut db = rusqlite::Connection::open_in_memory().expect("database");
         db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);
-            CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,record TEXT);").expect("owners");
+            CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,record TEXT);
+            CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT,record TEXT);").expect("owners");
         let run = json!({"id":"run","agent":"agent","accountKey":"default","epoch":1,"status":"completed","created":1.0,"threadId":"source","turnId":"turn","firstAttemptId":null,"rootAttemptId":null,"latestAttemptId":null});
         db.execute(
             "INSERT INTO runtime_execution_runs VALUES('run','agent','default',1,?1)",
