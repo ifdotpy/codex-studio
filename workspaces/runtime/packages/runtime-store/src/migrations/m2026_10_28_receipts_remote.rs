@@ -1,6 +1,5 @@
 //! Retain typed transport queues and move only completed replay bodies.
-use rusqlite::{Transaction, params};
-use serde::Serialize;
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_schema::persistence::{
     AccessOutboundState, FederationAckState, FederationDeliveryState, FederationMessageKind,
@@ -8,13 +7,16 @@ use studio_runtime_schema::persistence::{
     ServerFetchState, ServerOperationKind, enum_check,
 };
 
+use crate::multi_server_delivery::{
+    AccessPending, HttpAccessReply, SavedRemoteReply, federation_envelope_signature,
+};
 use crate::outbox::OutboxRow;
 use crate::receipt_migration_contract::{
     MigrationCheckpoint, ReceiptFamilyMigration, ReceiptMigrationError, ReceiptProjection, Result,
     SourceReceipt, admitted_owner_token, delete_source, import_outbox, import_result,
-    read_source_batch, unclassifiable, validate_completed_discard,
+    read_source_batch, source_exists as exists, unclassifiable, validate_completed_discard,
 };
-use crate::request_results::{AdmittedRequest, ResultEnvelope};
+use crate::request_results::ResultEnvelope;
 
 pub(super) const ID: &str = "2026-10-28-receipts-remote";
 pub(super) const SOURCES: &[&str] = &[
@@ -27,15 +29,8 @@ pub(super) const SOURCES: &[&str] = &[
     "runtime_federation_outbox",
 ];
 pub(super) struct Family;
-
-#[derive(Serialize)]
-struct AccessPending {
-    client: String,
-    request_id: String,
-    session: String,
-    record: Value,
-    admission: AdmittedRequest,
-}
+/// Protocol version in the supported pre-cutover envelope format. Immutable source contract.
+const SOURCE_FEDERATION_PROTOCOL_VERSION: u64 = 1;
 
 impl ReceiptFamilyMigration for Family {
     fn id(&self) -> &'static str {
@@ -70,11 +65,7 @@ impl ReceiptFamilyMigration for Family {
             return Ok(checkpoint.clone());
         }
         let projection = projection(source)?;
-        let rows = if exists(tx, source)? {
-            read_source_batch(tx, source, checkpoint, &projection, "1")?
-        } else {
-            Vec::new()
-        };
+        let rows = read_source_batch(tx, source, checkpoint, &projection, "1")?;
         let mut next = checkpoint.clone();
         next.status = if rows.is_empty() {
             MigrationStatus::Complete
@@ -189,13 +180,6 @@ impl ReceiptFamilyMigration for Family {
     }
 }
 
-fn exists(tx: &Transaction<'_>, table: &str) -> Result<bool> {
-    Ok(tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=?1 AND type='table')",
-        [table],
-        |r| r.get(0),
-    )?)
-}
 fn column(tx: &Transaction<'_>, table: &str, name: &str) -> Result<bool> {
     Ok(tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_xinfo(?1) WHERE name=?2)",
@@ -241,7 +225,7 @@ fn projection(source: &str) -> Result<ReceiptProjection<'static>> {
         "runtime_server_outbox" => ReceiptProjection {
             id: "source.id",
             signature: "coalesce(source.fingerprint,'')",
-            result: "json_object('state',source.state,'result',source.result,'body',source.body)",
+            result: "json_object('state',source.state,'result',source.result,'body',source.body,'server',source.server)",
         },
         "runtime_server_fetch" => ReceiptProjection {
             id: "source.id",
@@ -255,7 +239,7 @@ fn projection(source: &str) -> Result<ReceiptProjection<'static>> {
         },
         "runtime_federation_outbox" => ReceiptProjection {
             id: "json_array('federation-outbox',json_array(source.peer_id),source.id,json_array())",
-            signature: "source.id",
+            signature: "CASE WHEN json_valid(source.record) THEN coalesce(json_extract(source.record,'$.hash'),'') ELSE '' END",
             result: "source.record",
         },
         _ => {
@@ -345,12 +329,19 @@ fn access_inbound(
     }
     match wrapper["status"].as_str() {
         Some("complete") => {
+            let _: HttpAccessReply = decode(source, row, record.clone())?;
             if !record["status"]
                 .as_u64()
                 .is_some_and(|n| (100..=599).contains(&n))
                 || !record["headers"].is_array()
                 || !record["body"].is_string()
                 || !record["completed"].is_number()
+            {
+                return Err(invalid());
+            }
+            if data_encoding::BASE64
+                .decode(record["body"].as_str().ok_or_else(invalid)?.as_bytes())
+                .is_err()
             {
                 return Err(invalid());
             }
@@ -388,7 +379,10 @@ fn access_inbound(
                         client: client.into(),
                         request_id: request.into(),
                         session: session.into(),
-                        record,
+                        record: serde_json::value::RawValue::from_string(
+                            wrapper["record"].as_str().ok_or_else(invalid)?.to_owned(),
+                        )
+                        .map_err(|_| invalid())?,
                         admission: admitted_owner_token(&row.id, &row.signature, cutover),
                     },
                     created: cutover,
@@ -459,7 +453,10 @@ fn server(
             .as_str()
             .and_then(|s| serde_json::from_str(s).ok())
             .ok_or_else(|| unclassifiable(source, &row.id, &row.signature))?;
-        let _: RemoteOutcome = decode(source, row, response["outcome"].clone())?;
+        let outcome: RemoteOutcome = decode(source, row, response["outcome"].clone())?;
+        if outcome == RemoteOutcome::Unknown {
+            return Err(unclassifiable(source, &row.id, &row.signature));
+        }
         if response["requestId"] != row.id {
             return Err(unclassifiable(source, &row.id, &row.signature));
         }
@@ -469,14 +466,9 @@ fn server(
                 .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
                 .and_then(|body| body["actor"].as_str().map(str::to_owned))
         });
-        save(
-            tx,
-            source,
-            row,
-            json!({"principal":wrapper.get("principal"),"actor":actor,"body":wrapper.get("body"),"response":response}),
-            actor,
-            cutover,
-        )?;
+        let reply = json!({"principal":wrapper.get("principal"),"server":wrapper.get("server"),"actor":actor,"body":wrapper.get("body"),"response":response});
+        let _: SavedRemoteReply = decode(source, row, reply.clone())?;
+        save(tx, source, row, reply, actor, cutover)?;
         delete_source(tx, source, row.rowid)?;
     } else {
         if source == "runtime_server_outbox" {
@@ -495,6 +487,21 @@ fn server(
                 return Err(unclassifiable(source, &row.id, &row.signature));
             }
             let _: ServerOperationKind = decode(source, row, body["action"].clone())?;
+            if matches!(
+                body["action"].as_str(),
+                Some("add_location" | "remove_location")
+            ) {
+                let checked = &body["payload"]["_projectAdmission"];
+                if checked["project"] != body["payload"]["project"]
+                    || !checked["project"].is_string()
+                    || !checked["seq"].is_i64()
+                    || !checked["workspace"].is_string()
+                    || !checked["actor"].is_null() && !checked["actor"].is_string()
+                    || !checked["epoch"].is_null() && !checked["epoch"].is_i64()
+                {
+                    return Err(unclassifiable(source, &row.id, &row.signature));
+                }
+            }
             tx.execute(
                 "UPDATE runtime_server_outbox SET body=?1 WHERE rowid=?2",
                 params![body.to_string(), row.rowid],
@@ -563,6 +570,9 @@ fn federation(
             .and_then(|r| r.remove("receipt"))
             .ok_or_else(|| unclassifiable(source, &row.id, &row.signature))?;
         save(tx, source, row, reply, None, cutover)?;
+        let key: Value = serde_json::from_str(&row.id)
+            .map_err(|_| unclassifiable(source, &row.id, &row.signature))?;
+        record["requestId"] = key[2].clone();
         record["admission"] = json!(admitted_owner_token(&row.id, &row.signature, cutover));
         tx.execute(
             "UPDATE runtime_federation_inbox SET record=?1 WHERE rowid=?2",
@@ -571,9 +581,35 @@ fn federation(
     } else {
         let _: FederationMessageKind = decode(source, row, record["kind"].clone())?;
         let state: FederationDeliveryState = decode(source, row, record["status"].clone())?;
+        let mut identity = row.clone();
+        if state == FederationDeliveryState::Queued
+            || record.get("receipt").is_some_and(Value::is_object)
+        {
+            if !exists(tx, "runtime_federation_identity")? {
+                return Err(unclassifiable(source, &row.id, &row.signature));
+            }
+            let sender: Option<String> = tx.query_row(
+                "SELECT CASE WHEN json_valid(record) THEN json_extract(record,'$.stateId') ELSE NULL END FROM runtime_federation_identity WHERE id='local'",
+                [],
+                |r| r.get(0),
+            ).optional()?.flatten();
+            let sender = sender.ok_or_else(|| unclassifiable(source, &row.id, &row.signature))?;
+            let envelope = json!({"protocol":SOURCE_FEDERATION_PROTOCOL_VERSION,"senderServer":sender,"id":record["id"],"kind":record["kind"],"room":record["room"],"payload":record["payload"],"created":record["created"]});
+            let hash = federation_envelope_signature(&envelope)
+                .map_err(|_| unclassifiable(source, &row.id, &row.signature))?;
+            if record.get("hash").is_some_and(|saved| saved != &hash) {
+                return Err(unclassifiable(source, &row.id, &row.signature));
+            }
+            identity.signature = hash;
+        }
         match state {
             FederationDeliveryState::Queued => {
-                record["admission"] = json!(admitted_owner_token(&row.id, &row.signature, cutover));
+                record["requestId"] = record["id"].clone();
+                record["admission"] = json!(admitted_owner_token(
+                    &identity.id,
+                    &identity.signature,
+                    cutover
+                ));
                 tx.execute(
                     "UPDATE runtime_federation_outbox SET record=?1 WHERE rowid=?2",
                     params![record.to_string(), row.rowid],
@@ -581,7 +617,8 @@ fn federation(
             }
             FederationDeliveryState::Delivered => {
                 if let Some(reply) = record.get("receipt").filter(|v| v.is_object()).cloned() {
-                    save(tx, source, row, reply, None, cutover)?;
+                    let reply = json!({"ack":{"id":record["id"],"hash":identity.signature,"requestId":record["id"]},"receipt":reply});
+                    save(tx, source, &identity, reply, None, cutover)?;
                 } else {
                     let root = record["id"]
                         .as_str()
@@ -602,7 +639,7 @@ mod tests {
     use rusqlite::Connection;
     const CUTOVER: i64 = 1_000_000;
     fn fixture(db: &mut Connection) {
-        db.execute_batch("CREATE TABLE runtime_access_receipts(client TEXT,request_id TEXT,hash TEXT,session TEXT,status TEXT,record TEXT,PRIMARY KEY(client,request_id));CREATE TABLE runtime_access_outbound(server TEXT,request_id TEXT,hash TEXT,record TEXT,PRIMARY KEY(server,request_id));CREATE TABLE runtime_server_inbox(id TEXT PRIMARY KEY,signature TEXT,state TEXT,result TEXT,principal TEXT,actor TEXT);CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,fingerprint TEXT,state TEXT,result TEXT,body TEXT);CREATE TABLE runtime_server_fetch(id TEXT PRIMARY KEY,signature TEXT,state TEXT,result TEXT,server TEXT);CREATE TABLE runtime_federation_inbox(peer_id TEXT,message_id TEXT,record TEXT,PRIMARY KEY(peer_id,message_id));CREATE TABLE runtime_federation_outbox(id TEXT PRIMARY KEY,peer_id TEXT,record TEXT);").expect("old format");
+        db.execute_batch("CREATE TABLE runtime_access_receipts(client TEXT,request_id TEXT,hash TEXT,session TEXT,status TEXT,record TEXT,PRIMARY KEY(client,request_id));CREATE TABLE runtime_access_outbound(server TEXT,request_id TEXT,hash TEXT,record TEXT,PRIMARY KEY(server,request_id));CREATE TABLE runtime_server_inbox(id TEXT PRIMARY KEY,signature TEXT,state TEXT,result TEXT,principal TEXT,actor TEXT);CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,fingerprint TEXT,state TEXT,result TEXT,body TEXT,server TEXT DEFAULT 'server');CREATE TABLE runtime_server_fetch(id TEXT PRIMARY KEY,signature TEXT,state TEXT,result TEXT,server TEXT);CREATE TABLE runtime_federation_inbox(peer_id TEXT,message_id TEXT,record TEXT,PRIMARY KEY(peer_id,message_id));CREATE TABLE runtime_federation_outbox(id TEXT PRIMARY KEY,peer_id TEXT,record TEXT);").expect("old format");
         let tx = db.transaction().expect("transaction");
         prepare_schema(&tx).expect("schema");
         Family.prepare(&tx, CUTOVER).expect("prepare");
@@ -787,5 +824,130 @@ mod tests {
         assert!(owner.get("receipt").is_none());
         assert_eq!(owner["ack"], "pending");
         assert_eq!(owner["hash"], "hash");
+    }
+
+    #[test]
+    fn receipts_remote_pending_server_keys_and_original_fingerprint_are_preserved() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        let body=json!({"requestId":"old-pending","action":"event","actor":"agent","payload":{"text":"original"}}).to_string();
+        let expected = crate::sha256_hex(body.as_bytes());
+        db.execute("INSERT INTO runtime_server_outbox(id,state,body,server) VALUES('old-pending','running',?1,'peer')",[&body]).expect("pending outgoing");
+        db.execute("INSERT INTO runtime_server_inbox(id,signature,state,principal,actor) VALUES('old-incoming','incoming-signature','running','principal','agent')",[]).expect("pending incoming");
+        migrate(&mut db);
+        let (id, signature, raw, body): (String, String, String, String) = db
+            .query_row(
+                "SELECT id,fingerprint,admission,body FROM runtime_server_outbox",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("pending owner");
+        assert_eq!(id, "old-pending");
+        assert_eq!(signature, expected);
+        let token: crate::request_results::AdmittedRequest =
+            serde_json::from_str(&raw).expect("admitted");
+        assert_eq!(token.id(), id);
+        assert_eq!(token.signature(), signature);
+        let body: Value = serde_json::from_str(&body).expect("body");
+        assert_eq!(body["operation"], json!([]));
+        assert_eq!(body["payload"]["text"], "original");
+        assert_eq!(
+            db.query_row("SELECT id FROM runtime_server_inbox", [], |r| r
+                .get::<_, String>(0))
+                .expect("incoming"),
+            "old-incoming"
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                .get::<_, i64>(0))
+                .expect("no final result"),
+            0
+        );
+        migrate(&mut db);
+    }
+
+    #[test]
+    fn receipts_remote_completed_without_reply_counts_each_family_once() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        insert(&db, "client", "expired", "tombstone");
+        db.execute("INSERT INTO runtime_access_outbound VALUES('server','redacted','hash','{\"outcome\":\"redacted\",\"completed\":1.0}')",[]).expect("redacted reply");
+        let delivered = json!({"id":"2f4bf964-ef79-5f3e-936c-f839d664e5f2","kind":"chat-message","status":"delivered"});
+        db.execute(
+            "INSERT INTO runtime_federation_outbox VALUES(?1,'peer',?2)",
+            params![delivered["id"].as_str(), delivered.to_string()],
+        )
+        .expect("delivered");
+        migrate(&mut db);
+        migrate(&mut db);
+        let tx = db.transaction().expect("transaction");
+        for family in ["access-inbound", "access-outbound", "federation-outbox"] {
+            assert_eq!(
+                MigrationCheckpoint::load(&tx, ID, &format!("deleted-completed-c:{family}"))
+                    .expect("report")
+                    .expect("family count")
+                    .cursor,
+                1
+            );
+        }
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM request_results", [], |r| r
+                .get::<_, i64>(0))
+                .expect("no synthetic marker replay"),
+            0
+        );
+    }
+
+    #[test]
+    fn receipts_remote_pending_location_without_checked_admission_is_not_authorized() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        let body =
+            json!({"requestId":"location","action":"add_location","payload":{"project":"project"}})
+                .to_string();
+        db.execute(
+            "INSERT INTO runtime_server_outbox(id,state,body) VALUES('location','running',?1)",
+            [body],
+        )
+        .expect("old pending");
+        let tx = db.transaction().expect("transaction");
+        let checkpoint = MigrationCheckpoint::begin(&tx, ID, "runtime_server_outbox", CUTOVER)
+            .expect("checkpoint");
+        assert!(
+            matches!(Family.move_batch(&tx,"runtime_server_outbox",&checkpoint),Err(ReceiptMigrationError::Unclassifiable{table,key,..}) if table=="runtime_server_outbox" && key=="location")
+        );
+        tx.rollback().expect("preserve uncertain pending source");
+    }
+
+    #[test]
+    fn receipts_remote_queued_federation_uses_original_content_signature_and_domain_id() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute_batch("CREATE TABLE runtime_federation_identity(id TEXT PRIMARY KEY,record TEXT);INSERT INTO runtime_federation_identity VALUES('local','{\"stateId\":\"sender\"}');").expect("public federation identity");
+        let id = "2f4bf964-ef79-5f3e-936c-f839d664e5f2";
+        let old = json!({"id":id,"kind":"chat-message","room":"room","payload":{"text":"original"},"created":1.0,"status":"queued","attempts":0,"nextAt":0.0,"error":null});
+        db.execute(
+            "INSERT INTO runtime_federation_outbox VALUES(?1,'peer',?2)",
+            params![id, old.to_string()],
+        )
+        .expect("queued source");
+        migrate(&mut db);
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_federation_outbox", [], |r| {
+                r.get(0)
+            })
+            .expect("typed queued owner");
+        let owner: Value = serde_json::from_str(&raw).expect("record");
+        let token: crate::request_results::AdmittedRequest =
+            serde_json::from_value(owner["admission"].clone()).expect("token");
+        let expected=federation_envelope_signature(&json!({"protocol":SOURCE_FEDERATION_PROTOCOL_VERSION,"senderServer":"sender","id":id,"kind":"chat-message","room":"room","payload":{"text":"original"},"created":1.0})).expect("shared content signature");
+        assert_eq!(token.signature(), expected);
+        assert_eq!(owner["requestId"], id);
+        assert_eq!(owner["id"], id);
+        assert_eq!(owner["status"], "queued");
+        assert!(
+            studio_runtime_schema::validate("PersistedFederationOutbox", &owner).expect("schema")
+        );
+        migrate(&mut db);
     }
 }
