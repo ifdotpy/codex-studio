@@ -395,24 +395,17 @@ pub(crate) async fn execute(
     let signature = crate::event_write::request_signature(
         &json!({"actor":actor["id"],"epoch":actor["epoch"],"args":args}),
     );
-    let receipt_id = format!(
-        "manual-management:{}:{}:{request_id}",
-        actor["id"].as_str().ok_or(Error::Stale)?,
-        actor["epoch"]
-    );
-    let id = receipt_id.clone();
     let root_request_id = request_id.to_owned();
     let sig = signature.clone();
     let initial = store.transaction_with(move |tx| {
         let resolved = crate::provider_callbacks::tools::services::manage::resolved_args(tx, &actor, &args).map_err(|_| Error::Invalid("Unknown managed agent"))?;
         let target = resolved["agent_id"].as_str().ok_or(Error::Invalid("Supply agent_id"))?;
         let (lead, mut worker) = authorize(tx, &actor, target)?;
-        if let Some(saved) = read_pending(tx, &id, &sig)? { return Ok((None,saved)); }
         let epoch=lead["epoch"].to_string();
         let authority = [lead["id"].as_str().ok_or(Error::Stale)?, &epoch];
         if let Ok(identity) = RequestIdentity::new("manual-management", &authority, &root_request_id, &[])
             && let Some(saved) = read_pending(tx, identity.id(), &sig)? { return Ok((None, saved)); }
-        let admission=match crate::event_write::begin_request::<ManualReply>(tx,crate::event_write::RequestKey::new("manual-management",&authority,&root_request_id).raw(&id),&sig,now_ms()).map_err(studio_runtime_store::StoreError::from)? {
+        let admission=match crate::event_write::begin_request::<ManualReply>(tx,crate::event_write::RequestKey::new("manual-management",&authority,&root_request_id),&sig,now_ms()).map_err(studio_runtime_store::StoreError::from)? {
             crate::event_write::CallerAdmission::Fresh(token)=>token,
             crate::event_write::CallerAdmission::Replay(reply)=>return Ok((None,reply.into_receipt()?)),
         };
@@ -1330,6 +1323,43 @@ mod tests {
             })
             .await
             .expect("worker read")
+    }
+
+    #[tokio::test]
+    async fn manual_recovery_replays_exact_public_key_before_identity_validation() {
+        let (_directory, store, actor, session) = fixture().await;
+        let args = json!({"action":"recover","agent_id":"worker-00000000"});
+        let signature = crate::event_write::request_signature(&json!({
+            "actor":"lead-00000000","epoch":1,"args":args
+        }));
+        let saved = ResultEnvelope {
+            actor: Some("lead-00000000".to_owned()),
+            reply: ManualReply {
+                outcome: ToolRequestOutcome::Applied,
+                value: json!({"status":"checked"}),
+            },
+            references: vec![],
+        };
+        let v7 = RequestIdentity::issue_root();
+        let saved_v7 = v7.clone();
+        store.transaction(move |tx| {
+            for id in ["legacy-public-id", saved_v7.as_str()] {
+                tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)",
+                    rusqlite::params![id,signature,serde_json::to_string(&saved)?,now_ms()])?;
+            }
+            tx.execute("INSERT INTO runtime_orchestration_settings(id,record) VALUES('global',json_object('expired_before_ms',?1)) ON CONFLICT(id) DO UPDATE SET record=json_set(record,'$.expired_before_ms',?1)", [now_ms() + 1])?;
+            Ok(())
+        }).await.expect("migrated exact reply");
+        let session = Arc::new(session);
+        for id in ["legacy-public-id", v7.as_str()] {
+            let reply =
+                super::execute(Arc::clone(&store), session.clone(), &actor, &args, id, 10.0)
+                    .await
+                    .expect("exact reply replays before identity validation");
+            assert_eq!(reply.result().value["status"], "checked");
+        }
+        assert!(session.calls.lock().expect("calls").is_empty());
+        assert!(session.recoveries.lock().expect("recoveries").is_empty());
     }
 
     #[tokio::test]
