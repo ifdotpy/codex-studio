@@ -41,28 +41,16 @@ pub struct SubmissionResult {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Intent<I, R> {
-    Pending {
-        #[serde(flatten)]
-        owner: Owner<I>,
-    },
-    NotSent {
-        #[serde(flatten)]
-        owner: Owner<I>,
-    },
-    Unknown {
-        #[serde(flatten)]
-        owner: Owner<I>,
-    },
+    Pending(Owner<I>),
+    NotSent(Owner<I>),
+    Unknown(Owner<I>),
     Completed {
         #[serde(flatten)]
         owner: Owner<I>,
         #[serde(flatten)]
         result: R,
     },
-    UnknownUnattributed {
-        #[serde(flatten)]
-        public: PublicRequest,
-    },
+    UnknownUnattributed(PublicRequest),
 }
 
 #[derive(Default, Serialize, Deserialize)]

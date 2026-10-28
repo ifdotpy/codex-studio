@@ -1034,25 +1034,21 @@ use studio_runtime_store::vm_work_intent::{
 fn read_vm_view(connection: &Connection, task_id: &str) -> Result<VmView, WorkWriteError> {
     let work = WorkItemsRepository::work_record(connection, task_id)?
         .ok_or(Error::InvalidRequest("Unknown work item"))?;
-    serde_json::from_value(work.value().clone())
-        .map_err(studio_runtime_store::StoreError::from)
-        .map_err(Into::into)
+    Ok(serde_json::from_value(work.value().clone())
+        .map_err(studio_runtime_store::StoreError::from)?)
 }
 fn write_vm_view(tx: &Transaction<'_>, task_id: &str, view: &VmView) -> Result<(), WorkWriteError> {
     let mut work = WorkItemsRepository::work_record(tx, task_id)?
-        .ok_or(Error::InvalidRequest("Unknown work item"))?
-        .into_value();
+        .ok_or(Error::InvalidRequest("Unknown work item"))?;
     let fields = serde_json::to_value(view).map_err(studio_runtime_store::StoreError::from)?;
-    work.as_object_mut()
+    for (field, value) in fields
+        .as_object()
         .ok_or_else(|| invalid("runtime_work", task_id))?
-        .extend(
-            fields
-                .as_object()
-                .ok_or_else(|| invalid("runtime_work", task_id))?
-                .clone(),
-        );
-    WorkItemsRepository::update_work(tx, task_id, &work)?;
-    Ok(())
+    {
+        work.set(field, value.clone())
+            .map_err(studio_runtime_store::StoreError::from)?;
+    }
+    WorkItemsRepository::update_work(tx, task_id, work.value()).map_err(Into::into)
 }
 
 pub enum VmSubmissionPreparation {
@@ -1111,8 +1107,6 @@ pub async fn prepare_vm_submission(
         }
         text(&input.checks, false)?;
         let revision = python_bounded_text(&input.revision, 200)?;
-        let owner_id = work.owner().unwrap_or(&agent.id.0);
-        let owner = event_write::checked_agent(tx, owner_id)?;
         validate_submission_files(&owner, &input.files, input.prepared_files.as_ref())?;
         if owner.extra.get("executionMode").and_then(Value::as_str) != Some("vm") && owner.extra.get("workspaceMode").and_then(Value::as_str) != Some("layr-native") {
             return Ok(VmSubmissionPreparation::NotVm);
@@ -1120,11 +1114,11 @@ pub async fn prepare_vm_submission(
         let rpc_id = format!("layr-evidence:{owner_id}:{revision}");
         let mut view = read_vm_view(tx, &input.task_id)?;
         match &view.vm_submit {
-            Some(VmWorkIntent::Pending { .. } | VmWorkIntent::Unknown { .. } | VmWorkIntent::UnknownUnattributed { .. }) => return Err(Error::Conflict("A prior layr evidence request has an unknown outcome; inspect it before retrying").into()),
+            Some(VmWorkIntent::Pending(..) | VmWorkIntent::Unknown(..) | VmWorkIntent::UnknownUnattributed(..)) => return Err(Error::Conflict("A prior layr evidence request has an unknown outcome; inspect it before retrying").into()),
             Some(VmWorkIntent::Completed { owner, result }) if owner.request_id==rpc_id && owner.owner==owner_id && Some(owner.id.version)==work.value()["version"].as_i64() && owner.revision==revision => return Ok(VmSubmissionPreparation::Evidence{evidence:serde_json::to_value(&result.evidence).map_err(studio_runtime_store::StoreError::from)?,request_id:rpc_id.clone()}),
-            Some(VmWorkIntent::Completed { .. } | VmWorkIntent::NotSent { .. }) | None => {}
+            Some(VmWorkIntent::Completed { .. } | VmWorkIntent::NotSent(..)) | None => {}
         }
-        view.vm_submit = Some(VmWorkIntent::Pending { owner: VmOwner {request_id:rpc_id.clone(),owner:owner_id.into(),revision:revision.clone(),id:Submission { version:work.value()["version"].as_i64().ok_or_else(|| invalid("runtime_work", &input.task_id))? },public:None} });
+        view.vm_submit = Some(VmWorkIntent::Pending(VmOwner {request_id:rpc_id.clone(),owner:owner_id.into(),revision:revision.clone(),id:Submission { version:work.value()["version"].as_i64().ok_or_else(|| invalid("runtime_work", &input.task_id))? },public:None}));
         if let Some(root) = request_id.as_deref() {
             let token = if let Some(saved) = pending_work_request(tx,&agent,root,&signature)? {
                 if saved.task != input.task_id { return Err(Error::Conflict("This request id has different content").into()); }
@@ -1195,18 +1189,18 @@ async fn finish_vm_intent<I: Clone + Send + 'static, R: Clone + PartialEq + Send
                     }
                     return Ok(Some(result));
                 }
-                VmWorkIntent::Pending { owner }
-                | VmWorkIntent::Unknown { owner }
-                | VmWorkIntent::NotSent { owner }
+                VmWorkIntent::Pending(owner)
+                | VmWorkIntent::Unknown(owner)
+                | VmWorkIntent::NotSent(owner)
                     if owner.request_id == request_id =>
                 {
                     owner
                 }
-                VmWorkIntent::Pending { .. }
-                | VmWorkIntent::Unknown { .. }
-                | VmWorkIntent::NotSent { .. }
+                VmWorkIntent::Pending(..)
+                | VmWorkIntent::Unknown(..)
+                | VmWorkIntent::NotSent(..)
                 | VmWorkIntent::Completed { .. }
-                | VmWorkIntent::UnknownUnattributed { .. } => {
+                | VmWorkIntent::UnknownUnattributed(..) => {
                     return Err(Error::Conflict("The layr intent changed").into());
                 }
             };
@@ -1218,8 +1212,8 @@ async fn finish_vm_intent<I: Clone + Send + 'static, R: Clone + PartialEq + Send
                     },
                     Some(result),
                 ),
-                Err(true) => (VmWorkIntent::Unknown { owner }, None),
-                Err(false) => (VmWorkIntent::NotSent { owner }, None),
+                Err(true) => (VmWorkIntent::Unknown(owner), None),
+                Err(false) => (VmWorkIntent::NotSent(owner), None),
             };
             *select(&mut view) = Some(intent);
             write_vm_view(tx, &task_id, &view)?;
@@ -1364,9 +1358,9 @@ pub async fn prepare_vm_accept(
             let mut view = read_vm_view(tx, &task_id)?;
             match &view.vm_accept {
                 Some(
-                    VmWorkIntent::Pending { .. }
-                    | VmWorkIntent::Unknown { .. }
-                    | VmWorkIntent::UnknownUnattributed { .. },
+                    VmWorkIntent::Pending(..)
+                    | VmWorkIntent::Unknown(..)
+                    | VmWorkIntent::UnknownUnattributed(..),
                 ) => {
                     return Err(Error::Conflict(
                         "The prior layr merge outcome is unknown; inspect it before retrying",
@@ -1376,7 +1370,7 @@ pub async fn prepare_vm_accept(
                 Some(VmWorkIntent::Completed { owner, .. }) if owner.request_id == rpc_id => {
                     return Ok(VmAcceptPreparation::Merged(result_id.to_owned()));
                 }
-                Some(VmWorkIntent::Completed { .. } | VmWorkIntent::NotSent { .. }) | None => {}
+                Some(VmWorkIntent::Completed { .. } | VmWorkIntent::NotSent(..)) | None => {}
             }
             let mut owner = VmOwner {
                 request_id: rpc_id.clone(),
@@ -1415,7 +1409,7 @@ pub async fn prepare_vm_accept(
                 });
                 reserve_work_request(tx, &lead, root, &task_id, &token, false)?;
             }
-            view.vm_accept = Some(VmWorkIntent::Pending { owner });
+            view.vm_accept = Some(VmWorkIntent::Pending(owner));
             write_vm_view(tx, &task_id, &view)?;
             Ok(VmAcceptPreparation::Call(VmMergeCall {
                 lead_id: lead.id.0,
@@ -2972,8 +2966,7 @@ fn submit(
         let revision = python_bounded_text(&input.revision, 200)?;
         let evidence = serde_json::to_value(&result.evidence)
             .map_err(studio_runtime_store::StoreError::from)?;
-        if input.vm_evidence.is_none()
-            || owner.request_id != request_id
+        if owner.request_id != request_id
             || owner.owner != submitter_id
             || Some(owner.id.version) != work.value()["version"].as_i64()
             || owner.revision != revision

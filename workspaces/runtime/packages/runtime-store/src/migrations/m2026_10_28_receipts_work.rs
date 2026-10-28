@@ -344,9 +344,9 @@ fn vm_target<I, R>(
 ) -> Option<crate::vm_work_intent::Intent<I, R>> {
     use crate::vm_work_intent::Intent;
     match (status, result) {
-        (WorkEffectStatus::Pending, None) => Some(Intent::Pending { owner }),
-        (WorkEffectStatus::Unknown, None) => Some(Intent::Unknown { owner }),
-        (WorkEffectStatus::NotSent, None) => Some(Intent::NotSent { owner }),
+        (WorkEffectStatus::Pending, None) => Some(Intent::Pending(owner)),
+        (WorkEffectStatus::Unknown, None) => Some(Intent::Unknown(owner)),
+        (WorkEffectStatus::NotSent, None) => Some(Intent::NotSent(owner)),
         (WorkEffectStatus::Completed, Some(result)) => Some(Intent::Completed { owner, result }),
         (WorkEffectStatus::Completed, None)
         | (
@@ -640,9 +640,7 @@ fn move_effect(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
             work["vmAccept"] = serde_json::to_value(crate::vm_work_intent::Intent::<
                 crate::vm_work_intent::Acceptance,
                 (),
-            >::UnknownUnattributed {
-                public,
-            })
+            >::UnknownUnattributed(public))
             .map_err(|_| invalid())?;
         }
         work["vmAccept"]["publicAdmission"] = json!(admitted);
