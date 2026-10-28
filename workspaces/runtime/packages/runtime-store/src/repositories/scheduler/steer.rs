@@ -89,7 +89,7 @@ impl SteerState {
     fn sent(&self) -> Option<&SubmittedSteer> {
         match self {
             Self::Submitted(sent) | Self::Unconfirmed(sent) => Some(sent),
-            _ => None,
+            Self::Reserved | Self::Held => None,
         }
     }
 }
@@ -725,7 +725,7 @@ impl SchedulerRepository {
             admission: receipt.admission.clone(),
             steer_id: id
                 .strip_prefix(&receipt_id(agent_id, ""))
-                .ok_or_else(|| invalid_receipt(&id))?
+                .ok_or_else(|| invalid_receipt(id))?
                 .to_owned(),
             event_ids: receipt.events.clone(),
             prepared_submission: sent.prepared_submission.clone(),
