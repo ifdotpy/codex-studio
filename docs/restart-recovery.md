@@ -104,12 +104,6 @@ packaged supervisor protocol and state-directory identity before creating any
 AppServer. A missing or incompatible supervisor is a startup error; the backend
 does not fall back to in-process children.
 
-Do not switch an existing state directory from direct mode to supervisor mode
-until this known defect is fixed. The first supervisor generation can collide
-with a direct generation and inherit its journal ACK, losing notifications. A
-fresh supervisor journal alone does not prevent this. Switching from supervisor
-mode to direct mode is safe.
-
 The supervisor owns Codex app-server and Claude bridge children, including turns,
 monitors and background tasks carried by those app-servers, plus the terminal
 app-server and its user PTYs. The backend reconnects using stable handles and

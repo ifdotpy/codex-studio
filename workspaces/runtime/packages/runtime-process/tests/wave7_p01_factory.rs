@@ -15,6 +15,18 @@ use tokio::{
     net::{UnixListener, UnixStream},
 };
 
+async fn fixture_account_store(root: &std::path::Path, seed: i64) -> std::sync::Arc<studio_runtime_store::RuntimeStore> {
+    let path = root.join("account-state");
+    std::fs::create_dir(&path).unwrap();
+    let store = std::sync::Arc::new(studio_runtime_store::RuntimeStore::open(Some(&path)).await.unwrap());
+    store.transaction(move |tx| {
+        studio_runtime_store::account_state::ensure_account(tx, "fixture")?;
+        tx.execute("UPDATE runtime_account_state SET next_generation=?1 WHERE account='fixture'", [seed])?;
+        Ok(())
+    }).await.unwrap();
+    store
+}
+
 async fn request(stream: &mut BufReader<UnixStream>) -> Value {
     let mut line = String::new();
     stream.read_line(&mut line).await.unwrap();
@@ -40,14 +52,38 @@ fn options() -> OpenOptions {
     }
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
+async fn new_account_without_store_refuses_before_open() {
+    let root = tempfile::tempdir().unwrap();
+    let listener = UnixListener::bind(root.path().join("supervisor.sock")).unwrap();
+    let factory = SupervisorProviderTaskFactory::new(BackendIdentity {
+        backend_id: BackendId("fixture".into()), state_dir: root.path().into(),
+    });
+    let task = tokio::spawn(async move {
+        factory.prepare(ProviderHandle::for_account("fixture"), options(), Shutdown::default()).await
+    });
+    let (socket, _) = listener.accept().await.unwrap();
+    let mut stream = BufReader::new(socket);
+    request(&mut stream).await;
+    respond(&mut stream, json!({"protocol":3,"ok":true})).await;
+    let status = request(&mut stream).await;
+    respond(&mut stream, json!({"requestId":status["requestId"],"error":"Unknown supervisor handle"})).await;
+    let mut remainder = String::new();
+    use tokio::io::AsyncReadExt;
+    stream.read_to_string(&mut remainder).await.unwrap();
+    assert!(remainder.is_empty(), "no open is sent without the account store");
+    stream.get_mut().shutdown().await.unwrap();
+    assert!(matches!(task.await.unwrap(), Err(AdapterError::InvalidConfiguration)));
+}
+
+#[tokio::test]
 async fn two_phase_open_gates_replay_until_worker_installs_mapping() {
     let root = tempfile::tempdir().unwrap();
     let listener = UnixListener::bind(root.path().join("supervisor.sock")).unwrap();
     let factory = SupervisorProviderTaskFactory::new(BackendIdentity {
         backend_id: BackendId("fixture".into()),
         state_dir: root.path().into(),
-    });
+    }).with_account_store(fixture_account_store(root.path(), 16).await);
     let handle = ProviderHandle::for_account("fixture");
     let prepare = tokio::spawn(async move {
         factory
@@ -58,10 +94,10 @@ async fn two_phase_open_gates_replay_until_worker_installs_mapping() {
     let (socket, _) = listener.accept().await.unwrap();
     let mut stream = BufReader::new(socket);
     let hello = request(&mut stream).await;
-    assert_eq!(hello["protocol"], 2);
+    assert_eq!(hello["protocol"], 3);
     assert_eq!(hello["stateDir"], root.path().to_string_lossy().as_ref());
     assert_eq!(hello["backendId"], "fixture");
-    respond(&mut stream, json!({"protocol":2,"ok":true})).await;
+    respond(&mut stream, json!({"protocol":3,"ok":true})).await;
     let status = request(&mut stream).await;
     respond(
         &mut stream,
@@ -117,13 +153,13 @@ async fn two_phase_open_gates_replay_until_worker_installs_mapping() {
     let (event_socket, _) = listener.accept().await.unwrap();
     let mut event_stream = BufReader::new(event_socket);
     let event_hello = request(&mut event_stream).await;
-    assert_eq!(event_hello["protocol"], 2);
+    assert_eq!(event_hello["protocol"], 3);
     assert_eq!(
         event_hello["stateDir"],
         root.path().to_string_lossy().as_ref()
     );
     assert_eq!(event_hello["backendId"], "fixture");
-    respond(&mut event_stream, json!({"protocol":2,"ok":true})).await;
+    respond(&mut event_stream, json!({"protocol":3,"ok":true})).await;
     let next = request(&mut event_stream).await;
     assert_eq!(next["action"], "nextBatch");
     assert_eq!(next["cursor"], 0);
@@ -148,7 +184,7 @@ async fn cancelled_prepare_never_returns_a_usable_generation() {
     let factory = SupervisorProviderTaskFactory::new(BackendIdentity {
         backend_id: BackendId("fixture".into()),
         state_dir: root.path().into(),
-    });
+    }).with_account_store(fixture_account_store(root.path(), 0).await);
     let stop = Shutdown::default();
     stop.cancel();
     assert!(
@@ -167,7 +203,7 @@ async fn rejected_prepare(confirm_detach: bool) -> AdapterError {
     let factory = SupervisorProviderTaskFactory::new(BackendIdentity {
         backend_id: BackendId("rejected-prepare".into()),
         state_dir: root.path().into(),
-    });
+    }).with_account_store(fixture_account_store(root.path(), 0).await);
     let prepare = tokio::spawn(async move {
         factory
             .prepare(
@@ -182,7 +218,7 @@ async fn rejected_prepare(confirm_detach: bool) -> AdapterError {
     request(&mut stream).await;
     respond(
         &mut stream,
-        json!({"ok":false,"protocol":2,"error":"fixture handshake rejected"}),
+        json!({"ok":false,"protocol":3,"error":"fixture handshake rejected"}),
     )
     .await;
     assert_eq!(stream.read(&mut [0]).await.unwrap(), 0);
@@ -248,7 +284,15 @@ async fn shutdown_detaches_and_another_backend_reattaches_at_same_generation() {
     )
     .await
     .unwrap();
-    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let account_state = state.0.join("account-state");
+    std::fs::create_dir(&account_state).unwrap();
+    let store = std::sync::Arc::new(studio_runtime_store::RuntimeStore::open(Some(&account_state)).await.unwrap());
+    let direct = store.transaction(|tx| {
+        let generation = studio_runtime_store::account_state::allocate_next_generation(tx, "retained")?;
+        studio_runtime_store::account_state::set_provider_checkpoint(tx, "retained", generation, 100)?;
+        Ok(generation)
+    }).await.unwrap();
+    let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(store.clone());
     let handle = ProviderHandle::for_account("retained");
     let launch = || OpenOptions {
         clock: SessionClock::default(),
@@ -264,6 +308,10 @@ async fn shutdown_detaches_and_another_backend_reattaches_at_same_generation() {
         .await
         .unwrap();
     let generation = prepared.generation();
+    assert!(generation.0 > direct);
+    let before_reattach = store.read_async("test/generation", |db| {
+        Ok::<_, studio_runtime_store::StoreError>(db.query_row("SELECT next_generation FROM runtime_account_state WHERE account='retained'", [], |row| row.get::<_, i64>(0))?)
+    }).await.unwrap();
     let mut opts = launch();
     opts.expected_generation = Some(generation);
     let mut attachment = prepared
@@ -282,12 +330,16 @@ async fn shutdown_detaches_and_another_backend_reattaches_at_same_generation() {
     );
     let mut identity = state.identity();
     identity.backend_id.0.push_str("-restarted");
-    let restarted_factory = SupervisorProviderTaskFactory::new(identity);
+    let restarted_factory = SupervisorProviderTaskFactory::new(identity).with_account_store(store.clone());
     let prepared = restarted_factory
         .prepare(handle.clone(), launch(), Shutdown::default())
         .await
         .unwrap();
     assert_eq!(prepared.generation(), generation);
+    let after_reattach = store.read_async("test/generation", |db| {
+        Ok::<_, studio_runtime_store::StoreError>(db.query_row("SELECT next_generation FROM runtime_account_state WHERE account='retained'", [], |row| row.get::<_, i64>(0))?)
+    }).await.unwrap();
+    assert_eq!(after_reattach, before_reattach, "reattach does not allocate a generation");
     let mut opts = launch();
     opts.expected_generation = Some(generation);
     let mut attachment = prepared
@@ -336,7 +388,7 @@ async fn running_child_started_with_a_previous_command_reattaches() {
     .await
     .unwrap();
     let state = std::sync::Arc::new(state);
-    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(support::account_store(&state).await);
     let handle = ProviderHandle::for_account("retained");
     // A non-platform executable that waits on stdin: macOS hides the launch
     // environment of platform binaries such as /bin/sh, so their reattach is
@@ -504,7 +556,7 @@ async fn running_child_started_before_a_launch_variable_existed_reattaches() {
     .await
     .unwrap();
     let state = std::sync::Arc::new(state);
-    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(support::account_store(&state).await);
     let handle = ProviderHandle::for_account("retained");
     let node = std::process::Command::new("which")
         .arg("node")
@@ -612,7 +664,7 @@ async fn running_child_started_with_an_earlier_learned_value_reattaches() {
     .await
     .unwrap();
     let state = std::sync::Arc::new(state);
-    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(support::account_store(&state).await);
     let handle = ProviderHandle::for_account("retained");
     let node = std::process::Command::new("which")
         .arg("node")
@@ -704,7 +756,7 @@ async fn running_child_started_before_its_executables_were_replaced_reattaches()
     .await
     .unwrap();
     let state = std::sync::Arc::new(state);
-    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(support::account_store(&state).await);
     let handle = ProviderHandle::for_account("retained");
     let node = std::process::Command::new("which")
         .arg("node")

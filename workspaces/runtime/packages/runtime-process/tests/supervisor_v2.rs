@@ -529,7 +529,7 @@ printf '{"id":%s,"result":{"echo":"%s"}}\n' "$id" "$text"
     let health = client.health(HealthRequest::default()).unwrap();
     assert_eq!(
         health.protocol,
-        studio_runtime_process::SUPERVISOR_PROTOCOL_V2
+        studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION
     );
     assert_eq!(
         health.durability,
@@ -853,7 +853,7 @@ fn lost_action_response_is_unknown_outcome() {
             .read_line(&mut line)
             .unwrap();
         server_side
-            .write_all(b"{\"ok\":true,\"protocol\":2}\n")
+            .write_all(b"{\"ok\":true,\"protocol\":3}\n")
             .unwrap();
         let mut line = String::new();
         std::io::BufReader::new(&server_side)
@@ -901,7 +901,7 @@ fn handshake_rejection_is_a_typed_protocol_mismatch() {
     assert!(matches!(
         result,
         Err(SupervisorError::ProtocolMismatch {
-            expected: studio_runtime_process::SUPERVISOR_PROTOCOL_V2,
+            expected: studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION,
             ..
         })
     ));
@@ -936,6 +936,6 @@ fn supervisor_rejects_retired_protocol_before_admission() {
             .health(HealthRequest::default())
             .unwrap()
             .protocol,
-        studio_runtime_process::SUPERVISOR_PROTOCOL_V2
+        studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION
     );
 }

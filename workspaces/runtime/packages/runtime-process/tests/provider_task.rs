@@ -145,13 +145,13 @@ impl Peer {
             events.read_line(&mut line).await.unwrap();
             serde_json::from_str(&line).unwrap()
         };
-        assert_eq!(handshake["protocol"], 2);
+        assert_eq!(handshake["protocol"], 3);
         assert_eq!(
             handshake["stateDir"],
             identity.state_dir.to_string_lossy().as_ref()
         );
         assert_eq!(handshake["backendId"], identity.backend_id.0);
-        Self::send_to(&mut events, json!({"ok":true,"protocol":2})).await;
+        Self::send_to(&mut events, json!({"ok":true,"protocol":3})).await;
         self.events = Some(events);
     }
 }
@@ -182,7 +182,7 @@ async fn open_peer(state: &DisposableState) -> (ProviderAttachment, Peer) {
     let listener = UnixListener::bind(state.socket()).unwrap();
     let identity = state.identity();
     let factory: Arc<dyn ProviderTaskFactory> =
-        Arc::new(SupervisorProviderTaskFactory::new(identity.clone()));
+        Arc::new(SupervisorProviderTaskFactory::new(identity.clone()).with_account_store(account_store(state).await));
     let attachment = factory
         .open(
             ProviderHandle::for_account("test"),
@@ -197,13 +197,13 @@ async fn open_peer(state: &DisposableState) -> (ProviderAttachment, Peer) {
         events: None,
     };
     let handshake = peer.read().await.unwrap();
-    assert_eq!(handshake["protocol"], 2);
+    assert_eq!(handshake["protocol"], 3);
     assert_eq!(
         handshake["stateDir"],
         identity.state_dir.to_string_lossy().as_ref()
     );
     assert_eq!(handshake["backendId"], identity.backend_id.0);
-    peer.send(json!({"ok":true,"protocol":2})).await;
+    peer.send(json!({"ok":true,"protocol":3})).await;
     let status = peer.request("status").await;
     peer.error(&status, "Unknown supervisor handle").await;
     let open = peer.request("open").await;
@@ -217,7 +217,7 @@ async fn invalid_launch_refused_before_socket_open() {
     watchdog(async {
         let state = DisposableState::new();
         let listener = UnixListener::bind(state.socket()).unwrap();
-        let factory = SupervisorProviderTaskFactory::new(state.identity());
+        let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
         let mut invalid = options(&state);
         invalid.launch.command = vec!["x".repeat(MAX_SUPERVISOR_FRAME_BYTES)];
         assert!(matches!(
@@ -246,7 +246,7 @@ async fn shutdown_interrupts_handshake_and_closes_socket() {
     watchdog(async {
         let state = DisposableState::new();
         let listener = UnixListener::bind(state.socket()).unwrap();
-        let factory = SupervisorProviderTaskFactory::new(state.identity());
+        let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
         let mut attachment = factory
             .open(
                 ProviderHandle::for_account("test"),
@@ -515,7 +515,7 @@ async fn failed_status_probe_is_not_absence_and_never_opens_child() {
     watchdog(async {
         let state = DisposableState::new();
         let listener = UnixListener::bind(state.socket()).unwrap();
-        let factory = SupervisorProviderTaskFactory::new(state.identity());
+        let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
         let mut attachment = factory
             .open(
                 ProviderHandle::for_account("test"),
@@ -527,7 +527,7 @@ async fn failed_status_probe_is_not_absence_and_never_opens_child() {
         let (socket, _) = listener.accept().await.unwrap();
         let mut peer = Peer::command(socket);
         peer.read().await.unwrap();
-        peer.send(json!({"ok":true,"protocol":2})).await;
+        peer.send(json!({"ok":true,"protocol":3})).await;
         let status = peer.request("status").await;
         peer.error(&status, "status probe failed").await;
         assert!(peer.finish(attachment.completion()).await.result.is_err());
@@ -541,7 +541,7 @@ async fn unverifiable_retained_child_refused_before_open() {
     watchdog(async {
     let state = DisposableState::new();
     let listener = UnixListener::bind(state.socket()).unwrap();
-    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
     let mut attachment = factory
         .open(
             ProviderHandle::for_account("test"),
@@ -553,7 +553,7 @@ async fn unverifiable_retained_child_refused_before_open() {
     let (socket, _) = listener.accept().await.unwrap();
     let mut peer = Peer::command(socket);
     peer.read().await.unwrap();
-    peer.send(json!({"ok":true,"protocol":2})).await;
+    peer.send(json!({"ok":true,"protocol":3})).await;
     let status = peer.request("status").await;
     peer.result(&status, json!({"pid":u32::MAX,"sequence":0,"acknowledged":0,"returnCode":null,"backpressure":false})).await;
     // Socket setup is real; only the retained-record retry deadline is virtual.
@@ -692,7 +692,7 @@ done
         support::child_environment(&state.0),
         state.0.clone(),
     );
-    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
     let handle = ProviderHandle::for_account("recover-init");
     let opts = || OpenOptions {
         clock: SessionClock::default(),
@@ -855,7 +855,7 @@ done
         support::child_environment(&state.0),
         state.0.clone(),
     );
-    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
     let mut attachment = factory
         .open(
             ProviderHandle::for_account("claude-string-ids"),
@@ -1030,7 +1030,7 @@ async fn full_unix_connect_backlog_fails_closed_without_reconnect_or_stranded_ta
     bind(&listener, &SocketAddrUnix::new(state.socket()).unwrap()).unwrap();
     listen(&listener, SATURATED_BACKLOG).unwrap();
     let _occupant = UnixStream::connect(state.socket()).await.unwrap();
-    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
     let mut attachment = factory
         .open(
             ProviderHandle::for_account("test"),
@@ -1056,7 +1056,7 @@ async fn non_linux_reattach_refuses_even_an_exited_child_before_open() {
     watchdog(async {
         let state = DisposableState::new();
         let listener = UnixListener::bind(state.socket()).unwrap();
-        let factory = SupervisorProviderTaskFactory::new(state.identity());
+        let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
         let mut attachment = factory
             .open(
                 ProviderHandle::for_account("test"),
@@ -1068,7 +1068,7 @@ async fn non_linux_reattach_refuses_even_an_exited_child_before_open() {
         let (socket, _) = listener.accept().await.unwrap();
         let mut peer = Peer::command(socket);
         peer.read().await.unwrap();
-        peer.send(json!({"ok":true,"protocol":2})).await;
+        peer.send(json!({"ok":true,"protocol":3})).await;
         let request = peer.request("status").await;
         peer.result(
             &request,
@@ -1089,7 +1089,7 @@ async fn v1_handshake_is_rejected_without_provider_command_fallback() {
     watchdog(async {
         let state = DisposableState::new();
         let listener = UnixListener::bind(state.socket()).unwrap();
-        let factory = SupervisorProviderTaskFactory::new(state.identity());
+        let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
         let mut attachment = factory
             .open(
                 ProviderHandle::for_account("legacy-v1"),
@@ -1102,7 +1102,7 @@ async fn v1_handshake_is_rejected_without_provider_command_fallback() {
         let (socket, _) = listener.accept().await.unwrap();
         let mut peer = Peer::command(socket);
         let handshake = peer.read().await.unwrap();
-        assert_eq!(handshake["protocol"], 2);
+        assert_eq!(handshake["protocol"], 3);
         // A legacy v1 supervisor replies without a protocol echo.
         peer.send(json!({"ok":true})).await;
 
@@ -1110,7 +1110,7 @@ async fn v1_handshake_is_rejected_without_provider_command_fallback() {
             peer.finish(attachment.completion()).await.result,
             Err(AdapterError::Supervisor(
                 SupervisorError::ProtocolMismatch {
-                    expected: SUPERVISOR_PROTOCOL_V2,
+                    expected: SUPERVISOR_PROTOCOL_VERSION,
                     received: None,
                     ..
                 }
@@ -1197,7 +1197,7 @@ done
             support::child_environment(&state.0),
             state.0.clone(),
         );
-        let factory = SupervisorProviderTaskFactory::new(state.identity());
+        let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
         let mut attachment = factory
             .open(
                 ProviderHandle::for_account("write-once"),
@@ -1275,7 +1275,7 @@ done
             support::child_environment(&state.0),
             state.0.clone(),
         );
-        let factory = SupervisorProviderTaskFactory::new(state.identity());
+        let factory = SupervisorProviderTaskFactory::new(state.identity()).with_account_store(account_store(&state).await);
         let handle = ProviderHandle::for_account("generation");
         let opts = || OpenOptions {
             clock: SessionClock::default(),

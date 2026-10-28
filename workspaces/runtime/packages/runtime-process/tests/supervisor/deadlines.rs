@@ -43,6 +43,7 @@ fn blocked_write_on_one_handle_does_not_block_another_handle() {
         supervisor
             .handle(
                 Command::Open {
+                generation: None,
                     handle: handle.to_owned(),
                     command: vec![
                         "/bin/sh".into(),
@@ -317,7 +318,7 @@ fn v2_wait_disconnect_preserves_child_and_shared_backend_owner() {
         writeln!(
             client,
             "{}",
-            json!({"protocol":SUPERVISOR_PROTOCOL_V2,"stateDir":root,"backendId":backend})
+            json!({"protocol":SUPERVISOR_PROTOCOL_VERSION,"stateDir":root,"backendId":backend})
         )
         .unwrap();
         client.flush().unwrap();
@@ -334,6 +335,7 @@ fn v2_wait_disconnect_preserves_child_and_shared_backend_owner() {
     let opened = supervisor
         .handle(
             Command::Open {
+                generation: None,
                 handle: handle.into(),
                 command: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()],
                 env: BTreeMap::new(),
@@ -358,7 +360,7 @@ fn v2_wait_disconnect_preserves_child_and_shared_backend_owner() {
         connected(supervisor.clone(), "backend-a");
     for handshake in [&control_handshake, &waiter_handshake] {
         assert_eq!(handshake["ok"], true);
-        assert_eq!(handshake["protocol"], SUPERVISOR_PROTOCOL_V2);
+        assert_eq!(handshake["protocol"], SUPERVISOR_PROTOCOL_VERSION);
     }
     writeln!(
         waiter,
@@ -434,6 +436,7 @@ async fn v2_batches_do_not_mark_terminal_until_the_exit_sequence_is_returned() {
     let opened = supervisor
         .handle(
             Command::Open {
+                generation: None,
                 handle: handle.into(),
                 command: vec![
                     "/bin/sh".into(),
@@ -517,6 +520,7 @@ fn empty_batch_queried_before_exit_commit_is_not_terminal_after_commit() {
     let opened = supervisor
         .handle(
             Command::Open {
+                generation: None,
                 handle: handle.into(),
                 command: vec![
                     "/bin/sh".into(),

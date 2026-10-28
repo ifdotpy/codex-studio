@@ -318,9 +318,10 @@ impl SupervisorJournal {
             Ok((closed == 1, None))
         })
     }
-    pub fn opened(&self, handle: &str, signature: &str, pid: u32, start: &str) -> Result<u64> {
+    pub fn opened(&self, handle: &str, signature: &str, pid: u32, start: &str, generation: Option<u64>) -> Result<u64> {
         self.transaction(|tx, _buffered| {
-            tx.execute("UPDATE handles SET pid=?,signature=?,rpc_sequence=0,generation=generation+1,init_result=NULL,closed_at=NULL,closed_reason=NULL WHERE id=?",params![pid,signature,handle])?;
+            let generation = generation.map(|value| i64::try_from(value).map_err(|_| Refusal("Invalid generation"))).transpose()?;
+            tx.execute("UPDATE handles SET pid=?,signature=?,rpc_sequence=0,generation=COALESCE(?,generation+1),init_result=NULL,closed_at=NULL,closed_reason=NULL WHERE id=?",params![pid,signature,generation,handle])?;
             tx.execute("INSERT INTO child_identities(handle,pid,pgid,start_time,job_name,job_kill_on_close) VALUES (?,?,?,?,'',0) ON CONFLICT(handle) DO UPDATE SET pid=excluded.pid,pgid=excluded.pgid,start_time=excluded.start_time,job_name='',job_kill_on_close=0",params![handle,pid,pid,start])?;
             tx.execute("DELETE FROM degraded_handles WHERE handle=?",[handle])?;
             Ok((snapshot(tx,handle)?.generation(), None))
@@ -669,7 +670,7 @@ mod tests {
             .reserve("server-command:oversized", "signature", 1.0)
             .expect("reserve handle");
         let generation = journal
-            .opened("server-command:oversized", "signature", 41, "start")
+            .opened("server-command:oversized", "signature", 41, "start", None)
             .expect("open child handle");
         let payload = json!({"text": "x".repeat(1024)});
         assert_eq!(
@@ -710,7 +711,7 @@ mod tests {
             .reserve("server-command:fixture", "signature", 1.0)
             .expect("reserve handle");
         let generation = journal
-            .opened("server-command:fixture", "signature", 41, "start")
+            .opened("server-command:fixture", "signature", 41, "start", None)
             .expect("open child handle");
         assert_eq!(generation, 1);
         assert_eq!(

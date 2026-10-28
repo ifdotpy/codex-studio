@@ -349,7 +349,7 @@ async fn running_rust_supervisor_files_are_accepted_and_its_journal_is_kept() {
         .reserve("server-command:kept", "signature", 1.0)
         .expect("supervisor reserves a handle");
     journal
-        .opened("server-command:kept", "signature", 4242, "start")
+        .opened("server-command:kept", "signature", 4242, "start", None)
         .expect("supervisor records the child");
     fs::write(
         state.join("supervisor.lock"),

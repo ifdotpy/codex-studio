@@ -437,7 +437,7 @@ impl HostRuntime {
             })
             .with_callback_runtime(callback_runtime);
         let launcher = Arc::new(HostLauncher {
-            factory: SupervisorProviderTaskFactory::new(identity),
+            factory: SupervisorProviderTaskFactory::new(identity).with_account_store(store.clone()),
             supervisor_mode: std::env::var("CODEX_AGENTS_SUPERVISOR_MODE")
                 .is_ok_and(|value| value == "1"),
             child_priority: ChildPriority::from_environment(),

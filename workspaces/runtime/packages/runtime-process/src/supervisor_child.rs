@@ -70,6 +70,7 @@ impl OwnedChild {
         studio_runtime_store::debug_assert_outside_sql();
         let SupervisorCommand::Open {
             handle,
+            generation,
             command,
             env,
             cwd,
@@ -105,7 +106,7 @@ impl OwnedChild {
             let start = start_time(pid, true)?.ok_or(Error::Refused(
                 "Cannot prove the native child process identity",
             ))?;
-            let generation = journal.opened(handle, &signature, pid, &start)?;
+            let generation = journal.opened(handle, &signature, pid, &start, *generation)?;
             Ok((start, generation))
         })();
         let (start, generation) = match prepare {
@@ -474,6 +475,7 @@ mod tests {
             root.path(),
             &SupervisorCommand::Open {
                 handle: handle.to_owned(),
+                generation: None,
                 command,
                 env: BTreeMap::new(),
                 cwd: Some(cwd.clone()),

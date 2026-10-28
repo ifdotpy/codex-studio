@@ -356,7 +356,7 @@ class RustSelectionTest(unittest.TestCase):
     def test_supervisor_probe_requires_the_rust_supervisor_protocol(self):
         config = {**self.config, "supervisorEnabled": True}
         received, thread = self.serve_supervisor(
-            {"ok": True, "protocol": recovery.SUPERVISOR_PROTOCOL_V2},
+            {"ok": True, "protocol": recovery.SUPERVISOR_PROTOCOL_VERSION},
             {"requestId": 1, "result": {"recovery": {}}})
         with patch.object(recovery.subprocess, "Popen") as spawn:
             self.assertEqual(recovery.supervisor_tick(config, self.state), (None, "supervisor ready"))
@@ -379,7 +379,7 @@ class RustSelectionTest(unittest.TestCase):
 
     def test_supervisor_reply_errors_and_wrong_request_ids_fail_closed(self):
         for reply in ({"requestId": 2, "result": {}}, {"requestId": 1, "error": "uncertain owner"}):
-            received, thread = self.serve_supervisor({"ok": True, "protocol": 2}, reply)
+            received, thread = self.serve_supervisor({"ok": True, "protocol": 3}, reply)
             with self.assertRaises(RuntimeError):
                 recovery.supervisor_request(self.state, recovery.SupervisorAction.HEALTH)
             thread.join(5)
@@ -387,7 +387,7 @@ class RustSelectionTest(unittest.TestCase):
 
     def test_finish_fallback_uses_the_same_rust_protocol(self):
         received, thread = self.serve_supervisor(
-            {"ok": True, "protocol": recovery.SUPERVISOR_PROTOCOL_V2},
+            {"ok": True, "protocol": recovery.SUPERVISOR_PROTOCOL_VERSION},
             {"requestId": 1, "result": {"finished": True}})
         self.assertEqual(recovery.supervisor_request(self.state, recovery.SupervisorAction.FINISH_FALLBACK),
                          {"finished": True})
@@ -411,7 +411,7 @@ class RustSelectionTest(unittest.TestCase):
 
     def test_supervisor_protocol_matches_its_rust_owner(self):
         owner = (REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-providers/src/supervisor_protocol.rs").read_text()
-        self.assertIn(f"pub const SUPERVISOR_PROTOCOL_V2: u64 = {recovery.SUPERVISOR_PROTOCOL_V2};", owner)
+        self.assertIn(f"pub const SUPERVISOR_PROTOCOL_VERSION: u64 = {recovery.SUPERVISOR_PROTOCOL_VERSION};", owner)
         frame_owner = (REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-process/src/supervisor_contract.rs").read_text()
         self.assertIn(f"pub const MAX_SUPERVISOR_FRAME_BYTES: usize = {recovery.MAX_SUPERVISOR_FRAME_BYTES};", frame_owner)
 

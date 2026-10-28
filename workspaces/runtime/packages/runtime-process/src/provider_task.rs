@@ -4,7 +4,6 @@
 use crate::{provider_seam::*, provider_shared::*, *};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future, path::PathBuf, time::Duration};
 use studio_runtime_providers::{
@@ -29,6 +28,7 @@ pub const SUPERVISOR_DETACH_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct SupervisorProviderTaskFactory {
     identity: BackendIdentity,
     endpoint: PathBuf,
+    account_store: Option<Arc<studio_runtime_store::RuntimeStore>>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     environment_reads: Arc<Semaphore>,
 }
@@ -38,9 +38,15 @@ impl SupervisorProviderTaskFactory {
         Self {
             identity,
             endpoint,
+            account_store: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             environment_reads: Arc::new(Semaphore::new(4)),
         }
+    }
+
+    pub fn with_account_store(mut self, store: Arc<studio_runtime_store::RuntimeStore>) -> Self {
+        self.account_store = Some(store);
+        self
     }
 }
 
@@ -153,6 +159,7 @@ impl SupervisorProviderTaskFactory {
             }
             let open = OpenRequest {
                 handle: SupervisorHandle(handle.as_str().into()),
+                generation: None,
                 command: options.launch.command,
                 env: clean_environment(&options.launch.environment),
                 cwd: options
@@ -183,6 +190,7 @@ impl SupervisorProviderTaskFactory {
                 clock: options.clock,
                 handle,
                 open,
+                account_store: self.account_store.clone(),
                 reattach_commands: options.launch.reattach_commands,
                 retained: options.launch.retained,
                 identity: self.identity.clone(),
@@ -232,6 +240,8 @@ impl ProviderTaskFactory for SupervisorProviderTaskFactory {
 #[derive(Serialize)]
 struct OpenWireRequest<'a> {
     handle: &'a SupervisorHandle,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generation: Option<Generation>,
     command: &'a [String],
     env: &'a BTreeMap<String, String>,
     cwd: Option<&'a str>,
@@ -248,6 +258,7 @@ impl SupervisorRequest for OpenWireRequest<'_> {
 fn open_wire_request(open: &OpenRequest, inherit_cwd: bool) -> OpenWireRequest<'_> {
     OpenWireRequest {
         handle: &open.handle,
+        generation: open.generation,
         command: &open.command,
         env: &open.env,
         cwd: (!inherit_cwd).then_some(open.cwd.as_str()),
@@ -391,6 +402,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
 }
 
 struct AdapterTask {
+    account_store: Option<Arc<studio_runtime_store::RuntimeStore>>,
     inherit_cwd: bool,
     activation: Option<(oneshot::Sender<Generation>, oneshot::Receiver<Activation>)>,
     clock: SessionClock,
@@ -545,6 +557,15 @@ impl AdapterTask {
         } else if self.handled_cursor != 0 || self.expected_generation.is_some() {
             return Err(AdapterError::UnverifiableChild);
         }
+        if let Some(account) = self.handle.as_str().strip_prefix("account:")
+            && prior.as_ref().is_none_or(|status| status.return_code.is_some())
+        {
+            let store = self.account_store.as_ref().ok_or(AdapterError::InvalidConfiguration)?;
+            let account = account.to_owned();
+            let generation = store.transaction(move |tx| studio_runtime_store::account_state::allocate_next_generation(tx, &account))
+                .await.map_err(|_| AdapterError::TaskFailed)?;
+            self.open.generation = Some(Generation(generation));
+        }
         self.open_attempted = true;
         self.publish();
         let open = open_wire_request(&self.open, self.inherit_cwd);
@@ -568,7 +589,8 @@ impl AdapterTask {
             acknowledged: EventCursor(opened.acknowledged),
             resumed: opened.resumed,
         });
-        if opened.resumed && prior.as_ref().is_none_or(|prior| prior.pid != opened.pid)
+        if !opened.resumed && self.open.generation.is_some_and(|generation| generation != opened.generation)
+            || opened.resumed && prior.as_ref().is_none_or(|prior| prior.pid != opened.pid)
             || self
                 .expected_generation
                 .is_some_and(|generation| generation != opened.generation)

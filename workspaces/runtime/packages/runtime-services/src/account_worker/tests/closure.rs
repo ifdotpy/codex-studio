@@ -5,6 +5,31 @@ use studio_runtime_store::path_identity::CanonicalPath;
 const FLUSH_OPERATION_PROGRESS_GUARD: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[tokio::test]
+async fn new_supervisor_generation_after_direct_does_not_reuse_ack() {
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("state");
+    let journal_root = root.path().join("journal");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::create_dir_all(&journal_root).unwrap();
+    let store = studio_runtime_store::RuntimeStore::open(Some(&state)).await.unwrap();
+    let direct = store.transaction(|tx| studio_runtime_store::account_state::allocate_next_generation(tx, "default")).await.unwrap();
+    store::attach_provider_stream(&store, "default", None, direct, "direct").await.unwrap();
+    store.transaction(move |tx| studio_runtime_store::account_state::set_provider_checkpoint(tx, "default", direct, 100)).await.unwrap();
+    let journal = studio_runtime_store::supervisor_journal::SupervisorJournal::open(&journal_root).unwrap();
+    journal.reserve("account:default", "signature", 1.0).unwrap();
+    let allocated = store.transaction(|tx| studio_runtime_store::account_state::allocate_next_generation(tx, "default")).await.unwrap();
+    let supervisor = journal.opened("account:default", "signature", 1, "start", Some(allocated)).unwrap();
+    assert!(supervisor > direct, "new supervisor must use a new host generation");
+    store::attach_provider_stream(&store, "default", None, supervisor, "supervisor").await.unwrap();
+    let ack = store.read_async("test/supervisor-ack", move |db| studio_runtime_store::account_state::provider_checkpoint(db, "default", supervisor)).await.unwrap();
+    assert_eq!(ack, 0);
+    store.transaction(move |tx| studio_runtime_store::account_state::set_provider_checkpoint(tx, "default", supervisor, 17)).await.unwrap();
+    store::attach_provider_stream(&store, "default", None, supervisor, "reattach").await.unwrap();
+    let ack = store.read_async("test/reattach-ack", move |db| studio_runtime_store::account_state::provider_checkpoint(db, "default", supervisor)).await.unwrap();
+    assert_eq!(ack, 17, "reattaching the same supervisor preserves its ACK");
+}
+
+#[tokio::test]
 async fn direct_generation_after_supervisor_attachment_does_not_reuse_ack() {
     let directory = tempfile::tempdir().unwrap();
     let store = studio_runtime_store::RuntimeStore::open(Some(directory.path())).await.unwrap();

@@ -1524,7 +1524,20 @@ mod runtime_shutdown;
 
 /// Keep the ordinary account-worker setup, replacing only its provider port
 /// with the real supervisor adapter connected to a deterministic Unix peer.
+async fn fixture_supervisor_store(root: &std::path::Path, account: &str, seed: i64) -> Arc<RuntimeStore> {
+    let path = tempfile::Builder::new().prefix("account-state-").tempdir_in(root).unwrap().keep();
+    let store = Arc::new(RuntimeStore::open(Some(&path)).await.unwrap());
+    let account = account.to_owned();
+    store.transaction(move |tx| {
+        studio_runtime_store::account_state::ensure_account(tx, &account)?;
+        tx.execute("UPDATE runtime_account_state SET next_generation=?1 WHERE account=?2", rusqlite::params![seed,account])?;
+        Ok(())
+    }).await.unwrap();
+    store
+}
+
 struct SupervisorDetachLauncher {
+    store: Arc<RuntimeStore>,
     scripted: Arc<Scripted>,
     root: PathBuf,
 }
@@ -1707,7 +1720,7 @@ impl AccountLauncher for SupervisorDetachLauncher {
                         backend_id: studio_runtime_process::BackendId("detach-budget".into()),
                         state_dir: self.root.clone(),
                     },
-                ),
+                ).with_account_store(self.store.clone()),
             );
             Ok(launch)
         })
@@ -1728,6 +1741,7 @@ async fn backend_shutdown_reports_both_supervisor_detach_timeouts() {
         let runtime = host_runtime::HostRuntime::with_launcher(
             fixture.store.clone(),
             Arc::new(SupervisorDetachLauncher {
+                store: fixture_supervisor_store(fixture._root.path(), "default", 6).await,
                 scripted,
                 root: fixture._root.path().into(),
             }),
@@ -1739,7 +1753,7 @@ async fn backend_shutdown_reports_both_supervisor_detach_timeouts() {
         let (socket, _) = listener.accept().await.unwrap();
         let mut control = BufReader::new(socket);
         wire_read(&mut control).await;
-        wire_send(&mut control, json!({"ok":true,"protocol":2})).await;
+        wire_send(&mut control, json!({"ok":true,"protocol":3})).await;
         let status = wire_read(&mut control).await;
         assert_eq!(status["action"], "status");
         wire_send(
@@ -1757,7 +1771,7 @@ async fn backend_shutdown_reports_both_supervisor_detach_timeouts() {
         let (socket, _) = listener.accept().await.unwrap();
         let mut events = BufReader::new(socket);
         wire_read(&mut events).await;
-        wire_send(&mut events, json!({"ok":true,"protocol":2})).await;
+        wire_send(&mut events, json!({"ok":true,"protocol":3})).await;
         assert_eq!(wire_read(&mut events).await["action"], "nextBatch");
         let state = studio_runtime_http::HttpState::new(
             "token".into(),
@@ -2359,7 +2373,7 @@ async fn provider_input_barrier(root: &std::path::Path, backend_id: &str) -> Val
     );
     wire_send(
         &mut peer,
-        json!({"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_V2,"stateDir":root,"backendId":backend_id}),
+        json!({"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION,"stateDir":root,"backendId":backend_id}),
     )
     .await;
     let attached = wire_read(&mut peer).await;
@@ -2420,7 +2434,7 @@ async fn every_launch_signature_field_matches_frozen_appserver_contract() {
                 backend_id: studio_runtime_process::BackendId("fixture".into()),
                 state_dir: root.path().into(),
             },
-        );
+        ).with_account_store(fixture_supervisor_store(root.path(), "default", 0).await);
         let preparing = tokio::spawn(async move {
             factory
                 .prepare(
@@ -2438,10 +2452,10 @@ async fn every_launch_signature_field_matches_frozen_appserver_contract() {
         let (peer, _) = listener.accept().await.unwrap();
         let mut peer = tokio::io::BufReader::new(peer);
         let hello = wire_read(&mut peer).await;
-        assert_eq!(hello["protocol"], 2);
+        assert_eq!(hello["protocol"], 3);
         assert_eq!(hello["stateDir"], root.path().to_string_lossy().as_ref());
         assert_eq!(hello["backendId"], "fixture");
-        wire_send(&mut peer, json!({"ok":true,"protocol":2})).await;
+        wire_send(&mut peer, json!({"ok":true,"protocol":3})).await;
         let status = wire_read(&mut peer).await;
         wire_send(
             &mut peer,
@@ -2569,7 +2583,7 @@ async fn running_app_server_started_with_the_frozen_command_reattaches() {
         .unwrap()
     };
     let factory =
-        studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(identity.clone());
+        studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(identity.clone()).with_account_store(fixture_supervisor_store(&root, "default", 0).await);
     let attach = |handle: ProviderHandle, launch: ProviderLaunchSpec| {
         let factory = &factory;
         async move {
@@ -2680,7 +2694,7 @@ async fn supervised_child_observes_explicit_and_inherited_working_directories() 
     };
     supervisor_ready::wait(&mut supervisor.child, identity.clone(), &stderr);
     let factory =
-        studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(identity);
+        studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(identity).with_account_store(fixture_supervisor_store(root.path(), "default", 0).await);
     let explicit = root.path().join("explicit-cwd");
     std::fs::create_dir(&explicit).unwrap();
     for (name, working_dir) in [("explicit", Some(explicit.clone())), ("inherited", None)] {
@@ -3051,7 +3065,7 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
     );
     wire_send(
         &mut peer,
-        json!({"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_V2,"stateDir":fixture._root.path(),"backendId":"reattach-fixture"}),
+        json!({"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION,"stateDir":fixture._root.path(),"backendId":"reattach-fixture"}),
     )
     .await;
     assert!(wire_read(&mut peer).await["error"].is_null());
@@ -3268,7 +3282,7 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
             backend_id: studio_runtime_process::BackendId("verify-cutover".into()),
             state_dir: fixture._root.path().into(),
         },
-    );
+    ).with_account_store(fixture.store.clone());
     let retained = factory
         .prepare(
             ProviderHandle::for_account("default"),

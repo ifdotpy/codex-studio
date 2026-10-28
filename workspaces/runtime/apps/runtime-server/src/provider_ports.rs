@@ -100,7 +100,7 @@ fn supervisor_health_payload(
     status: studio_runtime_process::HealthResult,
     expected_state: &std::path::Path,
 ) -> Value {
-    if status.protocol != studio_runtime_process::SUPERVISOR_PROTOCOL_V2
+    if status.protocol != studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION
         || expected_state.to_str() != Some(status.state_dir.as_str())
     {
         return json!({"error":"The supervisor identity is incompatible."});
@@ -1257,7 +1257,7 @@ mod tests {
 
     fn supervisor_health_status(state: &std::path::Path) -> studio_runtime_process::HealthResult {
         studio_runtime_process::HealthResult {
-            protocol: studio_runtime_process::SUPERVISOR_PROTOCOL_V2,
+            protocol: studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION,
             state_dir: state.display().to_string(),
             handles: vec![
                 serde_json::from_value(json!({
@@ -1297,8 +1297,8 @@ mod tests {
         let state = fixture.path().join("state");
         let status = supervisor_health_status(&state);
         for protocol in [
-            studio_runtime_process::SUPERVISOR_PROTOCOL_V2 - 1,
-            studio_runtime_process::SUPERVISOR_PROTOCOL_V2 + 1,
+            studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION - 1,
+            studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION + 1,
         ] {
             let mut incompatible = status.clone();
             incompatible.protocol = protocol;

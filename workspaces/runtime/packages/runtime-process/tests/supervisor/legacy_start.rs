@@ -48,7 +48,7 @@ fn python_era_handle(supervisor: &Supervisor, handle: &str, pid: u32, start: &st
         .reserve(handle, PYTHON_SIGNATURE, now().unwrap())
         .unwrap();
     journal
-        .opened(handle, PYTHON_SIGNATURE, pid, start)
+        .opened(handle, PYTHON_SIGNATURE, pid, start, None)
         .unwrap();
     let row = journal.handle(handle).unwrap().unwrap();
     journal
