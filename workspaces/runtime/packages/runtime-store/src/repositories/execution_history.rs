@@ -44,6 +44,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     bootstrap_connection_functions: &[],
 };
 pub struct ExecutionHistoryRepository;
+#[derive(Clone, Copy)]
 enum VmAdmission {
     AuthBootstrap,
     CredentialRefresh,
@@ -107,11 +108,53 @@ impl ExecutionHistoryRepository {
         source: &AdmittedRequest,
         admitted: &AdmittedRequest,
     ) -> StoreResult<()> {
-        let changed=tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,?1,json(?2)) WHERE id=?3 AND json_extract(record,'$.admission')=json(?4) AND (json_type(record,?1) IS NULL OR json_extract(record,?1)=json(?2))",params![kind.path(),serde_json::to_string(admitted)?,id,serde_json::to_string(source)?])?;
+        if Self::admission(tx, id)?.as_ref() != Some(source) {
+            return Err(Self::invalid("runtime_execution_attempts", id));
+        }
+        if let Some(saved) = Self::vm_admission(tx, id, kind)? {
+            return if saved == *admitted {
+                Ok(())
+            } else {
+                Err(Self::invalid("runtime_execution_attempts", id))
+            };
+        }
+        let changed = tx.execute(
+            "UPDATE runtime_execution_attempts SET record=json_set(record,?1,json(?2)) WHERE id=?3",
+            params![kind.path(), serde_json::to_string(admitted)?, id],
+        )?;
         if changed != 1 {
             return Err(Self::invalid("runtime_execution_attempts", id));
         }
         Ok(())
+    }
+    /// Domain settlement survives response-cache expiry and never grants a fresh dispatch.
+    pub fn start_settled(db: &rusqlite::Connection, id: &str) -> StoreResult<bool> {
+        let row=db.query_row("SELECT json_extract(record,'$.submission'),json_extract(record,'$.executionOutcome'),json_extract(record,'$.turnStatus') FROM runtime_execution_attempts WHERE id=?1",[id],|row|Ok((row.get::<_,AttemptSubmission>(0)?,row.get::<_,Option<ExecutionStatus>>(1)?,row.get::<_,Option<ExecutionStatus>>(2)?))).optional()?;
+        let Some((submission, outcome, turn)) = row else {
+            return Ok(false);
+        };
+        let terminal = |status| {
+            matches!(
+                status,
+                ExecutionStatus::Completed
+                    | ExecutionStatus::Failed
+                    | ExecutionStatus::Interrupted
+                    | ExecutionStatus::Cancelled
+            )
+        };
+        Ok(matches!(
+            submission,
+            AttemptSubmission::Accepted | AttemptSubmission::Observed | AttemptSubmission::Rejected
+        ) || matches!(
+            outcome,
+            Some(
+                ExecutionStatus::Unsent
+                    | ExecutionStatus::Accepted
+                    | ExecutionStatus::Observed
+                    | ExecutionStatus::Rejected
+            )
+        ) || outcome.is_some_and(terminal)
+            || turn.is_some_and(terminal))
     }
     pub fn record_current(tx: &Transaction<'_>, agent: &mut AgentRecord) -> StoreResult<()> {
         Self::record(tx, agent)?;
@@ -668,7 +711,7 @@ mod tests {
         };
         tx.execute(
             "UPDATE runtime_execution_attempts SET record=json_set(record,'$.admission',json(?1))",
-            [serde_json::to_string(&admission).expect("token")],
+            [serde_json::to_value(&admission).expect("token").to_string()],
         )
         .expect("persist admission");
         let final_effect = admission.derive_result("provider-call", &["bootstrap"], "fingerprint");
@@ -710,6 +753,18 @@ mod tests {
             )
             .is_err()
         );
+        tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.submission','unknown') WHERE id='attempt'",[]).expect("unknown start");
+        assert!(
+            !ExecutionHistoryRepository::start_settled(&tx, "attempt")
+                .expect("unknown stays unresolved")
+        );
+        for status in ["accepted", "observed", "rejected"] {
+            tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.submission',?1) WHERE id='attempt'",[status]).expect("settled owner");
+            assert!(
+                ExecutionHistoryRepository::start_settled(&tx, "attempt")
+                    .expect("settlement is domain proof")
+            );
+        }
         let input = json!({"agent":"agent","epoch":1,"input":{"reason":"held"}});
         let reply = json!({"bound":true,"interrupt":false});
         ExecutionHistoryRepository::save_receipt(
