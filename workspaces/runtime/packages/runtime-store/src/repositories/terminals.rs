@@ -285,24 +285,22 @@ impl TerminalsRepository {
         else {
             return Ok(());
         };
+        let reply = TerminalActionReply {
+            response: response.into(),
+            failure,
+        };
         RequestResults::settle(
             tx,
             &saved.payload.admitted,
             &ResultEnvelope {
                 actor: None,
-                reply: TerminalActionReply {
-                    response: response.into(),
-                    failure,
-                },
+                reply: &reply,
                 references: vec![saved.owner_id.clone()],
             },
         )
         .map_err(StoreError::from)?;
         if failure == Some(TerminalActionFailure::Disconnected) {
-            saved.payload.reply = TerminalActionReply {
-                response: response.into(),
-                failure,
-            };
+            saved.payload.reply = reply;
             Outbox::put(tx, &saved).map_err(StoreError::from)?;
         } else {
             Outbox::delete_settled(tx, &saved.id, &saved.signature).map_err(StoreError::from)?;
