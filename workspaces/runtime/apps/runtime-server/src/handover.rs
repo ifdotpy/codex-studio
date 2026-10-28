@@ -184,7 +184,13 @@ mod unix {
         // The open file keeps this build's binary, whatever replaces it on disk.
         let exe = File::open(std::env::current_exe()?)?;
         let path = state_dir.join(SOCKET_FILE);
-        for stale in [&path, &state_dir.join(STANDBY_SOCKET)] {
+        // A stale standby copy of an earlier handover goes too. After a rollback this server
+        // runs from that copy: unlinking a running file is safe.
+        for stale in [
+            &path,
+            &state_dir.join(STANDBY_SOCKET),
+            &state_dir.join(STANDBY_FILE),
+        ] {
             match std::fs::remove_file(stale) {
                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
                 _ => {}
@@ -201,11 +207,13 @@ mod unix {
                 for stream in socket.incoming().flatten() {
                     if give(&stream, &listener).is_ok() {
                         drop(stream);
-                        let _ = sender.send(Handed {
-                            listener,
-                            exe,
-                            state_dir,
-                        });
+                        sender
+                            .send(Handed {
+                                listener,
+                                exe,
+                                state_dir,
+                            })
+                            .ok();
                         return;
                     }
                 }
@@ -231,7 +239,7 @@ mod unix {
             let copy = self.state_dir.join(STANDBY_FILE);
             let mut exe = self.exe;
             // A resumed server runs from the previous copy: unlink it, do not overwrite it.
-            let _ = std::fs::remove_file(&copy);
+            std::fs::remove_file(&copy).ok();
             let mut target = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -267,6 +275,8 @@ mod unix {
             match UnixStream::connect(state_dir.join(STANDBY_SOCKET)) {
                 Ok(stream) => break stream,
                 Err(error) if Instant::now() >= deadline => return Err(error),
+                // `take` runs on a dedicated blocking thread (spawn_blocking in main).
+                #[allow(clippy::disallowed_methods)]
                 Err(_) => std::thread::sleep(Duration::from_millis(10)),
             }
         };
@@ -301,6 +311,10 @@ mod unix {
         match standby() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
+                // The copy is useless now: remove it.
+                if let Ok(me) = std::env::current_exe() {
+                    std::fs::remove_file(me).ok();
+                }
                 eprintln!("live handover standby failed: {error}");
                 ExitCode::FAILURE
             }
@@ -310,7 +324,7 @@ mod unix {
     fn standby() -> std::io::Result<()> {
         let me = std::env::current_exe()?;
         let socket_path = me.with_file_name(STANDBY_SOCKET);
-        let _ = std::fs::remove_file(&socket_path);
+        std::fs::remove_file(&socket_path).ok();
         let offer = UnixListener::bind(&socket_path)?;
         let parent = UnixStream::from(std::io::stdin().as_fd().try_clone_to_owned()?);
         let listener = recv_fds(&parent)?.pop().ok_or_else(|| missing("socket"))?;
@@ -320,7 +334,7 @@ mod unix {
         line.write_all(b"DRAINED\n")?;
         let mut answer = String::new();
         BufReader::new(&line).read_line(&mut answer)?;
-        let _ = std::fs::remove_file(&socket_path);
+        std::fs::remove_file(&socket_path).ok();
         if answer == "READY\n" {
             return std::fs::remove_file(me);
         }

@@ -365,6 +365,67 @@ class BackendRestartAfterSwap(unittest.TestCase):
         self.assertEqual(self.backend.wait(10), -signal.SIGTERM)
 
 
+class StopBackendHandover(unittest.TestCase):
+    """stop_backend hands over when the old backend offers handover.sock, else it sends SIGTERM."""
+
+    def setUp(self):
+        self.state = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.state, True)
+        self.config = {"port": 4620, "runtimeServer": "/fake/studio-runtime-server"}
+        self.backend = {"pid": 100, "started": "t0"}
+        self.popen = []
+        self.killed = []
+        self.identity_pid = 100
+
+    def stop(self, child_exit=None):
+        class Child:
+            pid = 200
+            def poll(inner):
+                return child_exit
+        def popen(argv, **options):
+            self.popen.append((argv, options))
+            self.identity_pid = 200
+            return Child()
+        recovery = installer.recovery
+        with patch.object(recovery, "identity", lambda *_: {"pid": self.identity_pid}), \
+                patch.object(recovery, "process_start_time", lambda _pid: "t0"), \
+                patch.object(recovery, "verify_listener", lambda *_: None), \
+                patch.object(recovery, "rust_server", lambda _config: Path(self.config["runtimeServer"])), \
+                patch.object(recovery, "launch_environment", lambda *_: {"E": "1"}), \
+                patch.object(installer.subprocess, "Popen", popen), \
+                patch.object(installer.os, "kill", lambda pid, sig: self.killed.append((pid, sig))), \
+                patch.object(installer.time, "sleep", lambda _s: None):
+            return installer.stop_backend(self.config, self.state, self.backend)
+
+    def test_a_backend_that_offers_handover_gets_the_new_build_with_takeover(self):
+        (self.state / installer.HANDOVER_SOCKET).touch()
+        self.assertEqual(self.stop(), "handed over")
+        argv, options = self.popen[0]
+        self.assertEqual(argv, ["/fake/studio-runtime-server", "--takeover"])
+        self.assertTrue(options["start_new_session"])
+        self.assertEqual(self.killed, [])
+
+    def test_a_failed_new_build_is_reported_and_the_old_one_is_not_signalled(self):
+        (self.state / installer.HANDOVER_SOCKET).touch()
+        with self.assertRaisesRegex(RuntimeError, "old build serves again"):
+            self.stop(child_exit=1)
+        self.assertEqual(self.killed, [])
+
+    def test_a_backend_without_handover_gets_sigterm(self):
+        recovery = installer.recovery
+        def kill(pid, sig):
+            self.killed.append((pid, sig))
+            if sig == 0:
+                raise ProcessLookupError
+        with patch.object(recovery, "identity", lambda *_: {"pid": 100}), \
+                patch.object(recovery, "process_start_time", lambda _pid: "t0"), \
+                patch.object(recovery, "verify_listener", lambda *_: None), \
+                patch.object(installer.os, "kill", kill):
+            self.assertEqual(installer.stop_backend(self.config, self.state, self.backend), "stopped")
+        self.assertEqual(self.killed[0], (100, signal.SIGTERM))
+        self.assertEqual(self.popen, [])
+
+
 class RecoveryHook(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="studio-install-hook-")

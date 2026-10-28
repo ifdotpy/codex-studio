@@ -195,7 +195,9 @@ fn probe(port: u16) -> Probe {
                         )
                         .await;
                     let mut sink = Vec::new();
-                    let _ = timeout(Duration::from_secs(30), stream.read_to_end(&mut sink)).await;
+                    timeout(Duration::from_secs(30), stream.read_to_end(&mut sink))
+                        .await
+                        .ok();
                     if sent.is_ok() {
                         l.fetch_max(began.elapsed().as_millis() as u64, Ordering::Relaxed);
                     }
@@ -226,8 +228,12 @@ impl Probe {
 #[tokio::test]
 async fn a_new_server_takes_the_port_and_the_old_one_drains_its_stream() {
     let site = site().await;
+    // A stale standby copy of an earlier handover goes when the next server starts.
+    let copy = site.state.join("handover-standby");
+    fs::write(&copy, b"stale").unwrap();
     let mut old = server(&site, "old", &[]);
     let port = served_port(&mut old).await;
+    assert!(!copy.exists(), "a stale standby copy stayed");
     let stream = open_stream(port).await;
     let probe = probe(port);
 
@@ -242,6 +248,14 @@ async fn a_new_server_takes_the_port_and_the_old_one_drains_its_stream() {
         .unwrap();
     assert!(status.success(), "old server: {status}");
     assert_eq!(serving_pid(port).await, new.id().unwrap());
+    // The standby removes its copy when the new server is ready.
+    timeout(Duration::from_secs(10), async {
+        while copy.exists() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the standby copy stayed after the handover");
     let (refused, slowest) = probe.finish().await;
     eprintln!("handover: refused connections {refused}, slowest answer {slowest} ms");
     assert_eq!(refused, 0, "the port refused a connection");
@@ -277,12 +291,17 @@ async fn a_failed_new_server_gives_the_socket_back_and_the_old_build_serves_agai
     assert!(status.success(), "old server: {status}");
     let resumed = serving_pid(port).await;
     assert_ne!(resumed, old_pid, "the old build resumes in a new process");
+    assert!(
+        !site.state.join("handover-standby").exists(),
+        "the standby copy stayed after the rollback"
+    );
     drop(open_stream(port).await);
     let (refused, slowest) = probe.finish().await;
     eprintln!("rollback: refused connections {refused}, slowest answer {slowest} ms");
     assert_eq!(refused, 0, "the port refused a connection");
     // Stop the resumed server (not our child): SIGTERM through its PID.
-    let _ = std::process::Command::new("/bin/kill")
+    std::process::Command::new("/bin/kill")
         .arg(resumed.to_string())
-        .status();
+        .status()
+        .ok();
 }
