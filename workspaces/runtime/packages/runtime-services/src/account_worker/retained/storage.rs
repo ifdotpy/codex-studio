@@ -562,18 +562,15 @@ fn thread_started_for_actor(
     let Some(actor) = &call.actor else {
         return Ok(false);
     };
-    let Some(agent) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
-        return Ok(false);
-    };
-    let Some(provenance) = agent
-        .extra
-        .get("threadProvenance")
-        .and_then(|map| map.get(thread))
-    else {
+    let provenance: Option<String> = tx.query_row(
+        "SELECT value FROM runtime_agents, json_each(record,'$.threadProvenance') WHERE runtime_agents.id=?1 AND key=?2",
+        rusqlite::params![actor.agent, thread], |row| row.get(0),
+    ).optional()?;
+    let Some(provenance) = provenance else {
         return Ok(false);
     };
     let provenance: ThreadProvenance =
-        serde_json::from_value(provenance.clone()).map_err(StoreError::from)?;
+        serde_json::from_str(&provenance).map_err(StoreError::from)?;
     Ok(provenance.actor == *actor
         && provenance.scope.account == call.scope.account
         && provenance.scope.generation == call.scope.generation)
@@ -1018,7 +1015,7 @@ fn settle(
         };
         map.insert(
             thread.into(),
-            serde_json::to_value(ThreadProvenance {
+            studio_runtime_store::projection_value(&ThreadProvenance {
                 scope: payload.call.scope.clone(),
                 actor: actor.clone(),
                 operation: payload.call.operation.clone(),
@@ -1446,6 +1443,31 @@ mod replay_identity_tests {
             method: Method::ThreadRead,
             params: json!({"threadId":"thread-1","includeTurns":false}),
         }
+    }
+
+    #[test]
+    fn stored_thread_provenance_is_scoped_to_actor_and_generation() {
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT)")
+            .expect("table");
+        let tx = db.transaction().expect("transaction");
+        let call = call();
+        let provenance = ThreadProvenance {
+            scope: call.scope.clone(),
+            actor: call.actor.clone().expect("actor"),
+            operation: call.operation.clone(),
+        };
+        let raw = serde_json::to_string(&provenance).expect("provenance");
+        tx.execute(
+            "INSERT INTO runtime_agents VALUES('agent-1',?1)",
+            [format!(r#"{{"threadProvenance":{{"thread-1":{raw}}}}}"#)],
+        )
+        .expect("agent");
+        assert!(thread_started_for_actor(&tx, &call, "thread-1").expect("matching provenance"));
+        assert!(!thread_started_for_actor(&tx, &call, "missing").expect("missing provenance"));
+        let mut other = call.clone();
+        other.scope.generation += 1;
+        assert!(!thread_started_for_actor(&tx, &other, "thread-1").expect("different generation"));
     }
 
     #[tokio::test]
