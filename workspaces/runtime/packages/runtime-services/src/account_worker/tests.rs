@@ -1970,7 +1970,7 @@ async fn unsupported_callback(method: &str) {
                                     callback_record::CallbackObligation,
                                 >(tx, &operation)
                                 .map_err(|e| StoreError::SchemaMismatch(e.to_string()))?
-                                .is_some(),
+                                .is_some_and(|task| task.status != studio_runtime_schema::persistence::ToolRequestStatus::Completed),
                                 crate::tool_requests::get_callback::<
                                     callback_record::CallbackObligation,
                                 >(tx, &operation)
@@ -1996,7 +1996,7 @@ async fn unsupported_callback(method: &str) {
     assert_eq!(
         record_phases(&state).await,
         (cursor, false, false),
-        "a written answer retires its record"
+        "a written answer retires its outstanding obligation"
     );
     worker.shutdown().await.unwrap();
 }
