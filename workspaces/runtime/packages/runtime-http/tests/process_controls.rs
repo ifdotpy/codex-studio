@@ -560,6 +560,9 @@ async fn transferred_monitor_panel_authenticates_target_and_keeps_an_unknown_sto
     assert_eq!(*port.calls.lock().unwrap(), vec!["command/exec/terminate"]);
 }
 async fn call(app: &axum::Router, method: &str, path: &str, body: Value) -> (u16, Value) {
+    call_body(app, method, path, body.to_string()).await
+}
+async fn call_body(app: &axum::Router, method: &str, path: &str, body: String) -> (u16, Value) {
     let request = Request::builder()
         .method(method)
         .uri(path)
@@ -580,13 +583,22 @@ async fn call(app: &axum::Router, method: &str, path: &str, body: Value) -> (u16
         .body(if method == "GET" {
             Body::empty()
         } else {
-            Body::from(body.to_string())
+            Body::from(body)
         })
         .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status().as_u16();
     let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+#[tokio::test]
+async fn process_action_rejects_duplicate_keys() {
+    let (_root, app, port) = fixture("success").await;
+    let body = r#"{"action":"stop_owned","requestId":"first","requestId":"second","agent":"owner","accountKey":"default","epoch":1,"processes":[{"key":"key","generation":"gen","agent":"owner","accountKey":"default","epoch":1}]}"#;
+    let (status, _) = call_body(&app, "POST", "/api/processes/action", body.into()).await;
+    assert_eq!(status, 400);
+    assert!(port.calls.lock().unwrap().is_empty());
 }
 async fn fixture(behavior: &'static str) -> (tempfile::TempDir, axum::Router, Arc<Port>) {
     let root = tempfile::tempdir().unwrap();
@@ -1107,6 +1119,14 @@ async fn process_receipt_and_replay_preserve_retained_result_payload() {
             tx.execute("UPDATE runtime_process_actions SET record=json_set(record,'$.result',json(?)) WHERE id='stop'", [stored.to_string()])?;
             Ok::<_, StoreError>(())
         }).await.unwrap();
+        // Null decodes as None and serializes as an absent optional field.
+        if explicit_null {
+            retained.as_object_mut().unwrap().remove("response");
+            retained["processes"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("generation");
+        }
         let before = port.calls.lock().unwrap().clone();
         let (_, receipt) = call(
             &app,

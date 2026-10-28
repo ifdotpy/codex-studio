@@ -526,6 +526,7 @@ mod tests {
             .extensions
             .insert(crate::validation::ValidatedRequest {
                 body: None,
+                raw_body: None,
                 query: Arc::new(
                     serde_json::from_value(json!({"account_key":"selected"})).expect("query"),
                 ),

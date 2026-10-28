@@ -9,8 +9,9 @@ use studio_runtime_schema::process_controls::{
     ProcessActionResult, ProcessActionStatus, ProcessControlRequest, ProcessEntry, ProcessOutcome,
     ProcessReceipt, Request,
 };
-use studio_runtime_store::request_results::AdmittedRequest;
-use studio_runtime_store::{StoreError, Transaction};
+use studio_runtime_store::{
+    ProcessActionKind, ProcessActionPhase, ProcessActionRecord, StoreError, Transaction,
+};
 
 use crate::account_session_runtime::ConnectionScope;
 use crate::event_write::{CallerAdmission, RequestKey, begin_request};
@@ -584,21 +585,14 @@ pub fn validate_stop_response(
 }
 
 pub enum Claim {
-    Replay(Value),
+    Replay(ProcessActionResult),
     New {
-        record: Value,
+        record: ProcessActionRecord,
         targets: Vec<Value>,
         result: ProcessActionResult,
     },
 }
 
-/// The owning claim admits this token once; continuations derive their provider
-/// completions from it without reapplying ingress age checks.
-pub fn admitted_request(record: &Value) -> Result<AdmittedRequest, Error> {
-    serde_json::from_value(record["admittedRequest"].clone())
-        .map_err(StoreError::from)
-        .map_err(Error::from)
-}
 pub fn claim(
     tx: &Transaction<'_>,
     request: &Request,
@@ -624,7 +618,6 @@ pub fn claim(
             "The process owner changed. Refresh the process list",
         ));
     }
-    let action = text(request, "action", "");
     let mut targets = Vec::new();
     let mut entries = Vec::new();
     let response = if matches!(
@@ -694,6 +687,7 @@ pub fn claim(
                     outcome: ProcessOutcome::Stale {
                         error: error.into(),
                     },
+                    extra: Default::default(),
                 });
             } else if let Some(process) = found {
                 entries.push(ProcessEntry {
@@ -702,6 +696,7 @@ pub fn claim(
                     source: Some(text(process, "source", "").to_owned()),
                     generation: Some(text(process, "generation", "").to_owned()),
                     outcome: ProcessOutcome::Pending,
+                    extra: Default::default(),
                 });
                 targets.push(process.clone());
             }
@@ -744,10 +739,36 @@ pub fn claim(
             )));
         }
     };
-    let record = json!({"requestId":id,"rootRequestId":root_request_id,"admittedRequest":admitted,"signature":signature,"phase":"dispatching","scopeAgent":scope,"scopeAccountKey":request["accountKey"],"scopeEpoch":request["epoch"],"action":action,"responseTarget":response,"processes":result.processes,"created":now,"result":result});
+    let record = ProcessActionRecord {
+        request_id: id.into(),
+        root_request_id,
+        admitted_request: admitted,
+        signature: signature.clone(),
+        phase: ProcessActionPhase::Dispatching,
+        scope_agent: scope.into(),
+        scope_account_key: text(request, "accountKey", "").into(),
+        scope_epoch: request["epoch"]
+            .as_number()
+            .cloned()
+            .ok_or(Error::Invalid("Invalid process epoch"))?,
+        action: match command {
+            ProcessControlRequest::StopSelected { .. } => ProcessActionKind::StopSelected,
+            ProcessControlRequest::StopOwned { .. } => ProcessActionKind::StopOwned,
+            ProcessControlRequest::StopResponse { .. } => ProcessActionKind::StopResponse,
+            ProcessControlRequest::BackgroundCommand { .. } => ProcessActionKind::BackgroundCommand,
+        },
+        response_target: response,
+        processes: result.processes.clone().unwrap_or_default(),
+        created: now,
+        result: result.clone(),
+    };
     tx.execute(
         "INSERT INTO runtime_process_actions(id,signature,record) VALUES(?,?,?)",
-        params![id, signature, canonical(&record)],
+        params![
+            id,
+            signature,
+            serde_json::to_string(&record).map_err(StoreError::from)?
+        ],
     )
     .map_err(StoreError::from)?;
     Ok(Claim::New {
@@ -758,7 +779,7 @@ pub fn claim(
 }
 /// Reuse a durable action before any fresh native observation. Changed content
 /// under the same request ID remains an error, including after a lost response.
-pub fn replay(tx: &Transaction<'_>, request: &Value) -> Result<Option<Value>, Error> {
+pub fn replay(tx: &Transaction<'_>, request: &Value) -> Result<Option<ProcessActionResult>, Error> {
     let prior: Option<(String, String)> = tx
         .query_row(
             "SELECT signature,record FROM runtime_process_actions WHERE id=?",
@@ -775,34 +796,24 @@ pub fn replay(tx: &Transaction<'_>, request: &Value) -> Result<Option<Value>, Er
             "This process action ID has different content",
         ));
     }
-    let record: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
-    decode_result(&record).map(Some)
+    let record: ProcessActionRecord = serde_json::from_str(&raw).map_err(StoreError::from)?;
+    Ok(Some(record.result))
 }
-pub fn save(tx: &Transaction<'_>, record: &Value) -> Result<(), Error> {
+pub fn save(tx: &Transaction<'_>, record: &ProcessActionRecord) -> Result<(), Error> {
     tx.execute(
         "UPDATE runtime_process_actions SET record=? WHERE id=?",
-        params![canonical(record), text(record, "requestId", "")],
+        params![
+            serde_json::to_string(record).map_err(StoreError::from)?,
+            record.request_id
+        ],
     )
     .map_err(StoreError::from)?;
     Ok(())
-}
-fn decode_result(record: &Value) -> Result<Value, Error> {
-    let result = record["result"].clone();
-    ProcessActionResult::validate(&result).map_err(StoreError::from)?;
-    Ok(result)
 }
 pub fn receipt(connection: &Connection, query: &Value) -> Result<ProcessReceipt, Error> {
     let exists:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_process_actions')",[],|r|r.get(0)).map_err(StoreError::from)?;
     if !exists {
         return input_receipt(connection, query);
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct StoredReceipt {
-        scope_agent: String,
-        scope_account_key: String,
-        scope_epoch: i64,
-        result: ProcessActionResult,
     }
     let record: Option<String> = connection
         .query_row(
@@ -812,7 +823,7 @@ pub fn receipt(connection: &Connection, query: &Value) -> Result<ProcessReceipt,
         )
         .optional()
         .map_err(StoreError::from)?;
-    let record: Option<StoredReceipt> = record
+    let record: Option<ProcessActionRecord> = record
         .as_deref()
         .map(serde_json::from_str)
         .transpose()
@@ -820,40 +831,33 @@ pub fn receipt(connection: &Connection, query: &Value) -> Result<ProcessReceipt,
     if let Some(record) = record
         && record.scope_agent == query["agent"]
         && record.scope_account_key == query["accountKey"]
-        && record.scope_epoch == query["epoch"]
+        && query["epoch"].as_number() == Some(&record.scope_epoch)
     {
         return Ok(ProcessReceipt::found(record.result));
     }
     input_receipt(connection, query)
 }
 fn input_receipt(connection: &Connection, query: &Value) -> Result<ProcessReceipt, Error> {
-    let value =
-        crate::monitor_http_input::read(connection, query).map_err(|error| match error {
-            crate::monitor_policy::MonitorError::Expired => Error::Expired,
-            crate::monitor_policy::MonitorError::Store(error) => Error::Store(error),
-            crate::monitor_policy::MonitorError::InvalidStored { .. }
-            | crate::monitor_policy::MonitorError::InvalidResultReceipt(_)
-            | crate::monitor_policy::MonitorError::InvalidDeliveryIdentity(_)
-            | crate::monitor_policy::MonitorError::InvalidOutputReceipt(_)
-            | crate::monitor_policy::MonitorError::TaskFailed
-            | crate::monitor_policy::MonitorError::Refused(_)
-            | crate::monitor_policy::MonitorError::InputOutcomeUnknown
-            | crate::monitor_policy::MonitorError::Unavailable(_)
-            | crate::monitor_policy::MonitorError::ProviderRequest { .. }
-            | crate::monitor_policy::MonitorError::ConfigurationRejected { .. }
-            | crate::monitor_policy::MonitorError::ConfigurationReceipt { .. }
-            | crate::monitor_policy::MonitorError::Event(_)
-            | crate::monitor_policy::MonitorError::Rules(_)
-            | crate::monitor_policy::MonitorError::Io(_) => {
-                Error::Invalid("Invalid monitor input receipt")
-            }
-        })?;
-    if value["found"] != true {
-        return Ok(ProcessReceipt::not_found());
-    }
-    ProcessReceipt::found(value["result"].clone())
-        .map_err(StoreError::from)
-        .map_err(Error::from)
+    crate::monitor_http_input::read(connection, query).map_err(|error| match error {
+        crate::monitor_policy::MonitorError::Expired => Error::Expired,
+        crate::monitor_policy::MonitorError::Store(error) => Error::Store(error),
+        crate::monitor_policy::MonitorError::InvalidStored { .. }
+        | crate::monitor_policy::MonitorError::InvalidResultReceipt(_)
+        | crate::monitor_policy::MonitorError::InvalidDeliveryIdentity(_)
+        | crate::monitor_policy::MonitorError::InvalidOutputReceipt(_)
+        | crate::monitor_policy::MonitorError::TaskFailed
+        | crate::monitor_policy::MonitorError::Refused(_)
+        | crate::monitor_policy::MonitorError::InputOutcomeUnknown
+        | crate::monitor_policy::MonitorError::Unavailable(_)
+        | crate::monitor_policy::MonitorError::ProviderRequest { .. }
+        | crate::monitor_policy::MonitorError::ConfigurationRejected { .. }
+        | crate::monitor_policy::MonitorError::ConfigurationReceipt { .. }
+        | crate::monitor_policy::MonitorError::Event(_)
+        | crate::monitor_policy::MonitorError::Rules(_)
+        | crate::monitor_policy::MonitorError::Io(_) => {
+            Error::Invalid("Invalid monitor input receipt")
+        }
+    })
 }
 
 #[cfg(test)]
@@ -861,6 +865,16 @@ mod claim_identity_tests {
     use super::*;
     use studio_runtime_schema::persistence::RequestIdentity;
     use studio_runtime_store::request_results::RequestResults;
+
+    #[test]
+    fn raw_request_keeps_the_existing_canonical_signature() {
+        let raw = serde_json::value::RawValue::from_string(r#"{"action":"stop_owned","requestId":"request","agent":"owner","accountKey":"acct","epoch":1.0,"processes":[{"key":"key","generation":"gen","agent":"owner","accountKey":"acct","epoch":1.0}],"responseTarget":null}"#.into()).expect("fixture JSON");
+        let request = Request::parse(&raw).expect("request");
+        assert_eq!(
+            digest(request.raw()),
+            "b16654521805af453f0fc6e0b9f42fb54887c3b20eb1fb103b50e05a645497f8"
+        );
+    }
 
     #[test]
     fn process_claim_reuses_its_admitted_token_after_expiry_without_another_effect() {
@@ -883,13 +897,15 @@ mod claim_identity_tests {
             [owner.to_string()],
         )
         .expect("owner");
-        let request = Request::parse(
+        let raw = serde_json::value::RawValue::from_string(
             json!({"action":"stop_response","requestId":"opaque-action-id",
             "agent":"owner","accountKey":"account","epoch":3,"responseTarget":{
                 "agent":"owner","accountKey":"account","epoch":3,"connectionId":"connection",
-                "threadId":"thread","turnId":"turn"}}),
+                "threadId":"thread","turnId":"turn"}})
+            .to_string(),
         )
-        .expect("request");
+        .expect("fixture JSON");
+        let request = Request::parse(&raw).expect("request");
         let connections = Connections::from([("owner".into(), "connection".into())]);
         let tx = db.transaction().expect("transaction");
         let Claim::New { record, .. } =
@@ -897,14 +913,12 @@ mod claim_identity_tests {
         else {
             panic!("first claim must be new");
         };
-        let root = record["rootRequestId"]
-            .as_str()
-            .expect("persisted broker root");
+        let root = &record.root_request_id;
         RequestIdentity::new("process-action", &[], root, &[]).expect("UUIDv7 root");
-        assert_eq!(record["requestId"], "opaque-action-id");
+        assert_eq!(record.request_id, "opaque-action-id");
         tx.execute("UPDATE effects SET count=count+1", [])
             .expect("first dispatch");
-        let token = admitted_request(&record).expect("admitted owner token");
+        let token = record.admitted_request.clone();
         let after_ttl =
             token.created() + studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS + 1;
         RequestResults::gc(&tx, after_ttl).expect("expire fresh ingress");
@@ -929,9 +943,9 @@ mod claim_identity_tests {
                 |row| row.get(0),
             )
             .expect("owner record");
-        let persisted: Value = serde_json::from_str(&persisted).expect("record");
-        assert_eq!(persisted["rootRequestId"], root);
-        assert_eq!(admitted_request(&persisted).expect("same token"), token);
+        let persisted: ProcessActionRecord = serde_json::from_str(&persisted).expect("record");
+        assert_eq!(&persisted.root_request_id, root);
+        assert_eq!(persisted.admitted_request, token);
         assert_eq!(
             tx.query_row("SELECT count FROM effects", [], |row| row.get::<_, i64>(0))
                 .expect("effects"),

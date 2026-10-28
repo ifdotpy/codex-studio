@@ -1,6 +1,6 @@
 //! Shared process panel with exact-owner checks and retained stop receipts.
 use super::{
-    extractors::{ApiJson, QueryParams},
+    extractors::{ApiRawJson, QueryParams},
     manifest::{OperationStatus, RouteGroup, get, post},
 };
 use crate::{error::ApiError, router::HttpState};
@@ -175,8 +175,8 @@ async fn receipt(
 async fn action(
     State(state): State<HttpState>,
     runtime: Option<Extension<Arc<MonitorRuntime>>>,
-    ApiJson(request): ApiJson<Request>,
-) -> Result<Json<Value>, ApiError> {
+    ApiRawJson(request): ApiRawJson<Request>,
+) -> Result<Json<ProcessActionResult>, ApiError> {
     execute(state, runtime.map(|Extension(r)| r), request)
         .await
         .map(Json)
@@ -186,7 +186,7 @@ async fn execute(
     state: HttpState,
     runtime: Option<Arc<MonitorRuntime>>,
     request: Request,
-) -> Result<Value, ApiError> {
+) -> Result<ProcessActionResult, ApiError> {
     let store = store(&state)?;
     // A lost response must reuse its saved action without another native read.
     let replay_request = request.clone();
@@ -231,19 +231,14 @@ async fn execute(
             result,
         } => (record, targets, result),
     };
-    let root_request_id = record
-        .get("rootRequestId")
-        .and_then(Value::as_str)
-        .filter(|root| !root.is_empty())
-        .ok_or_else(ApiError::internal)?
-        .to_owned();
-    let admitted = controls::admitted_request(&record).map_err(error)?;
+    let root_request_id = record.root_request_id.clone();
+    let admitted = record.admitted_request.clone();
     let scope = request.command().scope();
     match request.command() {
         ProcessControlRequest::BackgroundCommand { item_id, .. } => {
             let outcome = background_command(
                 &state,
-                &record["responseTarget"],
+                &record.response_target,
                 item_id,
                 &scope.request_id,
                 (&root_request_id, &admitted),
@@ -265,7 +260,7 @@ async fn execute(
         ProcessControlRequest::StopResponse { .. } => {
             let outcome = stop_response(
                 &state,
-                &record["responseTarget"],
+                &record.response_target,
                 &scope.request_id,
                 proof.as_ref(),
                 (&root_request_id, &admitted),
@@ -330,14 +325,14 @@ async fn execute(
             };
         }
     }
-    record["phase"] = json!(if result.status == ProcessActionStatus::Uncertain {
-        "uncertain"
+    record.phase = if result.status == ProcessActionStatus::Uncertain {
+        studio_runtime_store::ProcessActionPhase::Uncertain
     } else {
-        "completed"
-    });
+        studio_runtime_store::ProcessActionPhase::Completed
+    };
     update_record(&mut record, &result);
     save(&store, record).await?;
-    Ok(json!(result))
+    Ok(result)
 }
 fn response_status(outcome: &ResponseOutcome) -> ProcessActionStatus {
     match outcome {
@@ -349,11 +344,17 @@ fn response_status(outcome: &ResponseOutcome) -> ProcessActionStatus {
         | ResponseOutcome::Failed { .. } => ProcessActionStatus::Completed,
     }
 }
-fn update_record(record: &mut Value, result: &ProcessActionResult) {
-    record["processes"] = json!(result.processes);
-    record["result"] = json!(result);
+fn update_record(
+    record: &mut studio_runtime_store::ProcessActionRecord,
+    result: &ProcessActionResult,
+) {
+    record.processes = result.processes.clone().unwrap_or_default();
+    record.result = result.clone();
 }
-async fn save(store: &RuntimeStore, record: Value) -> Result<(), ApiError> {
+async fn save(
+    store: &RuntimeStore,
+    record: studio_runtime_store::ProcessActionRecord,
+) -> Result<(), ApiError> {
     store
         .transaction_with(move |tx| controls::save(tx, &record))
         .await

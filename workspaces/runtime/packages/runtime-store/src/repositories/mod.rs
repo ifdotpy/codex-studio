@@ -29,6 +29,7 @@ pub mod multi_server_delivery;
 pub(crate) mod notification_dispatch;
 pub(crate) mod orchestration_settings;
 pub mod outbox;
+pub mod process_actions;
 pub(crate) mod profiles;
 pub(crate) mod project_locations;
 pub(crate) mod projects;

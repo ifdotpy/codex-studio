@@ -161,9 +161,6 @@ pub(crate) async fn boundary(
         let has_json_schema = matched_operation
             .as_ref()
             .is_some_and(|operation| operation.has_body_schema);
-        let has_opaque_json_schema = matched_operation
-            .as_ref()
-            .is_some_and(|operation| operation.has_opaque_body);
         let content_type = headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
@@ -225,9 +222,7 @@ pub(crate) async fn boundary(
                 }
                 Ok(value) => {
                     parsed_body = Some(value);
-                    if has_opaque_json_schema {
-                        raw_body = Some(bytes.clone());
-                    }
+                    raw_body = Some(bytes.clone());
                 }
             }
         }

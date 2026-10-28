@@ -9,6 +9,10 @@ use crate::event_write::settle_request;
 use crate::monitor_policy::{self, Effect, Input, InputOutcome, MonitorError, Operation};
 use crate::monitor_runtime;
 use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind, RequestIdentity};
+use studio_runtime_schema::process_controls::{
+    MonitorInputKind, MonitorInputResponse, MonitorInputStatus, ProcessActionResult,
+    ProcessActionStatus, ProcessReceipt, ProcessResponse,
+};
 use studio_runtime_store::outbox::{Outbox, OutboxRow};
 use studio_runtime_store::request_results::{Admission, AdmittedRequest, RequestResults};
 
@@ -115,8 +119,8 @@ pub(crate) fn acknowledged(request_id: &str) -> Value {
 }
 
 /// Use the existing process receipt read without the original stdin content.
-pub(crate) fn read(connection: &Connection, query: &Value) -> Result<Value, MonitorError> {
-    let missing = || json!({"found":false,"result":null});
+pub(crate) fn read(connection: &Connection, query: &Value) -> Result<ProcessReceipt, MonitorError> {
+    let missing = ProcessReceipt::not_found;
     let request_id = query["requestId"].as_str().unwrap_or_default();
     let Some((_, receipt)) = saved(connection, request_id)? else {
         return Ok(missing());
@@ -143,15 +147,34 @@ pub(crate) fn read(connection: &Connection, query: &Value) -> Result<Value, Moni
         return Ok(missing());
     }
     let (status, terminal) = match receipt.status {
-        Status::Acknowledged => ("acknowledged", true),
-        Status::Rejected => ("rejected", true),
-        Status::Expired => ("expired", true),
-        Status::Pending => ("pending", false),
-        Status::Unknown => ("unknown", false),
+        Status::Acknowledged => (MonitorInputStatus::Acknowledged, true),
+        Status::Rejected => (MonitorInputStatus::Rejected, true),
+        Status::Expired => {
+            return Err(
+                StoreError::Json(<serde_json::Error as serde::de::Error>::custom(
+                    "invalid monitor input status: expired",
+                ))
+                .into(),
+            );
+        }
+        Status::Pending => (MonitorInputStatus::Pending, false),
+        Status::Unknown => (MonitorInputStatus::Unknown, false),
     };
-    Ok(
-        json!({"found":true,"result":{"requestId":request_id,"status":if terminal {"completed"} else {"uncertain"},"processes":[],"response":{"kind":"monitor_input","monitorId":receipt.monitor,"status":status}}}),
-    )
+    Ok(ProcessReceipt::found(ProcessActionResult {
+        request_id: request_id.into(),
+        status: if terminal {
+            ProcessActionStatus::Completed
+        } else {
+            ProcessActionStatus::Uncertain
+        },
+        processes: Some(vec![]),
+        response: Some(ProcessResponse::MonitorInput(MonitorInputResponse {
+            kind: MonitorInputKind::MonitorInput,
+            monitor_id: receipt.monitor,
+            status,
+        })),
+        extra: Default::default(),
+    }))
 }
 
 fn request_context(

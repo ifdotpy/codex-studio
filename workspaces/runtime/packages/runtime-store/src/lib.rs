@@ -30,6 +30,9 @@ pub mod receipt_schema;
 mod records;
 mod repositories;
 pub use repositories::multi_server_delivery;
+pub use repositories::process_actions::{
+    ProcessActionKind, ProcessActionPhase, ProcessActionRecord,
+};
 pub use repositories::terminals;
 pub use repositories::{outbox, request_results};
 mod schema;

@@ -170,8 +170,8 @@ pub struct Request {
 }
 impl<'de> Deserialize<'de> for Request {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = Value::deserialize(deserializer)?;
-        Self::parse(raw).map_err(serde::de::Error::custom)
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
     }
 }
 impl Request {
@@ -181,9 +181,10 @@ impl Request {
     pub fn command(&self) -> &ProcessControlRequest {
         &self.command
     }
-    pub fn parse(raw: Value) -> Result<Self, String> {
+    pub fn parse(raw: &serde_json::value::RawValue) -> Result<Self, String> {
         let command: ProcessControlRequest =
-            serde_json::from_value(raw.clone()).map_err(|error| error.to_string())?;
+            serde_json::from_str(raw.get()).map_err(|error| error.to_string())?;
+        let raw = serde_json::from_str(raw.get()).map_err(|error| error.to_string())?;
         match &command {
             ProcessControlRequest::StopOwned { processes, .. } if processes.is_empty() => {
                 return Err("No owned process identities were supplied".into());
@@ -222,6 +223,12 @@ impl Request {
     }
 }
 
+#[cfg(test)]
+fn parse_fixture(value: &Value) -> Result<Request, String> {
+    let raw = serde_json::value::RawValue::from_string(value.to_string()).expect("fixture JSON");
+    Request::parse(&raw)
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ProcessOutcome {
@@ -254,6 +261,8 @@ pub struct ProcessEntry {
     pub generation: Option<String>,
     #[serde(flatten)]
     pub outcome: ProcessOutcome,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -312,12 +321,6 @@ pub struct MonitorInputResponse {
     pub kind: MonitorInputKind,
     pub monitor_id: String,
     pub status: MonitorInputStatus,
-}
-
-impl ProcessActionResult {
-    pub fn validate(value: &Value) -> Result<(), serde_json::Error> {
-        serde_json::from_value::<Self>(value.clone()).map(|_| ())
-    }
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -412,6 +415,17 @@ mod tests {
     }
 
     #[test]
+    fn process_entry_retains_opaque_extensions() {
+        let raw = r#"{"key":"key","agent":"agent","status":"stopped","nativeExtension":[null,"retained"]}"#;
+        let entry: ProcessEntry = serde_json::from_str(raw).expect("process entry");
+        let encoded = serde_json::to_string(&entry).expect("serialize entry");
+        assert_eq!(
+            serde_json::from_str::<Value>(&encoded).expect("JSON"),
+            serde_json::from_str::<Value>(raw).expect("fixture")
+        );
+    }
+
+    #[test]
     fn schema_references_leave_literal_text_untouched() {
         #[derive(JsonSchema)]
         struct Child {
@@ -475,10 +489,7 @@ mod tests {
             raw.as_object_mut()
                 .expect("object")
                 .extend(fields.as_object().expect("fields").clone());
-            assert_eq!(
-                Request::parse(raw.clone()).expect("legacy request").raw,
-                raw
-            );
+            assert_eq!(parse_fixture(&raw).expect("legacy request").raw, raw);
             let required = match action {
                 "stop_selected" => "process",
                 "stop_owned" => "processes",
@@ -486,7 +497,7 @@ mod tests {
                 _ => unreachable!(),
             };
             raw.as_object_mut().expect("object").remove(required);
-            assert!(Request::parse(raw).is_err(), "{action} requires {required}");
+            assert!(parse_fixture(&raw).is_err(), "{action} requires {required}");
         }
     }
     #[test]
@@ -572,12 +583,12 @@ mod ingress_tests {
                 .expect("object")
                 .extend(fields.as_object().expect("fields").clone());
             assert!(validator.is_valid(&raw), "schema: {raw}");
-            assert!(Request::parse(raw.clone()).is_ok(), "serde: {raw}");
+            assert!(parse_fixture(&raw).is_ok(), "serde: {raw}");
             raw.as_object_mut()
                 .expect("object")
                 .extend(forbidden.as_object().expect("fields").clone());
             assert!(!validator.is_valid(&raw), "schema: {raw}");
-            assert!(Request::parse(raw.clone()).is_err(), "serde: {raw}");
+            assert!(parse_fixture(&raw).is_err(), "serde: {raw}");
         }
     }
 }

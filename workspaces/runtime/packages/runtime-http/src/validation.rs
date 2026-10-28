@@ -30,6 +30,7 @@ pub(crate) struct RawRequest {
 pub(crate) struct ValidatedRequest {
     #[allow(dead_code, reason = "ApiJson consumes validated bodies")]
     pub body: Option<Value>,
+    pub raw_body: Option<Bytes>,
     #[allow(
         dead_code,
         reason = "shared QueryParams retains the original ordered wire values"
@@ -66,7 +67,6 @@ pub(crate) struct Registry {
 pub(crate) struct MatchedOperation {
     pub key: String,
     pub has_body_schema: bool,
-    pub has_opaque_body: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -355,6 +355,7 @@ impl Registry {
         }
         Ok(ValidatedRequest {
             body,
+            raw_body,
             query: Arc::new(query.as_object().cloned().unwrap_or_default()),
             headers: Arc::new(headers.as_object().cloned().unwrap_or_default()),
         })
@@ -393,10 +394,6 @@ impl Registry {
         Some(MatchedOperation {
             key,
             has_body_schema: operation.body.is_some(),
-            has_opaque_body: operation
-                .body
-                .as_ref()
-                .is_some_and(|part| part.has_opaque_json),
         })
     }
 
