@@ -953,26 +953,61 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
         let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
         seed(&store, &before).await;
         let task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"dynamicToolCall","kind":"tool","status":"running","created":1.});
-        let receipt = json!({"id":"receipt","agent":"agent","accountKey":"default","threadId":"thread","turnId":"turn","callId":"item","finished":2.,"stage":"completed","outcome":"applied","result":{"success":true,"contentItems":[]}});
+        let root_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let identity = studio_runtime_schema::persistence::RequestIdentity::new(
+            "managed_tool",
+            &["agent"],
+            &root_id,
+            &["item"],
+        )
+        .expect("receipt identity");
+        let receipt = json!({"id":root_id,"kind":"managed_tool","aliases":["item"],"agent":"agent","accountKey":"default","threadId":"thread","turnId":"turn","callId":"item","finished":2.,"stage":"completed","outcome":"applied","result":{"success":true,"contentItems":[]}});
         let task_to_save = task.clone();
-        let receipt_to_save = receipt.to_string();
-        store.transaction(move |tx|{
-            TaskRepository::put(tx,&TaskRecord::from_value(task_to_save).expect("task"))?;
-            tx.execute("INSERT INTO runtime_tool_request_aliases(agent,alias,request) VALUES('agent','item','receipt')",[])?;
-            tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES('receipt',?1)",[receipt_to_save])?;
-            Ok(())
-        }).await.expect("seed");
+        let mut receipt_to_save = receipt.clone();
+        let saved_root = root_id.clone();
+        let receipt = store
+            .transaction_with(move |tx| {
+                TaskRepository::put(tx, &TaskRecord::from_value(task_to_save).expect("task"))?;
+                let studio_runtime_store::request_results::Admission::Fresh(admitted) =
+                    studio_runtime_store::request_results::RequestResults::admit(
+                        tx,
+                        &identity,
+                        "fixture-signature",
+                        chrono::Utc::now().timestamp_millis(),
+                    )
+                    .expect("admission")
+                else {
+                    panic!("fresh owner")
+                };
+                receipt_to_save
+                    .as_object_mut()
+                    .expect("receipt")
+                    .insert("admitted".into(), serde_json::to_value(&admitted)?);
+                tx.execute(
+                    "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",
+                    rusqlite::params![saved_root, receipt_to_save.to_string()],
+                )?;
+                studio_runtime_services::tool_requests::settle_result(
+                    tx,
+                    &saved_root,
+                    &receipt_to_save["result"],
+                )
+                .expect("settle result");
+                Ok::<_, studio_runtime_store::StoreError>(receipt_to_save)
+            })
+            .await
+            .expect("seed");
         let snapshot = TaskRecoverySnapshot::from_records(
             before,
             task,
-            vec!["receipt".into()],
-            vec![("receipt".into(), receipt)],
+            vec![root_id.clone()],
+            vec![(root_id.clone(), receipt)],
         )
         .expect("snapshot");
         let change = change.to_owned();
         store.transaction(move |tx|{
-            if change=="alias" {tx.execute("UPDATE runtime_tool_request_aliases SET request='changed'",[])?;}
-            else {tx.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.result.success',json('false'))",[])?;}
+            if change=="alias" {tx.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.aliases',json('[\"changed\"]')) WHERE id=?1",[&root_id])?;}
+            else {tx.execute("UPDATE request_results SET result=json_set(result,'$.reply.success',json('false'))",[])?;}
             Ok(())
         }).await.expect("race");
         let write = |_: &Transaction<'_>,
