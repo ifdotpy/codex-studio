@@ -28,8 +28,9 @@ Facts measured on 2026-10-28 at `85663a40a`:
 - Model text reaches the UI after up to 750 ms of buffering in the account worker
   (`account_worker.rs`) and a 200 ms minimum frame interval (`change_notifications.rs`).
 - The live `canvas.sqlite3` is 29.4 GB and `analytics.sqlite3` is 31.8 GB. The
-  conversation is stored in the provider file, `runtime_items`, transcript rows in
-  `sync_entities`, and `analytics_items` (8.1M rows).
+  conversation is stored in the provider file, `runtime_items`, and transcript rows in
+  `sync_entities`. `analytics_items` (8.1M rows, about 480 compressed bytes each) holds
+  item timings, not message text, and the transcript reads reasoning timings from it.
 
 ## Decision
 
@@ -50,6 +51,11 @@ Desktop window (Tauri)          Phone (PWA) or UI-only computer
 | Provider adapter | Translation to the provider protocol, a list of capabilities                                | Queue and state                                   |
 
 - The server serves the frontend. The browser, the PWA, and the Tauri window load the same code.
+- A remote frontend connects directly to each server, with its own key for each server.
+  It does not go through another server.
+- The servers maintain the list of servers together. Each server shares its paired
+  servers, and a frontend learns the full list and gets UI access to each server from
+  any server that it reaches.
 - The PWA and Web Push stay.
 
 ### One command path
@@ -93,7 +99,7 @@ It needs a `tailscale cert` certificate, an `h3` ALPN, a UDP port, and the HTTPS
 ## Data-loss rules
 
 - Do not delete a "copy" of data before a check shows that the data exists elsewhere
-  (`analytics_items`, transcript rows in `sync_entities`, client stores).
+  (transcript rows in `sync_entities`, client stores).
 - Rewind, restore, and delete make a layr snapshot first. Items are hidden, not deleted.
 - The device keeps unsent input until the server confirms it.
 - Blob order: write the blob, fsync, then write the row. Blob collection uses mark and sweep with a delay.
@@ -112,9 +118,7 @@ It needs a `tailscale cert` certificate, an `h3` ALPN, a UDP port, and the HTTPS
 
 ## Open questions
 
-- **Reaching other servers from the phone:** directly with a key for each server (as now),
-  or through a gateway server. A gateway makes the phone depend on one machine that can
-  sleep, and one session would then reach every server.
-- **Analytics:** which features read text from `analytics_items`.
-- **Ownership:** most steps change backend code that Sasha owns (#37).
+- **Analytics size:** `analytics.sqlite3` is 31.8 GB, but `analytics_items` explains only
+  about 4 GB. Measure `dbstat` on an APFS clone before any analytics change.
+- **Ownership:** most steps change backend code that Sasha owns (#37). Agree each step with him.
 - **Upgrade:** a protocol change needs all paired servers on the same version.
