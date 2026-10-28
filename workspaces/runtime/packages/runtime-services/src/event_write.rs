@@ -788,6 +788,28 @@ mod tests {
         Transaction,
     };
 
+    #[test]
+    fn retired_non_v7_request_is_expired_before_mutation() {
+        let mut db = Connection::open_in_memory().expect("database");
+        studio_runtime_store::receipt_schema::create(&db).expect("receipts");
+        db.execute_batch("CREATE TABLE counter(n INTEGER NOT NULL); INSERT INTO counter VALUES(0)")
+            .expect("owner");
+        let tx = db.transaction().expect("transaction");
+        let root = "279bc183-b81e-4003-a05c-bb8e3f440bc4";
+        let result = super::begin_request::<Value>(
+            &tx,
+            super::RequestKey::new("work", &[], root),
+            "signature",
+            1_000_001,
+        );
+        assert!(matches!(result, Err(RequestResultError::Expired)));
+        assert_eq!(
+            tx.query_row("SELECT n FROM counter", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("memory database opens");
         connection

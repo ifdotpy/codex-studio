@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_schema::persistence::{
     DeliveryStatus, MigrationStatus, OutboxKind, OutboxStatus, OwnerKind, RecipientDelivery,
-    WorkEffectStatus,
+    ToolRequestKind, ToolRequestOutcome, ToolRequestStatus, WorkEffectStatus,
 };
 
 use crate::outbox::{Outbox, OutboxRow};
@@ -27,6 +27,8 @@ const SOURCE: &str = "runtime_operation_receipts";
 /// Persistent count of classified completed settings markers without a replay body.
 pub(super) const DELETED_SETTINGS_REPORT: &str = "deleted-completed-c:settings";
 pub(super) const DELETED_USER_MESSAGE_REPORT: &str = "deleted-completed-c:user-message";
+const DELETED_MODE_REPORT: &str = "deleted-completed-c:agent-mode";
+const DELETED_WORK_REFUSAL_REPORT: &str = "deleted-completed-c:work-refusal";
 /// Closed W2e audit (89dabbd591): these synchronous owners saved only the reply,
 /// never the exact original body. Their old spaced hashes cannot be normalized.
 const CHANGED_SYNCHRONOUS_SIGNATURES: &[(&str, &str)] = &[
@@ -45,6 +47,43 @@ struct WorkspaceKindView {
     source: Option<WorkspaceSource>,
     provider_admission: Option<AdmittedRequest>,
     root_request_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct LegacyModeReply {
+    applied: bool,
+    concurrency: u64,
+    agent_mode: String,
+    agent_mode_revision: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct LegacyWorkRefusal {
+    message: String,
+    #[serde(rename = "errors")]
+    _errors: Vec<LegacyWorkError>,
+    failed_submits: u64,
+    limit: u64,
+    retry_allowed: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyWorkError {
+    #[serde(rename = "path")]
+    _path: String,
+    #[serde(rename = "message")]
+    _message: String,
+}
+
+#[derive(Deserialize)]
+struct LegacyRefusalOwner {
+    id: String,
+    kind: ToolRequestKind,
+    stage: ToolRequestStatus,
+    outcome: ToolRequestOutcome,
 }
 
 #[derive(Deserialize)]
@@ -163,6 +202,58 @@ impl ReceiptFamilyMigration for Family {
             }
             if hash_signature && reply == json!({"applied":true}) {
                 discard_completed_reply(tx, &row, DELETED_SETTINGS_REPORT, checkpoint.cutover_ms)?;
+                continue;
+            }
+            if reply.get("agentMode").is_some() && reply.get("applied").is_some() {
+                let mode = LegacyModeReply::deserialize(&reply)
+                    .map_err(|_| unclassifiable(source, &row.id, &row.signature))?;
+                if !mode.applied
+                    || !matches!(mode.agent_mode.as_str(), "single" | "multi")
+                    || (mode.concurrency == 0) != (mode.agent_mode == "single")
+                {
+                    return Err(unclassifiable(source, &row.id, &row.signature));
+                }
+                let _revision = mode.agent_mode_revision;
+                discard_completed_reply(tx, &row, DELETED_MODE_REPORT, checkpoint.cutover_ms)?;
+                continue;
+            }
+            if let Some(value) = reply.get("submissionRefusal") {
+                let invalid = || unclassifiable(source, &row.id, &row.signature);
+                let refusal = LegacyWorkRefusal::deserialize(value).map_err(|_| invalid())?;
+                if !schema("PersistedWorkItemRecord", &reply)
+                    || reply.get("rootId").and_then(Value::as_str).is_none()
+                    || reply.get("title").and_then(Value::as_str).is_none()
+                    || refusal.message != "Result does not satisfy the task result contract"
+                    || refusal.limit != studio_runtime_schema::task_results::MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT
+                    || refusal.failed_submits > refusal.limit
+                    || refusal.retry_allowed != (refusal.failed_submits < refusal.limit)
+                { return Err(invalid()); }
+                if crate::receipt_migration_contract::source_exists(tx, "runtime_tool_requests")? {
+                    let owner: Option<String> = tx
+                        .query_row(
+                            "SELECT record FROM runtime_tool_requests WHERE id=?1",
+                            [&row.id],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    if let Some(owner) = owner {
+                        let owner: LegacyRefusalOwner =
+                            serde_json::from_str(&owner).map_err(|_| invalid())?;
+                        if owner.id != row.id
+                            || owner.kind != ToolRequestKind::ManagedTool
+                            || owner.stage != ToolRequestStatus::Failed
+                            || owner.outcome != ToolRequestOutcome::NotApplied
+                        {
+                            return Err(invalid());
+                        }
+                    }
+                }
+                discard_completed_reply(
+                    tx,
+                    &row,
+                    DELETED_WORK_REFUSAL_REPORT,
+                    checkpoint.cutover_ms,
+                )?;
                 continue;
             }
             let mut actor = row
@@ -1325,6 +1416,107 @@ mod tests {
     }
     fn plan() -> Value {
         json!({"id":"agent","rootId":"root","text":"original","version":1,"updated":1.0})
+    }
+    #[test]
+    fn receipts_requests_legacy_mode_and_work_refusal_are_counted_and_fenced() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        let mode_id = "279bc183-b81e-4003-a05c-bb8e3f440bc4";
+        let work_id = "0000000f-4240-7000-8000-000000000000";
+        db.execute_batch(
+            "CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let tool =
+            json!({"id":work_id,"kind":"managed_tool","stage":"failed","outcome":"not_applied"})
+                .to_string();
+        db.execute(
+            "INSERT INTO runtime_tool_requests VALUES(?1,?2)",
+            params![work_id, tool],
+        )
+        .unwrap();
+        let mode =
+            json!({"applied":true,"concurrency":2,"agentMode":"multi","agentModeRevision":1});
+        let work = json!({"id":"task","rootId":"root","title":"Task","status":"ready","created":1.0,"updated":2.0,"version":1,"submissionRefusal":{"message":"Result does not satisfy the task result contract","errors":[{"path":"/value","message":"invalid"}],"failedSubmits":1,"limit":3,"retryAllowed":true}});
+        insert(&db, mode_id, mode);
+        insert(&db, work_id, work);
+        migrate(&mut db);
+        let tx = db.transaction().expect("transaction");
+        assert_eq!(
+            tx.query_row(
+                "SELECT record FROM runtime_tool_requests WHERE id=?1",
+                [work_id],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            tool
+        );
+        for report in [
+            "deleted-completed-c:agent-mode",
+            "deleted-completed-c:work-refusal",
+        ] {
+            assert_eq!(
+                MigrationCheckpoint::load(&tx, ID, report)
+                    .expect("report")
+                    .expect("counter")
+                    .cursor,
+                1
+            );
+        }
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(
+            studio_runtime_schema::persistence::RequestIdentity::new("work", &[], mode_id, &[])
+                .is_err()
+        );
+        let identity =
+            studio_runtime_schema::persistence::RequestIdentity::new("work", &[], work_id, &[])
+                .expect("v7");
+        assert!(identity.validate(CUTOVER + 1, CUTOVER).is_err());
+    }
+    #[test]
+    fn receipts_requests_malformed_legacy_completion_is_preserved() {
+        for reply in [
+            json!({"applied":true,"concurrency":"bad","agentMode":"multi","agentModeRevision":1}),
+            json!({"id":"task","rootId":"root","title":"Task","status":"ready","submissionRefusal":{"message":"bad","errors":"bad","failedSubmits":1,"limit":3,"retryAllowed":true}}),
+        ] {
+            let mut db = Connection::open_in_memory().unwrap();
+            fixture(&mut db);
+            insert(&db, "bad", reply);
+            let tx = db.transaction().unwrap();
+            let cp = MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).unwrap();
+            assert!(Family.move_batch(&tx, SOURCE, &cp).is_err());
+            assert_eq!(
+                tx.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+    }
+    #[test]
+    fn receipts_requests_work_refusal_with_other_tool_state_is_preserved() {
+        let mut db = Connection::open_in_memory().unwrap();
+        fixture(&mut db);
+        db.execute_batch("CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL); INSERT INTO runtime_tool_requests VALUES('request','{\"id\":\"request\",\"kind\":\"managed_tool\",\"stage\":\"interrupted\",\"outcome\":\"unknown\"}')").unwrap();
+        insert(
+            &db,
+            "request",
+            json!({"id":"task","rootId":"root","title":"Task","status":"ready","submissionRefusal":{"message":"Result does not satisfy the task result contract","errors":[],"failedSubmits":1,"limit":3,"retryAllowed":true}}),
+        );
+        let tx = db.transaction().unwrap();
+        let cp = MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).unwrap();
+        assert!(Family.move_batch(&tx, SOURCE, &cp).is_err());
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
     #[test]
     fn receipts_requests_missing_outer_keeps_unknown_owner_and_replays_inner() {
