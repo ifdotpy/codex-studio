@@ -604,7 +604,9 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
     let envelope = json!({"requestId":"legacy","action":"add_location","payload":payload});
     let encoded = studio_runtime_services::remote_transport::canonical_json(&envelope)
         .expect("canonical envelope");
-    store.transaction(move|tx|{tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,next_at,attempts) VALUES('legacy','peer',?1,'queued',1,0,0)",[encoded])?;Ok(())}).await.expect("legacy reservation");
+    let fingerprint = studio_runtime_store::sha256_hex(encoded.as_bytes());
+    let saved_fingerprint = fingerprint.clone();
+    store.transaction(move|tx|{tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,next_at,attempts,fingerprint) VALUES('legacy','peer',?1,'queued',1,0,0,?2)",rusqlite::params![encoded,fingerprint])?;Ok(())}).await.expect("legacy reservation");
     let replay = payload.clone();
     store
         .transaction_with(move |tx| {
@@ -625,16 +627,31 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
         0,
         "legacy uncertain writes retain their existing no-resend policy"
     );
+    let scoped = studio_runtime_store::multi_server_delivery::remote_operation_key(
+        "server-outbox", &["peer"], "legacy", &["add_location"],
+    );
+    let token_json = format!(
+        "{{\"id\":{},\"signature\":\"{}\",\"created\":{}}}",
+        serde_json::to_string(&scoped).expect("scoped id"), saved_fingerprint,
+        chrono::Utc::now().timestamp_millis(),
+    );
+    let token: studio_runtime_store::request_results::AdmittedRequest =
+        serde_json::from_str(&token_json).expect("legacy admission");
+    let saved = studio_runtime_store::multi_server_delivery::SavedRemoteReply {
+        principal: None, server: Some("peer".into()), actor: None, body: None,
+        response: studio_runtime_store::multi_server_delivery::RemoteReply {
+            request_id: "legacy".into(),
+            outcome: studio_runtime_schema::persistence::RemoteOutcome::Applied,
+            value: Some(serde_json::value::RawValue::from_string("{\"retained\":true}".into()).expect("reply")),
+            error: None, waiting_for: None,
+        },
+    };
     store
-        .transaction(|tx| {
-            tx.execute(
-                "UPDATE runtime_server_outbox SET state='complete',result=?1 WHERE id='legacy'",
-                [
-                    json!({"requestId":"legacy","outcome":"applied","value":{"retained":true}})
-                        .to_string(),
-                ],
-            )?;
-            Ok(())
+        .transaction_with(move |tx| {
+            studio_runtime_services::event_write::settle_request(tx, &token, None, &saved)
+                .expect("settle legacy receipt");
+            tx.execute("DELETE FROM runtime_server_outbox WHERE id='legacy'", [])?;
+            Ok::<_, studio_runtime_services::multi_server_transport::AccessError>(())
         })
         .await
         .expect("retained legacy receipt");
