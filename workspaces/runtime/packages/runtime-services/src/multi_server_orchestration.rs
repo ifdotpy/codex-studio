@@ -1387,7 +1387,7 @@ fn durable_anchor_input_receipt(
     transaction: &Transaction<'_>,
     principal: &str,
     envelope: &Envelope,
-) -> Result<Option<Value>, AccessError> {
+) -> Result<Option<Box<serde_json::value::RawValue>>, AccessError> {
     let payload = &envelope.payload;
     if envelope.action.as_str() != "input"
         || payload
@@ -1447,7 +1447,9 @@ fn durable_anchor_input_receipt(
             "invalid_record",
             "Stored remote message receipt is invalid",
         )
-    })
+    })?
+    .map(|receipt| serde_json::value::to_raw_value(&receipt).map_err(|_| invalid_receipt()))
+    .transpose()
 }
 
 async fn receive_remote_input(
@@ -1656,7 +1658,8 @@ async fn receive_remote_input(
                     now,
                 )
                 .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
-                return Ok::<Value, AccessError>(json!({"eventId":key}));
+                return serde_json::value::to_raw_value(&json!({"eventId":key}))
+                    .map_err(|_| invalid_receipt());
             }
             if matches!(kind.as_str(), "user" | "followup") {
                 let admission = admission.as_ref().ok_or_else(|| {
@@ -1674,7 +1677,8 @@ async fn receive_remote_input(
                     admission,
                 )
                 .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
-                return Ok(posted.receipt);
+                return serde_json::value::to_raw_value(&posted.receipt)
+                    .map_err(|_| invalid_receipt());
             }
             crate::event_write::enqueue_recovery_event(
                 tx,
@@ -1685,10 +1689,10 @@ async fn receive_remote_input(
                 now,
             )
             .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
-            Ok(json!({"eventId":key}))
+            serde_json::value::to_raw_value(&json!({"eventId":key})).map_err(|_| invalid_receipt())
         })
         .await?;
-    applied(&result)
+    Ok(ExchangeOutcome::Applied(AppliedReply::new(result)))
 }
 
 fn callback_error(error: crate::provider_callbacks::CallbackError) -> AccessError {
@@ -3243,7 +3247,7 @@ impl OrchestrationDriver {
                 })
                 && let Some(receipt) = durable_anchor_input_receipt(tx, &principal_for_claim, &envelope_for_claim)?
             {
-                let result = applied(&receipt)?;
+                let result = ExchangeOutcome::Applied(AppliedReply::new(receipt));
                 let stored_result = serde_json::to_string(&result.to_reply(&envelope_for_claim.root)).map_err(|_| invalid_receipt())?;
                 if stored_result.len() > MAX_RESPONSE_BYTES {
                     return Ok((
