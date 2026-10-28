@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./request-id": "./request-id.ts"
+    "./request-id": "./request-id.ts",
+    "./*.ts": "./*.ts"
   },
   "scripts": {
     "test": "vitest run --config vitest.config.ts",
