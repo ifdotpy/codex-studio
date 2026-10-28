@@ -1536,6 +1536,31 @@ mod tests {
         );
     }
     #[test]
+    fn receipts_actions_legacy_numeric_ticket_remains_readable() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        db.execute("INSERT INTO runtime_agents VALUES('agent',?1)", [json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"running","startAttempt":{"id":"attempt","requestTicket":91}}).to_string()]).expect("legacy agent");
+        batch(&mut db, "runtime_agents").expect("migrate agent");
+        let raw: String = db
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id='agent'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("agent");
+        let agent = crate::AgentRecord::from_value(serde_json::from_str(&raw).expect("JSON"))
+            .expect("agent record");
+        assert_eq!(
+            agent
+                .start_attempt()
+                .expect("typed start attempt")
+                .expect("attempt")
+                .request_ticket
+                .as_deref(),
+            Some("91")
+        );
+    }
+    #[test]
     fn receipts_actions_fixtures_exact_replies_and_unknown_survive_reopen() {
         let dir = tempfile::tempdir().expect("directory");
         let path = dir.path().join("test.db");
