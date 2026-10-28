@@ -1,7 +1,7 @@
 //! Transactional location outbox and tool-receipt persistence. No delivery occurs here.
 use crate::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
-use crate::{StoreError, StoreResult, ToolResultRecord};
+use crate::{StoreError, StoreResult};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
@@ -77,13 +77,18 @@ impl ProjectLocationsRepository {
         record: &Value,
         result: &Value,
     ) -> StoreResult<()> {
-        let admitted: AdmittedRequest = serde_json::from_value(record["admitted"].clone())?;
+        let raw: String = tx.query_row(
+            "SELECT json_extract(record,'$.admitted') FROM runtime_tool_requests WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        let admitted: AdmittedRequest = serde_json::from_str(&raw)?;
         RequestResults::settle(
             tx,
             &admitted,
             &ResultEnvelope {
                 actor: record["agent"].as_str().map(str::to_owned),
-                reply: ToolResultRecord::from_value(result.clone())?,
+                reply: result,
                 references: Vec::new(),
             },
         )?;

@@ -74,20 +74,20 @@ mod receipt_tests {
 
     #[test]
     fn location_reply_preserves_missing_and_null_origin() {
-        for value in [
-            json!({"serverId":"peer"}),
-            json!({"serverId":"peer","gitOrigin":null}),
-            json!({"serverId":"peer","gitOrigin":"origin"}),
+        for raw in [
+            r#"{"serverId":"peer"}"#,
+            r#"{"serverId":"peer","gitOrigin":null}"#,
+            r#"{"serverId":"peer","gitOrigin":"origin"}"#,
         ] {
-            let parsed: LocationValue =
-                serde_json::from_value(value.clone()).expect("location value");
-            assert_eq!(json!(parsed), value);
+            let parsed: LocationValue = serde_json::from_str(raw).expect("location value");
+            assert_eq!(
+                json!(parsed),
+                serde_json::from_str::<Value>(raw).expect("expected value")
+            );
         }
         assert!(
-            serde_json::from_value::<LocationResult>(
-                json!({"requestId":"request","outcome":"other"})
-            )
-            .is_err()
+            serde_json::from_str::<LocationResult>(r#"{"requestId":"request","outcome":"other"}"#)
+                .is_err()
         );
     }
 
@@ -95,15 +95,15 @@ mod receipt_tests {
     fn location_request_signatures_keep_wire_bytes() {
         for (args, expected) in [
             (
-                json!({"action":"add_location","project":" /project ","server":" peer ","path":" /remote "}),
+                r#"{"action":"add_location","project":" /project ","server":" peer ","path":" /remote "}"#,
                 "410fb9b76817bc6e6398e5abdf5c23acba654d3e2767fc97291efdb766e38adb",
             ),
             (
-                json!({"action":"remove_location","project":"/project","server":"peer"}),
+                r#"{"action":"remove_location","project":"/project","server":"peer"}"#,
                 "b5c0f952f316204ce5bdef1a5d08f89fe93d3078338d7ee544d3bfddd551cd45",
             ),
         ] {
-            let args: LocationIngress = serde_json::from_value(args).expect("valid arguments");
+            let args: LocationIngress = serde_json::from_str(args).expect("valid arguments");
             assert_eq!(
                 LocationRequest::parse(args, Some("local-id"))
                     .expect("request")
@@ -113,10 +113,10 @@ mod receipt_tests {
             );
         }
         for invalid in [
-            json!({"action":"add_location","project":"/project","server":"peer"}),
-            json!({"action":"remove_location","project":"/project","server":"peer","path":"/remote"}),
+            r#"{"action":"add_location","project":"/project","server":"peer"}"#,
+            r#"{"action":"remove_location","project":"/project","server":"peer","path":"/remote"}"#,
         ] {
-            assert!(serde_json::from_value::<LocationIngress>(invalid).is_err());
+            assert!(serde_json::from_str::<LocationIngress>(invalid).is_err());
         }
     }
 

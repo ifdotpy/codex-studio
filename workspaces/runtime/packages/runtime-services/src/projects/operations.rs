@@ -2,14 +2,6 @@ use super::*;
 use crate::event_write::{CallerAdmission, RequestKey, begin_request};
 use std::sync::Arc;
 
-use studio_runtime_store::ProjectLocationRecord as ProjectReply;
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SidebarReply {
-    revision: u64,
-    groups: std::collections::BTreeMap<String, Vec<String>>,
-}
-
 pub async fn peer_team_write(
     store: Arc<RuntimeStore>,
     body: Value,
@@ -21,9 +13,6 @@ pub async fn peer_team_write(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    if action == "radio" {
-        return crate::radio_runtime::manage_http(Arc::clone(&store), &body).await;
-    }
     if action == "convert" {
         return crate::peer_conversion::convert(Arc::clone(&store), &body).await;
     }
@@ -105,9 +94,9 @@ pub async fn peer_team_write(
     store.transaction_with(move |tx| {
         prepared.recheck(tx)?;
         let server = RuntimeStore::transaction_local_server_id(tx)?.ok_or(ProjectsError::Invalid("The local server ID is unavailable"))?;
-        let admitted = match begin_request::<ProjectReply>(tx,RequestKey::new("peer-team", &[&server,"owner-api"], &request_id).raw(&key).operation(&["write"]), &signature,(now_seconds()*1000.0) as i64).map_err(StoreError::from)? {
+        let admitted = match begin_request::<Box<serde_json::value::RawValue>>(tx,RequestKey::new("peer-team", &[&server,"owner-api"], &request_id).raw(&key).operation(&["write"]), &signature,(now_seconds()*1000.0) as i64).map_err(StoreError::from)? {
             CallerAdmission::Fresh(admitted) => admitted,
-            CallerAdmission::Replay(reply) => return Ok(json!(reply)),
+            CallerAdmission::Replay(reply) => return serde_json::from_str(reply.get()).map_err(StoreError::from).map_err(Into::into),
         };
         let mut project = match load_project(tx, &path)? {
             Some(project) => project,
@@ -174,7 +163,7 @@ pub async fn peer_team_write(
         }
         for id in previous_ids.difference(&live_ids) { SyncDocumentsRepository::put_entity(tx, "peerTeam", id, json!({}), true)?; }
         refresh_project_rooms(tx, &path, &prepared)?;
-        let reply: ProjectReply = serde_json::from_value(project.clone()).map_err(StoreError::from)?;
+        let reply = serde_json::value::to_raw_value(&project).map_err(StoreError::from)?;
         crate::event_write::settle_request(tx, &admitted, None, &reply).map_err(StoreError::from)?;
         Ok(project)
     }).await
@@ -346,7 +335,7 @@ pub(super) async fn reorder(store: &RuntimeStore, mut body: Value) -> Result<Val
         .transaction_with(move |tx| -> Result<Value, ProjectsError> {
             let server = RuntimeStore::transaction_local_server_id(tx)?
                 .ok_or(ProjectsError::Invalid("The local server ID is unavailable"))?;
-            let admitted = match begin_request::<SidebarReply>(
+            let admitted = match begin_request::<Box<serde_json::value::RawValue>>(
                 tx,
                 RequestKey::new("sidebar-order", &[&server, "owner-api"], &request_id)
                     .raw(&key)
@@ -357,7 +346,11 @@ pub(super) async fn reorder(store: &RuntimeStore, mut body: Value) -> Result<Val
             .map_err(StoreError::from)?
             {
                 CallerAdmission::Fresh(admitted) => admitted,
-                CallerAdmission::Replay(reply) => return Ok(json!(reply)),
+                CallerAdmission::Replay(reply) => {
+                    return serde_json::from_str(reply.get())
+                        .map_err(StoreError::from)
+                        .map_err(Into::into);
+                }
             };
             let current = ProjectsRepository::sidebar_order(tx)?;
             let revision = current.get("revision").and_then(Value::as_u64).ok_or(
@@ -380,14 +373,12 @@ pub(super) async fn reorder(store: &RuntimeStore, mut body: Value) -> Result<Val
                     "Sidebar order changed. Refreshed from the server",
                 ));
             }
-            let result = SidebarReply {
-                revision: revision.saturating_add(1),
-                groups: serde_json::from_value(groups).map_err(StoreError::from)?,
-            };
-            ProjectsRepository::put_sidebar_order(tx, &json!(result))?;
-            crate::event_write::settle_request(tx, &admitted, None, &result)
+            let result = json!({"revision":revision.saturating_add(1),"groups":groups});
+            ProjectsRepository::put_sidebar_order(tx, &result)?;
+            let reply = serde_json::value::to_raw_value(&result).map_err(StoreError::from)?;
+            crate::event_write::settle_request(tx, &admitted, None, &reply)
                 .map_err(StoreError::from)?;
-            Ok(json!(result))
+            Ok(result)
         })
         .await
 }
