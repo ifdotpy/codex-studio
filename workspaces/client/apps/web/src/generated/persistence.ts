@@ -345,6 +345,7 @@ export const ExecutionEffectKindValues = [
   "tool_requests",
   "requests",
   "monitors",
+  "task_submit",
   "unrecognized",
 ] as const;
 export type ExecutionEffectKind = (typeof ExecutionEffectKindValues)[number];
@@ -483,6 +484,9 @@ export const EventKindValues = [
   "shell_policy",
   "work_released",
   "work_result_invalid",
+  "context_repair_wait",
+  "monitor_correction",
+  "rule_hold",
 ] as const;
 export type EventKind = (typeof EventKindValues)[number];
 export const EventStatusValues = [

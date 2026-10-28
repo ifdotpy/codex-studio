@@ -138,3 +138,31 @@ impl ReceiptFamilyMigration for Family {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn receipt_checks_accepts_historical_recovery_event_kinds() {
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_events(id TEXT PRIMARY KEY,kind TEXT,status TEXT); INSERT INTO runtime_events VALUES('one','context_repair_wait','pending'),('two','monitor_correction','cancelled'),('three','rule_hold','delivered')").expect("historical events");
+        let tx = db.transaction().expect("transaction");
+        let checkpoint = MigrationCheckpoint {
+            cursor: 0,
+            status: MigrationStatus::Running,
+            cutover_ms: 1000,
+        };
+        let next = Family
+            .move_batch(&tx, "runtime_events", &checkpoint)
+            .expect("classify");
+        assert_eq!(next.cursor, 3);
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_events", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+        tx.execute_batch(&format!("CREATE TABLE checked_events(kind TEXT {}); INSERT INTO checked_events SELECT kind FROM runtime_events", enum_check::<EventKind>("kind"))).expect("enum-backed check accepts historical kinds");
+    }
+}
