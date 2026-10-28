@@ -711,8 +711,9 @@ pub fn claim(
     let result = ProcessActionResult {
         request_id: id.into(),
         status: ProcessActionStatus::Uncertain,
-        processes: entries,
+        processes: Some(entries),
         response: None,
+        extra: Default::default(),
     };
     let root_request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let admitted = match begin_request::<ProcessActionResult>(
@@ -795,19 +796,33 @@ pub fn receipt(connection: &Connection, query: &Value) -> Result<ProcessReceipt,
     if !exists {
         return input_receipt(connection, query);
     }
-    let record = raw(
-        connection,
-        "runtime_process_actions",
-        text(query, "requestId", ""),
-    )?;
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct StoredReceipt {
+        scope_agent: String,
+        scope_account_key: String,
+        scope_epoch: i64,
+        result: ProcessActionResult,
+    }
+    let record: Option<String> = connection
+        .query_row(
+            "SELECT record FROM runtime_process_actions WHERE id=?",
+            [text(query, "requestId", "")],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(StoreError::from)?;
+    let record: Option<StoredReceipt> = record
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(StoreError::from)?;
     if let Some(record) = record
-        && record["scopeAgent"] == query["agent"]
-        && record["scopeAccountKey"] == query["accountKey"]
-        && record["scopeEpoch"] == query["epoch"]
+        && record.scope_agent == query["agent"]
+        && record.scope_account_key == query["accountKey"]
+        && record.scope_epoch == query["epoch"]
     {
-        return ProcessReceipt::found(record["result"].clone())
-            .map_err(StoreError::from)
-            .map_err(Error::from);
+        return Ok(ProcessReceipt::found(record.result));
     }
     input_receipt(connection, query)
 }
