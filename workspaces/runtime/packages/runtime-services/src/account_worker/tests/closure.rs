@@ -321,45 +321,26 @@ pub(super) async fn scenario_old_generation_pending_text_is_materialized_and_rec
             .await;
         peer.acknowledged(marker).await;
         replacement.shutdown().await.unwrap();
-        let (text, bookkeeping, retained, checkpoint) = state.bridge.run(|store| async move {
+        let (text, bookkeeping, calls, checkpoint) = state.bridge.run(|store| async move {
             let db=store.test_reader()?;
             let text=db.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE id LIKE '%:generation'",[],|r|r.get::<_,String>(0))?;
             let calls=db.prepare("SELECT payload FROM runtime_outbox WHERE account='default' AND kind=?1")?
                 .query_map([OutboxKind::ProviderCall],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?
                 .into_iter().map(|raw|serde_json::from_str::<store::ProviderCall>(&raw).map_err(StoreError::from)).collect::<Result<Vec<_>,_>>()?;
-            let retained=calls.into_iter().filter_map(|call|match call {store::ProviderCall::Retained(call)=>Some(call),store::ProviderCall::Account(_)=>None}).collect::<Vec<_>>();
             let all:i64=db.query_row("SELECT COUNT(*) FROM runtime_outbox WHERE account='default'",[],|row|row.get(0))?;
             let owner_count:i64=db.query_row("SELECT COUNT(*) FROM runtime_account_state WHERE account='default'",[],|row|row.get(0))?;
             assert_eq!(owner_count,1,"the host keeps one current stream owner across generations");
             let checkpoint=db.query_row("SELECT connection_generation,journal_ack FROM runtime_account_state WHERE account='default'",[],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?)))?;
-            Ok((text,all-retained.len() as i64+owner_count,retained,checkpoint))
+            Ok((text,all+owner_count,calls,checkpoint))
         }).await.unwrap();
         assert_eq!(text, "old generation text");
         assert!(
             bookkeeping <= 4,
             "generation churn retained {bookkeeping} worker owner/obligation rows"
         );
-        assert_eq!(
-            retained.len(),
-            1,
-            "generation {generation} keeps only the original unknown history read"
-        );
-        let call = &retained[0];
-        assert_eq!(call.call.method, Method::ThreadRead);
         assert!(
-            call.request.is_some(),
-            "submission proof stays on the unknown call"
-        );
-        assert!(
-            call.written,
-            "transport write proof survives generation replacement"
-        );
-        assert_eq!(
-            call.outcome
-                .as_ref()
-                .expect("unknown outcome retained")
-                .result,
-            crate::account_worker::retained::RequestResult::Unknown
+            calls.is_empty(),
+            "read-only recovery leaves no provider obligation"
         );
         assert_eq!(
             checkpoint.0,

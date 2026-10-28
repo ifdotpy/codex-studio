@@ -663,12 +663,20 @@ async fn vm_existing_reattach_on_demand_read_reuses_the_existing_actor_connectio
     assert!(matches!(receipt.result, RequestResult::Reply(_)));
     assert_eq!(guest.infos.load(std::sync::atomic::Ordering::SeqCst), 2);
     let repeated = port.request(request).await.unwrap();
-    assert!(repeated.replayed);
+    assert!(
+        !repeated.replayed,
+        "side-effect-free reads bypass replay storage"
+    );
     {
         let native = guest.inner.state.lock().unwrap();
         assert_eq!(native.starts, 1);
-        assert_eq!(native.writes.len(), 1);
-        assert_eq!(native.writes[0]["method"], "thread/read");
+        assert_eq!(native.writes.len(), 2);
+        assert!(
+            native
+                .writes
+                .iter()
+                .all(|write| write["method"] == "thread/read")
+        );
         assert!(native.stops.is_empty());
     }
     worker.shutdown().await.unwrap();
@@ -734,11 +742,19 @@ async fn vm_reattach_read_waits_for_handshake_and_rechecks_authority() {
             assert!(guest.inner.state.lock().unwrap().writes.is_empty());
         } else {
             assert!(matches!(result.unwrap().result, RequestResult::Reply(_)));
-            assert!(port.request(request).await.unwrap().replayed);
+            assert!(
+                !port.request(request).await.unwrap().replayed,
+                "side-effect-free reads bypass replay storage"
+            );
             let native = guest.inner.state.lock().unwrap();
             assert_eq!(native.starts, 1);
-            assert_eq!(native.writes.len(), 1);
-            assert_eq!(native.writes[0]["method"], "thread/read");
+            assert_eq!(native.writes.len(), 2);
+            assert!(
+                native
+                    .writes
+                    .iter()
+                    .all(|write| write["method"] == "thread/read")
+            );
             assert!(native.stops.is_empty());
         }
         worker.shutdown().await.unwrap();
