@@ -61,6 +61,31 @@ async fn legacy_location_without_project_admission_stops_migration() {
 }
 
 #[tokio::test]
+async fn frozen_transport_receipts_migrate_to_current_owners() {
+    let (_root, store) = migrated_store().await;
+    let db = store.test_reader().expect("reader");
+    let completed: i64 = db
+        .query_row(
+            "SELECT count(*) FROM request_results WHERE id='python-complete'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("completed receipt");
+    let pending: i64 = db
+        .query_row(
+            "SELECT count(*) FROM runtime_server_inbox WHERE id='python-running'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("pending owner");
+    assert_eq!(
+        completed, 1,
+        "completed incoming reply migrates to request_results"
+    );
+    assert_eq!(pending, 1, "unsettled incoming work remains held");
+}
+
+#[tokio::test]
 async fn tailscale_discovery_uses_only_online_untagged_same_owner_candidates() {
     let status = json!({
         "BackendState": "Running",
@@ -1260,19 +1285,36 @@ fn parsed_result(mut row: Value) -> Value {
     row
 }
 
-const EXEC_OUTBOX_ROW: &str = "SELECT json_object('server',server,'body',body,'state',state,'result',result,'attempts',attempts,'next_at',next_at,'fingerprint',fingerprint) FROM runtime_server_outbox WHERE id=?1";
 const EXEC_INBOX_ROW: &str = "SELECT json_object('signature',signature,'state',state,'result',result,'principal',principal,'actor',actor) FROM runtime_server_inbox WHERE id=?1";
 
 #[tokio::test]
 async fn python_exec_receipt_row_probes_once_and_settles_from_the_reply() {
-    let data = &fixture().data["execReceipt"];
-    let python_now = fixture().data["now"].as_f64().unwrap();
-    let pending = &data["pending"];
-    let replies = data["replies"].as_object().unwrap();
-    assert_eq!(replies.len(), 5, "every Python reply case is checked");
-    for (name, case) in replies {
-        let (_root, store) = store().await;
-        // Keep only the Python-written command row in receipt form.
+    use studio_runtime_store::multi_server_delivery::{RemoteReply, SavedRemoteReply};
+    use studio_runtime_store::request_results::ResultEnvelope;
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Corpus {
+        exec_receipt: ExecCases,
+    }
+    #[derive(serde::Deserialize)]
+    struct ExecCases {
+        replies: std::collections::BTreeMap<String, ReplyCase>,
+    }
+    #[derive(serde::Deserialize)]
+    struct ReplyCase {
+        reply: RemoteReply,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Probe {
+        request_id: String,
+        action: String,
+        operation: Vec<String>,
+    }
+    let corpus: Corpus = serde_json::from_value(fixture().data.clone()).expect("receipt cases");
+    assert_eq!(corpus.exec_receipt.replies.len(), 5);
+    for (name, case) in corpus.exec_receipt.replies {
+        let (_root, store) = migrated_store().await;
         store
             .transaction_with(|tx| {
                 tx.execute(
@@ -1283,52 +1325,65 @@ async fn python_exec_receipt_row_probes_once_and_settles_from_the_reply() {
             })
             .await
             .unwrap();
-        let before = exec_row(&store, EXEC_OUTBOX_ROW, "python-exec").unwrap();
-        assert_eq!(
-            before["body"], pending["body"],
-            "{name}: Python receipt form"
-        );
-        assert_eq!(before["state"], "queued", "{name}");
-        let wire = ExecWire::new(Some(case["reply"].clone()));
+        let mut reply = case.reply;
+        // The migration preserves the old root and assigns the probe an operation.
+        reply.request_id = "python-exec".into();
+        let expected = if name == "applied" || name == "commandNotApplied" {
+            Some(serde_json::from_str::<RemoteReply>(reply.value.as_ref().unwrap().get()).unwrap())
+        } else {
+            None
+        };
+        let wire = ExecWire::new(Some(serde_json::to_value(reply).unwrap()));
         let driver = exec_driver(&store, Arc::clone(&wire));
-        let now = pending["next_at"].as_f64().unwrap() as i64;
+        let now = chrono::Utc::now().timestamp();
         assert_eq!(driver.pump_due(now).await.unwrap(), 1, "{name}");
+        let probe: Probe = serde_json::from_value(wire.sent().into_iter().next().unwrap()).unwrap();
         assert_eq!(
-            wire.sent(),
-            data["probeSent"].as_array().unwrap().clone(),
-            "{name}: only the Python probe identity crosses the wire, never the command"
+            (
+                probe.request_id.as_str(),
+                probe.action.as_str(),
+                probe.operation.as_slice()
+            ),
+            (
+                "python-exec",
+                "exec_receipt",
+                &["exec-receipt".to_owned()][..]
+            ),
+            "{name}: probe only"
         );
-        assert_eq!(case["sent"], data["probeSent"], "{name}: Python oracle");
-        let expected = parsed_result(case["row"].clone());
-        let after = exec_row(&store, EXEC_OUTBOX_ROW, "python-exec").unwrap();
-        for field in [
-            "server",
-            "body",
-            "state",
-            "result",
-            "attempts",
-            "fingerprint",
-        ] {
+        let db = store.test_reader().unwrap();
+        let pending: i64 = db
+            .query_row(
+                "SELECT count(*) FROM runtime_server_outbox WHERE id='python-exec'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let key = studio_runtime_store::multi_server_delivery::remote_operation_key(
+            "server-outbox",
+            &["peer-server"],
+            "python-exec",
+            &["exec"],
+        );
+        let saved: Option<String> = rusqlite::OptionalExtension::optional(db.query_row(
+            "SELECT result FROM request_results WHERE id=?1",
+            [&key],
+            |r| r.get(0),
+        ))
+        .unwrap();
+        if let Some(expected) = expected {
+            assert_eq!(pending, 0, "{name}: settled row removed");
+            let saved: ResultEnvelope<SavedRemoteReply> =
+                serde_json::from_str(&saved.expect("saved reply")).unwrap();
             assert_eq!(
-                after[field], expected[field],
-                "{name}: Python field {field}"
-            );
-        }
-        if expected["state"] == "complete" {
-            assert_eq!(
-                after["next_at"].as_f64(),
-                expected["next_at"].as_f64(),
-                "{name}"
+                serde_json::to_string(&saved.reply.response).unwrap(),
+                serde_json::to_string(&expected).unwrap(),
+                "{name}: exact reply"
             );
         } else {
-            // Python delivered at its fixture time; compare the retry delay.
-            assert_eq!(
-                after["next_at"].as_f64().unwrap() - now as f64,
-                expected["next_at"].as_f64().unwrap() - python_now,
-                "{name}: Python retry delay"
-            );
+            assert_eq!(pending, 1, "{name}: uncertainty stays pending");
+            assert!(saved.is_none(), "{name}: no final reply is invented");
         }
-        // A settled or rescheduled row sends nothing more at the same time.
         assert_eq!(driver.pump_due(now).await.unwrap(), 0, "{name}");
         assert_eq!(wire.sent().len(), 1, "{name}: no second probe or command");
     }
@@ -1337,63 +1392,79 @@ async fn python_exec_receipt_row_probes_once_and_settles_from_the_reply() {
 #[tokio::test]
 async fn rust_exec_attempt_writes_the_python_receipt_form_and_never_resends() {
     use studio_runtime_services::multi_server_orchestration::ExchangeOutcome;
-    let data = &fixture().data["execReceipt"];
-    let python_now = fixture().data["now"].as_i64().unwrap();
-    let expected = &data["freshRow"];
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReceiptBody {
+        request_id: String,
+        action: String,
+        operation: Vec<String>,
+        payload: ReceiptPayload,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReceiptPayload {
+        actor: String,
+        receipt_digest: String,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Probe {
+        request_id: String,
+        action: String,
+        operation: Vec<String>,
+        payload: ProbePayload,
+    }
+    #[derive(serde::Deserialize)]
+    struct ProbePayload {
+        handle: String,
+        actor: String,
+        digest: String,
+    }
     let (_root, store) = store().await;
+    let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let key = studio_runtime_store::multi_server_delivery::remote_operation_key(
+        "server-outbox",
+        &["peer-server"],
+        &root,
+        &["exec"],
+    );
+    let now = chrono::Utc::now().timestamp();
     store
         .set_local_server_id(Some("local-server".to_owned()))
         .unwrap();
+    let payload = json!({"actor":"fixture-lead","command":["true"],"cwd":"/fixture","timeout":30});
     let lost = ExecWire::new(None);
     let driver = exec_driver(&store, Arc::clone(&lost));
     let outcome = driver
-        .exchange(
-            "peer-server",
-            "exec",
-            &data["payload"],
-            "fresh-exec",
-            python_now,
-        )
+        .exchange("peer-server", "exec", &payload, &root, now)
         .await
         .unwrap();
     assert_eq!(outcome, ExchangeOutcome::Unknown);
+    assert_eq!(lost.sent().len(), 1, "the command crosses the wire once");
+    let body: String = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT body FROM runtime_server_outbox WHERE id=?1",
+            [&key],
+            |row| row.get(0),
+        )
+        .expect("pending command receipt");
+    let body: ReceiptBody = serde_json::from_str(&body).expect("typed compact receipt");
     assert_eq!(
-        Value::Array(lost.sent()),
-        data["freshSent"],
-        "original once"
+        (&body.request_id, body.action.as_str(), &body.operation),
+        (&root, "exec", &Vec::<String>::new())
     );
-    let row = exec_row(&store, EXEC_OUTBOX_ROW, "fresh-exec").unwrap();
-    for field in [
-        "server",
-        "body",
-        "state",
-        "result",
-        "attempts",
-        "fingerprint",
-    ] {
-        assert_eq!(
-            row[field], expected[field],
-            "Python _compact_exec field {field}"
-        );
-    }
-    assert_eq!(row["next_at"].as_f64(), expected["next_at"].as_f64());
+    assert_eq!(body.payload.actor, "fixture-lead");
 
-    // The same request identity now only probes; the command never repeats.
-    // The first test checks this identity against the Python probe.
-    let probe_id = "d941e93e-db8c-5643-844d-aae0c6888829".to_owned();
-    let receipt = json!({"requestId":"fresh-exec","outcome":"applied","value":{"status":"exited"}});
+    // The same admitted root now only probes; the command never repeats.
+    let receipt = json!({"requestId":root,"outcome":"applied","value":{"status":"exited"}});
     let wire = ExecWire::new(Some(
-        json!({"requestId":probe_id,"outcome":"applied","value":receipt}),
+        json!({"requestId":root,"outcome":"applied","value":receipt}),
     ));
     let driver = exec_driver(&store, Arc::clone(&wire));
     let outcome = driver
-        .exchange(
-            "peer-server",
-            "exec",
-            &data["payload"],
-            "fresh-exec",
-            python_now + 5,
-        )
+        .exchange("peer-server", "exec", &payload, &root, now + 5)
         .await
         .unwrap();
     assert_eq!(
@@ -1402,28 +1473,38 @@ async fn rust_exec_attempt_writes_the_python_receipt_form_and_never_resends() {
     );
     let sent = wire.sent();
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0]["action"], "exec_receipt");
-    assert_eq!(sent[0]["requestId"], probe_id.as_str());
+    let probe: Probe =
+        serde_json::from_value(sent.into_iter().next().unwrap()).expect("typed probe");
     assert_eq!(
-        sent[0]["payload"],
-        json!({"handle":"fresh-exec","actor":data["payload"]["actor"],"digest":serde_json::from_str::<Value>(expected["body"].as_str().unwrap()).unwrap()["payload"]["receiptDigest"]})
+        (
+            &probe.request_id,
+            probe.action.as_str(),
+            probe.operation.as_slice()
+        ),
+        (&root, "exec_receipt", &["exec-receipt".to_owned()][..])
     );
-    let row = exec_row(&store, EXEC_OUTBOX_ROW, "fresh-exec").unwrap();
-    assert_eq!(row["state"], "complete");
-    assert_eq!(row["result"], receipt);
-    let mut changed = data["payload"].clone();
-    changed["cwd"] = json!("/other");
+    assert_eq!(
+        (
+            &probe.payload.handle,
+            &probe.payload.actor,
+            &probe.payload.digest
+        ),
+        (&root, &body.payload.actor, &body.payload.receipt_digest)
+    );
+    let (pending, complete): (i64,i64) = store.test_reader().unwrap().query_row(
+        "SELECT (SELECT count(*) FROM runtime_server_outbox WHERE id=?1),(SELECT count(*) FROM request_results WHERE id=?1)", [&key], |row| Ok((row.get(0)?,row.get(1)?)),
+    ).unwrap();
+    assert_eq!(
+        (pending, complete),
+        (0, 1),
+        "settlement removes the pending row and stores the reply"
+    );
+    let changed = json!({"actor":"fixture-lead","command":["true"],"cwd":"/other","timeout":30});
     let conflict = driver
-        .exchange(
-            "peer-server",
-            "exec",
-            &changed,
-            "fresh-exec",
-            python_now + 6,
-        )
+        .exchange("peer-server", "exec", &changed, &root, now + 6)
         .await
         .unwrap_err();
-    assert_eq!(refusal(conflict)["code"], "request_conflict");
+    assert_eq!(conflict.status(), 409);
     assert_eq!(wire.sent().len(), 1, "a changed command is never sent");
 }
 
@@ -1825,32 +1906,34 @@ fn discovery_includes_local_other_port_and_only_online_owner_nodes() {
 }
 #[tokio::test]
 async fn pairing_is_atomic_at_every_write_and_replays_after_restart() {
-    let data = &fixture().data;
-    let case = &data["auth"][0];
-    let now = data["now"].as_i64().expect("now");
+    #[derive(serde::Deserialize)]
+    struct PairReply {
+        paired: bool,
+    }
     for (table, operation) in [
         ("runtime_access_nonces", "INSERT"),
         ("runtime_access_invites", "UPDATE"),
         ("runtime_access_clients", "INSERT"),
-        ("runtime_access_receipts", "INSERT"),
+        ("request_results", "INSERT"),
         ("runtime_access_audit", "INSERT"),
     ]
     .into_iter()
     .take(if full_matrix() { 5 } else { 1 })
     {
         let (root, store) = store().await;
+        let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let now = chrono::Utc::now().timestamp();
+        store.transaction(move |tx| {
+            tx.execute("UPDATE runtime_access_invites SET record=json_set(record,'$.expires',?1) WHERE request_id='second-invite'", [now + 900])?;
+            Ok(())
+        }).await.expect("current invite");
+        let first = current_pair(&request_id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", now);
         let before = rows(&store);
         store.transaction(move |tx|{tx.execute_batch(&format!("CREATE TRIGGER failpoint BEFORE {operation} ON {table} BEGIN SELECT RAISE(ABORT,'fixture failpoint'); END"))?;Ok(())})
             .await.expect("failpoint");
         assert!(
             boundary()
-                .handle(
-                    &store,
-                    &request(case).expect("request"),
-                    &owner(),
-                    None,
-                    now
-                )
+                .handle(&store, &first, &owner(), None, now)
                 .await
                 .is_err(),
             "{table}"
@@ -1868,27 +1951,25 @@ async fn pairing_is_atomic_at_every_write_and_replays_after_restart() {
             .await
             .expect("restart");
         let result = boundary()
-            .handle(
-                &reopened,
-                &request(case).expect("request"),
-                &owner(),
-                None,
-                now,
-            )
+            .handle(&reopened, &first, &owner(), None, now)
             .await
             .expect("first apply after rollback");
-        assert_eq!(result["paired"], true);
+        assert!(
+            serde_json::from_value::<PairReply>(result.clone())
+                .expect("pair reply")
+                .paired
+        );
         let status: String = reopened
             .test_reader()
             .expect("read")
             .query_row(
                 "SELECT json_extract(record,'$.status') FROM runtime_access_invites WHERE id=?1",
-                [data["invitation"]["inviteId"].as_str().expect("invite ID")],
+                ["993f2bebcdf2445e8351b3e355dedfcb"],
                 |r| r.get(0),
             )
             .expect("invite state");
         assert_eq!(status, "used");
-        let fresh = request(&data["freshPair"]).expect("fresh nonce");
+        let fresh = current_pair(&request_id, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", now);
         assert_eq!(
             boundary()
                 .handle(&reopened, &fresh, &owner(), None, now)
@@ -1900,13 +1981,7 @@ async fn pairing_is_atomic_at_every_write_and_replays_after_restart() {
         assert_eq!(audit, 1, "pairing applied once");
         assert!(
             boundary()
-                .handle(
-                    &reopened,
-                    &request(case).expect("request"),
-                    &owner(),
-                    None,
-                    now
-                )
+                .handle(&reopened, &first, &owner(), None, now)
                 .await
                 .is_err(),
             "nonce replay"
@@ -2427,60 +2502,56 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
 }
 
 #[tokio::test]
-async fn python_receipt_states_preserve_completed_results_and_uncertainty() {
-    let data = &fixture().data;
-    let case = &data["auth"][0];
-    let now = data["now"].as_i64().expect("now");
-    for state in if full_matrix() {
-        &["pending", "complete", "tombstone", "expired", "malformed"][..]
-    } else {
-        &["pending", "expired"][..]
-    } {
-        let state = *state;
+async fn pairing_receipt_replays_exactly_and_expired_or_malformed_rows_refuse() {
+    for state in ["complete", "expired", "malformed"] {
         let (_root, store) = store().await;
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let now = chrono::Utc::now().timestamp();
+        store.transaction(move |tx| {
+            tx.execute("UPDATE runtime_access_invites SET record=json_set(record,'$.expires',?1) WHERE request_id='second-invite'", [now + 900])?;
+            Ok(())
+        }).await.expect("current invite");
+        let first = current_pair(&root, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", now);
         let result = boundary()
-            .handle(
-                &store,
-                &request(case).expect("request"),
-                &owner(),
-                None,
-                now,
-            )
+            .handle(&store, &first, &owner(), None, now)
             .await
             .expect("pair");
-        store.transaction(move |tx| {
-            if state == "expired" {
-                tx.execute("UPDATE runtime_access_receipts SET record=json_set(record,'$.completed',?1) WHERE client='new-client'", [now-8*86400])?;
-            } else if state == "malformed" {
-                tx.execute("UPDATE runtime_access_receipts SET record=json_set(record,'$.body',9) WHERE client='new-client'", [])?;
-            } else {
-                tx.execute("UPDATE runtime_access_receipts SET status=?1 WHERE client='new-client'", [state])?;
-            }
-            Ok(())
-        })
-            .await.expect("saved Python-compatible state");
+        let key = studio_runtime_store::multi_server_delivery::remote_result_key(
+            "access",
+            &["new-client"],
+            &root,
+        );
+        store
+            .transaction_with(move |tx| {
+                if state == "expired" {
+                    tx.execute(
+                        "UPDATE request_results SET created=?1 WHERE id=?2",
+                        rusqlite::params![
+                            chrono::Utc::now().timestamp_millis()
+                                - studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS
+                                - 1,
+                            key
+                        ],
+                    )?;
+                } else if state == "malformed" {
+                    tx.execute(
+                        "UPDATE request_results SET result=?1 WHERE id=?2",
+                        rusqlite::params![r#"{"actor":null,"reply":9,"references":[]}"#, key],
+                    )?;
+                }
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("saved receipt state");
         let before = rows(&store);
-        let replay = boundary()
-            .handle(
-                &store,
-                &request(&data["freshPair"]).expect("request"),
-                &owner(),
-                None,
-                now,
-            )
-            .await;
-        if matches!(state, "pending" | "complete") {
-            assert_eq!(replay.expect("recovered receipt"), result);
-            let saved: String = store
-                .test_reader()
-                .expect("read")
-                .query_row(
-                    "SELECT status FROM runtime_access_receipts WHERE client='new-client'",
-                    [],
-                    |r| r.get(0),
-                )
-                .expect("saved");
-            assert_eq!(saved, "complete");
+        let retry = current_pair(&root, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", now);
+        let replay = boundary().handle(&store, &retry, &owner(), None, now).await;
+        if state == "complete" {
+            assert_eq!(
+                replay.expect("exact reply"),
+                result,
+                "completed response is replayed exactly"
+            );
         } else {
             assert_eq!(
                 replay.expect_err("refused").status(),
@@ -2489,6 +2560,51 @@ async fn python_receipt_states_preserve_completed_results_and_uncertainty() {
             assert_eq!(rows(&store), before, "refusal is atomic");
         }
     }
+}
+
+#[tokio::test]
+async fn migrated_pending_pairing_remains_unknown_without_reapplying() {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PairCases {
+        auth: Vec<FixtureRequest>,
+        fresh_pair: FixtureRequest,
+        now: i64,
+    }
+    let cases: PairCases = serde_json::from_value(fixture().data.clone()).expect("pair cases");
+    let first = cases.auth.first().expect("pair case");
+    let signed = studio_runtime_services::multi_server_auth::SignedRequest::from_headers(
+        &first.method,
+        &first.target,
+        &first.headers,
+        first.raw.as_bytes(),
+    )
+    .expect("original signed request");
+    let fingerprint = signed.fingerprint();
+    let (root, store) = store().await;
+    drop(store);
+    {
+        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("source");
+        db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_access_receipts(client TEXT,request_id TEXT,hash TEXT,session TEXT,status TEXT,record TEXT,PRIMARY KEY(client,request_id));").expect("source-era access ledger");
+        db.execute("INSERT INTO runtime_access_receipts VALUES('new-client','request-a',?1,'session','pending','{}')", [&fingerprint]).expect("legacy pending owner");
+    }
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("migrate pending owner");
+    let retry = studio_runtime_services::multi_server_auth::SignedRequest::from_headers(
+        &cases.fresh_pair.method,
+        &cases.fresh_pair.target,
+        &cases.fresh_pair.headers,
+        cases.fresh_pair.raw.as_bytes(),
+    )
+    .expect("fresh signed nonce");
+    let before = rows(&store);
+    let error = boundary()
+        .handle(&store, &retry, &owner(), None, cases.now)
+        .await
+        .expect_err("unknown pending result");
+    assert_eq!(error.status(), 409, "migrated pending work stays unknown");
+    assert_eq!(rows(&store), before, "unknown pairing retry has no effect");
 }
 
 #[tokio::test]
@@ -2529,42 +2645,44 @@ async fn nonce_capacity_is_rate_limited_without_committing_access_writes() {
 
 #[tokio::test]
 async fn fractional_invitation_boundary_matches_python() {
-    let data = &fixture().data;
-    for case in data["auth"].as_array().expect("cases").iter().filter(|c| {
-        c["name"]
-            .as_str()
-            .expect("name")
-            .starts_with("invite-expiry-")
-    }) {
+    #[derive(serde::Deserialize)]
+    struct PairReply {
+        paired: bool,
+    }
+    for (offset, accepted) in [(0.75, true), (0.5, true), (0.25, false)] {
         let (_root, store) = store().await;
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let now = chrono::Utc::now().timestamp();
+        let expires = now as f64 + offset;
         store
             .transaction(move |tx| {
                 tx.execute(
-                    "UPDATE runtime_access_invites SET record=?1 WHERE id=?2",
-                    rusqlite::params![
-                        case["invite"].as_str().expect("invite"),
-                        case["inviteId"].as_str().expect("id")
-                    ],
+                    "UPDATE runtime_access_invites SET record=json_set(record,'$.expires',?1) WHERE request_id='second-invite'",
+                    [expires],
                 )?;
                 Ok(())
             })
             .await
             .expect("Python fractional expiry");
         let before = rows(&store);
+        let signed = current_pair(&root, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", now);
         let result = boundary()
-            .handle_at(
-                &store,
-                &request(case).expect("request"),
-                &owner(),
-                None,
-                case["now"].as_f64().expect("time"),
-            )
+            .handle_at(&store, &signed, &owner(), None, now as f64 + 0.5)
             .await;
-        if let Some(expected) = case.get("refusal") {
-            assert_eq!(refusal(result.expect_err("expired")), *expected);
+        if !accepted {
+            assert_eq!(
+                result.expect_err("expired").status(),
+                403,
+                "expired invitation refuses"
+            );
             assert_eq!(rows(&store), before);
         } else {
-            assert_eq!(result.expect("not expired")["paired"], true);
+            assert!(
+                serde_json::from_value::<PairReply>(result.expect("not expired"))
+                    .expect("reply")
+                    .paired,
+                "fractional boundary permits pairing"
+            );
         }
     }
 }

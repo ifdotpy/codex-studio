@@ -59,6 +59,38 @@ pub async fn store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
     (root, store)
 }
 
+/// Restore classifiable frozen transport rows in their source-era tables and
+/// run the real receipt migration. The unproven python-location row has its
+/// own migration-stop witness and is not mixed into this successful fixture.
+pub async fn migrated_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
+    let (root, store) = store().await;
+    drop(store);
+    {
+        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("source");
+        db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%';
+            CREATE TABLE runtime_access_receipts(client TEXT,request_id TEXT,hash TEXT,session TEXT,status TEXT,record TEXT,PRIMARY KEY(client,request_id));
+            DROP TABLE runtime_server_inbox; DROP TABLE runtime_server_outbox;
+            CREATE TABLE runtime_server_inbox(id TEXT PRIMARY KEY,signature TEXT NOT NULL,state TEXT NOT NULL,result TEXT,created_at REAL NOT NULL DEFAULT 0,completed_at REAL NOT NULL DEFAULT 0,principal TEXT,actor TEXT);
+            CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,server TEXT NOT NULL,body TEXT NOT NULL,state TEXT NOT NULL,result TEXT,attempts INTEGER NOT NULL DEFAULT 0,next_at REAL NOT NULL DEFAULT 0,error TEXT,created_at REAL NOT NULL DEFAULT 0,completed_at REAL NOT NULL DEFAULT 0,fingerprint TEXT);")
+            .expect("source-era receipt tables");
+        for line in fixture().canvas_sql.lines().filter(|line| {
+            (line.starts_with("INSERT INTO \"runtime_access_receipts\"")
+                || line.starts_with("INSERT INTO \"runtime_server_inbox\"")
+                || line.starts_with("INSERT INTO \"runtime_server_outbox\""))
+                && !line
+                    .starts_with("INSERT INTO \"runtime_server_outbox\" VALUES('python-location'")
+        }) {
+            db.execute_batch(line).expect("frozen source row");
+        }
+    }
+    let store = Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("migrate frozen receipts"),
+    );
+    (root, store)
+}
+
 /// The disposable oracle key only signs test requests at the HTTP wall clock.
 #[allow(clippy::disallowed_methods)]
 pub fn signing_identity() -> &'static studio_runtime_services::remote_transport::RemoteIdentity {
@@ -99,6 +131,62 @@ pub fn request(case: &Value) -> Result<SignedRequest, AccessError> {
         &case.headers,
         case.raw.as_bytes(),
     )
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PairBody {
+    client_id: String,
+    invite_id: String,
+    kind: String,
+    label: String,
+    origin: Option<String>,
+    protocol: u64,
+    public_key: String,
+    request_id: String,
+    token: String,
+}
+
+/// Sign a current UUIDv7 root with the frozen test identity.
+pub fn current_pair(root: &str, nonce: &str, now: i64) -> SignedRequest {
+    use studio_runtime_services::remote_transport::{
+        MultiServerSigningInput, multi_server_signing_bytes,
+    };
+    #[derive(serde::Deserialize)]
+    struct PairCase {
+        raw: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Data {
+        auth: Vec<PairCase>,
+    }
+    let data: Data = serde_json::from_value(fixture().data.clone()).expect("fixture cases");
+    let mut body: PairBody =
+        serde_json::from_str(&data.auth.first().expect("pair case").raw).expect("pair body");
+    body.request_id = root.to_owned();
+    let raw = serde_json::to_vec(&body).expect("pair JSON");
+    let timestamp = now.to_string();
+    let target = "/api/multi-server/v1/pair";
+    let bytes = multi_server_signing_bytes(MultiServerSigningInput {
+        method: "POST",
+        target,
+        server_id: "local-server",
+        client_id: &body.client_id,
+        timestamp: &timestamp,
+        nonce,
+        request_id: root,
+        body: &raw,
+    });
+    let signature = signing_identity().sign(&bytes);
+    let headers = vec![
+        ("X-Studio-Client".into(), body.client_id),
+        ("X-Studio-Server".into(), "local-server".into()),
+        ("X-Studio-Timestamp".into(), timestamp),
+        ("X-Studio-Nonce".into(), nonce.into()),
+        ("X-Studio-Request-Id".into(), root.into()),
+        ("X-Studio-Signature".into(), signature),
+    ];
+    SignedRequest::from_headers("POST", target, &headers, &raw).expect("signed request")
 }
 pub struct Owner;
 impl OwnerLookup for Owner {
