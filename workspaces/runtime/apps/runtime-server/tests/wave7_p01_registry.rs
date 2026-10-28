@@ -1567,9 +1567,10 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
     let encoded = format!("{response}\n");
     let saved = json!({"version":1,"handle":"account:default","generation":7,"pid":1,
         "frame":encoded,"sha256":studio_runtime_store::sha256_hex(encoded.as_bytes()),
-        "authority":{"context":{"agent":"managed-actor","account":"default","connection":"original-connection",
+        "authority":{"context":{"agent":"managed-actor","account":"default","stream_id":"default","connection":"original-connection",
             "generation":7,"epoch":0,"thread":"retained-thread","turn":"retained-turn"},"root":"managed-actor","provider":"claude",
             "parent":null,"role":"implementer","isLead":true,"executionMode":null,"moving":false}});
+    let saved_response = response.clone();
     store.transaction(move |tx| {
         let actor = json!({"id":"managed-actor","rootId":"managed-actor","epoch":0,"status":"running","autoWake":true,"inFlight":true,
             "provider":"claude","accountKey":"default","threadId":"retained-thread","turnId":"retained-turn","parentId":null,"role":"implementer","isLead":true,
@@ -1579,14 +1580,25 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
                 "requestTicket":"retained-start","connectionGeneration":7,"connectionId":"reattached-connection"}});
         tx.execute("INSERT INTO runtime_agents(id,record) VALUES ('managed-actor',?1)", [actor.to_string()])?;
         tx.execute("INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created,turn_id) VALUES ('delivered-input','managed-actor',0,'user','original input','delivered',1.0,'retained-turn')", [])?;
+        tx.execute("INSERT INTO runtime_account_state(account,next_generation,journal_ack,recovery_required,streams) VALUES ('default',7,0,0,'null') ON CONFLICT(account) DO UPDATE SET next_generation=7", [])?;
         let accepted = json!({"account":"default","journalScope":"default","generation":7,"cursor":1,
             "requestId":"saved-tool-reply","method":"item/tool/call",
             "frame":"{\"id\":\"saved-tool-reply\",\"method\":\"item/tool/call\",\"params\":{\"threadId\":\"retained-thread\",\"turnId\":\"retained-turn\",\"callId\":\"saved-spawn\",\"tool\":\"orchestration_spawn\",\"arguments\":{}}}\n",
             "actor":null,"epoch":null});
-        for (phase, value) in [("accepted",accepted),("submitted",saved),("recoverable",json!(true))] {
-            studio_runtime_store::EventWriteRepository::put_receipt(tx,
-                &format!("account-worker:callback:default:7:1:{phase}"), phase, &value.to_string())?;
-        }
+        use studio_runtime_providers::{decode_journal_value, DecodedJournalPayload};
+        use studio_runtime_services::provider_callbacks::{self, CallbackContext, FrameAdmission};
+        use studio_runtime_schema::persistence::{RequestIdentity, ToolRequestKind, ToolRequestStatus};
+        let context = CallbackContext { agent: "managed-actor".into(), account: "default".into(), stream_id: "default".into(), connection: "original-connection".into(), generation: 7, epoch: 0, thread: "retained-thread".into(), turn: "retained-turn".into() };
+        let request: Value = serde_json::from_str(accepted["frame"].as_str().unwrap()).unwrap();
+        let DecodedJournalPayload::Frame(request) = decode_journal_value(1, 7, &request).payload else { panic!("request frame") };
+        let DecodedJournalPayload::Frame(reply) = decode_journal_value(1, 7, &saved_response).payload else { panic!("response frame") };
+        let identity = provider_callbacks::save_frame_response(tx, &context, &request, &reply).unwrap();
+        assert_eq!(provider_callbacks::begin_frame(tx, "default", 7, &identity.operation_id(), &reply).unwrap(), FrameAdmission::Send);
+        let key = provider_callbacks::callback_origin_key(&context, &identity.rpc_id);
+        let owner: String = tx.query_row("SELECT id FROM runtime_tool_requests WHERE origin_key=?1", [&key], |row| row.get(0))?;
+        let task_id = RequestIdentity::issue_root();
+        let task = json!({"id":task_id,"kind":ToolRequestKind::ProviderCallback,"originKey":"callback:default:7:1","status":ToolRequestStatus::Running,"updated":1,"payload":{"accepted":accepted,"submitted":{"handle":saved["handle"],"generation":7,"pid":1,"response_key":key,"sha256":saved["sha256"],"authority":saved["authority"]},"recovery_authorized":true,"recovery_attempted":false,"request_fingerprint":studio_runtime_store::sha256_hex(accepted["frame"].as_str().unwrap().as_bytes()),"root_request_id":owner}});
+        tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES (?1,?2)", [&task_id, &task.to_string()])?;
         Ok(())
     }).await.unwrap();
     let db = store.test_reader().unwrap();
@@ -1626,7 +1638,7 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
         loop {
             let reader = store.test_reader().unwrap();
             let refused: bool = reader.query_row(
-                "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id='account-worker:callback:default:7:1:unknown')", [], |row| row.get(0)).unwrap();
+                "SELECT EXISTS(SELECT 1 FROM runtime_tool_requests WHERE origin_key='callback:default:7:1' AND status='unknown')", [], |row| row.get(0)).unwrap();
             assert!(
                 !refused,
                 "the saved callback must retain valid actor authority through startup recovery"
@@ -1643,7 +1655,7 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
         .unwrap_or_else(|_| {
             let db = store.test_reader().unwrap();
             let phases: Vec<(String, String)> = db
-                .prepare("SELECT signature,result FROM runtime_operation_receipts WHERE id LIKE 'account-worker:callback:default:7:1:%' ORDER BY id")
+                .prepare("SELECT origin_key,record FROM runtime_tool_requests WHERE origin_key='callback:default:7:1'")
                 .unwrap()
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
                 .unwrap()
@@ -1661,7 +1673,7 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
     tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let remaining = store.test_reader().unwrap().query_row(
-                "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:callback:default:7:1:%'", [], |row| row.get::<_, i64>(0)).unwrap();
+                "SELECT count(*) FROM runtime_outbox WHERE kind='provider_callback' AND account='default'", [], |row| row.get::<_, i64>(0)).unwrap();
             if remaining == 0 { break; }
             changes.changed().await.unwrap();
         }
