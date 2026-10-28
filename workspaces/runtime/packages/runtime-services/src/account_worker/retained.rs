@@ -105,7 +105,7 @@ pub struct SessionReceipt {
     pub operation: String,
     pub ticket: RequestTicket,
     pub result: RequestResult,
-    /// True only when this receipt came from checkpoint-verified durable replay.
+    /// True when this receipt reads a durable recorded identity, including Unknown.
     pub replayed: bool,
 }
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
@@ -116,6 +116,8 @@ pub enum PortError {
     ScopeMismatch,
     #[error("retained-session/invalid-request")]
     Invalid,
+    #[error("retained-session/request-expired")]
+    Expired,
     #[error("retained-session/not-sent")]
     NotSent,
     #[error("retained-session/unknown")]
@@ -1450,6 +1452,27 @@ pub mod consumers;
 
 #[cfg(test)]
 mod validation_tests {
+    #[test]
+    fn read_policy_has_one_closed_owner_and_preserves_mutations() {
+        for method in ProviderReadMethod::ALL {
+            assert_eq!(
+                ProviderReadMethod::from_method(method.method()),
+                Some(*method)
+            );
+        }
+        for method in [
+            Method::TurnStart,
+            Method::ThreadCompactStart,
+            Method::ThreadFork,
+            Method::ThreadSettingsUpdate,
+            Method::ClaudeSettings,
+            Method::ClaudeStopTask,
+            Method::AccountRateLimitResetCreditConsume,
+        ] {
+            assert_eq!(ProviderReadMethod::from_method(method), None);
+        }
+    }
+
     use super::*;
     use serde_json::json;
 
