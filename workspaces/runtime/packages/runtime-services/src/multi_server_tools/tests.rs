@@ -1382,11 +1382,22 @@ impl crate::voice_runtime::VoiceRequestPort for RecordingVoice {
 async fn ready_voice_session(store: &RuntimeStore, lead: &Value) {
     let lead_id = lead["id"].as_str().unwrap().to_owned();
     let thread = lead["threadId"].as_str().unwrap().to_owned();
+    crate::account_worker::store::attach_provider_stream_for_test(
+        store,
+        "default",
+        None,
+        7,
+        "connection",
+    )
+    .await
+    .unwrap();
     store
         .transaction_with(move |tx| -> Result<(), StoreError> {
+            let agent = studio_runtime_store::AgentRepository::get(tx, &studio_runtime_store::AgentId::from(lead_id.as_str()))?.unwrap();
+            let scope = studio_runtime_store::account_state::current_provider_scope(tx, &agent).expect("attached scope");
             tx.execute(
-                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES('voice-session',?1,1,?2,'default','connection','ready')",
-                [&lead_id, &thread],
+                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,provider_scope,state) VALUES('voice-session',?1,1,?2,'default','connection',?3,'ready')",
+                rusqlite::params![lead_id, thread, serde_json::to_string(&scope).unwrap()],
             )?;
             Ok(())
         })

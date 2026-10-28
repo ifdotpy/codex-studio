@@ -76,7 +76,13 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
     let agents = template.value["agents"].as_array().unwrap().clone();
-    let monitor = template.value["monitor"].clone();
+    let mut monitor = template.value["monitor"].clone();
+    let monitor_request = RequestIdentity::issue_root();
+    monitor["requestId"] = json!(monitor_request);
+    monitor["operation"]
+        .as_object_mut()
+        .unwrap()
+        .remove("requestId");
     let cwd = json!(directory.path());
     store
         .transaction_with::<_, StoreError>(move |tx| {

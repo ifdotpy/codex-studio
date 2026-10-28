@@ -2297,6 +2297,8 @@ async fn a_message_to_a_child_whose_provision_failed_is_admitted_and_its_worktre
         )
         .await;
     let room = fixture.id.clone();
+    let message_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let posted_message_id = message_id.clone();
     let prepared = crate::message_admission::PreparedAdmission::read(
         &fixture.store.test_reader().expect("read"),
         &room,
@@ -2312,7 +2314,7 @@ async fn a_message_to_a_child_whose_provision_failed_is_admitted_and_its_worktre
                 tx,
                 crate::coordination::PostManagedMessage {
                     room: &room,
-                    id: "resume-message",
+                    id: &posted_message_id,
                     text: "continue",
                     delivery: studio_runtime_schema::delivery::DeliveryMoment::for_event(
                         "user", "", None,
@@ -2347,5 +2349,5 @@ async fn a_message_to_a_child_whose_provision_failed_is_admitted_and_its_worktre
             .collect::<Result<_, _>>()
             .expect("ids")
     };
-    assert_eq!(pending, ["workspace-input", "resume-message"]);
+    assert_eq!(pending, ["workspace-input", &message_id]);
 }

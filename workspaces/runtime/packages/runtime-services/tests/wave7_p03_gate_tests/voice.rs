@@ -99,7 +99,7 @@ async fn voice_accepts_unrelated_operation_started_after_preparation() {
         super::submit(
             store,
             "late-operation-recipient",
-            "voice-late",
+            &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
             &["spoken".into()],
             None,
         )

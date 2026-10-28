@@ -4632,7 +4632,7 @@ mod tests {
             store
                 .transaction(move |tx| {
                     tx.execute(
-                        "INSERT INTO runtime_agents VALUES(?1,?2)",
+                        "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                         rusqlite::params![scenario_id, seed_record.to_string()],
                     )?;
                     Ok(())

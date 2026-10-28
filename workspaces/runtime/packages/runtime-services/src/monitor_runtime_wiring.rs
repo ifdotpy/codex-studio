@@ -2208,7 +2208,7 @@ mod tests {
         store.transaction_with(|tx| {
             tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
                 [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running","outputEventIds":["event"]}).to_string()])?;
-            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('event','owner','message','invalid','pending',0,0)", [])?;
+            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('event','owner','user','invalid','pending',0,0)", [])?;
             Ok::<_,studio_runtime_store::StoreError>(())
         }).await.unwrap();
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));

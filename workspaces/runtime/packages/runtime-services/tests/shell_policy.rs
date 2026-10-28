@@ -150,7 +150,7 @@ async fn checkin_is_durable_once_per_output_generation_and_does_not_double_stall
     let selected = id.clone();
     store
         .transaction_with(move |tx| {
-            tx.execute("UPDATE runtime_events SET status='done'", [])
+            tx.execute("UPDATE runtime_events SET status='delivered'", [])
                 .map_err(studio_runtime_store::StoreError::from)?;
             let mut actor = AgentRepository::get(tx, &AgentId::from("agent"))?.unwrap();
             actor.status = studio_runtime_store::AgentStatus::Idle;

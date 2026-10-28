@@ -373,7 +373,7 @@ fn input_states(deleted_worker: bool) -> Connection {
     let other = json!({"epoch":1,"provider":studio_runtime_schema::ProviderKind::Codex});
     connection
         .execute(
-            "INSERT INTO runtime_agents VALUES('worker',?1),('other',?2)",
+            "INSERT INTO runtime_agents(id,record) VALUES('worker',?1),('other',?2)",
             [worker.to_string(), other.to_string()],
         )
         .expect("agents");

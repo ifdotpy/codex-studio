@@ -2298,7 +2298,24 @@ mod tests {
             Some("closed")
         );
         assert_eq!(row.record.get("_processIdentity"), Some(&recovery_identity));
-        assert!(row.record.get("error").and_then(Value::as_str).is_some());
+        let root = row
+            .record
+            .get("_closeRequestId")
+            .and_then(Value::as_str)
+            .expect("close request");
+        let reader = state
+            .store
+            .as_ref()
+            .expect("store")
+            .test_reader()
+            .expect("read");
+        let (_, saved) = TerminalsRepository::action_result(&reader, root)
+            .expect("action result")
+            .expect("unknown close");
+        assert_eq!(
+            saved.failure,
+            Some(studio_runtime_schema::persistence::TerminalActionFailure::UnknownOutcome)
+        );
         let kills = driver
             .session
             .requests
@@ -2795,6 +2812,10 @@ mod tests {
                 .as_object_mut()
                 .expect("record object")
                 .remove("_processIdentity");
+            expected
+                .as_object_mut()
+                .expect("record object")
+                .remove("_closeRequestId");
             assert_eq!(visible, expected, "{action} hides the private identity");
         }
     }

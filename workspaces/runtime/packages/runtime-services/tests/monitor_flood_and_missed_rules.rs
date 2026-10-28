@@ -463,7 +463,7 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
         "owner",
         1,
         Some(&json!({"action":"resume","id":"once"})),
-        "resume-once",
+        &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
         3000.0,
         &LocalRuleWatchFiles,
     )
@@ -480,7 +480,7 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
         "owner",
         1,
         Some(&json!({"action":"delete","id":"once"})),
-        "delete-once",
+        &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
         3100.0,
         &LocalRuleWatchFiles,
     )

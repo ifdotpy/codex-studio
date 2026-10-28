@@ -848,7 +848,7 @@ mod tests {
         let record = json!({"id":"agent", "provider":studio_runtime_schema::ProviderKind::Codex, "name":"Renamed", "creationIntent":intent});
         connection
             .execute(
-                "INSERT INTO runtime_agents VALUES(?1,?2)",
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 rusqlite::params!["agent", record.to_string()],
             )
             .expect("insert");
