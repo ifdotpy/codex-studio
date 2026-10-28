@@ -1058,7 +1058,10 @@ impl MonitorRuntime {
         };
         if !matches!(submitted, Submission::Written) {
             return Err(match submitted {
-                Submission::NotSent { reason: monitor_driver::NotSentReason::Expired, .. } => MonitorError::Expired,
+                Submission::NotSent {
+                    reason: monitor_driver::NotSentReason::Expired,
+                    ..
+                } => MonitorError::Expired,
                 Submission::NotSent { .. } => MonitorError::Refused("Monitor input rejected"),
                 Submission::Written | Submission::Unknown => MonitorError::InputOutcomeUnknown,
             });

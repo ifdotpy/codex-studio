@@ -45,9 +45,8 @@ impl From<studio_runtime_store::outbox::OutboxError> for MonitorError {
     fn from(error: studio_runtime_store::outbox::OutboxError) -> Self {
         use studio_runtime_store::outbox::OutboxError;
         match error {
-            OutboxError::Sql(error) => Self::Store(error.into()),
-            OutboxError::Json(error) => Self::Store(error.into()),
             OutboxError::Conflict(_) => Self::Refused("Monitor input request content changed"),
+            error => Self::Store(error.into()),
         }
     }
 }
@@ -55,14 +54,10 @@ impl From<studio_runtime_store::request_results::RequestResultError> for Monitor
     fn from(error: studio_runtime_store::request_results::RequestResultError) -> Self {
         use studio_runtime_store::request_results::RequestResultError;
         match error {
-            RequestResultError::Sql(error) => Self::Store(error.into()),
-            RequestResultError::Json(error) => Self::Store(error.into()),
             RequestResultError::Conflict { .. } => {
                 Self::Refused("Monitor input request content changed")
             }
-            RequestResultError::Identity(error) => {
-                Self::Store(StoreError::RequestResult(error.into()))
-            }
+            error => Self::Store(error.into()),
         }
     }
 }
@@ -87,33 +82,16 @@ fn saved(connection: &Connection, root: &str) -> Result<Option<(String, Receipt)
         }
         return Ok(Some((saved.signature, saved.payload.receipt)));
     }
-    let canonical = identity(root).ok();
-    for id in std::iter::once(key.as_str()).chain(canonical.as_ref().map(RequestIdentity::id)) {
-        use rusqlite::OptionalExtension;
-        let signature: Option<String> = connection
-            .query_row(
-                "SELECT signature FROM request_results WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(StoreError::from)?;
-        if let Some(signature) = signature {
-            let Some(row) = RequestResults::replay(
-                connection,
-                id,
-                &signature,
-                chrono::Utc::now().timestamp_millis(),
-            )?
-            else {
-                continue;
-            };
-            let result: ResultEnvelope<Receipt> =
-                serde_json::from_str(&row.result).map_err(StoreError::from)?;
-            return Ok(Some((signature, result.reply)));
-        }
-    }
-    Ok(None)
+    Ok(RequestResults::read(
+        connection,
+        &key,
+        "monitor-http-input",
+        &[],
+        root,
+        &[],
+        chrono::Utc::now().timestamp_millis(),
+    )?
+    .map(|saved| (saved.signature, saved.reply)))
 }
 
 struct RequestContext {
@@ -246,7 +224,10 @@ fn put_receipt(
             ));
         }
     };
-    if matches!(status, Status::Acknowledged | Status::Rejected | Status::Expired) {
+    if matches!(
+        status,
+        Status::Acknowledged | Status::Rejected | Status::Expired
+    ) {
         RequestResults::settle(
             tx,
             &admitted,
@@ -348,7 +329,10 @@ pub(crate) fn settle(
             "Monitor input receipt identity changed",
         ));
     }
-    if matches!(receipt.status, Status::Acknowledged | Status::Rejected | Status::Expired) {
+    if matches!(
+        receipt.status,
+        Status::Acknowledged | Status::Rejected | Status::Expired
+    ) {
         return Ok(());
     }
     receipt.status = match outcome {
@@ -357,7 +341,10 @@ pub(crate) fn settle(
         InputOutcome::Rejected(_) => Status::Rejected,
         InputOutcome::Unknown(_) => Status::Unknown,
     };
-    if matches!(receipt.status, Status::Acknowledged | Status::Rejected | Status::Expired) {
+    if matches!(
+        receipt.status,
+        Status::Acknowledged | Status::Rejected | Status::Expired
+    ) {
         RequestResults::settle(
             tx,
             &saved.payload.admitted,

@@ -7,7 +7,7 @@ use crate::account_session_runtime::{
 };
 use crate::account_worker::retained::RequestActor;
 use crate::workspace_operations::ProviderTicket;
-use rusqlite::{OptionalExtension, Transaction};
+use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -71,10 +71,8 @@ impl From<studio_runtime_store::request_results::RequestResultError> for NativeE
     fn from(error: studio_runtime_store::request_results::RequestResultError) -> Self {
         use studio_runtime_store::request_results::RequestResultError;
         match error {
-            RequestResultError::Sql(error) => Self::Sql(error),
-            RequestResultError::Json(error) => Self::Json(error),
             RequestResultError::Conflict { .. } => Self::Conflict,
-            RequestResultError::Identity(error) => error.into(),
+            error => Self::Store(error.into()),
         }
     }
 }
@@ -87,9 +85,8 @@ impl From<studio_runtime_store::outbox::OutboxError> for NativeError {
     fn from(error: studio_runtime_store::outbox::OutboxError) -> Self {
         use studio_runtime_store::outbox::OutboxError;
         match error {
-            OutboxError::Sql(error) => Self::Sql(error),
-            OutboxError::Json(error) => Self::Json(error),
             OutboxError::Conflict(_) => Self::Conflict,
+            error => Self::Store(error.into()),
         }
     }
 }
@@ -217,36 +214,35 @@ fn admit(
     }
 }
 
-fn saved_reply(
-    tx: &rusqlite::Connection,
+fn saved_reply<R: serde::de::DeserializeOwned>(
+    connection: &rusqlite::Connection,
     namespace: &str,
     root: &str,
-) -> Result<Option<(String, Value)>> {
-    let canonical = request_identity(namespace, root).ok();
-    let imported_id = if namespace == "native-command" {
+) -> Result<Option<(String, R)>> {
+    let raw = if namespace == "native-command" {
         format!("native-command:{root}")
     } else {
         root.to_owned()
     };
-    for id in
-        std::iter::once(imported_id.as_str()).chain(canonical.as_ref().map(RequestIdentity::id))
-    {
-        let signature: Option<String> = tx
-            .query_row(
-                "SELECT signature FROM request_results WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if let Some(signature) = signature {
-            let saved =
-                RequestResults::replay(tx, id, &signature, chrono::Utc::now().timestamp_millis())?
-                    .ok_or(NativeError::Changed)?;
-            let envelope: ResultEnvelope<Value> = serde_json::from_str(&saved.result)?;
-            return Ok(Some((signature, envelope.reply)));
-        }
-    }
-    Ok(None)
+    Ok(RequestResults::read(
+        connection,
+        &raw,
+        namespace,
+        &[],
+        root,
+        &[],
+        chrono::Utc::now().timestamp_millis(),
+    )?
+    .map(|saved| (saved.signature, saved.reply)))
+}
+
+#[derive(Serialize, Deserialize)]
+struct NativeActionReply {
+    receipt: AdmissionReceipt,
+    outcome: Outcome,
+    replayed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<Value>,
 }
 
 /// Checked once from Python-written agent and receipt records, including legacy
@@ -258,13 +254,16 @@ pub struct Snapshot {
 }
 impl Snapshot {
     pub fn from_records(agent: Value, receipt: Value, outcome: Value) -> Result<Self> {
+        Self::checked(
+            agent,
+            decode(receipt, "receipt")?,
+            decode(outcome, "outcome")?,
+        )
+    }
+    fn checked(agent: Value, receipt: AdmissionReceipt, outcome: Outcome) -> Result<Self> {
         bounded(&agent, "agent")?;
         checked_agent(&agent)?;
-        let receipt: AdmissionReceipt = decode(receipt, "receipt")?;
-        let outcome = decode(outcome, "outcome")?;
-        if receipt.status
-            != studio_runtime_schema::persistence::NativeActionAdmissionStatus::Accepted
-            || !receipt.accepted_at.is_finite()
+        if !receipt.accepted_at.is_finite()
             || receipt.epoch < 0
             || receipt.request_id.is_empty()
             || receipt.request_id.len() > MAX_ID
@@ -327,7 +326,7 @@ pub fn reserve(
         if saved != signature {
             return Err(NativeError::Conflict);
         }
-        return Snapshot::from_records(agent(tx, &request.agent)?, receipt, outcome);
+        return Snapshot::checked(agent(tx, &request.agent)?, receipt, outcome);
     }
     let mut agent = agent(tx, &request.agent)?;
     checked_agent(&agent)?;
@@ -393,11 +392,26 @@ pub fn reserve(
     if !current_matches && !repaired_destination {
         return Err(NativeError::Changed);
     }
-    let receipt = json!({"requestId":request.request_id,"agentId":request.agent,"action":request.action,
-        "accountKey":identity["accountKey"],"threadId":identity["threadId"],"epoch":identity["epoch"],
-        "attemptId":attempt,"acceptedAt":now,"status":"accepted"});
-    let checked =
-        Snapshot::from_records(agent.clone(), receipt.clone(), json!({"status":"pending"}))?;
+    let receipt = AdmissionReceipt {
+        request_id: request.request_id.clone(),
+        agent_id: request.agent.clone(),
+        action: request.action,
+        account_key: identity["accountKey"]
+            .as_str()
+            .ok_or(NativeError::Invalid("accountKey"))?
+            .into(),
+        thread_id: identity["threadId"]
+            .as_str()
+            .ok_or(NativeError::Invalid("threadId"))?
+            .into(),
+        epoch: identity["epoch"]
+            .as_i64()
+            .ok_or(NativeError::Invalid("epoch"))?,
+        attempt_id: attempt.into(),
+        accepted_at: now,
+        status: studio_runtime_schema::persistence::NativeActionAdmissionStatus::Accepted,
+    };
+    let checked = Snapshot::checked(agent.clone(), receipt, Outcome::Pending { error: None })?;
     let account = agent
         .get("accountKey")
         .and_then(Value::as_str)
@@ -816,7 +830,7 @@ pub async fn execute_provider_prepared(
     let final_reply = store
         .read_async("runtime-services/native_actions", move |tx| {
             if let Some((signature, reply)) =
-                saved_reply(tx, "native-action", &replay_request.request_id)?
+                saved_reply::<Value>(tx, "native-action", &replay_request.request_id)?
             {
                 if signature != replay_request.signature()? {
                     return Err(NativeError::Conflict);
@@ -965,7 +979,9 @@ pub async fn execute_provider_prepared(
 /// Return a previously settled action receipt before an HTTP caller applies
 /// readiness preflights that may no longer hold after the original action.
 pub fn replay_if_settled(tx: &Transaction<'_>, request: &Request) -> Result<Option<Value>> {
-    if let Some((signature, reply)) = saved_reply(tx, "native-action", &request.request_id)? {
+    if let Some((signature, reply)) =
+        saved_reply::<Value>(tx, "native-action", &request.request_id)?
+    {
         if signature != request.signature()? {
             return Err(NativeError::Conflict);
         }
@@ -983,9 +999,7 @@ pub fn replay_if_settled(tx: &Transaction<'_>, request: &Request) -> Result<Opti
 
 /// The saved outcome of one admitted native action request.
 pub fn outcome(tx: &Transaction<'_>, id: &str) -> Result<Option<Outcome>> {
-    row(tx, id)?
-        .map(|(_, _, outcome)| decode(outcome, "outcome"))
-        .transpose()
+    Ok(row(tx, id)?.map(|(_, _, outcome)| outcome))
 }
 
 /// Settle an admitted request that was never handed to the provider as a
@@ -1356,7 +1370,7 @@ fn replay(tx: &Transaction<'_>, request: &Request) -> Result<Option<Snapshot>> {
     if signature != request.signature()? {
         return Err(NativeError::Conflict);
     }
-    Snapshot::from_records(agent(tx, &request.agent)?, receipt, outcome).map(Some)
+    Snapshot::checked(agent(tx, &request.agent)?, receipt, outcome).map(Some)
 }
 
 fn response(snapshot: &Snapshot, replayed: bool) -> Value {
@@ -1428,7 +1442,7 @@ fn agent(tx: &Transaction<'_>, id: &str) -> Result<Value> {
     checked_agent(&value).map_err(|error| located(error, "runtime_agents", id))?;
     Ok(value)
 }
-fn row(tx: &Transaction<'_>, id: &str) -> Result<Option<(String, Value, Value)>> {
+fn row(tx: &Transaction<'_>, id: &str) -> Result<Option<(String, AdmissionReceipt, Outcome)>> {
     if let Some(saved) = Outbox::get::<NativeActionIntent>(tx, &action_outbox_id(id))? {
         if saved.kind != OutboxKind::NativeAction
             || saved.owner_kind != OwnerKind::Agent
@@ -1438,32 +1452,21 @@ fn row(tx: &Transaction<'_>, id: &str) -> Result<Option<(String, Value, Value)>>
         }
         return Ok(Some((
             saved.signature,
-            serde_json::to_value(saved.payload.receipt)?,
-            serde_json::to_value(saved.payload.outcome)?,
+            saved.payload.receipt,
+            saved.payload.outcome,
         )));
     }
-    Ok(
-        saved_reply(tx, "native-action", id)?.map(|(signature, reply)| {
-            (
-                signature,
-                reply["receipt"].clone(),
-                reply["outcome"].clone(),
-            )
-        }),
-    )
+    Ok(saved_reply::<NativeActionReply>(tx, "native-action", id)?
+        .map(|(signature, reply)| (signature, reply.receipt, reply.outcome)))
 }
 fn load(tx: &Transaction<'_>, id: &str) -> Result<Snapshot> {
     let (_, receipt, outcome) = row(tx, id)?.ok_or(NativeError::Invalid("receipt.id"))?;
-    let agent_id = receipt["agentId"]
-        .as_str()
-        .ok_or(NativeError::Invalid("receipt.agentId"))?
-        .to_owned();
-    Snapshot::from_records(agent(tx, &agent_id)?, receipt, outcome)
+    Snapshot::checked(agent(tx, &receipt.agent_id)?, receipt, outcome)
         .map_err(|error| located(error, "runtime_outbox", id))
 }
 fn write_outcome(tx: &Transaction<'_>, id: &str, outcome: &Outcome) -> Result<()> {
     let Some(mut row) = Outbox::get::<NativeActionIntent>(tx, &action_outbox_id(id))? else {
-        return if row(tx, id)?.is_some_and(|(_, _, saved)| saved == json!(outcome)) {
+        return if row(tx, id)?.is_some_and(|(_, _, saved)| saved == *outcome) {
             Ok(())
         } else {
             Err(NativeError::Changed)
@@ -1482,14 +1485,15 @@ fn write_outcome(tx: &Transaction<'_>, id: &str, outcome: &Outcome) -> Result<()
             Outbox::put(tx, &row)?;
         }
         Outcome::Failed { .. } | Outcome::Acknowledged { .. } => {
-            let mut reply =
-                json!({"receipt":row.payload.receipt,"outcome":outcome,"replayed":false});
-            if let Outcome::Acknowledged {
-                result: Some(result),
-            } = outcome
-            {
-                reply["result"] = result.clone();
-            }
+            let reply = NativeActionReply {
+                receipt: row.payload.receipt,
+                outcome: outcome.clone(),
+                replayed: false,
+                result: match outcome {
+                    Outcome::Acknowledged { result } => result.clone(),
+                    _ => None,
+                },
+            };
             RequestResults::settle(
                 tx,
                 &row.payload.admitted,
@@ -1676,7 +1680,9 @@ pub fn replay_command(
         CommandAction::Cancel => json!({"task":task_id,"action":"cancel"}),
     }
     .to_string();
-    if let Some((saved_signature, reply)) = saved_reply(connection, "native-command", root)? {
+    if let Some((saved_signature, reply)) =
+        saved_reply::<Value>(connection, "native-command", root)?
+    {
         if signature != saved_signature {
             return Err(NativeError::Conflict);
         }
@@ -1725,7 +1731,7 @@ pub fn command_input(
         return Err(NativeError::Invalid("command.requestId"));
     }
     let signature = json!({"task":snapshot.task["id"],"action":"input","text":text}).to_string();
-    if let Some((saved, reply)) = saved_reply(tx, "native-command", key)? {
+    if let Some((saved, reply)) = saved_reply::<Value>(tx, "native-command", key)? {
         if saved != signature {
             return Err(NativeError::Conflict);
         }
@@ -1802,7 +1808,9 @@ pub fn command_cancel_claim(
         params: json!({"threadId":ticket.thread,"processId":snapshot.process}),
     };
     let signature = json!({"task":snapshot.task["id"],"action":"cancel"}).to_string();
-    if let Some((saved_signature, saved)) = saved_reply(tx, "native-command", &ticket.request)? {
+    if let Some((saved_signature, saved)) =
+        saved_reply::<Value>(tx, "native-command", &ticket.request)?
+    {
         if saved_signature != signature
             || !same_native_request(
                 &decode::<NativeRequest>(saved["request"].clone(), "command.result")?,
@@ -1861,7 +1869,7 @@ pub fn command_cancel_settle(tx: &Transaction<'_>, receipt: &TransportReceipt) -
     let id = command_outbox_id(&receipt.ticket.request);
     let saved = Outbox::get::<CommandCancelIntent>(tx, &id)?;
     let Some(saved) = saved else {
-        let (_, saved) = saved_reply(tx, "native-command", &receipt.ticket.request)?
+        let (_, saved) = saved_reply::<Value>(tx, "native-command", &receipt.ticket.request)?
             .ok_or(NativeError::Changed)?;
         let request: NativeRequest = decode(saved["request"].clone(), "command.result")?;
         return if request.ticket == receipt.ticket
