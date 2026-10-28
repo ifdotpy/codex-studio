@@ -3711,7 +3711,7 @@ async fn retained_barrier_waits_for_committed_journal_without_owning_bridge() {
 }
 
 #[tokio::test]
-async fn connection_recovery_history_receipt_survives_worker_restart_without_resend() {
+async fn connection_recovery_history_is_read_again_after_worker_restart() {
     use crate::{
         account_worker::retained::consumers::HistoryPort,
         recovery_history::{HistoryMethod, HistoryReceipt},
@@ -3775,16 +3775,18 @@ async fn connection_recovery_history_receipt_survives_worker_restart_without_res
         recovery_id.clone(),
     );
     let deadline = (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
-    let mut second_history = second_history;
-    let replay: HistoryReceipt = second_history
-        .request(&second_scope, HistoryMethod::Thread, params, deadline)
-        .await
-        .unwrap();
+    let replay = tokio::spawn(async move {
+        let mut history = second_history;
+        history.request(&second_scope, HistoryMethod::Thread, params, deadline).await
+    });
+    let request = second_peer.write("thread/read").await;
+    second_peer.reply(&request, expected).await;
+    let replay: HistoryReceipt = replay.await.unwrap().unwrap();
     assert_eq!(replay.body, first_receipt.body);
-    assert_eq!(replay.scope.generation, 1);
+    assert_eq!(replay.scope.generation, 2);
     assert!(
         second_peer.writes.try_recv().is_err(),
-        "saved history receipt must not be resent"
+        "recovery read sends no mutation"
     );
     let agent = state.record().await;
     assert_eq!(agent["connectionRecovery"]["requestId"], recovery_id);
@@ -4218,7 +4220,7 @@ async fn claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop() {
         matches!(task.await.unwrap().unwrap(), ControlReply::StopTask(result) if result == json!({"status":"stopped"}))
     );
     assert!(
-        matches!(session.call_scoped(scope.clone(), ControlInvocation::StopTask { thread_id: "fake-thread-0".into(), task_id: "task".into(), request_id: "stop-task-request".into() }).await.unwrap(), ControlReply::StopTask(result) if result == json!({"status":"stopped"}))
+        matches!(session.call_scoped(scope.clone(), ControlInvocation::StopTask { thread_id: "fake-thread-0".into(), task_id: "task".into(), request_id: retained_root("stop-task-request") }).await.unwrap(), ControlReply::StopTask(result) if result == json!({"status":"stopped"}))
     );
     worker.shutdown().await.unwrap();
     assert!(
@@ -4306,10 +4308,11 @@ async fn claude_rewind_negative_proof_requires_both_original_identities() {
         let mut peer = Peer::new();
         let mut worker = peer.worker(state.bridge.clone()).await;
         let session = worker.claude_session().unwrap();
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let scope = ControlScope {
             agent: state.agent.clone(),
             epoch: state.epoch.try_into().unwrap(),
-            request_id: Some(retained_root("transport")),
+            request_id: Some(root.clone()),
         };
         let task = tokio::spawn(async move {
             session
@@ -4320,7 +4323,7 @@ async fn claude_rewind_negative_proof_requires_both_original_identities() {
                         request_id: serde_json::from_value(json!("original")).unwrap(),
                         turn_id: serde_json::from_value(json!("turn")).unwrap(),
                         restore_files: true,
-                        transport_request_id: retained_root("transport"),
+                        transport_request_id: root,
                     },
                 )
                 .await
