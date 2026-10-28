@@ -404,12 +404,12 @@ impl RetainedMonitorPort {
             Err(WorkerError::Store(error)) => return Err(error.into()),
             Err(_) => return Ok(None),
         }
-        Ok(Some(ReattachOutcome::Running(ReattachProof {
+        Ok(Some(ReattachOutcome::Running(Box::new(ReattachProof {
             operation: operation.clone(),
             operation_id: operation_id.to_owned(),
             native_id: None,
             current_connection: scope.connection.clone(),
-        })))
+        }))))
     }
 
     /// Run one managed start in its own task. command/exec answers only when
@@ -1573,12 +1573,12 @@ impl MonitorPort for RetainedMonitorPort {
             let Some(native_id) = native_id.rpc().and_then(|id| u64::try_from(id).ok()) else {
                 return Ok(ReattachOutcome::Pending);
             };
-            Ok(ReattachOutcome::Running(ReattachProof {
+            Ok(ReattachOutcome::Running(Box::new(ReattachProof {
                 operation: operation.clone(),
                 operation_id,
                 native_id: Some(native_id),
                 current_connection: scope.connection,
-            }))
+            })))
         })
     }
 

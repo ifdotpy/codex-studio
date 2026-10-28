@@ -1012,7 +1012,7 @@ pub struct ReattachProof {
 /// A retained-process observation never launches a command.
 pub enum ReattachOutcome {
     Pending,
-    Running(ReattachProof),
+    Running(Box<ReattachProof>),
     TerminalQueued,
     Gone(String),
 }
