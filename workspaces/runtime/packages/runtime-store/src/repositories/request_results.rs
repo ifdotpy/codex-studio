@@ -102,9 +102,7 @@ impl RequestResults {
     ) -> Result<Option<StoredResult>> {
         let saved = Self::stored(tx, id, signature)?;
         if let Some(row) = &saved {
-            let floor = now_ms
-                .saturating_sub(REQUEST_RESULT_TTL_MS)
-                .max(Self::expired_before_ms(tx)?);
+            let floor = now_ms.saturating_sub(REQUEST_RESULT_TTL_MS);
             if row.created <= floor {
                 return Err(RequestIdentityError::Expired {
                     issued_ms: row.created,
@@ -147,15 +145,15 @@ impl RequestResults {
         signature: &str,
         now_ms: i64,
     ) -> Result<Admission> {
+        if let Some(row) = Self::replay(tx, identity.id(), signature, now_ms)? {
+            return Ok(Admission::Replay(row));
+        }
         identity.validate(now_ms, Self::expired_before_ms(tx)?)?;
-        Ok(match Self::replay(tx, identity.id(), signature, now_ms)? {
-            Some(row) => Admission::Replay(row),
-            None => Admission::Fresh(AdmittedRequest {
-                id: identity.id().into(),
-                signature: signature.into(),
-                created: identity.issued_ms(),
-            }),
-        })
+        Ok(Admission::Fresh(AdmittedRequest {
+            id: identity.id().into(),
+            signature: signature.into(),
+            created: identity.issued_ms(),
+        }))
     }
 
     /// Completion remains allowed after expiry; it never authorizes another external attempt.
@@ -183,10 +181,9 @@ impl RequestResults {
 
     /// Only the created index is visited. The floor advances with deletion in this transaction.
     pub fn gc(tx: &Transaction<'_>, now_ms: i64) -> Result<usize> {
-        let floor = now_ms
-            .saturating_sub(REQUEST_RESULT_TTL_MS)
-            .max(Self::expired_before_ms(tx)?);
-        let deleted = tx.execute("DELETE FROM request_results WHERE id IN (SELECT id FROM request_results INDEXED BY request_results_created WHERE created<=?1 ORDER BY created,id LIMIT ?2)", params![floor,REQUEST_RESULT_GC_BATCH_ROWS as i64])?;
+        let cutoff = now_ms.saturating_sub(REQUEST_RESULT_TTL_MS);
+        let floor = cutoff.max(Self::expired_before_ms(tx)?);
+        let deleted = tx.execute("DELETE FROM request_results WHERE id IN (SELECT id FROM request_results INDEXED BY request_results_created WHERE created<=?1 ORDER BY created,id LIMIT ?2)", params![cutoff,REQUEST_RESULT_GC_BATCH_ROWS as i64])?;
         tx.execute("INSERT INTO runtime_orchestration_settings(id,record) VALUES('global',json_object('expired_before_ms',?1)) ON CONFLICT(id) DO UPDATE SET record=json_set(record,'$.expired_before_ms',?1)", [floor])?;
         Ok(deleted)
     }
@@ -198,6 +195,55 @@ mod tests {
     use crate::{Connection, RuntimeStore, StoreError};
     use std::sync::Arc;
     use studio_runtime_schema::persistence::REQUEST_ID_FUTURE_SKEW_MS;
+
+    #[test]
+    fn receipt_result_cutover_floor_preserves_imported_reply_ttl() {
+        let mut db = database();
+        let cutover = REQUEST_RESULT_TTL_MS * 2;
+        let tx = db.transaction().expect("tx");
+        tx.execute("INSERT INTO runtime_orchestration_settings VALUES('global',json_object('expired_before_ms',?1))",[cutover]).expect("seed floor");
+        let token = crate::receipt_migration_contract::admitted_owner_token(
+            "ordinary imported pk",
+            "sig",
+            cutover,
+        );
+        RequestResults::settle(
+            &tx,
+            &token,
+            &ResultEnvelope {
+                actor: None,
+                reply: "exact old reply",
+                references: vec![],
+            },
+        )
+        .expect("import");
+        assert!(
+            RequestResults::replay(&tx, token.id(), "sig", cutover + 1)
+                .expect("ordinary imported cache grace")
+                .is_some()
+        );
+        assert_eq!(
+            RequestResults::gc(&tx, cutover + 1).expect("not TTL-expired"),
+            0
+        );
+        assert!(matches!(
+            RequestResults::admit(
+                &tx,
+                &identity(cutover, "discarded old operation"),
+                "sig",
+                cutover + 1
+            ),
+            Err(RequestResultError::Identity(
+                RequestIdentityError::Expired { .. }
+            ))
+        ));
+        assert!(matches!(
+            RequestResults::replay(&tx, token.id(), "sig", cutover + REQUEST_RESULT_TTL_MS),
+            Err(RequestResultError::Identity(
+                RequestIdentityError::Expired { .. }
+            ))
+        ));
+    }
 
     #[test]
     fn receipt_result_derived_owner_tokens_preserve_issuance_after_expiry() {
@@ -410,7 +456,12 @@ mod tests {
             .expect("expired row");
         }
         assert_eq!(
-            RequestResults::gc(&tx, issued).expect("rollback clock GC"),
+            RequestResults::gc(&tx, issued).expect("rollback clock preserves cache TTL"),
+            0
+        );
+        assert_eq!(
+            RequestResults::gc(&tx, issued + REQUEST_RESULT_TTL_MS)
+                .expect("bounded normal-clock GC"),
             REQUEST_RESULT_GC_BATCH_ROWS
         );
         assert_eq!(
