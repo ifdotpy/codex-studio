@@ -1608,7 +1608,7 @@ async fn seed_restart_input(state: &State, fail_terminal_settlement: bool) {
                 agent.status = studio_runtime_store::AgentStatus::Queued;
                 agent.extra.insert("threadId".into(), json!("fake-thread-0"));
                 agent.extra.insert("autoWake".into(), json!(true));
-                agent.extra.insert("inFlight".into(), json!(false));
+                agent.in_flight = Some(false);
                 agent.extra.insert("error".into(), json!("Context repair waits for a confirmed input receipt: annotation:input"));
                 agent.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":attempt}));
                 agent.extra.insert("contextRepairWait".into(), json!({"error":"Context repair waits for a confirmed input receipt: annotation:input","scope":"native","events":[event],"nextCheckAt":0,"source":{"id":agent_id,"epoch":epoch,"accountKey":"default","threadId":"fake-thread-0","attemptId":null}}));
@@ -2137,7 +2137,7 @@ async fn seed_transport_turn(state: &State) {
             agent.extra.insert("threadId".into(), json!("fake-thread-0"));
             agent.extra.insert("turnId".into(), json!("old-turn"));
             agent.extra.insert("turnEpoch".into(), json!(agent.epoch));
-            agent.extra.insert("inFlight".into(), json!(true));
+            agent.in_flight = Some(true);
             agent.extra.insert("autoWake".into(), json!(true));
             agent.extra.remove("contextRepairWait");
             agent.extra.remove("restartRecovery");
@@ -2187,7 +2187,7 @@ async fn seed_restart_turn(state: &State) {
                     agent.extra.insert("turnId".into(), json!("old-turn"));
                     agent.extra.insert("turnEpoch".into(), json!(epoch));
                     agent.extra.insert("autoWake".into(), json!(false));
-                    agent.extra.insert("inFlight".into(), json!(false));
+                    agent.in_flight = Some(false);
                     agent.extra.insert(
                         "error".into(),
                         json!(studio_runtime_store::BACKEND_RESTARTED_TURN_ERROR),
@@ -2309,7 +2309,7 @@ async fn automatic_recovery_case(restart: bool, child: bool, stopped: bool) {
             }
             agent.status = studio_runtime_store::AgentStatus::Running;
             agent.extra.insert("turnId".into(), json!("old-turn"));
-            agent.extra.insert("inFlight".into(), json!(true));
+            agent.in_flight = Some(true);
             agent.extra.insert("startAttempt".into(), json!({
                 "id":"old-attempt", "accountKey":"default", "epoch":agent.epoch,
                 "threadId":"fake-thread-0", "turnId":"old-turn", "submitted":true,
@@ -2514,7 +2514,7 @@ async fn seed_adopted_turn_checked_while_running(state: &State) {
                     agent.extra.insert("turnId".into(), json!("old-turn"));
                     agent.extra.insert("turnEpoch".into(), json!(epoch));
                     agent.extra.insert("autoWake".into(), json!(true));
-                    agent.extra.insert("inFlight".into(), json!(false));
+                    agent.in_flight = Some(false);
                     agent.extra.insert("error".into(), Value::Null);
                     agent.extra.insert("startAttempt".into(), attempt);
                     agent.extra.insert("disconnectRecovery".into(), disconnect);
@@ -2606,7 +2606,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
                 agent.status = studio_runtime_store::AgentStatus::Queued;
                 agent.extra.insert("threadId".into(), json!("fake-thread-0"));
                 agent.extra.insert("autoWake".into(), json!(true));
-                agent.extra.insert("inFlight".into(), json!(false));
+                agent.in_flight = Some(false);
                 agent.extra.insert("error".into(), json!("held"));
                 agent.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":attempt}));
                 agent.extra.insert("contextRepairWait".into(), json!({

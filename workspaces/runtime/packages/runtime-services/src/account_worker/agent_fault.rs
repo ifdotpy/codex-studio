@@ -378,7 +378,7 @@ pub(super) fn hold_agent(
                 agent.status = AgentStatus::Failed;
                 agent.extra.insert("nativeFailureHold".into(), json!(true));
                 agent.extra.insert("autoWake".into(), json!(false));
-                agent.extra.insert("inFlight".into(), json!(false));
+                agent.in_flight = Some(false);
                 agent.extra.insert("error".into(), json!(message));
                 AgentRepository::put(tx, &agent)?;
                 Ok(HoldResult::Placed)

@@ -562,7 +562,7 @@ async fn waiting_member_never_releases_while_busy() {
             .transaction(move |tx| {
                 let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
                 row.status = status;
-                row.extra.insert("inFlight".into(), json!(in_flight));
+                row.in_flight = Some(in_flight);
                 AgentRepository::put(tx, &row)
             })
             .await
@@ -594,7 +594,7 @@ async fn waiting_member_advances_on_next_preparation_without_a_wake() {
         .transaction(|tx| {
             let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
             row.status = AgentStatus::Running;
-            row.extra.insert("inFlight".into(), json!(true));
+            row.in_flight = Some(true);
             AgentRepository::put(tx, &row)
         })
         .await
@@ -604,7 +604,7 @@ async fn waiting_member_advances_on_next_preparation_without_a_wake() {
         .transaction(|tx| {
             let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
             row.status = AgentStatus::Queued;
-            row.extra.insert("inFlight".into(), json!(false));
+            row.in_flight = Some(false);
             AgentRepository::put(tx, &row)
         })
         .await

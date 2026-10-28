@@ -745,8 +745,7 @@ impl InterruptFixture {
                             continue;
                         }
                         let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
-                        let needs_settlement = agent.extra.get("inFlight").and_then(Value::as_bool)
-                            == Some(true)
+                        let needs_settlement = agent.in_flight == Some(true)
                             || agent.extra.get("turnId").is_some_and(|turn| {
                                 turn.as_str().is_some_and(|value| !value.is_empty())
                             })
@@ -762,7 +761,7 @@ impl InterruptFixture {
                         if !needs_settlement {
                             continue;
                         }
-                        agent.extra.insert("inFlight".to_owned(), json!(false));
+                        agent.in_flight = Some(false);
                         agent.extra.insert("turnId".to_owned(), Value::Null);
                         agent.extra.insert("activity".to_owned(), Value::Null);
                         agent.extra.insert("activeTools".to_owned(), json!([]));

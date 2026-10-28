@@ -627,8 +627,7 @@ fn capacity_snapshot(
     let team_active_all = team
         .iter()
         .filter(|agent| {
-            truthy(agent.extra.get("inFlight"))
-                || matches!(agent.status, Running | Starting | Approval)
+            agent.in_flight == Some(true) || matches!(agent.status, Running | Starting | Approval)
         })
         .count();
     Ok(json!({
@@ -681,7 +680,7 @@ fn agent_status_record(agent: &AgentRecord) -> Value {
         "id": agent.id.0,
         "name": agent.extra.get("name").cloned().unwrap_or(Value::Null),
         "status": agent.status.as_str(),
-        "inFlight": agent.extra.get("inFlight").cloned().unwrap_or(Value::Null),
+        "inFlight": agent.in_flight,
         "parentId": agent.extra.get("parentId").cloned().unwrap_or(Value::Null),
         "kind": "agent",
         "error": clip_value(agent.extra.get("error")),

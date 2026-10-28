@@ -800,7 +800,7 @@ fn capacity_reset(
             })
         {
             agent.extra.remove("startAttempt");
-            agent.extra.insert("inFlight".into(), Value::Bool(false));
+            agent.in_flight = Some(false);
             agent.status = studio_runtime_store::AgentStatus::Failed;
         }
     }
@@ -1584,7 +1584,7 @@ mod tests {
         .expect("lead exists");
         lead.status = studio_runtime_store::AgentStatus::Running;
         lead.extra.insert("autoWake".into(), json!(true));
-        lead.extra.insert("inFlight".into(), json!(true));
+        lead.in_flight = Some(true);
         studio_runtime_store::AgentRepository::put(&connection, &lead)
             .expect("recipient becomes an active lead");
         let send = |connection: &mut Connection, text: &str| {

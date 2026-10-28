@@ -43,7 +43,7 @@ fn binding(
         record.epoch,
         account,
         Some(provider),
-    )? || fields.get("inFlight") != Some(&Value::Bool(true))
+    )? || record.in_flight != Some(true)
         || [
             "executionMove",
             "lazyAccountTransfer",

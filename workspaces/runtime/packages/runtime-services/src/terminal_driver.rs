@@ -1334,6 +1334,7 @@ mod tests {
         );
         extra.insert("cwd".to_owned(), serde_json::json!(root));
         let agent = AgentRecord {
+            in_flight: None,
             title_job: None,
             start_outcome_hold: None,
             fired_events: Default::default(),

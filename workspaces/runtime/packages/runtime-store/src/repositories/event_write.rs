@@ -266,7 +266,6 @@ impl EventWriteRepository {
                     "activeTools",
                     "startAttempt",
                     "turnId",
-                    "inFlight",
                     "autoWake",
                     "capacityRetry",
                     "lastCompletedTurn",
@@ -288,6 +287,11 @@ impl EventWriteRepository {
                     } else {
                         value.remove(key);
                     }
+                }
+                if let Some(in_flight) = agent.in_flight {
+                    value.insert("inFlight".to_owned(), Value::Bool(in_flight));
+                } else {
+                    value.remove("inFlight");
                 }
                 if let Some(hold) = &agent.start_outcome_hold {
                     value.insert("startOutcomeHold".to_owned(), crate::projection_value(hold));

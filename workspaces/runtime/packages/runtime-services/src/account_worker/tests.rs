@@ -4912,7 +4912,7 @@ async fn vm_session_identity_refusal_holds_one_actor_and_keeps_sibling_usable() 
                     sibling_record.status = studio_runtime_store::AgentStatus::Queued;
                     sibling_record.extra.insert("threadId".into(), Value::Null);
                     sibling_record.extra.insert("autoWake".into(), json!(true));
-                    sibling_record.extra.insert("inFlight".into(), json!(false));
+                    sibling_record.in_flight = Some(false);
                     sibling_record.extra.insert("error".into(), Value::Null);
                     sibling_record.extra.remove("startAttempt");
                     sibling_record.extra.remove("preparationWake");
@@ -5079,7 +5079,7 @@ async fn vm_adapter_exit_recovers_only_its_actor_and_keeps_sibling_usable() {
                     sibling_record.status = studio_runtime_store::AgentStatus::Queued;
                     sibling_record.extra.insert("threadId".into(), Value::Null);
                     sibling_record.extra.insert("autoWake".into(), json!(true));
-                    sibling_record.extra.insert("inFlight".into(), json!(false));
+                    sibling_record.in_flight = Some(false);
                     sibling_record.extra.insert("error".into(), Value::Null);
                     sibling_record.extra.remove("startAttempt");
                     sibling_record.extra.remove("preparationWake");
@@ -5478,7 +5478,7 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         .unwrap();
     assert_eq!(saved.status, studio_runtime_store::AgentStatus::Running);
     assert_eq!(saved.extra["startAttempt"]["executionOutcome"], "unknown");
-    assert_eq!(saved.extra["inFlight"], true);
+    assert_eq!(saved.in_flight, Some(true));
 
     let vm_entry = JournalEntry {
         received_at_ms: 2,
@@ -5538,10 +5538,10 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         retired.status,
         studio_runtime_store::AgentStatus::Interrupted
     );
-    assert_eq!(retired.extra["inFlight"], false);
+    assert_eq!(retired.in_flight, Some(false));
     assert!(retired.extra.contains_key("disconnectRecovery"));
     assert_eq!(surviving.status, studio_runtime_store::AgentStatus::Running);
-    assert_eq!(surviving.extra["inFlight"], true);
+    assert_eq!(surviving.in_flight, Some(true));
     assert!(
         !store::disconnect_vm_actor(&store, "vm-completed", 8, "default", 31)
             .await

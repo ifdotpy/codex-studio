@@ -1270,7 +1270,7 @@ mod child_turn_parent_tests {
                     studio_runtime_store::monitor_runtime::put(tx, monitor)?;
                     agent.status = AgentStatus::Completed;
                     agent.extra.insert("turnId".into(), Value::Null);
-                    agent.extra.insert("inFlight".into(), json!(false));
+                    agent.in_flight = Some(false);
                     let mut value = agent.value();
                     crate::lifecycle_effects::ProductionRecoveryDelivery { at: 3.0 }
                         .terminal(
@@ -1627,9 +1627,9 @@ mod child_turn_parent_tests {
                         &retry,
                     )?;
                     agent.status = AgentStatus::Starting;
+                    agent.in_flight = Some(true);
                     for (key, value) in [
                         ("capacityRetry", retry),
-                        ("inFlight", json!(true)),
                         (
                             "startAttempt",
                             json!({"id":format!("capacity:{parked}"),"epoch":1,"events":[],

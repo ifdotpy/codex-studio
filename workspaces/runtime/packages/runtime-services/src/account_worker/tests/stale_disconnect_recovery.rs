@@ -148,12 +148,12 @@ async fn native_review_attempt_without_a_turn(shape: Shape) {
         "requestTicket":"retained:default:review","created":1.0});
     let saved = attempt.clone();
     edit(&state, move |row| {
+        row.in_flight = Some(false);
         for (key, value) in [
             ("threadId", json!("review-thread")),
             ("turnId", json!("review-turn")),
             ("status", json!("interrupted")),
             ("autoWake", json!(false)),
-            ("inFlight", json!(false)),
             ("turnEpoch", json!(epoch)),
             (
                 "error",

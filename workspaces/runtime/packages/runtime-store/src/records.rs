@@ -235,6 +235,8 @@ pub struct AgentRecord {
     pub epoch: i64,
     pub status: AgentStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_flight: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_job: Option<StoredTitleJob>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_outcome_hold: Option<StoredStartOutcomeHold>,
@@ -602,6 +604,9 @@ impl AgentRecord {
         value["rootId"] = Value::String(self.root_id.0.clone());
         value["epoch"] = Value::from(self.epoch);
         value["status"] = Value::String(self.status.as_str().to_owned());
+        if let Some(in_flight) = self.in_flight {
+            value["inFlight"] = Value::Bool(in_flight);
+        }
         if let Some(job) = &self.title_job {
             value["titleJob"] = crate::projection_value(job);
         }
@@ -636,6 +641,9 @@ impl AgentRecord {
         value["rootId"] = Value::String(self.root_id.0);
         value["epoch"] = Value::from(self.epoch);
         value["status"] = Value::String(self.status.as_str().to_owned());
+        if let Some(in_flight) = self.in_flight {
+            value["inFlight"] = Value::Bool(in_flight);
+        }
         if let Some(job) = &self.title_job {
             value["titleJob"] = crate::projection_value(job);
         }

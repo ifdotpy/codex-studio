@@ -137,7 +137,7 @@ async fn set_agent_in_use(state: &State, thread: &str, in_use: bool) {
                     let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                         .expect("test agent exists");
                     agent.extra.insert("threadId".into(), json!(thread));
-                    agent.extra.insert("inFlight".into(), json!(in_use));
+                    agent.in_flight = Some(in_use);
                     agent
                         .extra
                         .insert("turnId".into(), json!(if in_use { "busy" } else { "" }));

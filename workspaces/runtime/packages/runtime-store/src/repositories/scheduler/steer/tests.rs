@@ -219,7 +219,6 @@ fn running() -> AgentRecord {
         ("turnId", json!(TURN)),
         ("turnEpoch", json!(4)),
         ("autoWake", json!(true)),
-        ("inFlight", json!(true)),
         (
             "startAttempt",
             json!({"id":"start","epoch":4,"submitted":true,"turnId":TURN,"threadId":"thread",
@@ -229,6 +228,7 @@ fn running() -> AgentRecord {
         extra.insert(key.to_owned(), value);
     }
     AgentRecord {
+        in_flight: Some(true),
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -658,7 +658,7 @@ fn definite_rejection_after_unconfirmed_requeues_once() {
     // The turn ended first: `settle_terminal` left the agent idle.
     let mut idle = agent(&connection);
     idle.status = AgentStatus::Completed;
-    idle.extra.insert("inFlight".into(), json!(false));
+    idle.in_flight = Some(false);
     idle.extra.insert("turnId".into(), Value::Null);
     put_agent(&connection, idle);
     assert!(

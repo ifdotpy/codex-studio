@@ -605,7 +605,7 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<(), 
     let auto_wake = agent_auto_wake(agent)?;
     let status = match agent.status {
         AgentStatus::Running | AgentStatus::Starting => {
-            !truthy(agent.extra.get("inFlight"))
+            agent.in_flight != Some(true)
                 && !truthy(agent.extra.get("turnId"))
                 && !truthy(agent.extra.get("startAttempt"))
         }
@@ -784,6 +784,7 @@ mod tests {
         studio_runtime_store::receipt_schema::create(&connection).expect("request result schema");
         connection.execute_batch("DROP TABLE request_results; CREATE TABLE request_results(id TEXT PRIMARY KEY,signature TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'applied',ref_kind TEXT,ref_id TEXT,ref_rev INTEGER,result TEXT,created INTEGER NOT NULL); CREATE INDEX request_results_created ON request_results(created,id);").expect("reference receipt fixture");
         let agent = AgentRecord {
+            in_flight: None,
             title_job: None,
             start_outcome_hold: None,
             fired_events: Default::default(),

@@ -785,13 +785,14 @@ async fn existing_actor(paused: bool) -> (State, Arc<ExistingGuest>) {
         store.transaction_with(move|tx|{
             let mut record=AgentRepository::get(tx,&AgentId::from(actor.as_str()))?.unwrap();
             record.status=if paused{studio_runtime_store::AgentStatus::Paused}else{studio_runtime_store::AgentStatus::Running};
-            for(key,value)in[
+            record.in_flight = Some(true);
+            for (key, value) in [
                 ("executionMode",json!("vm")),("workspaceMode",json!("layr")),("layrReady",json!(true)),
                 ("provider",json!("claude")),("accountKey",json!("default")),("executionSettingsAccountKey",json!("default")),
                 ("cwd",json!("/home/studio/project")),("threadId",json!("fake-thread-0")),("turnId",json!("vm-turn")),
-                ("inFlight",json!(true)),("autoWake",json!(!paused)),
+                ("autoWake",json!(!paused)),
                 ("startAttempt",json!({"id":"existing-vm-attempt","epoch":epoch,"accountKey":"default","submitted":true,"events":["annotation:input"],"threadId":"fake-thread-0","turnId":"vm-turn","connectionGeneration":1,"connectionId":"previous-backend","requestTicket":"original-native-start"})),
-            ]{record.extra.insert(key.into(),value);}
+            ] { record.extra.insert(key.into(), value); }
             AgentRepository::put(tx,&record)?;
             studio_runtime_store::ExecutionHistoryRepository::record(tx,&record)?;
             tx.execute("UPDATE runtime_events SET status='delivered',turn_id='vm-turn' WHERE agent=?1",[&actor])?;

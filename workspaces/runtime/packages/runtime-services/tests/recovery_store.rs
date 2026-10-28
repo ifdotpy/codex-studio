@@ -308,7 +308,7 @@ async fn orphan_requires_the_completed_turn_receipt_and_no_uncertain_input() {
         let mut a =
             AgentRepository::get(tx, &AgentId::from("agent"))?.expect("valid recovery fixture");
         a.extra.remove("startAttempt");
-        a.extra.insert("inFlight".into(), json!(true));
+        a.in_flight = Some(true);
         AgentRepository::put(tx, &a)
     })
     .await

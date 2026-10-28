@@ -36,10 +36,10 @@ fn database() -> Connection {
     let mut extra = BTreeMap::new();
     extra.insert("provider".to_owned(), json!("codex"));
     extra.insert("autoWake".to_owned(), json!(true));
-    extra.insert("inFlight".to_owned(), json!(false));
     AgentRepository::put(
         &connection,
         &AgentRecord {
+            in_flight: Some(false),
             title_job: None,
             start_outcome_hold: None,
             fired_events: Default::default(),
@@ -394,7 +394,7 @@ fn submission_recheck_retires_decided_work_review_and_keeps_reconciliation_field
         .expect("agent reads")
         .expect("agent exists");
     agent.status = AgentStatus::Starting;
-    agent.extra.insert("inFlight".into(), json!(true));
+    agent.in_flight = Some(true);
     agent.extra.insert("startAttempt".into(), json!({"id":"attempt","epoch":4,"submitted":false,"activeAtReservation":false,"events":["first"]}));
     AgentRepository::put(&connection, &agent).expect("attempt fixture writes");
     let transaction = connection
@@ -436,7 +436,7 @@ fn submission_recheck_retires_decided_work_review_and_keeps_reconciliation_field
         agent.extra["startAttempt"]["retiredEvents"],
         json!(["first"])
     );
-    assert!(!agent.extra["inFlight"].as_bool().unwrap_or(true));
+    assert!(agent.in_flight == Some(false));
 }
 
 #[test]

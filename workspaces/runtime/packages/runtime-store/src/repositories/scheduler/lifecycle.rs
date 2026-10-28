@@ -71,7 +71,7 @@ impl SchedulerRepository {
     /// Hold further input after manual recovery without stopping the exact
     /// native turn that recovery already observed. This owns the hold record.
     pub fn hold_recovered_delivery(agent: &mut AgentRecord) -> StoreResult<()> {
-        let active = agent.extra.get("inFlight") == Some(&json!(true));
+        let active = agent.in_flight == Some(true);
         if active {
             let attempt = stored_attempt(agent).ok_or_else(|| invalid_agent(&agent.id.0))?;
             let turn = bound_turn(agent, attempt).ok_or_else(|| invalid_agent(&agent.id.0))?;
@@ -90,8 +90,7 @@ impl SchedulerRepository {
     /// Read the existing hold proof without changing delivery permission. A
     /// real Stop or a stale native identity cannot match the current turn.
     pub fn manual_delivery_hold_tracks(agent: &AgentRecord) -> bool {
-        if agent.status != AgentStatus::Paused || agent.extra.get("inFlight") != Some(&json!(true))
-        {
+        if agent.status != AgentStatus::Paused || agent.in_flight != Some(true) {
             return false;
         }
         let Some(turn) = agent.extra.get("turnId").and_then(Value::as_str) else {
@@ -205,7 +204,7 @@ impl SchedulerRepository {
         }
         if current_attempt(&agent, identity.epoch) {
             agent.status = AgentStatus::Running;
-            agent.extra.insert("inFlight".into(), json!(true));
+            agent.in_flight = Some(true);
             if agent.extra.get("error")
                 == agent
                     .extra
@@ -332,7 +331,7 @@ impl SchedulerRepository {
                 let previous_error = agent.extra.get("error").cloned().unwrap_or(Value::Null);
                 agent.status = AgentStatus::Running;
                 agent.extra.insert("autoWake".into(), json!(true));
-                agent.extra.insert("inFlight".into(), json!(true));
+                agent.in_flight = Some(true);
                 agent.extra.insert("error".into(), Value::Null);
                 agent.extra.insert("connectionRecovery".into(),json!({"source":"native_thread_read","at":at,"turnId":agent.extra.get("turnId").unwrap_or(&Value::Null),"outcome":"active","automatic":true,"previousError":previous_error}));
                 if let Some(marker) = agent.extra.get_mut("restartRecovery") {
@@ -344,7 +343,7 @@ impl SchedulerRepository {
             } else if transport_continuation_allowed(&agent) {
                 let previous_error = agent.extra.get("error").cloned().unwrap_or(Value::Null);
                 agent.extra.insert("autoWake".into(), json!(true));
-                agent.extra.insert("inFlight".into(), json!(true));
+                agent.in_flight = Some(true);
                 agent.extra.insert("error".into(), Value::Null);
                 agent.status = AgentStatus::Running;
                 agent.extra.insert(
@@ -526,8 +525,8 @@ impl SchedulerRepository {
             || agent.extra.get("accountKey").and_then(Value::as_str) != Some(account)
             || agent.extra.get("error") != Some(expected_error)
             || agent.extra.get("autoWake") != Some(&json!(true))
+            || agent.in_flight == Some(true)
             || [
-                "inFlight",
                 "activeTools",
                 "turnId",
                 "manualRecoveryDeliveryHold",
@@ -595,7 +594,7 @@ impl SchedulerRepository {
                 .any(|k| attempt[*k] == turn);
         let active_review = turn.is_empty()
             && agent.extra.get("nativeReview").is_some_and(truthy)
-            && agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true)
+            && agent.in_flight == Some(true)
             && attempt.get("action").and_then(Value::as_str) == Some("review")
             && attempt.get("submitted").and_then(Value::as_bool) == Some(true)
             && attempt.get("threadId").and_then(Value::as_str) == Some(thread);
@@ -775,7 +774,7 @@ impl SchedulerRepository {
         let current_attempt = agent.epoch == epoch
             && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(epoch)
             && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(true)
-            && agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true);
+            && agent.in_flight == Some(true);
         let stopped_after_submit = agent.status == AgentStatus::Paused
             && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(false)
             && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(epoch);
@@ -880,7 +879,7 @@ impl SchedulerRepository {
         );
         if !idle
             || flag("deletedAt")
-            || flag("inFlight")
+            || agent.in_flight == Some(true)
             || flag("nativeFailureHold")
             || flag("remoteWorker")
             || flag("remoteAnchor")
@@ -962,7 +961,7 @@ impl SchedulerRepository {
             || agent.extra.get("threadId").and_then(Value::as_str) != Some(thread_id)
             || agent.status != AgentStatus::Starting
             || agent.extra.get("autoWake") != Some(&json!(true))
-            || agent.extra.get("inFlight") != Some(&json!(true))
+            || agent.in_flight != Some(true)
             || agent.extra.get("nativeFailureHold").is_some_and(truthy)
             || attempt["id"] != attempt_id
             || attempt["epoch"] != epoch
@@ -1342,7 +1341,7 @@ impl SchedulerRepository {
             agent.status = status;
             agent.extra.insert("error".into(), json!(message));
         }
-        agent.extra.insert("inFlight".into(), json!(false));
+        agent.in_flight = Some(false);
         agent.start_outcome_hold = None;
         agent
             .extra
@@ -1558,7 +1557,7 @@ impl SchedulerRepository {
             attempt.remove("executionOutcome");
         }
         agent.extra.insert("turnId".into(), json!(turn_id));
-        agent.extra.insert("inFlight".into(), json!(true));
+        agent.in_flight = Some(true);
         if current_attempt || recovering(&agent, epoch) {
             if current_attempt {
                 agent.status = AgentStatus::Running;
@@ -1769,7 +1768,7 @@ impl SchedulerRepository {
         agent
             .extra
             .insert("activeTools".into(), serde_json::json!([]));
-        agent.extra.insert("inFlight".into(), json!(false));
+        agent.in_flight = Some(false);
         if status == AgentStatus::Failed {
             agent.extra.insert("nativeFailureHold".into(), json!(true));
         }
@@ -2019,7 +2018,7 @@ fn return_unapplied_input(
     )?;
     agent.status = AgentStatus::Queued;
     agent.extra.insert("error".into(), Value::Null);
-    agent.extra.insert("inFlight".into(), json!(false));
+    agent.in_flight = Some(false);
     agent.extra.remove("startAttempt");
     agent.start_outcome_hold = None;
     publish_agent(tx, &agent)?;
@@ -2088,7 +2087,7 @@ pub(super) fn apply_start_error(
                 .filter(|v| v.is_string())
                 .unwrap_or(json!("")),
         );
-        agent.status = if agent.extra.get("inFlight").is_some_and(truthy) {
+        agent.status = if agent.in_flight == Some(true) {
             AgentStatus::Running
         } else {
             AgentStatus::Queued
@@ -2122,9 +2121,7 @@ pub(super) fn apply_start_error(
                 json!(WAITING_START);
         }
     }
-    agent
-        .extra
-        .insert("inFlight".into(), json!(decision.in_flight));
+    agent.in_flight = Some(decision.in_flight);
     if !unknown {
         agent.start_outcome_hold = None;
     }
@@ -2335,7 +2332,7 @@ fn requeue_unsubmitted(
     if current
         && (agent.status != AgentStatus::Starting
             || agent.extra.get("autoWake") != Some(&json!(true))
-            || agent.extra.get("inFlight") != Some(&json!(true)))
+            || agent.in_flight != Some(true))
     {
         return Ok(None);
     }
@@ -2346,7 +2343,7 @@ fn requeue_unsubmitted(
         return Ok(None);
     }
     agent.extra.remove("startAttempt");
-    agent.extra.insert("inFlight".into(), json!(false));
+    agent.in_flight = Some(false);
     agent.status = AgentStatus::Queued;
     publish_agent(transaction, &agent)?;
     Ok(Some(count))
@@ -2501,7 +2498,7 @@ pub(super) fn disconnect_agent(
             }),
         );
     }
-    agent.extra.insert("inFlight".into(), json!(false));
+    agent.in_flight = Some(false);
     transaction.execute_cached("UPDATE runtime_events SET status='uncertain',error=?3 WHERE agent=?1 AND epoch=?2 AND status='dispatching'", params![agent.id.0,epoch,if restart {"Server restarted before delivery acknowledgement"} else {"Codex disconnected"}])?;
     if restart_input_wait {
         transaction.execute_cached("UPDATE runtime_events SET status='uncertain' WHERE agent=?1 AND epoch=?2 AND id IN (SELECT value FROM json_each(?3)) AND status IN ('reserved','dispatching','uncertain')", params![agent.id.0,epoch,attempt["events"].to_string()])?;
@@ -2664,7 +2661,7 @@ pub(super) fn transport_continuation_allowed(agent: &AgentRecord) -> bool {
     let attempt = agent.extra.get("startAttempt");
     continuation_allowed(agent)
         && agent.status == AgentStatus::Interrupted
-        && agent.extra.get("inFlight").is_none_or(|v| !truthy(v))
+        && agent.in_flight != Some(true)
         && agent.extra.get("autoWake").is_none_or(|v| !truthy(v))
         && agent.extra.get("turnId").is_some_and(Value::is_string)
         && matches!(

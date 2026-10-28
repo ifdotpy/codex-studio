@@ -1585,9 +1585,9 @@ mod replay_identity_tests {
             let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"threadId":"thread-1","status":"idle","autoWake":true}))?;
             AgentRepository::put(tx,&agent)?;
             assert!(authorize(tx,&request).expect("eligible handoff"));
-            agent.extra.insert("inFlight".into(),json!(true)); AgentRepository::put(tx,&agent)?;
+            agent.in_flight = Some(true); AgentRepository::put(tx,&agent)?;
             assert!(!authorize(tx,&request).expect("active handoff refused"));
-            agent.extra.insert("inFlight".into(),json!(false)); AgentRepository::put(tx,&agent)?;
+            agent.in_flight = Some(false); AgentRepository::put(tx,&agent)?;
             request.params["settings"]["pressureCleanup"] = json!(false);
             assert!(!authorize(tx,&request).expect("settings mismatch refused"));
             Ok::<_,StoreError>(())

@@ -152,7 +152,7 @@ async fn unwritten_thread_receipt_after_restart(shape: Orphan) {
                     )?;
                     agent.extra.insert("startAttempt".into(), finished);
                     agent.status = studio_runtime_store::AgentStatus::Queued;
-                    agent.extra.insert("inFlight".into(), json!(false));
+                    agent.in_flight = Some(false);
                 }
                 AgentRepository::put(tx, &agent)?;
                 Ok::<_, WorkerError>(())

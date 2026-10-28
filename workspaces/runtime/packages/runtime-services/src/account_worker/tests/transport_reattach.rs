@@ -21,7 +21,7 @@ async fn disconnected_running_turn(state: &State) {
                     .expect("fixture agent");
                 agent.status = studio_runtime_store::AgentStatus::Running;
                 agent.extra.insert("turnId".into(), json!("old-turn"));
-                agent.extra.insert("inFlight".into(), json!(true));
+                agent.in_flight = Some(true);
                 agent.extra.insert(
                     "startAttempt".into(),
                     json!({

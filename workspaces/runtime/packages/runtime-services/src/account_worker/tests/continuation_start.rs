@@ -26,9 +26,9 @@ async fn child_of_lead(state: &State) {
                 lead.id = AgentId::from(LEAD);
                 lead.root_id = AgentId::from(LEAD);
                 lead.status = studio_runtime_store::AgentStatus::Completed;
+                lead.in_flight = Some(false);
                 for (key, value) in [
                     ("threadId", json!("lead-thread")),
-                    ("inFlight", json!(false)),
                     ("concurrency", json!(8)),
                 ] {
                     lead.extra.insert(key.into(), value);

@@ -216,10 +216,10 @@ mod tests {
         extra.insert("provider".to_owned(), json!("codex"));
         extra.insert("threadId".into(), json!("thread"));
         extra.insert("autoWake".to_owned(), json!(true));
-        extra.insert("inFlight".to_owned(), json!(false));
         AgentRepository::put(
             &connection,
             &AgentRecord {
+                in_flight: Some(false),
                 title_job: None,
                 start_outcome_hold: None,
                 fired_events: Default::default(),
@@ -465,7 +465,7 @@ mod tests {
         let mut resumed = agent;
         resumed.status = AgentStatus::Queued;
         resumed.extra.insert("autoWake".to_owned(), json!(true));
-        resumed.extra.insert("inFlight".to_owned(), json!(false));
+        resumed.in_flight = Some(false);
         AgentRepository::put(&connection, &resumed).expect("resumed agent writes");
         connection
             .execute(
@@ -697,10 +697,10 @@ mod tests {
         let mut other_extra = BTreeMap::new();
         other_extra.insert("provider".to_owned(), json!("codex"));
         other_extra.insert("autoWake".to_owned(), json!(true));
-        other_extra.insert("inFlight".to_owned(), json!(false));
         AgentRepository::put(
             &transaction,
             &AgentRecord {
+                in_flight: Some(false),
                 title_job: None,
                 start_outcome_hold: None,
                 fired_events: Default::default(),

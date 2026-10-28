@@ -1527,7 +1527,7 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
         return Ok(());
     }
     agent.status = studio_runtime_store::AgentStatus::Paused;
-    agent.extra.insert("inFlight".to_owned(), json!(false));
+    agent.in_flight = Some(false);
     agent.extra.insert("turnId".to_owned(), Value::Null);
     agent.extra.insert("activity".to_owned(), Value::Null);
     agent.extra.insert("activeTools".to_owned(), json!([]));
@@ -1542,7 +1542,7 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
 
 fn needs_deleted_settlement(agent: &AgentRecord) -> bool {
     studio_runtime_store::truthy(agent.extra.get("deletedAt"))
-        && (studio_runtime_store::truthy(agent.extra.get("inFlight"))
+        && (agent.in_flight == Some(true)
             || studio_runtime_store::truthy(agent.extra.get("turnId"))
             || studio_runtime_store::truthy(
                 agent

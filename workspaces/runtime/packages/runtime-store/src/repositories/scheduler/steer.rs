@@ -348,7 +348,7 @@ fn steer_turn(agent: &AgentRecord) -> Option<(String, String)> {
     let attempt = agent.start_attempt().ok().flatten()?;
     let eligible = agent.status == AgentStatus::Running
         && agent.extra.get("autoWake") == Some(&json!(true))
-        && agent.extra.get("inFlight") == Some(&json!(true))
+        && agent.in_flight == Some(true)
         && !flag("remoteWorker")
         && !flag("remoteAnchor")
         && text("executionMode") != Some("vm")
@@ -446,7 +446,7 @@ fn release(tx: &Transaction<'_>, id: &str, receipt: &SteerPayload) -> StoreResul
     let requeue = returned > 0
         && agent.as_ref().is_some_and(|agent| {
             agent.extra.get("autoWake") == Some(&json!(true))
-                && !agent.extra.get("inFlight").is_some_and(truthy)
+                && agent.in_flight != Some(true)
                 && !matches!(
                     agent.status,
                     AgentStatus::Running

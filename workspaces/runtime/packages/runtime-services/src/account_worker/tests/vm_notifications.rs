@@ -238,7 +238,7 @@ fn running(tx: &rusqlite::Transaction<'_>, actor: &str, native: bool) -> Result<
         .extra
         .insert("threadId".into(), json!(format!("thread-{actor}")));
     record.extra.insert("turnId".into(), json!("turn"));
-    record.extra.insert("inFlight".into(), json!(true));
+    record.in_flight = Some(true);
     if native {
         record.extra.insert("executionMode".into(), json!("host"));
     }

@@ -417,6 +417,7 @@ async fn received_remote_event_replays_cached_receipt_after_restart_without_dupl
     }
     let (root, store) = store().await;
     let mut parent = AgentRecord {
+        in_flight: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -653,6 +654,7 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
 
     let (_root, store) = store().await;
     let mut parent = AgentRecord {
+        in_flight: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -677,6 +679,7 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
     );
     parent.extra.insert("concurrency".into(), json!(32));
     let mut worker = AgentRecord {
+        in_flight: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -705,6 +708,7 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
         json!({"server":"peer-server","link":"move-link"}),
     );
     let mut child = AgentRecord {
+        in_flight: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -795,6 +799,7 @@ async fn remote_worker_call_refuses_stopped_parent_without_writes() {
 
     let (_root, store) = store().await;
     let mut parent = AgentRecord {
+        in_flight: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -814,6 +819,7 @@ async fn remote_worker_call_refuses_stopped_parent_without_writes() {
     };
     parent.extra.insert("autoWake".into(), json!(false));
     let mut worker = AgentRecord {
+        in_flight: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -886,6 +892,7 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
 
     let (_root, store) = store().await;
     let mut parent = AgentRecord {
+        in_flight: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -906,6 +913,7 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
     parent.extra.insert("autoWake".into(), json!(true));
     parent.extra.insert("cwd".into(), json!("/fixture"));
     let mut worker = AgentRecord {
+        in_flight: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -1089,6 +1097,7 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
         .await
         .expect("paired peer");
     let mut proxy = AgentRecord {
+        in_flight: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -1217,6 +1226,7 @@ async fn child_result_requires_link_membership_and_updates_proxy() {
 
     let (_root, store) = store().await;
     let mut parent = AgentRecord {
+        in_flight: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -1236,6 +1246,7 @@ async fn child_result_requires_link_membership_and_updates_proxy() {
     };
     parent.extra.insert("autoWake".into(), json!(true));
     let mut child = AgentRecord {
+        in_flight: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -1986,6 +1997,7 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
         let name = &case.name;
         if let Some(lead) = case.lead {
             let mut record = AgentRecord {
+                in_flight: None,
                 title_job: None,
                 start_outcome_hold: None,
                 fired_events: Default::default(),

@@ -119,8 +119,7 @@ pub fn apply(tx: &Transaction<'_>, body: &Value) -> Result<Value, EventWriteErro
             let enabled = value.as_bool().unwrap_or_default();
             if field == "archived"
                 && enabled
-                && (agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true)
-                    || active_monitor(tx, id)?)
+                && (agent.in_flight == Some(true) || active_monitor(tx, id)?)
             {
                 return Err(EventWriteError::InvalidRequest(
                     "Stop active work before archiving this conversation",

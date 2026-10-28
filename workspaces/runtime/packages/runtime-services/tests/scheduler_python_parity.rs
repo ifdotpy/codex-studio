@@ -372,7 +372,7 @@ async fn restart_keeps_a_scoped_receipt_without_replaying_events() {
         .expect("present");
     assert_eq!(record.status, AgentStatus::Interrupted);
     assert_eq!(record.extra["restartRecovery"]["turnId"], "known");
-    assert_eq!(record.extra["inFlight"], false);
+    assert_eq!(record.in_flight, Some(false));
     assert_eq!(record.extra["autoWake"], false);
     let counts:(i64,i64)=reader.query_row("SELECT SUM(status='delivered'),SUM(status='pending') FROM runtime_events WHERE agent=?1",[&agent],|r|Ok((r.get(0)?,r.get(1)?))).expect("events");
     assert_eq!(counts, (3, 0));

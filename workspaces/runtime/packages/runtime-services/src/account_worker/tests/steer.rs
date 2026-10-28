@@ -1195,7 +1195,7 @@ async fn running_turn_with_followup(
                         outsider
                             .extra
                             .insert("threadId".into(), json!("outsider-thread"));
-                        outsider.extra.insert("inFlight".into(), json!(false));
+                        outsider.in_flight = Some(false);
                         AgentRepository::put(tx, &outsider)?;
                     }
                     tx.execute(

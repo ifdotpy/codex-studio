@@ -421,7 +421,7 @@ fn stopped_turn(agent: &AgentRecord, generation: u64) -> Option<StoppedTurn> {
     ) || staged(&receipt["startAttempt"])
         || extra.get("startAttempt").is_some_and(staged);
     let stopped = extra.get("autoWake") == Some(&json!(false))
-        && !studio_runtime_store::truthy(extra.get("inFlight"))
+        && agent.in_flight != Some(true)
         && epoch.checked_add(1) == Some(agent.epoch);
     if ended
         || !stopped

@@ -169,7 +169,7 @@ async fn member_busy_at_the_request_moves_at_its_next_wake() {
     let state = State::new().await;
     edit_agent(&state, |row| {
         row.status = studio_runtime_store::AgentStatus::Running;
-        row.extra.insert("inFlight".into(), json!(true));
+        row.in_flight = Some(true);
     })
     .await;
     let requested = request_transfer(&state, "target").await;
@@ -185,7 +185,7 @@ async fn member_busy_at_the_request_moves_at_its_next_wake() {
     // The turn ends; its queued input wakes the agent on its source account.
     edit_agent(&state, |row| {
         row.status = studio_runtime_store::AgentStatus::Queued;
-        row.extra.insert("inFlight".into(), json!(false));
+        row.in_flight = Some(false);
     })
     .await;
     let mut peer = Peer::new();

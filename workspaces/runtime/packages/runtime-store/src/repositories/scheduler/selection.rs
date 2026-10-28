@@ -314,7 +314,7 @@ impl SchedulerRepository {
     ) -> StoreResult<bool> {
         if agent.status != AgentStatus::Failed
             || agent.extra.get("autoWake") != Some(&json!(true))
-            || agent.extra.get("inFlight") != Some(&json!(false))
+            || agent.in_flight != Some(false)
             || !continuation_allowed(agent)
             || agent.start_outcome_hold.is_some()
             || ["turnId"]
@@ -881,7 +881,7 @@ impl SchedulerRepository {
             || agent.status != AgentStatus::Queued
             || !continuation_allowed(&agent)
             || agent.extra.get("autoWake").and_then(Value::as_bool) != Some(true)
-            || agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true)
+            || agent.in_flight == Some(true)
             || agent.extra.get("nativeFailureHold").is_some_and(truthy)
             || agent.extra.get("remoteWorker").is_some_and(truthy)
             || agent.extra.get("remoteAnchor").is_some_and(truthy)
@@ -1056,9 +1056,7 @@ impl SchedulerRepository {
         };
         if !preparation && let Some(reason) = unsupported {
             agent.status = AgentStatus::Waiting;
-            agent
-                .extra
-                .insert("inFlight".to_owned(), Value::Bool(false));
+            agent.in_flight = Some(false);
             agent.extra.insert("turnId".to_owned(), Value::Null);
             agent
                 .extra
@@ -1114,7 +1112,7 @@ impl SchedulerRepository {
         agent
             .extra
             .remove(studio_runtime_schema::agent_progress::START_WAIT_FIELD);
-        agent.extra.insert("inFlight".to_owned(), Value::Bool(true));
+        agent.in_flight = Some(true);
         agent.extra.insert("turnId".to_owned(), Value::Null);
         agent.extra.insert("turnEpoch".to_owned(), json!(epoch));
         agent.extra.insert(
@@ -1277,9 +1275,7 @@ impl SchedulerRepository {
             } else {
                 AgentStatus::Waiting
             };
-            agent
-                .extra
-                .insert("inFlight".to_owned(), Value::Bool(false));
+            agent.in_flight = Some(false);
         }
         publish_agent(transaction, &agent)?;
         Ok(false)
@@ -1493,7 +1489,7 @@ impl SchedulerRepository {
                 tx,
                 agent,
                 record.status.as_str(),
-                record.extra.get("inFlight") == Some(&json!(true)),
+                record.in_flight == Some(true),
                 record.extra.get("turnId").and_then(Value::as_str),
             )?;
         }
