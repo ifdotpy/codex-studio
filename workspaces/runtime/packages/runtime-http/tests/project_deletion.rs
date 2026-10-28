@@ -607,7 +607,7 @@ async fn project_deletion_unknown_interrupt_is_not_repeated() {
         }
     }
     let mut running = agent("lead", None, "/p");
-    for(k,v)in json!({"status":"running","inFlight":true,"accountKey":"account","connectionId":"connection","connectionGeneration":7,"threadId":"thread","turnId":"turn","startAttempt":{"id":"attempt","epoch":1,"action":"turn","submitted":true,"accountKey":"account","connectionId":"connection","connectionGeneration":7,"threadId":"thread","turnId":"turn","events":[]}}).as_object().expect("patch"){running[k]=v.clone();}
+    for(k,v)in json!({"status":"running","inFlight":true,"accountKey":"account","connectionId":"connection","connectionGeneration":7,"threadId":"thread","turnId":"turn","startAttempt":{"id":"attempt","epoch":1,"submitted":true,"accountKey":"account","connectionId":"connection","connectionGeneration":7,"threadId":"thread","turnId":"turn","events":[]}}).as_object().expect("patch"){running[k]=v.clone();}
     let mut f = Fixture::new(vec![running], vec![], false).await;
     let broker = Arc::new(UnknownBroker {
         store: f.store.clone(),
