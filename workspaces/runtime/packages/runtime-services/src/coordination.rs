@@ -395,7 +395,7 @@ fn post_managed_message(
     agent.extra.remove("nativeFailureHold");
     capacity_reset(transaction, &mut agent)?;
     studio_runtime_store::AgentRepository::put(transaction, &agent)?;
-    let projection = studio_runtime_store::projection_value(&agent).map_err(StoreError::from)?;
+    let projection = studio_runtime_store::projection_value(&agent);
     crate::agents_create::publish_agent(transaction, &projection)?;
 
     let created = crate::event_write::unix_time().map_err(event_write_error)?;
@@ -630,7 +630,7 @@ fn send_followup_inner(
         capacity_reset(transaction, &mut recipient)?;
         studio_runtime_store::AgentRepository::put(transaction, &recipient)?;
         let projection =
-            studio_runtime_store::projection_value(&recipient).map_err(StoreError::from)?;
+            studio_runtime_store::projection_value(&recipient);
         crate::agents_create::publish_agent(transaction, &projection)?;
     }
     let mut metadata = Value::Object(serde_json::Map::from_iter([

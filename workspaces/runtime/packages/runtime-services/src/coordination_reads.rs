@@ -168,13 +168,11 @@ pub fn chat_read(
                 ("id".into(), Value::String(room_id.to_owned())),
                 (
                     "name".into(),
-                    studio_runtime_store::projection_value(&root.name)
-                        .map_err(studio_runtime_store::StoreError::from)?,
+                    studio_runtime_store::projection_value(&root.name),
                 ),
                 (
                     "members".into(),
-                    studio_runtime_store::projection_value(&members)
-                        .map_err(studio_runtime_store::StoreError::from)?,
+                    studio_runtime_store::projection_value(&members),
                 ),
             ])),
             ids,
