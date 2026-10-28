@@ -1030,6 +1030,7 @@ pub(super) fn managed_error(error: crate::managed_host_tools::Error) -> Callback
         E::Unavailable(name) => CallbackError::Dependency(name),
         E::Store(error) => CallbackError::Store(error),
         E::Sqlite(error) => CallbackError::Store(error.into()),
+        E::Work(crate::work_write::WorkWriteError::Expired) => CallbackError::Expired,
         E::Work(crate::work_write::WorkWriteError::Event(error)) => error.into(),
         E::Work(crate::work_write::WorkWriteError::Store(error)) => CallbackError::Store(error),
         E::Work(crate::work_write::WorkWriteError::NotImplemented(name)) => {
