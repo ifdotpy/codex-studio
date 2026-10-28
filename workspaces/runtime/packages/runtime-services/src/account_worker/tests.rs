@@ -6192,7 +6192,6 @@ async fn vm_worker_restart_reconciles_uncertain_provider_start_without_resending
     worker_barrier(&first_worker).await;
     let first_recovery = state.record().await;
     assert_eq!(first_recovery["status"], "starting", "{first_recovery}");
-    let agent_id = state.agent.clone();
     let launch = &first_recovery["vmLaunch"];
     assert_eq!(launch["identity"]["epoch"], first_recovery["epoch"]);
     assert_eq!(launch["status"], "submitted");

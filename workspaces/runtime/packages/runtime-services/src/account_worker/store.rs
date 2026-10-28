@@ -339,7 +339,7 @@ pub(crate) fn notification_acknowledged(
         })
 }
 
-pub(crate) fn get_notification(
+pub fn get_notification(
     tx: &rusqlite::Connection,
     identity: &ProviderDeliveryIdentity,
 ) -> studio_runtime_store::StoreResult<Option<crate::notification_dispatch::NotificationSettlement>>
@@ -353,7 +353,7 @@ pub(crate) fn get_notification(
     .and_then(|row| row.payload.notification))
 }
 
-pub(crate) fn put_notification(
+pub fn put_notification(
     tx: &studio_runtime_store::Transaction<'_>,
     identity: &ProviderDeliveryIdentity,
     notification: crate::notification_dispatch::NotificationSettlement,
@@ -3867,11 +3867,10 @@ pub(super) async fn flush_streams(
         let mut streams = load_streams(tx, &account)?;
         crate::notification_dispatch::prune_inactive_streams(tx, &mut streams, now(), false)?;
         for (actor, owner, generation, thread) in streams.threads() {
-            let (_, identity) = SchedulerRepository::find_attempt_for_thread(
-                tx, &owner, generation, &thread, None,
+            let identity = SchedulerRepository::find_attempt_for_actor(
+                tx, &actor, &owner, generation, &thread, None,
             )?;
-            if let Some((identity, _)) = identity
-                && identity.agent_id == actor
+            if let Some(identity) = identity
                 && let Some(next) = flush_notification_streams(
                     tx,
                     &identity.agent_id,
