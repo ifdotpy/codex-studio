@@ -4,6 +4,24 @@ use studio_runtime_store::path_identity::CanonicalPath;
 
 const FLUSH_OPERATION_PROGRESS_GUARD: std::time::Duration = std::time::Duration::from_secs(10);
 
+#[tokio::test]
+async fn direct_generation_after_supervisor_attachment_does_not_reuse_ack() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = studio_runtime_store::RuntimeStore::open(Some(directory.path())).await.unwrap();
+    store.transaction(|tx| {
+        studio_runtime_store::account_state::ensure_account(tx, "default")?;
+        tx.execute("UPDATE runtime_account_state SET next_generation=41 WHERE account='default'", [])?;
+        Ok(())
+    }).await.unwrap();
+    store::attach_provider_stream(&store, "default", None, 42, "supervisor").await.unwrap();
+    store.transaction(|tx| studio_runtime_store::account_state::set_provider_checkpoint(tx, "default", 42, 100)).await.unwrap();
+    let next = store.transaction(|tx| studio_runtime_store::account_state::allocate_next_generation(tx, "default")).await.unwrap();
+    assert!(next > 42, "direct generation must exceed the supervisor generation");
+    store::attach_provider_stream(&store, "default", None, next, "direct").await.unwrap();
+    let ack = store.read_async("test/direct-checkpoint", move |db| studio_runtime_store::account_state::provider_checkpoint(db, "default", next)).await.unwrap();
+    assert_eq!(ack, 0, "a new direct process must not inherit the supervisor ACK");
+}
+
 async fn recover_after_flush_failure(state: &State) {
     *state.bridge.faults.pause_operation.lock().unwrap() = None;
     state

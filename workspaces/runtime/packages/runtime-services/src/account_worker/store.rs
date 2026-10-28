@@ -3049,9 +3049,10 @@ pub(super) async fn attach_provider_stream(
             studio_runtime_store::account_state::ensure_account(tx,&account)?;
             let (previous,ack):(Option<i64>,i64)=tx.query_row_cached("SELECT connection_generation,journal_ack FROM runtime_account_state WHERE account=?1",[&account],|row|Ok((row.get(0)?,row.get(1)?)))?;
             let generation=i64::try_from(generation).map_err(|_|invalid(&account))?;
+            let next_generation=generation.checked_add(1).ok_or_else(||invalid(&account))?;
             if previous.is_some_and(|old|old>generation){return Err(invalid(&account));}
             if let Some(previous)=previous && previous!=generation {super::retained::storage::checkpoint_covered(tx,&account,previous as u64,ack as u64)?;}
-            tx.execute_cached("UPDATE runtime_account_state SET connection_generation=?2,connection_id=?3,journal_ack=CASE WHEN connection_generation=?2 THEN journal_ack ELSE 0 END,recovery_required=0 WHERE account=?1",params![account,generation,connection])?;
+            tx.execute_cached("UPDATE runtime_account_state SET connection_generation=?2,connection_id=?3,journal_ack=CASE WHEN connection_generation=?2 THEN journal_ack ELSE 0 END,recovery_required=0,next_generation=MAX(next_generation,?4) WHERE account=?1",params![account,generation,connection,next_generation])?;
         }
         Ok(())
     }).await
