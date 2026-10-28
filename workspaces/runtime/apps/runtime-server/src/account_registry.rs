@@ -719,6 +719,9 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                 Err(studio_runtime_services::account_worker::retained::PortError::Unknown) => {
                     Err(AccountSessionError::Unknown)
                 }
+                Err(studio_runtime_services::account_worker::retained::PortError::Expired) => {
+                    Err(AccountSessionError::Expired)
+                }
                 Err(_) => Err(AccountSessionError::Refused(
                     "Account transfer source request was rejected",
                 )),
@@ -749,6 +752,9 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                 .barrier(&expected_scope, deadline)
                 .await
                 .map_err(|error| match error {
+                    studio_runtime_services::account_worker::retained::PortError::Expired => {
+                        studio_runtime_services::account_session_runtime::AccountSessionError::Expired
+                    }
                     studio_runtime_services::account_worker::retained::PortError::Unknown => {
                         studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
                     }
@@ -778,6 +784,9 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                 );
             };
             session.recover_connection(agent_id).await.map_err(|error| match error {
+                studio_runtime_services::account_worker::retained::PortError::Expired => {
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Expired
+                }
                 studio_runtime_services::account_worker::retained::PortError::Unknown => {
                     studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
                 }
@@ -886,6 +895,9 @@ async fn dispatch_request(
         }
         Err(error) => {
             return Err(match error {
+                studio_runtime_services::account_worker::retained::PortError::Expired => {
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Expired
+                }
                 studio_runtime_services::account_worker::retained::PortError::Unknown => {
                     studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
                 }
