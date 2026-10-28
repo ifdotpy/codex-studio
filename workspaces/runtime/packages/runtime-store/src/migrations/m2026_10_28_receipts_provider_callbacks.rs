@@ -128,6 +128,65 @@ fn put_task(tx: &Transaction<'_>, value: &Value) -> Result<()> {
     Ok(())
 }
 
+fn settle_written(
+    tx: &Transaction<'_>,
+    row: &SourceReceipt,
+    owner: &mut Value,
+    request_id: &str,
+    signature: &str,
+    mut payload: Value,
+    cutover: i64,
+) -> Result<()> {
+    let key = owner["originKey"]
+        .as_str()
+        .ok_or_else(|| fail(row))?
+        .to_owned();
+    if let Some(prior) = Outbox::get::<Value>(tx, &key).map_err(|_| fail(row))?
+        && (prior.signature != signature
+            || prior.payload["identity"] != payload["identity"]
+            || prior.payload["body"] != payload["body"])
+    {
+        return Err(fail(row));
+    }
+    if payload["frame_fingerprint"].is_null() {
+        let body = if let Some(value) = payload["body"].get("result") {
+            studio_runtime_providers::ResponseBody::Result(value.clone())
+        } else if let Some(value) = payload["body"].get("error") {
+            studio_runtime_providers::ResponseBody::Error(value.clone())
+        } else {
+            return Err(fail(row));
+        };
+        let frame = studio_runtime_providers::Frame::Response {
+            id: serde_json::from_value(payload["identity"]["rpc_id"].clone())
+                .map_err(|_| fail(row))?,
+            body,
+            fields: Default::default(),
+        };
+        payload["frame_fingerprint"] = json!(crate::sha256_hex(
+            &studio_runtime_providers::encode_line(&frame).map_err(|_| fail(row))?
+        ));
+    }
+    import_result(
+        tx,
+        request_id,
+        signature,
+        &ResultEnvelope {
+            actor: payload["identity"]["context"]["agent"]
+                .as_str()
+                .map(str::to_owned),
+            reply: payload.clone(),
+            references: vec![],
+        },
+        cutover,
+    )?;
+    owner["status"] = json!(ToolRequestStatus::Completed);
+    owner["payload"]["reply_identity"] = payload["identity"].clone();
+    owner["payload"]["frame_fingerprint"] = payload["frame_fingerprint"].clone();
+    put_task(tx, owner)?;
+    Outbox::delete_settled(tx, &key, signature).map_err(|_| fail(row))?;
+    Ok(())
+}
+
 fn canonical(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> {
     if row.signature != "provider-callback" {
         return Err(fail(row));
@@ -226,7 +285,7 @@ fn canonical(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<
         .unwrap_or(Value::Null);
     let mut origin = response_identity.clone();
     origin["attempt"] = json!("");
-    let owner = json!({"id":id,"kind":ToolRequestKind::ProviderCallback,"originKey":key,"status":status,"updated":cutover,"payload":{"identity":origin,"signature":signature,"card":card_id,"tool_request":tool,"credential_refresh_admission":null,"journal_cursor":cursor,"admission":admission,"reply_identity":if delivery_status.is_some(){response_identity.clone()}else{Value::Null},"frame_fingerprint":null}});
+    let mut owner = json!({"id":id,"kind":ToolRequestKind::ProviderCallback,"originKey":key,"status":status,"updated":cutover,"payload":{"identity":origin,"signature":signature,"card":card_id,"tool_request":tool,"credential_refresh_admission":null,"journal_cursor":cursor,"admission":admission,"reply_identity":if reply.is_some(){response_identity.clone()}else{Value::Null},"frame_fingerprint":null}});
     if let Some(previous) = &previous
         && (previous["payload"]["signature"] != signature
             || previous["payload"]["identity"] != owner["payload"]["identity"]
@@ -249,19 +308,7 @@ fn canonical(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<
         }
         let payload = json!({"identity":response_identity,"body":body,"card":card_id,"tool_request":tool,"unanswered":saved["unanswered"],"journal_cursor":cursor,"delete_requested_at":saved["deleteRequestedAt"],"frame_fingerprint":null});
         if status == OutboxStatus::Committed {
-            import_result(
-                tx,
-                base,
-                signature,
-                &ResultEnvelope {
-                    actor: response_identity["context"]["agent"]
-                        .as_str()
-                        .map(str::to_owned),
-                    reply: payload.clone(),
-                    references: vec![],
-                },
-                cutover,
-            )?;
+            return settle_written(tx, row, &mut owner, base, signature, payload, cutover);
         }
         let context = &response_identity["context"];
         import_outbox(
@@ -312,10 +359,46 @@ fn frame(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> 
         return Err(fail(row));
     }
     let mut destinations = Outbox::for_request::<Value>(tx, old_origin).map_err(|_| fail(row))?;
-    if destinations.len() != 1 {
+    if destinations.len() > 1 {
         return Err(fail(row));
     }
-    let mut response = destinations.pop().ok_or_else(|| fail(row))?;
+    let mut response = if let Some(response) = destinations.pop() {
+        response
+    } else {
+        // A Written canonical row has already retired. Its exact immutable
+        // result and owner fence identify the remaining transport sibling.
+        let (signature, raw, created): (String, String, i64) = tx
+            .query_row(
+                "SELECT signature,result,created FROM request_results WHERE id=?1",
+                [old_origin],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?
+            .ok_or_else(|| fail(row))?;
+        let envelope: ResultEnvelope<Value> = serde_json::from_str(&raw).map_err(|_| fail(row))?;
+        let (key, _identity) = identity(tx, row, envelope.reply["identity"].clone())?;
+        let owner = task(tx, &key)?.ok_or_else(|| fail(row))?;
+        if owner["status"] != json!(ToolRequestStatus::Completed) {
+            return Err(fail(row));
+        }
+        let context = &envelope.reply["identity"]["context"];
+        OutboxRow {
+            id: key,
+            kind: OutboxKind::ProviderCallback,
+            owner_kind: OwnerKind::Task,
+            owner_id: owner["id"].as_str().ok_or_else(|| fail(row))?.into(),
+            request_id: Some(old_origin.into()),
+            signature,
+            status: OutboxStatus::Committed,
+            account: context["account"].as_str().map(str::to_owned),
+            stream_id: context["stream_id"].as_str().map(str::to_owned),
+            generation: context["generation"].as_i64(),
+            ordinal: None,
+            next_at: None,
+            payload: envelope.reply,
+            created,
+        }
+    };
     if response.kind != OutboxKind::ProviderCallback
         || response.payload["identity"]["attempt"] != attempt
     {
@@ -346,6 +429,10 @@ fn frame(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> 
     let written = load(tx, &format!("{base}:written"))?;
     response.status = match written.as_ref().and_then(Value::as_str) {
         Some("written") => OutboxStatus::Committed,
+        Some("unknown") | None if response.status == OutboxStatus::Committed => {
+            OutboxStatus::Committed
+        }
+        Some("not-sent") if response.status == OutboxStatus::Committed => return Err(fail(row)),
         Some("unknown") | None => OutboxStatus::Unknown,
         Some("not-sent") => OutboxStatus::Pending,
         _ => return Err(fail(row)),
@@ -365,50 +452,26 @@ fn frame(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> 
             ToolRequestStatus::Unknown,
     });
     if response.status == OutboxStatus::Committed {
-        // Replace only the absent fingerprint in an earlier written import;
-        // it is destination proof, never a second provider operation.
-        let exact = response.payload.clone();
-        let old: Option<String> = tx
-            .query_row(
-                "SELECT result FROM request_results WHERE id=?1",
-                [old_origin],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(old) = old {
-            let mut envelope: Value = serde_json::from_str(&old).map_err(|_| fail(row))?;
-            let mut without = exact.clone();
-            without["frame_fingerprint"] = Value::Null;
-            if envelope["reply"] != without && envelope["reply"] != exact {
-                return Err(fail(row));
-            }
-            envelope["reply"] = exact;
-            tx.execute(
-                "UPDATE request_results SET result=?2 WHERE id=?1",
-                params![old_origin, envelope.to_string()],
-            )?;
-        } else {
-            import_result(
-                tx,
-                old_origin,
-                &response.signature,
-                &ResultEnvelope {
-                    actor: response.payload["identity"]["context"]["agent"]
-                        .as_str()
-                        .map(str::to_owned),
-                    reply: exact,
-                    references: vec![],
-                },
-                cutover,
-            )?;
-        }
+        settle_written(
+            tx,
+            row,
+            &mut owner,
+            old_origin,
+            &response.signature,
+            response.payload.clone(),
+            cutover,
+        )?;
     }
     tx.execute(
         "DELETE FROM runtime_operation_receipts WHERE id=?1 AND signature='written'",
         [format!("{base}:written")],
     )?;
     put_task(tx, &owner)?;
-    import_outbox(tx, &response)
+    if response.status == OutboxStatus::Committed {
+        Ok(())
+    } else {
+        import_outbox(tx, &response)
+    }
 }
 
 fn unanswered(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> {
@@ -434,12 +497,25 @@ fn unanswered(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result
     let Some(accepted) = accepted else {
         let previous = task(tx, operation)?.ok_or_else(|| fail(row))?;
         let value: Value = row.json(TABLE)?;
+        let completed = previous["status"] == json!(ToolRequestStatus::Completed);
+        let completed_fingerprint: Option<String> = if completed {
+            tx.query_row("SELECT json_extract(record,'$.payload.frame_fingerprint') FROM runtime_tool_requests WHERE id=?1",[previous["payload"]["root_request_id"].as_str().ok_or_else(||fail(row))?],|r|r.get(0)).optional()?.flatten()
+        } else {
+            None
+        };
         let valid = match phase {
             "submitted" => {
-                value == true && previous["status"] == json!(ToolRequestStatus::Unknown)
+                value == true
+                    && (previous["status"] == json!(ToolRequestStatus::Unknown) || completed)
                     || value["sha256"] == previous["payload"]["submitted"]["sha256"]
+                    || completed_fingerprint
+                        .as_deref()
+                        .is_some_and(|fp| value["sha256"].as_str() == Some(fp))
             }
-            "unknown" => value == true && previous["status"] == json!(ToolRequestStatus::Unknown),
+            "unknown" => {
+                value == true
+                    && (previous["status"] == json!(ToolRequestStatus::Unknown) || completed)
+            }
             "recoverable" => value == true && previous["payload"]["recovery_authorized"] == true,
             "replayed" => value == true && previous["payload"]["recovery_attempted"] == true,
             "written" => value == true && previous["status"] == json!(ToolRequestStatus::Completed),
@@ -474,7 +550,7 @@ fn unanswered(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result
     let [unknown, authorized, attempted, written] = flags.as_slice() else {
         return Err(fail(row));
     };
-    let state = if *written {
+    let mut state = if *written {
         ToolRequestStatus::Completed
     } else if *unknown || submitted == Some(json!(true)) {
         ToolRequestStatus::Unknown
@@ -516,6 +592,9 @@ fn unanswered(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result
         json!({"id":id,"kind":ToolRequestKind::ProviderCallback,"originKey":key,"status":state,"updated":cutover,"payload":{"identity":{"context":context,"rpc_id":accepted["requestId"],"attempt":""},"signature":signature,"card":null,"tool_request":null,"credential_refresh_admission":null,"journal_cursor":cursor,"admission":admitted_owner_token(&format!("{base}:accepted"),&signature,cutover),"reply_identity":null,"frame_fingerprint":null}})
     });
     let canonical_id = owner["id"].as_str().ok_or_else(|| fail(row))?.to_owned();
+    if owner["status"] == json!(ToolRequestStatus::Completed) {
+        state = ToolRequestStatus::Completed;
+    }
     let saved = if let Some(saved) = submitted.as_ref().filter(|value| value.is_object()) {
         if saved["version"] != 1
             || saved["generation"].as_i64() != Some(generation)
@@ -535,9 +614,36 @@ fn unanswered(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result
             return Err(fail(row));
         }
         let old = Outbox::get::<Value>(tx, &key).map_err(|_| fail(row))?;
+        let result_id = owner["payload"]["admission"]["id"]
+            .as_str()
+            .ok_or_else(|| fail(row))?
+            .to_owned();
+        let retained = if state == ToolRequestStatus::Completed {
+            let raw: Option<String> = tx
+                .query_row(
+                    "SELECT result FROM request_results WHERE id=?1",
+                    [&result_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            raw.map(|raw| {
+                serde_json::from_str::<ResultEnvelope<Value>>(&raw)
+                    .map(|envelope| envelope.reply)
+                    .map_err(|_| fail(row))
+            })
+            .transpose()?
+        } else {
+            None
+        };
         let mut reply_identity = old
             .as_ref()
             .map(|v| v.payload["identity"].clone())
+            .or_else(|| retained.as_ref().map(|v| v["identity"].clone()))
+            .or_else(|| {
+                owner["payload"]["reply_identity"]
+                    .is_object()
+                    .then(|| owner["payload"]["reply_identity"].clone())
+            })
             .unwrap_or_else(
                 || json!({"context":context,"rpc_id":accepted["requestId"],"attempt":fingerprint}),
             );
@@ -547,16 +653,18 @@ fn unanswered(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result
         } else {
             json!({"error":response["error"]})
         };
-        if old.as_ref().is_some_and(|old| old.payload["body"] != body) {
+        if old.as_ref().is_some_and(|old| old.payload["body"] != body)
+            || retained.as_ref().is_some_and(|saved| saved["body"] != body)
+        {
             return Err(fail(row));
         }
-        let payload = if let Some(mut old) = old.as_ref().map(|r| r.payload.clone()) {
+        let payload = if let Some(mut old) = old.as_ref().map(|r| r.payload.clone()).or(retained) {
             old["frame_fingerprint"] = json!(fingerprint);
             old
         } else {
             json!({"identity":reply_identity,"body":body,"card":null,"tool_request":null,"unanswered":null,"journal_cursor":cursor,"delete_requested_at":null,"frame_fingerprint":fingerprint})
         };
-        let delivery = if *written {
+        let delivery = if state == ToolRequestStatus::Completed {
             OutboxStatus::Committed
         } else if *unknown {
             OutboxStatus::Unknown
@@ -567,25 +675,37 @@ fn unanswered(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result
             .as_str()
             .ok_or_else(|| fail(row))?
             .to_owned();
-        import_outbox(
-            tx,
-            &OutboxRow {
-                id: key.clone(),
-                kind: OutboxKind::ProviderCallback,
-                owner_kind: OwnerKind::Task,
-                owner_id: canonical_id.clone(),
-                request_id: Some(request_id),
-                signature: signature.clone(),
-                status: delivery,
-                account: Some(account.into()),
-                stream_id: Some(stream.into()),
-                generation: Some(generation),
-                ordinal: None,
-                next_at: None,
+        if delivery == OutboxStatus::Committed {
+            settle_written(
+                tx,
+                row,
+                &mut owner,
+                &request_id,
+                &signature,
                 payload,
-                created: cutover,
-            },
-        )?;
+                cutover,
+            )?;
+        } else {
+            import_outbox(
+                tx,
+                &OutboxRow {
+                    id: key.clone(),
+                    kind: OutboxKind::ProviderCallback,
+                    owner_kind: OwnerKind::Task,
+                    owner_id: canonical_id.clone(),
+                    request_id: Some(request_id),
+                    signature: signature.clone(),
+                    status: delivery,
+                    account: Some(account.into()),
+                    stream_id: Some(stream.into()),
+                    generation: Some(generation),
+                    ordinal: None,
+                    next_at: None,
+                    payload,
+                    created: cutover,
+                },
+            )?;
+        }
         owner["payload"]["reply_identity"] = reply_identity;
         owner["payload"]["frame_fingerprint"] = json!(fingerprint);
         Some(
@@ -602,7 +722,14 @@ fn unanswered(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result
         .and_then(|v| v["id"].as_str())
         .map(str::to_owned)
         .unwrap_or_else(RequestIdentity::issue_root);
-    let task = json!({"id":id,"kind":ToolRequestKind::ProviderCallback,"originKey":operation,"status":state,"updated":cutover,"payload":{"accepted":accepted,"submitted":saved,"recovery_authorized":authorized,"recovery_attempted":attempted,"request_fingerprint":crate::sha256_hex(request_bytes.as_bytes()),"root_request_id":canonical_id}});
+    let mut stored_accepted = accepted.clone();
+    let saved = if state == ToolRequestStatus::Completed {
+        stored_accepted["frame"] = json!("");
+        None
+    } else {
+        saved
+    };
+    let task = json!({"id":id,"kind":ToolRequestKind::ProviderCallback,"originKey":operation,"status":state,"updated":cutover,"payload":{"accepted":stored_accepted,"submitted":saved,"recovery_authorized":authorized,"recovery_attempted":attempted,"request_fingerprint":crate::sha256_hex(request_bytes.as_bytes()),"root_request_id":canonical_id}});
     if !stream.contains(":vm:") {
         tx.execute("INSERT INTO runtime_account_state(account,next_generation,journal_ack,recovery_required,streams) VALUES(?1,?2,0,0,'null') ON CONFLICT(account) DO UPDATE SET next_generation=max(next_generation,excluded.next_generation)",params![account,generation])?;
     }
@@ -734,6 +861,138 @@ mod tests {
         .expect("callback");
         key
     }
+    fn move_all(tx: &Transaction<'_>) {
+        for source in SOURCES {
+            let mut cp =
+                MigrationCheckpoint::begin(tx, Family.id(), source, 1000).expect("checkpoint");
+            while cp.status != MigrationStatus::Complete {
+                cp = Family.move_batch(tx, source, &cp).expect("move");
+                cp.save(tx, Family.id(), source, 1000).expect("save");
+            }
+        }
+    }
+    #[test]
+    fn receipt_provider_callbacks_written_import_settles_raw_reply_and_owner_without_outbox() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let old = fixture(&tx, 17, "written");
+        move_all(&tx);
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_outbox", [], |r| r
+                .get::<_, i64>(0))
+                .expect("no completed body"),
+            0
+        );
+        let raw: String = tx
+            .query_row(
+                "SELECT result FROM request_results WHERE id=?1",
+                [&old],
+                |r| r.get(0),
+            )
+            .expect("original raw result");
+        let envelope: Value = serde_json::from_str(&raw).expect("envelope");
+        assert_eq!(
+            envelope["reply"]["body"],
+            json!({"result":{"approved":true}})
+        );
+        let owner = task(&tx, &new_key(&envelope["reply"]["identity"]))
+            .expect("owner")
+            .expect("fence");
+        assert_eq!(owner["status"], json!(ToolRequestStatus::Completed));
+        assert!(owner["payload"]["frame_fingerprint"].as_str().is_some());
+        let before = owner;
+        move_all(&tx);
+        assert_eq!(
+            task(&tx, before["originKey"].as_str().expect("key"))
+                .expect("owner")
+                .expect("fence"),
+            before
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_outbox", [], |r| r
+                .get::<_, i64>(0))
+                .expect("no resurrection"),
+            0
+        );
+    }
+    fn new_key(identity: &Value) -> String {
+        let c = &identity["context"];
+        format!(
+            "provider-callback:{}",
+            crate::sha256_hex(
+                json!([
+                    c["account"],
+                    c["generation"],
+                    c["stream_id"],
+                    c["agent"],
+                    c["epoch"],
+                    c["thread"],
+                    c["turn"],
+                    identity["rpc_id"]
+                ])
+                .to_string()
+                .as_bytes()
+            )
+        )
+    }
+    #[test]
+    fn receipt_provider_callbacks_late_written_frame_settles_unknown_and_removes_outbox() {
+        for delivery in ["unknown", "written"] {
+            let mut db = database();
+            let tx = db.transaction().expect("transaction");
+            let old = fixture(&tx, 17, delivery);
+            let operation = format!("{old}:attempt");
+            let base = format!(
+                "account-worker:retained-frame:default:{}",
+                crate::sha256_hex(operation.as_bytes())
+            );
+            let bytes = String::from_utf8(
+                studio_runtime_providers::encode_line(&studio_runtime_providers::Frame::Response {
+                    id: studio_runtime_providers::RequestId::Number(17),
+                    body: studio_runtime_providers::ResponseBody::Result(json!({"approved":true})),
+                    fields: Default::default(),
+                })
+                .expect("encode"),
+            )
+            .expect("UTF8");
+            tx.execute("INSERT INTO runtime_operation_receipts VALUES(?1,'frame',?2)",params![format!("{base}:frame"),json!({"scope":{"account":"default","generation":7,"connection":"original"},"operation":operation,"frame":bytes}).to_string()]).expect("transport frame");
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,'written','\"written\"')",
+                [format!("{base}:written")],
+            )
+            .expect("late Written");
+            move_all(&tx);
+            assert_eq!(
+                tx.query_row("SELECT count(*) FROM runtime_outbox", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("no completed body"),
+                0
+            );
+            let raw: String = tx
+                .query_row(
+                    "SELECT result FROM request_results WHERE id=?1",
+                    [&old],
+                    |r| r.get(0),
+                )
+                .expect("exact result");
+            let envelope: Value = serde_json::from_str(&raw).expect("envelope");
+            assert_eq!(
+                envelope["reply"]["frame_fingerprint"],
+                crate::sha256_hex(bytes.as_bytes())
+            );
+            let owner = task(&tx, &new_key(&envelope["reply"]["identity"]))
+                .expect("owner")
+                .expect("fence");
+            assert_eq!(owner["status"], json!(ToolRequestStatus::Completed));
+            move_all(&tx);
+            assert_eq!(
+                tx.query_row("SELECT count(*) FROM runtime_outbox", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("no resurrection"),
+                0
+            );
+        }
+    }
     #[test]
     fn receipt_provider_callbacks_unknown_import_is_one_stable_fence_on_reopen() {
         let mut db = database();
@@ -859,6 +1118,50 @@ mod tests {
         assert_eq!(
             task["payload"]["request_fingerprint"],
             crate::sha256_hex(request.as_bytes())
+        );
+    }
+    #[test]
+    fn receipt_provider_callbacks_written_obligation_has_no_response_body_outbox() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let request = "{\"id\":17,\"method\":\"native/unsupported\",\"params\":{}}\n";
+        let response = "{\"id\":17,\"error\":{\"code\":-1}}\n";
+        let accepted = json!({"account":"default","journalScope":"default","generation":7,"cursor":9,"requestId":17,"method":"native/unsupported","frame":request,"actor":null,"epoch":null});
+        let saved = json!({"version":1,"handle":"account:default","generation":7,"pid":123,"frame":response,"sha256":crate::sha256_hex(response.as_bytes())});
+        for (phase, value) in [
+            ("accepted", accepted),
+            ("submitted", saved),
+            ("written", json!(true)),
+        ] {
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+                params![
+                    format!("account-worker:callback:default:7:9:{phase}"),
+                    phase,
+                    value.to_string()
+                ],
+            )
+            .expect("phase");
+        }
+        move_all(&tx);
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_outbox", [], |r| r
+                .get::<_, i64>(0))
+                .expect("no completed body"),
+            0
+        );
+        let obligation = task(&tx, "callback:default:7:9")
+            .expect("obligation")
+            .expect("fence");
+        assert_eq!(obligation["status"], json!(ToolRequestStatus::Completed));
+        assert_eq!(obligation["payload"]["accepted"]["frame"], "");
+        assert_eq!(obligation["payload"]["submitted"], Value::Null);
+        move_all(&tx);
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_outbox", [], |r| r
+                .get::<_, i64>(0))
+                .expect("no resurrection"),
+            0
         );
     }
     #[test]
