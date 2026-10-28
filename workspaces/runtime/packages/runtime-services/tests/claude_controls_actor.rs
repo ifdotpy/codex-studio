@@ -42,6 +42,51 @@ struct Native {
 }
 
 struct MalformedState(Mutex<Vec<String>>);
+struct UnknownState(std::sync::atomic::AtomicUsize);
+impl ControlSession for UnknownState {
+    fn binding(&self) -> ControlBinding {
+        ControlBinding::new("account".into(), "connection".into(), 1).expect("binding")
+    }
+    fn call_scoped(
+        &self,
+        _: ControlScope,
+        _: ControlInvocation,
+    ) -> ControlFuture<'_, ControlReply> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { Err(ControlError::Unknown) })
+    }
+}
+
+#[tokio::test]
+async fn early_unknown_does_not_finalize_the_control_request() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("cwd");
+    let state = root.path().join("state");
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    seed_state(&state, &cwd).await;
+    let store = Arc::new(RuntimeStore::open(Some(&state)).await.unwrap());
+    let native = Arc::new(UnknownState(std::sync::atomic::AtomicUsize::new(0)));
+    let controls = Controls::new(
+        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
+        native.clone(),
+    );
+    let request = || {
+        serde_json::from_value(json!({"action":"settings","id":"agent","request_id":"early-unknown","settings":{"thinking":false}})).unwrap()
+    };
+    assert!(matches!(
+        controls.execute(request()).await,
+        Err(ControlError::Unknown)
+    ));
+    let db = store.test_reader().unwrap();
+    let final_response: Option<String> = db.query_row("SELECT json_extract(record,'$.finalResponse') FROM runtime_workspace_operations WHERE json_extract(record,'$.requestId')='early-unknown'", [], |row| row.get(0)).unwrap();
+    assert!(final_response.is_none());
+    drop(db);
+    assert!(matches!(
+        controls.execute(request()).await,
+        Err(ControlError::Unknown)
+    ));
+}
 impl ControlSession for MalformedState {
     fn binding(&self) -> ControlBinding {
         ControlBinding::new("account".into(), "connection".into(), 1).expect("binding")

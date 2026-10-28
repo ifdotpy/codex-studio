@@ -35,14 +35,39 @@ const CHANGED_SYNCHRONOUS_SIGNATURES: &[(&str, &str)] = &[
 ];
 pub(super) struct Family;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WorkspaceKindView {
+    id: String,
     kind: WorkspaceKind,
-    #[serde(flatten)]
-    fields: serde_json::Map<String, Value>,
+    phase: WorkspacePhase,
+    agent: String,
+    source: Option<WorkspaceSource>,
+    provider_admission: Option<AdmittedRequest>,
+    root_request_id: Option<String>,
+    control_attempt: Option<serde::de::IgnoredAny>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceSource {
+    account_key: Option<String>,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum WorkspacePhase {
+    CapturePending,
+    CaptureRunning,
+    ProviderPending,
+    ProviderReady,
+    LocalMutation,
+    RecoveryRequired,
+    Completed,
+    Failed,
+}
+
+#[derive(Deserialize)]
 #[cfg_attr(test, derive(strum::VariantNames))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(test, strum(serialize_all = "snake_case"))]
@@ -442,43 +467,33 @@ fn move_workspace_operations(
     let mut budget = BatchBudget::default();
     for row in rows {
         let invalid = || unclassifiable(TABLE, &row.id, &row.signature);
-        let Ok(mut view) = serde_json::from_str::<WorkspaceKindView>(&row.result) else {
+        let Ok(view) = serde_json::from_str::<WorkspaceKindView>(&row.result) else {
             next.cursor = row.rowid;
             continue;
         };
-        let mut owner = serde_json::to_value(&view).map_err(|_| invalid())?;
-        if !schema("PersistedWorkspaceOperationRecord", &owner) || owner["id"] != row.id {
+        if view.id != row.id {
             return Err(invalid());
         }
         if matches!(
             view.kind,
             WorkspaceKind::ClaudeSettings | WorkspaceKind::ClaudeRollback
-        ) && view.fields.contains_key("controlAttempt")
+        ) && view.control_attempt.is_some()
         {
             if !budget.include(row.result.len() + row.id.len() + row.signature.len()) {
                 break;
             }
-            view.fields.remove("controlAttempt");
             tx.execute(
-                "UPDATE runtime_workspace_operations SET record=?1 WHERE rowid=?2",
-                params![
-                    serde_json::to_string(&view).map_err(|_| invalid())?,
-                    row.rowid
-                ],
+                "UPDATE runtime_workspace_operations SET record=json_remove(record,'$.controlAttempt') WHERE rowid=?1",
+                [row.rowid],
             )?;
         }
         if !matches!(view.kind, WorkspaceKind::Branch | WorkspaceKind::Restore)
-            || owner["phase"] == "completed"
+            || view.phase == WorkspacePhase::Completed
         {
             next.cursor = row.rowid;
             continue;
         }
-        let previous_admission = owner
-            .get("providerAdmission")
-            .map(|admission| {
-                serde_json::from_value::<AdmittedRequest>(admission.clone()).map_err(|_| invalid())
-            })
-            .transpose()?;
+        let previous_admission = view.provider_admission.as_ref();
         let operation = format!(
             "{}:{}",
             row.id,
@@ -488,9 +503,10 @@ fn move_workspace_operations(
                 "provider"
             }
         );
-        let account = owner
-            .pointer("/source/accountKey")
-            .and_then(Value::as_str)
+        let account = view
+            .source
+            .as_ref()
+            .and_then(|source| source.account_key.as_deref())
             .ok_or_else(invalid)?;
         let transport_id = transport_key(account, &operation);
         let submitted_id = format!("account-worker:{transport_id}:submitted");
@@ -502,7 +518,7 @@ fn move_workspace_operations(
             )
             .optional()?;
         let Some(bytes) = bytes else {
-            if owner["rootRequestId"].as_str().is_some_and(|root| {
+            if view.root_request_id.as_deref().is_some_and(|root| {
                 studio_runtime_schema::persistence::RequestIdentity::new(
                     "workspace-provider",
                     &[],
@@ -544,7 +560,7 @@ fn move_workspace_operations(
             || call
                 .actor
                 .as_ref()
-                .is_none_or(|actor| owner["agent"] != actor.agent)
+                .is_none_or(|actor| view.agent != actor.agent)
             || !matches!(call.method.as_str(), "thread/start" | "thread/fork")
         {
             return Err(invalid());
@@ -568,11 +584,9 @@ fn move_workspace_operations(
         }) {
             return Err(invalid());
         }
-        let owner_root = owner
-            .get("rootRequestId")
-            .filter(|root| !root.is_null())
-            .map(|root| root.as_str().ok_or_else(invalid))
-            .transpose()?
+        let owner_root = view
+            .root_request_id
+            .as_deref()
             .filter(|root| !root.is_empty());
         let source_root =
             (!call.root_request_id.is_empty()).then_some(call.root_request_id.as_str());
@@ -607,15 +621,13 @@ fn move_workspace_operations(
         };
         submitted["call"]["root_request_id"] = json!(root);
         submitted["call"]["admitted_request"] = json!(admission);
-        owner["providerAdmission"] = json!(admission);
-        owner["rootRequestId"] = json!(root);
         tx.execute(
             "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
             params![submitted.to_string(), submitted_id],
         )?;
         tx.execute(
-            "UPDATE runtime_workspace_operations SET record=?1 WHERE rowid=?2",
-            params![owner.to_string(), row.rowid],
+            "UPDATE runtime_workspace_operations SET record=json_set(record,'$.providerAdmission',json(?1),'$.rootRequestId',?2) WHERE rowid=?3",
+            params![serde_json::to_string(&admission).map_err(|_| invalid())?, root, row.rowid],
         )?;
         next.cursor = row.rowid;
     }

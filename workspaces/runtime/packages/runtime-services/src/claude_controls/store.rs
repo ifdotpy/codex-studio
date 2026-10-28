@@ -288,7 +288,7 @@ impl ControlStorage for StoredControls {
                             .remove("workspaceReservationId");
                     }
                     Repository::apply(tx, &agent, &operation, &[])?;
-                    if !unknown && evidence != FailureEvidence::NotSent {
+                    if !unknown && !matches!(error, ControlError::Unknown | ControlError::NotSent) {
                         Repository::set_final(tx, &op.id, &ControlOutcome::Err(error))?;
                     }
                     Ok(())
