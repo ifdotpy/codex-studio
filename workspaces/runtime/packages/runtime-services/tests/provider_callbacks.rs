@@ -1122,6 +1122,13 @@ async fn provider_callbacks_unjournaled_card_is_refused_without_writes() {
             .unwrap()
     };
     let before = read();
+    let counts = || {
+        store.test_reader().unwrap().query_row(
+            "SELECT (SELECT count(*) FROM request_results), (SELECT count(*) FROM runtime_outbox), (SELECT count(*) FROM runtime_tool_requests)",
+            [], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+        ).unwrap()
+    };
+    let before_counts = counts();
     let result = answer(
         &store,
         &context,
@@ -1131,8 +1138,9 @@ async fn provider_callbacks_unjournaled_card_is_refused_without_writes() {
         20.0,
     )
     .await;
-    assert!(matches!(result, Err(CallbackError::Stale)));
+    assert!(matches!(result, Err(CallbackError::Stale)), "{result:?}");
     assert_eq!(read(), before);
+    assert_eq!(counts(), before_counts);
 }
 
 #[path = "provider_callbacks/review.rs"]

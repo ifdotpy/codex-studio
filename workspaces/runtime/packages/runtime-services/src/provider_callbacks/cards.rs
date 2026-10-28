@@ -425,6 +425,10 @@ fn answer_in(
         params: card["params"].clone(),
     };
     let identity = ReplyIdentity::new(context, &input.id);
+    let owner = storage::owner(tx, &identity)?.ok_or(CallbackError::Stale)?;
+    if owner.payload.card.as_deref() != Some(id) {
+        return Err(CallbackError::Stale);
+    }
     if let Some(previous) = card.get("answerSignature") {
         if previous != &signature {
             return Err(CallbackError::Conflict);
