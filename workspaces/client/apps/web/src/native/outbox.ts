@@ -123,7 +123,10 @@ export function createNativeOutbox(legacyOutbox: LegacyOutbox): OutboxService {
     const unreadable: string[] = [];
     for (const row of await legacy.db.outbox.find().exec()) {
       try {
-        const value = JSON.parse(row.payload) as Record<string, unknown>;
+        // The core decodes and validates the row.
+        const value: unknown = JSON.parse(row.payload);
+        if (!value || typeof value !== "object" || Array.isArray(value))
+          throw new Error("Invalid saved message.");
         await nativeRequest("outbox.import", {
           workspace: workspaceId,
           entries: [{ ...value, id: row.id }],
