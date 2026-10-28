@@ -472,9 +472,10 @@ pub(super) fn has_pending_thread_start(
     connection: &rusqlite::Connection,
     agent: &str,
 ) -> Result<bool, WorkerError> {
-    Ok(Outbox::for_owner::<ProviderCall>(connection,OwnerKind::Agent,agent,OutboxKind::ProviderCall).map_err(|error| match error {
-        studio_runtime_store::outbox::OutboxError::Json(_) => invalid(agent),
-        error => outbox_error(error),
+    Ok(Outbox::for_owner::<ProviderCall>(connection,OwnerKind::Agent,agent,OutboxKind::ProviderCall).map_err(|error| if let studio_runtime_store::outbox::OutboxError::Json(_) = error {
+        invalid(agent)
+    } else {
+        outbox_error(error)
     })?
         .into_iter().any(|row| matches!(row.payload,ProviderCall::Account(call) if matches!(call.context.method,Method::ThreadStart|Method::ThreadResume))))
 }
