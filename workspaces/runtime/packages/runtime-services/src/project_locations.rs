@@ -498,10 +498,35 @@ pub(crate) fn normalized_location_request(
     project: &str,
     server: &str,
     path: Option<&str>,
-    local: &str,
-) -> Value {
-    let server = server.trim();
-    json!({"action":action,"project":project.trim(),"server":if server == "local" { local } else { server },"path":path.map(str::trim)})
+    local: Option<&str>,
+) -> Result<Value, &'static str> {
+    fn text<'a>(value: &'a str, max: usize, error: &'static str) -> Result<&'a str, &'static str> {
+        if value.chars().count() > max || value.trim().is_empty() {
+            return Err(error);
+        }
+        Ok(value.trim())
+    }
+    let project = text(
+        project,
+        4096,
+        "Supply a project ID with 1 to 4096 characters",
+    )?;
+    let server = text(server, 128, "Supply a server ID with 1 to 128 characters")?;
+    let server = if server == "local" {
+        local.ok_or("The local server identity is unavailable")?
+    } else {
+        server
+    };
+    let path = if action == "add_location" {
+        Some(text(
+            path.unwrap_or_default(),
+            4096,
+            "Supply a location path with 1 to 4096 characters",
+        )?)
+    } else {
+        None
+    };
+    Ok(json!({"action":action,"project":project,"server":server,"path":path}))
 }
 fn task_location_request(
     tx: &Transaction<'_>,
@@ -523,13 +548,7 @@ fn task_location_request(
     }
     let args: LocationArguments = serde_json::from_value(task["arguments"].clone())
         .map_err(studio_runtime_store::StoreError::from)?;
-    let local = if args.server.trim() == "local" {
-        RuntimeStore::transaction_local_server_id(tx)?.ok_or(LocationError::Refused(
-            "The local server identity is unavailable",
-        ))?
-    } else {
-        String::new()
-    };
+    let local = RuntimeStore::transaction_local_server_id(tx)?;
     let path = if args.action == Action::AddLocation {
         args.path.as_deref()
     } else {
@@ -540,7 +559,9 @@ fn task_location_request(
     } else {
         "remove_location"
     };
-    let normalized = normalized_location_request(action, &args.project, &args.server, path, &local);
+    let normalized =
+        normalized_location_request(action, &args.project, &args.server, path, local.as_deref())
+            .map_err(LocationError::Refused)?;
     let server = normalized["server"]
         .as_str()
         .expect("normalized server")

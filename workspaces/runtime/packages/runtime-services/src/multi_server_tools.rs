@@ -471,29 +471,33 @@ impl ServerTools {
         key: &str,
         local: &str,
     ) -> Result<Value, Step> {
-        let project_id = text_field(args.get("project"), "a project ID", 4096)?;
-        let mut server = text_field(args.get("server"), "a server ID", 128)?;
-        if server == "local" {
-            server = local.to_owned();
-        }
+        let signature_data = crate::project_locations::normalized_location_request(
+            action,
+            args.get("project")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            args.get("server")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            args.get("path").and_then(Value::as_str),
+            Some(local),
+        )
+        .map_err(|message| Step::Refused(message.into()))?;
+        let project_id = signature_data["project"]
+            .as_str()
+            .expect("normalized project")
+            .to_owned();
+        let server = signature_data["server"]
+            .as_str()
+            .expect("normalized server")
+            .to_owned();
+        let path = signature_data["path"].as_str().map(str::to_owned);
         if server != local && !self.paired_ids().await?.contains(&server) {
             return refuse("The server is not paired or is revoked");
         }
         // Python passes `{**args, 'request_id': key}`: the tool request owns the identity.
         let request_id = text_field(Some(&json!(key)), "a request ID", 128)?;
         let outbox_key = request_id.clone();
-        let path = if action == "add_location" {
-            Some(text_field(args.get("path"), "a location path", 4096)?)
-        } else {
-            None
-        };
-        let signature_data = crate::project_locations::normalized_location_request(
-            action,
-            &project_id,
-            &server,
-            path.as_deref(),
-            local,
-        );
         let signature = studio_runtime_store::sha256_hex(
             studio_runtime_schema::json_compat::python_json_compact(&signature_data).as_bytes(),
         );

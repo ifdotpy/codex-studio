@@ -778,6 +778,53 @@ fn resolve(
 }
 
 #[tokio::test]
+async fn managed_location_recovery_resolves_local_alias() {
+    let (_directory, store, seed) = seeded_store().await;
+    let local = store.local_server_id().unwrap().unwrap();
+    let driver = Arc::new(OrchestrationDriver::new(
+        store.clone(),
+        Arc::new(RecordingTransport::default()),
+        Arc::new(RuntimeOrchestrationEffects::new(store.clone())),
+    ));
+    let tools: Arc<dyn MultiServerToolPort> =
+        Arc::new(ServerTools::new(store.clone(), driver, false));
+    let project = seed["projectId"].as_str().unwrap();
+    let args = json!({"action":"add_location","project":project,"server":" local ","path":project});
+    let result = call_named_tool(
+        &store,
+        &seed["lead"],
+        "orchestration_servers",
+        "local-location",
+        "call-local-location",
+        &args,
+        Some(tools),
+        None,
+    )
+    .await;
+    let value = parsed(&result);
+    assert_eq!(value["outcome"], "applied");
+    let actor = seed["lead"]["id"].as_str().unwrap().to_owned();
+    let request = value["requestId"].as_str().unwrap().to_owned();
+    let receipt = store
+        .transaction_with(move |tx| {
+            crate::project_locations::tool_location_receipt(
+                tx,
+                &actor,
+                &request,
+                &local,
+                chrono::Utc::now().timestamp() as f64,
+            )
+        })
+        .await
+        .expect("recover local receipt")
+        .expect("location receipt");
+    assert_eq!(
+        receipt.outcome,
+        crate::project_locations::LocationOutcome::Applied
+    );
+}
+
+#[tokio::test]
 async fn managed_location_recovery_normalizes_original_arguments() {
     let (_directory, store, seed) = seeded_store().await;
     let transport = Arc::new(RecordingTransport::default());
