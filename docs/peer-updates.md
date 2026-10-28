@@ -54,19 +54,21 @@ an export. It does not serve the QUIC export stream, so a
 puller receives the archive in `update.chunk` answers. A Rust backend before this module refused
 the actions with HTTP 501. A paired Python server then got no offer and kept its older build,
 and the UI hid that server's projects because its API schema hash differed. The Rust backend
-has no puller yet: a Mac on the Rust backend does not take a newer build from a paired server.
+has the puller too (below). A Rust backend before the puller took no newer build from a paired server.
 
 ## Pull and verify (backend)
 
-`codex_peer_updates.py` runs in the backend of an installed app. Every 10 minutes, and 2 minutes
-after the start, when the setting `autoUpdate` is on:
+`peer_update_pull.rs` (runtime-services) runs in the Rust backend of the installed app. `runtime-server`
+starts it only when the process runs from `/Applications/Codex Studio.app`. One timer task makes every
+pass, 2 minutes after the start and then every 10 minutes. A pass runs only when the setting `autoUpdate` is on:
 
 1. Ask each paired server that is online for `update.offer`.
 2. Take the newest offer with `builtAt` greater than the local stamp. Skip a build that failed
    verification before (kept in `<state>/peer-update.json`).
-3. Export, pull every chunk, and check each chunk hash and the whole file hash. Over the QUIC
-   link (`docs/peer-link.md`) the archive comes as one stream; the chunks continue from the
-   received offset when the stream stops.
+3. Export, pull every chunk, and check each chunk hash and the whole file hash. The archive
+   comes as `update.chunk` answers only. A stream over the QUIC link (`docs/peer-link.md`) is not
+   built: the Rust backend serves no export stream route. A lost chunk fails the pull, and the next
+   pull starts again after the 1-hour retry.
 4. Extract with `ditto -x -k` into a new private folder `<state>/updates/.extract-*`. The
    folder must then hold only `Codex Studio.app`. Another program can write into the
    `<builtAt>` folder at any time (Finder writes `.DS_Store` into a folder that a window shows),
@@ -79,8 +81,10 @@ after the start, when the setting `autoUpdate` is on:
 6. Move the app to `<state>/updates/<builtAt>/Codex Studio.app`. Write
    `<state>/pending-update.json`: `{id, app, build, from}`. Release the peer export.
 
-Only one pull runs at a time. A failure is recorded with its reason in `peer-update.json` and
-does not repeat the same build for 1 hour. A failed install receipt (below) also skips that build
+Only one pull runs at a time, because one timer task makes the passes. A failure is recorded
+with its reason in `peer-update.json` (`failures`, keyed by `builtAt:commit`; kept 24 hours) and
+does not repeat the same build for 1 hour. `peer-update.json` also holds `checkedAt` and `lastPull`.
+A failed install receipt (below) also skips that build
 for 1 hour. A pending update for a build that is not newer than the installed app is removed.
 The backend never replaces the installed app itself.
 

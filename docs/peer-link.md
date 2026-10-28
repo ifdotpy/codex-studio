@@ -101,7 +101,8 @@ paired server can read it, and only over the link (the route is not in the OpenA
 actions continue from the received offset when the server has no link or the stream stops, and
 the whole-file checksum is checked as before:
 
-- The update puller (`docs/peer-updates.md`) receives the app archive.
+- The update puller (`docs/peer-updates.md`) receives the app archive as `update.chunk` answers,
+  not over this route: the Rust backend serves no export stream route.
 - The Git fetch of a remote worker branch receives the bundle before its `chunk` actions.
 - A chat move publishes its `native.zip` as a hard link in `server-exports/` for the transfer.
   The source sends `move_pull` requests; the target streams the rest of the file from the

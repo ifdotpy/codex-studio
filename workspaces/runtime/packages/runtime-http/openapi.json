@@ -34983,30 +34983,27 @@
         "description": "The build stamp in Contents/Resources/studio-build.json (docs/peer-updates.md).",
         "properties": {
           "branch": {
-            "title": "Branch",
             "type": "string"
           },
           "builtAt": {
             "description": "Packaging time on the build Mac, in seconds since the epoch.",
-            "title": "Builtat",
+            "format": "double",
             "type": "number"
           },
           "commit": {
-            "title": "Commit",
             "type": "string"
           },
           "commitTime": {
             "description": "Commit time, in seconds since the epoch.",
-            "maximum": 9007199254740991,
+            "format": "uint64",
             "minimum": 0,
-            "title": "Committime",
             "type": "integer"
           },
           "version": {
-            "const": 1,
+            "description": "Format version of the stamp. Always 1.",
+            "format": "uint8",
             "maximum": 1,
             "minimum": 1,
-            "title": "Version",
             "type": "integer"
           }
         },
@@ -35017,23 +35014,19 @@
           "commitTime",
           "branch"
         ],
-        "title": "PeerUpdateBuild",
         "type": "object"
       },
       "PeerUpdateEvent": {
         "additionalProperties": false,
+        "description": "The last pull or install attempt of the update puller.",
         "properties": {
           "at": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
             "description": "Time of the pull or install attempt, in seconds since the epoch.",
-            "title": "At"
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "build": {
             "anyOf": [
@@ -35046,38 +35039,23 @@
             ]
           },
           "outcome": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Outcome"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "reason": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Reason"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "server": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
             "description": "The paired server that offered the build.",
-            "title": "Server"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -35087,17 +35065,16 @@
           "outcome",
           "reason"
         ],
-        "title": "PeerUpdateEvent",
         "type": "object"
       },
       "PeerUpdatePending": {
         "additionalProperties": false,
+        "description": "The staged update that the desktop installer takes next.",
         "properties": {
           "build": {
             "$ref": "#/components/schemas/PeerUpdateBuild"
           },
           "server": {
-            "title": "Server",
             "type": "string"
           }
         },
@@ -35105,11 +35082,11 @@
           "build",
           "server"
         ],
-        "title": "PeerUpdatePending",
         "type": "object"
       },
       "PeerUpdateStatus": {
         "additionalProperties": false,
+        "description": "The update state from a paired server, as `/api/desktop` shows it (`peerUpdate`).",
         "properties": {
           "build": {
             "anyOf": [
@@ -35123,15 +35100,12 @@
             "description": "The build of the installed app; null for a source checkout."
           },
           "checkedAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Checkedat"
+            "description": "Time of the last check, in seconds since the epoch.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "lastInstall": {
             "anyOf": [
@@ -35171,7 +35145,6 @@
           "pending",
           "lastInstall"
         ],
-        "title": "PeerUpdateStatus",
         "type": "object"
       },
       "PendingSettingsRecordResponse": {

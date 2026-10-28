@@ -1099,6 +1099,12 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             }
         })
     });
+    // The puller of updates from paired servers runs only in the installed app (docs/peer-updates.md).
+    let peer_update_task = studio_runtime_services::peer_update_pull::Puller::installed(
+        Arc::clone(&store),
+        monitor_shutdown.subscribe(),
+    )
+    .map(|puller| tokio::spawn(studio_runtime_services::peer_update_pull::run(puller)));
     let federation_cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let federation_store = Arc::clone(&store);
     let federation_stop = Arc::clone(&federation_cancelled);
@@ -1341,6 +1347,9 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         shutdown_join("analytics projection task", analytics_projection_task).await??;
         if let Some(task) = orchestration_task {
             shutdown_join("orchestration driver task", task).await??;
+        }
+        if let Some(task) = peer_update_task {
+            shutdown_join("peer update task", task).await??;
         }
         let monitor_result = shutdown_join("monitor runtime task", monitor_task).await?;
         monitor_result.map_err(std::io::Error::other)??;

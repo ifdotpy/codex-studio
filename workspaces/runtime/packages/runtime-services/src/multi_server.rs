@@ -195,7 +195,7 @@ fn server_list(clients: &[Value], discovered: Vec<Value>) -> Vec<Value> {
 
 /// The peer auto-update setting (docs/peer-updates.md). The Python backend creates its table;
 /// without the table the setting has its contract default, on.
-fn peer_auto_update(tx: &rusqlite::Transaction<'_>) -> Result<bool, StoreError> {
+pub fn peer_auto_update(tx: &rusqlite::Transaction<'_>) -> Result<bool, StoreError> {
     if !table_exists(tx, "runtime_peer_update_settings")? {
         return Ok(true);
     }
