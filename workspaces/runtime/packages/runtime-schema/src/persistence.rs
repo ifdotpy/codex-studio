@@ -44,9 +44,9 @@ macro_rules! domain {
 domain!(ExecutionReceiptKind { Submission=>"submission", StartResult=>"startResult", Unknown=>"unknown", ThreadPrepared=>"threadPrepared", Terminal=>"terminal", TerminalInput=>"terminalInput" });
 domain!(ContextRepairPhase { Preparing=>"preparing", Submitted=>"submitted", Unknown=>"unknown", Ready=>"ready", Completed=>"completed", Failed=>"failed", Unchanged=>"unchanged" });
 domain!(SteerStage { Reserved=>"reserved", Submitted=>"submitted", Unconfirmed=>"unconfirmed" });
-domain!(MonitorInputStatus { Pending=>"Pending", Acknowledged=>"Acknowledged", Rejected=>"Rejected", Unknown=>"Unknown" });
+domain!(MonitorInputStatus { Pending=>"Pending", Acknowledged=>"Acknowledged", Rejected=>"Rejected", Unknown=>"Unknown", Expired=>"Expired" });
 domain!(NativeActionAdmissionStatus { Accepted=>"accepted" });
-domain!(VoiceStopOutcome { Submitted=>"submitted", Written=>"written", NotSent=>"not_sent", Unknown=>"unknown", Rejected=>"rejected" });
+domain!(VoiceStopOutcome { Submitted=>"submitted", Written=>"written", NotSent=>"not_sent", Unknown=>"unknown", Rejected=>"rejected", Expired=>"expired" });
 domain!(TerminalInputDelivery { Sent=>"sent", Uncertain=>"uncertain" });
 domain!(ServerDeliveryState { Queued=>"queued", Running=>"running", Waiting=>"waiting", Complete=>"complete" });
 domain!(FederationDeliveryState { Queued=>"queued", Delivered=>"delivered" });
@@ -79,7 +79,7 @@ domain!(ToolRequestOutcome { Pending=>"pending", Applied=>"applied", NotApplied=
 domain!(ExecutionStatus { Unsent=>"unsent", Pending=>"pending", Accepted=>"accepted", Observed=>"observed", Running=>"running", Unknown=>"unknown", Rejected=>"rejected", Completed=>"completed", Failed=>"failed", Interrupted=>"interrupted", Cancelled=>"cancelled" });
 domain!(AttemptSubmission { Unsent=>"unsent", Pending=>"pending", Accepted=>"accepted", Observed=>"observed", Rejected=>"rejected", Unknown=>"unknown" });
 domain!(ExecutionEffectKind { Spawn=>"spawn", ToolRequests=>"tool_requests", Requests=>"requests", Monitors=>"monitors", Unrecognized=>"unrecognized" });
-domain!(ExecutionEffectStatus { Unknown=>"unknown", Idle=>"idle", Queued=>"queued", Starting=>"starting", Running=>"running", Waiting=>"waiting", WaitingOnMonitor=>"waiting_on_monitor", Approval=>"approval", Completed=>"completed", Interrupted=>"interrupted", Failed=>"failed", Blocked=>"blocked", Paused=>"paused", Parked=>"parked", Abandoned=>"abandoned", CapacityRetry=>"capacity-retry", Pending=>"pending", Cancelled=>"cancelled", Answering=>"answering", Answered=>"answered", Uncertain=>"uncertain", Resolved=>"resolved", Lost=>"lost" });
+domain!(ExecutionEffectStatus { Unknown=>"unknown", Idle=>"idle", Queued=>"queued", Starting=>"starting", Running=>"running", Waiting=>"waiting", WaitingOnMonitor=>"waiting_on_monitor", Approval=>"approval", Completed=>"completed", Interrupted=>"interrupted", Failed=>"failed", Blocked=>"blocked", Paused=>"paused", Parked=>"parked", Abandoned=>"abandoned", CapacityRetry=>"capacity-retry", Pending=>"pending", Cancelled=>"cancelled", Answering=>"answering", Answered=>"answered", Uncertain=>"uncertain", Resolved=>"resolved", Lost=>"lost", Expired=>"expired", Deleted=>"deleted" });
 domain!(ExecutionNodeStatus { Unknown=>"unknown", Idle=>"idle", Queued=>"queued", Starting=>"starting", Running=>"running", Waiting=>"waiting", WaitingOnMonitor=>"waiting_on_monitor", Approval=>"approval", Completed=>"completed", Interrupted=>"interrupted", Failed=>"failed", Blocked=>"blocked", Paused=>"paused", Parked=>"parked", Abandoned=>"abandoned", CapacityRetry=>"capacity-retry" });
 domain!(WorkEffectStatus { Completed=>"completed", Terminal=>"terminal", Pending=>"pending", Retryable=>"retryable", Submitted=>"submitted", Unknown=>"unknown", NotSent=>"not_sent", Complete=>"complete", Applied=>"applied", Failed=>"failed", Cancelled=>"cancelled" });
 domain!(TitleStatus { Scheduled=>"scheduled", Written=>"written", Invalid=>"invalid", Discarded=>"discarded", Pending=>"pending", Submitted=>"submitted", Unknown=>"unknown", NotSent=>"not_sent", Applied=>"applied", Failed=>"failed" });
