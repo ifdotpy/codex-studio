@@ -127,6 +127,11 @@ fn index(ctx: &Ctx, repo: &Repo, key: &[u8]) -> Result<Index> {
         if !repo.reads_overlay(&name, ctx.caller.uid, ctx.caller.gid)? {
             continue;
         }
+        // A folder overlay holds build output, not values: reading it would hash a whole cache
+        // folder on every check (docs/cache-overlays.md).
+        if repo.overlay_setting(&name, "folder")?.is_some() {
+            continue;
+        }
         for line in overlay.lines()? {
             let root = overlay.state_root(&line.head)?;
             for path in crate::overlay::files_of(&root)? {

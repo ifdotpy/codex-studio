@@ -39,6 +39,14 @@ struct ResourceScope {
 #[serde(rename_all = "kebab-case")]
 enum ResourceKind {
     State,
+    #[serde(rename = "agentDetail")]
+    AgentDetail,
+    Costs,
+    Desktop,
+    Monitors,
+    SessionCost,
+    Terminal,
+    Terminals,
     Transcript,
     Transcripts,
     Room,
@@ -54,24 +62,30 @@ enum ResourceKind {
     Other,
 }
 
+impl ResourceKind {
+    fn is_entity(&self) -> bool {
+        matches!(
+            self,
+            Self::State
+                | Self::AgentDetail
+                | Self::Costs
+                | Self::Desktop
+                | Self::Monitors
+                | Self::SessionCost
+                | Self::Task
+                | Self::Tasks
+                | Self::Terminal
+                | Self::Terminals
+                | Self::Work
+        )
+    }
+}
+
 struct ContentVersion {
     key: String,
     digest: Option<[u8; 32]>,
     checked_revision: i64,
     revision: i64,
-    entity_seq: Option<i64>,
-}
-
-/// A fingerprint and the entity sequence of the snapshot that produced it.
-#[derive(Clone, Copy)]
-pub struct EntityContentFingerprint {
-    pub sequence: i64,
-    pub digest: [u8; 32],
-}
-
-pub enum ContentProjection {
-    Bytes(Vec<u8>),
-    Entity(EntityContentFingerprint),
 }
 
 struct Publications {
@@ -222,41 +236,38 @@ impl ResourceNotifications {
         let mut versions = Vec::new();
         for resource in resources {
             let key = resource.to_string();
-            let scope: ResourceScope = serde_json::from_value(resource.clone())
+            let scope = ResourceScope::deserialize(resource)
                 .map_err(|_| ResourceNotifyError::Invalid)?;
             let explicit = if matches!(scope.kind, ResourceKind::State) {
                 state.entity_reset_revision
             } else {
                 state.resource_revision(&key)
             };
-            let entity_view = resource["kind"].as_str().is_some_and(|kind| {
-                studio_runtime_schema::sync_protocol::subscription_entity_scopes()
-                    .contains_key(kind)
-            });
-            let version = if entity_view {
-                explicit
+            let version = match scope.kind {
+                // Discovery reads refresh volatile access timestamps; only its
+                // explicit publications may advance this semantic cursor.
+                ResourceKind::MultiServer => explicit,
+                ResourceKind::AgentDetail
+                | ResourceKind::Costs
+                | ResourceKind::Desktop
+                | ResourceKind::Monitors
+                | ResourceKind::SessionCost
+                | ResourceKind::Terminal
+                | ResourceKind::Terminals
+                | ResourceKind::State
+                | ResourceKind::Transcript
+                | ResourceKind::Transcripts
+                | ResourceKind::Room
+                | ResourceKind::Processes
+                | ResourceKind::Complaint
+                | ResourceKind::Work
+                | ResourceKind::TerminalOutput
+                | ResourceKind::Task
+                | ResourceKind::Tasks
+                | ResourceKind::Workspace => explicit
                     .max(cursor.resource_revision)
-                    .max(state.entity_revision)
-            } else {
-                match scope.kind {
-                    // Discovery reads refresh volatile access timestamps; only its
-                    // explicit publications may advance this semantic cursor.
-                    ResourceKind::MultiServer => explicit,
-                    ResourceKind::State
-                    | ResourceKind::Transcript
-                    | ResourceKind::Transcripts
-                    | ResourceKind::Room
-                    | ResourceKind::Processes
-                    | ResourceKind::Complaint
-                    | ResourceKind::Work
-                    | ResourceKind::TerminalOutput
-                    | ResourceKind::Task
-                    | ResourceKind::Tasks
-                    | ResourceKind::Workspace => explicit
-                        .max(cursor.resource_revision)
-                        .max(state.entity_revision),
-                    ResourceKind::Other => explicit.max(cursor.resource_revision),
-                }
+                    .max(state.entity_revision),
+                ResourceKind::Other => explicit.max(cursor.resource_revision),
             };
             if after.is_none_or(|revision| version > revision) || overflow {
                 selected.push(resource.clone());
@@ -276,7 +287,8 @@ impl ResourceNotifications {
         })
     }
 
-    /// Compare only subscribed invalidation candidates with their served content.
+    /// Entity candidates go straight to scoped cursor delivery. Compare only
+    /// transient resources against their served content.
     /// Uncomputable reads retain the original safe refresh. The bounded
     /// cache shares computations across streams; no publication does projection work.
     pub async fn changes_since_with_content<F, Fut>(
@@ -289,24 +301,6 @@ impl ResourceNotifications {
         F: FnMut(Value) -> Fut,
         Fut: std::future::Future<Output = Option<Vec<u8>>>,
     {
-        self.changes_since_with_incremental_content(resources, after, |resource, _| {
-            let future = read(resource);
-            async move { future.await.map(ContentProjection::Bytes) }
-        })
-        .await
-    }
-
-    /// Reuse the previous entity digest when the store sequence is unchanged.
-    pub async fn changes_since_with_incremental_content<F, Fut>(
-        &self,
-        resources: &[Value],
-        after: Option<i64>,
-        mut read: F,
-    ) -> Result<ResourceChanges, ResourceNotifyError>
-    where
-        F: FnMut(Value, Option<EntityContentFingerprint>) -> Fut,
-        Fut: std::future::Future<Output = Option<ContentProjection>>,
-    {
         let mut view = self.changes_since(resources, after)?;
         if view.cursor.closed {
             return Ok(view);
@@ -315,31 +309,26 @@ impl ResourceNotifications {
         let mut versions = Vec::new();
         for (resource, version) in view.resources.iter().zip(&view.versions) {
             let key = resource.to_string();
-            let (cached, previous) = {
+            let scope = ResourceScope::deserialize(resource)
+                .map_err(|_| ResourceNotifyError::Invalid)?;
+            if scope.kind.is_entity() {
+                selected.push(resource.clone());
+                versions.push(*version);
+                continue;
+            }
+            let cached = {
                 let content = self.content.lock().await;
                 let entry = content.iter().find(|entry| entry.key == key);
-                (
-                    entry
-                        .filter(|entry| entry.checked_revision == *version)
-                        .map(|entry| entry.revision),
-                    entry
-                        .and_then(|entry| entry.entity_seq.zip(entry.digest))
-                        .map(|(sequence, digest)| EntityContentFingerprint { sequence, digest }),
-                )
+                entry
+                    .filter(|entry| entry.checked_revision == *version)
+                    .map(|entry| entry.revision)
             };
             let revision = if let Some(revision) = cached {
                 revision
             } else {
-                let projection = read(resource.clone(), previous).await;
-                let (digest, entity_seq) = match projection {
-                    Some(ContentProjection::Bytes(bytes)) => {
-                        (Some(Sha256::digest(&bytes).into()), None)
-                    }
-                    Some(ContentProjection::Entity(entity)) => {
-                        (Some(entity.digest), Some(entity.sequence))
-                    }
-                    None => (None, None),
-                };
+                let digest = read(resource.clone())
+                    .await
+                    .map(|bytes| Sha256::digest(&bytes).into());
                 if self.changes.snapshot().closed {
                     view.cursor.closed = true;
                     return Ok(view);
@@ -371,7 +360,6 @@ impl ResourceNotifications {
                     // the read is checked again even when this digest is equal.
                     checked_revision: *version,
                     revision,
-                    entity_seq,
                 });
                 revision
             };
@@ -450,9 +438,11 @@ mod tests {
         started_rx.await.expect("first projection started");
         let second = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            notifications.changes_since_with_content(&[json!({"kind":"costs"})], None, |_| async {
-                Some(vec![2])
-            }),
+            notifications.changes_since_with_content(
+                &[json!({"kind":"drafts"})],
+                None,
+                |_| async { Some(vec![2]) },
+            ),
         )
         .await;
         release_tx.send(()).expect("release first projection");
@@ -514,32 +504,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn incremental_projection_receives_the_previous_entity_snapshot() {
+    async fn entity_candidates_bypass_content_reads_for_seq_cursor_delivery() {
         let hub = Arc::new(ChangeNotificationHub::new());
         let notifications = ResourceNotifications::new(hub.clone());
-        let resources = [json!({"kind":"state"})];
-        let initial = EntityContentFingerprint {
-            sequence: 7,
-            digest: [3; 32],
-        };
-        notifications
-            .changes_since_with_incremental_content(&resources, None, |_, previous| async move {
-                assert!(previous.is_none());
-                Some(ContentProjection::Entity(initial))
+        let resources = [
+            json!({"kind":"state"}),
+            json!({"kind":"tasks","agentId":"lead"}),
+        ];
+        let baseline = notifications
+            .changes_since_with_content(&resources, None, |_| async {
+                panic!("entity candidates must go straight to cursor delivery")
             })
             .await
-            .expect("initial snapshot");
+            .expect("baseline candidates");
+        assert_eq!(baseline.resources, resources);
         hub.notify_one();
-        let unchanged = notifications
-            .changes_since_with_incremental_content(&resources, Some(0), |_, previous| async move {
-                let previous = previous.expect("cached snapshot");
-                assert_eq!(previous.sequence, 7);
-                assert_eq!(previous.digest, [3; 32]);
-                Some(ContentProjection::Entity(previous))
+        let changes = notifications
+            .changes_since_with_content(&resources, Some(baseline.cursor.revision), |_| async {
+                panic!("notification must not reread selected content")
             })
             .await
-            .expect("unchanged snapshot");
-        assert!(unchanged.resources.is_empty());
+            .expect("changed candidates");
+        assert_eq!(changes.resources, resources);
+        let document = crate::sync_views::openapi_document();
+        let mapping = document["components"]["schemas"]["ResourceRef"]["discriminator"]["mapping"]
+            .as_object()
+            .expect("resource owner");
+        for kind in mapping.keys() {
+            let role = ResourceKind::deserialize(serde::de::value::StrDeserializer::<
+                serde::de::value::Error,
+            >::new(kind))
+            .expect("notification role");
+            assert_eq!(
+                role.is_entity(),
+                studio_runtime_schema::sync_protocol::subscription_entity_scopes()
+                    .contains_key(kind),
+                "OpenAPI owns entity scopes: {kind}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -549,9 +551,9 @@ mod tests {
         let notifications = ResourceNotifications::new(hub.clone());
         let resources = vec![
             json!({"kind":"accounts"}),
-            json!({"kind":"costs"}),
-            json!({"kind":"desktop"}),
-            json!({"kind":"terminals"}),
+            json!({"kind":"drafts"}),
+            json!({"kind":"limits","accountKey":"default"}),
+            json!({"kind":"voice","agentId":"chat"}),
         ];
         let calls = AtomicUsize::new(0);
         let read = |resource: Value| {

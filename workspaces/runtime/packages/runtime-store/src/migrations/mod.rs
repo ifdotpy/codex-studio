@@ -10,6 +10,7 @@ mod m2026_10_26_provider_identity;
 mod m2026_10_26_registry;
 mod m2026_10_26_terminal_errors;
 pub(crate) mod m2026_10_27_cost_index;
+mod m2026_10_27_retired_sqlite;
 mod m2026_10_27_scheduler_indexes;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -86,6 +87,8 @@ const RETIRED_WAITS_ID: &str = "2026-10-26-retired-waits";
 const SUPERVISOR_ID: &str = "2026-10-26-supervisor-journal";
 /// Stable migration identifier; includes the introduction date.
 const TERMINAL_ERRORS_ID: &str = "2026-10-26-terminal-errors";
+const RETIRED_CANVAS_ID: &str = "2026-10-27-retired-canvas";
+const RETIRED_ANALYTICS_ID: &str = "2026-10-27-retired-analytics";
 const SCHEDULER_INDEXES_ID: &str = "2026-10-27-scheduler-indexes";
 const REMOVE_AFTER_SOURCE_RETIRED: &str = "Supported installations and restorable backups no longer admit the source format; pending historical effects are converted or terminal";
 
@@ -228,7 +231,7 @@ static CATALOG: &[&dyn Migration] = &[
             id: CANVAS_COLUMNS_ID,
             introduced: OCTOBER_26,
             target: MigrationTarget::Canvas,
-            supported_source: "Terminal output without generation and budget receipts without category/details columns",
+            supported_source: "Terminal output without generation",
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| {
@@ -295,6 +298,26 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_26_terminal_errors::apply(c.transaction, c.canvas()?),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: RETIRED_ANALYTICS_ID,
+            introduced: OCTOBER_27,
+            target: MigrationTarget::Analytics,
+            supported_source: "Retired unused SQLite families",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_27_retired_sqlite::analytics(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: RETIRED_CANVAS_ID,
+            introduced: OCTOBER_27,
+            target: MigrationTarget::Canvas,
+            supported_source: "Retired unused SQLite families",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_27_retired_sqlite::canvas(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {
@@ -573,6 +596,71 @@ pub(crate) fn prepare_canvas_fixture(transaction: &Transaction<'_>) -> StoreResu
 mod tests {
     use super::*;
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    #[tokio::test]
+    async fn retired_sqlite_drop_fault_rolls_back_each_target() {
+        let root = tempfile::tempdir().expect("state");
+        drop(
+            crate::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("fresh"),
+        );
+        for (file, target, setup, denied, restored) in [
+            (
+                "canvas.sqlite3",
+                MigrationTarget::Canvas,
+                "CREATE TABLE runtime_turn_item_links_v1(id TEXT); CREATE TABLE runtime_budget_usage(id TEXT); INSERT INTO runtime_turn_item_links_v1 VALUES('old'); CREATE TRIGGER runtime_turn_item_link_delete_v1 AFTER DELETE ON runtime_items BEGIN DELETE FROM runtime_turn_item_links_v1; END;",
+                "runtime_budget_usage",
+                "runtime_turn_item_links_v1",
+            ),
+            (
+                "analytics.sqlite3",
+                MigrationTarget::Analytics,
+                "CREATE TABLE analytics_cost_changes_v1(id TEXT); CREATE TABLE analytics_cost_roots_v1(id TEXT); INSERT INTO analytics_cost_changes_v1 VALUES('old');",
+                "analytics_cost_roots_v1",
+                "analytics_cost_changes_v1",
+            ),
+        ] {
+            let mut db = Connection::open(root.path().join(file)).expect("database");
+            db.execute_batch(setup).expect("old objects");
+            db.authorizer(Some(move |context: AuthContext<'_>| {
+                if matches!(context.action, AuthAction::DropTable { table_name } if table_name == denied) {
+                    Authorization::Deny
+                } else {
+                    Authorization::Allow
+                }
+            })).expect("fault");
+            let source =
+                Connection::open(root.path().join("canvas.sqlite3")).expect("canvas source");
+            let error = apply_target(
+                &mut db,
+                target,
+                &Accounts::new(),
+                SourceDatabase::Canvas(&source),
+            )
+            .expect_err("drop fails");
+            assert!(matches!(
+                error,
+                StoreError::Migration {
+                    phase: MigrationPhase::Apply,
+                    rollback: MigrationRollbackOutcome::RolledBack,
+                    ..
+                }
+            ));
+            db.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+                .expect("remove fault");
+            let count: i64 = db
+                .query_row(&format!("SELECT count(*) FROM {restored}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("retired rows restored");
+            assert_eq!(count, 1);
+            if target == MigrationTarget::Canvas {
+                let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='runtime_turn_item_link_delete_v1')", [], |row| row.get(0)).expect("trigger restored");
+                assert!(exists);
+            }
+        }
+    }
 
     #[test]
     fn migration_catalog_has_real_unique_dates_sources_and_removal_rules() {

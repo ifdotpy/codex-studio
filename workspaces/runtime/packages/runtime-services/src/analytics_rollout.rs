@@ -484,12 +484,14 @@ mod tests {
             .expect("usage count");
         assert_eq!(usage_rows, 0);
         let db = store.test_reader().expect("canvas");
-        let charges: i64 = db
-            .query_row("SELECT count(*) FROM runtime_budget_usage", [], |row| {
-                row.get(0)
-            })
-            .expect("charge count");
-        assert_eq!(charges, 0);
+        let retired: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='runtime_budget_usage')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("catalog");
+        assert!(!retired);
     }
 
     #[test]

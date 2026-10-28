@@ -726,6 +726,48 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn retired_sqlite_checkpoint_payload_survives_store_reopen() {
+        let root = tempfile::tempdir().expect("state");
+        drop(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("open"),
+        );
+        let source = json!({"id":"checkpoint", "items":[{"text":"x".repeat(70_000)}]});
+        let decision = decide_externalize("checkpoints", &source).expect("externalize");
+        write_blobs(root.path(), &decision.writes).expect("write blob");
+        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("canvas");
+        db.execute(
+            "INSERT INTO runtime_checkpoints(id,record) VALUES(?1,?2)",
+            ["checkpoint", &decision.record.to_string()],
+        )
+        .expect("checkpoint");
+        drop(db);
+        drop(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("reopen"),
+        );
+        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("canvas");
+        let record: String = db
+            .query_row(
+                "SELECT record FROM runtime_checkpoints WHERE id='checkpoint'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("checkpoint");
+        let record: Value = serde_json::from_str(&record).expect("JSON");
+        assert_eq!(
+            resolve_record(root.path(), &record).expect("hydrate"),
+            source
+        );
+        assert_eq!(
+            load_blob(root.path(), &record["_payloadBlobs"]["items"]).expect("verified blob"),
+            decision.writes[0].bytes
+        );
+    }
+
     #[test]
     fn result_preview_keeps_only_supported_summary_fields() {
         let source =

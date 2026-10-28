@@ -15,6 +15,7 @@ mod stream_fs;
 #[cfg(all(feature = "overlayfs", not(target_os = "linux")))]
 compile_error!("the overlayfs feature requires Linux");
 mod args;
+mod cache_overlay;
 mod changes;
 mod cmd;
 mod db;

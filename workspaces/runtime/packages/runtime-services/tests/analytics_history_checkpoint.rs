@@ -547,25 +547,18 @@ async fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
             .await
             .expect("first import tick")
     );
-    let read_budget = || {
-        store
-            .test_read_transaction(|tx| {
-                Ok((
-                    tx.query_row("SELECT count(*) FROM runtime_budget_usage", [], |row| {
-                        row.get::<_, i64>(0)
-                    })?,
-                    tx.query_row(
-                        "SELECT COALESCE(sum(tokens),0) FROM runtime_budget_usage",
-                        [],
-                        |row| row.get::<_, i64>(0),
-                    )?,
-                ))
-            })
-            .expect("budget rows")
+    let budget_absent = || {
+        !store
+            .test_reader()
+            .expect("canvas")
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='runtime_budget_usage')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("catalog")
     };
-    // The import writes analytics only; the removed team token budget kept
-    // its own usage rows.
-    assert_eq!(read_budget(), (0, 0));
+    assert!(budget_absent());
     let analytics = rusqlite::Connection::open(root.path().join("analytics.sqlite3"))
         .expect("analytics database");
     let read_analytics = || {
@@ -599,7 +592,7 @@ async fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
         .expect("replay tick");
     assert!(!replay_advanced, "idle poll does not advance history");
 
-    assert_eq!(read_budget(), (0, 0));
+    assert!(budget_absent());
     assert_eq!(read_analytics(), 1);
     assert_eq!(
         checkpoint(&store).expect("history checkpoint")["importedRecords"],

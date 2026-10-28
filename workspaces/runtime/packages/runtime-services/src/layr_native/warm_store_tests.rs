@@ -148,7 +148,7 @@ fn real_native_preparation_reuses_an_existing_projects_saved_rust_cache() {
         "{\"saved\":true}\n",
     )
     .expect("cache witness");
-    run(&state, &main, &["cache", "add", "target"]).expect("register cache");
+    run(&state, &main, &["config", "regenerable", r#"["target"]"#]).expect("register cache");
     run(&state, &main, &["protect", "main", "--remove"]).expect("unprotected main fixture");
     run(&state, &main, &["save", "--caches"]).expect("automatic cache with equal tracked content");
     let automatic = run(&state, &main, &["rev-parse", "main@{0}"]).expect("automatic state");

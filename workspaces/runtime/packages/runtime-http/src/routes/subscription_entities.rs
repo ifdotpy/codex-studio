@@ -4,31 +4,50 @@
 use crate::error::ApiError;
 use crate::generated::{ResourceRef, ResourceRevisionEntry, SubscriptionCursor};
 use crate::router::HttpState;
-use serde_json::{Value, json};
+use serde_json::json;
 use studio_runtime_schema::shared_values::{
     SYNC_ENTITY_STREAM_MAX_DOCUMENTS, SYNC_STREAM_EVENT_MAX_BYTES,
 };
 use studio_runtime_schema::sync_protocol::{SubscriptionEntityScope, subscription_entity_scopes};
 use studio_runtime_store::{EntityPage, SyncDocumentsRepository};
 
-fn selection(
+/// OpenAPI owns collections; typed selectors keep payload probing out of delivery.
+pub(super) fn selection(
     resource: &ResourceRef,
-) -> Result<(SubscriptionEntityScope, Option<String>, Option<String>), ApiError> {
-    let reference = serde_json::to_value(resource).map_err(|_| ApiError::internal())?;
-    let kind = reference["kind"].as_str().ok_or_else(ApiError::internal)?;
-    let scope = subscription_entity_scopes()
-        .get(kind)
-        .cloned()
-        .ok_or_else(ApiError::internal)?;
-    let field = |name: &Option<String>| {
-        name.as_deref()
-            .and_then(|name| reference.get(name))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
+) -> Option<(&'static SubscriptionEntityScope, Option<&str>, Option<&str>)> {
+    let (kind, id, agent) = match resource {
+        ResourceRef::StateResource(_) => ("state", None, None),
+        ResourceRef::CostsResource(_) => ("costs", None, None),
+        ResourceRef::DesktopResource(_) => ("desktop", None, None),
+        ResourceRef::TerminalsResource(_) => ("terminals", None, None),
+        ResourceRef::AgentDetailResource(r) => ("agentDetail", Some(r.agent_id.as_str()), None),
+        ResourceRef::SessionCostResource(r) => ("session-cost", Some(r.agent_id.as_str()), None),
+        ResourceRef::TaskResource(r) => ("task", Some(r.task_id.as_str()), None),
+        ResourceRef::TerminalResource(r) => ("terminal", Some(r.terminal_id.as_str()), None),
+        ResourceRef::TasksResource(r) => ("tasks", None, r.agent_id.as_deref()),
+        ResourceRef::MonitorsResource(r) => ("monitors", None, r.agent_id.as_deref()),
+        ResourceRef::WorkResource(r) => ("work", None, Some(r.agent_id.as_str())),
+        ResourceRef::AccountsResource(_)
+        | ResourceRef::DraftsResource(_)
+        | ResourceRef::LimitsResource(_)
+        | ResourceRef::ModelsResource(_)
+        | ResourceRef::MultiServerResource(_)
+        | ResourceRef::QueueResource(_)
+        | ResourceRef::ReceiptsResource(_)
+        | ResourceRef::RoomResource(_)
+        | ResourceRef::TranscriptResource(_)
+        | ResourceRef::TranscriptsResource(_)
+        | ResourceRef::VoiceResource(_)
+        | ResourceRef::WorkspaceResource(_)
+        | ResourceRef::AuthProgressResource(_)
+        | ResourceRef::VaultReadinessResource(_)
+        | ResourceRef::VaultJobProgressResource(_)
+        | ResourceRef::RenameProgressResource(_)
+        | ResourceRef::ProcessesResource(_)
+        | ResourceRef::ComplaintResource(_)
+        | ResourceRef::TerminalOutputResource(_) => return None,
     };
-    let id = field(&scope.id_field);
-    let agent = field(&scope.agent_field);
-    Ok((scope, id, agent))
+    Some((subscription_entity_scopes().get(kind)?, id, agent))
 }
 
 async fn read_page(
@@ -36,7 +55,9 @@ async fn read_page(
     resource: &ResourceRef,
     since: Option<i64>,
 ) -> Result<EntityPage, ApiError> {
-    let (scope, id, agent) = selection(resource)?;
+    let (scope, id, agent) = selection(resource).ok_or_else(ApiError::internal)?;
+    let id = id.map(str::to_owned);
+    let agent = agent.map(str::to_owned);
     let collections =
         serde_json::to_string(&scope.collections).map_err(|_| ApiError::internal())?;
     state
@@ -98,47 +119,6 @@ pub(super) async fn initial_snapshot(
     Ok(entry)
 }
 
-/// Shared scoped fingerprints suppress updates when only an offscreen view changed.
-pub(super) async fn content_fingerprint(
-    state: HttpState,
-    resource: ResourceRef,
-) -> Option<Vec<u8>> {
-    Some(
-        incremental_fingerprint(state, resource, None)
-            .await?
-            .digest
-            .to_vec(),
-    )
-}
-
-pub(super) async fn incremental_fingerprint(
-    state: HttpState,
-    resource: ResourceRef,
-    previous: Option<studio_runtime_services::resource_notify::EntityContentFingerprint>,
-) -> Option<studio_runtime_services::resource_notify::EntityContentFingerprint> {
-    use studio_runtime_services::resource_notify::EntityContentFingerprint;
-    let (scope, id, agent) = selection(&resource).ok()?;
-    let collections = serde_json::to_string(&scope.collections).ok()?;
-    state
-        .store?
-        .read_async("runtime-http/subscription-entity-fingerprint", move |tx| {
-            let sequence = SyncDocumentsRepository::entity_sequence(tx)?;
-            if let Some(previous) = previous.filter(|previous| previous.sequence == sequence) {
-                return Ok(previous);
-            }
-            let digest = SyncDocumentsRepository::entity_scope_fingerprint(
-                tx,
-                Some(&collections),
-                id.as_deref(),
-                agent.as_deref(),
-                scope.include_team_members,
-            )?;
-            Ok::<_, studio_runtime_store::StoreError>(EntityContentFingerprint { sequence, digest })
-        })
-        .await
-        .ok()
-}
-
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "subscription_entities",
@@ -153,235 +133,34 @@ mod tests {
     use std::sync::Arc;
     use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
 
-    #[tokio::test]
-    async fn incremental_fingerprint_handles_offscreen_moves_and_deletion() {
-        let directory = tempfile::tempdir().expect("isolated state");
-        let store = Arc::new(
-            RuntimeStore::open(Some(directory.path()))
-                .await
-                .expect("store"),
-        );
-        store
-            .transaction(|tx| {
-                SyncDocumentsRepository::put_entity(
-                    tx,
-                    "agentSummary",
-                    "worker",
-                    json!({"rootId":"lead"}),
-                    false,
-                )?;
-                SyncDocumentsRepository::put_entity(
-                    tx,
-                    "task",
-                    "visible",
-                    json!({"agent":"worker"}),
-                    false,
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("seed");
-        let workspace = store
-            .test_read_transaction(|tx| SyncDocumentsRepository::workspace_id(tx))
-            .expect("workspace");
-        let state = HttpState::new(
-            "token".into(),
-            workspace,
-            directory.path().display().to_string(),
-            4620,
-            None,
-            Some(store.clone()),
-            None,
-        );
-        let resource: ResourceRef =
-            serde_json::from_value(json!({"kind":"tasks","agentId":"lead"})).expect("tasks");
-        let initial = incremental_fingerprint(state.clone(), resource.clone(), None)
-            .await
-            .expect("initial");
-        let unchanged = incremental_fingerprint(state.clone(), resource.clone(), Some(initial))
-            .await
-            .expect("unchanged");
-        assert_eq!(unchanged.sequence, initial.sequence);
-        assert_eq!(unchanged.digest, initial.digest);
-        store
-            .transaction(|tx| {
-                SyncDocumentsRepository::put_entity(
-                    tx,
-                    "task",
-                    "offscreen",
-                    json!({"agent":"other"}),
-                    false,
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("offscreen");
-        let offscreen = incremental_fingerprint(state.clone(), resource.clone(), Some(unchanged))
-            .await
-            .expect("offscreen fingerprint");
-        assert_eq!(offscreen.digest, initial.digest);
-        assert!(offscreen.sequence > initial.sequence);
-        store
-            .transaction(|tx| {
-                SyncDocumentsRepository::put_entity(
-                    tx,
-                    "agentSummary",
-                    "worker",
-                    json!({"rootId":"other"}),
-                    false,
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("move");
-        let moved = incremental_fingerprint(state.clone(), resource.clone(), Some(offscreen))
-            .await
-            .expect("moved fingerprint");
-        assert_ne!(moved.digest, initial.digest);
-        store
-            .transaction(|tx| {
-                SyncDocumentsRepository::put_entity(
-                    tx,
-                    "agentSummary",
-                    "worker",
-                    json!({"rootId":"lead"}),
-                    false,
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("restore");
-        let restored = incremental_fingerprint(state.clone(), resource.clone(), Some(moved))
-            .await
-            .expect("restored fingerprint");
-        assert_eq!(restored.digest, initial.digest);
-        store
-            .transaction(|tx| {
-                SyncDocumentsRepository::put_entity(
-                    tx,
-                    "task",
-                    "visible",
-                    json!({"agent":"worker"}),
-                    true,
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("delete");
-        let deleted = incremental_fingerprint(state, resource, Some(restored))
-            .await
-            .expect("deleted fingerprint");
-        assert_ne!(deleted.digest, initial.digest);
-    }
-
-    #[tokio::test]
-    async fn view_scoped_entities_fingerprint_detects_changes_beyond_the_stream_page() {
-        let directory = tempfile::tempdir().expect("isolated state");
-        let store = Arc::new(
-            RuntimeStore::open(Some(directory.path()))
-                .await
-                .expect("store"),
-        );
-        studio_runtime_services::entity_publication::install(&store)
-            .await
-            .expect("publisher");
-        store
-            .transaction(|tx| {
-                // A full first page precedes the worker whose source changes below.
-                for index in 0..=SYNC_ENTITY_STREAM_MAX_DOCUMENTS {
-                    let id = format!("older-{index}");
-                    SyncDocumentsRepository::put_entity(
-                        tx,
-                        "agentSummary",
-                        &id,
-                        json!({"id":id,"status":"idle","source":"managed"}),
-                        false,
-                    )?;
-                }
-                Ok(())
-            })
-            .await
-            .expect("bounded prefix");
-        let workspace = store
-            .test_read_transaction(|tx| SyncDocumentsRepository::workspace_id(tx))
-            .expect("workspace");
-        let state = HttpState::new(
-            "token".into(),
-            workspace,
-            directory.path().display().to_string(),
-            4620,
-            None,
-            Some(store.clone()),
-            None,
-        );
-        let resource: ResourceRef =
-            serde_json::from_value(json!({"kind":"state"})).expect("state ref");
-        let before = content_fingerprint(state.clone(), resource.clone())
-            .await
-            .expect("fingerprint");
-        store.transaction_with(|tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"new-worker","rootId":"lead","parentId":"lead","epoch":1,"status":"idle","name":"New worker"}))?)
-        }).await.expect("source commit publishes worker");
-        let after = content_fingerprint(state.clone(), resource.clone())
-            .await
-            .expect("fingerprint");
-        assert!(
-            before != after,
-            "a new worker beyond the first page must wake the state subscription"
-        );
-        store
-            .transaction_with(|tx| {
-                let mut agent =
-                    AgentRepository::get(tx, &studio_runtime_store::AgentId::from("new-worker"))?
-                        .expect("worker")
-                        .value();
-                agent["status"] = json!("running");
-                agent["model"] = json!("changed-model");
-                AgentRepository::put(tx, &AgentRecord::from_value(agent)?)
-            })
-            .await
-            .expect("status/settings source publication");
-        let changed = content_fingerprint(state.clone(), resource.clone())
-            .await
-            .expect("updated fingerprint");
-        assert_ne!(
-            after, changed,
-            "same-count status and settings updates must publish"
-        );
-        store
-            .transaction_with(|tx| {
-                let mut agent =
-                    AgentRepository::get(tx, &studio_runtime_store::AgentId::from("new-worker"))?
-                        .expect("worker")
-                        .value();
-                agent["lastAnswer"] = json!("offscreen detail");
-                AgentRepository::put(tx, &AgentRecord::from_value(agent)?)
-            })
-            .await
-            .expect("detail-only publication");
-        assert_eq!(
-            changed,
-            content_fingerprint(state.clone(), resource.clone())
-                .await
-                .expect("unchanged list")
-        );
-        store
-            .transaction_with(|tx| {
-                let mut agent =
-                    AgentRepository::get(tx, &studio_runtime_store::AgentId::from("new-worker"))?
-                        .expect("worker")
-                        .value();
-                agent["deletedAt"] = json!(123.0);
-                AgentRepository::put(tx, &AgentRecord::from_value(agent)?)
-            })
-            .await
-            .expect("worker retirement");
-        assert_ne!(
-            changed,
-            content_fingerprint(state, resource)
-                .await
-                .expect("retired fingerprint")
-        );
+    #[test]
+    fn typed_entity_selectors_match_every_openapi_scope() {
+        for (kind, scope) in subscription_entity_scopes() {
+            let mut value = json!({"kind":kind});
+            for field in scope.id_field.iter().chain(&scope.agent_field) {
+                value[field] = json!("selector");
+            }
+            let resource: ResourceRef =
+                serde_json::from_value(value.clone()).expect("typed entity reference");
+            let (selected, id, agent) = selection(&resource).expect("every OpenAPI entity scope");
+            assert_eq!(selected.collections, scope.collections);
+            assert_eq!(
+                id,
+                scope
+                    .id_field
+                    .as_deref()
+                    .and_then(|field| value[field].as_str()),
+                "{kind} id owner"
+            );
+            assert_eq!(
+                agent,
+                scope
+                    .agent_field
+                    .as_deref()
+                    .and_then(|field| value[field].as_str()),
+                "{kind} agent owner"
+            );
+        }
     }
 
     #[tokio::test]
@@ -433,12 +212,10 @@ mod tests {
                 .iter()
                 .any(|row| row["id"] == "worker-command")
         );
-        let before = content_fingerprint(state.clone(), list_ref.clone())
-            .await
-            .expect("list fingerprint");
         let list = initial_snapshot(state.clone(), list_ref.clone(), None)
             .await
             .expect("global snapshot");
+        let before = list.cursor.clone();
         let list = serde_json::to_value(list).expect("typed entry");
         let documents = list["entityChanges"]["documents"]
             .as_array()
@@ -480,11 +257,16 @@ mod tests {
             })
             .await
             .expect("detail output commit");
-        assert_eq!(
-            content_fingerprint(state.clone(), list_ref)
-                .await
-                .expect("list fingerprint"),
-            before
+        let unchanged = initial_snapshot(state.clone(), list_ref, before)
+            .await
+            .expect("unchanged list");
+        assert!(
+            unchanged
+                .entity_changes
+                .flatten()
+                .expect("delta")
+                .documents
+                .is_empty()
         );
         let entry = initial_snapshot(state.clone(), detail_ref, None)
             .await

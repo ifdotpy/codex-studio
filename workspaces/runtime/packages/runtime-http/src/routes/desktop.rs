@@ -344,6 +344,35 @@ mod tests {
         };
         use studio_runtime_services::disk_space::DiskGate;
 
+        async fn published_interval(
+            state: &crate::router::HttpState,
+            disk: studio_runtime_schema::desktop::DiskSpaceStatus,
+            since: Option<crate::generated::SubscriptionCursor>,
+        ) -> crate::generated::ResourceRevisionEntry {
+            let value = super::status(state, disk);
+            state
+                .store
+                .as_ref()
+                .expect("store")
+                .transaction(move |tx| {
+                    studio_runtime_store::SyncDocumentsRepository::put_entity(
+                        tx, "desktop", "current", value, false,
+                    )?;
+                    Ok(())
+                })
+                .await
+                .expect("desktop source publication");
+            super::super::subscription_entities::initial_snapshot(
+                state.clone(),
+                crate::generated::ResourceRef::DesktopResource(crate::generated::DesktopResource {
+                    kind: crate::generated::DesktopResourceKind::Desktop,
+                }),
+                since,
+            )
+            .await
+            .expect("desktop interval")
+        }
+
         struct SupervisorNotice;
         impl SupervisorDiagnosticsPort for SupervisorNotice {
             fn snapshot(&self) -> SupervisorDiagnosticsSnapshot {
@@ -359,13 +388,18 @@ mod tests {
         // Advance beyond the gate's sample cache without waiting or filling a disk.
         const SAMPLE_STEP: Duration = Duration::from_secs(2);
         let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("isolated store"),
+        );
         let mut state = crate::router::HttpState::new(
             "fixture-token".into(),
             "fixture".into(),
             root.path().display().to_string(),
             49171,
             None,
-            None,
+            Some(store),
             None,
         );
         let free = Arc::new(AtomicU64::new(DISK_SPACE_WARNING_FREE_BYTES));
@@ -373,17 +407,10 @@ mod tests {
             let free = free.clone();
             Arc::new(move |_| Some(free.load(Ordering::SeqCst)))
         });
-        let notifications = state.resource_notifications.clone();
-        let resources = [serde_json::json!({"kind":"desktop"})];
         let first =
             serde_json::to_vec(&super::status(&state, gate.status())).expect("served desktop");
-        let baseline = notifications
-            .changes_since_with_content(&resources, None, |_| {
-                std::future::ready(Some(first.clone()))
-            })
-            .await
-            .expect("baseline");
-        let mut cursor = baseline.cursor.revision;
+        let baseline = published_interval(&state, gate.status(), None).await;
+        let mut cursor = baseline.cursor;
         let start = Instant::now();
         for (index, (bytes, expected_level)) in [
             (DISK_SPACE_WARNING_FREE_BYTES + 1, None),
@@ -408,23 +435,24 @@ mod tests {
             );
             let disk = gate.status();
             assert_eq!(disk.level, expected_level);
-            let content = serde_json::to_vec(&super::status(&state, disk)).expect("served desktop");
+            let content =
+                serde_json::to_vec(&super::status(&state, disk.clone())).expect("served desktop");
             if expected_level.is_none() {
                 assert_eq!(content, first, "the entire served identity stays stable");
             }
-            notifications.notify_store_commit(studio_runtime_store::ResourceChange::All);
-            let changed = notifications
-                .changes_since_with_content(&resources, Some(cursor), |_| {
-                    std::future::ready(Some(content.clone()))
-                })
-                .await
-                .expect("desktop content filter");
+            let changed = published_interval(&state, disk, cursor).await;
             assert_eq!(
-                changed.resources.len(),
+                changed
+                    .entity_changes
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .expect("desktop delta")
+                    .documents
+                    .len(),
                 usize::from(expected_level.is_some()),
-                "healthy writes cause no second read; threshold transitions still deliver"
+                "healthy writes stay silent; threshold transitions deliver"
             );
-            cursor = changed.cursor.revision;
+            cursor = changed.cursor;
         }
 
         let monitor = ProviderVersionMonitor::start(
@@ -443,20 +471,19 @@ mod tests {
             state.clone(),
             state.with_diagnostics_supervisor(Arc::new(SupervisorNotice)),
         ] {
-            notifications.notify_store_commit(studio_runtime_store::ResourceChange::All);
-            let changed = notifications
-                .changes_since_with_content(&resources, Some(cursor), |_| {
-                    std::future::ready(
-                        serde_json::to_vec(&super::status(&state, gate.status())).ok(),
-                    )
-                })
-                .await
-                .expect("visible desktop change");
+            let changed = published_interval(&state, gate.status(), cursor).await;
             assert_eq!(
-                changed.resources, resources,
+                changed
+                    .entity_changes
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .expect("desktop delta")
+                    .documents
+                    .len(),
+                1,
                 "provider and supervisor changes still deliver"
             );
-            cursor = changed.cursor.revision;
+            cursor = changed.cursor;
         }
         monitor.shutdown().await;
     }

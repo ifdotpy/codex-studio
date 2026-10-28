@@ -4,8 +4,7 @@ use crate::StoreResult;
 
 // These tables are installed by Runtime and feature constructors, or on first
 // feature use, in canvas.sqlite3. The Rust feature schema owns their current DDL.
-// `runtime_budget` and `runtime_budget_usage` keep the rows of the removed team
-// token budget that older builds wrote; current builds neither read nor write them.
+// `runtime_budget` retains historical state and replay diagnostics.
 const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_work (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_work_root_status
@@ -40,71 +39,17 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_workspace_operations (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_workspace_operation_phase ON runtime_workspace_operations(
                 json_extract(record,'$.phase'), json_extract(record,'$.agent'));
-            CREATE TABLE IF NOT EXISTS runtime_payload_refs (
-            table_name TEXT NOT NULL, record_id TEXT NOT NULL, field TEXT NOT NULL,
-            sha256 TEXT NOT NULL, PRIMARY KEY(table_name,record_id,field));
-            CREATE INDEX IF NOT EXISTS runtime_payload_refs_hash ON runtime_payload_refs(sha256);
-            CREATE TRIGGER IF NOT EXISTS runtime_payload_checkpoints_insert AFTER INSERT ON runtime_checkpoints BEGIN
-            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)
-            SELECT 'runtime_checkpoints',NEW.id,j.key,json_extract(j.value,'$.sha256')
-            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j
-            WHERE json_type(j.value,'$.sha256')='text';
-        END;
-            CREATE TRIGGER IF NOT EXISTS runtime_payload_checkpoints_update AFTER UPDATE OF record ON runtime_checkpoints BEGIN
-            DELETE FROM runtime_payload_refs WHERE table_name='runtime_checkpoints' AND record_id=OLD.id;
-            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)
-            SELECT 'runtime_checkpoints',NEW.id,j.key,json_extract(j.value,'$.sha256')
-            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j
-            WHERE json_type(j.value,'$.sha256')='text';
-        END;
-            CREATE TRIGGER IF NOT EXISTS runtime_payload_checkpoints_delete AFTER DELETE ON runtime_checkpoints BEGIN
-            DELETE FROM runtime_payload_refs WHERE table_name='runtime_checkpoints' AND record_id=OLD.id;
-        END;
             CREATE TABLE IF NOT EXISTS runtime_tool_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_tool_request_actor
                 ON runtime_tool_requests(json_extract(record,'$.agent'), json_extract(record,'$.updated') DESC);
             CREATE TABLE IF NOT EXISTS runtime_tool_request_aliases
                 (agent TEXT NOT NULL, alias TEXT NOT NULL, request TEXT NOT NULL, PRIMARY KEY(agent,alias,request));
-            CREATE TRIGGER IF NOT EXISTS runtime_payload_requests_insert AFTER INSERT ON runtime_tool_requests BEGIN
-            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)
-            SELECT 'runtime_tool_requests',NEW.id,j.key,json_extract(j.value,'$.sha256')
-            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j
-            WHERE json_type(j.value,'$.sha256')='text';
-        END;
-            CREATE TRIGGER IF NOT EXISTS runtime_payload_requests_update AFTER UPDATE OF record ON runtime_tool_requests BEGIN
-            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_requests' AND record_id=OLD.id;
-            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)
-            SELECT 'runtime_tool_requests',NEW.id,j.key,json_extract(j.value,'$.sha256')
-            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j
-            WHERE json_type(j.value,'$.sha256')='text';
-        END;
-            CREATE TRIGGER IF NOT EXISTS runtime_payload_requests_delete AFTER DELETE ON runtime_tool_requests BEGIN
-            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_requests' AND record_id=OLD.id;
-        END;
             CREATE TABLE IF NOT EXISTS runtime_tool_results (id TEXT PRIMARY KEY, result TEXT NOT NULL);
-            CREATE TRIGGER IF NOT EXISTS runtime_payload_results_insert AFTER INSERT ON runtime_tool_results BEGIN
-            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)
-            SELECT 'runtime_tool_results',NEW.id,j.key,json_extract(j.value,'$.sha256')
-            FROM json_each(json_extract(NEW.result,'$._payloadBlobs')) AS j
-            WHERE json_type(j.value,'$.sha256')='text';
-        END;
-            CREATE TRIGGER IF NOT EXISTS runtime_payload_results_update AFTER UPDATE OF result ON runtime_tool_results BEGIN
-            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_results' AND record_id=OLD.id;
-            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)
-            SELECT 'runtime_tool_results',NEW.id,j.key,json_extract(j.value,'$.sha256')
-            FROM json_each(json_extract(NEW.result,'$._payloadBlobs')) AS j
-            WHERE json_type(j.value,'$.sha256')='text';
-        END;
-            CREATE TRIGGER IF NOT EXISTS runtime_payload_results_delete AFTER DELETE ON runtime_tool_results BEGIN
-            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_results' AND record_id=OLD.id;
-        END;
             CREATE TABLE IF NOT EXISTS runtime_rules (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_rule_ready_tick
                 ON runtime_rules(json_extract(record,'$.status'))
                 WHERE NOT COALESCE(json_extract(record,'$.inFlight'),0);
             CREATE TABLE IF NOT EXISTS runtime_budget (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_budget_usage (id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, tokens INTEGER NOT NULL, at REAL NOT NULL, breakdown TEXT);
-            CREATE INDEX IF NOT EXISTS runtime_budget_usage_agent ON runtime_budget_usage(agent,kind);
             CREATE TABLE IF NOT EXISTS runtime_execution_runs (id TEXT PRIMARY KEY, agent TEXT NOT NULL, account TEXT NOT NULL, epoch INTEGER NOT NULL, thread TEXT, turn TEXT, created REAL NOT NULL, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_execution_run_agent ON runtime_execution_runs(agent,created DESC);
             CREATE INDEX IF NOT EXISTS runtime_execution_run_created ON runtime_execution_runs(created DESC);
@@ -220,12 +165,7 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_access_alias_requests (
           id TEXT PRIMARY KEY, server TEXT NOT NULL, alias TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_model_status (agent TEXT, revision TEXT, at REAL, record TEXT, PRIMARY KEY(agent,revision));
-            CREATE TABLE IF NOT EXISTS runtime_model_modes (agent TEXT, request TEXT, version TEXT, record TEXT, PRIMARY KEY(agent,request,version));
             CREATE TABLE IF NOT EXISTS runtime_native_notices (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_native_catalog_updates (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_native_limit_refreshes (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_native_sweeps (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL, epoch TEXT);
             CREATE INDEX IF NOT EXISTS runtime_agent_sweep_busy_v2 ON runtime_agents(account_key) WHERE provider='codex' AND (context_repair_phase IN ('preparing','submitted','unknown','ready') OR COALESCE(native_tool_refresh_id,'')!='');
             CREATE INDEX IF NOT EXISTS runtime_agent_callback_context_v2 ON runtime_agents(account_key,start_attempt_connection_generation,thread_id,turn_id) WHERE status='running' AND auto_wake=1;
             CREATE INDEX IF NOT EXISTS runtime_agent_sweep_cleanup_v2 ON runtime_agents(source_cleanup_account_key,source_cleanup_thread_id) WHERE source_cleanup_phase IN ('planned','submitted');
@@ -266,9 +206,6 @@ const FEATURE_SCHEMA: &str = r#"
                     id TEXT PRIMARY KEY, expires REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_server_output_tools_expiry
                     ON runtime_server_output_tools(expires);
-            CREATE TABLE IF NOT EXISTS runtime_server_sequence (
-                    id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
-            INSERT OR IGNORE INTO runtime_server_sequence VALUES(1,0);
             CREATE TABLE IF NOT EXISTS runtime_server_exec (
             id TEXT PRIMARY KEY, owner TEXT NOT NULL, actor TEXT NOT NULL,
             record TEXT NOT NULL);
