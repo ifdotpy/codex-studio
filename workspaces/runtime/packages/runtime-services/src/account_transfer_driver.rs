@@ -1938,6 +1938,7 @@ mod provider_admission_tests {
         let saved = decision.operation["members"]["agent"]["providerAdmission"].clone();
         let admission: ProviderAdmission =
             serde_json::from_value(saved.clone()).expect("admission");
+        assert!(admission.admitted_request.is_none());
         studio_runtime_schema::persistence::RequestIdentity::new(
             "test",
             &[],

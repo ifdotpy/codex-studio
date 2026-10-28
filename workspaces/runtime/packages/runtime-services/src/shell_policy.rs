@@ -411,7 +411,74 @@ async fn sweep(
                 deadline: Instant::now() + Duration::from_secs(2),
             })
         }).await?;
-        drop(port.provider_request(request).await);
+        let admitted = request.admitted_request.clone();
+        let expected_scope = request.expected_scope.clone();
+        let operation = request.operation.clone();
+        if let (Some(admitted), Some(expected_scope), Ok(receipt)) = (
+            admitted,
+            expected_scope,
+            port.provider_request(request).await,
+        ) && receipt.scope == expected_scope
+            && receipt.operation == operation
+            && receipt.certainty() == crate::account_session_runtime::RequestCertainty::NotSent
+        {
+            store
+                .transaction_with(move |tx| {
+                    crate::account_worker::retained::discard_unsent_provider_call(tx, &admitted)
+                })
+                .await?;
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    use crate::account_session_runtime::{
+        AccountSessionFuture, ConnectionScope, SessionOutcome, SessionReceipt,
+    };
+
+    struct NotSent;
+    impl AccountSessionPort for NotSent {
+        fn current_scope(&self, _: &str) -> Option<ConnectionScope> {
+            Some(ConnectionScope {
+                account: "default".into(),
+                connection: "connection".into(),
+                generation: 1,
+            })
+        }
+        fn provider_request<'a>(
+            &'a self,
+            request: ProviderRequest,
+        ) -> AccountSessionFuture<'a, SessionReceipt> {
+            Box::pin(async move {
+                Ok(SessionReceipt {
+                    scope: request.expected_scope.unwrap(),
+                    operation: request.operation,
+                    outcome: SessionOutcome::NoLiveAccountWorker,
+                    replayed: false,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_unsent_sweeps_do_not_leave_pending_provider_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"id":"agent","rootId":"agent","provider":"claude","threadId":"thread","accountKey":"default","epoch":1,"autoWake":true,"status":"idle"}).to_string()))?;
+            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", ("task", json!({"id":"task","agent":"agent","status":"running","name":"local_bash"}).to_string()))?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        sweep(&store, &NotSent, true).await.unwrap();
+        drop(store);
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        for _ in 0..2 {
+            sweep(&store, &NotSent, true).await.unwrap();
+        }
+        let pending: i64 = store.read_async("shell-policy/test", |db| Ok::<_, StoreError>(db.query_row("SELECT count(*) FROM runtime_outbox WHERE kind='provider_call' AND status='pending'", [], |row| row.get(0))?)).await.unwrap();
+        assert_eq!(pending, 0, "unsent periodic checks must not accumulate");
+    }
 }

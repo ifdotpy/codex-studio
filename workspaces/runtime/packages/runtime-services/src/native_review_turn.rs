@@ -752,6 +752,15 @@ pub(crate) mod tests {
             request: ProviderRequest,
         ) -> AccountSessionFuture<'a, SessionReceipt> {
             Box::pin(async move {
+                if request.method == Method::ThreadStart {
+                    assert_eq!(
+                        uuid::Uuid::parse_str(&request.root_request_id)
+                            .unwrap()
+                            .get_version_num(),
+                        7
+                    );
+                    assert!(request.admitted_request.is_none());
+                }
                 self.requests
                     .lock()
                     .unwrap()
