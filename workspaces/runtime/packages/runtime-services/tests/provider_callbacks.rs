@@ -791,7 +791,9 @@ async fn provider_callbacks_utility_invalid_and_deleted() {
     );
     let refresh = Frame::UnknownMethod(studio_runtime_providers::UnknownMethodFrame {
         method: "account/chatgptAuthTokens/refresh".into(),
-        fields: [("id".into(), json!(1)), ("params".into(), json!({}))].into(),
+        fields: [("id".into(), json!(1)), ("params".into(), json!({}))]
+            .into_iter()
+            .collect(),
     });
     assert!(matches!(
         reply(
@@ -986,7 +988,8 @@ async fn provider_callbacks_python_durable_answers() {
                     ("id".into(), json!(1000 + index as u64)),
                     ("params".into(), case["params"].clone()),
                 ]
-                .into(),
+                .into_iter()
+                .collect(),
             })
         };
         let CallbackDecision::Pending(id) =
