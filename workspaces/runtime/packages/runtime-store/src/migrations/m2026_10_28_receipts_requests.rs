@@ -25,6 +25,7 @@ pub(super) const SOURCES: &[&str] = &[
 const SOURCE: &str = "runtime_operation_receipts";
 /// Persistent count of classified completed settings markers without a replay body.
 pub(super) const DELETED_SETTINGS_REPORT: &str = "deleted-completed-c:settings";
+pub(super) const DELETED_USER_MESSAGE_REPORT: &str = "deleted-completed-c:user-message";
 pub(super) struct Family;
 
 #[derive(Serialize)]
@@ -101,17 +102,7 @@ impl ReceiptFamilyMigration for Family {
                 return Err(unclassifiable(source, &row.id, &row.signature));
             }
             if hash_signature && reply == json!({"applied":true}) {
-                validate_completed_discard(source, &row.id, checkpoint.cutover_ms)?;
-                let mut count = MigrationCheckpoint::begin(
-                    tx,
-                    ID,
-                    DELETED_SETTINGS_REPORT,
-                    checkpoint.cutover_ms,
-                )?;
-                count.cursor += 1;
-                count.status = MigrationStatus::Complete;
-                count.save(tx, ID, DELETED_SETTINGS_REPORT, checkpoint.cutover_ms)?;
-                delete_source(tx, source, row.rowid)?;
+                discard_completed_reply(tx, &row, DELETED_SETTINGS_REPORT, checkpoint.cutover_ms)?;
                 continue;
             }
             let mut actor = row
@@ -141,6 +132,15 @@ impl ReceiptFamilyMigration for Family {
                     return Err(unclassifiable(source, &row.id, &row.signature));
                 }
                 // Another independently registered owner must classify this row.
+                continue;
+            }
+            if direct_user_reply(&row, &reply) && !normalize_requested_delivery(tx, &row)? {
+                discard_completed_reply(
+                    tx,
+                    &row,
+                    DELETED_USER_MESSAGE_REPORT,
+                    checkpoint.cutover_ms,
+                )?;
                 continue;
             }
             if let Some(deliveries) = reply.get_mut("deliveries") {
@@ -175,6 +175,93 @@ impl ReceiptFamilyMigration for Family {
         }
         Ok(())
     }
+}
+
+fn discard_completed_reply(
+    tx: &Transaction<'_>,
+    row: &SourceReceipt,
+    report: &str,
+    cutover: i64,
+) -> Result<()> {
+    validate_completed_discard(SOURCE, &row.id, cutover)?;
+    let mut count = MigrationCheckpoint::begin(tx, ID, report, cutover)?;
+    count.cursor += 1;
+    count.status = MigrationStatus::Complete;
+    count.save(tx, ID, report, cutover)?;
+    delete_source(tx, SOURCE, row.rowid)
+}
+
+fn direct_user_reply(row: &SourceReceipt, reply: &Value) -> bool {
+    let signature: Value = match serde_json::from_str(&row.signature) {
+        Ok(signature) => signature,
+        Err(_) => return false,
+    };
+    reply["id"] == row.id
+        && reply.get("room").is_none()
+        && signature
+            .as_object()
+            .is_some_and(|fields| fields.len() == 3)
+        && signature["agent"].is_string()
+        && signature["text"].is_string()
+        && signature["assets"].is_array()
+}
+
+fn normalize_requested_delivery(tx: &Transaction<'_>, row: &SourceReceipt) -> Result<bool> {
+    const META: &str = "runtime_event_meta";
+    let invalid = || unclassifiable(META, &row.id, &row.signature);
+    if !crate::receipt_migration_contract::source_exists(tx, META)? {
+        return Ok(false);
+    }
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT record FROM runtime_event_meta WHERE id=?1",
+            [&row.id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(raw) = raw else {
+        return Ok(false);
+    };
+    let mut meta: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+    if !meta.is_object()
+        || meta
+            .get("sendNow")
+            .is_some_and(|value| !value.is_null() && !value.is_boolean())
+    {
+        return Err(invalid());
+    }
+    let requested = meta
+        .get("requestedDelivery")
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            if meta["sendNow"] == true {
+                None
+            } else {
+                meta.get("delivery").filter(|value| !value.is_null())
+            }
+        })
+        .cloned();
+    let Some(requested) = requested else {
+        return Ok(false);
+    };
+    let moment = studio_runtime_schema::DeliveryMoment::parse_legacy(
+        requested.as_str().ok_or_else(invalid)?,
+    )
+    .map_err(|_| invalid())?;
+    meta["requestedDelivery"] = json!(moment);
+    if let Some(delivery) = meta.get("delivery").filter(|value| !value.is_null()) {
+        meta["delivery"] = json!(
+            studio_runtime_schema::DeliveryMoment::parse_legacy(
+                delivery.as_str().ok_or_else(invalid)?
+            )
+            .map_err(|_| invalid())?
+        );
+    }
+    tx.execute(
+        "UPDATE runtime_event_meta SET record=?1 WHERE id=?2",
+        params![meta.to_string(), row.id],
+    )?;
+    Ok(true)
 }
 
 fn move_workspace_operations(
@@ -216,11 +303,12 @@ fn move_workspace_operations(
             next.cursor = row.rowid;
             continue;
         }
-        if let Some(admission) = owner.get("providerAdmission") {
-            serde_json::from_value::<AdmittedRequest>(admission.clone()).map_err(|_| invalid())?;
-            next.cursor = row.rowid;
-            continue;
-        }
+        let previous_admission = owner
+            .get("providerAdmission")
+            .map(|admission| {
+                serde_json::from_value::<AdmittedRequest>(admission.clone()).map_err(|_| invalid())
+            })
+            .transpose()?;
         let operation = format!(
             "{}:{}",
             row.id,
@@ -272,7 +360,7 @@ fn move_workspace_operations(
             [&submitted_id],
             |r| r.get(0),
         )?;
-        let submitted: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+        let mut submitted: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
         let mut call = submitted["call"].clone();
         let fields = call.as_object_mut().ok_or_else(invalid)?;
         fields.entry("root_request_id").or_insert(json!(""));
@@ -302,14 +390,59 @@ fn move_workspace_operations(
             .strip_suffix(":submitted")
             .map(|key| format!("{key}:result"))
             .ok_or_else(invalid)?;
-        owner["providerAdmission"] = json!(admitted_owner_token(
-            &result_id,
-            &signature,
-            checkpoint.cutover_ms
-        ));
-        if !call.root_request_id.is_empty() {
-            owner["rootRequestId"] = json!(call.root_request_id);
+        let admission = admitted_owner_token(&result_id, &signature, checkpoint.cutover_ms);
+        if previous_admission.as_ref().is_some_and(|previous| {
+            previous.id() != admission.id()
+                || previous.signature() != admission.signature()
+                || previous.created() != admission.created()
+        }) {
+            return Err(invalid());
         }
+        let owner_root = owner
+            .get("rootRequestId")
+            .filter(|root| !root.is_null())
+            .map(|root| root.as_str().ok_or_else(invalid))
+            .transpose()?
+            .filter(|root| !root.is_empty());
+        let source_root =
+            (!call.root_request_id.is_empty()).then_some(call.root_request_id.as_str());
+        for root in [owner_root, source_root].into_iter().flatten() {
+            if studio_runtime_schema::persistence::RequestIdentity::new(
+                "provider-call",
+                &[],
+                root,
+                &[],
+            )
+            .is_err()
+            {
+                return Err(invalid());
+            }
+        }
+        if owner_root
+            .zip(source_root)
+            .is_some_and(|(owner, source)| owner != source)
+        {
+            return Err(invalid());
+        }
+        let root = match source_root.or(owner_root) {
+            Some(root) => root.to_owned(),
+            None => crate::receipt_migration_contract::hydrate_source_root(
+                tx,
+                SOURCE,
+                &submitted_id,
+                "submitted",
+                "result",
+                "$.call.root_request_id",
+            )?,
+        };
+        submitted["call"]["root_request_id"] = json!(root);
+        submitted["call"]["admitted_request"] = json!(admission);
+        owner["providerAdmission"] = json!(admission);
+        owner["rootRequestId"] = json!(root);
+        tx.execute(
+            "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
+            params![submitted.to_string(), submitted_id],
+        )?;
         tx.execute(
             "UPDATE runtime_workspace_operations SET record=?1 WHERE rowid=?2",
             params![owner.to_string(), row.rowid],
@@ -489,10 +622,14 @@ fn exact_reply(row: &SourceReceipt, reply: &Value) -> bool {
                 .is_none_or(|e| e.is_null() || e.is_string()))
         || (reply["requestId"] == row.id
             && matches!(reply["outcome"].as_str(), Some("applied" | "not_applied")))
-        || (reply["id"].is_string()
-            && reply["room"].is_string()
-            && reply["author"].is_string()
-            && reply["deliveries"].is_object())
+        || (reply["requestId"] == row.id
+            && reply["server"].is_string()
+            && reply["branch"].is_string()
+            && reply["commit"].is_string()
+            && reply["bytes"].is_u64()
+            && reply["destination"].is_string())
+        || (reply["id"].is_string() && reply["room"].is_string() && reply["deliveries"].is_object())
+        || (reply["id"].is_string() && reply["room"].is_string() && reply["recipient"] == "user")
 }
 
 fn migrate_rules(
@@ -727,7 +864,7 @@ fn migrate_location(
         .ok_or_else(invalid)?;
     intents.insert(
         row.id.clone(),
-        json!(admitted_owner_token(&row.id, &row.signature, cutover)),
+        json!({"request":admitted_owner_token(&row.id, &row.signature, cutover)}),
     );
     tx.execute(
         "UPDATE runtime_projects SET record=?1 WHERE id=?2",
@@ -1105,57 +1242,124 @@ mod tests {
     }
 
     #[test]
-    fn receipts_requests_workspace_pending_hydrates_exact_provider_token_without_new_root() {
-        let mut db = Connection::open_in_memory().expect("database");
-        fixture(&mut db);
-        db.execute_batch(
-            "CREATE TABLE runtime_workspace_operations(id TEXT PRIMARY KEY,record TEXT)",
-        )
-        .expect("workspace owners");
-        let owner = json!({"id":"branch:old","kind":"branch","agent":"agent","phase":"provider_pending","signature":"original","source":{"accountKey":"default","threadId":"thread"}});
-        db.execute(
-            "INSERT INTO runtime_workspace_operations VALUES('branch:old',?1)",
-            [owner.to_string()],
-        )
-        .expect("old owner");
-        let operation = "branch:old:fork";
-        let key =
-            studio_runtime_schema::provider_call_contract::transport_key("default", operation);
-        let call = json!({"scope":{"account":"default","connection":"connection","generation":7},"operation":operation,"actor":{"agent":"agent","epoch":3},"transfer":null,"deleted_actor_session":null,"method":"thread/fork","params":{"threadId":"thread"}});
-        let submitted = json!({"call":call,"request":{"id":1,"generation":7,"method":"thread/fork","operation":key,"thread":"thread","lightweight":true,"deadline":60000,"unknown":false,"remoteId":null}});
-        let source_id = format!("account-worker:{key}:submitted");
-        db.execute(
-            "INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)",
-            params![source_id, submitted.to_string()],
-        )
-        .expect("retained source");
-        migrate(&mut db);
-        let raw: String = db
-            .query_row("SELECT record FROM runtime_workspace_operations", [], |r| {
-                r.get(0)
-            })
-            .expect("owner");
-        let owner: Value = serde_json::from_str(&raw).expect("owner JSON");
-        let token: AdmittedRequest =
-            serde_json::from_value(owner["providerAdmission"].clone()).expect("trusted token");
-        assert_eq!(token.id(), format!("account-worker:{key}:result"));
-        assert_eq!(token.created(), CUTOVER);
-        assert_ne!(token.signature(), "submitted");
-        assert_ne!(token.signature(), "result");
-        assert!(
-            owner.get("rootRequestId").is_none(),
-            "migration never invents a UUID"
-        );
-        assert!(
-            db.query_row(
-                "SELECT 1 FROM runtime_operation_receipts WHERE id=?1",
-                [source_id],
-                |r| r.get::<_, i64>(0)
+    fn receipts_requests_workspace_pending_hydrates_exact_provider_token_with_one_root() {
+        for original_root in [
+            None,
+            Some(studio_runtime_schema::persistence::RequestIdentity::issue_root()),
+        ] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            db.execute_batch(
+                "CREATE TABLE runtime_workspace_operations(id TEXT PRIMARY KEY,record TEXT)",
             )
-            .is_ok(),
-            "provider migration still owns its source"
-        );
-        migrate(&mut db);
+            .expect("workspace owners");
+            let owner = json!({"id":"branch:old","kind":"branch","agent":"agent","phase":"provider_pending","signature":"original","source":{"accountKey":"default","threadId":"thread"}});
+            db.execute(
+                "INSERT INTO runtime_workspace_operations VALUES('branch:old',?1)",
+                [owner.to_string()],
+            )
+            .expect("old owner");
+            let operation = "branch:old:fork";
+            let key =
+                studio_runtime_schema::provider_call_contract::transport_key("default", operation);
+            let mut call = json!({"scope":{"account":"default","connection":"connection","generation":7},"operation":operation,"actor":{"agent":"agent","epoch":3},"transfer":null,"deleted_actor_session":null,"method":"thread/fork","params":{"threadId":"thread"}});
+            if let Some(root) = &original_root {
+                call["root_request_id"] = json!(root);
+            }
+            let submitted = json!({"call":call,"request":{"id":1,"generation":7,"method":"thread/fork","operation":key,"thread":"thread","lightweight":true,"deadline":60000,"unknown":false,"remoteId":null}});
+            let source_id = format!("account-worker:{key}:submitted");
+            db.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)",
+                params![source_id, submitted.to_string()],
+            )
+            .expect("retained source");
+            {
+                let tx = db.transaction().expect("transaction");
+                let checkpoint =
+                    MigrationCheckpoint::begin(&tx, ID, "runtime_workspace_operations", CUTOVER)
+                        .expect("checkpoint");
+                let next = Family
+                    .move_batch(&tx, "runtime_workspace_operations", &checkpoint)
+                    .expect("hydrate owner/source");
+                next.save(&tx, ID, "runtime_workspace_operations", CUTOVER)
+                    .expect("checkpoint same transaction");
+                tx.rollback().expect("crash before commit");
+                let restored: String = db
+                    .query_row(
+                        "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                        [&source_id],
+                        |r| r.get(0),
+                    )
+                    .expect("original source");
+                assert_eq!(
+                    serde_json::from_str::<Value>(&restored).expect("source JSON"),
+                    submitted
+                );
+                let restored: String = db
+                    .query_row("SELECT record FROM runtime_workspace_operations", [], |r| {
+                        r.get(0)
+                    })
+                    .expect("original owner");
+                assert_eq!(
+                    serde_json::from_str::<Value>(&restored).expect("owner JSON"),
+                    owner
+                );
+            }
+            migrate(&mut db);
+            let raw: String = db
+                .query_row("SELECT record FROM runtime_workspace_operations", [], |r| {
+                    r.get(0)
+                })
+                .expect("owner");
+            let owner: Value = serde_json::from_str(&raw).expect("owner JSON");
+            let token: AdmittedRequest =
+                serde_json::from_value(owner["providerAdmission"].clone()).expect("trusted token");
+            assert_eq!(token.id(), format!("account-worker:{key}:result"));
+            assert_eq!(token.created(), CUTOVER);
+            assert_ne!(token.signature(), "submitted");
+            assert_ne!(token.signature(), "result");
+            let root = owner["rootRequestId"].as_str().expect("durable owner root");
+            if let Some(original) = &original_root {
+                assert_eq!(root, original);
+            }
+            assert!(
+                studio_runtime_schema::persistence::RequestIdentity::new(
+                    "provider-call",
+                    &[],
+                    root,
+                    &[]
+                )
+                .is_ok()
+            );
+            let raw: String = db
+                .query_row(
+                    "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                    [&source_id],
+                    |r| r.get(0),
+                )
+                .expect("retained call");
+            let source: Value = serde_json::from_str(&raw).expect("submitted JSON");
+            assert_eq!(source["call"]["root_request_id"], root);
+            assert!(
+                db.query_row(
+                    "SELECT 1 FROM runtime_operation_receipts WHERE id=?1",
+                    [&source_id],
+                    |r| r.get::<_, i64>(0)
+                )
+                .is_ok(),
+                "provider migration still owns its source"
+            );
+            migrate(&mut db);
+            let after: String = db
+                .query_row("SELECT record FROM runtime_workspace_operations", [], |r| {
+                    r.get(0)
+                })
+                .expect("same owner");
+            assert_eq!(
+                serde_json::from_str::<Value>(&after).expect("owner JSON"),
+                owner
+            );
+        }
     }
 
     #[test]
@@ -1207,5 +1411,319 @@ mod tests {
                 .expect("resumed next row"),
             2
         );
+    }
+
+    #[test]
+    fn receipts_requests_every_completed_c_family_replays_original_raw_identity() {
+        let work = json!({"id":"task","rootId":"root","title":"Task","status":"ready","created":1.0,"updated":2.0,"version":1});
+        let mut cases = vec![
+            ("plan-request:exact", plan()),
+            ("plan:agent:1", plan()),
+            ("work-create", work.clone()),
+            ("work-mutate", work.clone()),
+            ("work-claim", work.clone()),
+            ("work-submit", work.clone()),
+            ("work-accept", work),
+            ("default-gate", json!({"id":"agent","defaultGate":null})),
+            (
+                "rename",
+                json!({"id":"agent","name":"Original","request_id":"rename","status":"applied","_syncEntitiesAfter":42}),
+            ),
+            (
+                "concurrency",
+                json!({"id":"agent","concurrency":8,"agentMode":"multi","agentModeRevision":3,"maxAgents":12}),
+            ),
+            (
+                "annotation",
+                json!({"id":"annotation","agent":"agent","rootId":"root","path":"source.ts","line":3,"text":"Original","created":1.0}),
+            ),
+            (
+                "user:complaint",
+                json!({"id":"complaint","leadId":"root","status":"resolved","responses":[{"text":"Original"}]}),
+            ),
+            (
+                "queue:agent:exact",
+                json!({"status":"updated","revision":"original","capabilities":{"reorder":true,"receipts":true}}),
+            ),
+            (
+                "park-request:root:exact",
+                json!({"event":"ready","count":1,"woken":["agent"]}),
+            ),
+            ("sidebar-order:exact", json!({"revision":4,"groups":[]})),
+            (
+                "peer-team:exact",
+                json!({"id":"project","name":"Original","path":"/project"}),
+            ),
+            (
+                "project-delete:exact",
+                json!({"id":"project","request_id":"exact","outcome":"deleted","deletedAgentIds":["agent"],"deletedRoomIds":["room"]}),
+            ),
+            (
+                "input-message",
+                json!({"id":"input-message","status":"queued","waitingFor":["workspace"]}),
+            ),
+            (
+                "room-message",
+                json!({"id":"room-message","room":"room","author":"user","text":"Original","at":1.0,"deliveries":{},"status":"delivered"}),
+            ),
+            (
+                "location-applied",
+                json!({"requestId":"location-applied","outcome":"applied","value":{"serverId":"server","path":"/project","gitOrigin":null}}),
+            ),
+            (
+                "location-refused",
+                json!({"requestId":"location-refused","outcome":"not_applied","error":"Original refusal"}),
+            ),
+            (
+                "fetch",
+                json!({"requestId":"fetch","server":"server","branch":"branch","commit":"commit","bytes":12,"destination":"/project"}),
+            ),
+        ];
+        cases.push(("agent-room-message",json!({"id":"agent-room-message","room":"room","deliveries":{},"refused":{"blocked":"Original refusal"}})));
+        cases.push((
+            "lead-user-message",
+            json!({"id":"complaint","room":"user:agent","recipient":"user"}),
+        ));
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute_batch("CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT);INSERT INTO runtime_event_meta VALUES('input-message','{\"requestedDelivery\":\"current_turn\",\"delivery\":\"current_turn\"}');").expect("original user timing");
+        let user_signature =
+            crate::python_json(&json!({"agent":"agent","text":"Original","assets":[]}));
+        for (id, reply) in &cases {
+            if *id == "input-message" {
+                db.execute(
+                    "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+                    params![id, user_signature, reply.to_string()],
+                )
+                .expect("user message C");
+            } else {
+                insert(&db, id, reply.clone());
+            }
+        }
+        migrate(&mut db);
+        for (id, reply) in &cases {
+            let (signature, raw): (String, String) = db
+                .query_row(
+                    "SELECT signature,result FROM request_results WHERE id=?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap_or_else(|error| panic!("missing family {id}: {error}"));
+            assert_eq!(
+                signature,
+                if *id == "input-message" {
+                    user_signature.as_str()
+                } else {
+                    SIGNATURE
+                }
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&raw).expect("envelope")["reply"],
+                *reply,
+                "family {id}"
+            );
+        }
+        migrate(&mut db);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                .get::<_, i64>(0))
+                .expect("exact replies"),
+            cases.len() as i64
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                .get::<_, i64>(0))
+                .expect("all C sources moved"),
+            0
+        );
+    }
+
+    #[test]
+    fn receipts_requests_missing_or_wrong_dictionary_shapes_are_never_imported() {
+        for (id, reply) in [
+            ("plan-request:bad", json!({})),
+            (
+                "queue:agent:bad",
+                json!({"status":"updated","revision":"r","capabilities":[]}),
+            ),
+            ("user:bad", json!({"id":4})),
+            (
+                "park-request:bad",
+                json!({"event":"ready","count":1,"woken":{}}),
+            ),
+            ("peer-team:bad", json!({"id":"project","name":{}})),
+            ("sidebar-order:bad", json!({"revision":1,"groups":{}})),
+            (
+                "project-delete:bad",
+                json!({"id":"project","outcome":"deleted","deletedAgentIds":{},"deletedRoomIds":[]}),
+            ),
+        ] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            insert(&db, id, reply);
+            let tx = db.transaction().expect("transaction");
+            let checkpoint =
+                MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
+            assert!(
+                matches!(Family.move_batch(&tx,SOURCE,&checkpoint),Err(ReceiptMigrationError::Unclassifiable{table,key,..}) if table==SOURCE && key==id)
+            );
+            tx.rollback().expect("source preserved");
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("no invented reply"),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn receipts_requests_user_timing_is_proven_or_completed_reply_expires() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute_batch("CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_events(id TEXT PRIMARY KEY,status TEXT);").expect("event owners");
+        let signature = crate::python_json(&json!({"agent":"agent","text":"Original","assets":[]}));
+        let lost = "0000000f-4240-7000-8000-000000000000";
+        for (id, meta) in [
+            (
+                "known",
+                json!({"delivery":"current_turn","requestedDelivery":"next_turn","sendNow":true}),
+            ),
+            (
+                "unpromoted",
+                json!({"delivery":"after_turn","sendNow":false}),
+            ),
+            (lost, json!({"delivery":"current_turn","sendNow":true})),
+        ] {
+            let reply = json!({"id":id,"status":"queued"});
+            db.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+                params![id, signature, reply.to_string()],
+            )
+            .expect("C reply");
+            db.execute(
+                "INSERT INTO runtime_event_meta VALUES(?1,?2)",
+                params![id, meta.to_string()],
+            )
+            .expect("timing proof");
+            db.execute("INSERT INTO runtime_events VALUES(?1,'pending')", [id])
+                .expect("pending delivery");
+        }
+        migrate(&mut db);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                .get::<_, i64>(0))
+                .expect("reconstructable replies"),
+            2
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM runtime_events WHERE status='pending'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .expect("pending effects retained"),
+            3
+        );
+        for id in ["known", "unpromoted"] {
+            let raw: String = db
+                .query_row(
+                    "SELECT record FROM runtime_event_meta WHERE id=?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .expect("meta");
+            let meta: Value = serde_json::from_str(&raw).expect("meta JSON");
+            assert_eq!(meta["requestedDelivery"], "next_turn");
+        }
+        let tx = db.transaction().expect("transaction");
+        assert_eq!(
+            MigrationCheckpoint::load(&tx, ID, DELETED_USER_MESSAGE_REPORT)
+                .expect("report")
+                .expect("count")
+                .cursor,
+            1
+        );
+        let identity = studio_runtime_schema::persistence::RequestIdentity::new(
+            "messages",
+            &["agent"],
+            lost,
+            &[],
+        )
+        .expect("old root");
+        assert!(matches!(
+            crate::request_results::RequestResults::admit(&tx, &identity, &signature, CUTOVER + 1),
+            Err(crate::request_results::RequestResultError::Identity(
+                studio_runtime_schema::persistence::RequestIdentityError::Expired { .. }
+            ))
+        ));
+        tx.commit().expect("read commit");
+        migrate(&mut db);
+        let tx = db.transaction().expect("transaction");
+        assert_eq!(
+            MigrationCheckpoint::load(&tx, ID, DELETED_USER_MESSAGE_REPORT)
+                .expect("report")
+                .expect("count")
+                .cursor,
+            1
+        );
+    }
+
+    #[test]
+    fn receipts_requests_invalid_original_timing_stops_with_metadata_identity() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute_batch("CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT);INSERT INTO runtime_event_meta VALUES('message','{\"requestedDelivery\":{}}');").expect("invalid timing");
+        let signature = crate::python_json(&json!({"agent":"agent","text":"Original","assets":[]}));
+        db.execute("INSERT INTO runtime_operation_receipts VALUES('message',?1,'{\"id\":\"message\",\"status\":\"queued\"}')",[&signature]).expect("C reply");
+        let tx = db.transaction().expect("transaction");
+        let checkpoint = MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
+        assert!(
+            matches!(Family.move_batch(&tx,SOURCE,&checkpoint),Err(ReceiptMigrationError::Unclassifiable{table,key,signature:stored}) if table=="runtime_event_meta" && key=="message" && stored==signature)
+        );
+        tx.rollback().expect("source preserved");
+    }
+
+    #[test]
+    fn receipts_requests_project_registration_and_pending_location_share_owner_contract() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        let project = json!({"id":"project","registration":{"server":"server","path":"/project","name":"Original"}});
+        db.execute(
+            "INSERT INTO runtime_projects VALUES('project',?1)",
+            [project.to_string()],
+        )
+        .expect("project");
+        insert(
+            &db,
+            "project-registration:project",
+            json!({"projectId":"project","requestId":"location","outcome":"unknown"}),
+        );
+        insert(
+            &db,
+            "location",
+            json!({"projectId":"project","requestId":"location","outcome":"unknown"}),
+        );
+        migrate(&mut db);
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_projects", [], |r| r.get(0))
+            .expect("owner");
+        let owner: Value = serde_json::from_str(&raw).expect("owner JSON");
+        assert_eq!(owner["registration"]["name"], "Original");
+        assert_eq!(owner["registration"]["signature"], SIGNATURE);
+        assert_eq!(owner["registration"]["requestId"], "location");
+        assert_eq!(owner["registration"]["status"], "unknown");
+        let token: AdmittedRequest =
+            serde_json::from_value(owner["locationIntents"]["location"]["request"].clone())
+                .expect("ProjectsRepository::location_request contract");
+        assert_eq!(token.id(), "location");
+        assert_eq!(token.signature(), SIGNATURE);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                .get::<_, i64>(0))
+                .expect("uncertainty stays on owner"),
+            0
+        );
+        migrate(&mut db);
     }
 }
