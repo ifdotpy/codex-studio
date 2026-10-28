@@ -654,7 +654,7 @@ pub async fn begin_accepted_archive_attempt(
                 .to_owned();
             let mut record = work.into_value();
             let mut intent = record["archiveIntent"].clone();
-            if intent.intent_id != format!("{task_id}:{result_id}") {
+            if intent["intentId"] != format!("{task_id}:{result_id}") {
                 return Err(Error::Conflict("Archive intent changed").into());
             }
             if !matches!(intent["status"].as_str(), Some("pending" | "retryable")) {
@@ -722,7 +722,7 @@ fn accepted_archive_preflight(
             json!({"status":"kept","reason":"The accepted task result is missing"}),
         ));
     };
-    if intent["intentId"] != format!("{task_id}:{result_id}")
+    if intent.intent_id != format!("{task_id}:{result_id}")
         || work["owner"] != owner_id
         || work["rootId"] != root_id
     {
