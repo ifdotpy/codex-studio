@@ -3,7 +3,7 @@
 use crate::CachedSql;
 use crate::schema::SchemaRequirements;
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::repositories::transcript::{TranscriptItem, TranscriptRepository, TranscriptStoreError};
@@ -55,11 +55,11 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 
 impl NotificationDispatchRepository {
     /// The input event owns publication identity even after its replay body expires.
-    pub fn submission_owner<T: DeserializeOwned>(
+    pub fn submission_owner(
         tx: &Transaction<'_>,
         agent: &str,
         event: &str,
-    ) -> StoreResult<Option<T>> {
+    ) -> StoreResult<Option<Box<serde_json::value::RawValue>>> {
         if Self::user_event(tx, agent, event)?.is_none() {
             return Err(invalid_record("runtime_events", event));
         }
@@ -83,13 +83,9 @@ impl NotificationDispatchRepository {
             let metadata: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
                 serde_json::from_str(&raw)
                     .map_err(|_| invalid_record("runtime_event_meta", event))?;
-            metadata
-                .get("providerSubmission")
-                .map(|owner| {
-                    serde_json::from_str(owner.get())
-                        .map_err(|_| invalid_record("runtime_event_meta", event))
-                })
-                .transpose()
+            Ok(metadata
+                .into_iter()
+                .find_map(|(key, owner)| (key == "providerSubmission").then_some(owner)))
         })
         .transpose()
         .map(Option::flatten)

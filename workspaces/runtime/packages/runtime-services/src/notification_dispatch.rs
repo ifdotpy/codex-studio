@@ -3647,6 +3647,27 @@ mod tests {
             result
         };
         write(&mut connection, &first, true).expect("first start writes");
+        let metadata: String = connection
+            .query_row(
+                "SELECT record FROM runtime_event_meta WHERE id='e1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("metadata");
+        connection.execute(
+            "UPDATE runtime_event_meta SET record=json_set(record,'$.providerSubmission',json('null')) WHERE id='e1'", [],
+        ).expect("corrupt event owner");
+        assert_eq!(
+            write(&mut connection, &first, true)
+                .expect("attempt owner replays despite corrupt event owner"),
+            DispatchOutcome::Written
+        );
+        connection
+            .execute(
+                "UPDATE runtime_event_meta SET record=?1 WHERE id='e1'",
+                [&metadata],
+            )
+            .expect("restore metadata");
         let tx = connection.transaction().expect("conflict transaction");
         assert!(matches!(
             record_start_submission(&tx, "agent", "attempt", &retry),
@@ -3734,21 +3755,20 @@ mod tests {
     }
 
     #[test]
-    fn submission_owner_rejects_null_and_non_object_metadata() {
+    fn submission_owner_rejects_non_object_metadata() {
         let mut connection = database();
         connection.execute_batch(
             "INSERT INTO runtime_events VALUES('e1','agent','user','hello','dispatching',1,1,'turn',NULL);
              INSERT INTO runtime_event_meta VALUES('e1','{\"providerSubmission\":null}');",
         ).expect("event creates");
         let tx = connection.transaction().expect("transaction");
-        for metadata in [r#"{"providerSubmission":null}"#, "[]", "{}"] {
+        for metadata in ["[]", "{}"] {
             tx.execute(
                 "UPDATE runtime_event_meta SET record=?1 WHERE id='e1'",
                 [metadata],
             )
             .expect("metadata updates");
-            let owner =
-                NotificationDispatchRepository::submission_owner::<String>(&tx, "agent", "e1");
+            let owner = NotificationDispatchRepository::submission_owner(&tx, "agent", "e1");
             if metadata == "{}" {
                 assert!(owner.expect("absent owner is valid").is_none());
             } else {
