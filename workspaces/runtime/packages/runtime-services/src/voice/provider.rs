@@ -2792,6 +2792,15 @@ mod tests {
         let provider = Arc::new(ScriptedProvider {
             calls: Mutex::new(vec![]),
         });
+        crate::account_worker::store::attach_provider_stream_for_test(
+            &store,
+            "default",
+            None,
+            1,
+            "scripted-connection",
+        )
+        .await
+        .expect("attach provider");
         let replay = start_admitted(
             Arc::clone(&store),
             Some(provider.clone()),
