@@ -20,10 +20,14 @@ pub async fn execute(
     guard: Option<TransactionGuard>,
 ) -> Result<Value, ManagementError> {
     let action_for_transaction = action.clone();
-    let mut result = store.transaction_with_error(move |transaction| {
-        if let Some(guard) = guard { guard(transaction)?; }
-        execute_decision(transaction, &action_for_transaction, now, None)
-    }).await?;
+    let mut result = store
+        .transaction_with_error(move |transaction| {
+            if let Some(guard) = guard {
+                guard(transaction)?;
+            }
+            execute_decision(transaction, &action_for_transaction, now, None)
+        })
+        .await?;
     if matches!(action, Action::Delete { .. }) {
         crate::workspace_cleanup_runtime::reconcile_pending_cleanup(std::sync::Arc::clone(&store))
             .await

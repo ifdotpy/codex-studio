@@ -629,22 +629,33 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
         "legacy uncertain writes retain their existing no-resend policy"
     );
     let scoped = studio_runtime_store::multi_server_delivery::remote_operation_key(
-        "server-outbox", &["peer"], "legacy", &["add_location"],
+        "server-outbox",
+        &["peer"],
+        "legacy",
+        &["add_location"],
     );
     let token_json = format!(
         "{{\"id\":{},\"signature\":\"{}\",\"created\":{}}}",
-        serde_json::to_string(&scoped).expect("scoped id"), saved_fingerprint,
+        serde_json::to_string(&scoped).expect("scoped id"),
+        saved_fingerprint,
         chrono::Utc::now().timestamp_millis(),
     );
     let token: studio_runtime_store::request_results::AdmittedRequest =
         serde_json::from_str(&token_json).expect("legacy admission");
     let saved = studio_runtime_store::multi_server_delivery::SavedRemoteReply {
-        principal: None, server: Some("peer".into()), actor: None, body: None,
+        principal: None,
+        server: Some("peer".into()),
+        actor: None,
+        body: None,
         response: studio_runtime_store::multi_server_delivery::RemoteReply {
             request_id: "legacy".into(),
             outcome: studio_runtime_schema::persistence::RemoteOutcome::Applied,
-            value: Some(serde_json::value::RawValue::from_string("{\"retained\":true}".into()).expect("reply")),
-            error: None, waiting_for: None,
+            value: Some(
+                serde_json::value::RawValue::from_string("{\"retained\":true}".into())
+                    .expect("reply"),
+            ),
+            error: None,
+            waiting_for: None,
         },
     };
     store

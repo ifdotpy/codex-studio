@@ -867,7 +867,13 @@ async fn incremental_lifecycle_projection_matches_full_rebuild() {
         // Archive and restore also settle workspace cleanup; stop and delete
         // run the production effect adapter, which releases deleted work.
         let result = if matches!(action, Action::Archive { .. } | Action::Restore { .. }) {
-            execute(std::sync::Arc::clone(&store), &action, SYNTHETIC_NOW_SECS, None).await
+            execute(
+                std::sync::Arc::clone(&store),
+                &action,
+                SYNTHETIC_NOW_SECS,
+                None,
+            )
+            .await
         } else {
             agent_lifecycle_runtime::execute(
                 std::sync::Arc::clone(&store),
