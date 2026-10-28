@@ -766,6 +766,23 @@ pub async fn execute_provider_prepared(
     preparation: &impl Preparation,
 ) -> Result<Value> {
     let replay_request = request.clone();
+    let final_reply = store
+        .read_async("runtime-services/native_actions", move |tx| {
+            if let Some((signature, reply)) =
+                saved_reply(tx, "native-action", &replay_request.request_id)?
+            {
+                if signature != replay_request.signature()? {
+                    return Err(NativeError::Conflict);
+                }
+                return Ok(Some(reply));
+            }
+            Ok(None)
+        })
+        .await?;
+    if let Some(reply) = final_reply {
+        return Ok(reply);
+    }
+    let replay_request = request.clone();
     let existing = store
         .read_async("runtime-services/native_actions", move |tx| {
             replay(tx, &replay_request)
@@ -898,6 +915,12 @@ pub async fn execute_provider_prepared(
 /// Return a previously settled action receipt before an HTTP caller applies
 /// readiness preflights that may no longer hold after the original action.
 pub fn replay_if_settled(tx: &Transaction<'_>, request: &Request) -> Result<Option<Value>> {
+    if let Some((signature, reply)) = saved_reply(tx, "native-action", &request.request_id)? {
+        if signature != request.signature()? {
+            return Err(NativeError::Conflict);
+        }
+        return Ok(Some(reply));
+    }
     let existing = replay(tx, request)?;
     Ok(existing
         .as_ref()
