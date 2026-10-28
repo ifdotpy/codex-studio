@@ -7,7 +7,7 @@ use crate::receipt_migration_contract::{
 };
 use crate::request_results::{AdmittedRequest, ResultEnvelope};
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_schema::persistence::{
     MigrationStatus, MonitorInputStatus, NativeActionAdmissionStatus, OutboxKind, OutboxStatus,
@@ -719,6 +719,17 @@ fn agent_owners(
     let invalid = || unclassifiable(table, &row.id, &row.signature);
     if !value.is_object() {
         return Err(invalid());
+    }
+    if let Some(attempt) = value
+        .get_mut("startAttempt")
+        .and_then(|value| value.as_object_mut())
+        && let Some(action) = attempt.get("action")
+    {
+        if !crate::truthy(Some(action)) {
+            attempt.remove("action");
+        } else {
+            crate::StartAttemptAction::deserialize(action).map_err(|_| invalid())?;
+        }
     }
     if value["startAttempt"]["actionRequestId"].is_string()
         && value["startAttempt"]["rootRequestId"].is_null()
@@ -1681,6 +1692,63 @@ mod tests {
         assert_eq!(input.payload["receipt"]["operation"], owner["operation"]);
         assert_eq!(owner["streamQueue"][0]["operation"], owner["operation"]);
         assert_eq!(owner["operation"]["providerGeneration"], 1);
+    }
+    #[test]
+    fn receipts_actions_legacy_falsy_action_normalizes_and_other_values_refuse() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        let tx = db.transaction().expect("transaction");
+        let row = SourceReceipt {
+            rowid: 1,
+            id: "agent".into(),
+            signature: "owner".into(),
+            result: String::new(),
+        };
+        for action in [
+            json!(null),
+            json!(false),
+            json!(0),
+            json!(0.0),
+            json!(""),
+            json!([]),
+            json!({}),
+        ] {
+            let owner = agent_owners(
+                &tx,
+                &row,
+                json!({"id":"agent","epoch":1,"startAttempt":{"action":action}}),
+                1000,
+            )
+            .expect("legacy falsy");
+            assert!(owner["startAttempt"].get("action").is_none());
+        }
+        for action in ["compact", "review", "capacity", "safety"] {
+            let owner = agent_owners(
+                &tx,
+                &row,
+                json!({"id":"agent","epoch":1,"startAttempt":{"action":action}}),
+                1000,
+            )
+            .expect("known action");
+            assert_eq!(owner["startAttempt"]["action"], action);
+        }
+        for action in [
+            json!(true),
+            json!(1),
+            json!("other"),
+            json!([1]),
+            json!({"x":1}),
+        ] {
+            assert!(matches!(
+                agent_owners(
+                    &tx,
+                    &row,
+                    json!({"id":"agent","epoch":1,"startAttempt":{"action":action}}),
+                    1000
+                ),
+                Err(ReceiptMigrationError::Unclassifiable { .. })
+            ));
+        }
     }
     #[test]
     fn receipts_actions_completed_current_settings_do_not_require_a_retired_transport() {
