@@ -111,14 +111,10 @@ impl Outbox {
             .query_map(params![owner, id, kind], Self::decode)?
             .collect::<rusqlite::Result<_>>()
             .map_err(|error| match error {
-                rusqlite::Error::FromSqlConversionFailure(12, ty, source) => {
-                    match source.downcast::<serde_json::Error>() {
-                        Ok(error) => OutboxError::Json(*error),
-                        Err(source) => OutboxError::Sql(rusqlite::Error::FromSqlConversionFailure(
-                            12, ty, source,
-                        )),
-                    }
-                }
+                rusqlite::Error::FromSqlConversionFailure(_, _, source)
+                    if source.is::<serde_json::Error>() => OutboxError::Json(
+                        *source.downcast::<serde_json::Error>().expect("checked error type"),
+                    ),
                 error => OutboxError::Sql(error),
             })
     }
