@@ -590,33 +590,31 @@ impl RetainedMonitorPort {
         })
     }
 
-    fn request<'a>(
-        &'a self,
-        operation: &'a Operation,
+    async fn request(
+        &self,
+        operation: &Operation,
         request_operation: String,
         method: Method,
         params: Value,
         deadline: Instant,
         actor: bool,
-    ) -> futures_util::future::BoxFuture<'a, Result<SessionReceipt, AccountSessionError>> {
-        Box::pin(async move {
-            let id = params["processId"].as_str().map(str::to_owned);
-            provider_request(
-                MonitorRequestOwner {
-                    session: self.session.as_ref(),
-                    store: &self.store,
-                    operation,
-                    id: id.as_deref(),
-                    probe_generation: None,
-                    actor,
-                },
-                request_operation,
-                method,
-                params,
-                deadline,
-            )
-            .await
-        })
+    ) -> Result<SessionReceipt, AccountSessionError> {
+        let id = params["processId"].as_str().map(str::to_owned);
+        provider_request(
+            MonitorRequestOwner {
+                session: self.session.as_ref(),
+                store: &self.store,
+                operation,
+                id: id.as_deref(),
+                probe_generation: None,
+                actor,
+            },
+            request_operation,
+            method,
+            params,
+            deadline,
+        )
+        .await
     }
 
     async fn dispatch_monitor_start(&self, id: &str, now: f64) -> Result<(), MonitorError> {
