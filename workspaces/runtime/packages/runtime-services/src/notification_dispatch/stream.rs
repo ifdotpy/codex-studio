@@ -1227,8 +1227,10 @@ mod tests {
         };
         let mut vm_key = host_key.clone();
         vm_key.agent_id = "vm".into();
-        let mut streams = NotificationStreamBuffer::default();
-        streams.publication_sequence = 17;
+        let mut streams = NotificationStreamBuffer {
+            publication_sequence: 17,
+            ..NotificationStreamBuffer::default()
+        };
         assert!(matches!(
             streams.enqueue_delta(host_key.clone(), "host", &Value::Null),
             EnqueueResult::Buffered
