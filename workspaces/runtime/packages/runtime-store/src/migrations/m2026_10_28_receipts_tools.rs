@@ -565,8 +565,6 @@ fn save_result(
     if !studio_runtime_schema::validate("PersistedToolResult", &result).unwrap_or(false) {
         return Err(unclassifiable(source, &row.id, &row.signature));
     }
-    let result = crate::ToolResultRecord::from_value(result)
-        .map_err(|_| unclassifiable(source, &row.id, &row.signature))?;
     import_result(
         tx,
         &row.id,
