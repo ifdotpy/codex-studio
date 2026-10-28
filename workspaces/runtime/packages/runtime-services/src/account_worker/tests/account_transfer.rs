@@ -248,7 +248,7 @@ impl AccountSessionPort for RefusingReads {
 async fn lazy_member_moves_its_history_before_its_input_is_claimed() {
     let state = State::new().await;
     edit_agent(&state, |row| {
-        row.extra.insert("accountKey".into(), json!("source"));
+        row.account_key = "source".to_string();
         row.extra
             .insert("executionSettingsAccountKey".into(), json!("source"));
     })
@@ -325,7 +325,7 @@ async fn first_thread_preparation_cannot_skip_a_lazy_transfer() {
     for method in [Method::ThreadStart, Method::ThreadResume] {
         let state = State::new().await;
         edit_agent(&state, |row| {
-            row.extra.insert("accountKey".into(), json!("source"));
+            row.account_key = "source".to_string();
         })
         .await;
         request_transfer(&state, "default").await;

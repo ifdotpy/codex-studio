@@ -691,11 +691,7 @@ fn safety_retry_active(agent: &studio_runtime_store::AgentRecord) -> bool {
                 && retry.get("epoch").and_then(Value::as_i64) == Some(agent.epoch)
                 && retry.get("accountKey").and_then(Value::as_str)
                     == Some(
-                        agent
-                            .extra
-                            .get("accountKey")
-                            .and_then(Value::as_str)
-                            .unwrap_or("default"),
+                        agent.account_key.as_str(),
                     )
         })
 }
@@ -704,11 +700,7 @@ fn require_not_excluded(
     root: &studio_runtime_store::AgentRecord,
     agent: &studio_runtime_store::AgentRecord,
 ) -> Result<(), CoordinationError> {
-    let account = agent
-        .extra
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
+    let account = agent.account_key.as_str();
     if root
         .extra
         .get("excludedAccountKeys")
@@ -725,7 +717,7 @@ fn require_not_excluded(
 fn assert_native_thread_open(
     agent: &studio_runtime_store::AgentRecord,
 ) -> Result<(), CoordinationError> {
-    let thread = agent.extra.get("threadId").and_then(Value::as_str);
+    let thread = agent.thread_id.as_deref();
     let block = agent
         .extra
         .get("nativeThreadBlock")
@@ -749,7 +741,7 @@ fn assert_native_thread_open(
                 .get("nativeTurnError")
                 .and_then(Value::as_object)
                 .is_some_and(|previous| {
-                    previous.get("turnId") == agent.extra.get("turnId")
+                    previous.get("turnId").and_then(Value::as_str) == agent.turn_id.as_deref()
                         && previous
                             .get("error")
                             .is_some_and(is_misalignment_policy_violation)
@@ -1349,7 +1341,7 @@ mod tests {
         )
         .expect("lead lookup succeeds")
         .expect("lead exists");
-        lead.extra.insert("threadId".into(), json!("thread-1"));
+        lead.thread_id = Some("thread-1".to_string());
         studio_runtime_store::AgentRepository::put(&connection, &lead)
             .expect("managed thread persists");
         connection

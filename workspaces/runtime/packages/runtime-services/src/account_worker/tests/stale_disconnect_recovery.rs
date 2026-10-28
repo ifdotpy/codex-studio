@@ -151,9 +151,11 @@ async fn native_review_attempt_without_a_turn(shape: Shape) {
         row.in_flight = Some(false);
         row.auto_wake = Some(false);
 row.turn_epoch = Some(epoch);
+row.thread_id = Some("review-thread".to_string());
+row.turn_id = Some("review-turn".to_string());
 for (key, value) in [
-            ("threadId", json!("review-thread")),
-            ("turnId", json!("review-turn")),
+
+
             ("status", json!("interrupted")),
 
 

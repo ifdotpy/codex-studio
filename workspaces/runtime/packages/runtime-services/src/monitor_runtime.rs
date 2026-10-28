@@ -1573,11 +1573,7 @@ pub fn restart_in_transaction(
         uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, request_id.as_bytes()).to_string();
     let actor = event_write::checked_agent(tx, owner)?;
     if actor.epoch != epoch
-        || actor
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
+        || actor.account_key.as_str()
             != body["accountKey"]
     {
         return Err(MonitorError::Refused("The monitor owner changed"));

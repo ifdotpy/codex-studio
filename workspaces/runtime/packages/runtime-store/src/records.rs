@@ -235,6 +235,11 @@ pub enum AgentExecutionMode {
     Vm,
 }
 
+// Transitional for Value-based creation paths; remove when they supply accountKey.
+fn default_account_key() -> String {
+    crate::cost_aggregate::DEFAULT_ACCOUNT.to_owned()
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRecord {
@@ -250,6 +255,12 @@ pub struct AgentRecord {
     pub execution_mode: Option<AgentExecutionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_epoch: Option<i64>,
+    #[serde(default = "default_account_key")]
+    pub account_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_job: Option<StoredTitleJob>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -547,6 +558,9 @@ impl AgentRecord {
             auto_wake: None,
             execution_mode: None,
             turn_epoch: None,
+            account_key: default_account_key(),
+            thread_id: None,
+            turn_id: None,
             title_job: None,
             start_outcome_hold: None,
             fired_events: BTreeSet::new(),
@@ -657,6 +671,13 @@ impl AgentRecord {
         }
         if let Some(epoch) = self.turn_epoch {
             value["turnEpoch"] = Value::from(epoch);
+        }
+        value["accountKey"] = Value::String(self.account_key);
+        if let Some(thread) = self.thread_id {
+            value["threadId"] = Value::String(thread);
+        }
+        if let Some(turn) = self.turn_id {
+            value["turnId"] = Value::String(turn);
         }
         if let Some(job) = &self.title_job {
             value["titleJob"] = crate::projection_value(job);
@@ -1807,7 +1828,7 @@ mod tests {
         );
         assert_eq!(agent.clone().into_value(), agent.value());
 
-        let current = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","vmLaunch":{"identity":{"agentId":"agent","epoch":1,"handle":"handle","requestId":"request","launchFingerprint":"digest"},"signature":"signature","status":"submitted"},"credentialCopy":{"agentId":"agent","epoch":1,"accountKey":"account","provider":"codex","relativePath":"path","digest":"digest","requestId":"request","signature":"signature","status":"submitted"},"vmAuthBootstrap":{"agentId":"agent","epoch":1,"requestId":"request","rootRequestId":"root","admittedRequest":{"id":"token","signature":"signature","created":1},"fingerprint":"digest","state":"submitted"},"nativeRelease":{"scope":{"account":"account","connection":"connection","generation":2},"admittedRequest":{"id":"token","signature":"signature","created":1},"id":"release"}}"#;
+        let current = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","vmLaunch":{"identity":{"agentId":"agent","epoch":1,"handle":"handle","requestId":"request","launchFingerprint":"digest"},"signature":"signature","status":"submitted"},"credentialCopy":{"agentId":"agent","epoch":1,"accountKey":"account","provider":"codex","relativePath":"path","digest":"digest","requestId":"request","signature":"signature","status":"submitted"},"vmAuthBootstrap":{"agentId":"agent","epoch":1,"requestId":"request","rootRequestId":"root","admittedRequest":{"id":"token","signature":"signature","created":1},"fingerprint":"digest","state":"submitted"},"nativeRelease":{"scope":{"account":"account","connection":"connection","generation":2},"admittedRequest":{"id":"token","signature":"signature","created":1},"id":"release"}}"#;
         let agent: AgentRecord = serde_json::from_str(current).expect("current effect fields");
         let encoded = serde_json::to_string(&agent).expect("serialize current agent");
         assert_eq!(
@@ -1934,7 +1955,7 @@ mod tests {
         assert_eq!(
             projected,
             json!({
-                "id":"agent-1", "provider":"codex", "rootId":"root-1", "epoch":3, "status":"running",
+                "id":"agent-1", "provider":"codex", "rootId":"root-1", "epoch":3, "status":"running", "accountKey":"default",
                 "futureField":[{"nested":"retained"}]
             })
         );
@@ -1994,7 +2015,7 @@ mod tests {
     #[test]
     fn agent_round_trip_keeps_unknown_json_fields_and_number_kinds() {
         let value = json!({
-            "id":"agent-1", "provider":"codex", "rootId":"agent-1", "epoch":2, "status":"idle",
+            "id":"agent-1", "provider":"codex", "rootId":"agent-1", "epoch":2, "status":"idle", "accountKey":"default",
             "futureObject":{"number":1.5,"flag":true}, "futureInteger":9007199254740993_i64
         });
         let record = agent(value.clone());
@@ -2008,14 +2029,14 @@ mod tests {
     #[test]
     fn agent_round_trip_keeps_legacy_private_fields() {
         for private in [
-            json!({"accountKey":null,"threadId":null,"titleJob":{"legacy":true}}),
+            json!({"accountKey":"default","titleJob":{"legacy":true}}),
             json!({"startOutcomeHold":{"stage":"held","reason":"pending"}}),
             json!({"startOutcomeHold":{"stage":"account_settlement","cursor":null,"reason":"pending"}}),
             json!({"startOutcomeHold":{"stage":"held","operationId":"op","future":1}}),
             json!({"startOutcomeHold":{"stage":"recovery","epoch":2,"reason":"pending"}}),
             json!({"titleJob":{"requestId":"r","agentId":"agent","rootRequestId":"root","admittedRequest":{"id":"r","signature":"s","created":1},"status":"pending","future":true}}),
         ] {
-            let mut value = json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle"});
+            let mut value = json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default"});
             value
                 .as_object_mut()
                 .unwrap()
@@ -2128,7 +2149,7 @@ mod tests {
 
     #[test]
     fn unknown_agent_status_and_fields_survive_carrier_rewrite() {
-        let value = json!({"id":"agent-1","provider":"codex","rootId":"agent-1","epoch":4,
+        let value = json!({"id":"agent-1","provider":"codex","rootId":"agent-1","epoch":4,"accountKey":"default",
             "status":"future-agent-state","future":{"enabled":true,"count":9007199254740993_i64}});
         let record = agent(value.clone());
         assert_eq!(

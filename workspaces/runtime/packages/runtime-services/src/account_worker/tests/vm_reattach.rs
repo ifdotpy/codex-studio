@@ -788,10 +788,13 @@ async fn existing_actor(paused: bool) -> (State, Arc<ExistingGuest>) {
             record.in_flight = Some(true);
             record.auto_wake = Some(!paused);
 record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
+record.account_key = "default".to_string();
+record.thread_id = Some("fake-thread-0".to_string());
+record.turn_id = Some("vm-turn".to_string());
 for (key, value) in [
                 ("workspaceMode",json!("layr")),("layrReady",json!(true)),
-                ("provider",json!("claude")),("accountKey",json!("default")),("executionSettingsAccountKey",json!("default")),
-                ("cwd",json!("/home/studio/project")),("threadId",json!("fake-thread-0")),("turnId",json!("vm-turn")),
+                ("provider",json!("claude")),("executionSettingsAccountKey",json!("default")),
+                ("cwd",json!("/home/studio/project")),
 
                 ("startAttempt",json!({"id":"existing-vm-attempt","epoch":epoch,"accountKey":"default","submitted":true,"events":["annotation:input"],"threadId":"fake-thread-0","turnId":"vm-turn","connectionGeneration":1,"connectionId":"previous-backend","requestTicket":"original-native-start"})),
             ] { record.extra.insert(key.into(), value); }

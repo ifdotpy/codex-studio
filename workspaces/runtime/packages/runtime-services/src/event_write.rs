@@ -606,7 +606,7 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<(), 
     let status = match agent.status {
         AgentStatus::Running | AgentStatus::Starting => {
             agent.in_flight != Some(true)
-                && !truthy(agent.extra.get("turnId"))
+                && agent.turn_id.as_deref().is_none_or(str::is_empty)
                 && !truthy(agent.extra.get("startAttempt"))
         }
         AgentStatus::Approval => false,
@@ -782,6 +782,9 @@ mod tests {
         connection.execute_batch("DROP TABLE request_results; CREATE TABLE request_results(id TEXT PRIMARY KEY,signature TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'applied',ref_kind TEXT,ref_id TEXT,ref_rev INTEGER,result TEXT,created INTEGER NOT NULL); CREATE INDEX request_results_created ON request_results(created,id);").expect("reference receipt fixture");
         let agent = AgentRecord {
             in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
         auto_wake: None,
         execution_mode: None,
         turn_epoch: None,

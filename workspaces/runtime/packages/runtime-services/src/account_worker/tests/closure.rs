@@ -556,9 +556,7 @@ async fn competing_workers_transfer_claim_to_destination_session() {
                 .transaction_with(move |tx| {
                     let mut record =
                         AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
-                    record
-                        .extra
-                        .insert("accountKey".into(), json!("destination"));
+                    record.account_key = "destination".to_string();
                     AgentRepository::put(tx, &record)?;
                     Ok(())
                 })
@@ -1256,8 +1254,7 @@ async fn agent_preparations_run_concurrently() {
                 .transaction_with(move |tx| {
                     let mut row = AgentRepository::get(tx, &AgentId::from(a.as_str()))?.unwrap();
                     row.id = AgentId::from(neighbor.as_str());
-                    row.extra
-                        .insert("threadId".into(), json!("neighbor-thread"));
+                    row.thread_id = Some("neighbor-thread".to_string());
                     AgentRepository::put(tx, &row)?;
                     Ok(())
                 })

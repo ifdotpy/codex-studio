@@ -1183,7 +1183,7 @@ async fn an_unanswered_request_does_not_stop_events_or_new_work() {
                 .transaction(move |tx| {
                     let mut record =
                         AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
-                    record.extra.remove("threadId");
+                    record.thread_id = None;
                     AgentRepository::put(tx, &record)
                 })
                 .await?;

@@ -118,11 +118,42 @@ fn counter(row: &contract::SourceReceipt) -> Result<Counter> {
     Ok(value)
 }
 
+// Freeze the source-era fields and validation independently of AgentRecord.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceAgent {
+    id: crate::records::AgentId,
+    #[serde(rename = "rootId")]
+    _root_id: crate::records::AgentId,
+    epoch: i64,
+    #[serde(rename = "status")]
+    _status: crate::records::AgentStatus,
+    #[serde(rename = "titleJob")]
+    _title_job: Option<crate::records::StoredTitleJob>,
+    #[serde(rename = "startOutcomeHold")]
+    _start_outcome_hold: Option<crate::records::StoredStartOutcomeHold>,
+    #[serde(rename = "firedEvents", default)]
+    _fired_events: std::collections::BTreeSet<String>,
+    #[serde(rename = "nativeReviewThread")]
+    _native_review_thread: Option<crate::records::NativeReviewThread>,
+    #[serde(rename = "vmLaunch")]
+    _vm_launch: Option<crate::records::VmLaunch>,
+    #[serde(rename = "credentialCopy")]
+    _credential_copy: Option<crate::records::CredentialCopy>,
+    #[serde(rename = "vmAuthBootstrap")]
+    _vm_auth_bootstrap: Option<crate::records::VmAuthBootstrap>,
+    #[serde(rename = "nativeRelease")]
+    _native_release: Option<crate::records::NativeRelease>,
+    account_key: Option<serde_json::Value>,
+    thread_id: Option<serde_json::Value>,
+    turn_id: Option<serde_json::Value>,
+}
+
 // Source-era refusal hashes depended on the historical run selector.
 // Keep that frozen mapping here; runtime reads the persisted active execution pointer.
 fn source_submission_identity(
     connection: &rusqlite::Connection,
-    agent: &crate::AgentRecord,
+    agent: &SourceAgent,
 ) -> crate::StoreResult<Option<(String, Option<String>)>> {
     let table_exists: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_execution_runs')",
@@ -134,18 +165,12 @@ fn source_submission_identity(
     }
 
     let account = agent
-        .extra
-        .get("accountKey")
+        .account_key
+        .as_ref()
         .and_then(serde_json::Value::as_str)
         .unwrap_or("default");
-    let thread = agent
-        .extra
-        .get("threadId")
-        .and_then(serde_json::Value::as_str);
-    let turn = agent
-        .extra
-        .get("turnId")
-        .and_then(serde_json::Value::as_str);
+    let thread = agent.thread_id.as_ref().and_then(serde_json::Value::as_str);
+    let turn = agent.turn_id.as_ref().and_then(serde_json::Value::as_str);
     let row: Option<(String, String)> = if let Some(turn) = turn {
         let mut statement = connection.prepare_cached(
             "SELECT id, record FROM runtime_execution_runs \
@@ -226,7 +251,7 @@ fn move_counter(
     let Some(raw) = raw else {
         return Ok(budget.include(row.result.len()));
     };
-    let agent: crate::AgentRecord = serde_json::from_str(&raw).map_err(|_| invalid())?;
+    let agent: SourceAgent = serde_json::from_str(&raw).map_err(|_| invalid())?;
     if agent.id.0 != owner {
         return Err(invalid());
     }

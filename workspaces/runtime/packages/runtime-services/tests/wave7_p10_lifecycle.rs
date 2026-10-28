@@ -746,9 +746,7 @@ impl InterruptFixture {
                         }
                         let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
                         let needs_settlement = agent.in_flight == Some(true)
-                            || agent.extra.get("turnId").is_some_and(|turn| {
-                                turn.as_str().is_some_and(|value| !value.is_empty())
-                            })
+                            || agent.turn_id.as_deref().is_some_and(|turn| !turn.is_empty())
                             || attempt.get("activeAtReservation").and_then(Value::as_bool)
                                 == Some(true)
                             || agent
@@ -762,7 +760,7 @@ impl InterruptFixture {
                             continue;
                         }
                         agent.in_flight = Some(false);
-                        agent.extra.insert("turnId".to_owned(), Value::Null);
+                        agent.turn_id = None;
                         agent.extra.insert("activity".to_owned(), Value::Null);
                         agent.extra.insert("activeTools".to_owned(), json!([]));
                         if let Some(attempt) = agent.extra.get_mut("startAttempt")

@@ -77,11 +77,7 @@ pub fn vm_actor_matches(
             studio_runtime_providers::ProviderKind::of_field(record.extra.get("provider"))
                 .is_ok_and(|kind| kind.key() == provider)
         })
-        && record
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
+        && record.account_key.as_str()
             == account_key
         && !record
             .extra
@@ -1586,11 +1582,7 @@ async fn with_bootstrap<T: Send + 'static>(
 fn bootstrap_agent(tx: &Transaction<'_>, agent_id: &str, epoch: i64) -> Result<AgentRecord> {
     let agent =
         AgentRepository::get(tx, &AgentId::from(agent_id))?.ok_or(GuestProviderError::Refused)?;
-    let account = agent
-        .extra
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
+    let account = agent.account_key.as_str();
     if !vm_actor_matches(tx, agent_id, epoch, account, None)? {
         return Err(GuestProviderError::Refused);
     }

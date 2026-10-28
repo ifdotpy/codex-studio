@@ -965,11 +965,7 @@ pub(super) fn hold_invalid_agent_record_in(
     Ok(())
 }
 fn account_key(agent: &studio_runtime_store::AgentRecord) -> &str {
-    agent
-        .extra
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default")
+    agent.account_key.as_str()
 }
 
 pub(super) async fn submitted(
@@ -2805,11 +2801,7 @@ pub(super) async fn stop(
         let Some(record) = AgentRepository::get(tx, &AgentId::from(agent.as_str()))? else {
             return Ok(None);
         };
-        if record
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
+        if record.account_key.as_str()
             != account.as_str()
         {
             return Ok(None);
@@ -2823,7 +2815,7 @@ pub(super) async fn stop(
             .as_str()
             .or_else(|| attempt["observedTurnId"].as_str());
         let effect = turn
-            .zip(agent.extra.get("threadId").unwrap_or(&Value::Null).as_str())
+            .zip(agent.thread_id.as_deref())
             .map(|(turn, thread)| Effect::Interrupt {
                 agent: agent.id.0.clone(),
                 thread: thread.into(),
@@ -2862,12 +2854,7 @@ pub(super) fn interrupt_intent(
                     agent_id: agent.into(),
                     epoch,
                     attempt_id: id.into(),
-                    account_key: a
-                        .extra
-                        .get("accountKey")
-                        .unwrap_or(&Value::Null)
-                        .as_str()
-                        .unwrap_or("default")
+                    account_key: a.account_key.as_str()
                         .into(),
                     provider,
                     thread_id: Some(thread.into()),

@@ -329,7 +329,7 @@ async fn unwritten_thread_start_continues_after_a_message() {
                 .transaction(move |tx| {
                     let mut agent =
                         AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
-                    agent.extra.remove("threadId");
+                    agent.thread_id = None;
                     AgentRepository::put(tx, &agent)?;
                     Ok(())
                 })

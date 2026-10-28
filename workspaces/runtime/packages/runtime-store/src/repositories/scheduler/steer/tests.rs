@@ -214,9 +214,6 @@ fn running() -> AgentRecord {
     let mut extra = BTreeMap::new();
     for (key, value) in [
         ("provider", json!("claude")),
-        ("accountKey", json!("acct")),
-        ("threadId", json!("thread")),
-        ("turnId", json!(TURN)),
         (
             "startAttempt",
             json!({"id":"start","epoch":4,"submitted":true,"turnId":TURN,"threadId":"thread",
@@ -227,6 +224,9 @@ fn running() -> AgentRecord {
     }
     AgentRecord {
         in_flight: Some(true),
+        account_key: "acct".into(),
+        thread_id: Some("thread".into()),
+        turn_id: Some(TURN.into()),
         auto_wake: Some(true),
         turn_epoch: Some(4),
         id: AgentId::from(AGENT),
@@ -319,7 +319,7 @@ fn terminal(connection: &mut Connection, unapplied: &[&str]) {
 
 fn retarget(connection: &Connection, turn: &str) {
     let mut record = agent(connection);
-    record.extra.insert("turnId".into(), json!(turn));
+    record.turn_id = Some(turn.to_string());
     record.extra.get_mut("startAttempt").expect("attempt")["turnId"] = json!(turn);
     put_agent(connection, record);
 }
@@ -652,7 +652,7 @@ fn definite_rejection_after_unconfirmed_requeues_once() {
     let mut idle = agent(&connection);
     idle.status = AgentStatus::Completed;
     idle.in_flight = Some(false);
-    idle.extra.insert("turnId".into(), Value::Null);
+    idle.turn_id = None;
     put_agent(&connection, idle);
     assert!(
         with(&mut connection, reject),

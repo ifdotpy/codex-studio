@@ -317,9 +317,7 @@ impl SchedulerRepository {
             || agent.in_flight != Some(false)
             || !continuation_allowed(agent)
             || agent.start_outcome_hold.is_some()
-            || ["turnId"]
-                .iter()
-                .any(|key| agent.extra.get(*key).is_some_and(|value| !value.is_null()))
+            || agent.turn_id.is_some()
             || [
                 "capacityRetry",
                 "usageResume",
@@ -341,19 +339,12 @@ impl SchedulerRepository {
         {
             return Ok(false);
         }
-        let Some(thread) = agent
-            .extra
-            .get("threadId")
-            .and_then(Value::as_str)
+        let Some(thread) = agent.thread_id.as_deref()
             .filter(|value| !value.is_empty())
         else {
             return Ok(false);
         };
-        let account = agent
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default");
+        let account = agent.account_key.as_str();
         let Some(run) = ExecutionHistoryRepository::current_run(tx, agent)? else {
             return Ok(false);
         };
@@ -1057,7 +1048,7 @@ impl SchedulerRepository {
         if !preparation && let Some(reason) = unsupported {
             agent.status = AgentStatus::Waiting;
             agent.in_flight = Some(false);
-            agent.extra.insert("turnId".to_owned(), Value::Null);
+            agent.turn_id = None;
             agent
                 .extra
                 .insert("nativeFailureHold".to_owned(), Value::Bool(true));
@@ -1113,7 +1104,7 @@ impl SchedulerRepository {
             .extra
             .remove(studio_runtime_schema::agent_progress::START_WAIT_FIELD);
         agent.in_flight = Some(true);
-        agent.extra.insert("turnId".to_owned(), Value::Null);
+        agent.turn_id = None;
         agent.turn_epoch = Some(epoch);
         agent.extra.insert(
             "startAttempt".to_owned(),
@@ -1121,7 +1112,7 @@ impl SchedulerRepository {
                 "id": attempt_id,
                 "epoch": epoch,
                 "activeAtReservation": false,
-                "accountKey":agent.extra.get("accountKey").cloned().unwrap_or(json!("default")),
+                "accountKey":Value::String(agent.account_key.clone()),
                 "events": event_ids,
                 "submitted": false,
                 "created": attempt_created
@@ -1328,19 +1319,12 @@ pub(super) fn replay_claim(
             && preparation.input["agent"] == agent.id.0
             && preparation.input["epoch"] == epoch
             && preparation.input["account"]
-                == agent
-                    .extra
-                    .get("accountKey")
-                    .cloned()
-                    .unwrap_or(json!("default"))
+                == Value::String(agent.account_key.clone())
             && preparation.input["previousThread"]
-                == original
-                    .extra
-                    .get("threadId")
-                    .cloned()
+                == original.thread_id.clone().map(Value::String)
                     .unwrap_or(Value::Null)
             && preparation.input["thread"]
-                == agent.extra.get("threadId").cloned().unwrap_or(Value::Null)
+                == agent.thread_id.clone().map(Value::String).unwrap_or(Value::Null)
     });
     if original.id != agent.id
         || original.epoch != epoch
@@ -1490,7 +1474,7 @@ impl SchedulerRepository {
                 agent,
                 record.status.as_str(),
                 record.in_flight == Some(true),
-                record.extra.get("turnId").and_then(Value::as_str),
+                record.turn_id.as_deref(),
             )?;
         }
         Ok(())

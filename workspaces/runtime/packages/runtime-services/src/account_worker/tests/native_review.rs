@@ -28,9 +28,11 @@ async fn queue_review_child(state: &State) {
                 row.extra.insert("parentId".into(), json!("review-lead"));
                 row.in_flight = Some(false);
 row.auto_wake = Some(true);
+row.thread_id = None;
+row.turn_id = None;
 for (key, value) in [
-                    ("threadId", Value::Null),
-                    ("turnId", Value::Null),
+
+
                     ("status", json!("queued")),
 
 
@@ -197,9 +199,11 @@ async fn an_unbound_interrupted_review_completion_settles_instead_of_holding_the
                 row.in_flight = Some(false);
 row.auto_wake = Some(false);
 row.turn_epoch = Some(epoch);
+row.thread_id = Some("review-thread".to_string());
+row.turn_id = Some("review-turn".to_string());
 for (key, value) in [
-                    ("threadId", json!("review-thread")),
-                    ("turnId", json!("review-turn")),
+
+
                     ("status", json!("interrupted")),
 
 

@@ -2432,8 +2432,8 @@ fn continuation_work_pending(agent: &AgentRecord) -> bool {
         return false;
     }
     let default_account = json!("default");
-    let account = agent.extra.get("accountKey").unwrap_or(&default_account);
-    let thread = agent.extra.get("threadId").and_then(Value::as_str);
+    let account = Value::String(agent.account_key.clone());
+    let thread = agent.thread_id.as_deref();
     let epoch = agent.epoch;
     let last_turn = agent.extra.get("lastCompletedTurn").and_then(Value::as_str);
 
@@ -2443,7 +2443,7 @@ fn continuation_work_pending(agent: &AgentRecord) -> bool {
             .get("status")
             .and_then(Value::as_str)
             .is_some_and(|status| statuses.contains(&status))
-            && record_account == account
+            && record_account == &account
             && record.get("threadId").and_then(Value::as_str) == thread
             && thread.is_some_and(|thread| !thread.is_empty())
             && record.get("epoch").and_then(Value::as_i64) == Some(epoch)
@@ -2460,7 +2460,7 @@ fn continuation_work_pending(agent: &AgentRecord) -> bool {
             && restart
                 .get("autoWake")
                 .is_some_and(|value| event_write::truthy(Some(value)))
-            && restart.get("accountKey").unwrap_or(&default_account) == account
+            && restart.get("accountKey").unwrap_or(&default_account) == &account
             && restart.get("threadId").and_then(Value::as_str) == thread
             && thread.is_some_and(|thread| !thread.is_empty())
             && restart.get("epoch").and_then(Value::as_i64) == Some(epoch))

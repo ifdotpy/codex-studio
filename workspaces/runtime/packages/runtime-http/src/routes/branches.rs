@@ -64,11 +64,7 @@ async fn branch(
             let agent = AgentRepository::get(db, &AgentId::from(agent_id.as_str()))?
                 .ok_or_else(|| bad_request("Unknown managed agent"))?;
             Ok::<_, ApiError>(
-                agent
-                    .extra
-                    .get("accountKey")
-                    .and_then(Value::as_str)
-                    .unwrap_or("default")
+                agent.account_key.as_str()
                     .to_owned(),
             )
         })
@@ -920,7 +916,7 @@ async fn copy_branch_history(
         child.extra.insert("sandbox".into(), provider.get("sandbox").cloned().or_else(|| current.extra.get("sandbox").cloned()).unwrap_or(Value::Null));
         child.extra.insert("approvalPolicy".into(), provider.get("approvalPolicy").cloned().or_else(|| current.extra.get("approvalPolicy").cloned()).unwrap_or(Value::Null));
         child.extra.insert("profileId".into(), provider.get("activePermissionProfile").cloned().or_else(|| current.extra.get("profileId").cloned()).unwrap_or(Value::Null));
-        child.extra.insert("threadId".into(),provider["thread"]["id"].clone());
+        child.thread_id = match &provider["thread"]["id"] { Value::Null => None, Value::String(id) => Some(id.clone()), _ => return Err(studio_runtime_store::StoreError::SchemaMismatch("invalid branch thread".into())) };
         child.extra.insert("forkedFrom".into(),json!(source)); child.extra.insert("sourceMessage".into(),json!(selected.id));
         child.extra.insert("status".into(),json!("idle")); child.auto_wake = Some(true); child.extra.insert("needsTitle".into(),json!(false));
         child.extra.remove("quickCreate"); child.extra.remove("quickCreateRequest");

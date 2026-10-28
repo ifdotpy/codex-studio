@@ -595,7 +595,7 @@ async fn prove_ready_for_new_turn(
         .expect("Python-written seed");
     seed.id = AgentId::from("replacement-health");
     seed.root_id = seed.id.clone();
-    seed.extra.insert("threadId".into(), json!("health-thread"));
+    seed.thread_id = Some("health-thread".to_string());
     let epoch = seed.epoch;
     state
         .bridge

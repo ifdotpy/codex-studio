@@ -484,7 +484,7 @@ async fn mixed_inputs(state: &State) {
             sender.status = studio_runtime_store::AgentStatus::Completed;
             sender.extra.insert("parentId".into(), json!(agent));
             sender.extra.insert("isLead".into(), json!(false));
-            sender.extra.insert("threadId".into(), json!("child-thread"));
+            sender.thread_id = Some("child-thread".to_string());
             AgentRepository::put(tx, &sender)?;
             tx.execute("INSERT INTO runtime_rooms(id,record) VALUES('mixed-room',?1)",
                 [json!({"id":"mixed-room","kind":"private","members":[agent,"mixed-child"]}).to_string()])?;
@@ -1192,9 +1192,7 @@ async fn running_turn_with_followup(
                         outsider.id = AgentId::from(sender);
                         outsider.root_id = AgentId::from(sender);
                         outsider.status = studio_runtime_store::AgentStatus::Completed;
-                        outsider
-                            .extra
-                            .insert("threadId".into(), json!("outsider-thread"));
+                        outsider.thread_id = Some("outsider-thread".to_string());
                         outsider.in_flight = Some(false);
                         AgentRepository::put(tx, &outsider)?;
                     }
@@ -1462,9 +1460,9 @@ async fn private_answer_waits_while_shared_turn_holds_floor() {
     state.bridge.run(move |store| async move {
         store.transaction_with(move |tx| {
             let record = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
-            let turn = record.extra["turnId"].as_str().unwrap();
-            let thread = record.extra["threadId"].as_str().unwrap();
-            let account = record.extra["accountKey"].as_str().unwrap_or("default");
+            let turn = record.turn_id.as_deref().unwrap();
+            let thread = record.thread_id.as_deref().unwrap();
+            let account = record.account_key.as_str();
             tx.execute("UPDATE runtime_events SET kind='followup' WHERE id=?1", [INPUT])?;
             tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id) VALUES('radio-input',?1,'radio_turn','shared','delivered',1,?2,?3)", rusqlite::params![agent,epoch,turn])?;
             let room = json!({"id":"radio:test","kind":"private","members":[agent,"peer"],"radio":{"teamId":"test","revision":1,"status":"speaking","speaker":agent,"next":[],"active":{"eventId":"radio-input","agentId":agent,"epoch":epoch,"threadId":thread,"identity":[null,1,0],"through":1},"error":null,"seen":{}}});

@@ -182,7 +182,7 @@ fn apply_read_state(
         .ok_or(EventWriteError::InvalidRequest(
             "Supply the current read state revision",
         ))?;
-    if agent.extra.get("threadId").and_then(Value::as_str) != Some(thread)
+    if agent.thread_id.as_deref() != Some(thread)
         || agent.extra.get("lastCompletedTurn").and_then(Value::as_str) != Some(turn)
         || agent
             .extra

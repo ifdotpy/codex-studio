@@ -37,10 +37,7 @@ async fn clone_agent(state: &State, id: &str, thread: Option<&str>, input: &str)
                 let mut row = AgentRepository::get(tx, &AgentId::from(first.as_str()))?.unwrap();
                 row.id = AgentId::from(id_row.as_str());
                 row.root_id = AgentId::from(id_row.as_str());
-                match thread {
-                    Some(thread) => row.extra.insert("threadId".into(), json!(thread)),
-                    None => row.extra.remove("threadId"),
-                };
+                row.thread_id = thread;
                 AgentRepository::put(tx, &row)?;
                 Ok::<_, WorkerError>(())
             })

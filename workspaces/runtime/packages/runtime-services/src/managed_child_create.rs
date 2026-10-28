@@ -1044,7 +1044,7 @@ fn recheck_actor(
         AgentRepository::get(tx, &actor.id)?.ok_or(crate::managed_host_tools::Error::Stale)?;
     if current.epoch != actor.epoch
         || current.root_id != actor.root_id
-        || current.extra.get("accountKey") != actor.extra.get("accountKey")
+        || current.account_key != actor.account_key
         || current.extra.get("provider") != actor.extra.get("provider")
         || event_write::truthy(current.extra.get("deletedAt"))
         || current.auto_wake != Some(true)

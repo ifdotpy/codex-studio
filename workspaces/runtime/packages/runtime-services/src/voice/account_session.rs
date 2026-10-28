@@ -76,13 +76,9 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                         };
                         Ok::<_, studio_runtime_store::StoreError>(
                             agent.epoch == epoch
-                                && agent.extra.get("threadId").and_then(Value::as_str)
+                                && agent.thread_id.as_deref()
                                     == Some(thread_id_for_check.as_str())
-                                && agent
-                                    .extra
-                                    .get("accountKey")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("default")
+                                && agent.account_key.as_str()
                                     == account_key_for_check,
                         )
                     },

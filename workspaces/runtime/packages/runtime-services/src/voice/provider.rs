@@ -702,8 +702,8 @@ async fn prepare_end(
             session.native_thread(), session.account_key(), session.connection_id(),
         ) {
             (Some(thread), Some(account), Some(_connection)) => {
-                let current_thread = agent.extra.get("threadId").and_then(Value::as_str);
-                let current_account = agent.extra.get("accountKey").and_then(Value::as_str).unwrap_or("default");
+                let current_thread = agent.thread_id.as_deref();
+                let current_account = agent.account_key.as_str();
                 if current_thread != Some(thread) || current_account != account {
                     let transition = policy::transition_session(
                         &session, SessionSignal::ProviderDisconnected, now,
@@ -1170,16 +1170,10 @@ async fn reserve_approval(
         if session.native_thread().is_some() {
             return Err(VoiceProviderError::ContextChanged);
         }
-        let thread_id = actor
-            .extra
-            .get("threadId")
-            .and_then(Value::as_str)
+        let thread_id = actor.thread_id.as_deref()
             .filter(|value| !value.is_empty())
             .ok_or(VoiceProviderError::ContextUnavailable)?;
-        let account_key = actor
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
+        let account_key = Some(actor.account_key.as_str())
             .filter(|value| !value.is_empty())
             .unwrap_or("default");
         if session.account_key() != Some(account_key) {
@@ -1301,8 +1295,8 @@ async fn reserve_speech(
         }
         let account_key = session.account_key().ok_or(VoiceProviderError::ContextUnavailable)?;
         let thread_id = session.native_thread().ok_or(VoiceProviderError::ContextUnavailable)?;
-        if agent.extra.get("accountKey").and_then(Value::as_str).unwrap_or("default") != account_key
-            || agent.extra.get("threadId").and_then(Value::as_str) != Some(thread_id)
+        if agent.account_key.as_str() != account_key
+            || agent.thread_id.as_deref() != Some(thread_id)
         {
             return Err(VoiceProviderError::ContextChanged);
         }
@@ -1796,16 +1790,10 @@ fn agent_context(
 ) -> Result<(String, String, i64), VoiceProviderError> {
     let agent = super::checked_agent(connection, agent_id)
         .map_err(|_| VoiceProviderError::ContextUnavailable)?;
-    let thread_id = agent
-        .extra
-        .get("threadId")
-        .and_then(Value::as_str)
+    let thread_id = agent.thread_id.as_deref()
         .filter(|thread| !thread.is_empty())
         .unwrap_or_default();
-    let account_key = agent
-        .extra
-        .get("accountKey")
-        .and_then(Value::as_str)
+    let account_key = Some(agent.account_key.as_str())
         .filter(|account| !account.is_empty())
         .unwrap_or("default");
     Ok((account_key.to_owned(), thread_id.to_owned(), agent.epoch))
@@ -1865,8 +1853,8 @@ async fn create_session(
     store.transaction_with_error(move |transaction| -> Result<_, VoiceProviderError> {
         let agent = super::checked_agent(transaction, &agent_id)
             .map_err(|_| VoiceProviderError::ContextUnavailable)?;
-        let current_thread = agent.extra.get("threadId").and_then(Value::as_str).unwrap_or_default();
-        let current_account = agent.extra.get("accountKey").and_then(Value::as_str).unwrap_or("default");
+        let current_thread = agent.thread_id.as_deref().unwrap_or_default();
+        let current_account = agent.account_key.as_str();
         if agent.epoch != epoch || current_thread != thread_id
             || current_account != account_key {
             return Err(VoiceProviderError::ContextChanged);
@@ -1921,16 +1909,9 @@ async fn attach_start_context(
         .transaction_with_error(move |transaction| -> Result<_, VoiceProviderError> {
             let agent = super::checked_agent(transaction, &agent_id)
                 .map_err(|_| VoiceProviderError::ContextUnavailable)?;
-            let current_thread = agent
-                .extra
-                .get("threadId")
-                .and_then(Value::as_str)
+            let current_thread = agent.thread_id.as_deref()
                 .unwrap_or_default();
-            let current_account = agent
-                .extra
-                .get("accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default");
+            let current_account = agent.account_key.as_str();
             if agent.epoch != context.epoch
                 || current_thread != context.thread_id
                 || current_account != context.account_key
@@ -2750,11 +2731,12 @@ mod tests {
             "provider".into(),
             json!(studio_runtime_schema::ProviderKind::Codex),
         );
-        extra.insert("accountKey".into(), json!("default"));
-        extra.insert("threadId".into(), json!("voice-thread"));
         extra.insert("isLead".into(), json!(true));
         let agent = AgentRecord {
             in_flight: None,
+        account_key: "default".into(),
+        thread_id: Some("voice-thread".into()),
+        turn_id: None,
         auto_wake: None,
         execution_mode: None,
         turn_epoch: None,

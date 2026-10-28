@@ -2981,15 +2981,14 @@ impl Worker {
                         .any(|key| fields.get(*key).is_some_and(|value| !value.is_null()))
                         || fields.get("cwd").and_then(Value::as_str) != Some(request.cwd.as_str())
                         || guest_home != request.guest_home
-                        || fields.get("threadId").and_then(Value::as_str)
-                            != intent.thread_id.as_deref()
+                        || row.thread_id.as_deref() != intent.thread_id.as_deref()
                         || attempt["id"] != intent.attempt_id
                         || attempt["epoch"] != request.epoch
                         || attempt["accountKey"] != request.account_key
                         || attempt["submitted"] != false
                         || wait["epoch"] != request.epoch
                         || wait["accountKey"] != request.account_key
-                        || fields.get("threadId") != Some(&wait["threadId"])
+                        || row.thread_id.as_deref() != wait["threadId"].as_str()
                         || wait["authAttempt"]
                             .as_u64()
                             .and_then(|attempt| attempt.checked_add(1))
@@ -5176,11 +5175,7 @@ pub fn commit_prepared_turn(
     submission: &crate::notification_dispatch::PreparedSubmission,
 ) -> Result<bool, WorkerError> {
     if AgentRepository::get(tx, &AgentId::from(intent.agent_id.as_str()))?.is_none_or(|agent| {
-        agent
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
+        agent.account_key.as_str()
             != intent.account_key
     }) {
         return Ok(false);

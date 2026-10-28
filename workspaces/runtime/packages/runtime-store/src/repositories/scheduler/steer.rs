@@ -343,8 +343,8 @@ fn receipt_events(id: &str, receipt: &SteerPayload) -> StoreResult<String> {
 fn steer_turn(agent: &AgentRecord) -> Option<(String, String)> {
     let text = |key: &str| agent.extra.get(key).and_then(Value::as_str);
     let flag = |key: &str| agent.extra.get(key).is_some_and(truthy);
-    let turn = text("turnId").filter(|turn| !turn.is_empty())?;
-    let thread = text("threadId").filter(|thread| !thread.is_empty())?;
+    let turn = agent.turn_id.as_deref().filter(|turn| !turn.is_empty())?;
+    let thread = agent.thread_id.as_deref().filter(|thread| !thread.is_empty())?;
     let attempt = agent.start_attempt().ok().flatten()?;
     let eligible = agent.status == AgentStatus::Running
         && agent.auto_wake == Some(true)
@@ -608,11 +608,7 @@ impl SchedulerRepository {
             &SteerPayload {
                 agent: agent_id.into(),
                 epoch,
-                account_key: agent
-                    .extra
-                    .get("accountKey")
-                    .and_then(Value::as_str)
-                    .unwrap_or("default")
+                account_key: agent.account_key.as_str()
                     .into(),
                 thread_id: thread_id.clone(),
                 turn_id: turn_id.clone(),
@@ -702,8 +698,7 @@ impl SchedulerRepository {
         }
         let current = load_agent(tx, agent_id)?.is_some_and(|agent| {
             agent.epoch == receipt.epoch
-                && agent.extra.get("accountKey").unwrap_or(&json!("default"))
-                    == &json!(receipt.account_key)
+                && agent.account_key == receipt.account_key
                 && steer_turn(&agent).is_some_and(|(turn, thread)| {
                     receipt.turn_id == turn && receipt.thread_id == thread
                 })
@@ -786,7 +781,7 @@ impl SchedulerRepository {
         let requeued = release(tx, &id, &receipt)?;
         if let Some(mut agent) = load_agent(tx, agent_id)?
             && agent.epoch == receipt.epoch
-            && agent.extra.get("turnId").and_then(Value::as_str) == Some(receipt.turn_id.as_str())
+            && agent.turn_id.as_deref() == Some(receipt.turn_id.as_str())
         {
             agent
                 .extra

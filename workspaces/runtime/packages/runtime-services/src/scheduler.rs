@@ -810,12 +810,12 @@ pub(crate) fn claim_selected_event_in_transaction(
         agent_id: agent_id.to_owned(),
         epoch,
         attempt_id: attempt_id.to_owned(),
-        account_key: field("accountKey").unwrap_or("default").to_owned(),
+        account_key: claimed.agent.account_key.clone(),
         provider: studio_runtime_providers::ProviderKind::of_field(
             claimed.agent.extra.get("provider"),
         )
         .map_err(|_| StoreError::RecordContract("agent provider"))?,
-        thread_id: field("threadId").map(str::to_owned),
+        thread_id: claimed.agent.thread_id.clone(),
         cwd: field("cwd").map(str::to_owned),
         model: field("model").map(str::to_owned),
         events: claimed
@@ -872,12 +872,12 @@ fn claim_intent_selected(
         agent_id: agent_id.to_owned(),
         epoch,
         attempt_id: attempt_id.to_owned(),
-        account_key: field("accountKey").unwrap_or("default").to_owned(),
+        account_key: claimed.agent.account_key.clone(),
         provider: studio_runtime_providers::ProviderKind::of_field(
             claimed.agent.extra.get("provider"),
         )
         .map_err(|_| StoreError::RecordContract("agent provider"))?,
-        thread_id: field("threadId").map(str::to_owned),
+        thread_id: claimed.agent.thread_id.clone(),
         cwd: field("cwd").map(str::to_owned),
         model: field("model").map(str::to_owned),
         events: claimed
@@ -1269,7 +1269,7 @@ mod child_turn_parent_tests {
                     .expect("monitor");
                     studio_runtime_store::monitor_runtime::put(tx, monitor)?;
                     agent.status = AgentStatus::Completed;
-                    agent.extra.insert("turnId".into(), Value::Null);
+                    agent.turn_id = None;
                     agent.in_flight = Some(false);
                     let mut value = agent.value();
                     crate::lifecycle_effects::ProductionRecoveryDelivery { at: 3.0 }

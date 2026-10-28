@@ -104,7 +104,6 @@ impl ProviderState {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentScopeFields {
-    account_key: Option<String>,
     provider_stream: Option<StreamFields>,
 }
 #[derive(serde::Deserialize)]
@@ -172,7 +171,7 @@ pub fn provider_state(
                     .transpose()
                     .map(Option::flatten);
             }
-            std::borrow::Cow::Owned(fields.account_key.unwrap_or_else(|| "default".into()))
+            std::borrow::Cow::Borrowed(agent.account_key.as_str())
         }
     };
     let row: Option<(Option<i64>, Option<String>, i64)> = db.query_row(

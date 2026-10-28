@@ -183,11 +183,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         )
         .map_err(|error| WorkerError::PreparationRefused(error.to_string()));
     }
-    let agent_account = agent_record
-        .extra
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
+    let agent_account = agent_record.account_key.as_str();
     let common_identity = agent_account == call.scope.account
         && !studio_runtime_store::truthy(agent_record.extra.get("deletedAt"))
         && agent_record.extra.get("deleted") != Some(&json!(true));
@@ -244,7 +240,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 && source["epoch"].as_i64() == Some(actor.epoch)
                 && source["accountKey"].as_str() == Some(call.scope.account.as_str())
                 && source["threadId"].as_str()
-                    == agent_record.extra.get("threadId").and_then(Value::as_str)
+                    == agent_record.thread_id.as_deref()
                 && path_is_absolute(&snapshot["sourcePath"])
                 && path_is_absolute(&snapshot["copyPath"])
                 && snapshot["sourceSha256"]
@@ -281,7 +277,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         && actor.epoch.checked_add(1) == Some(agent_record.epoch)
         && agent_record.auto_wake == Some(false);
     let thread_matches = call.params["threadId"].as_str().is_some_and(|thread| {
-        agent_record.extra.get("threadId").and_then(Value::as_str) == Some(thread)
+        agent_record.thread_id.as_deref() == Some(thread)
     });
     let thread_start = call.method == Method::ThreadStart && call.params.get("threadId").is_none();
     let ephemeral_turn = if call.method == Method::TurnStart {

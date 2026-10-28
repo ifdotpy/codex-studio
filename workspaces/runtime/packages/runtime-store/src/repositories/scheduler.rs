@@ -214,11 +214,11 @@ mod tests {
             .expect("candidate-index transaction commits");
         let mut extra = BTreeMap::new();
         extra.insert("provider".to_owned(), json!("codex"));
-        extra.insert("threadId".into(), json!("thread"));
         AgentRepository::put(
             &connection,
             &AgentRecord {
                 in_flight: Some(false),
+                thread_id: Some("thread".into()),
                 auto_wake: Some(true),
                 id: AgentId::from("agent"),
                 root_id: AgentId::from("agent"),

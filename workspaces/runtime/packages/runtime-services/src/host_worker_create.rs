@@ -381,9 +381,7 @@ pub fn recheck(
             .get("accountKey")
             .and_then(Value::as_str)
             .unwrap_or("default")
-            != field(&drafts[0], "accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default")
+            != drafts[0].account_key
     {
         return Err(CreateError::IdentityChanged);
     }
@@ -422,7 +420,7 @@ pub fn recheck_worker(
     let frozen_cwd = field(draft, "_p02ParentCwd");
     let frozen_account = field(draft, "_p02ParentAccountKey");
     if field(&parent, "cwd") != frozen_cwd
-        || field(&parent, "accountKey") != frozen_account
+        || Some(parent.account_key.as_str()) != frozen_account.and_then(Value::as_str)
         || field(&parent, "projectId").and_then(Value::as_str)
             != field(draft, "_p02ParentProjectId").and_then(Value::as_str)
         || field(&parent, "projectServerId").and_then(Value::as_str)
@@ -436,7 +434,7 @@ pub fn recheck_worker(
     let project_path = field(draft, "_p02ParentProjectPath")
         .and_then(Value::as_str)
         .ok_or(CreateError::IdentityChanged)?;
-    if field(&parent, "executionMode").and_then(Value::as_str) == Some("vm")
+    if parent.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
         && field(&parent, "hostProjectPath").and_then(Value::as_str) != Some(project_path)
     {
         return Err(CreateError::IdentityChanged);
@@ -556,7 +554,7 @@ fn validate_agent(record: &AgentRecord) -> Result<(), CreateError> {
             id: record.id.0.clone(),
         });
     }
-    for field in ["accountKey", "provider", "cwd", "workspaceMode", "model"] {
+    for field in ["provider", "cwd", "workspaceMode", "model"] {
         required_string(record, field)?;
     }
     if record.epoch < 0 {
@@ -1049,7 +1047,7 @@ mod tests {
             assert_eq!(draft.status, AgentStatus::Idle);
             assert_eq!(field(draft, "parentId"), Some(&Value::Null));
             assert_eq!(
-                field(draft, "accountKey").and_then(Value::as_str),
+                Some(draft.account_key.as_str()),
                 Some(if id == IDS[0] { "one" } else { "two" })
             );
             assert_eq!(

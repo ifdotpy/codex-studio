@@ -1528,7 +1528,7 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
     }
     agent.status = studio_runtime_store::AgentStatus::Paused;
     agent.in_flight = Some(false);
-    agent.extra.insert("turnId".to_owned(), Value::Null);
+    agent.turn_id = None;
     agent.extra.insert("activity".to_owned(), Value::Null);
     agent.extra.insert("activeTools".to_owned(), json!([]));
     if let Some(attempt) = agent.extra.get_mut("startAttempt")
@@ -1543,7 +1543,7 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
 fn needs_deleted_settlement(agent: &AgentRecord) -> bool {
     studio_runtime_store::truthy(agent.extra.get("deletedAt"))
         && (agent.in_flight == Some(true)
-            || studio_runtime_store::truthy(agent.extra.get("turnId"))
+            || agent.turn_id.as_deref().is_some_and(|turn| !turn.is_empty())
             || studio_runtime_store::truthy(
                 agent
                     .extra

@@ -823,6 +823,9 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
     let (root, store) = common::store().await;
     let mut parent = AgentRecord {
         in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
         auto_wake: None,
         execution_mode: None,
         turn_epoch: None,
