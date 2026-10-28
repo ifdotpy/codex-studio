@@ -59,7 +59,7 @@ impl Fixture {
         }
         for case in data["cases"].as_array_mut().expect("cases") {
             if case["family"] == "tool" {
-                let admitted = json!({"id":case["record"]["id"],"signature":"fixture-tool","created":1_000_125});
+                let admitted = json!({"id":case["record"]["id"],"signature":"fixture-tool","created":chrono::Utc::now().timestamp_millis()});
                 let arguments = case["outbox"]["body"]["payload"]["request"].clone();
                 for field in ["record", "expected/record"] {
                     let target = if field == "record" {
