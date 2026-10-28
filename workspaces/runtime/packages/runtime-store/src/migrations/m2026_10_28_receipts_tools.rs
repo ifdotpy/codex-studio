@@ -123,7 +123,13 @@ impl ReceiptFamilyMigration for Family {
                         }
                     } else {
                         classify(source, &row, &task)?;
-                        hydrate_location_arguments(tx, source, &row, &mut task)?;
+                        hydrate_location_arguments(
+                            tx,
+                            source,
+                            &row,
+                            &mut task,
+                            checkpoint.cutover_ms,
+                        )?;
                         let result = if let Some(reference) = task.pointer("/_payloadBlobs/result")
                         {
                             Some(load_blob(tx, source, &row, reference)?)
@@ -202,9 +208,9 @@ fn hydrate_location_arguments(
     source: &str,
     row: &SourceReceipt,
     task: &mut Value,
+    cutover: i64,
 ) -> Result<()> {
     if task["tool"] != "orchestration_servers"
-        || task.get("arguments").is_some()
         || !matches!(task["outcome"].as_str(), Some("pending" | "unknown"))
     {
         return Ok(());
@@ -241,7 +247,43 @@ fn hydrate_location_arguments(
     {
         return Err(invalid());
     }
+    if task
+        .get("arguments")
+        .is_some_and(|original| original != args)
+    {
+        return Err(invalid());
+    }
     task["arguments"] = args.clone();
+    let project = args["project"].as_str().ok_or_else(invalid)?;
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT record FROM runtime_projects WHERE id=?1",
+            [project],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let mut owner: Value = raw
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .filter(Value::is_object)
+        .ok_or_else(invalid)?;
+    if owner.get("locationIntents").is_none() {
+        owner["locationIntents"] = json!({});
+    }
+    let intents = owner["locationIntents"]
+        .as_object_mut()
+        .ok_or_else(invalid)?;
+    let signature =
+        crate::sha256_hex(studio_runtime_schema::json_compat::python_json_compact(args).as_bytes());
+    let token = admitted_owner_token(&row.id, &row.signature, cutover).derive_result(
+        "project-location",
+        &["location"],
+        &signature,
+    );
+    intents.insert(id, json!({"request":token}));
+    tx.execute(
+        "UPDATE runtime_projects SET record=?1 WHERE id=?2",
+        params![owner.to_string(), project],
+    )?;
     Ok(())
 }
 
@@ -638,7 +680,7 @@ mod tests {
     fn receipts_tools_pending_location_arguments_come_from_exact_outbox_identity() {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&mut db);
-        db.execute_batch("CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,body TEXT)")
+        db.execute_batch("CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,body TEXT);CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT);INSERT INTO runtime_projects VALUES('project','{}')")
             .expect("outboxes");
         let task = json!({"id":"old-task","agent":"agent","tool":"orchestration_servers","signature":"signature","stage":"running","outcome":"unknown"});
         db.execute(
@@ -666,5 +708,30 @@ mod tests {
         assert_eq!(task["arguments"], args);
         assert_eq!(task["outcome"], "unknown");
         assert_eq!(task["admitted"]["id"], "old-task");
+        let raw: String = db
+            .query_row(
+                "SELECT record FROM runtime_projects WHERE id='project'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("project");
+        let project: Value = serde_json::from_str(&raw).expect("project JSON");
+        let parent: crate::request_results::AdmittedRequest =
+            serde_json::from_value(task["admitted"].clone()).expect("parent admission");
+        let signature = crate::sha256_hex(
+            studio_runtime_schema::json_compat::python_json_compact(&args).as_bytes(),
+        );
+        assert_eq!(
+            project["locationIntents"][&id]["request"],
+            json!(parent.derive_result("project-location", &["location"], &signature))
+        );
+        let preserved: String = db
+            .query_row(
+                "SELECT body FROM runtime_server_outbox WHERE id=?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .expect("wire");
+        assert_eq!(preserved, body.to_string());
     }
 }

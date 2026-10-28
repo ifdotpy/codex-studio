@@ -27,6 +27,7 @@ const SOURCE: &str = "runtime_operation_receipts";
 /// Persistent count of classified completed settings markers without a replay body.
 pub(super) const DELETED_SETTINGS_REPORT: &str = "deleted-completed-c:settings";
 pub(super) const DELETED_USER_MESSAGE_REPORT: &str = "deleted-completed-c:user-message";
+pub(super) const DELETED_LOCATION_REPORT: &str = "deleted-completed-c:project-location";
 pub(super) struct Family;
 
 #[derive(Serialize)]
@@ -129,6 +130,21 @@ impl ReceiptFamilyMigration for Family {
                 delete_source(tx, source, row.rowid)?;
                 continue;
             }
+            let mut signature = row.signature.clone();
+            if reply["requestId"] == row.id
+                && matches!(reply["outcome"].as_str(), Some("applied" | "not_applied"))
+            {
+                let Some(canonical) = location_signature(tx, &row)? else {
+                    discard_completed_reply(
+                        tx,
+                        &row,
+                        DELETED_LOCATION_REPORT,
+                        checkpoint.cutover_ms,
+                    )?;
+                    continue;
+                };
+                signature = canonical;
+            }
             if row.id.starts_with("managed-rules:") {
                 actor = Some(migrate_rules(tx, &row, &mut reply, checkpoint.cutover_ms)?);
             } else if !exact_reply(&row, &reply) {
@@ -153,7 +169,7 @@ impl ReceiptFamilyMigration for Family {
             import_result(
                 tx,
                 &row.id,
-                &row.signature,
+                &signature,
                 &ResultEnvelope {
                     actor,
                     reply,
@@ -947,15 +963,60 @@ fn migrate_location(
     let intents = owner["locationIntents"]
         .as_object_mut()
         .ok_or_else(invalid)?;
-    intents.insert(
-        row.id.clone(),
-        json!({"request":admitted_owner_token(&row.id, &row.signature, cutover)}),
-    );
+    let signature = location_signature(tx, row)?.unwrap_or_else(|| row.signature.clone());
+    let token = if let Some(existing) = intents.get(&row.id) {
+        let existing: AdmittedRequest =
+            serde_json::from_value(existing["request"].clone()).map_err(|_| invalid())?;
+        admitted_owner_token(existing.id(), &signature, existing.created())
+    } else {
+        admitted_owner_token(&row.id, &signature, cutover)
+    };
+    intents.insert(row.id.clone(), json!({"request":token}));
     tx.execute(
         "UPDATE runtime_projects SET record=?1 WHERE id=?2",
         params![owner.to_string(), project],
     )?;
     Ok(())
+}
+
+/// Only immutable captured request bytes establish a new signature spelling.
+/// The signed transport body and its fingerprint remain their original authority.
+fn location_signature(tx: &Transaction<'_>, row: &SourceReceipt) -> Result<Option<String>> {
+    if !crate::receipt_migration_contract::source_exists(tx, "runtime_server_outbox")? {
+        return Ok(None);
+    }
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT body FROM runtime_server_outbox WHERE id=?1",
+            [&row.id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let invalid = || unclassifiable(SOURCE, &row.id, &row.signature);
+    let body: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+    let request = &body["payload"]["request"];
+    if request.is_null() {
+        return Ok(None);
+    }
+    if body["requestId"] != row.id
+        || !matches!(
+            body["action"].as_str(),
+            Some("add_location" | "remove_location")
+        )
+        || request["action"] != body["action"]
+        || request["project"] != body["payload"]["project"]
+        || !request["project"].is_string()
+        || !request["server"].is_string()
+        || !request["path"].is_null() && !request["path"].is_string()
+    {
+        return Err(invalid());
+    }
+    Ok(Some(crate::sha256_hex(
+        studio_runtime_schema::json_compat::python_json_compact(request).as_bytes(),
+    )))
 }
 
 #[cfg(test)]
@@ -1575,6 +1636,10 @@ mod tests {
         let user_signature =
             crate::python_json(&json!({"agent":"agent","text":"Original","assets":[]}));
         for (id, reply) in &cases {
+            if id.starts_with("location-") {
+                let input = json!({"action":"add_location","project":"project","server":"peer","path":"/original"});
+                db.execute("INSERT INTO runtime_server_outbox VALUES(?1,?2)",params![id,json!({"requestId":id,"action":"add_location","payload":{"project":"project","request":input,"signature":SIGNATURE}}).to_string()]).expect("original location input");
+            }
             if *id == "input-message" {
                 db.execute(
                     "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
@@ -1597,9 +1662,11 @@ mod tests {
             assert_eq!(
                 signature,
                 if *id == "input-message" {
-                    user_signature.as_str()
+                    user_signature.clone()
+                } else if id.starts_with("location-") {
+                    crate::sha256_hex(crate::python_json_compact(&json!({"action":"add_location","project":"project","server":"peer","path":"/original"})).as_bytes())
                 } else {
-                    SIGNATURE
+                    SIGNATURE.to_owned()
                 }
             );
             assert_eq!(
@@ -1767,6 +1834,150 @@ mod tests {
             matches!(Family.move_batch(&tx,SOURCE,&checkpoint),Err(ReceiptMigrationError::Unclassifiable{table,key,signature:stored}) if table=="runtime_event_meta" && key=="message" && stored==signature)
         );
         tx.rollback().expect("source preserved");
+    }
+
+    #[test]
+    fn receipts_requests_location_signatures_use_captured_input_and_leave_wire_unchanged() {
+        for _ in 0..1 {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            let input = json!({"action":"add_location","project":"project","server":"peer","path":"/original"});
+            let signature = crate::sha256_hex(crate::python_json_compact(&input).as_bytes());
+            let old_signature = crate::sha256_hex(crate::python_json(&input).as_bytes());
+            assert_ne!(signature, old_signature);
+            db.execute("INSERT INTO runtime_projects VALUES('project','{}')", [])
+                .expect("project");
+            for (id, outcome) in [("complete", "applied"), ("pending", "unknown")] {
+                let body = json!({"requestId":id,"action":"add_location","payload":{"project":"project","request":input,"signature":old_signature}}).to_string();
+                db.execute(
+                    "INSERT INTO runtime_server_outbox VALUES(?1,?2)",
+                    params![id, body],
+                )
+                .expect("captured wire input");
+                let reply = json!({"requestId":id,"projectId":"project","outcome":outcome,"value":{"serverId":"peer","path":"/original","gitOrigin":null}});
+                db.execute(
+                    "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+                    params![id, old_signature, reply.to_string()],
+                )
+                .expect("location source");
+            }
+            let before: Vec<(String, String)> = db
+                .prepare("SELECT id,body FROM runtime_server_outbox ORDER BY id")
+                .expect("query")
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .expect("rows")
+                .collect::<rusqlite::Result<_>>()
+                .expect("wire");
+            migrate(&mut db);
+            let tx = db.transaction().expect("transaction");
+            let saved = crate::request_results::RequestResults::replay(
+                &tx,
+                "complete",
+                &signature,
+                CUTOVER + 1,
+            )
+            .expect("normalized exact replay")
+            .expect("saved reply");
+            assert_eq!(
+                serde_json::from_str::<Value>(&saved.result).expect("envelope")["reply"]["value"]["gitOrigin"],
+                Value::Null
+            );
+            let owner: String = tx
+                .query_row(
+                    "SELECT record FROM runtime_projects WHERE id='project'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("owner");
+            let owner: Value = serde_json::from_str(&owner).expect("owner JSON");
+            let token: AdmittedRequest =
+                serde_json::from_value(owner["locationIntents"]["pending"]["request"].clone())
+                    .expect("pending token");
+            assert_eq!(token.signature(), signature);
+            assert_eq!(token.id(), "pending");
+            tx.rollback().expect("read only");
+            let after: Vec<(String, String)> = db
+                .prepare("SELECT id,body FROM runtime_server_outbox ORDER BY id")
+                .expect("query")
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .expect("rows")
+                .collect::<rusqlite::Result<_>>()
+                .expect("wire");
+            assert_eq!(after, before, "original signed body stays byte identical");
+            migrate(&mut db);
+        }
+    }
+
+    #[test]
+    fn receipts_requests_location_without_exact_input_expires_completed_and_preserves_unknown() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute("INSERT INTO runtime_projects VALUES('project','{}')", [])
+            .expect("project");
+        let root = "0000000f-4240-7000-8000-000000000000";
+        insert(
+            &db,
+            root,
+            json!({"requestId":root,"outcome":"applied","value":{"serverId":"peer","path":"/original"}}),
+        );
+        insert(
+            &db,
+            "pending",
+            json!({"requestId":"pending","projectId":"project","outcome":"unknown"}),
+        );
+        migrate(&mut db);
+        let tx = db.transaction().expect("transaction");
+        assert!(
+            crate::request_results::RequestResults::replay(
+                &tx,
+                root,
+                "new canonical signature",
+                CUTOVER + 1
+            )
+            .expect("missing, never conflict")
+            .is_none()
+        );
+        let identity = studio_runtime_schema::persistence::RequestIdentity::new(
+            "project-location",
+            &["server", "ui"],
+            root,
+            &["location"],
+        )
+        .expect("old root");
+        assert!(matches!(
+            crate::request_results::RequestResults::admit(
+                &tx,
+                &identity,
+                "new canonical signature",
+                CUTOVER + 1
+            ),
+            Err(crate::request_results::RequestResultError::Identity(
+                studio_runtime_schema::persistence::RequestIdentityError::Expired { .. }
+            ))
+        ));
+        assert_eq!(
+            MigrationCheckpoint::load(&tx, ID, "deleted-completed-c:project-location")
+                .expect("report")
+                .expect("count")
+                .cursor,
+            1
+        );
+        let raw: String = tx
+            .query_row("SELECT record FROM runtime_projects", [], |r| r.get(0))
+            .expect("unknown owner");
+        assert_eq!(
+            serde_json::from_str::<Value>(&raw).expect("owner")["locationIntents"]["pending"]["request"]
+                ["signature"],
+            SIGNATURE
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_outbox", [], |r| r
+                .get::<_, i64>(0))
+                .expect("no send obligation"),
+            0
+        );
+        tx.rollback().expect("read only");
+        migrate(&mut db);
     }
 
     #[test]
