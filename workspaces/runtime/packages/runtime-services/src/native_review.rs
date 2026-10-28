@@ -287,6 +287,7 @@ pub fn reserve(
     let response = json!({"requestId":plan.key,"agentId":id,"status":"queued","reviewModel":child["model"],
         "reviewEffort":child.get("nativeEffort").unwrap_or(&child["effort"]),"agents":[brief],"delivery":DELIVERY});
     child["nativeReview"] = json!({"target":plan.target,"requestId":plan.key,"actorId":actor_id,
+        "actionRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root(),
         "args":plan.args,"status":"pending","response":response});
     AgentRepository::put(tx, &AgentRecord::from_value(child)?)?;
     creator.receipt(tx, &plan.key, &response)?;

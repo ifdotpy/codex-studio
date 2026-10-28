@@ -5,6 +5,7 @@ pub use crate::account_transfer::TransferDispatch;
 use crate::account_transfer::{
     Action, Command, Decision, EXECUTOR_REQUIRED, Snapshot, Ticket, TransferError,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::future::Future;
 use std::pin::Pin;
@@ -408,8 +409,9 @@ pub async fn reserve(
         .transaction_with_error(move |tx| {
             check_durable_blockers(tx, &ticket.agent)?;
             let snapshot = load(tx, &ticket.operation)?;
-            let decision =
+            let mut decision =
                 snapshot.provider_intent(&ticket.agent, &ticket.request, scope, &method, params)?;
+            admit_mutation(&snapshot, &mut decision, &ticket.agent)?;
             persist(tx, decision, now)?;
             Ok(())
         })
@@ -625,17 +627,15 @@ pub async fn provider_intent(
     store
         .transaction_with_error(move |tx| {
             let snapshot = load(tx, &operation)?;
-            persist(
-                tx,
-                snapshot.provider_intent(
-                    &agent,
-                    &provider_operation,
-                    intent.scope,
-                    &method,
-                    intent.params,
-                )?,
-                now,
+            let mut decision = snapshot.provider_intent(
+                &agent,
+                &provider_operation,
+                intent.scope,
+                &method,
+                intent.params,
             )?;
+            admit_mutation(&snapshot, &mut decision, &agent)?;
+            persist(tx, decision, now)?;
             Ok(())
         })
         .await
@@ -651,537 +651,61 @@ pub(crate) struct ProviderReadIntent<'a> {
     pub params: Value,
 }
 
-#[cfg(test)]
-mod background_read_compat_tests {
-    use super::*;
-    use studio_runtime_store::{AgentRecord, EventWriteRepository};
+/// The root is created only with a new transfer obligation. Imported obligations
+/// carry their final provider token from the migration.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderAdmission {
+    pub root_request_id: String,
+    pub admitted_request: Option<studio_runtime_store::request_results::AdmittedRequest>,
+}
 
-    const TRANSFER: &str = "88aa8d8c-3300-4da8-9c97-efc12a81bbd1";
-    const READ: &str = "transfer:88aa8d8c-3300-4da8-9c97-efc12a81bbd1:member:background-before";
-    fn scope() -> Value {
-        json!({"account":"source","connection":"source-connection","generation":7})
+fn admit_mutation(
+    snapshot: &Snapshot,
+    decision: &mut Decision,
+    agent: &str,
+) -> Result<(), TransferError> {
+    if snapshot.operation()["members"][agent]
+        .get("providerIntent")
+        .is_none()
+    {
+        decision.operation["members"][agent]["providerAdmission"] = json!(ProviderAdmission {
+            root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+            admitted_request: None,
+        });
+    } else if snapshot.operation()["members"][agent]
+        .get("providerAdmission")
+        .is_none()
+    {
+        return Err(TransferError::Refused(
+            "The transfer provider admission is missing",
+        ));
     }
+    Ok(())
+}
 
-    async fn fixture(evidence: Option<&'static str>) -> (tempfile::TempDir, RuntimeStore, Value) {
-        fixture_read(
-            evidence,
-            READ,
-            "thread/backgroundTerminals/list",
-            json!({"threadId":"source-thread"}),
-        )
+pub(crate) async fn provider_admission(
+    store: &RuntimeStore,
+    transfer: &str,
+    agent: &str,
+    operation: &str,
+) -> Result<ProviderAdmission, TransferError> {
+    let transfer = transfer.to_owned();
+    let agent = agent.to_owned();
+    let operation = operation.to_owned();
+    store
+        .read_async("account-transfer/provider-admission", move |tx| {
+            let snapshot = load(tx, &transfer)?;
+            let member = &snapshot.operation()["members"][&agent];
+            let admission = if member["providerIntent"]["operation"] == operation {
+                &member["providerAdmission"]
+            } else {
+                &member["providerReadAdmissions"][&operation]
+            };
+            serde_json::from_value(admission.clone())
+                .map_err(|_| TransferError::Refused("The transfer provider admission is missing"))
+        })
         .await
-    }
-
-    async fn fixture_read(
-        evidence: Option<&'static str>,
-        read: &'static str,
-        method: &'static str,
-        params: Value,
-    ) -> (tempfile::TempDir, RuntimeStore, Value) {
-        let root = tempfile::tempdir().expect("background read state");
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
-        let legacy = json!({"operation":read,"account":"source","scope":scope(),
-            "method":method,"params":params});
-        let old = legacy.clone();
-        store.transaction(move |tx| {
-            let agent = AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"member","rootId":"member","epoch":3,
-                "status":"completed","isLead":true,"autoWake":false,"accountKey":"target",
-                "threadId":"source-thread","accountTransferId":TRANSFER}))?;
-            AgentRepository::put(tx, &agent)?;
-            let mut operation = json!({"id":TRANSFER,"leadId":"member","targetAccountKey":"target",
-                "status":"pending","scope":"team","created":1.0,"members":{"member":{
-                    "phase":"reading","sourceAccountKey":"source","sourceThreadId":"source-thread",
-                    "providerReadIntents":{(read):old}}},"requests":{}});
-            if evidence == Some("transfer-unknown") {
-                operation["members"]["member"]["providerReadReceipts"][read] = json!({"certainty":"unknown"});
-            }
-            Repository::put(tx, TRANSFER, &operation.to_string())?;
-            if let Some(phase) = evidence.filter(|phase| *phase != "transfer-unknown") {
-                let key = format!("account-worker:retained:source:{}:{phase}", studio_runtime_store::sha256_hex(read.as_bytes()));
-                EventWriteRepository::replace_receipt(tx, &key, "account-worker", "{\"result\":\"Unknown\"}")?;
-            }
-            Ok::<_, studio_runtime_store::StoreError>(())
-        }).await.expect("legacy read intent");
-        (root, store, legacy)
-    }
-
-    const TURN_READ: &str = "account-transfer:88aa8d8c-3300-4da8-9c97-efc12a81bbd1:member:turns:1";
-
-    fn turn_params() -> Value {
-        json!({"threadId":"source-thread","limit":20,"sortDirection":"desc","itemsView":"full","cursor":"20"})
-    }
-
-    async fn correct_turn_page(
-        store: &RuntimeStore,
-        current_scope: Value,
-        params: Value,
-        operation: &str,
-    ) -> Result<Option<Value>, TransferError> {
-        provider_read_intent(
-            store,
-            ProviderReadIntent {
-                transfer: TRANSFER,
-                agent: "member",
-                operation,
-                account: "source",
-                scope: current_scope,
-                method: "thread/turns/list",
-                params,
-            },
-            2.0,
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn legacy_paginated_turn_read_rebinds_only_its_scope_without_transport_evidence() {
-        let (_root, store, legacy) =
-            fixture_read(None, TURN_READ, "thread/turns/list", turn_params()).await;
-        let before_agent = store
-            .read_async("agent before correction", |tx| {
-                AgentRepository::get(tx, &studio_runtime_store::AgentId::from("member"))
-            })
-            .await
-            .expect("agent");
-        for (connection, generation) in
-            [("new-source-connection", 8), ("next-source-connection", 9)]
-        {
-            let current =
-                json!({"account":"source","connection":connection,"generation":generation});
-            assert!(
-                correct_turn_page(&store, current.clone(), turn_params(), TURN_READ)
-                    .await
-                    .expect("rebind the known rejected page")
-                    .is_none()
-            );
-            let operation = store
-                .read_async("corrected turns page", |tx| {
-                    load(tx, TRANSFER).map(|s| s.operation().clone())
-                })
-                .await
-                .expect("operation");
-            let mut expected = legacy.clone();
-            expected["scope"] = current;
-            assert_eq!(
-                operation["members"]["member"]["providerReadIntents"][TURN_READ],
-                expected
-            );
-            assert_eq!(
-                operation["members"]["member"]["providerReadIntentCorrections"][TURN_READ],
-                legacy
-            );
-            assert!(operation["members"]["member"]["providerReadReceipts"][TURN_READ].is_null());
-        }
-        let after_agent = store
-            .read_async("agent after correction", |tx| {
-                AgentRepository::get(tx, &studio_runtime_store::AgentId::from("member"))
-            })
-            .await
-            .expect("agent")
-            .expect("member exists");
-        let mut actual_agent = after_agent.value();
-        let summary = actual_agent
-            .as_object_mut()
-            .expect("agent object")
-            .remove("accountTransfer")
-            .expect("the existing writer projects a transfer summary");
-        assert_eq!(summary["id"], TRANSFER);
-        assert_eq!(summary["targetAccountKey"], "target");
-        assert_eq!(summary["status"], "pending");
-        assert_eq!(summary["updated"], 2.0);
-        assert_eq!(
-            actual_agent,
-            before_agent.expect("member exists").value(),
-            "only the current transfer summary may change; input, thread and actor identity stay unchanged"
-        );
-    }
-
-    #[tokio::test]
-    async fn legacy_paginated_turn_read_preserves_every_transport_or_transfer_receipt() {
-        for evidence in ["submitted", "written", "result", "transfer-unknown"] {
-            let (_root, store, legacy) = fixture_read(
-                Some(evidence),
-                TURN_READ,
-                "thread/turns/list",
-                turn_params(),
-            )
-            .await;
-            let current =
-                json!({"account":"source","connection":"new-source-connection","generation":8});
-            assert!(
-                correct_turn_page(&store, current, turn_params(), TURN_READ)
-                    .await
-                    .is_err(),
-                "{evidence}"
-            );
-            let operation = store
-                .read_async("held turns page", |tx| {
-                    load(tx, TRANSFER).map(|s| s.operation().clone())
-                })
-                .await
-                .expect("operation");
-            assert_eq!(
-                operation["members"]["member"]["providerReadIntents"][TURN_READ],
-                legacy
-            );
-            assert!(operation["members"]["member"]["providerReadIntentCorrections"].is_null());
-        }
-    }
-
-    #[tokio::test]
-    async fn legacy_paginated_turn_read_replays_its_written_reply_without_rebinding() {
-        let (_root, store, _) =
-            fixture_read(None, TURN_READ, "thread/turns/list", turn_params()).await;
-        let current =
-            json!({"account":"source","connection":"new-source-connection","generation":8});
-        correct_turn_page(&store, current.clone(), turn_params(), TURN_READ)
-            .await
-            .expect("correct unsubmitted page");
-        let receipt = json!({"operation":TURN_READ,"scope":current,"certainty":"written",
-            "notSentReason":null,"ticket":{"generation":8,"id":"native-page-request","method":"thread/turns/list"}});
-        let result = json!({"kind":"reply","value":{"data":[],"nextCursor":null}});
-        provider_read_receipt(
-            &store,
-            ProviderReadReceipt {
-                transfer: TRANSFER,
-                agent: "member",
-                operation: TURN_READ,
-                receipt: crate::account_session_runtime::SessionReceipt {
-                    scope: serde_json::from_value(current.clone()).expect("scope"),
-                    operation: TURN_READ.into(),
-                    replayed: false,
-                    outcome: crate::account_session_runtime::SessionOutcome::Written {
-                        ticket: studio_runtime_providers::RequestTicket {
-                            generation: 8,
-                            id: serde_json::from_value(json!("native-page-request")).expect("id"),
-                            method: studio_runtime_providers::Method::ThreadTurnsList,
-                        },
-                        response: crate::account_session_runtime::ProviderResponse::Reply(
-                            result["value"].clone(),
-                        ),
-                    },
-                },
-            },
-            3.0,
-        )
-        .await
-        .expect("record exact page reply");
-        let before = store
-            .read_async("before written page replay", |tx| {
-                load(tx, TRANSFER).map(|s| s.operation().clone())
-            })
-            .await
-            .expect("operation");
-        let next_scope =
-            json!({"account":"source","connection":"next-source-connection","generation":9});
-        let replay = correct_turn_page(&store, next_scope, turn_params(), TURN_READ)
-            .await
-            .expect("replay exact Written page");
-        assert_eq!(
-            replay,
-            Some(json!({"receipt":receipt,"result":result,"certainty":"written"})),
-            "Some receipt prohibits a second native request"
-        );
-        let after = store
-            .read_async("after written page replay", |tx| {
-                load(tx, TRANSFER).map(|s| s.operation().clone())
-            })
-            .await
-            .expect("operation");
-        assert_eq!(
-            after, before,
-            "Written reply keeps its original source scope and ticket"
-        );
-    }
-
-    #[tokio::test]
-    async fn legacy_paginated_turn_read_refuses_changed_fingerprints_and_invalid_scopes() {
-        for change in [
-            "cursor",
-            "thread",
-            "limit",
-            "itemsView",
-            "sortDirection",
-            "extra",
-            "no-cursor",
-            "account",
-            "connection",
-            "generation",
-            "old-scope",
-            "method",
-            "operation",
-        ] {
-            let (_root, store, _) =
-                fixture_read(None, TURN_READ, "thread/turns/list", turn_params()).await;
-            let mut params = turn_params();
-            let mut current =
-                json!({"account":"source","connection":"new-source-connection","generation":8});
-            match change {
-                "cursor" => params["cursor"] = json!("40"),
-                "thread" => params["threadId"] = json!("another-thread"),
-                "limit" => params["limit"] = json!(21),
-                "itemsView" => params["itemsView"] = json!("notLoaded"),
-                "sortDirection" => params["sortDirection"] = json!("asc"),
-                "extra" => params["extra"] = json!(true),
-                "no-cursor" => {
-                    params.as_object_mut().expect("params").remove("cursor");
-                }
-                "account" => current["account"] = json!("another-account"),
-                "connection" => current["connection"] = json!(""),
-                "generation" => current["generation"] = json!(0),
-                _ => {
-                    store
-                        .transaction(move |tx| {
-                            let mut op = Repository::get(tx, TRANSFER)?.expect("transfer");
-                            let saved =
-                                &mut op["members"]["member"]["providerReadIntents"][TURN_READ];
-                            match change {
-                                "old-scope" => saved["scope"]["account"] = json!("another-account"),
-                                "method" => saved["method"] = json!("thread/unsubscribe"),
-                                _ => saved["operation"] = json!("another-operation"),
-                            }
-                            Repository::put(tx, TRANSFER, &op.to_string())
-                        })
-                        .await
-                        .expect("changed legacy fingerprint");
-                }
-            }
-            let before = store
-                .read_async("before page refusal", |tx| {
-                    load(tx, TRANSFER).map(|s| s.operation().clone())
-                })
-                .await
-                .expect("operation");
-            assert!(
-                correct_turn_page(&store, current, params, TURN_READ)
-                    .await
-                    .is_err(),
-                "{change}"
-            );
-            let after = store
-                .read_async("after page refusal", |tx| {
-                    load(tx, TRANSFER).map(|s| s.operation().clone())
-                })
-                .await
-                .expect("operation");
-            assert_eq!(after, before, "{change}");
-        }
-    }
-
-    async fn corrected(
-        store: &RuntimeStore,
-        expected_scope: Value,
-    ) -> Result<Option<Value>, TransferError> {
-        provider_read_intent(
-            store,
-            ProviderReadIntent {
-                transfer: TRANSFER,
-                agent: "member",
-                operation: READ,
-                account: "source",
-                scope: expected_scope,
-                method: "thread/backgroundTerminals/list",
-                params: json!({"threadId":"source-thread","limit":100}),
-            },
-            2.0,
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn legacy_background_read_without_transport_evidence_keeps_its_logical_identity() {
-        let (_root, store, legacy) = fixture(None).await;
-        assert!(
-            corrected(&store, scope())
-                .await
-                .expect("correct the proven unsubmitted read")
-                .is_none()
-        );
-        let operation = store
-            .read_async("corrected read", |tx| {
-                load(tx, TRANSFER).map(|snapshot| snapshot.operation().clone())
-            })
-            .await
-            .expect("operation");
-        assert_eq!(
-            operation["members"]["member"]["providerReadIntents"][READ]["operation"],
-            READ
-        );
-        assert_eq!(
-            operation["members"]["member"]["providerReadIntents"][READ]["params"],
-            json!({"threadId":"source-thread","limit":100})
-        );
-        assert_eq!(
-            operation["members"]["member"]["providerReadIntentCorrections"][READ],
-            legacy
-        );
-        assert!(
-            corrected(&store, scope())
-                .await
-                .expect("resume before a native submission")
-                .is_none()
-        );
-    }
-
-    #[tokio::test]
-    async fn legacy_background_read_reconnects_only_before_any_native_submission() {
-        let (_root, store, legacy) = fixture(None).await;
-        for (connection, generation) in
-            [("new-source-connection", 8), ("next-source-connection", 9)]
-        {
-            let current =
-                json!({"account":"source","connection":connection,"generation":generation});
-            assert!(
-                corrected(&store, current.clone())
-                    .await
-                    .expect("correct the unsubmitted legacy read for the current source session")
-                    .is_none()
-            );
-            let operation = store
-                .read_async("reconnected read", |tx| {
-                    load(tx, TRANSFER).map(|snapshot| snapshot.operation().clone())
-                })
-                .await
-                .expect("operation");
-            let saved = &operation["members"]["member"]["providerReadIntents"][READ];
-            assert_eq!(saved["operation"], READ);
-            assert_eq!(saved["scope"], current);
-            assert_eq!(
-                operation["members"]["member"]["providerReadIntentCorrections"][READ],
-                legacy
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn legacy_background_read_never_discards_transport_evidence() {
-        for evidence in [
-            Some("submitted"),
-            Some("written"),
-            Some("result"),
-            Some("transfer-unknown"),
-        ] {
-            let (_root, store, legacy) = fixture(evidence).await;
-            let expected_scope =
-                json!({"account":"source","connection":"new-connection","generation":8});
-            assert!(
-                corrected(&store, expected_scope).await.is_err(),
-                "{evidence:?}"
-            );
-            let operation = store
-                .read_async("unchanged read", |tx| {
-                    load(tx, TRANSFER).map(|snapshot| snapshot.operation().clone())
-                })
-                .await
-                .expect("operation");
-            assert_eq!(
-                operation["members"]["member"]["providerReadIntents"][READ],
-                legacy
-            );
-            assert!(operation["members"]["member"]["providerReadIntentCorrections"].is_null());
-        }
-    }
-
-    #[tokio::test]
-    async fn legacy_background_read_refuses_invalid_source_scope_and_changed_thread() {
-        for change in [
-            "account",
-            "empty-connection",
-            "zero-generation",
-            "negative-generation",
-            "extra-scope",
-            "old-account",
-            "old-generation",
-            "thread",
-        ] {
-            let (_root, store, _) = fixture(None).await;
-            let mut current =
-                json!({"account":"source","connection":"new-connection","generation":8});
-            match change {
-                "account" => current["account"] = json!("another-account"),
-                "empty-connection" => current["connection"] = json!(""),
-                "zero-generation" => current["generation"] = json!(0),
-                "negative-generation" => current["generation"] = json!(-1),
-                "extra-scope" => current["extra"] = json!(true),
-                _ => {
-                    store
-                        .transaction(move |tx| {
-                            let mut operation = Repository::get(tx, TRANSFER)?.expect("transfer");
-                            let saved =
-                                &mut operation["members"]["member"]["providerReadIntents"][READ];
-                            match change {
-                                "old-account" => {
-                                    saved["scope"]["account"] = json!("another-account")
-                                }
-                                "old-generation" => saved["scope"]["generation"] = json!(0),
-                                _ => saved["params"]["threadId"] = json!("another-thread"),
-                            }
-                            Repository::put(tx, TRANSFER, &operation.to_string())
-                        })
-                        .await
-                        .expect("invalid legacy identity");
-                }
-            }
-            let before = store
-                .read_async("before refusal", |tx| {
-                    load(tx, TRANSFER).map(|s| s.operation().clone())
-                })
-                .await
-                .expect("operation");
-            assert!(corrected(&store, current).await.is_err(), "{change}");
-            let after = store
-                .read_async("after refusal", |tx| {
-                    load(tx, TRANSFER).map(|s| s.operation().clone())
-                })
-                .await
-                .expect("operation");
-            assert_eq!(after, before, "{change}");
-        }
-    }
-
-    #[tokio::test]
-    async fn legacy_background_correction_refuses_other_unknown_fingerprints() {
-        for changed in ["canonical-unknown", "mutation", "extra-field"] {
-            let (_root, store, _) = fixture(None).await;
-            store
-                .transaction(move |tx| {
-                    let mut operation = load(tx, TRANSFER)
-                        .map_err(|error| {
-                            studio_runtime_store::StoreError::SchemaMismatch(error.to_string())
-                        })?
-                        .operation()
-                        .clone();
-                    let saved = &mut operation["members"]["member"]["providerReadIntents"][READ];
-                    match changed {
-                        "canonical-unknown" => saved["params"]["limit"] = json!(100),
-                        "mutation" => saved["method"] = json!("thread/unsubscribe"),
-                        _ => saved["params"]["extra"] = json!(true),
-                    }
-                    Repository::put(tx, TRANSFER, &operation.to_string())
-                })
-                .await
-                .expect("another saved fingerprint");
-            let before = store
-                .read_async("prior fingerprint", |tx| {
-                    load(tx, TRANSFER).map(|snapshot| snapshot.operation().clone())
-                })
-                .await
-                .expect("operation");
-            let error = corrected(&store, scope())
-                .await
-                .expect_err("unknown or changed identity must stay held");
-            if changed == "canonical-unknown" {
-                assert!(error.to_string().contains("outcome is unknown"));
-            }
-            let after = store
-                .read_async("held fingerprint", |tx| {
-                    load(tx, TRANSFER).map(|snapshot| snapshot.operation().clone())
-                })
-                .await
-                .expect("operation");
-            assert_eq!(after, before, "{changed}");
-        }
-    }
 }
 
 pub(crate) async fn provider_read_intent(
@@ -1202,47 +726,13 @@ pub(crate) async fn provider_read_intent(
             if let Some(reply) = snapshot.written_read_replay(&agent, &next)? {
                 return Ok(Some(reply));
             }
-            if let Some(correction) =
-                snapshot.correct_unsubmitted_legacy_read(&agent, &operation, &next)?
-            {
-                let evidence = crate::account_worker::retained::has_transport_evidence(
-                    tx, &account, &operation,
-                )
-                .map_err(|error| match error {
-                    crate::account_worker::WorkerError::Store(error) => TransferError::Store(error),
-                    crate::account_worker::WorkerError::Recovery(_)
-                    | crate::account_worker::WorkerError::Scheduler(_)
-                    | crate::account_worker::WorkerError::Session(_)
-                    | crate::account_worker::WorkerError::Notification(_)
-                    | crate::account_worker::WorkerError::PreparationRefused(_)
-                    | crate::account_worker::WorkerError::StaleVmActor
-                    | crate::account_worker::WorkerError::PreparationPending(_)
-                    | crate::account_worker::WorkerError::PreparationAwaitsAgent(_)
-                    | crate::account_worker::WorkerError::CleanupUnconfirmed(_)
-                    | crate::account_worker::WorkerError::AlreadyRunning
-                    | crate::account_worker::WorkerError::Closed
-                    | crate::account_worker::WorkerError::ShutdownTimeout
-                    | crate::account_worker::WorkerError::TaskFailed
-                    | crate::account_worker::WorkerError::Capacity
-                    | crate::account_worker::WorkerError::CallbackUnknown => {
-                        TransferError::Refused("Cannot verify the legacy read transport evidence")
-                    }
-                })?;
-                if evidence {
-                    return Err(TransferError::Refused(
-                        "The legacy provider read has transport evidence; its intent is unchanged",
-                    ));
-                }
-                persist(tx, correction, now)?;
-                return Ok(None);
-            }
             let prior = snapshot.operation()["members"][agent.as_str()]["providerReadReceipts"]
                 [operation.as_str()]
             .as_object()
             .filter(|receipt| receipt.get("certainty") == Some(&Value::String("written".into())))
             .cloned()
             .map(Value::Object);
-            let decision = snapshot.provider_read_intent(
+            let mut decision = snapshot.provider_read_intent(
                 &agent,
                 &operation,
                 &account,
@@ -1250,6 +740,26 @@ pub(crate) async fn provider_read_intent(
                 &method,
                 intent.params,
             )?;
+            if method == "thread/unsubscribe" {
+                if snapshot.operation()["members"][&agent]["providerReadIntents"]
+                    .get(&operation)
+                    .is_none()
+                {
+                    decision.operation["members"][&agent]["providerReadAdmissions"][&operation] =
+                        json!(ProviderAdmission {
+                            root_request_id:
+                                studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                            admitted_request: None,
+                        });
+                } else if snapshot.operation()["members"][&agent]["providerReadAdmissions"]
+                    .get(&operation)
+                    .is_none()
+                {
+                    return Err(TransferError::Refused(
+                        "The transfer provider admission is missing",
+                    ));
+                }
+            }
             persist(tx, decision, now)?;
             Ok(prior)
         })
@@ -2378,5 +1888,53 @@ mod request_tests {
             before_blocked,
             "excluded account wrote durable state"
         );
+    }
+}
+
+#[cfg(test)]
+mod provider_admission_tests {
+    use super::*;
+
+    fn snapshot(intent: bool, admission: Option<Value>) -> Snapshot {
+        let mut operation = json!({"id":"transfer","leadId":"agent","targetAccountKey":"target",
+            "status":"pending","created":1.0,"scope":"team",
+            "members":{"agent":{"phase":"reading","sourceAccountKey":"source","sourceThreadId":"thread"}}});
+        if intent {
+            operation["members"]["agent"]["providerIntent"] = json!({"operation":"start"});
+        }
+        if let Some(admission) = admission {
+            operation["members"]["agent"]["providerAdmission"] = admission;
+        }
+        Snapshot::read(&operation.to_string(),[("agent".into(), json!({"provider":"codex","id":"agent",
+            "rootId":"agent","epoch":0,"status":"idle","accountKey":"target","accountTransferId":"transfer"}).to_string())])
+            .expect("transfer owner")
+    }
+
+    #[test]
+    fn provider_root_is_persisted_once_and_missing_retry_identity_is_refused() {
+        let first = snapshot(false, None);
+        let mut decision = first.decide(Command::Restart).expect("decision");
+        admit_mutation(&first, &mut decision, "agent").expect("new obligation");
+        let saved = decision.operation["members"]["agent"]["providerAdmission"].clone();
+        let admission: ProviderAdmission =
+            serde_json::from_value(saved.clone()).expect("admission");
+        studio_runtime_schema::persistence::RequestIdentity::new(
+            "test",
+            &[],
+            &admission.root_request_id,
+            &[],
+        )
+        .expect("v7 root");
+        let retry = snapshot(true, Some(saved.clone()));
+        let mut decision = retry.decide(Command::Restart).expect("retry decision");
+        admit_mutation(&retry, &mut decision, "agent").expect("saved identity");
+        assert_eq!(
+            decision.operation["members"]["agent"]["providerAdmission"],
+            saved
+        );
+        let missing = snapshot(true, None);
+        let mut decision = missing.decide(Command::Restart).expect("held decision");
+        assert!(admit_mutation(&missing, &mut decision, "agent").is_err());
+        assert!(decision.operation["members"]["agent"]["providerAdmission"].is_null());
     }
 }

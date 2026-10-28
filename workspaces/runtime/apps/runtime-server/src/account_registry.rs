@@ -688,6 +688,8 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
             let operation = request.operation.clone();
             let response = session
                 .request(SessionRequest {
+                    root_request_id: request.root_request_id.clone(),
+                    admitted_request: request.admitted_request.clone(),
                     scope: scope.clone(),
                     expected_scope: Some(scope.clone()),
                     operation: operation.clone(),
@@ -849,6 +851,8 @@ async fn dispatch_request(
     }
     let fallback_request = request.clone();
     let retained_request = SessionRequest {
+        root_request_id: request.root_request_id.clone(),
+        admitted_request: request.admitted_request.clone(),
         scope: scope.clone(),
         expected_scope: request.expected_scope.clone(),
         operation: request.operation.clone(),
@@ -2728,6 +2732,8 @@ mod tests {
         assert!(broker.current_scope("account-a").is_none());
         let receipt = broker
             .request(ProviderRequest {
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
                 account: "account-a".into(),
                 operation: "read-1".into(),
                 actor: None,

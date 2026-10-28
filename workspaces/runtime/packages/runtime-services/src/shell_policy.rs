@@ -361,7 +361,7 @@ async fn sweep(
     store: &RuntimeStore,
     port: &dyn AccountSessionPort,
     critical: bool,
-) -> Result<(), StoreError> {
+) -> Result<(), crate::account_worker::WorkerError> {
     let (settings, agents) = store.read_async("runtime-services/shell-policy", move |db| {
         let settings = OrchestrationSettingsRepository::shell_policy(db)?;
         if settings.quiet_threshold_ms == 0 && !critical { return Ok((settings,Vec::new())); }
@@ -378,18 +378,38 @@ async fn sweep(
         };
         let id = agent["id"].as_str().unwrap_or_default().to_owned();
         let epoch = agent["epoch"].as_i64().unwrap_or(-1);
-        let check = agent.clone();
-        let allowed = store
-            .read_async("runtime-services/shell-policy/eligibility", move |db| {
-                eligible(db, &check)
+        let account = account.to_owned();
+        let policy = settings.clone();
+        let request = store.transaction_with(move |tx| {
+            use crate::account_worker::retained::{ProviderCallIntent, reserve_provider_call};
+            use studio_runtime_schema::persistence::RequestIdentity;
+            use studio_runtime_store::request_results::{Admission, RequestResults};
+            let allowed = eligible(tx, &agent)?;
+            let root_request_id = RequestIdentity::issue_root();
+            let operation = format!("shell-policy:{id}:{root_request_id}");
+            let params = json!({"threadId":agent["threadId"],"settings":policy,"eligible":allowed,"critical":critical});
+            let identity = RequestIdentity::new("shell-policy", &[&id], &root_request_id, &[])
+                .map_err(studio_runtime_store::request_results::RequestResultError::from).map_err(StoreError::from)?;
+            let owner = match RequestResults::admit(tx, &identity, &params.to_string(), chrono::Utc::now().timestamp_millis()).map_err(StoreError::from)? {
+                Admission::Fresh(owner) => owner,
+                Admission::Replay(_) => return Err(crate::account_worker::WorkerError::Store(StoreError::RequestResult(
+                    studio_runtime_store::request_results::RequestResultError::Conflict {id: identity.id().to_owned()}
+                ))),
+            };
+            let actor = Some(RequestActor {agent: id, epoch});
+            let method = studio_runtime_providers::Method::ClaudeShellPolicy;
+            let admitted = reserve_provider_call(tx, &owner, ProviderCallIntent {
+                root_request_id: root_request_id.clone(), admitted_request: None,
+                scope: scope.clone(), operation: operation.clone(), actor: actor.clone(),
+                transfer: None, deleted_actor_session: None, method, params: params.clone(),
+            })?;
+            Ok::<_,crate::account_worker::WorkerError>(ProviderRequest {
+                root_request_id, admitted_request: Some(admitted), account, operation, actor,
+                expected_scope: Some(scope), deleted_actor_session: None, method, params,
+                deadline: Instant::now() + Duration::from_secs(2),
             })
-            .await?;
-        drop(port.provider_request(ProviderRequest {
-            account: account.into(), operation: format!("shell-policy:{id}:{}", uuid::Uuid::new_v4()), actor: Some(RequestActor {agent: id, epoch}), expected_scope: Some(scope), deleted_actor_session: None,
-            method: studio_runtime_providers::Method::ClaudeShellPolicy,
-            params: json!({"threadId":agent["threadId"],"settings":settings,"eligible":allowed,"critical":critical}),
-            deadline: Instant::now() + Duration::from_secs(2),
-        }).await);
+        }).await?;
+        drop(port.provider_request(request).await);
     }
     Ok(())
 }

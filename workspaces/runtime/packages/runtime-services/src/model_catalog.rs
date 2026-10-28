@@ -132,6 +132,8 @@ async fn read_account_session_catalog(
         );
         use crate::account_session_runtime::{ProviderRequest, ProviderResponse};
         let request = session_clone.provider_request(ProviderRequest {
+            root_request_id: String::new(),
+            admitted_request: None,
             account: account_clone,
             operation: operation.clone(),
             actor: None,
