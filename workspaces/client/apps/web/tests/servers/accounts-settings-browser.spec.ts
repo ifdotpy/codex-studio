@@ -535,6 +535,7 @@ test("accounts settings show per-server state and provider choices", async ({
     .click();
   await expect.poll(() => profilePosts.length).toBe(1);
   await expect(profile).toBeVisible();
+  await expect(profile.getByRole("status")).toHaveText("Claude profile saved.");
   expect(profilePosts).toHaveLength(1);
   expect(profilePosts[0]!.port).toBe(new URL(remote.origin).port);
   expect(profilePosts[0]!.body.account_key).toBe("remote-claude");
@@ -549,6 +550,7 @@ test("accounts settings show per-server state and provider choices", async ({
   const remoteActions = remoteClaude.getByRole("button", {
     name: "Actions for claude@example.test",
   });
+  await expect(remoteActions).toBeEnabled();
   await expect(remoteActions).toBeFocused();
   await remoteActions.click();
   await page.getByRole("menuitem", { name: "Configure", exact: true }).click();
