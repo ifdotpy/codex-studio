@@ -50,7 +50,12 @@ Server preferences stay on their own server.
 | Account, model, permission and worker concurrency choices                   | Existing server APIs and their entities                                                                                                 | Server, already synced; not UI preference fields                              |
 
 `workspaces/client/apps/web/src/servers/storage.ts` adds the server namespace to local keys in server views.
-The offline cache retains the previous local keys for the first render.
+Local keys are not browser storage. In the desktop app they are rows of the Rust core store (`client_preferences`). The page reads them once at startup with `preferences.raw_all`, keeps them in memory, and writes each change with `preferences.raw_set` or `preferences.raw_remove`.
+
+- The core keeps the unacknowledged writes in the journal row `studio-native-preferences-journal-v1`. A restart resends them with their original request IDs. A write that reached memory but not the journal before a crash is lost. Synchronous commit is the open fix (see the TODO in `native/preferenceState.ts`).
+- The first start imports the WebView entries of older builds once. The import and the marker `studio-native-preferences-imported-v1` are one core call, so the import never repeats. The old journal of that WebView is replayed in the same call.
+- A plain browser has no core. Its local values stay in memory and are lost on reload. The server copy still applies.
+- `workspaces/client/apps/web/src/browserStorageOwners.test.ts` lists each web file that still reads browser storage, with its owner step.
 
 ## Storage and delivery
 
