@@ -760,6 +760,45 @@ test("an idle existing session queues the change until its next turn", async () 
   });
 });
 
+test("a direct settings save shows Saved instead of Queued", async () => {
+  h.post.mockResolvedValue({ ...initial, model: "gpt-6-luna" });
+  render(initial).picker.onModel("gpt-6-luna");
+  await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+  await Promise.resolve();
+  expect(
+    children(render(initial).statusModal).map((node) => node.props.children),
+  ).toContain("Saved");
+});
+
+test("late success cannot revive a failed account change after returning to the original account", async () => {
+  let finish!: (agent: Agent) => void;
+  h.post.mockImplementationOnce(
+    () =>
+      new Promise<Agent>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const agent: Agent = {
+    ...initial,
+    status: AgentStatus.running,
+    nextTurnSettingsSupported: true,
+  };
+  render(agent).picker.onModel("gpt-6-luna");
+  const other = { ...agent, accountKey: "other" };
+  render(other);
+  render(other);
+  render(agent);
+  finish({
+    ...agent,
+    pendingSettings: { model: "gpt-6-luna", effort: "medium", fastMode: false },
+    pendingSettingsAccountKey: "default",
+  });
+  await Promise.resolve();
+  expect(
+    children(render(agent).statusModal).map((node) => node.props.children),
+  ).toContain("Failed");
+});
+
 test("earlier matching pending and applied events cannot confirm an unresolved save", async () => {
   const agent: Agent = {
     ...initial,

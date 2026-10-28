@@ -304,7 +304,9 @@ function ExecutionSettingsController(props: ControllerProps) {
             ? "Saving…"
             : changeStatus.phase === "queued"
               ? "Queued for the next turn"
-              : "Failed"}
+              : changeStatus.phase === "saved"
+                ? "Saved"
+                : "Failed"}
         </Text>
         <Text size="sm">
           {changeStatus.before.model || "Default"} →{" "}
@@ -490,13 +492,14 @@ function ExecutionSettingsController(props: ControllerProps) {
             : current,
         )
       }
-      onSettingsConfirmed={(key) =>
+      onSettingsConfirmed={(key, nextTurn) =>
         setChangeStatus((current) =>
           current &&
+          current.phase !== "failed" &&
           current.requestKey === key &&
           projected.current.agent.id === current.agentId &&
           accountOf(projected.current.agent) === current.accountKey
-            ? { ...current, phase: "queued" }
+            ? { ...current, phase: nextTurn ? "queued" : "saved" }
             : current,
         )
       }
@@ -588,7 +591,7 @@ function ScopedExecutionSettings({
   beginSettingsSave: (role: SetupRole) => (agent: Agent) => boolean;
   onSettingsChange: (change: SettingsChange) => void;
   onSettingsFailure: (key: string, message: string, uncertain: boolean) => void;
-  onSettingsConfirmed: (key: string) => void;
+  onSettingsConfirmed: (key: string, nextTurn: boolean) => void;
   teamDefaults: boolean;
   readOnlyReason?: string | undefined;
   inheritedUnavailable: boolean;
@@ -1011,7 +1014,8 @@ function ScopedExecutionSettings({
           "The settings account changed. Check the current settings.",
         );
       confirmed = true;
-      if (!teamDefaults) onSettingsConfirmed(statusKey);
+      if (!teamDefaults)
+        onSettingsConfirmed(statusKey, request.next_turn === true);
       if (request.next_turn) {
         clearReceipt();
         if (mounted.current) setUnconfirmed(null);

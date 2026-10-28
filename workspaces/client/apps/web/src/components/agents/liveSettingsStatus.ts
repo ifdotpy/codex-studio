@@ -8,7 +8,7 @@ type Values = {
 export type SettingsChange = {
   agentId: string;
   accountKey: string;
-  phase: "saving" | "queued" | "failed";
+  phase: "saving" | "queued" | "saved" | "failed";
   before: Values;
   requested: Values;
   error?: string;
@@ -28,7 +28,7 @@ export function observeSettingsChange(
     | "pendingSettingsAccountKey"
   >,
 ): SettingsChange {
-  if (change.phase === "failed") return change;
+  if (change.phase === "failed" || change.phase === "saved") return change;
   if (
     agent.id !== change.agentId ||
     (agent.accountKey || "default") !== change.accountKey ||
