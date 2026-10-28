@@ -351,7 +351,7 @@ async fn transferred_monitor_fixture(
     port.store.transaction(move |tx| {
         use studio_runtime_schema::persistence::{RequestIdentity, OutboxKind, OutboxStatus, OwnerKind};
         use studio_runtime_schema::provider_call_contract::{ProviderCallIntent, RetainedCall, TransportRequest, RequestActor};
-        use studio_runtime_store::request_results::Admission;
+        use studio_runtime_services::event_write::{begin_request, CallerAdmission, RequestKey};
         tx.execute("DELETE FROM runtime_tasks", [])?;
         let operation = format!("monitor:{}", receipt_monitor["id"].as_str().unwrap());
         let root = RequestIdentity::issue_root();
@@ -363,9 +363,9 @@ async fn transferred_monitor_fixture(
             params:json!({"processId":receipt_monitor["id"],"cwd":receipt_monitor["cwd"],"command":["true"]}),
         };
         let signature = call.fingerprint("default", call.method.as_str());
-        let admitted = match studio_runtime_services::event_write::admit_request(tx,"provider-call", &["default","owner","1"], &root, &[&operation], &signature, (studio_runtime_services::event_write::unix_time().unwrap()*1000.0) as i64)? {
-            Admission::Fresh(admitted) => admitted,
-            Admission::Replay(_) => panic!("fresh command"),
+        let admitted = match begin_request::<()>(tx, RequestKey::new("provider-call", &["default","owner","1"], &root).operation(&[&operation]), &signature, (studio_runtime_services::event_write::unix_time().unwrap()*1000.0) as i64)? {
+            CallerAdmission::Fresh(admitted) => admitted,
+            CallerAdmission::Replay(_) => panic!("fresh command"),
         };
         let key = studio_runtime_schema::provider_call_contract::transport_key("default", &operation);
         let request = TransportRequest { id:studio_runtime_providers::RequestId::String(key.clone()), generation:7, method:call.method, operation:key.clone(), thread:None,lightweight:true,deadline:60000,unknown:false,remote_id:None };

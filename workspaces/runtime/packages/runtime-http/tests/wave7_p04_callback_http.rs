@@ -153,7 +153,8 @@ async fn complaint_http_replays_original_signature_before_version_and_recipient_
         None,
     ))
     .unwrap();
-    let body = json!({"id":"reply", "action":"respond", "complaint_id":"complaint",
+    let request_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let body = json!({"id":request_root, "action":"respond", "complaint_id":"complaint",
         "text":"  Reviewed  ", "status":"in_progress", "version":1, "lead":null});
     assert_eq!(
         call(&app, "/api/complaints", body.clone(), "wrong").await.0,
@@ -168,9 +169,8 @@ async fn complaint_http_replays_original_signature_before_version_and_recipient_
     signature_body["operation"] = json!("complaint_response");
     let signature = studio_runtime_services::event_write::request_signature(&signature_body);
     store.transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
-        assert!(studio_runtime_services::event_write::read_receipt(
-            tx, Some("user:reply"), &signature, "runtime_complaints", "complaint", |_: &Value| true,
-        ).unwrap().is_some());
+        let identity = studio_runtime_schema::persistence::RequestIdentity::new("complaint_response", &["complaint","user"], &request_root, &[]).unwrap();
+        assert!(studio_runtime_services::event_write::replay_request::<studio_runtime_store::ComplaintRecord>(tx, identity.id(), &signature, (studio_runtime_services::event_write::unix_time().unwrap()*1000.0) as i64)?.is_some());
         // A lost reply must replay despite later version/recipient changes.
         tx.execute("UPDATE runtime_complaints SET record=json_set(record,'$.recipient','lead','$.version',9)", [])?;
         Ok(())
@@ -186,11 +186,11 @@ async fn complaint_http_replays_original_signature_before_version_and_recipient_
             changed[field] = json!("Changed reply");
         }
         let (status, error) = call(&app, "/api/complaints", changed, "token").await;
-        assert_eq!(status, 400, "{error}");
-        assert_eq!(error["error"], "This request id has different content");
+        assert_eq!(status, 409, "{error}");
+        assert_eq!(error["error"], "This request ID has different content");
     }
     let mut fresh = body.clone();
-    fresh["id"] = json!("new-reply");
+    fresh["id"] = json!(studio_runtime_schema::persistence::RequestIdentity::issue_root());
     let (status, error) = call(&app, "/api/complaints", fresh.clone(), "token").await;
     assert_eq!(status, 400, "{error}");
     assert_eq!(
