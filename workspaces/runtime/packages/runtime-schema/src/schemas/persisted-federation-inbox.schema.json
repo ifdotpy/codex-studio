@@ -31,13 +31,6 @@
       ],
       "title": "Kind"
     },
-    "receipt": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "title": "Receipt",
-      "type": "object"
-    },
     "room": {
       "anyOf": [
         {
@@ -51,7 +44,7 @@
       "title": "Room"
     }
   },
-  "required": ["hash", "receipt", "ack", "created"],
+  "required": ["hash", "ack", "created"],
   "title": "PersistedFederationInbox",
   "type": "object"
 }

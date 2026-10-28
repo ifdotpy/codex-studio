@@ -3464,6 +3464,28 @@
         "title": "ActiveToolRecordResponse",
         "type": "object"
       },
+      "AdmittedRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "created": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "signature",
+          "created"
+        ],
+        "title": "AdmittedRequest",
+        "type": "object"
+      },
       "AgentActivity": {
         "additionalProperties": false,
         "properties": {

@@ -6,6 +6,9 @@
     "$ref": "#/$defs/JsonValue"
   },
   "properties": {
+    "admission": {
+      "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/AdmittedRequest"
+    },
     "attempts": {
       "maximum": 9007199254740991,
       "minimum": 0,
@@ -59,19 +62,9 @@
       "title": "Payload",
       "type": "object"
     },
-    "receipt": {
-      "anyOf": [
-        {
-          "additionalProperties": {
-            "$ref": "#/$defs/JsonValue"
-          },
-          "type": "object"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Receipt"
+    "requestId": {
+      "format": "uuid",
+      "type": "string"
     },
     "room": {
       "maxLength": 128,
@@ -92,7 +85,9 @@
     "created",
     "status",
     "attempts",
-    "nextAt"
+    "nextAt",
+    "requestId",
+    "admission"
   ],
   "title": "PersistedFederationOutbox",
   "type": "object"
