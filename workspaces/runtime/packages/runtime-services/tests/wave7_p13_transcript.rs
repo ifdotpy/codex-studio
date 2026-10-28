@@ -11,9 +11,8 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::{RuntimeStore, StoreError};
 
-#[tokio::test]
 #[allow(clippy::disallowed_methods)]
-async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
+async fn transcript_cases(group: usize) {
     let root = tempfile::tempdir().expect("isolated state");
     let mode = if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
         "full"
@@ -43,7 +42,24 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
     );
     let mut fault_count = 0;
     let mut startup_refusals = 0;
-    for case in cases {
+    assert_eq!(
+        cases
+            .iter()
+            .filter(|case| case["phase"] == "malformed-turn")
+            .count(),
+        1,
+        "one malformed turn must be refused at startup"
+    );
+    let expected_refusals = cases
+        .iter()
+        .enumerate()
+        .filter(|(index, case)| index % 8 == group && case["phase"] == "malformed-turn")
+        .count();
+    for (_, case) in cases
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| index % 8 == group)
+    {
         let name = case["path"].as_str().expect("snapshot name");
         let state = root.path().join(name);
         restore_snapshot(&fixtures.join(name), &state, root.path());
@@ -460,10 +476,26 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
         }
     }
     assert_eq!(
-        startup_refusals, 1,
+        startup_refusals, expected_refusals,
         "only the malformed turn is refused at startup"
     );
     eprintln!("P13 injected write/commit boundaries: {fault_count}");
+}
+macro_rules! transcript_groups {
+    ($($name:ident: $group:expr),+ $(,)?) => {$ (
+        #[tokio::test]
+        async fn $name() { transcript_cases($group).await; }
+    )+};
+}
+transcript_groups! {
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_0: 0,
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_1: 1,
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_2: 2,
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_3: 3,
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_4: 4,
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_5: 5,
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_6: 6,
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_7: 7,
 }
 // The Python transcript-only captures contain replies with no tool owner. Move
 // those replies into current completed owners after the real migration has run.

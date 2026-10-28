@@ -191,8 +191,11 @@ async fn python_terminal_notification_count_decodes_without_changing_attempt_eve
 async fn connection_completion_matches_python_full_records_and_results() {
     let cases = corpus()["connection"].as_array().expect("cases");
     assert_eq!(cases.len(), 27);
+    let seed_root = fixture();
+    let template = crate::state_template::StateTemplate::migrate(seed_root.path()).await;
     for case in cases {
-        let root = fixture();
+        let root = tempfile::tempdir().expect("temporary state");
+        template.write(root.path());
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         seed(&store, &case["before"]).await;
         let result = apply(&store, &case["before"], terminal(case), false)
@@ -249,8 +252,11 @@ async fn connection_completion_matches_python_full_records_and_results() {
 async fn unresolved_operations_match_python_including_legacy_scope() {
     let cases = corpus()["unresolved"].as_array().expect("cases");
     assert_eq!(cases.len(), 36);
+    let seed_root = fixture();
+    let template = crate::state_template::StateTemplate::migrate(seed_root.path()).await;
     for case in cases {
-        let root = fixture();
+        let root = tempfile::tempdir().expect("temporary state");
+        template.write(root.path());
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let before = corpus()["connection"][0]["before"].clone();
         seed(&store, &before).await;

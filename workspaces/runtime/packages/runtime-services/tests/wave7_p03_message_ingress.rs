@@ -89,6 +89,17 @@ impl Fixture {
             .expect("rebind seed hash");
         }
         drop(db);
+        Self::seed_identity(&root);
+        root
+    }
+    fn seed_copy(&self, name: &str, template: &crate::state_template::StateTemplate) -> PathBuf {
+        let root = self.root.path().join(name);
+        std::fs::create_dir(&root).expect("fixture directory");
+        template.write(&root);
+        Self::seed_identity(&root);
+        root
+    }
+    fn seed_identity(root: &Path) {
         let identity_root = root.join("multi-server");
         std::fs::create_dir(&identity_root).expect("identity directory");
         let identity = identity_root.join("identity.json");
@@ -105,7 +116,6 @@ impl Fixture {
             std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o600))
                 .expect("private identity file");
         }
-        root
     }
     fn expected(&self, name: &str) -> Expected {
         let workspace =
@@ -211,6 +221,8 @@ fn post(
 #[tokio::test]
 async fn python_send_and_receipt_corpus() {
     let fixture = Fixture::new();
+    let seed = fixture.seed("migrated-template");
+    let template = crate::state_template::StateTemplate::migrate(&seed).await;
     let cases: Vec<Value> =
         serde_json::from_str(include_str!("wave7_p03_message_ingress/cases.json")).expect("cases");
     for mut case in cases {
@@ -230,7 +242,7 @@ async fn python_send_and_receipt_corpus() {
             }
         }
         let name = case["name"].as_str().expect("case name");
-        let root = fixture.seed(name);
+        let root = fixture.seed_copy(name, &template);
         let expected = fixture.expected(name);
         let store = RuntimeStore::open(Some(&root))
             .await
