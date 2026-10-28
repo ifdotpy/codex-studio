@@ -363,6 +363,7 @@ fn monitor(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value, cutover: i6
     let status: MonitorInputStatus =
         serde_json::from_value(value["status"].clone()).map_err(|_| invalid())?;
     match status {
+        MonitorInputStatus::Expired => Err(invalid()),
         MonitorInputStatus::Pending | MonitorInputStatus::Unknown => obligation(
             tx,
             row,

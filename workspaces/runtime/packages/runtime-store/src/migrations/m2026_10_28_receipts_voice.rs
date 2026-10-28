@@ -331,6 +331,7 @@ fn convert(
                 outcome = prior(tx, &mut session, &operation, cutover)?;
             }
             match outcome {
+                Some(VoiceStopOutcome::Expired) => return Err(invalid()),
                 Some(VoiceStopOutcome::Submitted | VoiceStopOutcome::Unknown) => {
                     payload
                         .voice_end_results
