@@ -5,6 +5,7 @@ import { ApiError, errorText, type PostBody } from "../../api";
 import {
   useServerApi,
   useServerServices,
+  useServerStorage,
 } from "../../servers/ServerServicesContext";
 import type {
   DisplayBackgroundTask,
@@ -33,11 +34,12 @@ export default function MonitorRestart({
 }) {
   const { post } = useServerApi();
   const services = useServerServices();
+  const storage = useServerStorage();
   const storageKey = `monitor-restart:${services?.owner.id || "local"}:${task.id}`;
   const [receipt, setReceipt] = useState<Restart | null>(() => {
     try {
       return JSON.parse(
-        sessionStorage.getItem(storageKey) || "null",
+        storage.getItem(storageKey) || "null",
       ) as Restart | null;
     } catch {
       return null;
@@ -63,13 +65,13 @@ export default function MonitorRestart({
       outputPatterns: values,
     };
     // Retain the exact confirmed request across a lost reply or drawer close.
-    sessionStorage.setItem(storageKey, JSON.stringify(body));
+    storage.setItem(storageKey, JSON.stringify(body));
     setReceipt(body);
     setPending(true);
     setError("");
     try {
       await post("/api/monitor/restart", body);
-      sessionStorage.removeItem(storageKey);
+      storage.removeItem(storageKey);
       setReceipt(null);
       setOpened(false);
       notify(
@@ -82,7 +84,7 @@ export default function MonitorRestart({
         failure.status >= 400 &&
         failure.status < 500
       ) {
-        sessionStorage.removeItem(storageKey);
+        storage.removeItem(storageKey);
         setReceipt(null);
         setError(errorText(failure));
       } else {

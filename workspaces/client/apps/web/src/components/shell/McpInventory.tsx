@@ -7,7 +7,10 @@ import {
   type PostBody,
   type PostResult,
 } from "../../api";
-import { useServerServices } from "../../servers/ServerServicesContext";
+import {
+  useServerServices,
+  useServerStorage,
+} from "../../servers/ServerServicesContext";
 import { serverViewId } from "../../servers/environment";
 
 type Inventory = GetResult<"/api/capabilities">;
@@ -54,6 +57,7 @@ export function McpInventory({
   reconnect,
 }: Props) {
   const services = useServerServices();
+  const storage = useServerStorage();
   const owner = services?.owner.id ?? serverViewId ?? "local";
   const [inventory, setInventory] = useState(initial);
   const [rows, setRows] = useState(() => mcpServers(initial.mcp));
@@ -89,7 +93,7 @@ export function McpInventory({
     for (const row of rows) {
       const key = requestKey(row.name);
       try {
-        const requestId = sessionStorage.getItem(key);
+        const requestId = storage.getItem(key);
         if (requestId && !requests.current.has(key)) {
           requests.current.set(key, {
             id: agent,
@@ -170,14 +174,14 @@ export function McpInventory({
       // Keep an uncertain request across a page reload. Failure to persist must
       // stop the mutation before it reaches the server.
       try {
-        const requestId = sessionStorage.getItem(storageKey) || randomUUID();
+        const requestId = storage.getItem(storageKey) || randomUUID();
         body = {
           id: agent,
           name,
           session: inventory.mcpSession,
           request_id: requestId,
         };
-        sessionStorage.setItem(storageKey, requestId);
+        storage.setItem(storageKey, requestId);
         requests.current.set(storageKey, body);
       } catch (error) {
         setFeedback((old) => ({
@@ -204,7 +208,7 @@ export function McpInventory({
       }));
       if (result.status !== "unknown") {
         try {
-          sessionStorage.removeItem(storageKey);
+          storage.removeItem(storageKey);
           requests.current.delete(storageKey);
         } catch {
           /* A saved settled identity can still be replayed safely. */

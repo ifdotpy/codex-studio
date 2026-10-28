@@ -26,17 +26,36 @@ function stubBrowser() {
   vi.stubGlobal("navigator", { onLine: true });
 }
 
-function stubRendererUpdate() {
+// The update marker is written to the preference store (see preferenceStorage.ts).
+// Each import of the api module after a reset needs the same entries again.
+function preferenceEntries(entries: Map<string, string>): Storage {
+  return {
+    get length() {
+      return entries.size;
+    },
+    key: (index: number) => [...entries.keys()][index] ?? null,
+    getItem: (key: string) => entries.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      entries.set(key, value);
+    },
+    removeItem: (key: string) => {
+      entries.delete(key);
+    },
+    clear: () => entries.clear(),
+  };
+}
+
+async function installPreferences(entries: Map<string, string>) {
+  const { installPreferenceStorage } = await import("./preferenceStorage");
+  installPreferenceStorage(preferenceEntries(entries));
+}
+
+async function stubRendererUpdate() {
   stubBrowser();
   const entries = new Map<string, string>();
+  await installPreferences(entries);
   const reload = vi.fn();
-  vi.stubGlobal("sessionStorage", {
-    getItem: (key: string) => entries.get(key) ?? null,
-    setItem: (key: string, value: string) => entries.set(key, value),
-    removeItem: (key: string) => entries.delete(key),
-  });
   Object.assign(window, {
-    codexDesktop: {},
     location: { href: "http://studio.test/?studio-server=local", reload },
   });
   Object.assign(document, {
@@ -46,7 +65,7 @@ function stubRendererUpdate() {
 }
 
 it("automatically loads a verified new renderer once and permits a later deployment", async () => {
-  const { reload } = stubRendererUpdate();
+  const { reload, entries } = await stubRendererUpdate();
   let hash = "a".repeat(64);
   let build = "b".repeat(16);
   const fetch = vi.fn(async () =>
@@ -63,6 +82,7 @@ it("automatically loads a verified new renderer once and permits a later deploym
     { cache: "no-store", redirect: "error" },
   ]);
   vi.resetModules();
+  await installPreferences(entries);
   api = await import("./api");
   api.markApiSchemaMismatch(hash);
   expect(await api.automaticallyUpdateRenderer(() => true, signal)).toBe(false);
@@ -70,6 +90,7 @@ it("automatically loads a verified new renderer once and permits a later deploym
   hash = "c".repeat(64);
   build = "d".repeat(16);
   vi.resetModules();
+  await installPreferences(entries);
   api = await import("./api");
   api.markApiSchemaMismatch(hash);
   expect(await api.automaticallyUpdateRenderer(() => true, signal)).toBe(true);
@@ -77,7 +98,7 @@ it("automatically loads a verified new renderer once and permits a later deploym
 });
 
 it("retains the gate for unknown, unavailable or incompatible renderer metadata", async () => {
-  const { reload } = stubRendererUpdate();
+  const { reload } = await stubRendererUpdate();
   let api = await import("./api");
   const signal = new AbortController().signal;
   const fetch = vi.fn();
@@ -109,7 +130,7 @@ it("retains the gate for unknown, unavailable or incompatible renderer metadata"
 });
 
 it("checks local activity again after fetching metadata and preserves cancellation", async () => {
-  const { reload } = stubRendererUpdate();
+  const { reload } = await stubRendererUpdate();
   let safe = true;
   vi.stubGlobal("fetch", async () => {
     safe = false;
@@ -379,11 +400,7 @@ it("raises mismatch state only for the explicitly marked schema-gated 426", asyn
 
 it("clears the update attempt only after a matching response on the reloaded page", async () => {
   const storage = new Map<string, string>();
-  vi.stubGlobal("sessionStorage", {
-    getItem: (key: string) => storage.get(key) ?? null,
-    setItem: (key: string, value: string) => storage.set(key, value),
-    removeItem: (key: string) => storage.delete(key),
-  });
+  await installPreferences(storage);
   const responses = ["foreign-schema", API_SCHEMA_HASH];
   stubBrowser();
   vi.stubGlobal(
@@ -404,6 +421,7 @@ it("clears the update attempt only after a matching response on the reloaded pag
   storage.set("studio-api-schema-update-attempted", "1");
   expect(api.schemaUpdateFailedAfterReload()).toBe(true);
   vi.resetModules();
+  await installPreferences(storage);
   responses[0] = API_SCHEMA_HASH;
   const reloadedApi = await import("./api");
   await reloadedApi.get("/api/session");
@@ -412,12 +430,8 @@ it("clears the update attempt only after a matching response on the reloaded pag
 
 it("reloads only after Update and distinguishes a matching renderer from a persistent mismatch", async () => {
   const storage = new Map<string, string>();
+  await installPreferences(storage);
   const reload = vi.fn();
-  vi.stubGlobal("sessionStorage", {
-    getItem: (key: string) => storage.get(key) ?? null,
-    setItem: (key: string, value: string) => storage.set(key, value),
-    removeItem: (key: string) => storage.delete(key),
-  });
   stubBrowser();
   vi.stubGlobal("window", {
     addEventListener: vi.fn(),
@@ -444,6 +458,7 @@ it("reloads only after Update and distinguishes a matching renderer from a persi
   expect(storage.has("studio-api-schema-update-attempted")).toBe(true);
 
   vi.resetModules();
+  await installPreferences(storage);
   responseHash = API_SCHEMA_HASH;
   api = await import("./api");
   await api.get("/api/session");
@@ -452,6 +467,7 @@ it("reloads only after Update and distinguishes a matching renderer from a persi
 
   storage.set("studio-api-schema-update-attempted", "1");
   vi.resetModules();
+  await installPreferences(storage);
   responseHash = "foreign-schema";
   api = await import("./api");
   await expect(api.get("/api/session")).rejects.toBeInstanceOf(
@@ -462,46 +478,12 @@ it("reloads only after Update and distinguishes a matching renderer from a persi
   expect(reload).toHaveBeenCalledTimes(1);
 });
 
-it("clears the completed-update marker when service-worker update fails", async () => {
-  const storage = new Map<string, string>();
-  stubBrowser();
-  vi.stubGlobal("sessionStorage", {
-    getItem: (key: string) => storage.get(key) ?? null,
-    setItem: (key: string, value: string) => storage.set(key, value),
-    removeItem: (key: string) => storage.delete(key),
-  });
-  vi.stubGlobal("window", {
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-    dispatchEvent: vi.fn(),
-    location: { href: "http://studio.test/", assign: vi.fn() },
-  });
-  vi.stubGlobal("navigator", {
-    onLine: true,
-    serviceWorker: {
-      getRegistration: vi.fn().mockResolvedValue({
-        update: vi.fn().mockRejectedValue(new Error("offline")),
-      }),
-    },
-  });
-  const api = await import("./api");
-  await expect(api.updateRendererAndReload()).rejects.toThrow("offline");
-  expect(storage.has("studio-api-schema-update-attempted")).toBe(false);
-});
-
-it("reloads the packaged native renderer without requiring a browser service worker", async () => {
-  const { reload } = stubRendererUpdate();
-  delete window.codexDesktop;
-  vi.stubGlobal("__TAURI__", { core: { invoke: vi.fn() } });
-  const getRegistration = vi.fn(async () => undefined);
-  vi.stubGlobal("navigator", {
-    onLine: true,
-    serviceWorker: { getRegistration },
-  });
+it("reloads Studio after writing the update marker to the core", async () => {
+  const { reload, entries } = await stubRendererUpdate();
   const api = await import("./api");
   expect(await api.updateRendererAndReload()).toBe(true);
   expect(reload).toHaveBeenCalledOnce();
-  expect(getRegistration).not.toHaveBeenCalled();
+  expect(entries.get("studio-api-schema-update-attempted")).toBe("1");
   expect(await api.updateRendererAndReload("1", () => false)).toBe(false);
   expect(reload).toHaveBeenCalledOnce();
 });

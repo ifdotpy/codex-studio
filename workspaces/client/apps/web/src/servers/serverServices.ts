@@ -49,7 +49,6 @@ import { createServerActivity } from "./activity";
 import { createMutationJournal } from "./mutationIdentity";
 import type { StudioServer } from "./registry";
 import { createServerTransport } from "./serverTransport";
-import { scopedStorage } from "./storage";
 import { serverCredentialAdapter } from "./transport";
 
 /** The queue, files, recordings and drafts that the core of one server keeps. */
@@ -89,10 +88,6 @@ export function createServerServices(server: StudioServer) {
     origin: transport.owner.origin,
     fetch: transport.fetch,
     localStorage: storage,
-    sessionStorage: scopedStorage(
-      () => globalThis.sessionStorage,
-      `:server:${transport.owner.id}:`,
-    ),
     beginMutation: createMutationJournal(transport.owner.id, storage),
     beginActivity: activity.beginServerActivity,
   });

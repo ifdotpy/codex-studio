@@ -1,29 +1,14 @@
 import { WorkspaceMode } from "./generated/api";
 import { expect, test } from "vitest";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { SignInPushSettings } from "./components/SignInPushSettings";
 import { nativeErrorView } from "./nativeErrors";
 import { layrSyncText } from "./components/sidebar/MacSync";
 import { workspaceBadgeInfo } from "./components/shell/WorkspaceBadge";
 import { resultTarget } from "./components/questions/signInCardModel";
-import { deviceName } from "./push/signInPush";
 import type { Agent } from "./types";
 import {
   LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
   VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 } from "./generated/sharedValues";
-
-test("unsupported push alerts give platform-neutral setup guidance", () => {
-  const markup = renderToStaticMarkup(
-    createElement(SignInPushSettings, { active: true }),
-  );
-  expect(markup).toContain("This window cannot get push alerts.");
-  expect(markup).toContain(
-    "Try adding Studio to your home screen and opening it from there.",
-  );
-  expect(markup).not.toContain("iPhone");
-});
 
 test("disk recovery, folder sync, workspaces and sign-in use platform-neutral product words", () => {
   expect(nativeErrorView("ENOSPC: no space left on device").hint).toBe(
@@ -64,9 +49,6 @@ test("disk recovery, folder sync, workspaces and sign-in use platform-neutral pr
       "Build server",
     ),
   ).toBe("The VM on Build server, port 8000");
-  expect(deviceName("Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0)")).toBe(
-    "Computer",
-  );
 });
 
 test("user-supplied server labels and raw error details stay intact", () => {

@@ -4,7 +4,7 @@ import {
   MonitorInputStatus,
 } from "./generated/api";
 import { randomUUID } from "./uuid";
-import { hasNativeClient } from "./native/client";
+import { flushPreferenceStorage } from "./preferenceStorage";
 
 import { beginServerActivity } from "./servers/activity";
 
@@ -14,10 +14,7 @@ import {
   finishMonitorInput,
 } from "./servers/mutationIdentity";
 
-import {
-  serverLocalStorage as localStorage,
-  serverSessionStorage as sessionStorage,
-} from "./servers/storage";
+import { serverLocalStorage as localStorage } from "./servers/storage";
 
 import { apiOrigin, serverFetch } from "./servers/transport";
 
@@ -147,27 +144,6 @@ if (typeof window !== "undefined")
   });
 
 const SCHEMA_UPDATE_ATTEMPT_KEY = "studio-api-schema-update-attempted";
-
-const SERVICE_WORKER_UPDATE_TIMEOUT_MS = 20_000;
-
-async function withUpdateTimeout<T>(work: Promise<T>) {
-  return new Promise<T>((resolve, reject) => {
-    const timeout = setTimeout(
-      () => reject(new Error("Studio update timed out.")),
-      SERVICE_WORKER_UPDATE_TIMEOUT_MS,
-    );
-    work.then(
-      (value) => {
-        clearTimeout(timeout);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timeout);
-        reject(error);
-      },
-    );
-  });
-}
 
 export function isApiSchemaHashMismatch(serverHash: unknown) {
   return serverHash !== API_SCHEMA_HASH;
@@ -322,12 +298,11 @@ export type ApiScopeOptions = {
   origin: string;
   fetch: (request: Request) => Promise<Response>;
   localStorage: Storage;
-  sessionStorage: Storage;
   beginMutation: typeof beginServerMutation;
   beginActivity: typeof beginServerActivity;
 };
 export function createApiScope(options: ApiScopeOptions) {
-  const { localStorage, sessionStorage } = options;
+  const { localStorage } = options;
   const apiOrigin = () => options.origin;
   const serverFetch = options.fetch;
   const beginServerMutation = options.beginMutation;
@@ -389,7 +364,7 @@ export function createApiScope(options: ApiScopeOptions) {
 
   function schemaUpdateFailedAfterReload() {
     try {
-      const attempt = sessionStorage.getItem(SCHEMA_UPDATE_ATTEMPT_KEY);
+      const attempt = localStorage.getItem(SCHEMA_UPDATE_ATTEMPT_KEY);
       return attempt === "1" || !!attempt?.startsWith("auto:");
     } catch {
       return false;
@@ -398,7 +373,7 @@ export function createApiScope(options: ApiScopeOptions) {
 
   function clearSchemaUpdateAttemptAfterMatch() {
     try {
-      sessionStorage.removeItem(SCHEMA_UPDATE_ATTEMPT_KEY);
+      localStorage.removeItem(SCHEMA_UPDATE_ATTEMPT_KEY);
     } catch {
       // Storage may be disabled; the mismatch gate still works in memory.
     }
@@ -408,64 +383,17 @@ export function createApiScope(options: ApiScopeOptions) {
     attempt = "1",
     canReload = () => true,
   ) {
+    if (!canReload()) return false;
     try {
-      if (
-        (window as Window & { codexDesktop?: unknown }).codexDesktop ||
-        hasNativeClient() ||
-        !navigator.serviceWorker
-      ) {
-        if (!canReload()) return false;
-        sessionStorage.setItem(SCHEMA_UPDATE_ATTEMPT_KEY, attempt);
-        window.location.reload();
-        return true;
-      }
-      const registration = await navigator.serviceWorker.getRegistration("/");
-      if (!registration)
-        throw new Error(
-          "Studio's service worker is not registered. Reload Studio and try again.",
-        );
-      await withUpdateTimeout(registration.update());
-      const worker = registration.waiting ?? registration.installing;
-      if (worker) {
-        await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(
-            () => finish(new Error("Studio update timed out.")),
-            SERVICE_WORKER_UPDATE_TIMEOUT_MS,
-          );
-          const finish = (error?: Error) => {
-            clearTimeout(timeout);
-            worker.removeEventListener("statechange", changed);
-            if (error) reject(error);
-            else resolve();
-          };
-          let requestedActivation = false;
-          const changed = () => {
-            if (worker.state === "installed" && !requestedActivation) {
-              requestedActivation = true;
-              worker.postMessage({ type: "STUDIO_SKIP_WAITING" });
-            }
-            if (worker.state === "activated") finish();
-            else if (worker.state === "redundant")
-              finish(new Error("Studio update could not be installed."));
-          };
-          worker.addEventListener("statechange", changed);
-          changed();
-        });
-      }
-      if (!canReload()) return false;
-      sessionStorage.setItem(SCHEMA_UPDATE_ATTEMPT_KEY, attempt);
-      const url = new URL(window.location.href);
-      url.searchParams.set("studio-update", String(Date.now()));
-      window.location.assign(url.href);
-      return true;
+      localStorage.setItem(SCHEMA_UPDATE_ATTEMPT_KEY, attempt);
+      // The reloaded page reads the attempt, so it must reach the core first.
+      await flushPreferenceStorage();
     } catch (error) {
-      try {
-        sessionStorage.removeItem(SCHEMA_UPDATE_ATTEMPT_KEY);
-      } catch {
-        // Storage may be unavailable; a failed update remains retryable in memory.
-      }
+      localStorage.removeItem(SCHEMA_UPDATE_ATTEMPT_KEY);
       throw error;
     }
+    window.location.reload();
+    return true;
   }
 
   async function automaticallyUpdateRenderer(
@@ -502,7 +430,7 @@ export function createApiScope(options: ApiScopeOptions) {
       return false;
     const attempt = `auto:${apiSchema}:${build}`;
     // One attempt per target build. A broken deployment must not reload forever.
-    if (sessionStorage.getItem(SCHEMA_UPDATE_ATTEMPT_KEY) === attempt)
+    if (localStorage.getItem(SCHEMA_UPDATE_ATTEMPT_KEY) === attempt)
       return false;
     return updateRendererAndReload(
       attempt,
@@ -997,7 +925,6 @@ const defaultApi = createApiScope({
   origin: apiOrigin(),
   fetch: serverFetch,
   localStorage,
-  sessionStorage,
   beginMutation: beginServerMutation,
   beginActivity: beginServerActivity,
 });

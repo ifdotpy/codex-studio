@@ -42,7 +42,6 @@ function scope(
     origin: `https://${id}.example`,
     fetch,
     localStorage: storage,
-    sessionStorage: storage,
     beginMutation: createMutationJournal(id, storage),
     beginActivity: () => () => {},
   });

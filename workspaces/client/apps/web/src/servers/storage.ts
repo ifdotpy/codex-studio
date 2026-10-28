@@ -98,10 +98,6 @@ export const serverLocalStorage = scopedStorage(
   prefix,
   new Set(["codex-studio-preferences-v1", "mantine-color-scheme-value"]),
 );
-export const serverSessionStorage = scopedStorage(
-  () => globalThis.sessionStorage,
-  prefix,
-);
 export function createStorageEventKey(prefix: string) {
   return (event: Pick<StorageEvent, "key">) =>
     event.key === null

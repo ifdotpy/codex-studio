@@ -123,7 +123,6 @@ function fixture() {
       origin: "http://192.0.2.10:49171",
       fetch,
       localStorage: storage,
-      sessionStorage: storage,
       beginMutation: createMutationJournal(null, storage, journal.store(null)),
       beginActivity: () => () => {},
     });

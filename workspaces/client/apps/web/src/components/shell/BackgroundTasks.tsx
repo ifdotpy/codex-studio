@@ -7,6 +7,7 @@ import { randomUUID } from "../../uuid";
 import {
   useServerApi,
   useServerServices,
+  useServerStorage,
 } from "../../servers/ServerServicesContext";
 import { localDateTime } from "../../local-time";
 import ErrorDescription from "../ErrorDescription";
@@ -243,6 +244,7 @@ export default function BackgroundTasks({
 }) {
   const { get, post } = useServerApi();
   const services = useServerServices();
+  const storage = useServerStorage();
   const taskRecords = useSubscription(
     opened && leadId ? { kind: "tasks", agentId: leadId } : null,
   );
@@ -296,7 +298,7 @@ export default function BackgroundTasks({
     setControlPending(false);
     setIncludeWorkers(false);
     try {
-      const raw = sessionStorage.getItem(controlStorageKey);
+      const raw = storage.getItem(controlStorageKey);
       setPendingControl(
         raw ? (JSON.parse(raw) as PostBody<"/api/processes/action">) : null,
       );
@@ -364,12 +366,12 @@ export default function BackgroundTasks({
       setControlResult(result);
       if (result.status === GeneratedApiProcessActionStatus.uncertain) {
         setPendingControl(body);
-        sessionStorage.setItem(controlStorageKey, JSON.stringify(body));
+        storage.setItem(controlStorageKey, JSON.stringify(body));
         notify(
           "The stop result is unknown. Check its receipt before another stop.",
         );
       } else {
-        sessionStorage.removeItem(controlStorageKey);
+        storage.removeItem(controlStorageKey);
         setPendingControl(null);
         const outcomes = (result.processes || [])
           .map((item) => item.status)
@@ -388,13 +390,13 @@ export default function BackgroundTasks({
         error.status >= 400 &&
         error.status < 500
       ) {
-        sessionStorage.removeItem(controlStorageKey);
+        storage.removeItem(controlStorageKey);
         setPendingControl(null);
         notify(errorText(error));
         return;
       }
       setPendingControl(body);
-      sessionStorage.setItem(controlStorageKey, JSON.stringify(body));
+      storage.setItem(controlStorageKey, JSON.stringify(body));
       notify(
         "The stop reply is unknown. Check its receipt before another stop.",
       );
@@ -427,7 +429,7 @@ export default function BackgroundTasks({
         return;
       }
       setControlResult(receipt.result);
-      sessionStorage.removeItem(controlStorageKey);
+      storage.removeItem(controlStorageKey);
       setPendingControl(null);
       const outcomes = (receipt.result.processes || [])
         .map((item) => item.status)
@@ -526,7 +528,7 @@ export default function BackgroundTasks({
         return exhaustive;
       }
     }
-    sessionStorage.setItem(controlStorageKey, JSON.stringify(body));
+    storage.setItem(controlStorageKey, JSON.stringify(body));
     setPendingControl(body);
     void submitControl(body);
   };

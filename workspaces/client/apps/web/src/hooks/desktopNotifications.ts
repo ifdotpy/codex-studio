@@ -78,22 +78,6 @@ export function useDesktopNotifications(
             }),
           );
         });
-      } else if (
-        "Notification" in window &&
-        Notification.permission === "granted"
-      ) {
-        const native = new Notification(alert.title, {
-          body: alert.body,
-          tag: id,
-          silent: !alert.sound,
-        });
-        native.onclick = () => {
-          native.close();
-          window.focus();
-          window.dispatchEvent(
-            new CustomEvent("studio-navigate", { detail: alert.target }),
-          );
-        };
       }
     }
   }, [data, opened, enabled, now]);

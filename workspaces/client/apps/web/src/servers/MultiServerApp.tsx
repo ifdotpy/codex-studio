@@ -285,6 +285,7 @@ function MultiServerShell({
         const server =
           readServers().find((row) => row.id === id) || localServer();
         const title = `${server.label}: ${alert.title}`.slice(0, 160);
+        // Alerts reach the person only through the desktop app.
         if (hasDesktopNotifications())
           void notifyDesktop({
             title,
@@ -292,20 +293,6 @@ function MultiServerShell({
             ...(alert.sound ? { sound: true } : {}),
             target: { ...alert.target, serverId: id },
           }).catch(() => {});
-        else if (
-          "Notification" in window &&
-          Notification.permission === "granted"
-        ) {
-          const notification = new Notification(title, {
-            body: alert.body,
-            tag: `${id}:${alert.id}`,
-            silent: !alert.sound,
-          });
-          notification.onclick = () => {
-            notification.close();
-            send(id, { action: "notifications", ...alert.target });
-          };
-        }
       }
     }
     const screen = screens.current.get(id);

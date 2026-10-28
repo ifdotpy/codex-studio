@@ -20,12 +20,18 @@ export function memoryStorage(): Storage {
   };
 }
 
-let installed: Storage = memoryStorage();
+type PreferenceStore = Storage & { flush?: () => Promise<void> };
+let installed: PreferenceStore = memoryStorage();
 
-export function installPreferenceStorage(storage: Storage) {
+export function installPreferenceStorage(storage: PreferenceStore) {
   installed = storage;
 }
 
 export function preferenceStorage(): Storage {
   return installed;
+}
+
+/** Waits until queued writes reach the core. A reload needs this first. */
+export async function flushPreferenceStorage() {
+  await installed.flush?.();
 }
