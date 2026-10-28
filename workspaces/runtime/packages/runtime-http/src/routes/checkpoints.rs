@@ -342,6 +342,7 @@ async fn restore_owned(
         )
         .await
         .map_err(|error| match error {
+            studio_runtime_services::account_session_runtime::AccountSessionError::Expired => (ApiError::new(StatusCode::GONE, error.to_string()), false),
             studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
                 name,
             ) => (ApiError::dependency(name), false),

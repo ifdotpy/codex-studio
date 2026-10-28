@@ -437,6 +437,7 @@ async fn claude_profile(
 
 pub(super) fn session_error(error: AccountSessionError) -> ApiError {
     let status = match error {
+        AccountSessionError::Expired => StatusCode::GONE,
         AccountSessionError::Requires(_) => StatusCode::NOT_IMPLEMENTED,
         AccountSessionError::Refused(_) => StatusCode::BAD_REQUEST,
         AccountSessionError::Persistence => StatusCode::SERVICE_UNAVAILABLE,

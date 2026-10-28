@@ -355,6 +355,7 @@ fn voice_provider_unavailable() -> ApiError {
 fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
     use voice::provider::VoiceProviderError as E;
     match error {
+        E::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         E::RequestResult(error) => error.into(),
         E::Outbox(error) => error.into(),
         E::Provider(_) => ApiError::internal(),
@@ -386,6 +387,9 @@ fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
         },
         E::Voice(error) => voice_error(error),
         E::Monitor(error) => match error {
+            studio_runtime_services::monitor_policy::MonitorError::Expired => {
+                ApiError::new(StatusCode::GONE, error.to_string())
+            }
             studio_runtime_services::monitor_policy::MonitorError::Store(error) => {
                 ApiError::stored(error)
             }

@@ -501,7 +501,7 @@ async fn commit(
                     WorkWrite::Claim(input) => write(WorkWrite::Claim(input)).map_err(|error| match error {
                         WorkWriteError::Event(studio_runtime_services::event_write::EventWriteError::Store(error))
                         | WorkWriteError::Store(error) if matches!(&error,studio_runtime_store::StoreError::InvalidSyncObjectField {scope,..} if scope == WorkItemRecord::TABLE) => WorkCommitError::RefusedClaim(error),
-                        error @ (WorkWriteError::Event(_)
+                        error @ (WorkWriteError::Expired | WorkWriteError::Event(_)
                         | WorkWriteError::Store(_)
                         | WorkWriteError::NotImplemented(_)
                         | WorkWriteError::PreparationWorker) => WorkCommitError::Write(error),
@@ -984,6 +984,7 @@ fn commit_error(error: WorkCommitError) -> ApiError {
 
 pub(super) fn write_error(error: WorkWriteError) -> ApiError {
     match error {
+        WorkWriteError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         WorkWriteError::Event(error) => work_items::write_error(error),
         WorkWriteError::PreparationWorker => ApiError::internal(),
         WorkWriteError::Store(error) => ApiError::stored(error),

@@ -39,6 +39,7 @@ pub(crate) fn routes() -> RouteGroup {
 }
 fn error(error: controls::Error) -> ApiError {
     match error {
+        controls::Error::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         controls::Error::Invalid(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         controls::Error::Store(error) => ApiError::stored(error),
     }

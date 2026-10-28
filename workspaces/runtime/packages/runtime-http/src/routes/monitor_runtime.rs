@@ -162,6 +162,7 @@ async fn input(
 
 fn error(error: MonitorError) -> ApiError {
     match error {
+        MonitorError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         MonitorError::Store(error) => ApiError::stored(error),
         MonitorError::InputOutcomeUnknown => ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,

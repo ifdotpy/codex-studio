@@ -61,6 +61,7 @@ async fn repair(
             }
             .await
             .map_err(|error| match error {
+                RepairError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
                 RepairError::MissingAgent => {
                     ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent")
                 }
@@ -96,6 +97,7 @@ async fn repair(
         Err(error) => Err(error),
     }
     .map_err(|error| match error {
+        RepairError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         RepairError::MissingAgent => ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"),
         RepairError::ReceiptHold => ApiError::new(
             StatusCode::BAD_REQUEST,

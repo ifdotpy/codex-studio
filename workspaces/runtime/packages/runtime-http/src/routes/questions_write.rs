@@ -272,6 +272,9 @@ fn answer_callback_error(
     error: studio_runtime_services::provider_callbacks::CallbackError,
 ) -> ApiError {
     match error {
+        studio_runtime_services::provider_callbacks::CallbackError::Expired => {
+            ApiError::new(StatusCode::GONE, error.to_string())
+        }
         studio_runtime_services::provider_callbacks::CallbackError::Dependency(name) => {
             ApiError::dependency(name)
         }
@@ -295,6 +298,7 @@ fn monitor_approval_error(
 ) -> ApiError {
     use studio_runtime_services::monitor_policy::MonitorError as E;
     match error {
+        E::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         E::Store(error) => ApiError::stored(error),
         E::Unavailable(name) => ApiError::dependency(name),
         E::Event(
@@ -326,6 +330,7 @@ fn callback_clock() -> Result<f64, studio_runtime_services::provider_callbacks::
 fn callback_error(error: studio_runtime_services::provider_callbacks::CallbackError) -> ApiError {
     use studio_runtime_services::provider_callbacks::CallbackError as E;
     match error {
+        E::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         E::InvalidResultSchema(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         E::Dependency(name) => ApiError::dependency(name),
         E::Store(error) => ApiError::stored(error),

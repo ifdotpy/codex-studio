@@ -664,6 +664,7 @@ impl native_actions::Preparation for NativeActionPreparationRun {
 
 fn native_error(error: NativeError) -> ApiError {
     match error {
+        NativeError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         NativeError::Unavailable(_) => {
             ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
         }
@@ -683,6 +684,7 @@ fn safety_error(
 ) -> ApiError {
     use studio_runtime_services::safety_buffering::SafetyBufferingError as SafetyError;
     match error {
+        SafetyError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         SafetyError::Requires(name) => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             format!("Not implemented: requires {name}"),
@@ -725,6 +727,7 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
         None => agent_management_store::execute(Arc::clone(&store), &action, now).await,
     }
     .map_err(|error| match error {
+        ManagementError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         ManagementError::Unavailable(_) => {
             ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
         }
