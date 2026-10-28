@@ -4674,8 +4674,8 @@ async fn retained_vm_thread_start_provenance_survives_next_generation_attach() {
                 method: Method::ThreadStart,
                 params: json!({"ephemeral":true}),
             };
-            let admitted =
-                crate::account_worker::retained::reserve_provider_call(tx, &owner, call)?;
+            let admitted = crate::account_worker::retained::reserve_provider_call(tx, &owner, call)
+                .expect("valid retained VM reservation");
             let mut row =
                 Outbox::get::<crate::account_worker::store::ProviderCall>(tx, &fixture_key)?
                     .unwrap();
