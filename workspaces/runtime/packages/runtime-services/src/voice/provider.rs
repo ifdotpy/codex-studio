@@ -2283,7 +2283,7 @@ mod tests {
             .await
             .expect("delete owner");
         provider.release.notify_one();
-        let _ = running.await.expect("stop task");
+        drop(running.await.expect("stop task"));
         let reader = store.test_reader().expect("reader");
         assert!(
             Outbox::get::<studio_runtime_store::VoiceEffect>(&reader, &id)
@@ -2348,7 +2348,7 @@ mod tests {
                 Ok(())
             }).await.expect("retain uncertain stop");
             provider.release.notify_one();
-            let _ = running.await.expect("stop task");
+            drop(running.await.expect("stop task"));
             let reader = store.test_reader().expect("reader");
             let stops = Outbox::for_owner::<studio_runtime_store::VoiceEffect>(
                 &reader,
@@ -2549,7 +2549,7 @@ mod tests {
         });
         provider.entered.notified().await;
         running.abort();
-        let _ = running.await;
+        drop(running.await);
         let row = Outbox::for_owner::<studio_runtime_store::VoiceEffect>(
             &store.test_reader().expect("reader"),
             OwnerKind::Agent,
