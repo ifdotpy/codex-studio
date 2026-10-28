@@ -49,14 +49,8 @@ export async function initializeNativePreferences() {
             : { owner: chunk.owner || "root", sha256: chunk.sha256 },
         ),
     );
-<<<<<<< head
-  // The draft recovery journal stays in WebView storage until step 6 moves it.
-  setNativeJournalStorage(globalThis.localStorage);
-||||||| base
-  setNativeJournalStorage(window.localStorage);
-=======
-  setLegacyDraftStorage(window.localStorage);
->>>>>>> step6-drafts
+  // Old browser drafts are read once for their import into the core.
+  setLegacyDraftStorage(globalThis.localStorage);
   const invoke = isNativeFrame()
     ? <T>(method: string, params: unknown, id?: string) =>
         nativeRequest<T>("browser.preferences", { method, params }, id)
