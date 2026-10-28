@@ -4420,7 +4420,7 @@ impl Worker {
             let store = Arc::clone(&self.bridge.store);
             self.managed_callbacks.spawn(async move {
                 let handled =
-                    callback::native_response(&store, &account, generation, cursor.0, &frame, now)
+                    callback::native_response(&store, &account, generation, &frame, now)
                         .await;
                 (cursor, origin, actor, actor_epoch, handled)
             });

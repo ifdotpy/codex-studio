@@ -350,7 +350,6 @@ pub(super) async fn native_response(
     store: &Arc<RuntimeStore>,
     account: &str,
     generation: u64,
-    cursor: u64,
     frame: &Frame,
     now: f64,
 ) -> CallbackHandled {
@@ -389,9 +388,7 @@ pub(super) async fn native_response(
             ));
         }
     };
-    match crate::provider_callbacks::admit_native(Arc::clone(store), &context, frame, cursor, now)
-        .await
-    {
+    match crate::provider_callbacks::admit_native(Arc::clone(store), &context, frame, now).await {
         Ok(crate::provider_callbacks::NativeAdmission::Answer(body)) => {
             CallbackHandled::Answer(Frame::Response {
                 id: request.id.clone(),
