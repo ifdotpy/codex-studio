@@ -36,6 +36,14 @@ pub(crate) struct Native {
     pub(crate) calls: Mutex<Vec<Value>>,
     pub(crate) repair_report: Mutex<Option<Value>>,
     ready: Notify,
+    restore_mode: Mutex<RestoreMode>,
+}
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum RestoreMode {
+    #[default]
+    Normal,
+    Partial,
+    WrongId,
 }
 impl Native {
     fn response(&self, request: &Value) -> Value {
@@ -53,10 +61,11 @@ impl Native {
             "claude/stopTask" => json!({"stopped":true}),
             "thread/rollback" => {
                 let id = p["requestId"].as_str().unwrap();
-                if self.full.load(Ordering::SeqCst) || ["partial", "wrong-id"].contains(&id) {
+                let mode = *self.restore_mode.lock().unwrap();
+                if self.full.load(Ordering::SeqCst) || mode != RestoreMode::Normal {
                     let mut error = json!({"code":-32000,"message":"The before-restore backup limit is reached."});
-                    if id != "partial" {
-                        error["data"] = json!({"fileRestoreOutcome":"not_applied","requestId":if id == "wrong-id" {"foreign"} else {id},"turnId":p["turnId"]});
+                    if mode != RestoreMode::Partial {
+                        error["data"] = json!({"fileRestoreOutcome":"not_applied","requestId":if mode == RestoreMode::WrongId {"foreign"} else {id},"turnId":p["turnId"]});
                     } else {
                         error["message"] = json!("Claude restored only one file.");
                     }
@@ -295,6 +304,13 @@ async fn claude_control_session_reads_and_stop_keep_dispatch() {
         let result = post(&app, "/api/claude/session", body).await;
         assert_eq!(result.0, expected, "{action}: {result:?}");
     }
+    let replay = post(
+        &app,
+        "/api/claude/session",
+        json!({"id":"agent","action":"stop_task","task_id":"task"}),
+    )
+    .await;
+    assert_eq!(replay.0, 200, "{replay:?}");
     let methods: Vec<Value> = native
         .calls
         .lock()
@@ -338,7 +354,7 @@ async fn claude_control_settings_ingress_and_exact_receipt_replay() {
     assert!(native.calls.lock().unwrap().is_empty());
     assert!(agent(&store)["workspaceReservationId"].is_null());
 
-    let body = json!({"id":"agent","action":"settings","request_id":"settings-one","settings":{"permissionMode":"plan","thinking":false,"autoCompactWindow":null}});
+    let body = json!({"id":"agent","action":"settings","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"settings":{"permissionMode":"plan","thinking":false,"autoCompactWindow":null}});
     let result = post(&app, "/api/claude/session", body.clone()).await;
     assert_eq!(result.0, 200, "{result:?}");
     assert_eq!(agent(&store)["claudeOptions"], body["settings"]);
@@ -369,7 +385,8 @@ async fn claude_control_settings_ingress_and_exact_receipt_replay() {
 #[tokio::test]
 async fn quota_reason_crosses_retained_adapter_and_http_release_allows_same_request_retry() {
     let (_root, store, app, mut worker, native) = fixture().await;
-    let completed = post(&app, "/api/claude/session", rewind("completed")).await;
+    let completed_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let completed = post(&app, "/api/claude/session", rewind(&completed_id)).await;
     assert_eq!(
         completed.0,
         200,
@@ -380,13 +397,15 @@ async fn quota_reason_crosses_retained_adapter_and_http_release_allows_same_requ
     // An unresolved restore in another workspace must never appear in this chat's release proof.
     let other_cwd = _root.path().join("other");
     std::fs::create_dir(&other_cwd).unwrap();
+    let completed_operation = format!("claude-control:{completed_id}");
     store.transaction(move |tx| {
         tx.execute("INSERT INTO runtime_agents(id,record) SELECT 'other',json_set(record,'$.id','other','$.rootId','other','$.cwd',?1,'$.threadId','other-thread') FROM runtime_agents WHERE id='agent'", [other_cwd.to_string_lossy().as_ref()])?;
-        tx.execute("INSERT INTO runtime_workspace_operations(id,record) SELECT 'claude-control:unresolved',json_set(record,'$.id','claude-control:unresolved','$.agent','other','$.requestId','unresolved','$.phase','recovery_required','$.source.threadId','other-thread','$.source.cwd',?1) FROM runtime_workspace_operations WHERE id='claude-control:completed'",[other_cwd.to_string_lossy().as_ref()])?;
+        tx.execute("INSERT INTO runtime_workspace_operations(id,record) SELECT 'claude-control:unresolved',json_set(record,'$.id','claude-control:unresolved','$.agent','other','$.requestId','unresolved','$.phase','recovery_required','$.source.threadId','other-thread','$.source.cwd',?1) FROM runtime_workspace_operations WHERE id=?2",rusqlite::params![other_cwd.to_string_lossy().as_ref(), completed_operation])?;
         Ok(())
     }).await.unwrap();
     native.full.store(true, Ordering::SeqCst);
-    let rejected = post(&app, "/api/claude/session", rewind("quota")).await;
+    let quota_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let rejected = post(&app, "/api/claude/session", rewind(&quota_id)).await;
     assert_eq!(rejected.0, 400, "{rejected:?}");
     assert!(
         rejected.1.to_string().contains("backup limit"),
@@ -399,7 +418,7 @@ async fn quota_reason_crosses_retained_adapter_and_http_release_allows_same_requ
     let usage = post(
         &app,
         "/api/claude/file-backups",
-        json!({"id":"agent","release":false,"request_id":"usage"}),
+        json!({"id":"agent","release":false,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()}),
     )
     .await;
     assert_eq!(usage.0, 200, "{usage:?}");
@@ -407,7 +426,7 @@ async fn quota_reason_crosses_retained_adapter_and_http_release_allows_same_requ
     let release = post(
         &app,
         "/api/claude/file-backups",
-        json!({"id":"agent","release":true,"request_id":"release"}),
+        json!({"id":"agent","release":true,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()}),
     )
     .await;
     assert_eq!(release.0, 200, "{release:?}");
@@ -419,24 +438,29 @@ async fn quota_reason_crosses_retained_adapter_and_http_release_allows_same_requ
             r["method"] == "claude/fileBackups" && r["params"]["settledRequestIds"].is_array()
         })
         .unwrap();
-    assert_eq!(proof["params"]["settledRequestIds"], json!(["completed"]));
-    let retry = post(&app, "/api/claude/session", rewind("quota")).await;
+    assert_eq!(proof["params"]["settledRequestIds"], json!([completed_id]));
+    let retry = post(&app, "/api/claude/session", rewind(&quota_id)).await;
     assert_eq!(retry.0, 200, "{retry:?}");
     assert_eq!(retry.1["filesRestored"], true);
     worker.shutdown().await.unwrap();
 }
 #[tokio::test]
 async fn generic_and_wrong_identity_rejections_keep_recovery_reservations_through_http() {
-    for id in ["partial", "wrong-id"] {
+    for mode in [RestoreMode::Partial, RestoreMode::WrongId] {
         let (_root, store, app, mut worker, _native) = fixture().await;
-        let result = post(&app, "/api/claude/session", rewind(id)).await;
+        *_native.restore_mode.lock().unwrap() = mode;
+        let id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let result = post(&app, "/api/claude/session", rewind(&id)).await;
         assert_eq!(result.0, 409, "{result:?}");
         assert!(
-            result.1.to_string().contains(if id == "partial" {
-                "only one file"
-            } else {
-                "backup limit"
-            }),
+            result
+                .1
+                .to_string()
+                .contains(if mode == RestoreMode::Partial {
+                    "only one file"
+                } else {
+                    "backup limit"
+                }),
             "{result:?}; agent={:?}; calls={:?}",
             agent(&store),
             _native.calls.lock().unwrap()
