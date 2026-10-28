@@ -3244,7 +3244,7 @@ impl OrchestrationDriver {
                 && let Some(receipt) = durable_anchor_input_receipt(tx, &principal_for_claim, &envelope_for_claim)?
             {
                 let result = applied(&receipt)?;
-                let stored_result = result.to_value(&envelope_for_claim.root).to_string();
+                let stored_result = serde_json::to_string(&result.to_reply(&envelope_for_claim.root)).map_err(|_| invalid_receipt())?;
                 if stored_result.len() > MAX_RESPONSE_BYTES {
                     return Ok((
                         DeliveryDecision::Return(ExchangeOutcome::Unknown),
@@ -3302,7 +3302,11 @@ impl OrchestrationDriver {
             // negative receipt after response loss.
             result = ExchangeOutcome::Unknown;
         }
-        if result.to_value(&envelope.root).to_string().len() > MAX_RESPONSE_BYTES {
+        if serde_json::to_string(&result.to_reply(&envelope.root))
+            .map_err(|_| invalid_receipt())?
+            .len()
+            > MAX_RESPONSE_BYTES
+        {
             self.finish(
                 Direction::Incoming,
                 &claim_key,
