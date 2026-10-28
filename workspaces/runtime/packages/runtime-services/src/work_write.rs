@@ -11,7 +11,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use studio_runtime_schema::persistence::{
-    OutboxKind, OutboxStatus, OwnerKind, RequestIdentity, WorkEffectStatus,
+    OutboxKind, OutboxStatus, OwnerKind, WorkEffectStatus,
 };
 use studio_runtime_schema::shared_values::{
     TASK_SUBMISSION_MAX_FILES, TASK_SUBMISSION_PATH_MAX_CODEPOINTS,
@@ -1122,6 +1122,14 @@ pub async fn finish_vm_submission(
             let mut intent = read_vm_intent(tx, VmIntentKind::Submit, &task_id)?
                 .filter(|value| value.request_id == request_id)
                 .ok_or(Error::Conflict("The layr evidence intent changed"))?;
+            if intent.status == WorkEffectStatus::Completed {
+                if let Ok(evidence) = &outcome
+                    && intent.evidence.as_ref() != Some(evidence)
+                {
+                    return Err(Error::Conflict("The layr evidence changed").into());
+                }
+                return Ok(intent.evidence);
+            }
             match outcome {
                 Ok(evidence) => {
                     intent.status = WorkEffectStatus::Completed;
@@ -1346,6 +1354,9 @@ pub async fn finish_vm_accept(
             let mut intent = read_vm_intent(tx, VmIntentKind::Accept, &task_id)?
                 .filter(|value| value.request_id == request_id)
                 .ok_or(Error::Conflict("The layr merge intent changed"))?;
+            if intent.status == WorkEffectStatus::Completed {
+                return Ok(());
+            }
             if let Some(uncertain) = uncertain {
                 intent.status = if uncertain {
                     WorkEffectStatus::Unknown
@@ -1799,7 +1810,7 @@ fn write_internal(
                 let task = match &command {
                     WorkWrite::Accept(input) => Some(input.task_id.as_str()),
                     WorkWrite::Submit(input) => Some(input.task_id.as_str()),
-                    _ => None,
+                    WorkWrite::Create(_) | WorkWrite::Mutate(_) | WorkWrite::Claim(_) => None,
                 };
                 if task != Some(reservation.task.as_str()) {
                     return Err(Error::Conflict("This request id has different content").into());
@@ -3875,6 +3886,14 @@ mod actor_tests {
                 .expect("late reply"),
             Some(json!({"layrStateId":"state"}))
         );
+        for outcome in [Err(false), Ok(json!({"layrStateId":"state"}))] {
+            assert_eq!(
+                super::finish_vm_submission(&store, "vm-known", "evidence", outcome)
+                    .await
+                    .expect("stable evidence"),
+                Some(json!({"layrStateId":"state"}))
+            );
+        }
         assert!(
             super::finish_vm_submission(
                 &store,
@@ -3888,6 +3907,11 @@ mod actor_tests {
         super::finish_vm_accept(&store, "vm-known", "merge", Some(true))
             .await
             .expect("late merge reply");
+        for outcome in [Some(false), None] {
+            super::finish_vm_accept(&store, "vm-known", "merge", outcome)
+                .await
+                .expect("stable merge proof");
+        }
         let owner = store
             .read_async("vm-proof", |db| {
                 WorkItemsRepository::work_record(db, "vm-known")
