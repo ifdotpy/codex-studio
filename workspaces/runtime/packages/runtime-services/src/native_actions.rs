@@ -73,7 +73,10 @@ impl From<studio_runtime_store::request_results::RequestResultError> for NativeE
         use studio_runtime_store::request_results::RequestResultError;
         match error {
             RequestResultError::Conflict { .. } => Self::Conflict,
-            error => Self::Store(error.into()),
+            error @ (RequestResultError::Expired
+            | RequestResultError::Sql(_)
+            | RequestResultError::Json(_)
+            | RequestResultError::Identity(_)) => Self::Store(error.into()),
         }
     }
 }
@@ -87,7 +90,7 @@ impl From<studio_runtime_store::outbox::OutboxError> for NativeError {
         use studio_runtime_store::outbox::OutboxError;
         match error {
             OutboxError::Conflict(_) => Self::Conflict,
-            error => Self::Store(error.into()),
+            error @ (OutboxError::Sql(_) | OutboxError::Json(_)) => Self::Store(error.into()),
         }
     }
 }
@@ -1038,7 +1041,7 @@ mod native_action_retry_tests {
             "CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
         )
         .expect("policy");
-        let reply = serde_json::json!({"receipt":{"requestId":"old-action","agentId":"agent"},"outcome":{"status":"acknowledged","result":{"turnId":"original"}},"replayed":false,"result":{"turnId":"original"}});
+        let reply = serde_json::json!({"receipt":{"requestId":"old-action","agentId":"agent","action":"compact","accountKey":"account","threadId":"thread","epoch":1,"attemptId":"attempt","acceptedAt":1.0,"status":"accepted"},"outcome":{"status":"acknowledged","result":{"turnId":"original"}},"replayed":false,"result":{"turnId":"original"}});
         let envelope = studio_runtime_store::request_results::ResultEnvelope {
             actor: Some("agent".to_owned()),
             reply,
