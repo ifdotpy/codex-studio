@@ -135,6 +135,16 @@ struct ArchiveIntent {
     public_response: Option<WorkItemRecord>,
 }
 
+#[derive(serde::Deserialize)]
+struct ArchiveNotice {
+    version: i64,
+    decisions: Vec<ArchiveDecision>,
+}
+#[derive(serde::Deserialize)]
+struct ArchiveDecision {
+    reason: Option<String>,
+}
+
 /// Retry accepted-result archives whose Python-compatible retry deadline has
 /// elapsed. `now` is injected so scheduling and exponential backoff are
 /// deterministic in tests. Pending/unknown receipts are reconciled against the
@@ -152,201 +162,303 @@ pub async fn accepted_archive_tick(
         .await?;
     let mut handled = 0;
     for (task_id, encoded_intent) in due {
-        let intent: ArchiveIntent = serde_json::from_str(&encoded_intent)
-            .map_err(studio_runtime_store::StoreError::from)?;
-        let task_id_for_read = task_id.clone();
-        let Some(encoded_work) = store
-            .read_async("runtime-services/work_write", move |connection| {
-                Ok::<_, WorkWriteError>(WorkItemsRepository::work_record(
-                    connection,
-                    &task_id_for_read,
-                )?)
-            })
-            .await?
-        else {
-            continue;
-        };
-        let work = encoded_work;
-        if work.status() != studio_runtime_store::WorkStatus::Accepted {
-            continue;
+        if matches!(
+            run_accepted_archive(&store, task_id, encoded_intent, now, ArchiveTiming::Due).await?,
+            ArchiveRun::Handled(_)
+        ) {
+            handled += 1;
         }
-        let intent_id = &intent.intent_id;
-        let owner_id = work.owner().unwrap_or_default().to_owned();
-        let root_id = work.value()["rootId"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        if intent_id.is_empty() || owner_id.is_empty() || root_id.is_empty() {
-            continue;
-        }
-        let task_id_for_claim = task_id.clone();
-        let owner_for_claim = owner_id.clone();
-        let root_for_claim = root_id.clone();
-        let Some((dispatch_actor_epoch, prior_status)) = store
-            .transaction_with_error(
-                move |tx| -> Result<Option<(i64, WorkEffectStatus)>, WorkWriteError> {
-                    let current = WorkItemsRepository::work_record(tx, &task_id_for_claim)?
-                        .ok_or(Error::InvalidRequest("Unknown work item"))?;
-                    if current.status() != studio_runtime_store::WorkStatus::Accepted
-                        || current.owner() != Some(owner_for_claim.as_str())
-                        || current.value()["rootId"] != root_for_claim
-                    {
-                        return Ok(None);
-                    }
-                    let mut record = current.into_value();
-                    let mut intent: ArchiveIntent =
-                        serde_json::from_value(record["archiveIntent"].clone())
-                            .map_err(studio_runtime_store::StoreError::from)?;
-                    let prior_status = intent.status;
-                    if !matches!(
-                        prior_status,
-                        WorkEffectStatus::Pending
-                            | WorkEffectStatus::Retryable
-                            | WorkEffectStatus::Unknown
-                    ) || intent.next_attempt_at.unwrap_or(0.0) > now
-                    {
-                        return Ok(None);
-                    }
-                    let actor_epoch = intent.actor_epoch;
-                    intent.status = WorkEffectStatus::Unknown;
-                    intent.attempt_started_at = Some(now);
-                    intent.next_attempt_at = Some(now + ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS as f64);
-                    record["archiveIntent"] = serde_json::to_value(intent)
-                        .map_err(studio_runtime_store::StoreError::from)?;
-                    WorkItemsRepository::update_work(tx, &task_id_for_claim, &record)?;
-                    Ok(Some((actor_epoch, prior_status)))
-                },
-            )
-            .await?
-        else {
-            continue;
-        };
-
-        let task_for_preflight = task_id.clone();
-        let work_for_preflight = work.clone();
-        let intent_for_preflight = intent.clone();
-        let owner_for_preflight = owner_id.clone();
-        let root_for_preflight = root_id.clone();
-        let preflight = store
-            .read_async("runtime-services/work_write", move |connection| {
-                accepted_archive_preflight(
-                    connection,
-                    &task_for_preflight,
-                    work_for_preflight.value(),
-                    &intent_for_preflight,
-                    &owner_for_preflight,
-                    &root_for_preflight,
-                    dispatch_actor_epoch,
-                )
-            })
-            .await?;
-        let outcome = match preflight {
-            Some(value) => Ok(value),
-            None if prior_status == WorkEffectStatus::Unknown => continue,
-            None => {
-                crate::agent_management_store::execute(
-                    Arc::clone(&store),
-                    &crate::agent_management::Action::Archive {
-                        actor: root_id.clone(),
-                        epoch: dispatch_actor_epoch,
-                        target: owner_id.clone(),
-                        reason: "Accepted task result is on main".to_owned(),
-                        unassign_work: false,
-                    },
-                    now,
-                )
-                .await
-            }
-        };
-        let (receipt_status, archive, retryable) = match outcome {
-            Ok(value) => {
-                let retryable = value["retryable"] == true
-                    || value["status"] == "blocked"
-                    || value["cleanupPending"] == true;
-                let receipt_status = if retryable {
-                    WorkEffectStatus::Retryable
-                } else if value["status"] == "archived" {
-                    WorkEffectStatus::Complete
-                } else {
-                    WorkEffectStatus::Terminal
-                };
-                (receipt_status, value, retryable)
-            }
-            Err(error) => (
-                WorkEffectStatus::Unknown,
-                json!({"status":"kept","reason":format!("The archive check failed: {error}")}),
-                false,
-            ),
-        };
-        let task_id_for_settlement = task_id.clone();
-        let intent_for_settlement = intent.clone();
-        let owner_for_settlement = owner_id.clone();
-        let root_for_settlement = root_id.clone();
-        store
-            .transaction_with_error(move |tx| -> Result<(), WorkWriteError> {
-                let Some(current) = WorkItemsRepository::work_record(tx, &task_id_for_settlement)?
-                else {
-                    return Ok(());
-                };
-                if current.status() != studio_runtime_store::WorkStatus::Accepted
-                    || current.owner() != Some(owner_for_settlement.as_str())
-                    || current.value()["rootId"] != root_for_settlement
-                {
-                    return Ok(());
-                }
-                let mut current = current.into_value();
-                let next_attempt = intent_for_settlement.attempts + 1;
-                let delay = if retryable {
-                    ACCEPTED_ARCHIVE_BASE_DELAY_SECONDS
-                        .pow(next_attempt.min(ACCEPTED_ARCHIVE_MAX_BACKOFF_EXPONENT) as u32)
-                        .min(ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS)
-                } else {
-                    ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS
-                };
-                if receipt_status != WorkEffectStatus::Unknown {
-                    current["archive"] = archive.clone();
-                }
-                let mut final_intent = intent_for_settlement.clone();
-                final_intent.status = if retryable {
-                    WorkEffectStatus::Pending
-                } else {
-                    receipt_status
-                };
-                final_intent.attempts = next_attempt;
-                final_intent.next_attempt_at = Some(now + delay as f64);
-                final_intent.last_outcome = Some(archive.clone());
-                final_intent.updated = Some(now);
-                final_intent.actor_epoch = dispatch_actor_epoch;
-                if !retryable && receipt_status != WorkEffectStatus::Unknown {
-                    final_intent.outcome = Some(archive);
-                }
-                current["archiveIntent"] = serde_json::to_value(&final_intent)
-                    .map_err(studio_runtime_store::StoreError::from)?;
-                WorkItemsRepository::update_work(tx, &task_id_for_settlement, &current)?;
-                if archive_outcome_can_settle(receipt_status)
-                    && let Some(root) = final_intent.public_request_id.as_deref()
-                {
-                    let mut response = final_intent
-                        .public_response
-                        .ok_or_else(|| invalid("runtime_work", &task_id_for_settlement))?;
-                    response
-                        .set("archive", current["archive"].clone())
-                        .map_err(studio_runtime_store::StoreError::from)?;
-                    response
-                        .set("archivePending", json!(retryable))
-                        .map_err(studio_runtime_store::StoreError::from)?;
-                    settle_accepted_archive(tx, &task_id_for_settlement, root, &response)?;
-                }
-                Ok(())
-            })
-            .await?;
-        handled += 1;
     }
     Ok(handled)
 }
 
+#[derive(Clone, Copy)]
+enum ArchiveTiming {
+    Immediate,
+    Due,
+}
+enum ArchiveRun {
+    Skipped,
+    Handled(WorkItemRecord),
+}
+
+async fn run_accepted_archive(
+    store: &Arc<RuntimeStore>,
+    task_id: String,
+    encoded_intent: String,
+    now: f64,
+    timing: ArchiveTiming,
+) -> Result<ArchiveRun, WorkWriteError> {
+    let intent: ArchiveIntent =
+        serde_json::from_str(&encoded_intent).map_err(studio_runtime_store::StoreError::from)?;
+    let task_id_for_read = task_id.clone();
+    let Some(encoded_work) = store
+        .read_async("runtime-services/work_write", move |connection| {
+            Ok::<_, WorkWriteError>(WorkItemsRepository::work_record(
+                connection,
+                &task_id_for_read,
+            )?)
+        })
+        .await?
+    else {
+        return Ok(ArchiveRun::Skipped);
+    };
+    let work = encoded_work;
+    if work.status() != studio_runtime_store::WorkStatus::Accepted {
+        return Ok(ArchiveRun::Skipped);
+    }
+    let intent_id = &intent.intent_id;
+    let owner_id = work.owner().unwrap_or_default().to_owned();
+    let root_id = work.value()["rootId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    if intent_id.is_empty() || owner_id.is_empty() || root_id.is_empty() {
+        return Ok(ArchiveRun::Skipped);
+    }
+    let task_id_for_claim = task_id.clone();
+    let owner_for_claim = owner_id.clone();
+    let root_for_claim = root_id.clone();
+    let Some((intent, prior_status)) = store
+        .transaction_with_error(
+            move |tx| -> Result<Option<(ArchiveIntent, WorkEffectStatus)>, WorkWriteError> {
+                let current = WorkItemsRepository::work_record(tx, &task_id_for_claim)?
+                    .ok_or(Error::InvalidRequest("Unknown work item"))?;
+                if current.status() != studio_runtime_store::WorkStatus::Accepted
+                    || current.owner() != Some(owner_for_claim.as_str())
+                    || current.value()["rootId"] != root_for_claim
+                {
+                    return Ok(None);
+                }
+                let mut record = current.into_value();
+                let mut intent: ArchiveIntent =
+                    serde_json::from_value(record["archiveIntent"].clone())
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                let prior_status = intent.status;
+                if !matches!(
+                    prior_status,
+                    WorkEffectStatus::Pending
+                        | WorkEffectStatus::Retryable
+                        | WorkEffectStatus::Unknown
+                ) || (matches!(timing, ArchiveTiming::Due)
+                    && intent.next_attempt_at.unwrap_or(0.0) > now)
+                {
+                    return Ok(None);
+                }
+                let claimed = intent.clone();
+                intent.status = WorkEffectStatus::Unknown;
+                intent.attempt_started_at = Some(now);
+                intent.next_attempt_at = Some(now + ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS as f64);
+                record["archiveIntent"] =
+                    serde_json::to_value(intent).map_err(studio_runtime_store::StoreError::from)?;
+                WorkItemsRepository::update_work(tx, &task_id_for_claim, &record)?;
+                Ok(Some((claimed, prior_status)))
+            },
+        )
+        .await?
+    else {
+        return Ok(ArchiveRun::Skipped);
+    };
+    let dispatch_actor_epoch = intent.actor_epoch;
+
+    let task_for_preflight = task_id.clone();
+    let work_for_preflight = work.clone();
+    let intent_for_preflight = intent.clone();
+    let owner_for_preflight = owner_id.clone();
+    let root_for_preflight = root_id.clone();
+    let preflight = store
+        .read_async("runtime-services/work_write", move |connection| {
+            accepted_archive_preflight(
+                connection,
+                &task_for_preflight,
+                work_for_preflight.value(),
+                &intent_for_preflight,
+                &owner_for_preflight,
+                &root_for_preflight,
+                dispatch_actor_epoch,
+            )
+        })
+        .await?;
+    let outcome = match preflight {
+        Some(value) => Ok(value),
+        None if prior_status == WorkEffectStatus::Unknown => return Ok(ArchiveRun::Skipped),
+        None => {
+            crate::agent_management_store::execute(
+                Arc::clone(store),
+                &crate::agent_management::Action::Archive {
+                    actor: root_id.clone(),
+                    epoch: dispatch_actor_epoch,
+                    target: owner_id.clone(),
+                    reason: "Accepted task result is on main".to_owned(),
+                    unassign_work: false,
+                },
+                now,
+            )
+            .await
+        }
+    };
+    let (receipt_status, archive, retryable) = match outcome {
+        Ok(value) => {
+            let retryable = value["retryable"] == true
+                || value["status"] == "blocked"
+                || value["cleanupPending"] == true;
+            let receipt_status = if retryable {
+                WorkEffectStatus::Retryable
+            } else if value["status"] == "archived" {
+                WorkEffectStatus::Complete
+            } else {
+                WorkEffectStatus::Terminal
+            };
+            (receipt_status, value, retryable)
+        }
+        Err(error) => (
+            WorkEffectStatus::Unknown,
+            json!({"status":"kept","reason":format!("The archive check failed: {error}")}),
+            false,
+        ),
+    };
+    let task_id_for_settlement = task_id.clone();
+    let intent_for_settlement = intent.clone();
+    let owner_for_settlement = owner_id.clone();
+    let root_for_settlement = root_id.clone();
+    let result = store
+        .transaction_with_error(move |tx| -> Result<ArchiveRun, WorkWriteError> {
+            let Some(current) = WorkItemsRepository::work_record(tx, &task_id_for_settlement)?
+            else {
+                return Ok(ArchiveRun::Skipped);
+            };
+            if current.status() != studio_runtime_store::WorkStatus::Accepted
+                || current.owner() != Some(owner_for_settlement.as_str())
+                || current.value()["rootId"] != root_for_settlement
+            {
+                return Ok(ArchiveRun::Skipped);
+            }
+            let mut current = current.into_value();
+            let next_attempt = intent_for_settlement.attempts + 1;
+            let delay = if retryable {
+                ACCEPTED_ARCHIVE_BASE_DELAY_SECONDS
+                    .pow(next_attempt.min(ACCEPTED_ARCHIVE_MAX_BACKOFF_EXPONENT) as u32)
+                    .min(ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS)
+            } else {
+                ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS
+            };
+            if receipt_status != WorkEffectStatus::Unknown {
+                current["archive"] = archive.clone();
+            }
+            let mut final_intent = intent_for_settlement.clone();
+            final_intent.status = if retryable {
+                WorkEffectStatus::Pending
+            } else {
+                receipt_status
+            };
+            final_intent.attempts = next_attempt;
+            final_intent.next_attempt_at = Some(now + delay as f64);
+            final_intent.last_outcome = Some(archive.clone());
+            final_intent.updated = Some(now);
+            final_intent.actor_epoch = dispatch_actor_epoch;
+            if !retryable && receipt_status != WorkEffectStatus::Unknown {
+                final_intent.outcome = Some(archive.clone());
+            }
+            current["archiveIntent"] = serde_json::to_value(&final_intent)
+                .map_err(studio_runtime_store::StoreError::from)?;
+            WorkItemsRepository::update_work(tx, &task_id_for_settlement, &current)?;
+            if matches!(timing, ArchiveTiming::Immediate)
+                && !retryable
+                && receipt_status == WorkEffectStatus::Terminal
+                && let Some(owner) =
+                    AgentRepository::get(tx, &AgentId::from(owner_for_settlement.as_str()))?
+                && owner
+                    .extra
+                    .get("deletedAt")
+                    .is_none_or(|value| value.is_null())
+            {
+                let notice: ArchiveNotice = serde_json::from_value(current.clone())
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                let reason = notice
+                    .decisions
+                    .last()
+                    .and_then(|decision| decision.reason.as_deref());
+                event_write::enqueue_recovery_event(
+                    tx,
+                    &owner,
+                    format!(
+                        "work-decision:{}:{}",
+                        task_id_for_settlement,
+                        notice.version - 1
+                    ),
+                    "work_decision",
+                    json!({"task":task_id_for_settlement,"decision":"accept","reason":reason})
+                        .to_string(),
+                    now,
+                )?;
+            }
+            let mut response = match final_intent.public_response {
+                Some(response) => response,
+                None => WorkItemRecord::checked(work_item_view(
+                    tx,
+                    &WorkItemRecord::checked(current)?,
+                )?)?,
+            };
+            response
+                .set("archive", archive)
+                .map_err(studio_runtime_store::StoreError::from)?;
+            response
+                .set(
+                    "archivePending",
+                    json!(retryable || !archive_outcome_can_settle(receipt_status)),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            if archive_outcome_can_settle(receipt_status)
+                && let Some(root) = final_intent.public_request_id.as_deref()
+            {
+                response = settle_accepted_archive(tx, &task_id_for_settlement, root, &response)?;
+            }
+            Ok(ArchiveRun::Handled(response))
+        })
+        .await?;
+    Ok(result)
+}
+
 pub fn archive_outcome_can_settle(status: WorkEffectStatus) -> bool {
     status != WorkEffectStatus::Unknown
+}
+
+pub async fn finalize_accepted_archive(
+    store: Arc<RuntimeStore>,
+    response: WorkItemRecord,
+) -> Result<WorkItemRecord, WorkWriteError> {
+    let task_id = response.id().0.clone();
+    let task_for_read = task_id.clone();
+    let intent = store
+        .read_async("accepted-archive/intent", move |connection| {
+            connection
+                .query_row(
+                    "SELECT json_extract(record,'$.archiveIntent') FROM runtime_work WHERE id=?1",
+                    [&task_for_read],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .map(|row| row.flatten())
+                .map_err(studio_runtime_store::StoreError::from)
+        })
+        .await?;
+    let Some(intent) = intent else {
+        if response
+            .get("archivePending")
+            .and_then(|value| value.as_bool())
+            == Some(true)
+        {
+            return Err(Error::Conflict("The accepted archive outcome is pending").into());
+        }
+        return Ok(response);
+    };
+    let now = event_write::unix_time()?;
+    match run_accepted_archive(&store, task_id, intent, now, ArchiveTiming::Immediate).await? {
+        ArchiveRun::Handled(result) => Ok(result),
+        ArchiveRun::Skipped => {
+            Err(Error::Conflict("The accepted archive outcome is pending").into())
+        }
+    }
 }
 
 /// Schedule and retry archiving completed reviewers after their child result
@@ -635,46 +747,6 @@ pub async fn next_archive_retry_at(
             Ok::<_, WorkWriteError>(accepted.into_iter().chain(reviewer).reduce(f64::min))
         })
         .await
-}
-
-/// Persist uncertainty before the synchronous accept route attempts an archive
-/// effect. A later tick reconciles the target before replaying the same tuple.
-pub async fn begin_accepted_archive_attempt(
-    store: &RuntimeStore,
-    task_id: &str,
-    now: f64,
-) -> Result<(), WorkWriteError> {
-    let task_id = task_id.to_owned();
-    store
-        .transaction_with_error(move |tx| -> Result<(), WorkWriteError> {
-            let work = WorkItemsRepository::work_record(tx, &task_id)?
-                .ok_or(Error::InvalidRequest("Unknown work item"))?;
-            if work.status() != studio_runtime_store::WorkStatus::Accepted {
-                return Err(Error::InvalidRequest("Work item is not accepted").into());
-            }
-            let result_id = work.value()["decisions"]
-                .as_array()
-                .and_then(|items| items.last())
-                .and_then(|decision| decision["resultId"].as_str())
-                .ok_or(Error::InvalidRequest("Accepted result is missing"))?
-                .to_owned();
-            let mut record = work.into_value();
-            let mut intent = record["archiveIntent"].clone();
-            if intent["intentId"] != format!("{task_id}:{result_id}") {
-                return Err(Error::Conflict("Archive intent changed").into());
-            }
-            if !matches!(intent["status"].as_str(), Some("pending" | "retryable")) {
-                return Err(Error::InvalidRequest("Archive attempt is not dispatchable").into());
-            }
-            intent["status"] = json!(WorkEffectStatus::Unknown);
-            intent["attemptStartedAt"] = json!(now);
-            intent["nextAttemptAt"] = json!(now + ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS as f64);
-            record["archiveIntent"] = intent;
-            WorkItemsRepository::update_work(tx, &task_id, &record)?;
-            Ok(())
-        })
-        .await?;
-    Ok(())
 }
 
 /// Reconcile the target and accepted result before replaying a lifecycle archive.
@@ -3883,6 +3955,26 @@ mod actor_tests {
             )
             .await
             .expect("pending proof");
+    }
+
+    #[tokio::test]
+    async fn receipt_domain_archive_finished_by_another_caller_does_not_return_stale_pending() {
+        let dir = tempfile::tempdir().expect("state");
+        let store = Arc::new(RuntimeStore::open(Some(dir.path())).await.expect("store"));
+        let mut response = work("finished", Some("worker"), "accepted", json!([]));
+        response["archivePending"] = json!(true);
+        let pending = studio_runtime_store::WorkItemRecord::checked(response.clone())
+            .expect("public response");
+        store
+            .transaction_with(move |tx| WorkItemsRepository::put_work(tx, "finished", &response))
+            .await
+            .expect("finished work");
+        assert!(matches!(
+            super::finalize_accepted_archive(store, pending).await,
+            Err(super::WorkWriteError::Event(super::Error::Conflict(
+                "The accepted archive outcome is pending"
+            )))
+        ));
     }
 
     #[test]
