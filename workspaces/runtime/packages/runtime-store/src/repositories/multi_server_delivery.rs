@@ -23,6 +23,7 @@ pub struct RemoteReply {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedRemoteReply {
     pub principal: Option<String>,
+    pub server: Option<String>,
     pub actor: Option<String>,
     pub body: Option<String>,
     pub response: RemoteReply,
