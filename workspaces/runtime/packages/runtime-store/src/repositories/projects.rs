@@ -168,15 +168,11 @@ impl ProjectsRepository {
         project: &str,
         operation: &str,
     ) -> StoreResult<Option<AdmittedRequest>> {
-        Self::get(connection, project)?
-            .and_then(|(_, value)| {
-                value
-                    .get("locationIntents")
-                    .and_then(|intents| intents.get(operation))
-                    .and_then(|intent| intent.get("request"))
-                    .cloned()
-            })
-            .map(serde_json::from_value)
+        let raw: Option<String> = connection.query_row(
+            "SELECT json_extract(intent.value,'$.request') FROM runtime_projects,json_each(record,'$.locationIntents') AS intent WHERE runtime_projects.id=?1 AND intent.key=?2",
+            params![project,operation], |row|row.get(0),
+        ).optional()?;
+        raw.map(|raw| serde_json::from_str(&raw))
             .transpose()
             .map_err(Into::into)
     }
@@ -187,26 +183,24 @@ impl ProjectsRepository {
         operation: &str,
         request: &AdmittedRequest,
     ) -> StoreResult<()> {
-        let (_, mut value) =
-            Self::get(tx, project)?.ok_or_else(|| StoreError::InvalidStoredRecord {
-                object: "runtime_projects",
-                id: project.to_owned(),
-            })?;
         if let Some(previous) = Self::location_request(tx, project, operation)?
             && previous != *request
         {
-            return Err(StoreError::SchemaMismatch(
-                "location request identity has different content".to_owned(),
-            ));
+            return Err(crate::request_results::RequestResultError::Conflict {
+                id: request.id().to_owned(),
+            }
+            .into());
         }
-        if value.get("locationIntents").is_none() {
-            value["locationIntents"] = json!({});
-        }
-        value["locationIntents"][operation] = json!({"request":request});
-        tx.execute(
-            "UPDATE runtime_projects SET record=?2 WHERE id=?1",
-            params![project, value.to_string()],
+        let changed=tx.execute(
+            "UPDATE runtime_projects SET record=json_patch(record,json_object('locationIntents',json_object(?2,json_object('request',json(?3))))) WHERE id=?1 AND json_extract(record,'$.removal') IS NULL",
+            params![project,operation,serde_json::to_string(request)?],
         )?;
+        if changed == 0 {
+            return Err(StoreError::InvalidStoredRecord {
+                object: "runtime_projects",
+                id: project.to_owned(),
+            });
+        }
         Ok(())
     }
 
@@ -215,18 +209,9 @@ impl ProjectsRepository {
         project: &str,
         operation: &str,
     ) -> StoreResult<()> {
-        let Some((_, mut value)) = Self::get(tx, project)? else {
-            return Ok(());
-        };
-        if let Some(intents) = value
-            .get_mut("locationIntents")
-            .and_then(Value::as_object_mut)
-        {
-            intents.remove(operation);
-        }
         tx.execute(
-            "UPDATE runtime_projects SET record=?2 WHERE id=?1",
-            params![project, value.to_string()],
+            "UPDATE runtime_projects SET record=json_patch(record,json_object('locationIntents',json_object(?2,NULL))) WHERE id=?1",
+            params![project,operation],
         )?;
         Ok(())
     }
