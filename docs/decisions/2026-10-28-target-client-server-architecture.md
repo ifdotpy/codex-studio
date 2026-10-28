@@ -180,6 +180,10 @@ is one file for backups and layr snapshots. The problems are in its use:
 
 ## Data-loss rules
 
+- All conversation history stays: messages, items, and items hidden by a rewind (owner
+  decision, 2026-10-28). Only service data is removed: expired receipts, tombstones,
+  cached transcript pages, used nonces, completed outbox entries, and client copies.
+
 - Do not delete a "copy" of data before a check shows that the data exists elsewhere
   (transcript rows in `sync_entities`, client stores).
 - Rewind, restore, and delete make a layr snapshot first. Items are hidden, not deleted.
