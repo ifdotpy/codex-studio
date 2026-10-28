@@ -207,31 +207,6 @@ pub struct NotificationStreamBuffer {
     post_commit_analytics_bytes: usize,
 }
 
-/// The durable metadata of a stream buffer: every field, with each entry's
-/// pending text, count and params blanked (the pending form keeps them).
-/// It borrows the buffer, so persisting copies no stream text.
-#[derive(Serialize)]
-struct StreamMetadata<'a> {
-    entries: Vec<EntryMetadata<'a>>,
-    closed: &'a [Shared<StreamKey>],
-    analytics: &'a [Shared<AnalyticsCapture>],
-    post_commit: &'a [Shared<NotificationPostCommit>],
-    publication_sequence: u64,
-    analytics_overflow: u64,
-    analytics_skipped: &'a [Shared<StreamKey>],
-}
-
-#[derive(Serialize)]
-struct EntryMetadata<'a> {
-    key: &'a StreamKey,
-    flushed: bool,
-    base: &'a Option<String>,
-    pending: &'static str,
-    count: u64,
-    characters: u64,
-    params: (),
-}
-
 #[derive(Deserialize)]
 struct PersistedNotificationStreamBuffer {
     #[serde(default)]
@@ -653,27 +628,13 @@ impl NotificationStreamBuffer {
     pub(crate) fn persisted_parts(
         &self,
     ) -> serde_json::Result<(String, Option<NotificationPendingStreams>)> {
-        let metadata = serde_json::to_string(&StreamMetadata {
-            entries: self
-                .entries
-                .iter()
-                .map(|entry| EntryMetadata {
-                    key: &entry.key,
-                    flushed: entry.flushed,
-                    base: &entry.base,
-                    pending: "",
-                    count: 0,
-                    characters: entry.characters,
-                    params: (),
-                })
-                .collect(),
-            closed: &self.closed,
-            analytics: &self.analytics,
-            post_commit: &self.post_commit,
-            publication_sequence: self.publication_sequence,
-            analytics_overflow: self.analytics_overflow,
-            analytics_skipped: &self.analytics_skipped,
-        })?;
+        let mut metadata = self.clone();
+        for entry in &mut metadata.entries {
+            entry.pending.clear();
+            entry.count = 0;
+            let _ = std::mem::take(&mut entry.params);
+        }
+        let metadata = serde_json::to_string(&metadata)?;
         let pending = self
             .entries
             .iter()
