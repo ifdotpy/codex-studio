@@ -1603,14 +1603,7 @@ fn work_receipt_in(
     } else {
         let identity =
             RequestIdentity::new("work", &[&agent.root_id.0], request_id, &[]).map_err(|_| {
-                Error::RequestResult(
-                    studio_runtime_store::request_results::RequestResultError::Identity(
-                        studio_runtime_schema::persistence::RequestIdentityError::Expired {
-                            issued_ms: 0,
-                            expired_before_ms: now_ms,
-                        },
-                    ),
-                )
+                Error::RequestResult(studio_runtime_store::request_results::RequestResultError::Expired)
             })?;
         event_write::replay_request::<WorkItemRecord>(connection, identity.id(), signature, now_ms)
             .map_err(Error::from)?
@@ -3753,6 +3746,19 @@ mod actor_tests {
                 .expect("agent row inserts");
         }
         connection
+    }
+
+    #[test]
+    fn receipt_domain_invalid_work_root_reports_fieldless_expiry() {
+        let connection = database();
+        assert!(matches!(
+            super::work_receipt_in(&connection, "lead", "invalid-root", "signature"),
+            Err(super::WorkWriteError::Event(
+                crate::event_write::EventWriteError::RequestResult(
+                    studio_runtime_store::request_results::RequestResultError::Expired
+                )
+            ))
+        ));
     }
 
     #[test]
