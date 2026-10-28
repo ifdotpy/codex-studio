@@ -502,27 +502,18 @@ async fn stop_process(
     let mut seen = std::collections::HashSet::new();
     let mut found = false;
     for page_index in 0..NATIVE_TERMINAL_MAX_PAGES {
-        let result = dispatch(
-            state,
+        let result = super::catalog_agent::provider_call(
             &port,
             &scope,
-            request_identity.1,
-            NativeRequest {
-                root_request_id: request_identity.0.to_owned(),
-                admitted_request: None,
-                ticket: ticket.clone(),
-                method: if claude {
-                    "claude/stopTask"
-                } else {
-                    "thread/backgroundTerminals/terminate"
-                }
-                .to_owned(),
-                params: if claude {
-                    json!({"threadId":ticket.thread,"taskId":task})
-                } else {
-                    json!({"threadId":ticket.thread,"processId":pid})
-                },
+            &ticket,
+            &format!("{operation}:list:{page_index}"),
+            if claude {
+                "claude/state"
+            } else {
+                "thread/backgroundTerminals/list"
             },
+            params.clone(),
+            ("", None),
         )
         .await?;
         let items = result[if claude { "tasks" } else { "data" }]
@@ -561,22 +552,27 @@ async fn stop_process(
             error: "The native process connection changed before stop".into(),
         });
     }
-    let result = super::catalog_agent::provider_call(
+    let result = dispatch(
+        state,
         &port,
         &scope,
-        &ticket,
-        &operation,
-        if claude {
-            "claude/stopTask"
-        } else {
-            "thread/backgroundTerminals/terminate"
+        request_identity.1,
+        NativeRequest {
+            root_request_id: request_identity.0.to_owned(),
+            admitted_request: None,
+            ticket: ticket.clone(),
+            method: if claude {
+                "claude/stopTask"
+            } else {
+                "thread/backgroundTerminals/terminate"
+            }
+            .to_owned(),
+            params: if claude {
+                json!({"threadId":ticket.thread,"taskId":task})
+            } else {
+                json!({"threadId":ticket.thread,"processId":pid})
+            },
         },
-        if claude {
-            json!({"threadId":ticket.thread,"taskId":task})
-        } else {
-            json!({"threadId":ticket.thread,"processId":pid})
-        },
-        (root_request_id, None),
     )
     .await?;
     if !claude {
