@@ -557,10 +557,10 @@ mod tests {
             .expect("receipt rows")
             .collect::<Result<Vec<_>, _>>()
             .expect("receipt values");
-        drop(store);
-        let store = RuntimeStore::open(Some(root.path()))
+        store
+            .transaction(|tx| super::migrate_canvas_2026_10_26(tx, &super::Accounts::new()))
             .await
-            .expect("migrated effects");
+            .expect("dated provider tag conversion");
         let reader = store.test_reader().expect("reader");
         for (id, signature, raw) in before {
             let mut expected: Value = serde_json::from_str(&raw).expect("original effect");

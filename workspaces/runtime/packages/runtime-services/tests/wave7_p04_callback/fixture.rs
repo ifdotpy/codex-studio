@@ -44,6 +44,7 @@ pub async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext
     let context = CallbackContext {
         agent: data["agents"][0]["id"].as_str().unwrap().into(),
         account: "default".into(),
+        stream_id: "default".into(),
         connection: "connection".into(),
         generation: 7,
         epoch: 3,
@@ -304,6 +305,7 @@ pub async fn seed_admission(store: &RuntimeStore, before: &Value) {
     let context = CallbackContext {
         agent: before["agent"].as_str().unwrap().into(),
         account: before["accountKey"].as_str().unwrap().into(),
+        stream_id: before["accountKey"].as_str().unwrap().into(),
         connection: before["connectionId"].as_str().unwrap().into(),
         generation: before["supervisor"]["generation"].as_u64().unwrap(),
         epoch: before["epoch"].as_u64().unwrap(),

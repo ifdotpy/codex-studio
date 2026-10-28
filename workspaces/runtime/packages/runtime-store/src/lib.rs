@@ -284,7 +284,7 @@ impl ObservedTable {
             Self::Events => "runtime_events",
             Self::EventMeta => "runtime_event_meta",
             Self::Rooms => "runtime_rooms",
-            Self::RequestResults => "request_results",
+            Self::RequestResults => request_results::TABLE,
             Self::Work => "runtime_work",
             Self::Monitors => "runtime_monitors",
             Self::Rules => "runtime_rules",
@@ -626,9 +626,6 @@ fn install_table_change_hooks(
                 return;
             }
             entity_publication::observe_row(table_name, row_id);
-            if table_name == request_results::TABLE {
-                resource_receipt_update_count.fetch_add(1, Ordering::Relaxed);
-            }
             if ENTITY_RESOURCE_TABLES.contains(&table_name) {
                 resource_entity_update_count.fetch_add(1, Ordering::Relaxed);
             }
@@ -655,10 +652,9 @@ fn install_table_change_hooks(
     connection.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Delete { table_name }
             if context.database_name == Some("main")
-                && (table_name == request_results::TABLE
-                    || OBSERVED_TABLES
-                        .iter()
-                        .any(|observed| observed.name() == table_name)) =>
+                && OBSERVED_TABLES
+                    .iter()
+                    .any(|observed| observed.name() == table_name) =>
         {
             // SQLite documents IGNORE here as retaining DELETE semantics while
             // disabling the truncate optimization, so update_hook sees rows.

@@ -4612,3 +4612,157 @@ async fn retained_malformed_monitor_owner_keeps_unknown_proof_without_resending(
     malformed_monitor_keeps_proof_without_blocking_other_agent(MalformedMonitorWitness::Owner)
         .await;
 }
+
+#[tokio::test]
+async fn retained_vm_thread_start_provenance_survives_next_generation_attach() {
+    use studio_runtime_schema::persistence::{OutboxStatus, RequestIdentity};
+    use studio_runtime_schema::provider_call_contract::{
+        CommittedAck, RetainedOutcome, RetainedReply, transport_key,
+    };
+    use studio_runtime_store::{
+        outbox::Outbox,
+        request_results::{Admission, RequestResults, ResultEnvelope},
+    };
+    let state = State::new().await;
+    retained_schema(&state).await;
+    let actor = state.agent.clone();
+    let epoch = state.epoch;
+    let fixture_actor = actor.clone();
+    let operation = "vm-thread-start-provenance";
+    let key = transport_key("default", operation);
+    let fixture_key = key.clone();
+    let root = retained_root(operation);
+    let admitted = state
+        .bridge
+        .store
+        .transaction_with(move |tx| {
+            let mut agent =
+                AgentRepository::get(tx, &AgentId::from(fixture_actor.as_str()))?.unwrap();
+            agent.extra.insert("executionMode".into(), json!("vm"));
+            agent.extra.insert(
+                "providerStream".into(),
+                json!({"generation":7,"connection":"old-vm-connection","ack":12,"streams":null}),
+            );
+            AgentRepository::put(tx, &agent)?;
+            let identity =
+                RequestIdentity::new("vm-thread-start-fixture", &[&fixture_actor], &root, &[])
+                    .unwrap();
+            let owner = match RequestResults::admit(
+                tx,
+                &identity,
+                "fixture",
+                chrono::Utc::now().timestamp_millis(),
+            )? {
+                Admission::Fresh(owner) => owner,
+                Admission::Replay(_) => panic!("fresh owner"),
+            };
+            let call = crate::account_worker::retained::ProviderCallIntent {
+                root_request_id: root,
+                admitted_request: None,
+                scope: ConnectionScope {
+                    account: "default".into(),
+                    connection: "old-vm-connection".into(),
+                    generation: 7,
+                },
+                operation: operation.into(),
+                actor: Some(RequestActor {
+                    agent: fixture_actor.clone(),
+                    epoch,
+                }),
+                transfer: None,
+                deleted_actor_session: None,
+                method: Method::ThreadStart,
+                params: json!({"ephemeral":true}),
+            };
+            let admitted = crate::account_worker::retained::reserve_provider_call(tx, &owner, call)
+                .expect("valid retained VM reservation");
+            let mut row =
+                Outbox::get::<crate::account_worker::store::ProviderCall>(tx, &fixture_key)?
+                    .unwrap();
+            let crate::account_worker::store::ProviderCall::Retained(payload) = &mut row.payload
+            else {
+                panic!("retained owner")
+            };
+            let request = crate::provider_session_task::RecoveredRequest {
+                ticket: studio_runtime_providers::RequestTicket {
+                    generation: 7,
+                    id: RequestId::String(fixture_key.clone()),
+                    method: Method::ThreadStart,
+                },
+                operation_id: OperationId(fixture_key),
+                thread_id: None,
+                lightweight: true,
+                deadline_ms: 1000,
+                unknown: true,
+                remote_id: None,
+            };
+            payload.request =
+                Some(crate::account_worker::retained::storage::TransportRequest::from(&request));
+            payload.written = true;
+            payload.outcome = Some(RetainedOutcome {
+                result: RequestResult::Reply(json!({"thread":{"id":"started-vm-thread"}})),
+                cursor: 12,
+                committed_ack: None,
+            });
+            row.status = OutboxStatus::Unknown;
+            row.next_at = None;
+            Outbox::put(tx, &row)?;
+            Ok::<_, StoreError>(admitted)
+        })
+        .await
+        .unwrap();
+    store::attach_provider_stream(
+        &state.bridge.store,
+        "default",
+        Some(&actor),
+        8,
+        "new-vm-connection",
+    )
+    .await
+    .unwrap();
+    let expected_actor = actor.clone();
+    state
+        .bridge
+        .store
+        .transaction(move |tx| {
+            let agent = AgentRepository::get(tx, &AgentId::from(actor.as_str()))?.unwrap();
+            assert_eq!(agent.extra["providerStream"]["generation"], 8);
+            assert_eq!(agent.extra["providerStream"]["ack"], 0);
+            assert_eq!(
+                agent.extra["providerStream"]["connection"],
+                "new-vm-connection"
+            );
+            let provenance = &agent.extra["threadProvenance"]["started-vm-thread"];
+            assert_eq!(
+                provenance["actor"],
+                json!({"agent":expected_actor,"epoch":epoch})
+            );
+            assert_eq!(
+                provenance["scope"],
+                json!({"account":"default","connection":"old-vm-connection","generation":7})
+            );
+            assert_eq!(provenance["operation"], operation);
+            assert!(Outbox::get::<crate::account_worker::store::ProviderCall>(tx, &key)?.is_none());
+            let saved = RequestResults::replay(
+                tx,
+                admitted.id(),
+                admitted.signature(),
+                chrono::Utc::now().timestamp_millis(),
+            )?
+            .unwrap();
+            let envelope: ResultEnvelope<
+                RetainedReply<Method, studio_runtime_store::request_results::AdmittedRequest>,
+            > = serde_json::from_str(&saved.result)?;
+            assert_eq!(
+                envelope.reply.ack,
+                CommittedAck {
+                    stream_id: crate::account_worker::vm_journal_scope("default", &expected_actor),
+                    generation: 7,
+                    cursor: 12
+                }
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+}

@@ -13,8 +13,6 @@ use studio_runtime_store::{
     request_results::{Admission, AdmittedRequest, RequestResults, ResultEnvelope},
 };
 
-/// The exact prepared transport request. Method stays in the provider enum owner.
-
 impl From<&RecoveredRequest> for TransportRequest {
     fn from(request: &RecoveredRequest) -> Self {
         Self::from_request(request)
