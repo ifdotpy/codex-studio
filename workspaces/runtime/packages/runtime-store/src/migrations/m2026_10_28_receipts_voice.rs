@@ -29,33 +29,20 @@ fn migrate_session_scopes(
     checkpoint: &MigrationCheckpoint,
 ) -> Result<MigrationCheckpoint> {
     let mut next = checkpoint.clone();
-    let mut query = tx.prepare("SELECT rowid,id,agent,account_key,connection_id FROM voice_sessions WHERE rowid>?1 AND ended IS NULL AND state IS NOT NULL ORDER BY rowid LIMIT ?2")?;
+    let mut query = tx.prepare("SELECT rowid, length(CAST(id AS BLOB)) + length(CAST(agent AS BLOB)) + COALESCE(length(CAST(account_key AS BLOB)),0) + COALESCE(length(CAST(connection_id AS BLOB)),0) FROM voice_sessions WHERE rowid>?1 AND ended IS NULL AND state IS NOT NULL ORDER BY rowid LIMIT ?2")?;
     let rows = query
         .query_map(
             params![
                 checkpoint.cursor,
                 crate::receipt_migration_contract::MIGRATION_BATCH_ROWS as i64
             ],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                ))
-            },
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     drop(query);
     let mut budget = BatchBudget::default();
-    for (rowid, id, agent_id, account, connection) in rows {
-        if !budget.include(
-            id.len()
-                + agent_id.len()
-                + account.as_ref().map_or(0, String::len)
-                + connection.as_ref().map_or(0, String::len),
-        ) {
+    for (rowid, bytes) in rows {
+        if !budget.include(usize::try_from(bytes).unwrap_or(usize::MAX)) {
             break;
         }
         // A matching current connection does not prove a legacy generation.
@@ -752,6 +739,35 @@ mod tests {
     use crate::receipt_migration_contract::{MIGRATION_BATCH_ROWS, prepare_schema};
     use rusqlite::Connection;
 
+    #[test]
+    fn voice_session_scope_batches_bound_large_rows() {
+        let mut db = Connection::open_in_memory().unwrap();
+        fixture(&db);
+        db.execute_batch("ALTER TABLE voice_sessions ADD COLUMN state TEXT;")
+            .unwrap();
+        let size = crate::receipt_migration_contract::MIGRATION_BATCH_BYTES;
+        let large = "x".repeat(size / 2);
+        let oversized = "z".repeat(size + 1);
+        for id in [format!("a{large}"), format!("b{large}"), oversized] {
+            db.execute(
+                "INSERT INTO voice_sessions(id,agent,created,state) VALUES(?1,'agent',1,'ready')",
+                [id],
+            )
+            .unwrap();
+        }
+        let tx = db.transaction().unwrap();
+        prepare_schema(&tx).unwrap();
+        VoiceMigration.prepare(&tx, 1000).unwrap();
+        let mut cp =
+            MigrationCheckpoint::begin(&tx, VoiceMigration.id(), "voice_sessions", 1000).unwrap();
+        for rowid in 1..=3 {
+            cp = VoiceMigration
+                .move_batch(&tx, "voice_sessions", &cp)
+                .unwrap();
+            assert_eq!(cp.cursor, rowid);
+        }
+        assert_eq!(cp.status, MigrationStatus::Complete);
+    }
     #[test]
     fn voice_session_scope_migration_holds_even_a_matching_current_connection() {
         let mut db = Connection::open_in_memory().expect("database");
