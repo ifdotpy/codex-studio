@@ -1140,7 +1140,6 @@ pub type ProviderCallIntent = studio_runtime_schema::provider_call_contract::Pro
     ConnectionScope,
 >;
 pub(in crate::account_worker) type Call = ProviderCallIntent;
-use storage::TransportRequestExt;
 
 /// Reserve a provider obligation in the transaction admitting its owning work.
 /// Repeating this call never turns submitted or unknown work back into sendable work.
