@@ -539,17 +539,19 @@ async fn mixed_batch_is_compiled_acknowledged_once_and_deferred_input_waits(
     if provider == "claude" {
         assert_eq!(
             inputs.len(),
-            3,
-            "reports, task instructions, then Studio context"
+            4,
+            "work instructions, reports, task instructions, then Studio context"
         );
-        assert_eq!(inputs[0]["inputOrigin"], "studio_event");
-        assert_eq!(inputs[1]["inputOrigin"], "human");
-        assert_eq!(inputs[2]["inputOrigin"], "studio_event");
+        assert_eq!(inputs[0]["inputOrigin"], "human");
+        assert_eq!(inputs[1]["inputOrigin"], "studio_event");
+        assert_eq!(inputs[2]["inputOrigin"], "human");
+        assert_eq!(inputs[3]["inputOrigin"], "studio_event");
         for item in inputs {
             let text = item["text"].as_str().unwrap().trim_start();
             // This fixture stamps senderId on its followup. It retains task
             // authority, as do work decisions and the actual user message.
             let expected_origin = if text == TEXT
+                || text.starts_with("[Orchestration event: work_ready]\n")
                 || text.starts_with("[Orchestration event: followup]\n")
                 || text.starts_with("[Orchestration event: work_decision]\n")
             {
