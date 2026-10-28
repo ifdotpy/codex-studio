@@ -44,7 +44,75 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     bootstrap_connection_functions: &[],
 };
 pub struct ExecutionHistoryRepository;
+enum VmAdmission {
+    AuthBootstrap,
+    CredentialRefresh,
+}
+impl VmAdmission {
+    fn path(self) -> &'static str {
+        match self {
+            Self::AuthBootstrap => "$.vm_auth_bootstrap_admission",
+            Self::CredentialRefresh => "$.vm_credential_refresh_admission",
+        }
+    }
+}
 impl ExecutionHistoryRepository {
+    pub fn vm_auth_bootstrap_admission(
+        db: &rusqlite::Connection,
+        id: &str,
+    ) -> StoreResult<Option<AdmittedRequest>> {
+        Self::vm_admission(db, id, VmAdmission::AuthBootstrap)
+    }
+    pub fn vm_credential_refresh_admission(
+        db: &rusqlite::Connection,
+        id: &str,
+    ) -> StoreResult<Option<AdmittedRequest>> {
+        Self::vm_admission(db, id, VmAdmission::CredentialRefresh)
+    }
+    pub fn set_vm_auth_bootstrap_admission(
+        tx: &Transaction<'_>,
+        id: &str,
+        source: &AdmittedRequest,
+        admitted: &AdmittedRequest,
+    ) -> StoreResult<()> {
+        Self::set_vm_admission(tx, id, VmAdmission::AuthBootstrap, source, admitted)
+    }
+    pub fn set_vm_credential_refresh_admission(
+        tx: &Transaction<'_>,
+        id: &str,
+        source: &AdmittedRequest,
+        admitted: &AdmittedRequest,
+    ) -> StoreResult<()> {
+        Self::set_vm_admission(tx, id, VmAdmission::CredentialRefresh, source, admitted)
+    }
+    fn vm_admission(
+        db: &rusqlite::Connection,
+        id: &str,
+        kind: VmAdmission,
+    ) -> StoreResult<Option<AdmittedRequest>> {
+        db.query_row(
+            "SELECT json_extract(record,?1) FROM runtime_execution_attempts WHERE id=?2",
+            params![kind.path(), id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+        .map(|raw| serde_json::from_str(&raw).map_err(StoreError::from))
+        .transpose()
+    }
+    fn set_vm_admission(
+        tx: &Transaction<'_>,
+        id: &str,
+        kind: VmAdmission,
+        source: &AdmittedRequest,
+        admitted: &AdmittedRequest,
+    ) -> StoreResult<()> {
+        let changed=tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,?1,json(?2)) WHERE id=?3 AND json_extract(record,'$.admission')=json(?4) AND (json_type(record,?1) IS NULL OR json_extract(record,?1)=json(?2))",params![kind.path(),serde_json::to_string(admitted)?,id,serde_json::to_string(source)?])?;
+        if changed != 1 {
+            return Err(Self::invalid("runtime_execution_attempts", id));
+        }
+        Ok(())
+    }
     pub fn record_current(tx: &Transaction<'_>, agent: &mut AgentRecord) -> StoreResult<()> {
         Self::record(tx, agent)?;
         if let Some(pointer) = Self::current_pointer(tx, agent)? {
@@ -363,6 +431,8 @@ impl ExecutionHistoryRepository {
                 "rootRequestId",
                 "providerSubmission",
                 "firstEventId",
+                "vm_auth_bootstrap_admission",
+                "vm_credential_refresh_admission",
             ] {
                 if let Some(value) = previous.get(key) {
                     saved[key] = value.clone();
@@ -601,6 +671,45 @@ mod tests {
             [serde_json::to_string(&admission).expect("token")],
         )
         .expect("persist admission");
+        let final_effect = admission.derive_result("provider-call", &["bootstrap"], "fingerprint");
+        ExecutionHistoryRepository::set_vm_auth_bootstrap_admission(
+            &tx,
+            "attempt",
+            &admission,
+            &final_effect,
+        )
+        .expect("reserve exact source");
+        assert_eq!(
+            ExecutionHistoryRepository::vm_auth_bootstrap_admission(&tx, "attempt")
+                .expect("final pointer"),
+            Some(final_effect.clone())
+        );
+        ExecutionHistoryRepository::set_vm_auth_bootstrap_admission(
+            &tx,
+            "attempt",
+            &admission,
+            &final_effect,
+        )
+        .expect("same final pointer");
+        let wrong_source = admission.derive_result("wrong-source", &[], "different");
+        assert!(
+            ExecutionHistoryRepository::set_vm_auth_bootstrap_admission(
+                &tx,
+                "attempt",
+                &wrong_source,
+                &final_effect
+            )
+            .is_err()
+        );
+        assert!(
+            ExecutionHistoryRepository::set_vm_auth_bootstrap_admission(
+                &tx,
+                "attempt",
+                &admission,
+                &wrong_source
+            )
+            .is_err()
+        );
         let input = json!({"agent":"agent","epoch":1,"input":{"reason":"held"}});
         let reply = json!({"bound":true,"interrupt":false});
         ExecutionHistoryRepository::save_receipt(
