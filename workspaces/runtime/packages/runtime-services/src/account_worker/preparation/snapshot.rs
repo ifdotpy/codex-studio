@@ -1006,15 +1006,17 @@ fn catalog_definitions<'a>(
 }
 
 /// The thread role of an agent record: its saved role, else the role of a
-/// lead or a worker.
+/// lead, a native review child, or a worker.
 fn role(record: &Value) -> Result<thread::Role, WorkerError> {
-    Ok(
-        optional(record, "role")?.unwrap_or(if flag(record, "isLead")? {
+    Ok(optional(record, "role")?.unwrap_or(
+        if studio_runtime_store::truthy(record.get("nativeReview")) {
+            thread::Role::Reviewer
+        } else if flag(record, "isLead")? {
             thread::Role::Orchestrator
         } else {
             thread::Role::Implementer
-        }),
-    )
+        },
+    ))
 }
 
 fn federation_enabled(tx: &Transaction<'_>) -> Result<bool, WorkerError> {
@@ -1944,6 +1946,21 @@ mod resource_tests {
             .map(|raw| serde_json::from_str::<Value>(raw).expect("record")["id"].to_string())
             .collect();
         assert_eq!(ids, ["\"a\"", "\"b\""]);
+    }
+
+    #[test]
+    fn native_review_without_a_role_is_a_reviewer() {
+        for role_value in [None, Some(Value::Null)] {
+            let mut record = json!({"isLead":false,"nativeReview":{"requestId":"q"}});
+            if let Some(value) = role_value {
+                record["role"] = value;
+            }
+            assert_eq!(role(&record).expect("role"), thread::Role::Reviewer);
+        }
+        assert_eq!(
+            role(&json!({"isLead":false})).expect("role"),
+            thread::Role::Implementer
+        );
     }
 
     /// Python stores a review child's `nativeReview` as its review object and
