@@ -2,7 +2,7 @@
 use rusqlite::Transaction;
 use serde::Deserialize;
 use studio_runtime_schema::persistence::MigrationStatus;
-use studio_runtime_schema::studio_errors::{Kind, StudioError, Target};
+use studio_runtime_schema::studio_errors::{Diagnostics, Kind, StudioError, Target};
 
 use crate::receipt_migration_contract::{
     MigrationCheckpoint, ReceiptFamilyMigration, ReceiptMigrationError, Result, delete_source,
@@ -12,6 +12,25 @@ use crate::receipt_migration_contract::{
 pub(super) struct Family;
 const SOURCE: &str = "runtime_operation_receipts";
 const PREDICATE: &str = "id GLOB 'studio-errors:*'";
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyIncident {
+    id: String,
+    kind: Kind,
+    reason: String,
+    #[serde(flatten)]
+    target: Target,
+    detail: String,
+    subject: String,
+    at: f64,
+    monitor_id: Option<String>,
+    event_id: Option<String>,
+    rule_id: Option<String>,
+    count: Option<u64>,
+    first_at: Option<f64>,
+    diagnostics: Diagnostics,
+}
 
 impl ReceiptFamilyMigration for Family {
     fn id(&self) -> &'static str {
@@ -47,18 +66,27 @@ impl ReceiptFamilyMigration for Family {
                 if row.signature != "studio-error-incident-v1" {
                     return Err(invalid());
                 }
-                let mut payload: serde_json::Value = row.json(SOURCE)?;
-                // Original diagnostic records predate the required level field.
-                let object = payload.as_object_mut().ok_or_else(invalid)?;
-                let kind: Kind =
-                    serde_json::from_value(object.get("kind").cloned().ok_or_else(invalid)?)
-                        .map_err(|_| invalid())?;
-                object.insert(
-                    "level".into(),
-                    serde_json::to_value(kind.level()).map_err(|_| invalid())?,
-                );
-                let incident: StudioError =
-                    serde_json::from_value(payload).map_err(|_| invalid())?;
+                if !row.result.trim_start().starts_with('{') {
+                    return Err(invalid());
+                }
+                let old: LegacyIncident = row.json(SOURCE)?;
+                let kind = old.kind;
+                let incident = StudioError {
+                    id: old.id,
+                    kind,
+                    level: kind.level(),
+                    reason: old.reason,
+                    target: old.target,
+                    detail: old.detail,
+                    subject: old.subject,
+                    at: old.at,
+                    monitor_id: old.monitor_id,
+                    event_id: old.event_id,
+                    rule_id: old.rule_id,
+                    count: old.count,
+                    first_at: old.first_at,
+                    diagnostics: old.diagnostics,
+                };
                 if incident.id != id
                     || !matches!(kind, Kind::HttpFailure | Kind::RecoveryFailed)
                     || !matches!(incident.target, Target::Details)
@@ -118,8 +146,8 @@ mod tests {
         Context, Diagnostics, EffectCertainty, HttpErrorKind, RecoveryPhase,
     };
 
-    fn incident(id: &str, kind: Kind) -> Value {
-        let error = StudioError {
+    fn incident(id: &str, kind: Kind) -> StudioError {
+        StudioError {
             id: id.into(),
             kind,
             level: kind.level(),
@@ -151,10 +179,10 @@ mod tests {
                 certainty: EffectCertainty::Unknown,
                 causes: vec![],
             },
-        };
-        let mut value = serde_json::to_value(error).expect("incident");
-        value.as_object_mut().expect("object").remove("level");
-        value
+        }
+    }
+    fn put_incident(db: &Connection, id: &str, error: &StudioError) {
+        db.execute("INSERT INTO runtime_operation_receipts VALUES(?1,'studio-error-incident-v1',json_remove(?2,'$.level'))", params![id, serde_json::to_string(error).expect("incident")]).expect("source");
     }
     fn put(db: &Connection, id: &str, signature: &str, value: &Value) {
         db.execute(
@@ -196,16 +224,14 @@ mod tests {
             "studio-error-dismissal",
             &json!({"at":2.5}),
         );
-        put(
+        put_incident(
             &db,
             "studio-errors:incident:http",
-            "studio-error-incident-v1",
             &incident("http", Kind::HttpFailure),
         );
-        put(
+        put_incident(
             &db,
             "studio-errors:incident:recovery",
-            "studio-error-incident-v1",
             &incident("recovery", Kind::RecoveryFailed),
         );
         put(
@@ -223,10 +249,7 @@ mod tests {
         );
         assert_eq!(first[1].6, "null");
         assert_eq!(first[2].2, "account");
-        let mut expected = incident("http", Kind::HttpFailure);
-        expected["level"] = json!(Kind::HttpFailure.level());
-        let original: StudioError =
-            serde_json::from_value(expected).expect("canonical expected diagnostic");
+        let original = incident("http", Kind::HttpFailure);
         assert_eq!(
             serde_json::from_str::<StudioError>(&first[0].6).expect("canonical incident"),
             original
