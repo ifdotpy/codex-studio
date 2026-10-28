@@ -52,6 +52,7 @@ impl From<studio_runtime_store::request_results::RequestResultError> for Callbac
     fn from(error: studio_runtime_store::request_results::RequestResultError) -> Self {
         use studio_runtime_store::request_results::RequestResultError;
         match error {
+            RequestResultError::Expired => Self::Expired,
             RequestResultError::Sql(error) => error.into(),
             RequestResultError::Json(_) => Self::Stored("callback result payload".into()),
             RequestResultError::Conflict { .. } => Self::Conflict,
