@@ -994,6 +994,13 @@ fn migrate_location(
     let token = if let Some(existing) = intents.get(&row.id) {
         let existing: AdmittedRequest =
             serde_json::from_value(existing["request"].clone()).map_err(|_| invalid())?;
+        if existing.signature() != signature {
+            return Err(unclassifiable(
+                "runtime_projects",
+                &project,
+                existing.signature(),
+            ));
+        }
         admitted_owner_token(existing.id(), &signature, existing.created())
     } else {
         admitted_owner_token(&row.id, &signature, cutover)
@@ -1041,9 +1048,13 @@ fn location_signature(tx: &Transaction<'_>, row: &SourceReceipt) -> Result<Optio
     {
         return Err(invalid());
     }
-    Ok(Some(crate::sha256_hex(
+    let signature = crate::sha256_hex(
         studio_runtime_schema::json_compat::python_json_compact(request).as_bytes(),
-    )))
+    );
+    if row.signature != signature {
+        return Err(invalid());
+    }
+    Ok(Some(signature))
 }
 
 #[cfg(test)]
@@ -1920,6 +1931,59 @@ mod tests {
                 .expect("wire");
             assert_eq!(after, before, "original signed body stays byte identical");
             migrate(&mut db);
+        }
+    }
+
+    #[test]
+    fn receipts_requests_pending_location_rejects_signature_and_token_mismatch() {
+        for bad_source in [true, false] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            let input = json!({"action":"add_location","project":"project","server":"peer","path":"/original"});
+            let signature = crate::sha256_hex(crate::python_json_compact(&input).as_bytes());
+            let source_signature = if bad_source {
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            } else {
+                &signature
+            };
+            let token = admitted_owner_token("location", "wrong owner signature", CUTOVER);
+            db.execute(
+                "INSERT INTO runtime_projects VALUES('project',?1)",
+                [json!({"locationIntents":{"location":{"request":token}}}).to_string()],
+            )
+            .expect("owner");
+            db.execute("INSERT INTO runtime_server_outbox VALUES('location',?1)",[json!({"requestId":"location","action":"add_location","payload":{"project":"project","request":input,"signature":signature}}).to_string()]).expect("captured request");
+            db.execute(
+                "INSERT INTO runtime_operation_receipts VALUES('location',?1,?2)",
+                params![
+                    source_signature,
+                    json!({"requestId":"location","projectId":"project","outcome":"unknown"})
+                        .to_string()
+                ],
+            )
+            .expect("pending C marker");
+            let tx = db.transaction().expect("transaction");
+            let checkpoint =
+                MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
+            let error = Family
+                .move_batch(&tx, SOURCE, &checkpoint)
+                .expect_err("mismatch cannot gain new authority");
+            assert!(
+                matches!(error,ReceiptMigrationError::Unclassifiable{table,key,..}if (bad_source&&table==SOURCE&&key=="location")||(!bad_source&&table=="runtime_projects"&&key=="project"))
+            );
+            tx.rollback().expect("source preserved");
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("old marker"),
+                1
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("no reply authority"),
+                0
+            );
         }
     }
 

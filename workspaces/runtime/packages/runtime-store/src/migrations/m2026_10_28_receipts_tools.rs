@@ -257,20 +257,33 @@ fn hydrate_location_arguments(
     let args = body
         .as_ref()
         .and_then(|body| body.pointer("/payload/request"));
-    migrate_location_c(tx, &id, args, cutover)?;
+    let pending = matches!(task["outcome"].as_str(), Some("pending" | "unknown"));
+    migrate_location_c(tx, &id, args, pending, cutover)?;
     let Some(args) = args else {
         return Ok(());
     };
     let body = body.as_ref().ok_or_else(invalid)?;
-    if !matches!(
-        args["action"].as_str(),
-        Some("add_location" | "remove_location")
-    ) || args["project"] != body["payload"]["project"]
+    if body["requestId"] != id
+        || body["action"] != args["action"]
+        || !matches!(
+            args["action"].as_str(),
+            Some("add_location" | "remove_location")
+        )
+        || args["project"] != body["payload"]["project"]
         || !args["project"].is_string()
         || !args["server"].is_string()
         || !args["path"].is_null() && !args["path"].is_string()
     {
         return Err(invalid());
+    }
+    let original_signature =
+        crate::sha256_hex(studio_runtime_schema::json_compat::python_json(args).as_bytes());
+    if body["payload"]["signature"] != original_signature {
+        return Err(unclassifiable(
+            "runtime_server_outbox",
+            &id,
+            body["payload"]["signature"].as_str().unwrap_or(""),
+        ));
     }
     if task
         .get("arguments")
@@ -279,7 +292,7 @@ fn hydrate_location_arguments(
         return Err(invalid());
     }
     task["arguments"] = args.clone();
-    if !matches!(task["outcome"].as_str(), Some("pending" | "unknown")) {
+    if !pending {
         return Ok(());
     }
     let project = args["project"].as_str().ok_or_else(invalid)?;
@@ -307,6 +320,19 @@ fn hydrate_location_arguments(
         &["location"],
         &signature,
     );
+    if let Some(saved) = intents.get(&id) {
+        let saved: crate::request_results::AdmittedRequest =
+            serde_json::from_value(saved["request"].clone()).map_err(|_| invalid())?;
+        if (saved.signature() != original_signature && saved.signature() != signature)
+            || (saved.id() != id && saved.id() != token.id())
+        {
+            return Err(unclassifiable(
+                "runtime_projects",
+                project,
+                saved.signature(),
+            ));
+        }
+    }
     intents.insert(id, json!({"request":token}));
     tx.execute(
         "UPDATE runtime_projects SET record=?1 WHERE id=?2",
@@ -367,6 +393,7 @@ fn migrate_location_c(
     tx: &Transaction<'_>,
     id: &str,
     args: Option<&Value>,
+    pending: bool,
     cutover: i64,
 ) -> Result<()> {
     const SOURCE: &str = "runtime_operation_receipts";
@@ -394,7 +421,19 @@ fn migrate_location_c(
     if reply["requestId"] != id {
         return Err(unclassifiable(SOURCE, id, &row.signature));
     }
+    if let Some(args) = args {
+        let original =
+            crate::sha256_hex(studio_runtime_schema::json_compat::python_json(args).as_bytes());
+        if row.signature != original {
+            return Err(unclassifiable(SOURCE, id, &row.signature));
+        }
+    }
     if reply["outcome"] == "unknown" {
+        // The same transaction persists its exact derived token on the pending
+        // project owner below. A bodyless unknown remains held with its old marker.
+        if args.is_some() && pending {
+            delete_source(tx, SOURCE, row.rowid)?;
+        }
         return Ok(());
     }
     if !matches!(reply["outcome"].as_str(), Some("applied" | "not_applied")) {
@@ -828,6 +867,53 @@ mod tests {
     }
 
     #[test]
+    fn receipts_tools_wrong_original_location_signature_aborts_without_new_authority() {
+        for outcome in ["applied", "unknown"] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            db.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT);CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,body TEXT);CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT);INSERT INTO runtime_projects VALUES('project','{}')").expect("old owners");
+            let task = json!({"id":"task","agent":"agent","tool":"orchestration_servers","signature":"tool signature","stage":if outcome=="unknown"{"running"}else{"completed"},"outcome":outcome});
+            db.execute(
+                "INSERT INTO runtime_tool_requests VALUES('task',?1)",
+                [task.to_string()],
+            )
+            .expect("task");
+            let id = uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_URL,
+                b"studio-cross-server:project-location:agent:task",
+            )
+            .to_string();
+            let input = json!({"action":"add_location","project":"project","server":"peer","path":"/original"});
+            let signature = crate::sha256_hex(crate::python_json(&input).as_bytes());
+            db.execute("INSERT INTO runtime_server_outbox VALUES(?1,?2)",params![id,json!({"requestId":id,"action":"add_location","payload":{"project":"project","request":input,"signature":signature}}).to_string()]).expect("captured request");
+            db.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,'corrupt logical signature',?2)",
+                params![id, json!({"requestId":id,"outcome":outcome}).to_string()],
+            )
+            .expect("mismatched old C");
+            let tx = db.transaction().expect("transaction");
+            let checkpoint = MigrationCheckpoint::begin(&tx, ID, "runtime_tool_requests", CUTOVER)
+                .expect("checkpoint");
+            assert!(
+                matches!(Family.move_batch(&tx,"runtime_tool_requests",&checkpoint),Err(ReceiptMigrationError::Unclassifiable{table,key,signature})if table=="runtime_operation_receipts"&&key==id&&signature=="corrupt logical signature")
+            );
+            tx.rollback().expect("source preserved");
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("old C"),
+                1
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("no new replay authority"),
+                0
+            );
+        }
+    }
+
+    #[test]
     fn receipts_tools_secondary_location_sources_share_row_and_byte_batch_limits() {
         for (count, padding, first_batch) in [(167, 0, 166), (2, 9 * 1024 * 1024, 1)] {
             let mut db = Connection::open_in_memory().expect("database");
@@ -847,8 +933,8 @@ mod tests {
                     format!("studio-cross-server:project-location:agent:{task_id}").as_bytes(),
                 )
                 .to_string();
-                db.execute("INSERT INTO runtime_server_outbox VALUES(?1,?2)",params![id,json!({"requestId":id,"action":"add_location","payload":{"project":"project","request":input}}).to_string()]).expect("captured request");
-                db.execute("INSERT INTO runtime_operation_receipts VALUES(?1,'old logical signature',?2)",params![id,json!({"requestId":id,"outcome":"applied","value":{"original":"x".repeat(padding)}}).to_string()]).expect("old C reply");
+                db.execute("INSERT INTO runtime_server_outbox VALUES(?1,?2)",params![id,json!({"requestId":id,"action":"add_location","payload":{"project":"project","request":input,"signature":crate::sha256_hex(crate::python_json(&input).as_bytes())}}).to_string()]).expect("captured request");
+                db.execute("INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",params![id,crate::sha256_hex(crate::python_json(&input).as_bytes()),json!({"requestId":id,"outcome":"applied","value":{"original":"x".repeat(padding)}}).to_string()]).expect("old C reply");
             }
             let next = batch(&mut db, "runtime_tool_requests", true);
             assert_eq!(
@@ -945,7 +1031,7 @@ mod tests {
     fn receipts_tools_pending_location_arguments_come_from_exact_outbox_identity() {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&mut db);
-        db.execute_batch("CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,body TEXT);CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT);INSERT INTO runtime_projects VALUES('project','{}')")
+        db.execute_batch("CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,body TEXT);CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT);INSERT INTO runtime_projects VALUES('project','{}')")
             .expect("outboxes");
         let task = json!({"id":"old-task","agent":"agent","tool":"orchestration_servers","signature":"signature","stage":"running","outcome":"unknown"});
         db.execute(
@@ -959,12 +1045,21 @@ mod tests {
         )
         .to_string();
         let args = json!({"action":"add_location","project":"project","server":"server","path":"/project"});
-        let body = json!({"action":"add_location","payload":{"project":"project","request":args}});
+        let body = json!({"requestId":id,"action":"add_location","payload":{"project":"project","request":args,"signature":crate::sha256_hex(crate::python_json(&args).as_bytes())}});
         db.execute(
             "INSERT INTO runtime_server_outbox VALUES(?1,?2)",
             params![id, body.to_string()],
         )
         .expect("exact immutable outbox");
+        db.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+            params![
+                id,
+                crate::sha256_hex(crate::python_json(&args).as_bytes()),
+                json!({"requestId":id,"projectId":"project","outcome":"unknown"}).to_string()
+            ],
+        )
+        .expect("old unknown marker");
         migrate(&mut db);
         let raw: String = db
             .query_row("SELECT record FROM runtime_tool_requests", [], |r| r.get(0))
@@ -998,5 +1093,11 @@ mod tests {
             )
             .expect("wire");
         assert_eq!(preserved, body.to_string());
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                .get::<_, i64>(0))
+                .expect("pending authority moved atomically to project token"),
+            0
+        );
     }
 }

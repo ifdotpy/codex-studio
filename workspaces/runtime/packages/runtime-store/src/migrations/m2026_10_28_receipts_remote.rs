@@ -31,12 +31,17 @@ pub(super) const SOURCES: &[&str] = &[
 pub(super) struct Family;
 /// Protocol version in the supported pre-cutover envelope format. Immutable source contract.
 const SOURCE_FEDERATION_PROTOCOL_VERSION: u64 = 1;
+/// The sole authorized historical wire normalization; payload/root/fingerprint stay exact.
+const WIRE_OPERATION_REPORT: &str = "normalized-wire:server-outbox-operation";
 
 impl ReceiptFamilyMigration for Family {
     fn id(&self) -> &'static str {
         ID
     }
-    fn prepare(&self, tx: &Transaction<'_>, _cutover_ms: i64) -> Result<()> {
+    fn prepare(&self, tx: &Transaction<'_>, cutover_ms: i64) -> Result<()> {
+        let mut report = MigrationCheckpoint::begin(tx, ID, WIRE_OPERATION_REPORT, cutover_ms)?;
+        report.status = MigrationStatus::Complete;
+        report.save(tx, ID, WIRE_OPERATION_REPORT, cutover_ms)?;
         for table in [
             "runtime_server_inbox",
             "runtime_server_outbox",
@@ -505,6 +510,7 @@ fn server(
             let object = body
                 .as_object_mut()
                 .ok_or_else(|| unclassifiable(source, &row.id, &row.signature))?;
+            let normalize_operation = !object.contains_key("operation");
             object.entry("operation").or_insert(json!([]));
             if !body["operation"]
                 .as_array()
@@ -532,6 +538,13 @@ fn server(
                 "UPDATE runtime_server_outbox SET body=?1 WHERE rowid=?2",
                 params![body.to_string(), row.rowid],
             )?;
+            if normalize_operation {
+                let mut report =
+                    MigrationCheckpoint::begin(tx, ID, WIRE_OPERATION_REPORT, cutover)?;
+                report.cursor += 1;
+                report.status = MigrationStatus::Complete;
+                report.save(tx, ID, WIRE_OPERATION_REPORT, cutover)?;
+            }
         }
         tx.execute(
             &format!("UPDATE {source} SET admission=?1 WHERE rowid=?2"),
@@ -961,7 +974,25 @@ mod tests {
                 .expect("no final result"),
             0
         );
+        let tx = db.transaction().expect("transaction");
+        assert_eq!(
+            MigrationCheckpoint::load(&tx, ID, "normalized-wire:server-outbox-operation")
+                .expect("report")
+                .expect("normalization count")
+                .cursor,
+            1
+        );
+        tx.rollback().expect("read only");
         migrate(&mut db);
+        let tx = db.transaction().expect("transaction");
+        assert_eq!(
+            MigrationCheckpoint::load(&tx, ID, "normalized-wire:server-outbox-operation")
+                .expect("report")
+                .expect("stable count")
+                .cursor,
+            1
+        );
+        tx.rollback().expect("read only");
     }
 
     #[test]
