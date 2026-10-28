@@ -4,8 +4,45 @@ use crate::callback_fixtures as fixture;
 use fixture::*;
 use serde_json::json;
 use std::sync::Arc;
+use studio_runtime_schema::persistence::{OutboxStatus, ToolRequestStatus};
 use studio_runtime_services::{callback_runtime::*, provider_callbacks::*};
-use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::{
+    RuntimeStore,
+    outbox::Outbox,
+    request_results::{RequestResults, ResultEnvelope},
+};
+
+fn callback_owner(
+    store: &RuntimeStore,
+    context: &CallbackContext,
+    rpc: &studio_runtime_providers::RequestId,
+) -> studio_runtime_services::tool_requests::CallbackTask<CallbackOwner> {
+    studio_runtime_services::tool_requests::get_callback(
+        &store.test_reader().unwrap(),
+        &callback_origin_key(context, rpc),
+    )
+    .unwrap()
+    .unwrap()
+}
+
+fn callback_body(
+    store: &RuntimeStore,
+    owner: &studio_runtime_services::tool_requests::CallbackTask<CallbackOwner>,
+) -> Option<CallbackResponse> {
+    let admission = owner.payload.admission.as_ref().unwrap();
+    RequestResults::replay(
+        &store.test_reader().unwrap(),
+        admission.id(),
+        admission.signature(),
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .unwrap()
+    .map(|row| {
+        serde_json::from_str::<ResultEnvelope<CallbackResponse>>(&row.result)
+            .unwrap()
+            .reply
+    })
+}
 
 #[tokio::test]
 async fn complete_python_answer_and_delete_corpus() {
@@ -56,18 +93,49 @@ async fn complete_python_answer_and_delete_corpus() {
 }
 
 #[tokio::test]
-async fn retirement_requires_checkpoint_and_preserves_http_replay_and_unknown_proof() {
+async fn written_retires_transport_body_and_preserves_exact_http_replay() {
     let (_root, store, context) = fixture().await;
     let (id, frame) = pending(&store, &context).await;
     let data = json!({"answers":{"secret":{"answers":["secret-payload"]}}});
     let port = Arc::new(Port::default());
     let runtime = CallbackRuntime::new(store.clone(), port.clone());
     runtime.answer(&id, &data, 20.0).await.unwrap();
-    assert_eq!(checkpoint(&store, &context, 0).await, 0);
-    assert_eq!(checkpoint(&store, &context, 1).await, 1);
-    assert_eq!(checkpoint(&store, &context, 1).await, 0);
-    let raw:String=store.test_reader().unwrap().query_row("SELECT group_concat(result) FROM runtime_operation_receipts WHERE signature='provider-callback'",[],|r|r.get(0)).unwrap();
-    assert!(!raw.contains("secret-payload"));
+    let owner = callback_owner(
+        &store,
+        &context,
+        &studio_runtime_providers::RequestId::Number(42),
+    );
+    assert_eq!(owner.status, ToolRequestStatus::Completed);
+    assert!(owner.payload.frame_fingerprint.is_some());
+    assert!(
+        !serde_json::to_string(&owner)
+            .unwrap()
+            .contains("secret-payload")
+    );
+    assert!(
+        Outbox::get::<CallbackResponse>(&store.test_reader().unwrap(), &owner.origin_key)
+            .unwrap()
+            .is_none()
+    );
+    let saved = callback_body(&store, &owner).unwrap();
+    assert_eq!(saved.body, CallbackBody::Result(data.clone()));
+    let reply = port.calls.lock().unwrap()[0].clone();
+    store
+        .transaction_with::<_, CallbackError>(move |tx| {
+            assert_eq!(
+                begin_frame(
+                    tx,
+                    &reply.identity.context.stream_id,
+                    reply.identity.context.generation,
+                    &reply.identity.operation_id(),
+                    &reply.frame()
+                )?,
+                FrameAdmission::Written
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
     assert!(matches!(
         dispatch(Arc::clone(&store), &context, &frame, 21.0)
             .await
@@ -108,7 +176,17 @@ async fn not_sent_creates_new_attempt_and_foreign_receipt_is_unknown() {
         Err(CallbackError::Stale)
     ));
     assert_eq!(stored(&store, &id)["status"], "uncertain");
-    assert_eq!(checkpoint(&store, &context, 1).await, 0);
+    let owner = callback_owner(
+        &store,
+        &context,
+        &studio_runtime_providers::RequestId::Number(42),
+    );
+    assert_eq!(owner.status, ToolRequestStatus::Unknown);
+    let row = Outbox::get::<CallbackResponse>(&store.test_reader().unwrap(), &owner.origin_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.status, OutboxStatus::Unknown);
+    assert_eq!(row.next_at, None);
     assert!(prepared_replies(&store, &context).await.unwrap().is_empty());
 }
 
@@ -213,7 +291,18 @@ async fn binding_after_http_commit_still_retires_payload_and_preserves_attempt()
     bind_journal(&store, &decision, &context, &RequestId::Number(12), 1)
         .await
         .unwrap();
-    assert_eq!(checkpoint(&store, &context, 1).await, 1);
+    let owner = callback_owner(&store, &context, &RequestId::Number(12));
+    assert_eq!(owner.status, ToolRequestStatus::Completed);
+    assert_eq!(owner.payload.journal_cursor, Some(1));
+    assert!(
+        Outbox::get::<CallbackResponse>(&store.test_reader().unwrap(), &owner.origin_key)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        callback_body(&store, &owner).unwrap().identity,
+        owner.payload.reply_identity.unwrap()
+    );
     assert!(matches!(
         dispatch(Arc::clone(&store), &context, &frame, 21.0)
             .await
@@ -246,28 +335,45 @@ async fn tool_replay_rebuilds_the_same_reply_without_reexecuting_effect() {
     else {
         panic!("answer")
     };
-    // The durable tool result is the only copy of the answer.
-    assert_eq!(first, second, "a replay rebuilds the identical reply");
-    let replies: i64 = store
-        .test_reader()
+    assert_eq!(
+        first, second,
+        "a replay returns the identical committed reply"
+    );
+    let owner = callback_owner(&store, &context, &RequestId::Number(25));
+    let row = Outbox::get::<CallbackResponse>(&store.test_reader().unwrap(), &owner.origin_key)
         .unwrap()
-        .query_row(
-            "SELECT count(*) FROM runtime_operation_receipts WHERE signature='provider-callback'",
-            [],
-            |r| r.get(0),
-        )
         .unwrap();
-    assert_eq!(replies, 0, "a tool call keeps no reply row");
+    assert_eq!(row.status, OutboxStatus::Pending);
+    assert_eq!(row.payload.body, CallbackBody::from(&first.body));
+    let tool = owner.payload.tool_request.as_ref().unwrap();
+    assert!(
+        studio_runtime_services::tool_requests::saved_result(&store.test_reader().unwrap(), tool)
+            .unwrap()
+            .is_some()
+    );
     let count: i64 = store
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT count(*) FROM runtime_tool_results WHERE id='thread-0:rotate'",
-            [],
-            |r| r.get(0),
+            "SELECT count(*) FROM runtime_tool_requests WHERE id=?1",
+            [tool],
+            |row| row.get(0),
         )
         .unwrap();
     assert_eq!(count, 1);
+    let runtime = CallbackRuntime::new(store.clone(), Arc::new(Port::default()));
+    assert!(runtime.deliver(&first).await.unwrap());
+    let owner = callback_owner(&store, &context, &RequestId::Number(25));
+    assert_eq!(owner.status, ToolRequestStatus::Completed);
+    assert!(
+        Outbox::get::<CallbackResponse>(&store.test_reader().unwrap(), &owner.origin_key)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        callback_body(&store, &owner).unwrap().identity,
+        first.identity
+    );
 }
 
 #[tokio::test]
@@ -275,11 +381,11 @@ async fn failed_store_calls_roll_back_card_outbox_and_publication_before_handoff
     for (table, event, phase) in [
         ("runtime_requests", "INSERT", "admit"),
         ("runtime_agents", "UPDATE", "admit"),
-        ("runtime_operation_receipts", "INSERT", "admit"),
+        ("runtime_tool_requests", "INSERT", "admit"),
         ("sync_entities", "INSERT", "admit"),
         ("runtime_requests", "INSERT", "answer"),
-        ("runtime_operation_receipts", "INSERT", "answer"),
-        ("runtime_operation_receipts", "UPDATE", "answer"),
+        ("runtime_outbox", "INSERT", "answer"),
+        ("runtime_outbox", "UPDATE", "answer"),
     ] {
         let (_root, store, context) = fixture().await;
         let id = if phase == "answer" {
@@ -383,8 +489,27 @@ async fn resolved_pending_or_prepared_callbacks_ack_without_resurrecting_approva
         )
         .await
         .unwrap();
-        let raw:String=store.test_reader().unwrap().query_row("SELECT group_concat(result) FROM runtime_operation_receipts WHERE signature='provider-callback'",[],|r|r.get(0)).unwrap();
-        assert!(!raw.contains("resolved-secret"));
+        let owner = callback_owner(
+            &store,
+            &context,
+            &studio_runtime_providers::RequestId::Number(42),
+        );
+        assert_eq!(owner.status, ToolRequestStatus::Completed);
+        assert_eq!(owner.payload.journal_cursor, Some(2));
+        assert!(
+            !serde_json::to_string(&owner)
+                .unwrap()
+                .contains("resolved-secret")
+        );
+        assert!(
+            Outbox::get::<CallbackResponse>(&store.test_reader().unwrap(), &owner.origin_key)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            callback_body(&store, &owner).is_none(),
+            "resolution without delivery invents no response"
+        );
         assert_eq!(stored(&store, &id)["status"], "resolved");
         assert!(prepared_replies(&store, &context).await.unwrap().is_empty());
     }
