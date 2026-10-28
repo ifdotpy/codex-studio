@@ -31,7 +31,10 @@ pub fn initialize(connection: &Connection) -> rusqlite::Result<()> {
         payload TEXT NOT NULL, in_flight INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(workspace,id));
         CREATE TABLE IF NOT EXISTS client_outbox_removed (
-        workspace TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(workspace,id));",
+        workspace TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(workspace,id));
+        CREATE TABLE IF NOT EXISTS client_outbox_pending (
+        workspace TEXT NOT NULL, room TEXT NOT NULL, id TEXT NOT NULL,
+        payload TEXT NOT NULL, PRIMARY KEY(workspace,room));",
     )?;
     // The previous process no longer owns an HTTP wait. Keep attempted=true so
     // restart cannot turn an uncertain delivery into a safe local cancellation.
@@ -237,12 +240,69 @@ fn save(connection: &Connection, entry: &Entry, in_flight: bool) -> Result<(), S
     Ok(())
 }
 
-fn apply(connection: &Connection, method: &str, params: &Value) -> Result<Value, String> {
-    // A message identity is minted here and stored only by `outbox.enqueue`.
-    if method == "outbox.reserve" {
-        return Ok(json!({"id":crate::server_keys::random_id()?}));
+/// The pending send of a room: its identity and content, kept until the page
+/// releases it. The same content returns the same identity, so a resend after
+/// a lost reply reaches `outbox.enqueue` with the identity it already stored.
+fn prepare(connection: &Connection, workspace: &str, params: &Value) -> Result<Value, String> {
+    let room = text(params, "room")?;
+    let body = json!({
+        "room": room,
+        "text": params.get("text").and_then(Value::as_str).ok_or("Message text is required.")?,
+        "assets": params.get("assets").filter(|value| value.is_array()).ok_or("Message assets are required.")?,
+        "delivery": text(params, "delivery")?,
+    });
+    let pending: Option<String> = connection
+        .query_row(
+            "SELECT payload FROM client_outbox_pending WHERE workspace=?1 AND room=?2",
+            params![workspace, room],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if let Some(saved) = pending {
+        let saved: Value = serde_json::from_str(&saved).map_err(|e| e.to_string())?;
+        if ["room", "text", "assets", "delivery"]
+            .iter()
+            .all(|key| saved.get(*key) == body.get(*key))
+        {
+            return Ok(saved);
+        }
     }
+    let id = crate::server_keys::random_id()?;
+    let mut stored = body;
+    stored["id"] = json!(id);
+    connection
+        .execute(
+            "INSERT INTO client_outbox_pending(workspace,room,id,payload) VALUES(?1,?2,?3,?4)
+        ON CONFLICT(workspace,room) DO UPDATE SET id=excluded.id,payload=excluded.payload",
+            params![workspace, room, id, stored.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(stored)
+}
+
+/// Removes the pending send only when the identity matches, so a stale page
+/// cannot drop a newer pending send of the same room.
+fn release(connection: &Connection, workspace: &str, params: &Value) -> Result<Value, String> {
+    let room = text(params, "room")?;
+    let id = text(params, "id")?;
+    let removed = connection
+        .execute(
+            "DELETE FROM client_outbox_pending WHERE workspace=?1 AND room=?2 AND id=?3",
+            params![workspace, room, id],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(json!({"released": removed == 1}))
+}
+
+fn apply(connection: &Connection, method: &str, params: &Value) -> Result<Value, String> {
     let workspace = text(params, "workspace")?;
+    if method == "outbox.prepare" {
+        return prepare(connection, workspace, params);
+    }
+    if method == "outbox.release" {
+        return release(connection, workspace, params);
+    }
     if method == "outbox.list" {
         return serde_json::to_value(list(connection, workspace)?).map_err(|e| e.to_string());
     }
@@ -486,7 +546,9 @@ pub fn dispatch(connection: &mut Connection, request: &Request) -> Response {
             .map_err(|e| e.to_string())?;
         let durable = matches!(
             request.method.as_str(),
-            "outbox.enqueue"
+            "outbox.prepare"
+                | "outbox.release"
+                | "outbox.enqueue"
                 | "outbox.import"
                 | "outbox.stop"
                 | "outbox.change"
@@ -773,33 +835,86 @@ mod tests {
         assert!(!entry.display_pending);
     }
 
+    fn reopen(path: &std::path::Path) -> Connection {
+        crate::store::Store::open(path).unwrap().connection
+    }
+    fn prepare(db: &mut Connection, room: &str, text: &str) -> Value {
+        command(
+            db,
+            "outbox.prepare",
+            json!({"workspace":"w","room":room,"text":text,"assets":[],"delivery":"queue"}),
+        )
+        .result
+        .unwrap()
+    }
     #[test]
-    fn reserved_message_identities_are_core_minted_and_unique() {
+    fn prepared_identity_survives_a_store_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let mut db = reopen(&path);
+        let first = prepare(&mut db, "r", "one")["id"].clone();
+        drop(db);
+        let mut db = reopen(&path);
+        assert_eq!(prepare(&mut db, "r", "one")["id"], first);
+    }
+    #[test]
+    fn changed_text_gets_a_new_identity() {
         let mut db = database();
-        let mut reserve = || {
-            command(&mut db, "outbox.reserve", json!({}))
-                .result
-                .unwrap()["id"]
-                .as_str()
-                .unwrap()
-                .to_owned()
-        };
-        let first = reserve();
-        let second = reserve();
-        assert_ne!(first, second);
-        assert_eq!(uuid::Uuid::parse_str(&first).unwrap().get_version_num(), 4);
-        assert!(
-            list(&db, "w").unwrap().is_empty(),
-            "a reservation stores nothing"
-        );
-        // The reserved identity is the one the enqueue stores.
-        let enqueued = command(
+        let first = prepare(&mut db, "r", "one")["id"].clone();
+        let second = prepare(&mut db, "r", "two");
+        assert_ne!(second["id"], first);
+        assert_eq!(second["text"], "two");
+    }
+    #[test]
+    fn release_with_a_wrong_identity_keeps_the_pending_row() {
+        let mut db = database();
+        let first = prepare(&mut db, "r", "one")["id"].clone();
+        let wrong = command(
             &mut db,
-            "outbox.enqueue",
-            json!({"workspace":"w","body":{"id":first,"room":"r","text":"one"}}),
+            "outbox.release",
+            json!({"workspace":"w","room":"r","id":"other"}),
         );
-        assert!(enqueued.error.is_none());
-        assert_eq!(list(&db, "w").unwrap()[0].id, first);
+        assert_eq!(wrong.result.unwrap()["released"], false);
+        assert_eq!(prepare(&mut db, "r", "one")["id"], first);
+        let right = command(
+            &mut db,
+            "outbox.release",
+            json!({"workspace":"w","room":"r","id":first}),
+        );
+        assert_eq!(right.result.unwrap()["released"], true);
+        assert_ne!(prepare(&mut db, "r", "one")["id"], first);
+    }
+    #[test]
+    fn a_lost_enqueue_reply_then_resend_yields_one_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let mut db = reopen(&path);
+        let prepared = prepare(&mut db, "r", "one");
+        assert!(
+            command(
+                &mut db,
+                "outbox.enqueue",
+                json!({"workspace":"w","body":prepared.clone()})
+            )
+            .error
+            .is_none()
+        );
+        // The enqueue committed, its reply was lost, and the page reloaded
+        // before it released the pending row.
+        drop(db);
+        let mut db = reopen(&path);
+        let resent = prepare(&mut db, "r", "one");
+        assert_eq!(resent["id"], prepared["id"]);
+        assert!(
+            command(
+                &mut db,
+                "outbox.enqueue",
+                json!({"workspace":"w","body":resent})
+            )
+            .error
+            .is_none()
+        );
+        assert_eq!(list(&db, "w").unwrap().len(), 1);
     }
 
     #[test]
