@@ -614,27 +614,36 @@ pub(super) fn replay_in_transaction(
     if authorize(tx, call)? {
         return replay_recorded(tx, call);
     }
-    if call.admitted_request.is_none() {
-        let identity = match call.identity() {
-            Ok(identity) => identity,
-            Err(error) => return Ok(Err(error)),
-        };
-        if let Err(error) = identity.validate(
-            now_ms(),
-            RequestResults::expired_before_ms(tx).map_err(result_error)?,
-        ) {
-            return Ok(Err(match error {
-                studio_runtime_schema::persistence::RequestIdentityError::Expired { .. } => {
-                    PortError::Expired
-                }
-                studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7(_)
-                | studio_runtime_schema::persistence::RequestIdentityError::FutureTimestamp {
-                    ..
-                } => PortError::Invalid,
-            }));
-        }
+    if call.admitted_request.is_none()
+        && let Err(error) = validate_root(tx, call)?
+    {
+        return Ok(Err(error));
     }
     Ok(Err(PortError::Identity))
+}
+fn validate_root(
+    tx: &rusqlite::Connection,
+    call: &Call,
+) -> Result<Result<(), PortError>, WorkerError> {
+    let identity = match call.identity() {
+        Ok(identity) => identity,
+        Err(error) => return Ok(Err(error)),
+    };
+    if let Err(error) = identity.validate(
+        now_ms(),
+        RequestResults::expired_before_ms(tx).map_err(result_error)?,
+    ) {
+        return Ok(Err(match error {
+            studio_runtime_schema::persistence::RequestIdentityError::Expired { .. } => {
+                PortError::Expired
+            }
+            studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7(_)
+            | studio_runtime_schema::persistence::RequestIdentityError::FutureTimestamp {
+                ..
+            } => PortError::Invalid,
+        }));
+    }
+    Ok(Ok(()))
 }
 pub(super) enum Replay {
     Ready,
@@ -678,7 +687,14 @@ pub(super) fn replay_recorded(
         if !same_replay_identity(&prior.call, call) {
             return Ok(Err(PortError::Identity));
         }
-        return Ok(Ok(replay_pending(prior)));
+        let replay = replay_pending(prior);
+        if call.admitted_request.is_none()
+            && matches!(replay, Replay::Ready | Replay::Retry(_))
+            && let Err(error) = validate_root(tx, call)?
+        {
+            return Ok(Err(error));
+        }
+        return Ok(Ok(replay));
     }
     let id = match result_id(call) {
         Ok(id) => id,
@@ -701,23 +717,8 @@ pub(super) fn replay_recorded(
         if call.admitted_request.is_some() {
             return Ok(Err(PortError::Unknown));
         }
-        let identity = match call.identity() {
-            Ok(identity) => identity,
-            Err(error) => return Ok(Err(error)),
-        };
-        if let Err(error) = identity.validate(
-            now_ms(),
-            RequestResults::expired_before_ms(tx).map_err(result_error)?,
-        ) {
-            return Ok(Err(match error {
-                studio_runtime_schema::persistence::RequestIdentityError::Expired { .. } => {
-                    PortError::Expired
-                }
-                studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7(_)
-                | studio_runtime_schema::persistence::RequestIdentityError::FutureTimestamp {
-                    ..
-                } => PortError::Invalid,
-            }));
+        if let Err(error) = validate_root(tx, call)? {
+            return Ok(Err(error));
         }
         return Ok(Ok(Replay::Ready));
     };
