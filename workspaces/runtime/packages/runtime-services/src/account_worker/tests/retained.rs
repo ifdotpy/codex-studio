@@ -17,18 +17,16 @@ use std::sync::{Arc, Mutex};
 /// Maximum wait for a first-pass fixture result; unit: elapsed duration.
 const FIRST_PASS_TEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
+type RecordedRequest = (
+    String,
+    Value,
+    String,
+    Option<studio_runtime_store::request_results::AdmittedRequest>,
+);
+
 struct ResetBrokerSession {
     port: RetainedSessionPort,
-    requests: Arc<
-        Mutex<
-            Vec<(
-                String,
-                Value,
-                String,
-                Option<studio_runtime_store::request_results::AdmittedRequest>,
-            )>,
-        >,
-    >,
+    requests: Arc<Mutex<Vec<RecordedRequest>>>,
     lose_response: Arc<tokio::sync::Notify>,
 }
 
