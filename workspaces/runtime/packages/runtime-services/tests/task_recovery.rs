@@ -76,6 +76,15 @@ fn cancelled_receipt_requires_exact_attempt_and_negative_finished_result() {
 
 #[tokio::test]
 async fn historical_negative_receipt_resolves_without_rewriting_or_native_evidence() {
+    #[derive(serde::Deserialize)]
+    struct HistoricalFields {
+        id: String,
+        agent: String,
+        stage: String,
+        outcome: String,
+        finished: f64,
+        result: Box<serde_json::value::RawValue>,
+    }
     let cases: Vec<Value> = serde_json::from_str(include_str!("recovery/task_oracle.json"))
         .expect("frozen recovery cases");
     let case = cases
@@ -100,25 +109,60 @@ async fn historical_negative_receipt_resolves_without_rewriting_or_native_eviden
         "completed"
     );
     let root = tempfile::tempdir().expect("state root");
-    let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
-        .await
-        .expect("store");
+    drop(
+        studio_runtime_store::RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("bootstrap"),
+    );
     let owner = case["agent"].to_string();
     let raw = receipt.to_string();
-    store
-        .transaction(move |tx| {
-            tx.execute(
-                "INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",
-                [owner],
-            )?;
-            tx.execute(
-                "INSERT INTO runtime_tool_requests(id,record) VALUES('receipt',?1)",
-                [raw],
-            )?;
-            Ok(())
-        })
+    {
+        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("source");
+        db.execute(
+            "DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'",
+            [],
+        )
+        .expect("reopen cutover");
+        db.execute(
+            "INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",
+            [owner],
+        )
+        .expect("source agent");
+        db.execute(
+            "INSERT INTO runtime_tool_requests(id,record) VALUES('receipt',?1)",
+            [raw],
+        )
+        .expect("source receipt");
+    }
+    let error = studio_runtime_store::RuntimeStore::open(Some(root.path()))
         .await
-        .expect("seed historical receipt");
+        .err()
+        .expect("legacy row without tool and signature is unclassifiable");
+    assert!(format!("{error:?}").contains("receipt"));
+    {
+        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("source");
+        let unchanged: String = db
+            .query_row(
+                "SELECT record FROM runtime_tool_requests WHERE id='receipt'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("unclassifiable row retained");
+        assert_eq!(unchanged, receipt.to_string());
+        db.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.tool',?1,'$.signature',?2) WHERE id='receipt'", ["fixture/tool", "fixture-signature"]).expect("classified source fixture");
+    }
+    let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("migrate classified historical receipt");
+    let before: String = store
+        .test_reader()
+        .expect("reader")
+        .query_row(
+            "SELECT record FROM runtime_tool_requests WHERE id='receipt'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("migrated owner");
     for _ in 0..2 {
         let recovered = store
             .transaction_with(|tx| {
@@ -131,8 +175,40 @@ async fn historical_negative_receipt_resolves_without_rewriting_or_native_eviden
             })
             .await
             .expect("read retained terminal receipt");
-        assert_eq!(recovered, receipt);
+        let actual: HistoricalFields =
+            serde_json::from_str(&recovered.to_string()).expect("recovered fields");
+        let expected: HistoricalFields =
+            serde_json::from_str(&receipt.to_string()).expect("source fields");
+        assert_eq!(
+            (
+                &actual.id,
+                &actual.agent,
+                &actual.stage,
+                &actual.outcome,
+                actual.finished,
+                actual.result.get()
+            ),
+            (
+                &expected.id,
+                &expected.agent,
+                &expected.stage,
+                &expected.outcome,
+                expected.finished,
+                expected.result.get()
+            ),
+            "historical result and outcome survive migration"
+        );
     }
+    let after: String = store
+        .test_reader()
+        .expect("reader")
+        .query_row(
+            "SELECT record FROM runtime_tool_requests WHERE id='receipt'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("migrated owner");
+    assert_eq!(after, before, "replay preserves migrated owner state");
 }
 
 #[test]
