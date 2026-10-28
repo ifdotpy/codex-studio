@@ -694,6 +694,9 @@ pub(super) fn replay_recorded(
         if !same_replay_identity(&prior.call, call) {
             return Ok(Err(PortError::Identity));
         }
+        if row.status == OutboxStatus::Unknown && prior.request.is_none() {
+            return Ok(Err(PortError::Unknown));
+        }
         let replay = replay_pending(prior, row.stream_id.as_deref());
         if call.admitted_request.is_none()
             && matches!(replay, Replay::Ready | Replay::Retry(_))
@@ -1245,6 +1248,140 @@ pub(super) fn recorded_operation(
 #[cfg(test)]
 mod replay_identity_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn migrated_submitted_without_request_stays_unknown_without_preparation() {
+        use serde::Serialize;
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Agent<'a> {
+            id: &'a str,
+            root_id: &'a str,
+            epoch: i64,
+            status: &'a str,
+            auto_wake: bool,
+            account_key: &'a str,
+            provider: &'a str,
+        }
+        #[derive(Serialize)]
+        struct Monitor<'a> {
+            id: &'a str,
+            agent: &'a str,
+            epoch: i64,
+            status: &'a str,
+            cwd: &'a std::path::Path,
+            operation: crate::monitor_policy::Operation,
+        }
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Params<'a> {
+            process_id: &'a str,
+            cwd: &'a std::path::Path,
+            command: [&'a str; 1],
+        }
+        #[derive(Serialize)]
+        struct Submitted {
+            call: Call,
+        }
+        let root = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("bootstrap");
+        let request_root = RequestIdentity::issue_root();
+        let operation = crate::monitor_policy::Operation {
+            agent: "agent-1".into(),
+            epoch: 7,
+            account_key: "default".into(),
+            connection_id: "old-connection".into(),
+            evidence: crate::monitor_policy::OperationEvidence {
+                root_request_id: Some(request_root.clone()),
+                provider_generation: Some(4),
+                provider_request: None,
+            },
+        };
+        let mut call = call();
+        call.root_request_id = request_root;
+        call.operation = "monitor:watch".into();
+        call.method = Method::CommandExec;
+        call.params = serde_json::to_value(Params {
+            process_id: "watch",
+            cwd: root.path(),
+            command: ["true"],
+        })
+        .expect("params");
+        let agent = serde_json::to_value(Agent {
+            id: "agent-1",
+            root_id: "agent-1",
+            epoch: 7,
+            status: "waiting",
+            auto_wake: true,
+            account_key: "default",
+            provider: "codex",
+        })
+        .expect("agent");
+        let watch = serde_json::to_value(Monitor {
+            id: "watch",
+            agent: "agent-1",
+            epoch: 7,
+            status: "running",
+            cwd: root.path(),
+            operation,
+        })
+        .expect("monitor");
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(agent)?)?;
+                studio_runtime_store::Table::new(tx)
+                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)
+            })
+            .await
+            .expect("owners");
+        drop(store);
+        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("database");
+        db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL)").expect("legacy schema");
+        let key = call.key();
+        db.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)",
+            rusqlite::params![
+                format!("account-worker:{key}:submitted"),
+                serde_json::to_string(&Submitted { call }).expect("submitted")
+            ],
+        )
+        .expect("legacy submitted");
+        drop(db);
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("migrate held submission");
+        store
+            .read_async("test/held-replay", move |tx| {
+                let row = row(tx, &key)?.expect("held provider call");
+                assert_eq!(row.status, OutboxStatus::Unknown);
+                let prior = retained(&row)?;
+                assert!(prior.request.is_none(), "no request was prepared");
+                assert!(
+                    authorize(tx, &prior.call)?,
+                    "the original monitor scope is authorized"
+                );
+                assert!(
+                    matches!(
+                        replay_in_transaction(tx, &prior.call)?,
+                        Err(PortError::Unknown)
+                    ),
+                    "caller must stop before preparation or send"
+                );
+                let pending = Outbox::pending::<store::ProviderCall>(
+                    tx,
+                    OutboxKind::ProviderCall,
+                    now_ms(),
+                    100,
+                )
+                .map_err(outbox_error)?;
+                assert!(pending.is_empty(), "no provider call can be sent");
+                Ok::<_, WorkerError>(())
+            })
+            .await
+            .expect("held replay");
+    }
 
     async fn database(path: &std::path::Path) -> RuntimeStore {
         let store = RuntimeStore::open(Some(path)).await.expect("store");
