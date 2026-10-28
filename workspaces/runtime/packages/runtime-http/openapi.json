@@ -46763,10 +46763,52 @@
         "additionalProperties": false,
         "properties": {
           "action": {
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Action",
+            "enum": [
+              "event",
+              "input",
+              "message",
+              "move_send",
+              "location_info",
+              "location_matches",
+              "stop",
+              "exec_event",
+              "projects",
+              "folders",
+              "git",
+              "export",
+              "chunk",
+              "exec_read",
+              "exec_input",
+              "exec_cancel",
+              "release",
+              "update.offer",
+              "update.export",
+              "update.chunk",
+              "update.release",
+              "task",
+              "complaint",
+              "context",
+              "directory",
+              "chat_read",
+              "move_manage",
+              "move_interrupt",
+              "move_spawn",
+              "exec",
+              "exec_receipt",
+              "browser_callback",
+              "add_location",
+              "remove_location",
+              "move_validate",
+              "move_begin"
+            ],
             "type": "string"
+          },
+          "operation": {
+            "description": "Scoped suboperation tuple; empty for a single-step request.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "payload": {
             "additionalProperties": {
@@ -46786,7 +46828,8 @@
         "required": [
           "requestId",
           "action",
-          "payload"
+          "payload",
+          "operation"
         ],
         "title": "ServerOperationRequest",
         "type": "object"
@@ -47504,6 +47547,11 @@
             "title": "Protocol",
             "type": "integer"
           },
+          "requestId": {
+            "description": "UUIDv7 mutation root, issued once and retained across delivery retries.",
+            "format": "uuid",
+            "type": "string"
+          },
           "room": {
             "maxLength": 128,
             "title": "Room",
@@ -47534,7 +47582,8 @@
           "created",
           "timestamp",
           "nonce",
-          "signature"
+          "signature",
+          "requestId"
         ],
         "title": "SignedEnvelope",
         "type": "object"

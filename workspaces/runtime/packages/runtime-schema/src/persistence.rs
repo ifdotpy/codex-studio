@@ -54,6 +54,15 @@ domain!(FederationAckState { Pending=>"pending", Sent=>"sent", Confirmed=>"confi
 domain!(FederationMessageKind { ChatMessage=>"chat-message", RoomInvite=>"room-invite", RoomAccept=>"room-accept" });
 domain!(AccessOutboundState { Unknown=>"unknown", Complete=>"complete", Redacted=>"redacted" });
 domain!(RemoteOutcome { Applied=>"applied", NotApplied=>"not_applied", Unknown=>"unknown" });
+domain!(RequestCardStatus { Pending=>"pending", Answering=>"answering", Answered=>"answered", Uncertain=>"uncertain", Blocked=>"blocked", Resolved=>"resolved", Expired=>"expired", Deleted=>"deleted" });
+domain!(TerminalActionFailure { UnknownOutcome=>"unknown_outcome", Rejected=>"rejected", Disconnected=>"disconnected" });
+domain!(NativeReleasePhase { Checking=>"checking", Unsubscribing=>"unsubscribing", Unknown=>"unknown", Released=>"released", Blocked=>"blocked", Resumed=>"resumed" });
+domain!(ServerFetchState { Preparing=>"preparing", Fetching=>"fetching", Complete=>"complete" });
+domain!(ServerOperationKind { Event=>"event", Input=>"input", Message=>"message", MoveSend=>"move_send", LocationInfo=>"location_info", LocationMatches=>"location_matches", Stop=>"stop", ExecEvent=>"exec_event", Projects=>"projects", Folders=>"folders", Git=>"git", Export=>"export", Chunk=>"chunk", ExecRead=>"exec_read", ExecInput=>"exec_input", ExecCancel=>"exec_cancel", Release=>"release", UpdateOffer=>"update.offer", UpdateExport=>"update.export", UpdateChunk=>"update.chunk", UpdateRelease=>"update.release", Task=>"task", Complaint=>"complaint", Context=>"context", Directory=>"directory", ChatRead=>"chat_read", MoveManage=>"move_manage", MoveInterrupt=>"move_interrupt", MoveSpawn=>"move_spawn", Exec=>"exec", ExecReceipt=>"exec_receipt", BrowserCallback=>"browser_callback", AddLocation=>"add_location", RemoveLocation=>"remove_location", MoveValidate=>"move_validate", MoveBegin=>"move_begin" });
+domain!(RecoveryReceiptStatus { Unknown=>"unknown", Unconfirmed=>"unconfirmed", Blocked=>"blocked", Skipped=>"skipped", Superseded=>"superseded", HistoryMissing=>"history_missing", InputRestored=>"input_restored", Held=>"held", Reconciled=>"reconciled", Adopted=>"adopted", Accepted=>"accepted", Checked=>"checked", Released=>"released" });
+domain!(NativeSettingsStatus { Submitted=>"submitted", Acknowledged=>"acknowledged", NotSent=>"not_sent", Unknown=>"unknown", Rejected=>"rejected" });
+domain!(SafetyRetryStage { Turns=>"turns", Items=>"items", Interrupt=>"interrupt", VerifyTurns=>"verify_turns", VerifyItems=>"verify_items", Fork=>"fork", Start=>"start", Running=>"running", Unknown=>"unknown", Failed=>"failed", Cancelled=>"cancelled" });
+domain!(SafetyRetryDispatch { Ready=>"ready", Intent=>"intent", Received=>"received", Rejected=>"rejected", Unknown=>"unknown", Cancelled=>"cancelled" });
 domain!(WorkStatus { Ready=>"ready", Blocked=>"blocked", Running=>"running", Review=>"review", Accepted=>"accepted", Cancelled=>"cancelled" });
 domain!(OwnerKind { Agent=>"agent", Task=>"task", Account=>"account", Vm=>"vm", Project=>"project", Monitor=>"monitor", Terminal=>"terminal", Message=>"message", Request=>"request", Server=>"server" });
 domain!(OutboxKind { ProviderCall=>"provider_call", ProviderCallback=>"provider_callback", JournalEntry=>"journal_entry", Publication=>"publication", StreamFlush=>"stream_flush", FollowupEffect=>"followup_effect", Steer=>"steer", VoiceStop=>"voice_stop", VoiceDelete=>"voice_delete", WorkArchive=>"work_archive", WorkVm=>"work_vm", TitleGeneration=>"title_generation", NativeAction=>"native_action", TerminalAction=>"terminal_action", MonitorInput=>"monitor_input", McpReconnect=>"mcp_reconnect", ProjectRegistration=>"project_registration", RemoteDelivery=>"remote_delivery", ManagedTool=>"managed_tool" });
@@ -73,8 +82,8 @@ domain!(VmLaunchStatus { Preparing=>"preparing", Submitted=>"submitted", Unknown
 domain!(IdleEpisodeOutcome { Compacted=>"compacted", Disabled=>"disabled", CompactionOff=>"compaction_off", IdleCompactionOff=>"idle_compaction_off", PrefixChanged=>"prefix_changed", Started=>"started", Dispatched=>"dispatched", Failed=>"failed", NotOneHour=>"not_one_hour", Lapsed=>"lapsed", Small=>"small", NewerRequest=>"newer_request", NearLimit=>"near_limit", Active=>"active", QueuedInput=>"queued_input", Stopped=>"stopped", NoHost=>"no_host", WouldCompact=>"would_compact" });
 domain!(ProjectRemovalReason { Delete=>"delete" });
 domain!(EventKind { User=>"user", Followup=>"followup", AgentMessage=>"agent_message", ChildResult=>"child_result", ChildStopped=>"child_stopped", Complaint=>"complaint", ComplaintResponse=>"complaint_response", ChatReview=>"chat_review", WorkReview=>"work_review", WorkDecision=>"work_decision", WorkReady=>"work_ready", MonitorExit=>"monitor_exit", MonitorStall=>"monitor_stall", Rule=>"rule", RuleMissed=>"rule_missed", RuleStall=>"rule_stall", RadioTurn=>"radio_turn", BrowserDeclined=>"browser_declined", BrowserJoined=>"browser_joined", BrowserOutcome=>"browser_outcome", BrowserUnanswered=>"browser_unanswered", EventWake=>"event_wake", MonitorCancelled=>"monitor_cancelled", MonitorOutput=>"monitor_output", PlanUpdate=>"plan_update", ShellPolicy=>"shell_policy", WorkReleased=>"work_released", WorkResultInvalid=>"work_result_invalid" });
-domain!(EventStatus { Pending=>"pending", Reserved=>"reserved", Dispatching=>"dispatching", Delivered=>"delivered", Uncertain=>"uncertain", Cancelled=>"cancelled", Failed=>"failed" });
-domain!(DeliveryStatus { Pending=>"pending", Delivered=>"delivered", Failed=>"failed", Uncertain=>"uncertain" });
+domain!(EventStatus { StoredOnly=>"stored_only", Pending=>"pending", Reserved=>"reserved", Dispatching=>"dispatching", Delivered=>"delivered", Uncertain=>"uncertain", Cancelled=>"cancelled", Failed=>"failed" });
+domain!(DeliveryStatus { Queued=>"queued", StoredOnly=>"stored_only", Accepted=>"accepted", Sent=>"sent", Cancelled=>"cancelled", Pending=>"pending", Delivered=>"delivered", Failed=>"failed", Uncertain=>"uncertain" });
 domain!(MigrationStatus { Pending=>"pending", Running=>"running", WaitingForSpace=>"waitingForSpace", Error=>"error", Complete=>"complete" });
 domain!(ReceiptMigrationPhase { Prepare=>"prepare", Move=>"move", Finish=>"finish" });
 domain!(
@@ -106,6 +115,15 @@ macro_rules! contracts {
     };
 }
 contracts!(
+    SafetyRetryStage,
+    SafetyRetryDispatch,
+    NativeSettingsStatus,
+    ServerFetchState,
+    ServerOperationKind,
+    RecoveryReceiptStatus,
+    RequestCardStatus,
+    TerminalActionFailure,
+    NativeReleasePhase,
     RemoteOutcome,
     VoiceStopOutcome,
     TerminalInputDelivery,
@@ -144,6 +162,14 @@ contracts!(
     ReceiptMigrationPhase,
     IncidentKind
 );
+
+/// One recipient's delivery state. Error text is separate from the closed status.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecipientDelivery {
+    pub status: DeliveryStatus,
+    pub error: Option<String>,
+}
 
 /// CHECK expression for a trusted schema identifier, generated solely from the enum.
 pub fn enum_check<T: VariantNames>(column: &str) -> String {
