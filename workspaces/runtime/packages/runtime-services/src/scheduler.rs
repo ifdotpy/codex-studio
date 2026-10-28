@@ -527,7 +527,7 @@ pub(crate) fn settle_terminal_in_transaction(
     if let Some(saved) = ExecutionHistoryRepository::replay(
         transaction,
         &identity.attempt_id,
-        "terminalInput",
+        studio_runtime_schema::persistence::ExecutionReceiptKind::TerminalInput,
         &input,
     )? {
         return saved
@@ -637,7 +637,7 @@ pub(crate) fn settle_terminal_in_transaction(
         ExecutionHistoryRepository::save_receipt(
             transaction,
             &identity.attempt_id,
-            "terminalInput",
+            studio_runtime_schema::persistence::ExecutionReceiptKind::TerminalInput,
             input,
             serde_json::json!(result),
         )?;
@@ -702,8 +702,12 @@ pub async fn authorize_submission(
     let connection_id = connection_id.to_owned();
     let thread = thread.to_owned();
     Ok(lifecycle_transaction(store, move |tx| {
-        let replay = ExecutionHistoryRepository::attempt(tx, &attempt_id)?
-            .is_some_and(|a| a["receipts"]["submission"].is_object());
+        let replay = ExecutionHistoryRepository::receipt(
+            tx,
+            &attempt_id,
+            studio_runtime_schema::persistence::ExecutionReceiptKind::Submission,
+        )?
+        .is_some();
         let result = SchedulerRepository::mark_submitted_identity(
             tx,
             &agent_id,

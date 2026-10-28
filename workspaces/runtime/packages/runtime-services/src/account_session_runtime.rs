@@ -2298,7 +2298,7 @@ mod persistence_tests {
         assert_eq!(stored_workspace(&store), before);
         assert!(cache.lock().unwrap().is_empty());
         assert_eq!(store.test_reader().unwrap().query_row(
-            "SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='limits-observation'", [], |row| row.get::<_, i64>(0),
+            "SELECT COUNT(*) FROM runtime_account_state WHERE limits_observation IS NOT NULL", [], |row| row.get::<_, i64>(0),
         ).unwrap(), 0, "failed publication rolls back the private observation too");
     }
 }
@@ -2617,10 +2617,8 @@ mod limits_runtime_tests {
             .test_reader()
             .unwrap()
             .query_row(
-                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-                [studio_runtime_store::account_state::limits_observation_key(
-                    "default",
-                )],
+                "SELECT limits_observation FROM runtime_account_state WHERE account=?1",
+                ["default"],
                 |row| row.get(0),
             )
             .unwrap();

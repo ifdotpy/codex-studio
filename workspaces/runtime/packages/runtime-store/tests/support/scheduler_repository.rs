@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 
 fn database() -> Connection {
     let connection = Connection::open_in_memory().expect("memory database opens");
+    crate::receipt_schema::create(&connection).expect("receipt schema");
+    connection.execute_batch("CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT);").expect("settings");
     connection
             .execute_batch(
                 &crate::agent_columns::fixture_sql("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);

@@ -1,12 +1,12 @@
 //! Pure project-location completion and receipt reconciliation, with atomic adapters.
 use crate::event_write::{python_json, request_signature, truthy};
 pub use crate::relocation::RelocationError as LocationError;
-use crate::relocation::{checked, identity, invalid, timestamp};
+use crate::relocation::{checked, invalid, timestamp};
 use rusqlite::{OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
 pub use studio_runtime_schema::persistence::RemoteOutcome as LocationOutcome;
+use studio_runtime_schema::persistence::ServerDeliveryState as OutboxState;
 use studio_runtime_store::{
     ProjectLocationsRepository as Repository, ProjectsRepository, RuntimeStore,
 };
@@ -174,10 +174,9 @@ mod receipt_tests {
         .expect("replay")
         .expect("reply");
         assert_eq!(json!(result.reply), case["receipt"]);
-        apply_completed_in_transaction(
+        complete_snapshot_in_transaction(
             &tx,
-            &key,
-            "peer",
+            &raw,
             &case["receipt"],
             "local-fixture",
             now_ms as f64 / 1000.0,
@@ -193,7 +192,7 @@ mod receipt_tests {
     }
 }
 
-#[derive(Clone, Copy, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum Action {
     AddLocation,
@@ -212,12 +211,6 @@ struct Payload {
     path: Option<String>,
     signature: String,
     request: Value,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum OutboxState {
-    Queued,
-    Complete,
 }
 #[derive(Deserialize)]
 struct Outbox {
@@ -241,7 +234,8 @@ pub struct CompletionDecision {
 impl CompletionSnapshot {
     pub fn from_records(outbox: &Value, project: Option<&Value>) -> Result<Self, LocationError> {
         let outbox: Outbox = checked("relocation/LocationOutbox", "runtime_server_outbox", outbox)?;
-        if outbox.id != outbox.body.request_id
+        if outbox.id.is_empty()
+            || outbox.body.request_id.is_empty()
             || outbox.body.payload.request["project"] != outbox.body.payload.project
             || outbox.body.payload.request["server"] != outbox.server
             || outbox.body.payload.request["path"] != json!(outbox.body.payload.path)
@@ -270,7 +264,7 @@ impl CompletionSnapshot {
     ) -> Result<CompletionDecision, LocationError> {
         timestamp(now)?;
         checked::<Value>("relocation/RelocationReceipt", "location receipt", receipt)?;
-        if receipt["requestId"] != self.outbox.id {
+        if receipt["requestId"] != self.outbox.body.request_id {
             return Err(LocationError::Refused(
                 "The paired server returned a different request identity",
             ));
@@ -307,7 +301,7 @@ impl CompletionSnapshot {
             if location["serverId"] != self.outbox.server
                 || location["homeProjectId"] != envelope.payload.project
                 || location["path"] != json!(envelope.payload.path)
-                || location["requestId"] != self.outbox.id
+                || location["requestId"] != self.outbox.body.request_id
                 || canonical.is_none_or(|path| !canonical_absolute(path))
                 || location["projectId"] != location["canonicalPath"]
             {
@@ -376,26 +370,67 @@ pub fn complete_in_transaction(
     local_server: &str,
     now: f64,
 ) -> Result<Value, LocationError> {
-    let raw =
-        Repository::outbox(tx, key)?.ok_or(LocationError::Refused("Unknown location request"))?;
+    let raw = match Repository::outbox(tx, key)? {
+        Some(raw) => raw,
+        None => {
+            let raw = json!({"id":key,"server":server,"body":envelope,"state":OutboxState::Complete,"result":receipt});
+            let snapshot = CompletionSnapshot::from_records(&raw, None)?;
+            snapshot.decide(receipt, local_server, now)?;
+            return if replayed_location(tx, &raw, receipt, now)? {
+                Ok(receipt.clone())
+            } else {
+                Err(LocationError::Refused("Unknown location request"))
+            };
+        }
+    };
     if raw["server"] != server || raw["body"] != *envelope {
         return Err(LocationError::Refused(
             "The location transport ticket has different content",
         ));
     }
+    let reply = complete_snapshot_in_transaction(tx, &raw, receipt, local_server, now)?;
+    let result: LocationResult =
+        serde_json::from_value(receipt.clone()).map_err(studio_runtime_store::StoreError::from)?;
+    if result.outcome != LocationOutcome::Unknown {
+        Repository::delete_settled(tx, key)?;
+    }
+    Ok(reply)
+}
+
+/// The delivery owner calls this with its exact saved envelope and completion
+/// proof, then deletes its transport row in this same writer transaction.
+pub fn complete_snapshot_in_transaction(
+    tx: &Transaction<'_>,
+    raw: &Value,
+    receipt: &Value,
+    local_server: &str,
+    now: f64,
+) -> Result<Value, LocationError> {
     let project_id = raw
         .pointer("/body/payload/project")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("runtime_server_outbox", "/body/payload/project"))?;
     let project = ProjectsRepository::get(tx, project_id)?;
+    let snapshot = CompletionSnapshot::from_records(raw, project.as_ref().map(|(_, value)| value))?;
+    snapshot.decide(receipt, local_server, now)?;
+    if replayed_location(tx, raw, receipt, now)? {
+        return Ok(receipt.clone());
+    }
+    let mut pending = raw.clone();
+    pending["state"] = json!(OutboxState::Queued);
+    pending["result"] = Value::Null;
     let snapshot =
-        CompletionSnapshot::from_records(&raw, project.as_ref().map(|(_, value)| value))?;
+        CompletionSnapshot::from_records(&pending, project.as_ref().map(|(_, value)| value))?;
     let decision = snapshot.decide(receipt, local_server, now)?;
     if decision.apply {
-        if !replayed_location(tx, &raw, receipt, now)? {
-            settle_location(tx, project_id, key, &raw, receipt, decision.project)?;
-        }
-        Repository::complete(tx, key, receipt, now)?;
+        settle_location(
+            tx,
+            project_id,
+            &snapshot.outbox.body.request_id,
+            raw,
+            receipt,
+            decision.project,
+        )?;
     }
     Ok(decision.receipt)
 }
@@ -406,45 +441,6 @@ pub(crate) fn normalize_project(
     local_server: &str,
 ) -> Result<(), LocationError> {
     normalize(project, local_server)
-}
-
-/// Python `applied` after the paired driver already completed the outbox row
-/// with `receipt`: commit the home location and its receipts once.
-pub fn apply_completed_in_transaction(
-    tx: &Transaction<'_>,
-    key: &str,
-    server: &str,
-    receipt: &Value,
-    local_server: &str,
-    now: f64,
-) -> Result<(), LocationError> {
-    let mut raw =
-        Repository::outbox(tx, key)?.ok_or(LocationError::Refused("Unknown location request"))?;
-    if raw["server"] != server || raw["state"] != "complete" || raw["result"] != *receipt {
-        return Err(LocationError::Refused(
-            "The location transport ticket has different content",
-        ));
-    }
-    if replayed_location(tx, &raw, receipt, now)? {
-        return Ok(());
-    }
-    // Decide as Python does before the outbox completion in the same commit.
-    raw["state"] = json!("queued");
-    raw["result"] = Value::Null;
-    let project_id = raw
-        .pointer("/body/payload/project")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("runtime_server_outbox", "/body/payload/project"))?
-        .to_owned();
-    let project = ProjectsRepository::get(tx, &project_id)?;
-    let snapshot =
-        CompletionSnapshot::from_records(&raw, project.as_ref().map(|(_, value)| value))?;
-    let decision = snapshot.decide(receipt, local_server, now)?;
-    if !decision.apply {
-        return Ok(());
-    }
-    settle_location(tx, &project_id, key, &raw, receipt, decision.project)?;
-    Ok(())
 }
 
 fn request_error(
@@ -579,57 +575,111 @@ fn canonical_absolute(path: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
-/// Resolve caller aliases to a saved wire identity, refusing ambiguous aliases.
-pub fn tool_receipt_key(
+/// Resolve a managed location request through its current tool owner and exact result.
+pub fn tool_location_receipt(
     tx: &Transaction<'_>,
     actor: &str,
     request: &str,
     server: &str,
-) -> Result<String, LocationError> {
-    let aliases = Repository::alias_requests(tx, actor, request)?;
-    if aliases.len() > 1000 {
-        return Err(LocationError::Refused("Too many location receipt aliases"));
+    now: f64,
+) -> Result<Option<LocationResult>, LocationError> {
+    let task =
+        if let Some(task) = Repository::tool(tx, request)?.filter(|task| task["agent"] == actor) {
+            Some(task)
+        } else {
+            let aliases = Repository::alias_requests(tx, actor, request)?;
+            match aliases.as_slice() {
+                [] => None,
+                [id] => Repository::tool(tx, id)?,
+                [_, _, ..] => {
+                    return Err(LocationError::Refused(
+                        "This request ID names several requests. Use the returned requestId",
+                    ));
+                }
+            }
+        };
+    let Some(task) = task else {
+        return Ok(None);
+    };
+    let Some((admitted, requested_server)) = task_location_request(tx, &task)? else {
+        return Ok(None);
+    };
+    if requested_server != server {
+        return Err(LocationError::Refused(
+            "The location request belongs to another server",
+        ));
     }
-    let candidates = aliases
-        .iter()
-        .map(|alias| identity(&["project-location", actor, alias]))
-        .chain(std::iter::once(identity(&[
-            "project-location",
-            actor,
-            request,
-        ])))
-        .collect::<BTreeSet<_>>();
-    let mut matches = Vec::new();
-    for candidate in candidates {
-        let outbox = Repository::outbox(tx, &candidate)?;
-        let found = outbox.as_ref().is_some_and(|row| {
-            row["server"] == server
-                && matches!(
-                    row.pointer("/body/action").and_then(Value::as_str),
-                    Some("add_location" | "remove_location")
-                )
-        });
-        if found || Repository::retired(tx, &candidate, server)? {
-            matches.push(candidate);
-        }
-    }
-    match matches.len() {
-        0 => Ok(request.to_owned()),
-        1 => Ok(matches.remove(0)),
-        _ => Err(LocationError::Refused(
-            "This request ID names several location receipts. Use the returned requestId",
-        )),
-    }
+    Ok(crate::event_write::replay_request::<LocationResult>(
+        tx,
+        admitted.id(),
+        admitted.signature(),
+        (now * 1000.0) as i64,
+    )
+    .map_err(request_error)?
+    .map(|saved| saved.reply))
 }
 
-/// The tool-request consumer passes its exact record read under this transaction.
-/// Bind all durable identity fields by comparing it with the stored row before repairing it.
+#[derive(Deserialize)]
+struct LocationArguments {
+    action: Action,
+    project: String,
+    server: String,
+    path: Option<String>,
+}
+fn task_location_request(
+    tx: &Transaction<'_>,
+    task: &Value,
+) -> Result<
+    Option<(
+        studio_runtime_store::request_results::AdmittedRequest,
+        String,
+    )>,
+    LocationError,
+> {
+    if task["tool"] != "orchestration_servers"
+        || !matches!(
+            task.pointer("/arguments/action").and_then(Value::as_str),
+            Some("add_location" | "remove_location")
+        )
+    {
+        return Ok(None);
+    }
+    let args: LocationArguments = serde_json::from_value(task["arguments"].clone())
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let server = if args.server == "local" {
+        RuntimeStore::transaction_local_server_id(tx)?.ok_or(LocationError::Refused(
+            "The local server identity is unavailable",
+        ))?
+    } else {
+        args.server
+    };
+    let path = if args.action == Action::AddLocation {
+        args.path
+    } else {
+        None
+    };
+    let signature = request_signature(
+        &json!({"action":args.action,"project":args.project,"server":server,"path":path}),
+    );
+    let parent: studio_runtime_store::request_results::AdmittedRequest =
+        serde_json::from_value(task["admitted"].clone())
+            .map_err(studio_runtime_store::StoreError::from)?;
+    Ok(Some((
+        parent.derive_result("project-location", &["location"], &signature),
+        server,
+    )))
+}
+
+/// Settle an uncertain managed tool from its exact completed location result.
 pub fn refresh_tool_receipt(
     tx: &Transaction<'_>,
     record: &mut Value,
     now: f64,
 ) -> Result<bool, LocationError> {
-    if record.get("tool").and_then(Value::as_str) != Some("orchestration_servers") {
+    if record["tool"] != "orchestration_servers"
+        || record["outcome"]
+            != json!(studio_runtime_schema::persistence::ToolRequestOutcome::Unknown)
+    {
         return Ok(false);
     }
     if truthy(record.get("_payloadBlobs")) {
@@ -637,9 +687,8 @@ pub fn refresh_tool_receipt(
             "payload-store/tool-request-recovery",
         ));
     }
-    let id = record
-        .get("id")
-        .and_then(Value::as_str)
+    let id = record["id"]
+        .as_str()
         .ok_or_else(|| invalid("runtime_tool_requests", "/id"))?
         .to_owned();
     if Repository::tool(tx, &id)?.as_ref() != Some(record) {
@@ -647,90 +696,44 @@ pub fn refresh_tool_receipt(
             "The tool request changed before location reconciliation",
         ));
     }
-    checked::<Value>("relocation/ToolRequest", "runtime_tool_requests", record)?;
-    let saved = Repository::tool_result(tx, &id)?;
-    let actor = record["agent"]
-        .as_str()
-        .ok_or_else(|| invalid("runtime_tool_requests", "/agent"))?;
-    let key = identity(&["project-location", actor, &id]);
-    let outbox = Repository::outbox(tx, &key)?;
-    let Some((next, result)) = reconcile_tool(record, saved.as_ref(), outbox.as_ref(), now)? else {
+    let Some((request, _)) = task_location_request(tx, record)? else {
         return Ok(false);
     };
-    Repository::save_tool(tx, &id, &next, &result)?;
-    *record = next;
-    Ok(true)
-}
-
-/// Pure repair decision over checked saved records; no wall clock or transport access.
-fn reconcile_tool(
-    record: &Value,
-    saved: Option<&Value>,
-    raw: Option<&Value>,
-    now: f64,
-) -> Result<Option<(Value, Value)>, LocationError> {
-    let previous = saved
-        .filter(|v| truthy(Some(v)))
-        .or_else(|| record.get("result"));
-    let Some(previous) = previous.filter(|v| v["success"] == true) else {
-        return Ok(None);
-    };
-    if truthy(previous.get("_payloadBlobs")) {
-        return Err(LocationError::Requires(
-            "payload-store/tool-request-recovery",
-        ));
-    }
-    let Some(text) = previous
-        .pointer("/contentItems/0/text")
-        .and_then(Value::as_str)
+    let Some(receipt) = crate::event_write::replay_request::<LocationResult>(
+        tx,
+        request.id(),
+        request.signature(),
+        (now * 1000.0) as i64,
+    )
+    .map_err(request_error)?
     else {
-        return Ok(None);
+        return Ok(false);
     };
-    let Ok(value) = serde_json::from_str::<Value>(text) else {
-        return Ok(None);
-    };
-    let id = record["id"]
-        .as_str()
-        .ok_or_else(|| invalid("runtime_tool_requests", "/id"))?;
-    let actor = record
-        .get("agent")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("runtime_tool_requests", "/agent"))?;
-    let key = identity(&["project-location", actor, id]);
-    if value["requestId"] != key || value["outcome"] != "unknown" {
-        return Ok(None);
+    if receipt.reply.outcome == LocationOutcome::Unknown {
+        return Ok(false);
     }
-    let Some(raw) = raw else {
-        return Ok(None);
-    };
-    let snapshot = CompletionSnapshot::from_records(raw, None)?;
-    if !matches!(snapshot.outbox.state, OutboxState::Complete) {
-        return Ok(None);
-    }
-    let Some(receipt) = snapshot.outbox.result else {
-        return Ok(None);
-    };
-    if receipt["requestId"] != key
-        || !matches!(receipt["outcome"].as_str(), Some("applied" | "not_applied"))
-    {
-        return Ok(None);
-    }
-    let result = json!({"success":true,"contentItems":[{"type":"inputText","text":python_json(&receipt)},{"type":"inputText","text":format!("[Time awareness] Tool result finalized at {}",timestamp(now)?)}]});
-    if result["contentItems"].to_string().len() > 64 * 1024 {
+    let result = json!({"success":true,"contentItems":[{"type":"inputText","text":python_json(&json!(receipt.reply))},{"type":"inputText","text":format!("[Time awareness] Tool result finalized at {}",timestamp(now)?)}]});
+    /// Maximum inline recovered location tool result. Unit: UTF-8 bytes.
+    const MAX_LOCATION_TOOL_RESULT_BYTES: usize = 64 * 1024;
+    if result["contentItems"].to_string().len() > MAX_LOCATION_TOOL_RESULT_BYTES {
         return Err(LocationError::Requires(
             "payload-store/tool-request-recovery",
         ));
     }
     let mut next = record.clone();
     next["result"] = result.clone();
-    next["outcome"] = receipt["outcome"].clone();
-    next["stage"] = json!(if receipt["outcome"] == "applied" {
-        "completed"
-    } else {
-        "failed"
+    next["outcome"] = json!(receipt.reply.outcome);
+    next["stage"] = json!(match receipt.reply.outcome {
+        LocationOutcome::Applied =>
+            studio_runtime_schema::persistence::ToolRequestStatus::Completed,
+        LocationOutcome::NotApplied =>
+            studio_runtime_schema::persistence::ToolRequestStatus::Failed,
+        LocationOutcome::Unknown => return Ok(false),
     });
     next["updated"] = json!(now);
-    Ok(Some((next, result)))
+    Repository::save_tool(tx, &id, &next, &result)?;
+    *record = next;
+    Ok(true)
 }
 
 /// Internal outbound payload field. Its value binds reservation to the checked
@@ -766,19 +769,12 @@ pub fn location_admission(
 pub(crate) fn check_location_admission(
     tx: &Transaction<'_>,
     payload: &Value,
-    exact_legacy_reservation: bool,
 ) -> Result<(), LocationError> {
-    let Some(saved) = payload.get(LOCATION_ADMISSION_FIELD) else {
-        // Only a caller-proven exact pre-existing envelope may use the legacy
-        // format. Fresh reservations always require their checked lifetime.
-        return if exact_legacy_reservation {
-            Ok(())
-        } else {
-            Err(LocationError::Refused(
-                "A checked project location admission is required",
-            ))
-        };
-    };
+    let saved = payload
+        .get(LOCATION_ADMISSION_FIELD)
+        .ok_or(LocationError::Refused(
+            "A checked project location admission is required",
+        ))?;
     let expected: LocationAdmission = serde_json::from_value(saved.clone())
         .map_err(|_| LocationError::Refused("Invalid project location admission"))?;
     if payload.get("project").and_then(Value::as_str) != Some(expected.project.as_str()) {

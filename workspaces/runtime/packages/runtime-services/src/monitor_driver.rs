@@ -189,7 +189,7 @@ pub(crate) async fn input_http(
                 })
                 .await?;
             // The terminal refusal is durable before an HTTP error escapes.
-            outcome.replay()?;
+            crate::monitor_http_input::replay_status(outcome)?;
             return Ok(None);
         }
     };
@@ -560,6 +560,10 @@ pub fn reserve_cancel(
     } else {
         None
     };
+    if operation.is_some() && decision.record.get("cancelRootRequestId").is_none() {
+        decision.record["cancelRootRequestId"] =
+            json!(studio_runtime_schema::persistence::RequestIdentity::issue_root());
+    }
     monitor_runtime::apply(tx, &snapshot, &actor, &decision, now)?;
     Ok::<_, MonitorError>((decision.response, operation))
 }

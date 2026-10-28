@@ -7,6 +7,12 @@ use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use studio_runtime_providers::Method;
+use studio_runtime_schema::persistence::{
+    RequestIdentity, ResetCreditCertainty, ResetCreditOutcome, ResetCreditStatus,
+};
+use studio_runtime_store::request_results::{
+    Admission, AdmittedRequest, RequestResultError, RequestResults,
+};
 use studio_runtime_store::{RuntimeStore, StoreError};
 use thiserror::Error;
 use uuid::Uuid;
@@ -24,6 +30,10 @@ pub enum ResetError {
     Provider(String),
     #[error("reset-credit persistence failed")]
     Store(#[from] StoreError),
+    #[error(transparent)]
+    Request(#[from] RequestResultError),
+    #[error(transparent)]
+    Worker(#[from] crate::account_worker::WorkerError),
     #[error("reset-credit persistence failed")]
     Sql(#[from] rusqlite::Error),
     #[error("reset-credit persistence failed")]
@@ -39,10 +49,13 @@ struct Attempt {
     idempotency_key: String,
     #[serde(default = "initial_transport_attempts")]
     transport_attempts: u64,
-    status: String,
+    status: ResetCreditStatus,
+    root_request_id: String,
+    admission: Option<AdmittedRequest>,
+    provider_request: Option<AdmittedRequest>,
     #[serde(default)]
-    certainty: Option<String>,
-    outcome: Option<String>,
+    certainty: Option<ResetCreditCertainty>,
+    outcome: Option<ResetCreditOutcome>,
     error: Option<String>,
     #[serde(default)]
     created: Option<f64>,
@@ -108,14 +121,25 @@ async fn read_attempts(
                 }
                 return Ok(Some(attempt.clone()));
             }
+            let identity =
+                RequestIdentity::new("reset-credit", &[&account, &credit], &request_id, &[])
+                    .map_err(RequestResultError::from)?;
+            identity
+                .validate(
+                    (now()? * 1000.0) as i64,
+                    RequestResults::expired_before_ms(tx)?,
+                )
+                .map_err(RequestResultError::from)?;
             let attempt = attempts.into_iter().rev().find(|attempt| {
                 attempt.account_id == account
                     && attempt.credit_id == credit
-                    && (matches!(attempt.status.as_str(), "pending" | "uncertain")
-                        || matches!(
-                            attempt.outcome.as_deref(),
-                            Some("reset" | "alreadyRedeemed")
-                        ))
+                    && (matches!(
+                        attempt.status,
+                        ResetCreditStatus::Pending | ResetCreditStatus::Uncertain
+                    ) || matches!(
+                        attempt.outcome,
+                        Some(ResetCreditOutcome::Reset | ResetCreditOutcome::AlreadyRedeemed)
+                    ))
             });
             if let Some(attempt) = attempt {
                 // A public request id is permanently bound even when it reuses an
@@ -158,7 +182,7 @@ async fn save_attempt(
 /// The store serializes this check and insert; provider I/O happens after commit.
 async fn reserve_attempt(
     store: &RuntimeStore,
-    candidate: Attempt,
+    mut candidate: Attempt,
     request_id: &str,
 ) -> Result<Attempt, ResetError> {
     let request_id = request_id.to_owned();
@@ -194,11 +218,13 @@ async fn reserve_attempt(
             if let Some(attempt) = attempts.into_iter().rev().find(|attempt| {
                 attempt.account_id == candidate.account_id
                     && attempt.credit_id == candidate.credit_id
-                    && (matches!(attempt.status.as_str(), "pending" | "uncertain")
-                        || matches!(
-                            attempt.outcome.as_deref(),
-                            Some("reset" | "alreadyRedeemed")
-                        ))
+                    && (matches!(
+                        attempt.status,
+                        ResetCreditStatus::Pending | ResetCreditStatus::Uncertain
+                    ) || matches!(
+                        attempt.outcome,
+                        Some(ResetCreditOutcome::Reset | ResetCreditOutcome::AlreadyRedeemed)
+                    ))
             }) {
                 tx.execute(
                 "INSERT OR IGNORE INTO runtime_limit_reset_requests (id,attempt_id) VALUES (?1,?2)",
@@ -206,6 +232,35 @@ async fn reserve_attempt(
             )?;
                 return Ok(attempt);
             }
+            let signature = studio_runtime_store::sha256_hex(
+                json!([
+                    candidate.account_key,
+                    candidate.account_id,
+                    candidate.credit_id,
+                    candidate.idempotency_key
+                ])
+                .to_string()
+                .as_bytes(),
+            );
+            let identity = RequestIdentity::new(
+                "reset-credit",
+                &[
+                    &candidate.account_key,
+                    &candidate.account_id,
+                    &candidate.credit_id,
+                ],
+                &candidate.root_request_id,
+                &[],
+            )
+            .map_err(RequestResultError::from)?;
+            candidate.admission = Some(
+                match RequestResults::admit(tx, &identity, &signature, (now()? * 1000.0) as i64)? {
+                    Admission::Fresh(admitted) => admitted,
+                    Admission::Replay(_) => {
+                        return Err(ResetError::Invalid("The reset attempt already completed"));
+                    }
+                },
+            );
             let record = serde_json::to_string(&candidate)?;
             tx.execute(
                 "INSERT INTO runtime_limit_reset_attempts (id,record) VALUES (?1,?2)",
@@ -244,7 +299,7 @@ fn has_available_credit(limits: &Value, credit: &str, now: f64) -> bool {
 
 fn response(attempt: &Attempt, limits: Value) -> Value {
     json!({
-        "outcome":attempt.outcome.as_deref().unwrap_or("uncertain"),
+        "outcome":attempt.outcome.map(ResetCreditOutcome::as_str).unwrap_or("uncertain"),
         "request_id":attempt.id,
         "credit_id":attempt.credit_id,
         "account_id":attempt.account_id,
@@ -281,7 +336,7 @@ pub async fn consume_reset(
         Some(value) => Uuid::parse_str(value)
             .map_err(|_| ResetError::Invalid("Supply a UUID request_id"))?
             .to_string(),
-        None => Uuid::new_v4().to_string(),
+        None => RequestIdentity::issue_root(),
     };
     let mut attempt = read_attempts(store, &request_id, &account, &credit).await?;
     let limits = session
@@ -311,7 +366,10 @@ pub async fn consume_reset(
                     credit_id: credit.clone(),
                     idempotency_key: Uuid::new_v4().to_string(),
                     transport_attempts: INITIAL_TRANSPORT_ATTEMPTS,
-                    status: "pending".to_owned(),
+                    status: ResetCreditStatus::Pending,
+                    root_request_id: request_id.clone(),
+                    admission: None,
+                    provider_request: None,
                     certainty: None,
                     outcome: None,
                     error: None,
@@ -323,7 +381,7 @@ pub async fn consume_reset(
             .await?
         }
     };
-    if attempt.status == "completed" {
+    if attempt.status == ResetCreditStatus::Completed {
         return Ok(response(&attempt, limits));
     }
     attempt.certainty = None;
@@ -331,8 +389,8 @@ pub async fn consume_reset(
     let scope = match session.ensure_session(account_key).await {
         Ok(scope) => scope,
         Err(error) => {
-            attempt.status = "pending".to_owned();
-            attempt.certainty = Some("not_sent".to_owned());
+            attempt.status = ResetCreditStatus::Pending;
+            attempt.certainty = Some(ResetCreditCertainty::NotSent);
             attempt.error = Some(error.to_string());
             save_attempt(store, &attempt, &request_id).await?;
             return Err(ResetError::Provider(error.to_string()));
@@ -348,20 +406,60 @@ pub async fn consume_reset(
             .ok_or(ResetError::Invalid(
                 "The reset transport attempt limit was reached",
             ))?;
-    save_attempt(store, &attempt, &request_id).await?;
     let operation = format!(
         "{RESET_OPERATION_PREFIX}{}:{}",
         attempt.idempotency_key, attempt.transport_attempts
     );
+    let parent = attempt.admission.clone().ok_or(ResetError::Invalid(
+        "The reset attempt admission is missing",
+    ))?;
+    let mut reserved = attempt.clone();
+    let reserve_scope = scope.clone();
+    let reserve_operation = operation.clone();
+    let params = json!({"creditId":credit,"idempotencyKey":attempt.idempotency_key});
+    let reserve_params = params.clone();
+    let alias = request_id.clone();
+    attempt = store
+        .transaction_with(move |tx| {
+            let token = crate::account_worker::retained::reserve_provider_call(
+                tx,
+                &parent,
+                crate::account_worker::retained::ProviderCallIntent {
+                    root_request_id: reserved.root_request_id.clone(),
+                    admitted_request: None,
+                    scope: reserve_scope,
+                    operation: reserve_operation,
+                    actor: None,
+                    transfer: None,
+                    deleted_actor_session: None,
+                    method: Method::AccountRateLimitResetCreditConsume,
+                    params: reserve_params,
+                },
+            )?;
+            reserved.provider_request = Some(token);
+            reserved.updated = Some(now()?);
+            tx.execute(
+                "UPDATE runtime_limit_reset_attempts SET record=?2 WHERE id=?1",
+                (&reserved.id, serde_json::to_string(&reserved)?),
+            )?;
+            tx.execute(
+                "INSERT OR IGNORE INTO runtime_limit_reset_requests(id,attempt_id) VALUES(?1,?2)",
+                (&alias, &reserved.id),
+            )?;
+            Ok::<_, ResetError>(reserved)
+        })
+        .await?;
     let receipt = session
         .provider_request(ProviderRequest {
             account: account_key.to_owned(),
+            root_request_id: attempt.root_request_id.clone(),
+            admitted_request: attempt.provider_request.clone(),
             operation: operation.clone(),
             actor: None,
             expected_scope: Some(scope.clone()),
             deleted_actor_session: None,
             method: Method::AccountRateLimitResetCreditConsume,
-            params: json!({"creditId":credit,"idempotencyKey":attempt.idempotency_key}),
+            params,
             deadline: std::time::Instant::now() + RESET_REQUEST_TIMEOUT,
         })
         .await;
@@ -371,8 +469,8 @@ pub async fn consume_reset(
                 && receipt.scope == scope
                 && receipt.certainty() == RequestCertainty::NotSent =>
         {
-            attempt.status = "pending".to_owned();
-            attempt.certainty = Some("not_sent".to_owned());
+            attempt.status = ResetCreditStatus::Pending;
+            attempt.certainty = Some(ResetCreditCertainty::NotSent);
             attempt.error =
                 Some("The reset request was not sent; retry the same request_id".to_owned());
         }
@@ -381,43 +479,37 @@ pub async fn consume_reset(
                 && receipt.scope == scope
                 && receipt.certainty() == RequestCertainty::Written =>
         {
-            let outcome = receipt.response().cloned().and_then(|result| match result {
-                ProviderResponse::Reply(value) => value
-                    .get("outcome")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
+            let outcome = receipt.response().and_then(|result| match result {
+                ProviderResponse::Reply(value) => {
+                    serde_json::from_value::<ResetCreditOutcome>(value["outcome"].clone()).ok()
+                }
                 ProviderResponse::Rejected(_) => None,
             });
-            if let Some(outcome) = outcome.filter(|value| {
-                matches!(
-                    value.as_str(),
-                    "reset" | "nothingToReset" | "noCredit" | "alreadyRedeemed"
-                )
-            }) {
-                attempt.status = "completed".to_owned();
-                attempt.certainty = Some("written".to_owned());
+            if let Some(outcome) = outcome {
+                attempt.status = ResetCreditStatus::Completed;
+                attempt.certainty = Some(ResetCreditCertainty::Written);
                 attempt.outcome = Some(outcome);
                 attempt.error = None;
             } else {
-                attempt.status = "uncertain".to_owned();
-                attempt.certainty = Some("written".to_owned());
+                attempt.status = ResetCreditStatus::Uncertain;
+                attempt.certainty = Some(ResetCreditCertainty::Written);
                 attempt.error =
                     Some("The reset result is unknown. Retry the same attempt".to_owned());
             }
         }
         Ok(_) => {
-            attempt.status = "uncertain".to_owned();
-            attempt.certainty = Some("unknown".to_owned());
+            attempt.status = ResetCreditStatus::Uncertain;
+            attempt.certainty = Some(ResetCreditCertainty::Unknown);
             attempt.error = Some("The reset result is unknown. Retry the same attempt".to_owned());
         }
         Err(AccountSessionError::Unknown) => {
-            attempt.status = "uncertain".to_owned();
-            attempt.certainty = Some("unknown".to_owned());
+            attempt.status = ResetCreditStatus::Uncertain;
+            attempt.certainty = Some(ResetCreditCertainty::Unknown);
             attempt.error = Some("The reset result is unknown. Retry the same attempt".to_owned());
         }
         Err(error) => {
-            attempt.status = "uncertain".to_owned();
-            attempt.certainty = Some("unknown".to_owned());
+            attempt.status = ResetCreditStatus::Uncertain;
+            attempt.certainty = Some(ResetCreditCertainty::Unknown);
             attempt.error = Some(error.to_string());
         }
     }
@@ -446,7 +538,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
     use studio_runtime_providers::{Method, RequestId, RequestTicket};
+    use studio_runtime_schema::persistence::{RequestIdentity, ResetCreditStatus};
     use studio_runtime_store::RuntimeStore;
+    use studio_runtime_store::request_results::{Admission, AdmittedRequest, RequestResults};
 
     enum Reply {
         NotSent,
@@ -613,6 +707,29 @@ mod tests {
         run_async(save_attempt_async(store, attempt, request_id))
     }
 
+    fn test_admission(store: &RuntimeStore, root: &str) -> AdmittedRequest {
+        let root = root.to_owned();
+        run_async(store.transaction_with(move |tx| {
+            let identity = RequestIdentity::new(
+                "reset-credit",
+                &["default", "account-A", "credit-A"],
+                &root,
+                &[],
+            )
+            .expect("root");
+            match RequestResults::admit(
+                tx,
+                &identity,
+                "test-owner",
+                (super::now()? * 1000.0) as i64,
+            )? {
+                Admission::Fresh(token) => Ok::<_, super::ResetError>(token),
+                Admission::Replay(_) => panic!("fresh owner"),
+            }
+        }))
+        .expect("admit")
+    }
+
     fn request(request_id: &str) -> Value {
         json!({"account_key":"default","account_id":"account-A","credit_id":"credit-A","request_id":request_id})
     }
@@ -621,9 +738,9 @@ mod tests {
     fn not_sent_retry_changes_transport_identity_and_preserves_charge_identity() {
         let (_root, store) = store();
         let provider = FakeProvider::new([Reply::NotSent, Reply::Outcome("reset")]);
-        let request_id = "11000000-0000-4000-8000-000000000001";
-        let first = consume_reset(&store, &provider, &request(request_id)).unwrap();
-        let second = consume_reset(&store, &provider, &request(request_id)).unwrap();
+        let request_id = RequestIdentity::issue_root();
+        let first = consume_reset(&store, &provider, &request(&request_id)).unwrap();
+        let second = consume_reset(&store, &provider, &request(&request_id)).unwrap();
         let calls = provider.requests.lock().unwrap();
 
         assert_eq!(first["outcome"], "uncertain");
@@ -653,9 +770,9 @@ mod tests {
     fn unknown_retry_uses_new_transport_identity_and_same_provider_key() {
         let (_root, store) = store();
         let provider = FakeProvider::new([Reply::Unknown, Reply::Outcome("reset")]);
-        let request_id = "11000000-0000-4000-8000-000000000002";
-        let first = consume_reset(&store, &provider, &request(request_id)).unwrap();
-        let retry = consume_reset(&store, &provider, &request(request_id)).unwrap();
+        let request_id = RequestIdentity::issue_root();
+        let first = consume_reset(&store, &provider, &request(&request_id)).unwrap();
+        let retry = consume_reset(&store, &provider, &request(&request_id)).unwrap();
 
         assert_eq!(first["outcome"], "uncertain");
         assert_eq!(retry["outcome"], "reset");
@@ -674,16 +791,17 @@ mod tests {
         provider.assert_reset_lock = true;
         let provider = Arc::new(provider);
         let store = Arc::new(store);
-        let request_id = "11000000-0000-4000-8000-000000000016";
+        let request_id = RequestIdentity::issue_root();
         let start = Arc::new(Barrier::new(3));
         let mut workers = Vec::new();
         for _ in 0..2 {
             let provider = Arc::clone(&provider);
             let store = Arc::clone(&store);
             let start = Arc::clone(&start);
+            let request_id = request_id.clone();
             workers.push(std::thread::spawn(move || {
                 start.wait();
-                consume_reset(&store, &*provider, &request(request_id)).unwrap()
+                consume_reset(&store, &*provider, &request(&request_id)).unwrap()
             }));
         }
         start.wait();
@@ -710,27 +828,30 @@ mod tests {
     #[test]
     fn recovered_pending_attempt_advances_persisted_transport_sequence() {
         let (_root, store) = store();
-        let request_id = "11000000-0000-4000-8000-000000000014";
+        let request_id = RequestIdentity::issue_root();
         let stored_key = "11000000-0000-4000-8000-000000000015";
         let pending = Attempt {
-            id: request_id.into(),
+            id: request_id.clone(),
+            root_request_id: request_id.clone(),
+            admission: Some(test_admission(&store, &request_id)),
+            provider_request: None,
             account_id: "account-A".into(),
             account_key: "default".into(),
             credit_id: "credit-A".into(),
             idempotency_key: stored_key.into(),
             // The prior process committed attempt one, then stopped before dispatch.
             transport_attempts: 1,
-            status: "pending".into(),
+            status: ResetCreditStatus::Pending,
             certainty: None,
             outcome: None,
             error: Some("interrupted before the result was saved".into()),
             created: Some(1.0),
             updated: Some(2.0),
         };
-        save_attempt(&store, &pending, request_id).unwrap();
+        save_attempt(&store, &pending, &request_id).unwrap();
         let provider = FakeProvider::new([Reply::Outcome("reset")]);
 
-        let result = consume_reset(&store, &provider, &request(request_id)).unwrap();
+        let result = consume_reset(&store, &provider, &request(&request_id)).unwrap();
 
         assert_eq!(result["outcome"], "reset");
         let calls = provider.requests.lock().unwrap();
@@ -746,15 +867,15 @@ mod tests {
     fn request_identity_cannot_be_rebound_and_exact_credit_is_required() {
         let (_root, store) = store();
         let provider = FakeProvider::new([Reply::Outcome("noCredit")]);
-        let request_id = "11000000-0000-4000-8000-000000000003";
+        let request_id = RequestIdentity::issue_root();
         assert_eq!(
-            consume_reset(&store, &provider, &request(request_id)).unwrap()["outcome"],
+            consume_reset(&store, &provider, &request(&request_id)).unwrap()["outcome"],
             "noCredit"
         );
-        let mut rebound = request(request_id);
+        let mut rebound = request(&request_id);
         rebound["credit_id"] = Value::String("credit-B".into());
         assert!(consume_reset(&store, &provider, &rebound).is_err());
-        let mut absent = request("11000000-0000-4000-8000-000000000004");
+        let mut absent = request(&RequestIdentity::issue_root());
         absent["credit_id"] = Value::String("absent".into());
         assert!(consume_reset(&store, &provider, &absent).is_err());
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
@@ -764,17 +885,17 @@ mod tests {
     fn reused_request_identity_is_bound_to_the_existing_credit_attempt() {
         let (_root, store) = store();
         let provider = FakeProvider::new([Reply::Outcome("reset")]);
-        let first_id = "11000000-0000-4000-8000-000000000010";
-        let alias_id = "11000000-0000-4000-8000-000000000011";
+        let first_id = RequestIdentity::issue_root();
+        let alias_id = RequestIdentity::issue_root();
         assert_eq!(
-            consume_reset(&store, &provider, &request(first_id)).unwrap()["outcome"],
+            consume_reset(&store, &provider, &request(&first_id)).unwrap()["outcome"],
             "reset"
         );
         assert_eq!(
-            consume_reset(&store, &provider, &request(alias_id)).unwrap()["outcome"],
+            consume_reset(&store, &provider, &request(&alias_id)).unwrap()["outcome"],
             "reset"
         );
-        let mut rebound = request(alias_id);
+        let mut rebound = request(&alias_id);
         rebound["credit_id"] = Value::String("credit-B".into());
         assert!(consume_reset(&store, &provider, &rebound).is_err());
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
@@ -784,23 +905,23 @@ mod tests {
     fn settled_attempt_followed_by_new_action_gets_a_new_idempotency_key() {
         let (_root, store) = store();
         let provider = FakeProvider::new([Reply::Outcome("noCredit"), Reply::Outcome("reset")]);
-        let first_id = "11000000-0000-4000-8000-000000000012";
-        let second_id = "11000000-0000-4000-8000-000000000013";
+        let first_id = RequestIdentity::issue_root();
+        let second_id = RequestIdentity::issue_root();
         assert_eq!(
-            consume_reset(&store, &provider, &request(first_id)).unwrap()["outcome"],
+            consume_reset(&store, &provider, &request(&first_id)).unwrap()["outcome"],
             "noCredit"
         );
         assert_eq!(
-            consume_reset(&store, &provider, &request(second_id)).unwrap()["outcome"],
+            consume_reset(&store, &provider, &request(&second_id)).unwrap()["outcome"],
             "reset"
         );
         let calls = provider.requests.lock().unwrap();
         assert_eq!(calls.len(), 2);
         assert_ne!(calls[0].1["idempotencyKey"], calls[1].1["idempotencyKey"]);
-        let first = read_attempts(&store, first_id, "account-A", "credit-A")
+        let first = read_attempts(&store, &first_id, "account-A", "credit-A")
             .unwrap()
             .unwrap();
-        let second = read_attempts(&store, second_id, "account-A", "credit-A")
+        let second = read_attempts(&store, &second_id, "account-A", "credit-A")
             .unwrap()
             .unwrap();
         assert_ne!(first.id, second.id);

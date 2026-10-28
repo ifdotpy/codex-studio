@@ -27,6 +27,8 @@ pub fn claim(
         let saved: NativeRequest =
             decode(operation["nativeRequest"].clone(), "fork.nativeRequest")?;
         let retry = NativeRequest {
+            root_request_id: saved.root_request_id.clone(),
+            admitted_request: saved.admitted_request.clone(),
             ticket: ticket.clone(),
             method: "thread/fork".into(),
             params: params.clone(),
@@ -48,6 +50,8 @@ pub fn claim(
         return Err(NativeError::Invalid("fork.params.threadId"));
     }
     let request = NativeRequest {
+        root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+        admitted_request: None,
         ticket: ticket.clone(),
         method: "thread/fork".into(),
         params,
@@ -167,6 +171,8 @@ pub async fn dispatch_reserved_via_broker(
     };
     let receipt = port
         .provider_request(ProviderRequest {
+            root_request_id: request.root_request_id.clone(),
+            admitted_request: request.admitted_request.clone(),
             account: request.ticket.account.clone(),
             operation: request.ticket.request.clone(),
             actor: Some(RequestActor {
