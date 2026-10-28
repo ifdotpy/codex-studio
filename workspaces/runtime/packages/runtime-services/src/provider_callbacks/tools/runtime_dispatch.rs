@@ -876,7 +876,9 @@ async fn lifecycle_management(
         .await;
     let action = match checked {
         Ok(action) => action,
-        Err(error @ (Error::Store(_) | Error::Sqlite(_) | Error::Work(_))) => return Err(error),
+        Err(error @ (Error::Expired | Error::Store(_) | Error::Sqlite(_) | Error::Work(_))) => {
+            return Err(error);
+        }
         // These checks only read; a refusal proves that nothing was applied.
         Err(error) => return Ok(not_sent(error)),
     };
@@ -1074,7 +1076,7 @@ pub(crate) fn managed_input_receipt(
 /// read-only check before the operation's first write proves it was not applied.
 fn refused_before_write(error: Error) -> Result<Option<DispatchedOperation>, Error> {
     match error {
-        Error::Store(_) | Error::Sqlite(_) | Error::Work(_) => Err(error),
+        Error::Expired | Error::Store(_) | Error::Sqlite(_) | Error::Work(_) => Err(error),
         error @ Error::Invalid(_)
         | error @ Error::Stale
         | error @ Error::InvalidStored { .. }
@@ -1093,7 +1095,10 @@ async fn child_creation_refusal(
     request_id: &str,
     error: Error,
 ) -> Result<DispatchedOperation, Error> {
-    if matches!(error, Error::Store(_) | Error::Sqlite(_) | Error::Work(_)) {
+    if matches!(
+        error,
+        Error::Expired | Error::Store(_) | Error::Sqlite(_) | Error::Work(_)
+    ) {
         return Err(error);
     }
     if tool == "orchestration_spawn" {
@@ -1123,7 +1128,8 @@ fn not_sent(error: Error) -> DispatchedOperation {
         Error::Unavailable(crate::model_catalog::MODEL_CATALOG_DEPENDENCY) => {
             json!(MODEL_CATALOG_RETRY)
         }
-        error @ Error::Invalid(_)
+        error @ Error::Expired
+        | error @ Error::Invalid(_)
         | error @ Error::Stale
         | error @ Error::InvalidStored { .. }
         | error @ Error::StoredAt(_)

@@ -162,6 +162,8 @@ impl Call {
 
 #[derive(Debug, Error)]
 pub(crate) enum Error {
+    #[error("The request ID expired")]
+    Expired,
     #[error("{0}")]
     Invalid(&'static str),
     #[error("The caller identity changed")]
