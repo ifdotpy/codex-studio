@@ -4863,7 +4863,8 @@ mod wal_flush_tests {
 }
 
 /// The only typed→Value conversion: feeds existing Value-only projections
-/// (sync views, SSE, entity/room/subscription views). Not for storage or logic.
+/// (sync views, SSE, entity/room/subscription views). Also writes typed fields
+/// into existing Value-backed records. Not for general storage or logic.
 /// Also backs legacy read-only AgentRecord::value() readers; migrate to typed fields.
 ///
 /// Panics if T's Serialize fails (custom serializer error or non-string map keys).
