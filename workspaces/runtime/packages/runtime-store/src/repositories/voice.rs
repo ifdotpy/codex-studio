@@ -1,11 +1,37 @@
 //! Persisted native voice records, sessions, deliveries and approval inputs.
 
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
+
+/// One durable provider stop effect for one captured voice session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VoiceEffect {
+    pub session_id: String,
+    pub agent: String,
+    pub epoch: i64,
+    pub account: String,
+    pub thread: String,
+    pub authority: VoiceEffectAuthority,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum VoiceEffectAuthority {
+    Admitted {
+        scope: studio_runtime_schema::persistence::ProviderScope,
+        root_request_id: String,
+        admission: crate::request_results::AdmittedRequest,
+        outcome: studio_runtime_schema::persistence::VoiceStopOutcome,
+    },
+    Held {
+        scope: studio_runtime_schema::persistence::CapturedScope,
+    },
+}
 
 const BOOTSTRAP_TABLES: &[TableRequirement] = &[
     TableRequirement {
