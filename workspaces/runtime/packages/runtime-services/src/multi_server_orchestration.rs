@@ -1303,7 +1303,7 @@ fn durable_anchor_input_receipt(
     let Some(parent_epoch) = payload.get("parentEpoch").and_then(Value::as_i64) else {
         return Ok(None);
     };
-    if envelope.key.is_empty()
+    if envelope.root.is_empty()
         || link_id.is_empty()
         || text(payload, "kind") != "user"
         || !crate::coordination::message_text_within_limit(event_text)
@@ -1335,7 +1335,7 @@ fn durable_anchor_input_receipt(
     crate::coordination::remote_message_receipt(
         transaction,
         parent_id,
-        &envelope.key,
+        &envelope.root,
         event_text,
         delivery,
     )
