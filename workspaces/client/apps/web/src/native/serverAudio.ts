@@ -1,5 +1,5 @@
 import { bindAudioFrames } from "./audioFrames";
-import { hasNativeClient, listenNativeEvents, nativeRequest } from "./client";
+import { hasDeviceClient, listenNativeEvents, nativeRequest } from "./client";
 import { createNativeDictation, dictationBridge } from "./dictation";
 import { isNativeFrame } from "./frame";
 import { nativeVoice } from "./voice";
@@ -42,7 +42,7 @@ export function createServerAudio() {
   const dictation = createNativeDictation(request, listen);
   return {
     dictationBridge: () =>
-      window.codexDesktop || (hasNativeClient() ? dictation.bridge : undefined),
+      window.codexDesktop || (hasDeviceClient() ? dictation.bridge : undefined),
     captureAudio: (onChunk: (pcm: Int16Array) => void) =>
       captureAudio(onChunk, dictation.captureNativeAudio),
     nativeVoice: (

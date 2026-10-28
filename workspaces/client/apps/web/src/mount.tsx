@@ -1,7 +1,7 @@
 import { BottomInsetBand } from "./hooks/BottomInsetBand";
 import "./browser-reset.css";
 import { NativeServerCredentials } from "./native/serverCredentials";
-import { hasNativeClient } from "./native/client";
+import { hasDeviceClient } from "./native/client";
 import { isNativeFrame } from "./native/frame";
 import {
   bootstrapPreferenceCache,
@@ -42,7 +42,7 @@ async function mount() {
   setServerCredentialAdapter(
     nativeCredentials
       ? new DesktopServerCredentials(nativeCredentials)
-      : hasNativeClient() && !isServerView
+      : hasDeviceClient() && !isServerView
         ? new NativeServerCredentials()
         : isNativeFrame()
           ? new DesktopServerCredentials(shellCredentialBridge())

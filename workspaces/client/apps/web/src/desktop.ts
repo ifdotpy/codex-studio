@@ -1,4 +1,4 @@
-import { hasNativeClient } from "./native/client";
+import { hasDeviceClient } from "./native/client";
 import { openNativeLink } from "./native/externalLinks";
 
 export type { DesktopBridge, SignInForward } from "../../desktop/api.ts";
@@ -10,7 +10,7 @@ if (window.codexDesktop?.platform === "darwin") {
 // Preview frames cannot access this main-frame bridge.
 document.addEventListener("click", (event) => {
   if (
-    (!window.codexDesktop && !hasNativeClient()) ||
+    (!window.codexDesktop && !hasDeviceClient()) ||
     event.defaultPrevented ||
     event.button !== 0
   )

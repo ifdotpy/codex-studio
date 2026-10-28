@@ -177,6 +177,9 @@ pub struct HttpState {
     pub(crate) continuation_wake: Arc<Notify>,
     pub(crate) etag_operations: BTreeSet<(String, String)>,
     pub(crate) mutation_tasks: Arc<crate::mutation_tasks::MutationTasks>,
+    /// One client core per browser device; see `routes::client_core`.
+    #[cfg(unix)]
+    pub(crate) client_cores: Arc<routes::client_core::ClientCores>,
 }
 
 impl HttpState {
@@ -268,6 +271,8 @@ impl HttpState {
                 notifications.notify_store_commit(change)
             });
         }
+        #[cfg(unix)]
+        let client_cores = Arc::new(routes::client_core::ClientCores::new(&state_dir, port));
         Self {
             message_admission: None,
             callback_runtime: None,
@@ -323,6 +328,8 @@ impl HttpState {
             continuation_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
             mutation_tasks: Arc::new(crate::mutation_tasks::MutationTasks::new()),
+            #[cfg(unix)]
+            client_cores,
         }
     }
 

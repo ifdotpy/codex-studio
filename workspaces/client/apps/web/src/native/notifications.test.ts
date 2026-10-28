@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 vi.mock("./client", () => ({
-  hasNativeClient: () => true,
+  hasDeviceClient: () => true,
   nativeHost: vi.fn(),
   nativeRequest: vi.fn(),
 }));

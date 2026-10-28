@@ -19,6 +19,9 @@ pub(crate) fn request_limit(path: &str) -> usize {
         "/api/assets" => ASSET_BODY_LIMIT,
         "/api/voice/audio" => VOICE_AUDIO_BODY_LIMIT,
         "/api/projects" => PROJECTS_BODY_LIMIT,
+        // One hosted core request carries one core message.
+        #[cfg(unix)]
+        "/api/client/request" => studio_client_core::protocol::MAX_MESSAGE,
         _ => DEFAULT_BODY_LIMIT,
     }
 }

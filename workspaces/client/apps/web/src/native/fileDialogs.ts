@@ -1,4 +1,4 @@
-import { hasNativeClient, nativeRequest } from "./client";
+import { hasDeviceClient, nativeRequest } from "./client";
 import { isRemoteServerView } from "../servers/environment";
 
 export function createFileDialogs(owner: string) {
@@ -7,7 +7,7 @@ export function createFileDialogs(owner: string) {
     return (
       local &&
       (typeof window.codexDesktop?.pickDirectory === "function" ||
-        hasNativeClient())
+        hasDeviceClient())
     );
   }
   function pickDirectory(): Promise<string | null> {
@@ -23,7 +23,7 @@ export function createFileDialogs(owner: string) {
     return (
       local &&
       (typeof window.codexDesktop?.pickFiles === "function" ||
-        hasNativeClient())
+        hasDeviceClient())
     );
   }
   async function pickFiles(): Promise<File[]> {
@@ -49,7 +49,7 @@ export function createFileDialogs(owner: string) {
   }
 
   function canRevealPath() {
-    return local && (!!window.codexDesktop?.revealPath || hasNativeClient());
+    return local && (!!window.codexDesktop?.revealPath || hasDeviceClient());
   }
   async function revealPath(path: string): Promise<void> {
     if (!canRevealPath())
@@ -62,7 +62,7 @@ export function createFileDialogs(owner: string) {
   }
 
   function canShowVaultKeys() {
-    return local && (!!window.codexDesktop?.showVaultKeys || hasNativeClient());
+    return local && (!!window.codexDesktop?.showVaultKeys || hasDeviceClient());
   }
   async function showVaultKeys(prefix: string): Promise<void> {
     if (!canShowVaultKeys())

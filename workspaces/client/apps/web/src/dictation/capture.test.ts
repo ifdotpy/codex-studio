@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, it, vi } from "vitest";
 import { captureAudio } from "./capture";
 
-vi.mock("../native/client", () => ({ hasNativeClient: () => false }));
+vi.mock("../native/client", () => ({ hasDeviceClient: () => false }));
 vi.mock("../native/dictation", () => ({ captureNativeAudio: vi.fn() }));
 afterEach(() => {
   vi.unstubAllGlobals();

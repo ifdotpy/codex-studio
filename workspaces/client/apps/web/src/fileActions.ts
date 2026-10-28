@@ -1,6 +1,6 @@
 import { saveNativeFile } from "./native/saveFile";
 import type { DesktopBridge } from "./desktop";
-import { hasNativeClient, nativeRequest } from "./native/client";
+import { hasDeviceClient, nativeRequest } from "./native/client";
 import { isRemoteServerView } from "./servers/environment";
 
 export interface FileTarget {
@@ -20,7 +20,7 @@ export function createFileActions(owner: string) {
     return (
       local &&
       (typeof window.codexDesktop?.fileAction === "function" ||
-        hasNativeClient())
+        hasDeviceClient())
     );
   }
 
@@ -69,7 +69,7 @@ export async function saveFile(value: SaveFile): Promise<boolean> {
   const native: DesktopBridge["saveFile"] = window.codexDesktop?.saveFile;
   // Call the bridge before an await, while the initiating gesture is available.
   if (native) return native({ name, data });
-  if (hasNativeClient()) return saveNativeFile(name, data);
+  if (hasDeviceClient()) return saveNativeFile(name, data);
   const file = new File([data], name, {
     type: value.mime || "application/octet-stream",
   });
