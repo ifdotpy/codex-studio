@@ -1,4 +1,5 @@
 //! Move account state and remaining journal obligations in bounded source order.
+use crate::receipt_migration_contract::load_operation_receipt as load;
 use crate::receipt_migration_contract::*;
 use crate::{
     outbox::{Outbox, OutboxRow},
@@ -55,22 +56,6 @@ fn phase_key<'a>(row: &'a SourceReceipt, prefix: &str, phase: &str) -> Result<&'
         .and_then(|s| s.strip_suffix(phase))
         .filter(|s| !s.is_empty())
         .ok_or_else(|| fail(row))
-}
-fn load(tx: &Transaction<'_>, id: &str) -> Result<Option<SourceReceipt>> {
-    Ok(tx
-        .query_row(
-            "SELECT rowid,id,signature,result FROM runtime_operation_receipts WHERE id=?1",
-            [id],
-            |r| {
-                Ok(SourceReceipt {
-                    rowid: r.get(0)?,
-                    id: r.get(1)?,
-                    signature: r.get(2)?,
-                    result: r.get(3)?,
-                })
-            },
-        )
-        .optional()?)
 }
 
 fn state(tx: &Transaction<'_>, row: &SourceReceipt) -> Result<()> {

@@ -400,20 +400,7 @@ fn migrate_location_c(
     if !crate::receipt_migration_contract::source_exists(tx, SOURCE)? {
         return Ok(());
     }
-    let row: Option<SourceReceipt> = tx
-        .query_row(
-            "SELECT rowid,id,signature,result FROM runtime_operation_receipts WHERE id=?1",
-            [id],
-            |r| {
-                Ok(SourceReceipt {
-                    rowid: r.get(0)?,
-                    id: r.get(1)?,
-                    signature: r.get(2)?,
-                    result: r.get(3)?,
-                })
-            },
-        )
-        .optional()?;
+    let row = crate::receipt_migration_contract::load_operation_receipt(tx, id)?;
     let Some(row) = row else {
         return Ok(());
     };
@@ -740,9 +727,11 @@ mod tests {
         {
             let mut db = Connection::open(&path).expect("database");
             fixture(&mut db);
+            db.execute_batch("BEGIN").expect("fixture transaction");
             for n in 0..=MIGRATION_BATCH_ROWS {
                 insert(&db, &format!("request-{n}"), "running", "unknown");
             }
+            db.execute_batch("COMMIT").expect("fixture setup committed");
             assert_eq!(
                 batch(&mut db, SOURCES[2], true).cursor,
                 MIGRATION_BATCH_ROWS as i64

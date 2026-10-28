@@ -54,6 +54,27 @@ impl SourceReceipt {
     }
 }
 
+/// Read one legacy operation receipt by its original key.
+pub(crate) fn load_operation_receipt(
+    tx: &Transaction<'_>,
+    id: &str,
+) -> Result<Option<SourceReceipt>> {
+    Ok(tx
+        .query_row(
+            "SELECT rowid,id,signature,result FROM runtime_operation_receipts WHERE id=?1",
+            [id],
+            |row| {
+                Ok(SourceReceipt {
+                    rowid: row.get(0)?,
+                    id: row.get(1)?,
+                    signature: row.get(2)?,
+                    result: row.get(3)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
 pub fn unclassifiable(table: &str, id: &str, signature: &str) -> ReceiptMigrationError {
     ReceiptMigrationError::Unclassifiable {
         table: table.into(),

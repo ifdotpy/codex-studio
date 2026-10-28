@@ -167,22 +167,6 @@ fn public_reply(row: &contract::SourceReceipt) -> Result<TitleReply> {
     }
     Ok(reply)
 }
-fn read_public(tx: &Transaction<'_>, request: &str) -> Result<Option<contract::SourceReceipt>> {
-    Ok(tx
-        .query_row(
-            "SELECT rowid,id,signature,result FROM runtime_operation_receipts WHERE id=?1",
-            [request],
-            |r| {
-                Ok(contract::SourceReceipt {
-                    rowid: r.get(0)?,
-                    id: r.get(1)?,
-                    signature: r.get(2)?,
-                    result: r.get(3)?,
-                })
-            },
-        )
-        .optional()?)
-}
 fn save_reply(
     tx: &Transaction<'_>,
     row: &contract::SourceReceipt,
@@ -295,7 +279,7 @@ fn move_effect(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
     {
         return Err(invalid());
     }
-    let public = read_public(tx, &effect.request_id)?.ok_or_else(invalid)?;
+    let public = contract::load_operation_receipt(tx, &effect.request_id)?.ok_or_else(invalid)?;
     let reply = public_reply(&public)?;
     if reply.id != effect.agent_id {
         return Err(invalid());
@@ -708,6 +692,7 @@ mod tests {
             [],
         )
         .expect("agent");
+        db.execute_batch("BEGIN").expect("fixture transaction");
         for i in 0..501 {
             let request = format!("r{i}");
             put(
@@ -723,6 +708,7 @@ mod tests {
                 json!({"request_id":request,"agent_id":"a","state":"unknown"}),
             );
         }
+        db.execute_batch("COMMIT").expect("fixture setup committed");
         let first = batch(&mut db, SOURCES[0]).expect("first");
         db.close().expect("interrupted between batches");
         let mut db = Connection::open(&path).expect("reopen");
