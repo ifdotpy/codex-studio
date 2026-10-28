@@ -2187,7 +2187,7 @@ mod bounded_reconcile_tests {
                 if id == "healthy-mode" { agent["workspaceMode"] = serde_json::json!("shared"); }
                 if id == "null-mode" { agent["workspaceMode"] = serde_json::Value::Null; }
                 AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
-                tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,?1,'annotation','fixture','pending',0,1)", [id])?;
+                tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,?1,'user','fixture','pending',0,1)", [id])?;
             }
             Ok(())
         }).await.expect("pending candidates");

@@ -431,15 +431,16 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
             ("stop_task", json!("thread")),
         ] {
             let agent = json!({"id":"agent","rootId":"agent","epoch":2,"cwd":"/fixture","provider":"claude","accountKey":"account","threadId":thread,"status":"paused"});
-            let body = json!({"id":"agent","action":action,"task_id":"task"});
+            let body = json!({"id":"agent","action":action,"task_id":"task","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
             service
                 .read_or_stop(&agent, &body, None)
                 .await
                 .expect("read action");
         }
 
+        let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let request = || {
-            serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","request_id":"control-one","turn_id":"two"})).expect("valid fixture")
+            serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","request_id":request_id,"turn_id":"two"})).expect("valid fixture")
         };
         let first = service.execute(request()).await;
         assert_eq!(
