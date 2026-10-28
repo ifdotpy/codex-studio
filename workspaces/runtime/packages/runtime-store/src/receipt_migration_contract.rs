@@ -3,7 +3,9 @@
 use crate::request_results::{AdmittedRequest, ResultEnvelope};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Serialize, de::DeserializeOwned};
-use studio_runtime_schema::persistence::{MigrationStatus, ReceiptMigrationPhase, enum_check};
+use studio_runtime_schema::persistence::{
+    MigrationStatus, ReceiptMigrationPhase, RequestIdentity, enum_check,
+};
 
 /// Maximum input rows in one migration batch. Unit: source rows.
 pub const MIGRATION_BATCH_ROWS: usize = 500;
@@ -24,6 +26,15 @@ pub enum ReceiptMigrationError {
     Incomplete {
         migration: String,
         source_table: String,
+    },
+    #[error(
+        "cannot discard completed request table={table} key={key} issuance_ms={issued_ms} is after cutover_ms={cutover_ms}"
+    )]
+    FutureDatedCompletedRequest {
+        table: String,
+        key: String,
+        issued_ms: i64,
+        cutover_ms: i64,
     },
 }
 pub type Result<T> = std::result::Result<T, ReceiptMigrationError>;
@@ -63,6 +74,14 @@ fn identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+pub fn source_exists(tx: &Transaction<'_>, table: &str) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get(0),
+    )?)
+}
+
 pub fn read_receipt_batch(
     tx: &Transaction<'_>,
     table: &str,
@@ -91,6 +110,9 @@ pub fn read_source_batch(
     projection: &ReceiptProjection<'_>,
     predicate: &str,
 ) -> Result<Vec<SourceReceipt>> {
+    if !source_exists(tx, table)? {
+        return Ok(Vec::new());
+    }
     let table_sql = identifier(table);
     let ReceiptProjection {
         id,
@@ -272,17 +294,42 @@ impl MigrationCheckpoint {
 /// One timestamp shared by all independent catalog entries and retained across restart.
 pub fn cutover_ms(tx: &Transaction<'_>, now_ms: i64) -> Result<i64> {
     tx.execute("INSERT OR IGNORE INTO runtime_payload_migrations(name,cursor,complete,status,updated,cutover_ms) VALUES('receipts:cutover',0,1,?1,?2,?3)",params![MigrationStatus::Complete,now_ms as f64/1000.0,now_ms])?;
-    Ok(tx.query_row(
+    let cutover_ms = tx.query_row(
         "SELECT cutover_ms FROM runtime_payload_migrations WHERE name='receipts:cutover'",
         [],
         |row| row.get(0),
-    )?)
+    )?;
+    seed_expired_before_ms(tx, cutover_ms)?;
+    Ok(cutover_ms)
+}
+
+/// Atomic ingress fence only. Cached results retain their independent created-time TTL.
+pub fn seed_expired_before_ms(tx: &Transaction<'_>, cutover_ms: i64) -> Result<()> {
+    tx.execute("INSERT INTO runtime_orchestration_settings(id,record) VALUES('global',json_object('expired_before_ms',?1)) ON CONFLICT(id) DO UPDATE SET record=json_set(record,'$.expired_before_ms',?1) WHERE coalesce(json_extract(record,'$.expired_before_ms'),0)<?1",[cutover_ms])?;
+    Ok(())
+}
+
+/// Completed C rows lacking an exact reply may be deleted only if the cutover
+/// fence can prevent their identity from being freshly admitted in the future.
+pub fn validate_completed_discard(table: &str, id: &str, cutover_ms: i64) -> Result<()> {
+    if let Ok(identity) = RequestIdentity::new("migration-validation", &[], id, &[])
+        && identity.issued_ms() > cutover_ms
+    {
+        return Err(ReceiptMigrationError::FutureDatedCompletedRequest {
+            table: table.into(),
+            key: id.into(),
+            issued_ms: identity.issued_ms(),
+            cutover_ms,
+        });
+    }
+    Ok(())
 }
 
 /// Create shared destination schema and checkpoint columns once under the startup lock.
 /// Existing checkpoint status CHECK rebuilding belongs to the schema cutover migration.
 pub fn prepare_schema(tx: &Transaction<'_>) -> Result<()> {
     crate::receipt_schema::create(tx)?;
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)")?;
     tx.execute_batch(&format!("CREATE TABLE IF NOT EXISTS runtime_payload_migrations(name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT '{}' {},updated REAL,error TEXT,cutover_ms INTEGER)",MigrationStatus::Pending.as_str(), enum_check::<MigrationStatus>("status")))?;
     let has_cutover: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('runtime_payload_migrations') WHERE name='cutover_ms')",[],|row|row.get(0))?;
     if !has_cutover {
@@ -316,6 +363,57 @@ pub fn phase_id(migration: &str, phase: ReceiptMigrationPhase) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn receipt_migration_cutover_fences_fresh_ids_without_expiring_imports() {
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        let tx = db.transaction().expect("tx");
+        prepare_schema(&tx).expect("schema");
+        assert_eq!(cutover_ms(&tx, 1000).expect("cutover"), 1000);
+        assert_eq!(
+            crate::request_results::RequestResults::expired_before_ms(&tx).expect("seeded floor"),
+            1000
+        );
+        assert_eq!(cutover_ms(&tx, 2000).expect("same cutover"), 1000);
+        let checkpoint =
+            MigrationCheckpoint::begin(&tx, "family", "missing", 3000).expect("checkpoint");
+        assert!(
+            read_receipt_batch(&tx, "missing", &checkpoint, "1")
+                .expect("fresh has no source")
+                .is_empty()
+        );
+        assert!(validate_completed_discard("old", "ordinary opaque id", 1000).is_ok());
+        let at = |ms: u128| uuid::Uuid::from_u128((ms << 80) | (7 << 76) | (2 << 62)).to_string();
+        assert!(validate_completed_discard("old", &at(1000), 1000).is_ok());
+        assert!(
+            matches!(validate_completed_discard("old",&at(1001),1000),Err(ReceiptMigrationError::FutureDatedCompletedRequest{table,key,issued_ms:1001,cutover_ms:1000}) if table=="old"&&key==at(1001))
+        );
+        let token = admitted_owner_token("imported", "sig", 1000);
+        crate::request_results::RequestResults::settle(
+            &tx,
+            &token,
+            &ResultEnvelope {
+                actor: None,
+                reply: true,
+                references: vec![],
+            },
+        )
+        .expect("import");
+        assert!(
+            crate::request_results::RequestResults::replay(&tx, "imported", "sig", 1001)
+                .expect("30 day grace")
+                .is_some()
+        );
+        tx.rollback().expect("atomic rollback");
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name='runtime_orchestration_settings'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .expect("seed rolled back"),
+            0
+        );
+    }
     #[test]
     fn receipt_migration_scan_is_keyset_bounded_and_imports_are_atomic() {
         let mut db = rusqlite::Connection::open_in_memory().expect("database");
