@@ -158,6 +158,31 @@ struct NativeActionIntent {
     admitted: AdmittedRequest,
     receipt: AdmissionReceipt,
     outcome: Outcome,
+    idle: Option<IdleActionProvenance>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IdleActionProvenance {
+    pub episode_id: String,
+    pub before: IdleActionBefore,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdleActionBefore {
+    pub status: studio_runtime_store::AgentStatus,
+    pub start_attempt: Value,
+    pub turn_epoch: Option<i64>,
+}
+
+pub fn idle_provenance(
+    connection: &rusqlite::Connection,
+    request_id: &str,
+) -> Result<Option<IdleActionProvenance>> {
+    Ok(
+        Outbox::get::<NativeActionIntent>(connection, &action_outbox_id(request_id))?
+            .and_then(|row| row.payload.idle),
+    )
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -283,6 +308,9 @@ impl Snapshot {
 /// this transaction. No provider, filesystem work or publication is permitted.
 pub trait Admission: Send + Sync + 'static {
     fn check(&self, tx: &Transaction<'_>, agent: &Value, action: Action) -> Result<()>;
+    fn idle_episode_id(&self) -> Option<&str> {
+        None
+    }
 }
 
 pub fn reserve(
@@ -399,6 +427,19 @@ pub fn reserve(
             record.remove("pendingSettingsAccountKey");
         }
     }
+    let idle = gate
+        .idle_episode_id()
+        .map(|episode_id| -> Result<IdleActionProvenance> {
+            Ok(IdleActionProvenance {
+                episode_id: episode_id.to_owned(),
+                before: IdleActionBefore {
+                    status: decode(agent["status"].clone(), "idle.before.status")?,
+                    start_attempt: agent["startAttempt"].clone(),
+                    turn_epoch: decode(agent["turnEpoch"].clone(), "idle.before.turnEpoch")?,
+                },
+            })
+        })
+        .transpose()?;
     gate.check(tx, &agent, request.action)?;
     if let Some(episode) = AgentRepository::get(
         tx,
@@ -412,7 +453,7 @@ pub fn reserve(
     agent["inFlight"] = json!(true);
     agent["turnEpoch"] = agent["epoch"].clone();
     agent["startAttempt"] = json!({"id":attempt,"epoch":agent["epoch"],"events":[],"action":request.action,
-        "submitted":false,"created":now,"actionRequestId":request.request_id,"actionIdentity":identity});
+        "submitted":false,"created":now,"actionRequestId":request.request_id,"rootRequestId":request.request_id,"actionIdentity":identity});
     if review_worker {
         // Python `codex_agent_review.claim` saves the account on the attempt.
         agent["startAttempt"]["accountKey"] = identity["accountKey"].clone();
@@ -448,6 +489,7 @@ pub fn reserve(
                 admitted,
                 receipt: checked.receipt.clone(),
                 outcome: checked.outcome.clone(),
+                idle,
             },
         },
     )?;
@@ -540,6 +582,9 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
     {
         return Err(NativeError::Unknown);
     }
+    let intent = Outbox::get::<NativeActionIntent>(tx, &action_outbox_id(id))?
+        .ok_or(NativeError::Changed)?
+        .payload;
     let r = &snapshot.receipt;
     if ticket.operation != r.attempt_id
         || ticket.agent != r.agent_id
@@ -552,9 +597,9 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
     {
         return Err(NativeError::Changed);
     }
-    if snapshot.agent["idleCompactionEpisode"]["id"] == r.request_id
+    if let Some(idle) = &intent.idle
         && let Some(reason) =
-            crate::idle_compaction::handoff_refusal(tx, &snapshot.agent, &r.request_id)?
+            crate::idle_compaction::handoff_refusal(tx, &snapshot.agent, &idle.episode_id)?
     {
         eprintln!(
             "idle_compaction_refused request={} reason={}",
@@ -575,12 +620,15 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
             "review/start"
         }
     };
-    if snapshot.agent["idleCompactionEpisode"]["id"] == r.request_id {
+    if intent.idle.is_some() {
         params["requestId"] = json!(r.request_id);
         params["idleCompaction"] = snapshot.agent["idleCompactionEpisode"]["cache"].clone();
     }
     let request = NativeRequest {
-        root_request_id: ticket.request.clone(),
+        root_request_id: snapshot.agent["startAttempt"]["rootRequestId"]
+            .as_str()
+            .ok_or(NativeError::Invalid("startAttempt.rootRequestId"))?
+            .to_owned(),
         admitted_request: snapshot.agent["startAttempt"]
             .get("providerRequest")
             .cloned()
@@ -590,10 +638,7 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
         method: method.into(),
         params,
     };
-    let owner = Outbox::get::<NativeActionIntent>(tx, &action_outbox_id(id))?
-        .ok_or(NativeError::Changed)?
-        .payload
-        .admitted;
+    let owner = intent.admitted;
     let request = reserve_provider_intent(tx, &owner, &ticket.operation, request)?;
     snapshot.agent["startAttempt"]["providerRequest"] = json!(request.admitted_request);
     snapshot.agent["startAttempt"]["submitted"] = json!(true);
@@ -1146,6 +1191,13 @@ pub async fn update_action_settings(
                     return Err(NativeError::Changed);
                 }
                 let saved = agent["startAttempt"].get("modelSettings").cloned();
+                let root_request_id = saved
+                    .as_ref()
+                    .and_then(|saved| saved.get("rootRequestId"))
+                    .or_else(|| agent["startAttempt"].get("rootRequestId"))
+                    .and_then(Value::as_str)
+                    .ok_or(NativeError::Invalid("modelSettings.rootRequestId"))?
+                    .to_owned();
                 let final_token = saved
                     .as_ref()
                     .and_then(|saved| saved.get("providerRequest"))
@@ -1182,7 +1234,7 @@ pub async fn update_action_settings(
                     &owner,
                     &operation_for_tx,
                     NativeRequest {
-                        root_request_id: request_id.clone(),
+                        root_request_id: root_request_id.clone(),
                         admitted_request: final_token,
                         ticket: ProviderTicket {
                             operation: operation_for_tx.clone(),
@@ -1200,6 +1252,7 @@ pub async fn update_action_settings(
                     "params": params_snapshot,
                     "status": NativeSettingsStatus::Submitted,
                     "providerRequest":prepared.admitted_request,
+                    "rootRequestId":root_request_id,
                 });
                 AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
                 Ok(Some(prepared))
@@ -1643,6 +1696,14 @@ pub fn replay_command(
         }
         return Err(NativeError::Unknown);
     }
+    let now = chrono::Utc::now().timestamp_millis();
+    let identity = RequestIdentity::new("native-command", &[], root, &[]).map_err(|_| {
+        studio_runtime_schema::persistence::RequestIdentityError::Expired {
+            issued_ms: 0,
+            expired_before_ms: now,
+        }
+    })?;
+    identity.validate(now, RequestResults::expired_before_ms(connection)?)?;
     Ok(None)
 }
 

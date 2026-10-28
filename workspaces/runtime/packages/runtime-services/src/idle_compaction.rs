@@ -17,7 +17,6 @@ use studio_runtime_store::{
 use tokio::sync::{Notify, watch};
 
 pub const NOTICE: &str = "Compacted while idle, before the prompt cache expired. To turn it off, set Claude idle compaction to Off in Settings > Agent orchestration.";
-pub const REQUEST_PREFIX: &str = "idle-compaction:";
 const FAILURE_RETRY_SECONDS: u64 = 30;
 
 pub use studio_runtime_schema::idle_compaction::CacheReport;
@@ -96,6 +95,13 @@ pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Resul
         ));
     }
     agent["idleCache"] = json!(cache);
+    if let Some(previous) = agent.get("idleCompactionEpisode") {
+        let previous: Episode = serde_json::from_value(previous.clone())
+            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+        if previous.cache.request_id == cache.request_id && previous.identity == identity(agent) {
+            return Ok(());
+        }
+    }
     let settings = OrchestrationSettingsRepository::idle_compaction(connection)?;
     if cache.ttl != "1h" || settings.mode == Mode::Off {
         if let Some(fields) = agent.as_object_mut() {
@@ -105,13 +111,6 @@ pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Resul
     }
     let activity = cache.last_activity_at / 1000.0;
     let expiry = activity + IDLE_COMPACTION_CACHE_SECONDS;
-    if let Some(previous) = agent.get("idleCompactionEpisode") {
-        let previous: Episode = serde_json::from_value(previous.clone())
-            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
-        if previous.cache.request_id == cache.request_id && previous.identity == identity(agent) {
-            return Ok(());
-        }
-    }
     let id = RequestIdentity::issue_root();
     agent["idleCompactionEpisode"] = json!(Episode {
         id,
@@ -213,13 +212,16 @@ fn record(
 }
 
 /// Rechecks eligibility under the same writer transaction as native admission.
-/// The native receipt and this fire receipt commit together or neither commits.
+/// The native obligation and the current episode fire commit together or neither commits.
 pub struct IdleAdmission {
     pub inner: Arc<dyn Admission>,
     pub episode: Episode,
     pub limits: Value,
 }
 impl Admission for IdleAdmission {
+    fn idle_episode_id(&self) -> Option<&str> {
+        Some(&self.episode.id)
+    }
     fn check(
         &self,
         tx: &Transaction<'_>,
@@ -268,11 +270,12 @@ pub async fn release_unsubmitted(
             {
                 return Ok(());
             }
-            let saved = value["idleCompactionEpisode"].clone();
+            let saved = crate::native_actions::idle_provenance(tx, &request_id)?
+                .ok_or(NativeError::Changed)?;
             crate::native_actions::fail_pending(tx, &request_id, &message)?;
-            for field in ["status", "startAttempt", "turnEpoch"] {
-                value[field] = saved["before"][field].clone();
-            }
+            value["status"] = json!(saved.before.status);
+            value["startAttempt"] = saved.before.start_attempt;
+            value["turnEpoch"] = json!(saved.before.turn_epoch);
             value["inFlight"] = json!(false);
             studio_runtime_store::AgentRepository::put(
                 tx,
@@ -290,11 +293,11 @@ pub fn handoff_refusal(
     agent: &Value,
     request: &str,
 ) -> Result<Option<IdleEpisodeOutcome>, StoreError> {
-    let episode: Episode = serde_json::from_value(agent["idleCompactionEpisode"].clone())
-        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
-    if episode.id != request {
+    if agent["idleCompactionEpisode"]["id"] != request {
         return Ok(Some(IdleEpisodeOutcome::NewerRequest));
     }
+    let episode: Episode = serde_json::from_value(agent["idleCompactionEpisode"].clone())
+        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
     let receipt = &agent["idleCompactionEpisode"];
     let account = episode.identity["accountKey"].as_str().unwrap_or("default");
     let current: Option<String> = tx.query_row("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0", [], |row| row.get(0)).optional()?;
@@ -521,6 +524,34 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn receipt_domain_idle_repeat_keeps_fired_episode_through_disabled_observation() {
+        let db = studio_runtime_store::test_canvas();
+        let (settings, episode, mut agent, _) = fixture();
+        OrchestrationSettingsRepository::set_idle_compaction(&db, &settings).expect("settings");
+        observe(&db, &mut agent, &json!(episode.cache)).expect("first observation");
+        let root = agent["idleCompactionEpisode"]["id"].clone();
+        agent["idleCompactionEpisode"]["fired"] = json!(true);
+        agent["idleCompactionEpisode"]["outcome"] = json!(IdleEpisodeOutcome::Started);
+        let mut disabled = settings;
+        disabled.mode = Mode::Off;
+        OrchestrationSettingsRepository::set_idle_compaction(&db, &disabled).expect("disable");
+        observe(&db, &mut agent, &json!(episode.cache)).expect("same episode");
+        assert_eq!(agent["idleCompactionEpisode"]["id"], root);
+        assert_eq!(agent["idleCompactionEpisode"]["fired"], true);
+        disabled.mode = Mode::Compact;
+        OrchestrationSettingsRepository::set_idle_compaction(&db, &disabled).expect("enable");
+        observe(&db, &mut agent, &json!(episode.cache)).expect("repeat");
+        assert_eq!(agent["idleCompactionEpisode"]["id"], root);
+        assert_eq!(agent["idleCompactionEpisode"]["fired"], true);
+        let tx = db.unchecked_transaction().expect("tx");
+        agent["idleCompactionEpisode"] = Value::Null;
+        assert_eq!(
+            handoff_refusal(&tx, &agent, root.as_str().expect("root")).expect("superseded"),
+            Some(IdleEpisodeOutcome::NewerRequest)
+        );
+    }
+
     #[test]
     fn receipt_domain_idle_fires_on_owner_once_without_receipt_table() {
         let db = studio_runtime_store::test_canvas();

@@ -702,7 +702,7 @@ pub fn claim(
         processes: entries,
         response: None,
     };
-    let record = json!({"requestId":id,"signature":signature,"phase":"dispatching","scopeAgent":scope,"scopeAccountKey":request["accountKey"],"scopeEpoch":request["epoch"],"action":action,"responseTarget":response,"processes":result.processes,"created":now,"result":result});
+    let record = json!({"requestId":id,"rootRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"signature":signature,"phase":"dispatching","scopeAgent":scope,"scopeAccountKey":request["accountKey"],"scopeEpoch":request["epoch"],"action":action,"responseTarget":response,"processes":result.processes,"created":now,"result":result});
     tx.execute(
         "INSERT INTO runtime_process_actions(id,signature,record) VALUES(?,?,?)",
         params![id, signature, canonical(&record)],
@@ -797,4 +797,63 @@ fn input_receipt(connection: &Connection, query: &Value) -> Result<ProcessReceip
     ProcessReceipt::found(value["result"].clone())
         .map_err(StoreError::from)
         .map_err(Error::from)
+}
+
+#[cfg(test)]
+mod claim_identity_tests {
+    use super::*;
+    use studio_runtime_schema::persistence::RequestIdentity;
+
+    #[test]
+    fn process_claim_persists_one_broker_root_without_changing_the_domain_request() {
+        let mut db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT,parent_id TEXT,deleted_at REAL);
+            CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT);
+            CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(id);
+            CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT);
+            CREATE INDEX runtime_task_agent_created_id ON runtime_tasks(id);
+            CREATE TABLE runtime_process_actions(id TEXT PRIMARY KEY,signature TEXT,record TEXT);")
+            .expect("claim tables");
+        let owner = json!({"id":"owner","epoch":3,"accountKey":"account","inFlight":true,
+            "threadId":"thread","turnId":"turn"});
+        db.execute(
+            "INSERT INTO runtime_agents(id,record) VALUES('owner',?1)",
+            [owner.to_string()],
+        )
+        .expect("owner");
+        let request = Request::parse(
+            json!({"action":"stop_response","requestId":"opaque-action-id",
+            "agent":"owner","accountKey":"account","epoch":3,"responseTarget":{
+                "agent":"owner","accountKey":"account","epoch":3,"connectionId":"connection",
+                "threadId":"thread","turnId":"turn"}}),
+        )
+        .expect("request");
+        let connections = Connections::from([("owner".into(), "connection".into())]);
+        let tx = db.transaction().expect("transaction");
+        let Claim::New { record, .. } =
+            claim(&tx, &request, &connections, 1.0).expect("fresh claim")
+        else {
+            panic!("first claim must be new");
+        };
+        let root = record["rootRequestId"]
+            .as_str()
+            .expect("persisted broker root");
+        RequestIdentity::new("process-action", &[], root, &[]).expect("UUIDv7 root");
+        assert_eq!(record["requestId"], "opaque-action-id");
+        assert!(matches!(
+            claim(&tx, &request, &connections, 2.0).expect("replay"),
+            Claim::Replay(_)
+        ));
+        let persisted: String = tx
+            .query_row(
+                "SELECT record FROM runtime_process_actions WHERE id='opaque-action-id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("owner record");
+        assert_eq!(
+            serde_json::from_str::<Value>(&persisted).expect("record")["rootRequestId"],
+            root
+        );
+    }
 }
