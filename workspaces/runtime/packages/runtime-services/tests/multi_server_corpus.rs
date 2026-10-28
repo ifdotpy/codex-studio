@@ -5,10 +5,149 @@ use common::*;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
-use studio_runtime_services::multi_server_auth::{AccessSnapshot, OwnerObservation, authorize_at};
+use studio_runtime_services::multi_server_auth::{
+    AccessSnapshot, OwnerObservation, SignedRequest, authorize_at,
+};
 use studio_runtime_services::multi_server_discovery::DiscoverySnapshot;
 use studio_runtime_store::RuntimeStore;
 
+/// Restore classifiable frozen transport rows in their source-era tables and
+/// run the real receipt migration. The unproven python-location row has its
+/// own migration-stop witness and is not mixed into this successful fixture.
+pub async fn migrated_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
+    let (root, store) = store().await;
+    drop(store);
+    {
+        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("source");
+        db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%';
+            CREATE TABLE runtime_access_receipts(client TEXT,request_id TEXT,hash TEXT,session TEXT,status TEXT,record TEXT,PRIMARY KEY(client,request_id));
+            DROP TABLE runtime_server_inbox; DROP TABLE runtime_server_outbox;
+            CREATE TABLE runtime_server_inbox(id TEXT PRIMARY KEY,signature TEXT NOT NULL,state TEXT NOT NULL,result TEXT,created_at REAL NOT NULL DEFAULT 0,completed_at REAL NOT NULL DEFAULT 0,principal TEXT,actor TEXT);
+            CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,server TEXT NOT NULL,body TEXT NOT NULL,state TEXT NOT NULL,result TEXT,attempts INTEGER NOT NULL DEFAULT 0,next_at REAL NOT NULL DEFAULT 0,error TEXT,created_at REAL NOT NULL DEFAULT 0,completed_at REAL NOT NULL DEFAULT 0,fingerprint TEXT);")
+            .expect("source-era receipt tables");
+        for line in fixture().canvas_sql.lines().filter(|line| {
+            (line.starts_with("INSERT INTO \"runtime_access_receipts\"")
+                || line.starts_with("INSERT INTO \"runtime_server_inbox\"")
+                || line.starts_with("INSERT INTO \"runtime_server_outbox\""))
+                && !line
+                    .starts_with("INSERT INTO \"runtime_server_outbox\" VALUES('python-location'")
+        }) {
+            db.execute_batch(line).expect("frozen source row");
+        }
+    }
+    let store = Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("migrate frozen receipts"),
+    );
+    (root, store)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PairBody {
+    client_id: String,
+    invite_id: String,
+    kind: String,
+    label: String,
+    origin: Option<String>,
+    protocol: u64,
+    public_key: String,
+    request_id: String,
+    token: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoPairBody {
+    label: String,
+    origin: String,
+    protocol: u64,
+    public_key: String,
+    request_id: String,
+    server_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct SigningCase {
+    name: String,
+    raw: String,
+}
+#[derive(serde::Deserialize)]
+struct SigningData {
+    auth: Vec<SigningCase>,
+}
+
+/// Sign a current UUIDv7 root with the frozen test identity.
+pub fn current_pair(root: &str, nonce: &str, now: i64) -> SignedRequest {
+    let data: SigningData = serde_json::from_value(fixture().data.clone()).expect("fixture cases");
+    let mut body: PairBody =
+        serde_json::from_str(&data.auth.first().expect("pair case").raw).expect("pair body");
+    body.request_id = root.to_owned();
+    let raw = serde_json::to_vec(&body).expect("pair JSON");
+    current_signed(
+        "/api/multi-server/v1/pair",
+        &body.client_id,
+        root,
+        nonce,
+        now,
+        &raw,
+    )
+}
+
+pub fn current_auto_pair(root: &str, nonce: &str, now: i64) -> SignedRequest {
+    let data: SigningData = serde_json::from_value(fixture().data.clone()).expect("fixture cases");
+    let case = data
+        .auth
+        .iter()
+        .find(|case| case.name == "auto-pair")
+        .expect("auto pair case");
+    let mut body: AutoPairBody = serde_json::from_str(&case.raw).expect("auto pair body");
+    body.request_id = root.to_owned();
+    let raw = serde_json::to_vec(&body).expect("auto pair JSON");
+    current_signed(
+        "/api/multi-server/v1/auto-pair",
+        &body.server_id,
+        root,
+        nonce,
+        now,
+        &raw,
+    )
+}
+
+fn current_signed(
+    target: &str,
+    client: &str,
+    root: &str,
+    nonce: &str,
+    now: i64,
+    raw: &[u8],
+) -> SignedRequest {
+    use studio_runtime_services::remote_transport::{
+        MultiServerSigningInput, multi_server_signing_bytes,
+    };
+    let timestamp = now.to_string();
+    let bytes = multi_server_signing_bytes(MultiServerSigningInput {
+        method: "POST",
+        target,
+        server_id: "local-server",
+        client_id: client,
+        timestamp: &timestamp,
+        nonce,
+        request_id: root,
+        body: raw,
+    });
+    let signature = signing_identity().sign(&bytes);
+    let headers = vec![
+        ("X-Studio-Client".into(), client.into()),
+        ("X-Studio-Server".into(), "local-server".into()),
+        ("X-Studio-Timestamp".into(), timestamp),
+        ("X-Studio-Nonce".into(), nonce.into()),
+        ("X-Studio-Request-Id".into(), root.into()),
+        ("X-Studio-Signature".into(), signature),
+    ];
+    SignedRequest::from_headers("POST", target, &headers, raw).expect("signed request")
+}
 #[tokio::test]
 async fn legacy_location_without_project_admission_stops_migration() {
     let root = tempfile::tempdir().expect("state");
