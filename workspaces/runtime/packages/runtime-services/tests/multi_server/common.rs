@@ -10,7 +10,7 @@ use studio_runtime_store::RuntimeStore;
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fixture {
-    canvas_sql: String,
+    pub canvas_sql: String,
     signing_identity: Box<serde_json::value::RawValue>,
     pub data: Value,
 }
@@ -38,7 +38,20 @@ pub async fn store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
     );
     store
         .transaction_with(|tx| {
-            tx.execute_batch(&fixture().canvas_sql)?;
+            // Receipt rows in the frozen snapshot predate the cutover. Tests
+            // create current receipt owners through their caller or migrate
+            // the individual legacy row they exercise.
+            let sql = fixture()
+                .canvas_sql
+                .lines()
+                .filter(|line| {
+                    !line.contains("runtime_access_receipts")
+                        && !line.starts_with("INSERT INTO \"runtime_server_inbox\"")
+                        && !line.starts_with("INSERT INTO \"runtime_server_outbox\"")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            tx.execute_batch(&sql)?;
             Ok::<_, studio_runtime_store::StoreError>(())
         })
         .await
@@ -123,14 +136,16 @@ pub fn rows(store: &RuntimeStore) -> Value {
         "runtime_access_clients",
         "runtime_access_invites",
         "runtime_access_nonces",
-        "runtime_access_receipts",
+        "request_results",
+        "runtime_outbox",
         "runtime_access_audit",
         "runtime_server_inbox",
         "runtime_server_outbox",
     ] {
         let sql=match table {
             "runtime_access_nonces"=>"SELECT json_array(client,nonce,created) FROM runtime_access_nonces ORDER BY client,nonce".to_owned(),
-            "runtime_access_receipts"=>"SELECT json_array(client,request_id,hash,session,status,record) FROM runtime_access_receipts ORDER BY client,request_id".to_owned(),
+            "request_results"=>"SELECT json_array(id,signature,result,created) FROM request_results ORDER BY id".to_owned(),
+            "runtime_outbox"=>"SELECT json_array(id,kind,status,payload) FROM runtime_outbox ORDER BY id".to_owned(),
             "runtime_access_audit"=>"SELECT json_array(seq,client,actor,action,created) FROM runtime_access_audit ORDER BY seq".to_owned(),
             "runtime_server_inbox"=>"SELECT json_array(id,signature,state,result,created_at,completed_at,principal,actor) FROM runtime_server_inbox ORDER BY id".to_owned(),
             "runtime_server_outbox"=>"SELECT json_array(id,server,body,state,result,fingerprint,attempts,created_at,completed_at) FROM runtime_server_outbox ORDER BY id".to_owned(),
