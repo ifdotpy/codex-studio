@@ -2529,6 +2529,7 @@ mod voice_composition_tests {
 
     struct VoiceFactory {
         stop_writes: Arc<AtomicUsize>,
+        request_writes: Arc<AtomicUsize>,
     }
 
     impl ProviderTaskFactory for VoiceFactory {
@@ -2555,6 +2556,7 @@ mod voice_composition_tests {
             });
             let mut stop = shutdown.subscribe();
             let stop_writes = Arc::clone(&self.stop_writes);
+            let request_writes = Arc::clone(&self.request_writes);
             let task = tokio::spawn(async move {
                 let mut cursor = 0_u64;
                 loop {
@@ -2596,6 +2598,7 @@ mod voice_composition_tests {
                             else {
                                 continue;
                             };
+                            request_writes.fetch_add(1, Ordering::SeqCst);
                             if method == "thread/realtime/stop" {
                                 stop_writes.fetch_add(1, Ordering::SeqCst);
                             }
@@ -2739,7 +2742,7 @@ mod voice_composition_tests {
         let operation = format!("vm-codex-token-refresh:voice-account:{old_root}");
         let identity = RequestIdentity::new(
             "provider-call",
-            &["voice-account", "expired-agent", "3"],
+            &["voice-account", "", ""],
             &old_root,
             &[&operation],
         )
@@ -2754,10 +2757,12 @@ mod voice_composition_tests {
         }).await.unwrap();
         let factory = Arc::new(VoiceFactory {
             stop_writes: Arc::new(AtomicUsize::new(0)),
+            request_writes: Arc::new(AtomicUsize::new(0)),
         });
         let (mut worker, session, _callbacks) =
             start_voice_worker(directory.path(), Arc::clone(&store), Arc::clone(&factory)).await;
         let scope = session.current_scope("voice-account").unwrap();
+        let sent_before_retry = factory.request_writes.load(Ordering::SeqCst);
         let result =
             studio_runtime_services::account_session_runtime::AccountSessionPort::provider_request(
                 session.as_ref(),
@@ -2766,16 +2771,11 @@ mod voice_composition_tests {
                     admitted_request: None,
                     account: "voice-account".into(),
                     operation,
-                    actor: Some(
-                        studio_runtime_services::account_worker::retained::RequestActor {
-                            agent: "expired-agent".into(),
-                            epoch: 3,
-                        },
-                    ),
+                    actor: None,
                     expected_scope: Some(scope),
                     deleted_actor_session: None,
-                    method: studio_runtime_providers::Method::ThreadRealtimeStop,
-                    params: json!({"threadId":"voice-thread"}),
+                    method: studio_runtime_providers::Method::AccountRead,
+                    params: json!({"refreshToken":true}),
                     deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
                 },
             )
@@ -2784,7 +2784,10 @@ mod voice_composition_tests {
             result,
             Err(AccountSessionError::Refused("Request id expired"))
         ));
-        assert_eq!(factory.stop_writes.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            factory.request_writes.load(Ordering::SeqCst),
+            sent_before_retry
+        );
         worker.shutdown().await.unwrap();
     }
 
@@ -2810,6 +2813,7 @@ mod voice_composition_tests {
 
         let factory = Arc::new(VoiceFactory {
             stop_writes: Arc::new(AtomicUsize::new(0)),
+            request_writes: Arc::new(AtomicUsize::new(0)),
         });
         let (mut worker, session, callbacks) =
             start_voice_worker(directory.path(), store.clone(), Arc::clone(&factory)).await;
