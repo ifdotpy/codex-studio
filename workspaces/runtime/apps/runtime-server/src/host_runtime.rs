@@ -2994,7 +2994,7 @@ mod voice_composition_tests {
             store.clone(),
             provider.clone(),
             "stale-agent".into(),
-            voice_session,
+            voice_session.clone(),
             1.0,
         )
         .await;
@@ -3011,7 +3011,7 @@ mod voice_composition_tests {
             store.clone(),
             Arc::new(tokio::sync::Notify::new()),
             Arc::new(tokio::sync::Notify::new()),
-            session,
+            session.clone(),
             Some(provider),
         ));
         ports
@@ -3027,6 +3027,44 @@ mod voice_composition_tests {
             )
             .await
             .unwrap();
+        let scope =
+            studio_runtime_services::account_session_runtime::AccountSessionPort::current_scope(
+                session.as_ref(),
+                "voice-account",
+            )
+            .expect("live provider scope");
+        let old =
+            studio_runtime_services::account_session_runtime::AccountSessionPort::provider_request(
+                session.as_ref(),
+                ProviderRequest {
+                    root_request_id:
+                        studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                    admitted_request: None,
+                    account: "voice-account".into(),
+                    operation: format!("voice:stop:{voice_session}"),
+                    actor: Some(
+                        studio_runtime_schema::provider_call_contract::RequestActor {
+                            agent: "stale-agent".into(),
+                            epoch: 3,
+                        },
+                    ),
+                    expected_scope: Some(scope),
+                    deleted_actor_session: None,
+                    method: studio_runtime_providers::Method::ThreadRealtimeStop,
+                    params: json!({"threadId":"voice-thread"}),
+                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
+                },
+            )
+            .await;
+        assert!(
+            match old {
+                Ok(receipt) => receipt.certainty()
+                    == studio_runtime_services::account_session_runtime::RequestCertainty::NotSent,
+                Err(AccountSessionError::Refused("Provider request was refused")) => true,
+                Err(_) => false,
+            },
+            "old epoch cannot dispatch"
+        );
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 let notified = factory.stop_signal.notified();
@@ -3038,7 +3076,128 @@ mod voice_composition_tests {
         })
         .await
         .expect("current-epoch lifecycle stop reaches the retained provider");
-        assert_eq!(factory.stop_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            factory.stop_attempts.load(Ordering::SeqCst),
+            2,
+            "old epoch never reaches provider"
+        );
+        worker.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn migrated_voice_stop_replays_unknown_with_real_worker_without_resending() {
+        use studio_runtime_schema::provider_call_contract::{
+            ConnectionScope, ProviderCallIntent, RequestActor, transport_key,
+        };
+        use studio_runtime_store::request_results::AdmittedRequest;
+        #[derive(serde::Serialize)]
+        struct LegacyStop<'a> {
+            agent: &'a str,
+            epoch: i64,
+            status: &'a str,
+        }
+        #[derive(serde::Serialize)]
+        struct LegacySubmission {
+            call: ProviderCallIntent<studio_runtime_providers::Method, AdmittedRequest>,
+            request: studio_runtime_schema::provider_call_contract::TransportRequest<
+                studio_runtime_providers::Method,
+            >,
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        seed_voice_agent(&store, "legacy-agent").await;
+        let voice_session = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let operation = format!("voice:stop:{voice_session}");
+        let scope = studio_runtime_schema::persistence::ProviderScope {
+            generation: 42,
+            connection: "legacy-connection".into(),
+        };
+        let transport = transport_key("voice-account", &operation);
+        let call = LegacySubmission {
+            call: ProviderCallIntent {
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
+                scope: ConnectionScope {
+                    account: "voice-account".into(),
+                    connection: scope.connection.clone(),
+                    generation: scope.generation,
+                },
+                operation: operation.clone(),
+                actor: Some(RequestActor {
+                    agent: "legacy-agent".into(),
+                    epoch: 3,
+                }),
+                transfer: None,
+                deleted_actor_session: None,
+                method: studio_runtime_providers::Method::ThreadRealtimeStop,
+                params: json!({"threadId":"voice-thread"}),
+            },
+            request: studio_runtime_schema::provider_call_contract::TransportRequest {
+                id: studio_runtime_schema::provider_input::RequestId::String(transport.clone()),
+                generation: scope.generation,
+                method: studio_runtime_providers::Method::ThreadRealtimeStop,
+                operation: transport.clone(),
+                thread: None,
+                lightweight: false,
+                deadline: 100,
+                unknown: true,
+                remote_id: None,
+            },
+        };
+        let session_for_seed = voice_session.clone();
+        let submitted_id = format!("account-worker:{}:submitted", transport);
+        store.transaction(move |tx| {
+            tx.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);")?;
+            tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES(?1,'legacy-agent',1,'voice-thread','voice-account','legacy-connection','ready')", [&session_for_seed])?;
+            tx.execute("INSERT INTO runtime_operation_receipts VALUES('agent-voice-stop:legacy-agent:3','lifecycle.voice-stop.v1',?1)", [serde_json::to_string(&LegacyStop { agent: "legacy-agent", epoch: 3, status: "pending" }).unwrap()])?;
+            tx.execute("INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)", rusqlite::params![submitted_id, serde_json::to_string(&call).unwrap()])?;
+            Ok(())
+        }).await.unwrap();
+        drop(store);
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("migrate legacy voice"),
+        );
+        let encoded: String = store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT provider_scope FROM voice_sessions WHERE id=?1",
+                [&voice_session],
+                |row| row.get(0),
+            )
+            .expect("migrated session scope");
+        assert_eq!(
+            serde_json::from_str::<studio_runtime_schema::persistence::ProviderScope>(&encoded)
+                .unwrap(),
+            scope
+        );
+        let factory = Arc::new(VoiceFactory::default());
+        let (mut worker, session, callbacks) =
+            start_voice_worker(directory.path(), store.clone(), factory.clone()).await;
+        let provider = Arc::new(
+            studio_runtime_services::voice::account_session::AccountSessionVoicePort::new(
+                store.clone(),
+                session,
+                callbacks,
+            ),
+        );
+        for now in [2.0, 3.0] {
+            let replay = studio_runtime_services::voice::provider::end(
+                store.clone(),
+                provider.clone(),
+                "legacy-agent".into(),
+                voice_session.clone(),
+                now,
+            )
+            .await
+            .expect("replay uncertain legacy stop");
+            assert_eq!(replay.get("state").and_then(Value::as_str), Some("unknown"));
+        }
+        assert_eq!(factory.stop_attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(factory.stop_writes.load(Ordering::SeqCst), 0);
         worker.shutdown().await.unwrap();
     }
 
